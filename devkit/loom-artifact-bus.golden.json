@@ -1,0 +1,12 @@
+[
+  {"name": "to_bus_has_type", "import": "from artifact_bus import to_bus_message", "expr": "to_bus_message({'stage':'plan','role':'dev','title':'T','body':'hello','carrier':'glm','task_type':'backend','tokens':100,'cost':0.001,'verdict':'GO','tests_passed':True})['type']", "expect": "artifact"},
+  {"name": "to_bus_stage", "import": "from artifact_bus import to_bus_message", "expr": "to_bus_message({'stage':'implement','role':'dev','title':'T','body':'x'})['stage']", "expect": "implement"},
+  {"name": "to_bus_digest_8hex", "import": "from artifact_bus import to_bus_message", "expr": "len(to_bus_message({'stage':'plan','role':'dev','title':'T','body':'hello'})['body_digest'])", "expect": 8},
+  {"name": "to_bus_digest_consistent", "import": "from artifact_bus import to_bus_message", "expr": "to_bus_message({'stage':'x','role':'r','title':'t','body':'abc'})['body_digest'] == to_bus_message({'stage':'x','role':'r','title':'t','body':'abc'})['body_digest']", "expect": true},
+  {"name": "from_bus_roundtrip_stage", "import": "from artifact_bus import to_bus_message, from_bus_message", "expr": "from_bus_message(to_bus_message({'stage':'review','role':'r','title':'t','body':''}))['stage']", "expect": "review"},
+  {"name": "from_bus_default_body", "import": "from artifact_bus import to_bus_message, from_bus_message", "expr": "from_bus_message(to_bus_message({'stage':'x','role':'r','title':'t','body':''})).get('body','')", "expect": ""},
+  {"name": "merge_total_tokens", "import": "from artifact_bus import to_bus_message, merge", "expr": "merge([to_bus_message({'stage':'plan','role':'r','title':'t','body':'','tokens':100}), to_bus_message({'stage':'impl','role':'r','title':'t','body':'','tokens':200})])['total_tokens']", "expect": 300},
+  {"name": "merge_stages_list", "import": "from artifact_bus import to_bus_message, merge", "expr": "merge([to_bus_message({'stage':'plan','role':'r','title':'t','body':''}), to_bus_message({'stage':'impl','role':'r','title':'t','body':''})])['stages']", "expect": ["plan","impl"]},
+  {"name": "merge_go_count", "import": "from artifact_bus import to_bus_message, merge", "expr": "merge([to_bus_message({'stage':'x','role':'r','title':'t','body':'','verdict':'GO'}), to_bus_message({'stage':'y','role':'r','title':'t','body':'','verdict':'NO-GO'})])['go_count']", "expect": 1},
+  {"name": "digest_empty_string", "import": "from artifact_bus import _digest", "expr": "len(_digest(''))", "expect": 8}
+]

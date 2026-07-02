@@ -1,0 +1,9 @@
+[
+  {"name":"fix","import":"from tasktype import infer_task_type","expr":"infer_task_type('修复登录bug')","expect":"backend-fix"},
+  {"name":"test","import":"from tasktype import infer_task_type","expr":"infer_task_type('给这个函数写测试')","expect":"test-gen"},
+  {"name":"review","import":"from tasktype import infer_task_type","expr":"infer_task_type('review this patch')","expect":"review"},
+  {"name":"refactor","import":"from tasktype import infer_task_type","expr":"infer_task_type('重构这段代码')","expect":"refactor"},
+  {"name":"feature","import":"from tasktype import infer_task_type","expr":"infer_task_type('add a new endpoint')","expect":"feature"},
+  {"name":"other","import":"from tasktype import infer_task_type","expr":"infer_task_type('随便聊聊')","expect":"other"},
+  {"name":"priority_fix_over_feature","import":"from tasktype import infer_task_type","expr":"infer_task_type('fix and add validation')","expect":"backend-fix"}
+]

@@ -1,0 +1,8 @@
+[
+  {"name": "stop_two_same", "import": "from stopcheck import should_stop", "expr": "should_stop(['e1','e1'])['stop']", "expect": true},
+  {"name": "no_stop_different", "import": "from stopcheck import should_stop", "expr": "should_stop(['e1','e2'])['stop']", "expect": false},
+  {"name": "stop_tail_same", "import": "from stopcheck import should_stop", "expr": "should_stop(['a','e1','e1'])['stop']", "expect": true},
+  {"name": "no_stop_tail_diff", "import": "from stopcheck import should_stop", "expr": "should_stop(['e1','e1','e2'])['stop']", "expect": false},
+  {"name": "no_stop_empty", "import": "from stopcheck import should_stop", "expr": "should_stop([])['stop']", "expect": false},
+  {"name": "no_stop_passed", "import": "from stopcheck import should_stop", "expr": "should_stop(['',''])['stop']", "expect": false}
+]

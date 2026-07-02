@@ -1,0 +1,7 @@
+[
+  {"name":"run_opencode_exists","import":"from devkit.executors import run_opencode","expr":"callable(run_opencode)","expect":true},
+  {"name":"opencode_not_installed_graceful","import":"from devkit.executors import run_opencode","expr":"(lambda r: r[0] is False and 'opencode' in r[2])(run_opencode('test', __import__('pathlib').Path('/tmp'), timeout=5))","expect":true},
+  {"name":"run_dispatch_opencode","import":"from devkit.executors import run","expr":"(lambda r: r[0] is False and r[2] == 'opencode')(run('opencode','prompt','m',__import__('pathlib').Path('/tmp'),'http://x','k'))","expect":true},
+  {"name":"unknown_executor_mentions_opencode","import":"from devkit.executors import run","expr":"'opencode' in run('zzz','p','m',__import__('pathlib').Path('/tmp'),'gw','k')[1]","expect":true},
+  {"name":"opencode_in_executors","import":"from devkit.roles import EXECUTORS","expr":"'opencode' in EXECUTORS","expect":true}
+]

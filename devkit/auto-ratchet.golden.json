@@ -1,0 +1,8 @@
+[
+  {"name": "weakened_fewer_cases", "import": "from ratchet import is_weakened", "expr": "is_weakened([{},{}],[{}])", "expect": true},
+  {"name": "not_weakened_grew", "import": "from ratchet import is_weakened", "expr": "is_weakened([{}],[{},{}])", "expect": false},
+  {"name": "weakened_fewer_raises", "import": "from ratchet import is_weakened", "expr": "is_weakened([{'raises':'X'},{}],[{},{}])", "expect": true},
+  {"name": "not_weakened_equal", "import": "from ratchet import is_weakened", "expr": "is_weakened([{}],[{}])", "expect": false},
+  {"name": "check_new_count", "import": "from ratchet import check", "expr": "check([{},{}],[{},{},{}])['new_count']", "expect": 3},
+  {"name": "check_weakened_flag", "import": "from ratchet import check", "expr": "check([{},{}],[{}])['weakened']", "expect": true}
+]

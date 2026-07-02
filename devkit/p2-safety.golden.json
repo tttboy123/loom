@@ -1,0 +1,11 @@
+[
+  {"name":"safety_module_exists","import":"from devkit import safety","expr":"callable(safety.scan_build)","expect":true},
+  {"name":"empty_dir_ok","import":"import pathlib,tempfile; from devkit import safety","expr":"safety.scan_build(pathlib.Path(tempfile.mkdtemp()))['ok']","expect":true},
+  {"name":"missing_dir_ok","import":"from devkit import safety","expr":"safety.scan_build(__import__('pathlib').Path('/nonexistent/__loom__'))['ok']","expect":true},
+  {"name":"result_has_required_keys","import":"import pathlib,tempfile; from devkit import safety","expr":"set(safety.scan_build(pathlib.Path(tempfile.mkdtemp())).keys()) >= {'ok','violations','scanned_files','rules_applied'}","expect":true},
+  {"name":"detects_hardcoded_secret","import":"import pathlib,tempfile,json; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'s.py').write_text('API_KEY = \"abcdefghijklmnopqrstuvwxyz123\"\\n') and not safety.scan_build(pathlib.Path(d))['ok'])(tempfile.mkdtemp())","expect":true},
+  {"name":"detects_shell_true","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'s.py').write_text('subprocess.run([\"ls\"], shell=True)\\n') and not safety.scan_build(pathlib.Path(d))['ok'])(tempfile.mkdtemp())","expect":true},
+  {"name":"clean_file_ok","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'c.py').write_text('def add(a,b): return a+b\\n') is not None and safety.scan_build(pathlib.Path(d))['ok'])(tempfile.mkdtemp())","expect":true},
+  {"name":"rules_applied_ge_4","import":"import pathlib,tempfile; from devkit import safety","expr":"safety.scan_build(pathlib.Path(tempfile.mkdtemp()))['rules_applied'] >= 4","expect":true},
+  {"name":"cmd_safety_exists","import":"import devkit.__main__ as m","expr":"callable(getattr(m, '_cmd_safety', None))","expect":true}
+]

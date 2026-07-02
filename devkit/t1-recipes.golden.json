@@ -1,0 +1,7 @@
+[
+  {"name":"cheap_dev_impl","import":"from recipes import get_recipe","expr":"get_recipe('cheap-dev')['carriers']['implement']","expect":"loom-dev"},
+  {"name":"cheap_dev_review","import":"from recipes import get_recipe","expr":"get_recipe('cheap-dev')['carriers']['review']","expect":"loom-reviewer"},
+  {"name":"list_sorted","import":"from recipes import list_recipes","expr":"list_recipes()","expect":["agent-team-research","cheap-dev","local-first","premium-architect"]},
+  {"name":"local_verify","import":"from recipes import get_recipe","expr":"get_recipe('local-first')['carriers']['verify']","expect":"glm"},
+  {"name":"unknown_raises","import":"from recipes import get_recipe","expr":"get_recipe('nope')","raises":"KeyError"}
+]

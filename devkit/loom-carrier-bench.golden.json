@@ -1,0 +1,12 @@
+[
+  {"id":"load_tasks_nonempty","expr":"len(load_tasks()) > 0","expect":true},
+  {"id":"load_tasks_has_fields","expr":"all('id' in t and 'stage' in t and 'prompt' in t for t in load_tasks())","expect":true},
+  {"id":"load_results_nonexistent","expr":"load_results('/tmp/nonexistent_bench_xyz_abc.json')","expect":{}},
+  {"id":"save_load_roundtrip","expr":"(save_results({'glm':{}},'/tmp/test_bench_save.json'), load_results('/tmp/test_bench_save.json'))[-1].get('glm')","expect":{}},
+  {"id":"run_bench_empty_carriers","expr":"run_bench([], 'http://x', 'k')","expect":{}},
+  {"id":"run_bench_bad_carrier_no_raise","expr":"isinstance(run_bench(['bad_carrier'],'http://127.0.0.1:19999','k',timeout=1), dict)","expect":true},
+  {"id":"run_bench_bad_carrier_has_stages","expr":"len(run_bench(['bad_carrier'],'http://127.0.0.1:19999','k',timeout=1).get('bad_carrier',{})) > 0","expect":true},
+  {"id":"stage_result_has_fields","expr":"all(k in list(run_bench(['bad_carrier'],'http://127.0.0.1:19999','k',timeout=1).get('bad_carrier',{}).values())[0] for k in ['ok_rate','avg_latency_ms','avg_cost','runs'])","expect":true},
+  {"id":"ok_rate_in_range","expr":"all(0.0 <= v['ok_rate'] <= 1.0 for s in run_bench(['bad_carrier'],'http://127.0.0.1:19999','k',timeout=1).values() for v in s.values())","expect":true},
+  {"id":"print_table_empty_no_raise","expr":"(print_table({}), True)[-1]","expect":true}
+]

@@ -1,0 +1,94 @@
+# =============================================================================
+# LiteLLM Gateway 配置
+# 作用：把 Claude / GLM / OpenAI / DeepSeek / Kimi 统一成 OpenAI 兼容接口，
+#       并在“模型组”级别做跨厂商 fallback（降级）、重试、冷却。
+#
+# 上层 Agno 的每个 Agent 只认 model_name（逻辑名），不直接绑厂商。
+# 想换厂商 / 调降级链 —— 只改这个文件，不动业务代码。
+# =============================================================================
+
+model_list:
+  # ---------- Anthropic / Claude ----------
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ---------- OpenAI ----------
+  - model_name: gpt-flagship
+    litellm_params:
+      model: openai/gpt-5
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-mini
+    litellm_params:
+      model: openai/gpt-5-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ---------- 智谱 GLM（OpenAI 兼容端点）----------
+  - model_name: glm-flagship
+    litellm_params:
+      model: openai/glm-4.6
+      api_base: https://open.bigmodel.cn/api/paas/v4
+      api_key: os.environ/ZHIPU_API_KEY
+  - model_name: glm-air
+    litellm_params:
+      model: openai/glm-4-air
+      api_base: https://open.bigmodel.cn/api/paas/v4
+      api_key: os.environ/ZHIPU_API_KEY
+
+  # ---------- DeepSeek（LiteLLM 原生 provider）----------
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+  - model_name: deepseek-reasoner
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # ---------- Kimi / Moonshot ----------
+  - model_name: kimi
+    litellm_params:
+      model: moonshot/kimi-k2-0905-preview
+      api_key: os.environ/MOONSHOT_API_KEY
+
+# =============================================================================
+# 降级策略：fallbacks 按 model_name 触发。
+# 主模型报错 / 限流 / 超时 → 自动按列表顺序切到下一个（可跨厂商）。
+# 这就是“每个 Agent 怎么降级”的集中定义。
+# =============================================================================
+litellm_settings:
+  # 通用降级链（错误 / 限流 / 服务不可用时）
+  fallbacks:
+    - claude-sonnet:      ["gpt-flagship", "glm-flagship"]
+    - gpt-flagship:       ["claude-sonnet", "glm-flagship"]
+    - glm-flagship:       ["deepseek-chat", "claude-sonnet"]
+    - deepseek-reasoner:  ["claude-sonnet", "glm-flagship"]
+    - glm-air:            ["deepseek-chat", "kimi"]
+    - claude-haiku:       ["glm-air", "deepseek-chat"]
+    - kimi:               ["glm-air", "deepseek-chat"]
+
+  # 超长上下文专用降级（命中 context window 超限时优先切大窗口模型）
+  context_window_fallbacks:
+    - claude-sonnet:      ["gpt-flagship", "glm-flagship"]
+
+  # 内容审查命中时的降级（部分厂商更宽松）
+  content_policy_fallbacks:
+    - gpt-flagship:       ["claude-sonnet"]
+
+  num_retries: 2
+  request_timeout: 120
+  drop_params: true            # 厂商不支持的参数自动丢弃，避免 400
+
+router_settings:
+  routing_strategy: simple-shuffle   # 同名多 deployment 时做负载均衡
+  allowed_fails: 3                    # 连续失败几次后把该 deployment 冷却
+  cooldown_time: 60                   # 冷却秒数
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY   # 上层用这个 key 访问网关
+  database_url: os.environ/DATABASE_URL        # 计费 / key 管理 / 用量持久化

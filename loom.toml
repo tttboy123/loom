@@ -1,0 +1,16 @@
+# Loom project config — devkit reads these as defaults for every run
+# CLI flags always override.
+
+[defaults]
+# stages = "plan,implement,review"   # 要跑的阶段
+# cascade = "deepseek,glm"           # 级联升级载体
+# max_tokens = 8000
+# recipe = "cheap-dev"
+# safety = true
+# auto_carrier = true
+# iterate = 1
+# budget = 0.05
+
+# [carrier]
+# implement = "deepseek"
+# review = "claude"

@@ -1,0 +1,67 @@
+# =============================================================================
+# 混合配置：订阅产品（Claude Code / Codex，非 API）+ 真实 API，统一降级。
+#
+# 订阅产品由 CLIProxyAPI 包装成 OpenAI 接口（默认 http://localhost:8317）。
+#   - docker 里的 LiteLLM 访问宿主机用 host.docker.internal
+#   - 原生跑 LiteLLM 就把下面 api_base 改成 http://localhost:8317/v1
+#
+# CLIProxyAPI 实际暴露的模型名以 `GET /v1/models` 为准，下面是常见值，按需改。
+# =============================================================================
+
+model_list:
+  # ---------- 订阅后端：Claude Code（非 API，走你的 Claude 订阅 OAuth）----------
+  - model_name: claude-code-sub
+    litellm_params:
+      model: openai/claude-sonnet-4-5
+      api_base: http://host.docker.internal:8317/v1
+      api_key: sk-cliproxy-local
+
+  # ---------- 订阅后端：Codex（非 API，走你的 ChatGPT 订阅 OAuth）----------
+  - model_name: codex-sub
+    litellm_params:
+      model: openai/gpt-5.1-codex
+      api_base: http://host.docker.internal:8317/v1
+      api_key: sk-cliproxy-local
+
+  # ---------- 真实 API：作为订阅限额耗尽 / 被限流时的兜底 ----------
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: gpt-flagship
+    litellm_params:
+      model: openai/gpt-5
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: glm-flagship
+    litellm_params:
+      model: openai/glm-4.6
+      api_base: https://open.bigmodel.cn/api/paas/v4
+      api_key: os.environ/ZHIPU_API_KEY
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+# =============================================================================
+# 降级链：先尽量用“订阅额度”（不额外花钱），耗尽/限流再退到付费 API。
+# 这就实现了“同时使用多个产品 + API”，且产品挂了能自动接管。
+# =============================================================================
+litellm_settings:
+  fallbacks:
+    # Claude 订阅 → Claude API → GLM API（先免费额度，后付费兜底）
+    - claude-code-sub: ["claude-sonnet", "glm-flagship"]
+    # Codex 订阅 → OpenAI API → DeepSeek API
+    - codex-sub:       ["gpt-flagship", "deepseek-chat"]
+    # 跨产品兜底：Claude 订阅整体不可用时，临时用 Codex 订阅顶上
+    - claude-sonnet:   ["codex-sub", "glm-flagship"]
+  num_retries: 1
+  request_timeout: 180          # 订阅 CLI 后端首字延迟可能偏高，超时放宽
+  drop_params: true
+
+router_settings:
+  routing_strategy: simple-shuffle
+  allowed_fails: 2
+  cooldown_time: 60
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

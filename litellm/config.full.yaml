@@ -1,0 +1,118 @@
+# =============================================================================
+# 全量配置：执行面 MiniMax 主力 + 控制面 codex-sub + M2.7 fallback
+#
+#   控制面（product / orchestrator / reviewer）：codex-sub
+#   执行面（dev / tester）：MiniMax-M3
+#   Fallback：MiniMax-M3 → MiniMax-M2.7-highspeed → MiniMax-M2.7 → GLM → DeepSeek
+#   Claude 已废弃，不再保留 claude-code-sub
+#   订阅备用：codex-sub 保留
+#
+# docker 里的 LiteLLM 访问宿主机 CLIProxyAPI 用 host.docker.internal；
+# 原生跑改 api_base 为 http://localhost:8317/v1。
+# =============================================================================
+
+model_list:
+  # ---------- 主力：MiniMax（月付订阅包量，所有角色首选）----------
+  - model_name: minimax
+    litellm_params:
+      model: minimax/MiniMax-M3
+      api_base: https://api.minimaxi.com/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: minimax-m27-highspeed
+    litellm_params:
+      model: minimax/MiniMax-M2.7-highspeed
+      api_base: https://api.minimaxi.com/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: minimax-m27
+    litellm_params:
+      model: minimax/MiniMax-M2.7
+      api_base: https://api.minimaxi.com/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  # ---------- Fallback #1：智谱 GLM（API 按量计费）----------
+  - model_name: glm
+    litellm_params:
+      model: openai/glm-5.2
+      api_base: https://open.bigmodel.cn/api/paas/v4
+      api_key: os.environ/ZHIPU_API_KEY
+
+  # ---------- Fallback #2：DeepSeek（API 按量计费，当前余额不足需充值）----------
+  - model_name: deepseek
+    litellm_params:
+      model: openai/deepseek-chat
+      api_base: https://api.deepseek.com
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # ---------- 订阅备用：Codex（cliproxy，非 API）----------
+  - model_name: codex-sub
+    litellm_params:
+      model: openai/gpt-5.5
+      api_base: http://cliproxy:8317/v1
+      api_key: sk-cliproxy-local
+
+  # ===========================================================================
+  # Loom 角色载体
+  #   控制面 → codex-sub
+  #   执行面 → MiniMax 主力
+  # ===========================================================================
+  - model_name: loom-product        # 产品判断 / PRD / brainstorming — codex-sub
+    litellm_params:
+      model: openai/gpt-5.5
+      api_base: http://cliproxy:8317/v1
+      api_key: sk-cliproxy-local
+
+  - model_name: loom-orchestrator   # 编排 / 任务分派 / 计划 — codex-sub
+    litellm_params:
+      model: openai/gpt-5.5
+      api_base: http://cliproxy:8317/v1
+      api_key: sk-cliproxy-local
+
+  - model_name: loom-dev            # TDD 实现 — MiniMax-M3 主力
+    litellm_params:
+      model: minimax/MiniMax-M3
+      api_base: https://api.minimaxi.com/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: loom-tester         # 测试 / 验证 — MiniMax-M3 主力
+    litellm_params:
+      model: minimax/MiniMax-M3
+      api_base: https://api.minimaxi.com/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: loom-reviewer       # 独立审查 — codex-sub
+    litellm_params:
+      model: openai/gpt-5.5
+      api_base: http://cliproxy:8317/v1
+      api_key: sk-cliproxy-local
+
+# =============================================================================
+# 降级链
+#   控制面：codex-sub → MiniMax-M3 → MiniMax-M2.7-highspeed → MiniMax-M2.7 → GLM → DeepSeek
+#   执行面：MiniMax-M3 → MiniMax-M2.7-highspeed → MiniMax-M2.7 → GLM → DeepSeek
+# =============================================================================
+litellm_settings:
+  fallbacks:
+    - minimax:         ["minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+    - minimax-m27-highspeed: ["minimax-m27", "glm", "deepseek"]
+    - minimax-m27:     ["glm", "deepseek"]
+    - glm:             ["minimax", "minimax-m27-highspeed", "deepseek"]
+    - deepseek:        ["minimax", "minimax-m27-highspeed", "glm"]
+    - codex-sub:       ["minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+    - loom-product:      ["codex-sub", "minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+    - loom-orchestrator: ["codex-sub", "minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+    - loom-dev:          ["minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+    - loom-tester:       ["minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+    - loom-reviewer:     ["codex-sub", "minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"]
+  num_retries: 3                    # minimax 最多重试 3 次再 fallback
+  request_timeout: 600              # 单次最多等 10 分钟（minimax 有时慢）
+  drop_params: true
+
+router_settings:
+  routing_strategy: simple-shuffle
+  allowed_fails: 4                  # 允许 4 次失败才进冷却，避免偶发超时踢出 minimax
+  cooldown_time: 30                 # 30s 冷却，快速恢复
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

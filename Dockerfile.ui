@@ -1,0 +1,14 @@
+# 开源前端控制台 agent-ui（Next.js）。浏览器开 http://localhost:3000 即聊天界面。
+FROM node:20-slim
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm
+WORKDIR /srv
+# 拉取官方 agent-ui（main 分支对应 Agno v2.x）
+RUN git clone --depth 1 https://github.com/agno-agi/agent-ui.git .
+RUN pnpm install
+# 生产模式：构建期编译，运行期只 serve 产物 —— 运行内存从 ~1.2GB 降到 ~0.2GB。
+RUN pnpm build
+EXPOSE 3000
+# -H 0.0.0.0 让容器外（你的浏览器）能访问；next start 跑生产构建。
+CMD ["pnpm", "exec", "next", "start", "-p", "3000", "-H", "0.0.0.0"]

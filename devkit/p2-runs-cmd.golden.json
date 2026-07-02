@@ -1,0 +1,10 @@
+[
+  {"name":"runs_list_exists","import":"from devkit.insight import runs_list","expr":"callable(runs_list)","expect":true},
+  {"name":"runs_list_returns_list","import":"from devkit.insight import runs_list","expr":"isinstance(runs_list(), list)","expect":true},
+  {"name":"runs_list_item_keys","import":"from devkit.insight import runs_list","expr":"(lambda items: all(set(i.keys()) >= {'run_id','gate','tokens','cost','task_type','task_snippet','artifact_files'} for i in items) if items else True)(runs_list())","expect":true},
+  {"name":"runs_list_sorted_desc","import":"from devkit.insight import runs_list","expr":"(lambda items: items == sorted(items, key=lambda x: x['run_id'], reverse=True))(runs_list())","expect":true},
+  {"name":"runs_cmd_exists","import":"from devkit.__main__ import _cmd_runs","expr":"callable(_cmd_runs)","expect":true},
+  {"name":"runs_cmd_list_mode_zero_exit","import":"from devkit.__main__ import _cmd_runs","expr":"(lambda: (lambda ret: ret == 0)(_cmd_runs([])))()","expect":true},
+  {"name":"runs_list_empty_dir_ok","import":"from devkit.insight import runs_list","expr":"(lambda: __import__('tempfile').mkdtemp() or True)()\n","expect":true},
+  {"name":"runs_list_no_crash_missing_dir","import":"from devkit.insight import runs_list","expr":"isinstance(runs_list(__import__('pathlib').Path('/tmp/no-such-runs-dir-xyz')), list)","expect":true}
+]

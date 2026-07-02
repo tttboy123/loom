@@ -1,0 +1,10 @@
+[
+  {"name":"simulate_exists","import":"from devkit.insight import quota_simulate","expr":"callable(quota_simulate)","expect":true},
+  {"name":"simulate_keys","import":"from devkit.insight import quota_simulate","expr":"set(quota_simulate(['implement'],'http://x','k').keys()) >= {'stages','stage_costs','estimated_total','verdict','missing_stages'}","expect":true},
+  {"name":"unknown_when_no_history","import":"from devkit.insight import quota_simulate","expr":"quota_simulate(['no_such_stage_xyz'],'http://x','k')['verdict']","expect":"Unknown"},
+  {"name":"missing_stages_populated","import":"from devkit.insight import quota_simulate","expr":"'no_such_stage_xyz' in quota_simulate(['no_such_stage_xyz'],'http://x','k')['missing_stages']","expect":true},
+  {"name":"estimated_total_float","import":"from devkit.insight import quota_simulate","expr":"isinstance(quota_simulate(['implement'],'http://x','k')['estimated_total'], float)","expect":true},
+  {"name":"stage_costs_is_dict","import":"from devkit.insight import quota_simulate","expr":"isinstance(quota_simulate(['implement'],'http://x','k')['stage_costs'], dict)","expect":true},
+  {"name":"stages_in_result","import":"from devkit.insight import quota_simulate","expr":"quota_simulate(['implement','verify'],'http://x','k')['stages']","expect":["implement","verify"]},
+  {"name":"verdict_is_string","import":"from devkit.insight import quota_simulate","expr":"isinstance(quota_simulate(['implement'],'http://x','k')['verdict'], str)","expect":true}
+]

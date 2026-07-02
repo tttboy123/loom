@@ -1,0 +1,10 @@
+[
+  {"name":"rules_applied_is_6","import":"import pathlib,tempfile; from devkit import safety","expr":"safety.scan_build(pathlib.Path(tempfile.mkdtemp()))['rules_applied']","expect":6},
+  {"name":"has_errors_key_exists","import":"import pathlib,tempfile; from devkit import safety","expr":"'has_errors' in safety.scan_build(pathlib.Path(tempfile.mkdtemp()))","expect":true},
+  {"name":"clean_has_no_errors","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'c.py').write_text('def f(): return 1\\n') is not None and not safety.scan_build(pathlib.Path(d))['has_errors'])(tempfile.mkdtemp())","expect":true},
+  {"name":"s005_eval_detected","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'e.py').write_text('eval(user_input)\\n') and not safety.scan_build(pathlib.Path(d))['ok'])(tempfile.mkdtemp())","expect":true},
+  {"name":"s006_pickle_detected","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'p.py').write_text('import pickle\\npickle.loads(data)\\n') and not safety.scan_build(pathlib.Path(d))['ok'])(tempfile.mkdtemp())","expect":true},
+  {"name":"violation_has_severity","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'s.py').write_text('API_KEY = \"abcdefghijklmnopqrstuvwxyz123\"\\n') and 'severity' in safety.scan_build(pathlib.Path(d))['violations'][0])(tempfile.mkdtemp())","expect":true},
+  {"name":"s001_is_error_severity","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'s.py').write_text('API_KEY = \"abcdefghijklmnopqrstuvwxyz123\"\\n') and safety.scan_build(pathlib.Path(d))['violations'][0]['severity'])(tempfile.mkdtemp())","expect":"error"},
+  {"name":"s005_is_warn_severity","import":"import pathlib,tempfile; from devkit import safety","expr":"(lambda d: (pathlib.Path(d)/'e.py').write_text('eval(x)\\n') and safety.scan_build(pathlib.Path(d))['violations'][0]['severity'])(tempfile.mkdtemp())","expect":"warn"}
+]

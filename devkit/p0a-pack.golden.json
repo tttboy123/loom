@@ -1,0 +1,10 @@
+[
+  {"name": "kept_greedy_by_prio", "import": "from budget import pack", "expr": "pack([{'name':'a','text':'xxxxx','prio':1,'protected':False},{'name':'b','text':'yy','prio':0,'protected':True},{'name':'c','text':'zzzzzz','prio':2,'protected':False}], 8, est=len)['kept']", "expect": ["a", "b"]},
+  {"name": "dropped", "import": "from budget import pack", "expr": "pack([{'name':'a','text':'xxxxx','prio':1,'protected':False},{'name':'b','text':'yy','prio':0,'protected':True},{'name':'c','text':'zzzzzz','prio':2,'protected':False}], 8, est=len)['dropped']", "expect": ["c"]},
+  {"name": "used_sum", "import": "from budget import pack", "expr": "pack([{'name':'a','text':'xxxxx','prio':1,'protected':False},{'name':'b','text':'yy','prio':0,'protected':True},{'name':'c','text':'zzzzzz','prio':2,'protected':False}], 8, est=len)['used']", "expect": 7},
+  {"name": "protected_kept_over_budget", "import": "from budget import pack", "expr": "pack([{'name':'p','text':'verylongtext','prio':0,'protected':True}], 3, est=len)['kept']", "expect": ["p"]},
+  {"name": "text_original_order", "import": "from budget import pack", "expr": "pack([{'name':'a','text':'AAA','prio':1,'protected':False},{'name':'b','text':'BB','prio':0,'protected':True}], 100, est=len)['text']", "expect": "AAA\n\nBB"},
+  {"name": "existing_carrier_window", "import": "from budget import carrier_window", "expr": "carrier_window('glm')", "expect": 128000},
+  {"name": "existing_est_cjk", "import": "from budget import est_tokens", "expr": "est_tokens('中'*100)", "expect": 100},
+  {"name": "existing_budget_tokens", "import": "from budget import budget_tokens", "expr": "budget_tokens(100000)", "expect": 60000}
+]

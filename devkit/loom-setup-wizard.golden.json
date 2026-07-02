@@ -1,0 +1,12 @@
+[
+  {"id":"detect_docker_returns_bool","expr":"isinstance(detect_docker(), bool)","expect":true},
+  {"id":"detect_env_missing_key","expr":"detect_env_key('MINIMAX_API_KEY_NONEXISTENT_XYZ')","expect":""},
+  {"id":"write_env_creates_key","expr":"(write_env_file({'TEST_KEY_XYZ':'test_val'},'/tmp/test_loom_env.env'), 'TEST_KEY_XYZ=test_val' in open('/tmp/test_loom_env.env').read())[-1]","expect":true},
+  {"id":"check_gateway_unreachable_ok","expr":"check_gateway('http://127.0.0.1:19999',timeout=1)['ok']","expect":false},
+  {"id":"check_gateway_unreachable_latency","expr":"check_gateway('http://127.0.0.1:19999',timeout=1)['latency_ms']","expect":0.0},
+  {"id":"run_setup_returns_steps_list","expr":"isinstance(run_setup(interactive=False, keys={})['steps'], list)","expect":true},
+  {"id":"run_setup_steps_have_fields","expr":"all('name' in s and 'ok' in s and 'message' in s for s in run_setup(interactive=False,keys={})['steps'])","expect":true},
+  {"id":"run_setup_with_key_min_steps","expr":"len(run_setup(interactive=False,keys={'MINIMAX_API_KEY':'test'})['steps']) >= 3","expect":true},
+  {"id":"check_gateway_has_error_field","expr":"'error' in check_gateway('http://127.0.0.1:19999',timeout=1)","expect":true},
+  {"id":"write_env_no_duplicate","expr":"(write_env_file({'DUP_KEY':'v1'},'/tmp/test_dup_env.env'), write_env_file({'DUP_KEY':'v2'},'/tmp/test_dup_env.env'), open('/tmp/test_dup_env.env').read().count('DUP_KEY'))[-1]","expect":1}
+]

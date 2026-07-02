@@ -1,0 +1,11 @@
+[
+  {"name":"provider_balance_exists","import":"from devkit.insight import provider_balance","expr":"callable(provider_balance)","expect":true},
+  {"name":"no_key_returns_none","import":"from devkit.insight import provider_balance","expr":"provider_balance('deepseek', None)['available_usd']","expect":null},
+  {"name":"no_key_source","import":"from devkit.insight import provider_balance","expr":"provider_balance('deepseek', None)['source']","expect":"no_key"},
+  {"name":"unsupported_backend","import":"from devkit.insight import provider_balance","expr":"provider_balance('glm', 'key')['source']","expect":"unsupported"},
+  {"name":"unsupported_returns_none","import":"from devkit.insight import provider_balance","expr":"provider_balance('glm', 'key')['available_usd']","expect":null},
+  {"name":"bad_key_returns_error_not_raise","import":"from devkit.insight import provider_balance","expr":"provider_balance('deepseek', 'bad-key')['source'] in ('error','api')","expect":true},
+  {"name":"result_has_required_keys","import":"from devkit.insight import provider_balance","expr":"set(provider_balance('deepseek', None).keys()) >= {'backend','available_usd','available_cny','source'}","expect":true},
+  {"name":"quota_report_still_works","import":"from devkit.insight import quota_report","expr":"isinstance(quota_report('http://x','k'), dict)","expect":true},
+  {"name":"quota_report_has_rows","import":"from devkit.insight import quota_report","expr":"'rows' in quota_report('http://x','k')","expect":true}
+]

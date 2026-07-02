@@ -1,0 +1,126 @@
+# 本地 / 单机自托管一键起栈。云上用 k8s/ 下的 manifest。
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agno
+      POSTGRES_PASSWORD: agno
+      POSTGRES_DB: agno
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agno"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    # LiteLLM 用 redis 做跨副本的限流 / 路由状态共享（云上多副本必需）
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: ${LITELLM_DATABASE_URL}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agentos:
+    profiles: ["full"]          # 重型：仅 --profile full 启动（聊天 UI 的后端）
+    build: { context: ., dockerfile: Dockerfile }
+    command: ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      CREW_SERVICE_URL: http://crew-service:8001
+    ports:
+      - "8000:8000"
+      - "7777:8000"        # agent-ui 默认连 :7777，映射到此，开箱即连
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 前端控制台：本地聊天界面（不依赖 os.agno.com）
+  agent-ui:
+    profiles: ["full"]          # 重型：仅 --profile full 启动（Next.js 聊天界面）
+    build: { context: ., dockerfile: Dockerfile.ui }
+    ports:
+      - "3000:3000"
+    depends_on:
+      - agentos
+    # 浏览器开 http://localhost:3000；它在浏览器侧直连 AgentOS(:7777)
+
+  # 全局控制台（中枢）：聚合 devkit 运行 / 网关用量 / 健康 / 角色映射 + 一键发起运行。
+  console:
+    build: { context: ., dockerfile: Dockerfile.console }
+    environment:
+      LITELLM_BASE_URL: http://litellm:4000
+      AGENTOS_URL: http://agentos:8000
+      AGENTUI_URL: http://agent-ui:3000
+      CLIPROXY_URL: http://cliproxy:8317               # 订阅代理（容器服务）
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      CONSOLE_TOKEN: ${CONSOLE_TOKEN:-}                 # 设了就鉴权；空=本地零摩擦
+      TZ: Asia/Shanghai                                # 运行时间戳与宿主机一致
+    volumes:
+      - ./console:/app/console:ro       # 改 HTML/逻辑即时生效
+      - ./devkit:/app/devkit            # 运行产物读写 + 与宿主机共享
+      - ./app:/app/app:ro               # 角色注册表
+      - ./litellm:/app/litellm          # 读 config 做载体→后端映射；UI 改角色厂商也写这里
+      - ./USAGE.zh.md:/app/USAGE.zh.md:ro     # 控制台内「使用帮助」
+      - ./USAGE.en.md:/app/USAGE.en.md:ro
+      - ./LOOM-ROLES.md:/app/LOOM-ROLES.md:ro
+      - ./CONSTITUTION.md:/app/CONSTITUTION.md:ro   # 宪章：注入每次容器内 devkit 运行 + 控制台查看
+      # 可选（默认关）：挂入订阅 token（只读）→ 控制台真活性面板才能区分「过期需重登」与「真挂」。
+      # 不挂则控制台降级为 服务中/挂了，过期判定看宿主机 ./loom doctor。注意这会把订阅凭据带进有访问
+      # token 守门的网络服务，按需开启：
+      # - ${HOME}/.cli-proxy-api:/root/.cli-proxy-api:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8899:8899"
+    depends_on:
+      - litellm
+    # 浏览器开 http://localhost:8899
+
+  # 订阅代理（容器化，restart:always）：包装 Claude/ChatGPT 订阅为本地 OpenAI 接口。
+  # token 由宿主机 ~/.cli-proxy-api 挂载提供；如需重新登录，在宿主机跑一次
+  # ./cli-proxy-api --claude-login（或 --codex-login）刷新 token 即可，容器会自动读到。
+  cliproxy:
+    build: { context: ., dockerfile: Dockerfile.cliproxy }
+    restart: always
+    volumes:
+      - ./cliproxy/config.yaml:/app/config.yaml:ro
+      - ${HOME}/.cli-proxy-api:/root/.cli-proxy-api
+    ports:
+      - "8317:8317"
+
+  # 可选：默认注释，需要 crew 时再启用
+  crew-service:
+    build: { context: ., dockerfile: Dockerfile.crew }
+    command: ["uvicorn", "crew_service.crew_app:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+    ports:
+      - "8001:8001"
+    depends_on:
+      - litellm
+    profiles: ["crew"]   # docker compose --profile crew up 才会启动
+
+volumes:
+  pgdata:

@@ -1,0 +1,12 @@
+[
+  {"name": "window_minimax", "import": "from budget import carrier_window", "expr": "carrier_window('minimax')", "expect": 32768},
+  {"name": "window_glm", "import": "from budget import carrier_window", "expr": "carrier_window('glm')", "expect": 128000},
+  {"name": "window_unknown_default", "import": "from budget import carrier_window", "expr": "carrier_window('no-such-model')", "expect": 32768},
+  {"name": "budget_default_reserve", "import": "from budget import budget_tokens", "expr": "budget_tokens(100000)", "expect": 60000},
+  {"name": "budget_custom_reserve", "import": "from budget import budget_tokens", "expr": "budget_tokens(100000, 0.5)", "expect": 50000},
+  {"name": "est_empty", "import": "from budget import est_tokens", "expr": "est_tokens('')", "expect": 0},
+  {"name": "est_english", "import": "from budget import est_tokens", "expr": "est_tokens('hello world')", "expect": 4},
+  {"name": "est_cjk", "import": "from budget import est_tokens", "expr": "est_tokens('中文')", "expect": 2},
+  {"name": "est_mixed", "import": "from budget import est_tokens", "expr": "est_tokens('中文abc')", "expect": 3},
+  {"name": "est_cjk_not_underestimated", "import": "from budget import est_tokens", "expr": "est_tokens('中'*100)", "expect": 100}
+]

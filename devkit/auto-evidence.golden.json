@@ -1,0 +1,8 @@
+[
+  {"name": "go_via_tests", "import": "from evidence import gate", "expr": "gate({'has_test_output':True,'tests_passed':True,'has_codex_verdict':False,'codex_verdict':None})['verdict']", "expect": "GO"},
+  {"name": "nogo_no_evidence", "import": "from evidence import gate", "expr": "gate({'has_test_output':False,'tests_passed':None,'has_codex_verdict':False,'codex_verdict':None})['verdict']", "expect": "NO-GO"},
+  {"name": "nogo_tests_failed", "import": "from evidence import gate", "expr": "gate({'has_test_output':True,'tests_passed':False,'has_codex_verdict':False,'codex_verdict':None})['verdict']", "expect": "NO-GO"},
+  {"name": "go_via_codex", "import": "from evidence import gate", "expr": "gate({'has_test_output':False,'tests_passed':None,'has_codex_verdict':True,'codex_verdict':'GO'})['verdict']", "expect": "GO"},
+  {"name": "nogo_codex_nogo", "import": "from evidence import gate", "expr": "gate({'has_test_output':False,'tests_passed':None,'has_codex_verdict':True,'codex_verdict':'NO-GO'})['verdict']", "expect": "NO-GO"},
+  {"name": "no_evidence_reason", "import": "from evidence import gate", "expr": "'no evidence' in gate({'has_test_output':False,'tests_passed':None,'has_codex_verdict':False,'codex_verdict':None})['reason'].lower()", "expect": true}
+]

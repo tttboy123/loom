@@ -1,0 +1,10 @@
+[
+  {"name":"cmt_glm","import":"from budget import carrier_max_tokens","expr":"carrier_max_tokens('glm')","expect":8000},
+  {"name":"cmt_deepseek","import":"from budget import carrier_max_tokens","expr":"carrier_max_tokens('deepseek')","expect":8000},
+  {"name":"cmt_minimax","import":"from budget import carrier_max_tokens","expr":"carrier_max_tokens('minimax')","expect":8000},
+  {"name":"cmt_claude_none","import":"from budget import carrier_max_tokens","expr":"carrier_max_tokens('claude')","expect":null},
+  {"name":"cmt_unknown_none","import":"from budget import carrier_max_tokens","expr":"carrier_max_tokens('no-such')","expect":null},
+  {"name":"zf_empty_files_is_failed","import":"","expr":"(None is False) or not []","expect":true},
+  {"name":"zf_ok_files_not_failed","import":"","expr":"(True is False) or not ['a.py']","expect":false},
+  {"name":"zf_test_failed_with_files","import":"","expr":"(False is False) or not ['a.py']","expect":true}
+]

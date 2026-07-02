@@ -1,0 +1,12 @@
+[
+  {"name": "estimate_empty_history", "import": "from capacity import estimate_run", "expr": "estimate_run(['plan','implement'],[],{})['estimated_tokens'] > 0", "expect": true},
+  {"name": "estimate_has_per_stage", "import": "from capacity import estimate_run", "expr": "isinstance(estimate_run(['plan'],{},{}).get('per_stage',{}), dict)", "expect": true},
+  {"name": "estimate_plan_in_per_stage", "import": "from capacity import estimate_run", "expr": "'plan' in estimate_run(['plan','implement'],{},{})['per_stage']", "expect": true},
+  {"name": "preflight_ok_no_budget", "import": "from capacity import preflight_check", "expr": "preflight_check(['plan','implement'],{},{},None)['ok']", "expect": true},
+  {"name": "preflight_ok_within_budget", "import": "from capacity import preflight_check", "expr": "preflight_check(['plan'],{},{},9.99)['ok']", "expect": true},
+  {"name": "preflight_fail_zero_budget", "import": "from capacity import preflight_check", "expr": "preflight_check(['plan','implement','verify'],{},{},0.0)['ok']", "expect": false},
+  {"name": "preflight_warning_field", "import": "from capacity import preflight_check", "expr": "isinstance(preflight_check(['plan'],{},{},0.0).get('warning',''), str)", "expect": true},
+  {"name": "suggest_cheaper_returns_list", "import": "from capacity import suggest_cheaper", "expr": "isinstance(suggest_cheaper(['brainstorm','plan','implement'],{},{},0.0), list)", "expect": true},
+  {"name": "suggest_cheaper_only_optional", "import": "from capacity import suggest_cheaper", "expr": "all(s in ('brainstorm','verify') for s in suggest_cheaper(['brainstorm','plan','implement','verify'],{},{},0.0))", "expect": true},
+  {"name": "estimate_cost_float", "import": "from capacity import estimate_run", "expr": "isinstance(estimate_run(['implement'],{},{})['estimated_cost'], float)", "expect": true}
+]

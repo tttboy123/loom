@@ -1,0 +1,53 @@
+[
+  {
+    "id": "select_best_by_ok_rate",
+    "expr": "select('implement', ['glm', 'deepseek'], [{'carrier':'glm','stage':'implement','ok_rate':0.9,'avg_cost':0.001,'runs':5},{'carrier':'deepseek','stage':'implement','ok_rate':0.7,'avg_cost':0.002,'runs':3}])",
+    "expect": "glm"
+  },
+  {
+    "id": "select_no_history_returns_candidate",
+    "expr": "select('implement', ['glm', 'deepseek'], []) in ['glm', 'deepseek']",
+    "expect": true
+  },
+  {
+    "id": "select_empty_raises",
+    "expr": "(lambda: (lambda: (_ for _ in ()).throw(ValueError()))() if not True else 'ok')()",
+    "skip": true,
+    "note": "ValueError test done in unit tests"
+  },
+  {
+    "id": "fallback_chain_best_first",
+    "expr": "fallback_chain('implement', ['glm', 'deepseek', 'minimax'], [{'carrier':'minimax','stage':'implement','ok_rate':0.95,'avg_cost':0.005,'runs':10}])[0]",
+    "expect": "minimax"
+  },
+  {
+    "id": "fallback_chain_length_equals_candidates",
+    "expr": "len(fallback_chain('plan', ['glm', 'deepseek'], []))",
+    "expect": 2
+  },
+  {
+    "id": "fallback_chain_single",
+    "expr": "fallback_chain('impl', ['only'], [])",
+    "expect": ["only"]
+  },
+  {
+    "id": "score_carrier_ok_rate",
+    "expr": "score_carrier('glm', 'implement', [{'carrier':'glm','stage':'implement','ok_rate':0.8,'avg_cost':0.001,'runs':5}])['ok_rate']",
+    "expect": 0.8
+  },
+  {
+    "id": "score_carrier_no_history_runs",
+    "expr": "score_carrier('new_model', 'implement', [])['runs']",
+    "expect": 0
+  },
+  {
+    "id": "score_carrier_no_history_default_ok_rate",
+    "expr": "score_carrier('new_model', 'implement', [])['ok_rate']",
+    "expect": 0.5
+  },
+  {
+    "id": "score_carrier_high_beats_low",
+    "expr": "score_carrier('good', 'plan', [{'carrier':'good','stage':'plan','ok_rate':0.9,'avg_cost':0.001,'runs':3}])['score'] > score_carrier('bad', 'plan', [{'carrier':'bad','stage':'plan','ok_rate':0.3,'avg_cost':0.008,'runs':3}])['score']",
+    "expect": true
+  }
+]

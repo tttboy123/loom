@@ -1,0 +1,12 @@
+[
+  {"name": "done_stages_nonexistent", "import": "from resume import done_stages", "expr": "done_stages('/nonexistent/loom/xyz')", "expect": []},
+  {"name": "done_stages_empty_dir", "import": "import tempfile; from resume import done_stages", "expr": "done_stages(tempfile.mkdtemp())", "expect": []},
+  {"name": "done_stages_finds_plan", "import": "import pathlib,tempfile; from resume import done_stages", "expr": "(lambda d: [(d/'01-plan.md').write_text('x')] and done_stages(d))(pathlib.Path(tempfile.mkdtemp()))", "expect": ["plan"]},
+  {"name": "done_stages_skips_task", "import": "import pathlib,tempfile; from resume import done_stages", "expr": "(lambda d: [(d/'00-task.md').write_text('x')] and done_stages(d))(pathlib.Path(tempfile.mkdtemp()))", "expect": []},
+  {"name": "done_stages_skips_iter", "import": "import pathlib,tempfile; from resume import done_stages", "expr": "(lambda d: [(d/'90-implement-r1.md').write_text('x')] and done_stages(d))(pathlib.Path(tempfile.mkdtemp()))", "expect": []},
+  {"name": "done_stages_ordered", "import": "import pathlib,tempfile; from resume import done_stages", "expr": "(lambda d: [(d/'02-implement.md').write_text('x'),(d/'01-plan.md').write_text('x')] and done_stages(d))(pathlib.Path(tempfile.mkdtemp()))", "expect": ["plan","implement"]},
+  {"name": "pending_stages_subtracts", "import": "import pathlib,tempfile; from resume import pending_stages", "expr": "(lambda d: [(d/'01-plan.md').write_text('x')] and pending_stages(d,['plan','implement','verify']))(pathlib.Path(tempfile.mkdtemp()))", "expect": ["implement","verify"]},
+  {"name": "is_complete_false_no_log", "import": "import tempfile; from resume import is_complete", "expr": "is_complete(tempfile.mkdtemp())", "expect": false},
+  {"name": "is_complete_true_with_log", "import": "import pathlib,tempfile; from resume import is_complete", "expr": "(lambda d: [(d/'run-log.md').write_text('x')] and is_complete(d))(pathlib.Path(tempfile.mkdtemp()))", "expect": true},
+  {"name": "is_complete_false_nonexistent", "import": "from resume import is_complete", "expr": "is_complete('/nonexistent/loom/xyz')", "expect": false}
+]

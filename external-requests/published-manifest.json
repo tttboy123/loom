@@ -1,0 +1,13 @@
+{
+  "published_at": "2026-07-01T21:28:00+08:00",
+  "source_root": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/outputs/space-agent-startup-docs/task-harness/loom-buddys/upstream-requests",
+  "loom_root": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/agent-platform/external-requests",
+  "request_count": 5,
+  "request_ids": [
+    "loom-upstream-001-devflow-capability-alignment",
+    "loom-upstream-002-materialization-and-apply-contract",
+    "loom-upstream-003-external-verification-surface-contract",
+    "loom-upstream-004-external-queue-lease-and-recovery",
+    "loom-upstream-005-external-candidate-drift-and-failure-classification"
+  ]
+}

@@ -1,0 +1,12 @@
+[
+  {"name":"parse_go","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('All tests passed ✅ GO')['verdict']","expect":"GO"},
+  {"name":"parse_go_tests_passed","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('PASS: 5/5 GO')['tests_passed']","expect":true},
+  {"name":"parse_nogo","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('Test failed ❌ NO-GO')['verdict']","expect":"NO-GO"},
+  {"name":"parse_nogo_tests_passed_false","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('FAIL: 2 errors NO-GO')['tests_passed']","expect":false},
+  {"name":"parse_unknown","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('结果不明确')['verdict']","expect":"UNKNOWN"},
+  {"name":"parse_unknown_tests_none","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('分析中...')['tests_passed']","expect":null},
+  {"name":"parse_nogo_overrides_go","import":"from executors import _parse_verify_report","expr":"_parse_verify_report('3 PASS 1 FAIL NO-GO')['verdict']","expect":"NO-GO"},
+  {"name":"summary_truncated","import":"from executors import _parse_verify_report","expr":"len(_parse_verify_report('x' * 1000)['summary']) <= 500","expect":true},
+  {"name":"codex_in_run_signature","import":"import inspect; from executors import run","expr":"'codex' in inspect.getsource(run)","expect":true},
+  {"name":"parse_verify_report_exists","import":"from executors import _parse_verify_report","expr":"callable(_parse_verify_report)","expect":true}
+]

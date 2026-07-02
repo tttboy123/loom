@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom · 开发套件控制台</title>
+<style>
+  :root{
+    --bg:#ffffff; --surface:#ffffff; --surface-2:#f7f7f8; --sidebar:#f9f9f9; --elevated:#ffffff;
+    --border:#e5e5e5; --border-strong:#d7d7e0;
+    --text:#0d0d0d; --muted:#6e6e80; --faint:#a0a0ac;
+    --accent:#0d0d0d; --accent-hover:#2a2a2a; --accent-soft:#ececf1; --on-accent:#ffffff;
+    --green:#10a37f; --amber:#b5840a; --red:#e5484d;
+    --r-lg:16px; --r-md:12px; --r-sm:9px;
+    --shadow:0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.04);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,"PingFang SC","Microsoft Yahei",sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#212121; --surface:#2a2a2c; --surface-2:#343541; --sidebar:#171717; --elevated:#2a2a2c;
+      --border:#3a3a3d; --border-strong:#4a4a4d;
+      --text:#ececec; --muted:#a9a9b3; --faint:#7d7d86;
+      --accent:#ffffff; --accent-hover:#e6e6e6; --accent-soft:#2f2f33; --on-accent:#0d0d0d;
+      --green:#19c39c; --amber:#d6a53a; --red:#f2555a;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 28px rgba(0,0,0,.25);
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{color:var(--accent-hover)}
+  .app{display:flex;min-height:100vh}
+
+  /* ── Sidebar ── */
+  .sidebar{width:240px;flex-shrink:0;border-right:1px solid var(--border);padding:22px 18px;display:flex;flex-direction:column;gap:22px;position:sticky;top:0;height:100vh;background:var(--sidebar)}
+  .brand{display:flex;flex-direction:column;gap:2px}
+  .brand .name{font-family:var(--sans);font-size:21px;font-weight:600;letter-spacing:.2px}
+  .brand .sub{font-size:12px;color:var(--muted)}
+  nav{display:flex;flex-direction:column;gap:2px}
+  nav a{padding:7px 11px;border-radius:var(--r-sm);color:var(--text);font-size:13.5px;display:flex;align-items:center;gap:9px}
+  nav a:hover{background:var(--surface-2)}
+  .sec-label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--faint);margin:0 0 8px 4px;font-weight:600}
+  .health{display:flex;flex-direction:column;gap:7px}
+  .hrow{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--muted)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);flex-shrink:0}
+  .dot.up{background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 18%,transparent)}
+  .dot.down{background:var(--red)}
+  .ext{display:flex;flex-direction:column;gap:5px;margin-top:auto}
+  .ext a{font-size:13px;color:var(--muted);display:flex;justify-content:space-between;padding:5px 4px}
+  .ext a:hover{color:var(--accent)}
+
+  /* ── Main ── */
+  main{flex:1;min-width:0;padding:30px 38px 60px;max-width:1080px;margin:0 auto;width:100%}
+  .page-h{font-family:var(--sans);font-size:27px;font-weight:600;margin:0 0 3px}
+  .page-sub{color:var(--muted);font-size:14px;margin:0 0 26px}
+  section{margin-bottom:26px;scroll-margin-top:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow)}
+  .card-pad{padding:18px 20px}
+  h2.title{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:0 0 2px;font-weight:600}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px}
+  .card-head .meta{font-size:12.5px;color:var(--faint)}
+
+  /* ── Composer (chat-style) ── */
+  .composer{background:var(--elevated);border:1px solid var(--border-strong);border-radius:var(--r-lg);padding:6px 6px 10px;box-shadow:var(--shadow);transition:border-color .15s}
+  .composer:focus-within{border-color:var(--accent)}
+  .composer textarea{width:100%;border:none;background:transparent;color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.5;padding:13px 13px 6px;resize:none;outline:none;min-height:54px}
+  .composer .toolbar{display:flex;align-items:center;gap:10px;padding:4px 8px 2px;flex-wrap:wrap}
+  select,.toggle{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 10px;font-family:var(--sans);font-size:13px}
+  .toggle{display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--muted)}
+  .toggle input{accent-color:var(--accent)}
+  .spacer{flex:1}
+  .btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--r-sm);padding:8px 18px;font-weight:600;font-size:13.5px;cursor:pointer;display:flex;align-items:center;gap:7px;transition:background .15s}
+  .btn:hover{background:var(--accent-hover)}
+  .btn:disabled{opacity:.55;cursor:default}
+  .run-msg{font-size:12.5px;color:var(--muted);padding:8px 12px 0;min-height:16px}
+
+  /* ── Runs table ── */
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--faint);font-weight:600;padding:0 10px 9px}
+  td{padding:11px 10px;border-top:1px solid var(--border);font-size:13.5px;vertical-align:top}
+  tr.run{cursor:pointer;transition:background .12s}
+  tr.run:hover td{background:var(--surface-2)}
+  .pill{font-size:11px;font-weight:600;padding:2.5px 10px;border-radius:20px;white-space:nowrap;display:inline-block}
+  .pill.go{color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent)}
+  .pill.nogo{color:var(--red);background:color-mix(in srgb,var(--red) 12%,transparent)}
+  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .chip{font-size:10.5px;padding:2px 8px;border-radius:11px;background:var(--surface-2);color:var(--muted);font-family:var(--mono)}
+  .chip.ok{color:var(--green)} .chip.blocked{color:var(--amber)} .chip.nogo{color:var(--red)}
+  pre.diff{font-size:11.5px;line-height:1.5}
+  .diff .dadd{color:var(--green)} .diff .ddel{color:#b91c1c} .diff .dhunk{color:var(--muted)}
+  .tasktd{max-width:330px;color:var(--text)}
+  .ts{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap}
+  .empty{color:var(--faint);text-align:center;padding:26px 0;font-size:13.5px}
+
+  /* ── Detail ── */
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .tab{font-size:12.5px;padding:5px 12px;border:1px solid var(--border);border-radius:20px;background:var(--surface);cursor:pointer;color:var(--muted);font-family:var(--mono)}
+  .tab:hover{border-color:var(--border-strong)}
+  .tab.active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .doc{font-size:14px;line-height:1.62}
+  .doc h1{font-family:var(--sans);font-size:20px;margin:2px 0 12px}
+  .doc h2{font-size:16px;margin:20px 0 8px}
+  .doc h3{font-size:14px;margin:16px 0 6px;color:var(--muted)}
+  .doc p{margin:9px 0}
+  .doc ul{margin:8px 0;padding-left:22px}
+  .doc li{margin:3px 0}
+  .doc hr{border:none;border-top:1px solid var(--border);margin:18px 0}
+  .doc code{font-family:var(--mono);font-size:12.5px;background:var(--surface-2);padding:1.5px 5px;border-radius:5px}
+  .doc pre.code{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:13px 15px;overflow:auto;margin:12px 0}
+  .doc pre.code code{background:none;padding:0;font-size:12.5px;line-height:1.5}
+  .doc table{margin:12px 0;font-size:13px}
+  .doc th,.doc td{border:1px solid var(--border);padding:7px 10px;text-transform:none;letter-spacing:0;color:var(--text)}
+  .doc th{background:var(--surface-2);font-weight:600}
+
+  /* ── Bottom grid ── */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+  @media(max-width:980px){.grid2{grid-template-columns:1fr} .sidebar{display:none} main{padding:22px 18px}}
+  .num{font-variant-numeric:tabular-nums}
+  .note{font-size:12px;color:var(--faint);margin-top:10px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="name">Loom</span>
+      <span class="sub">开发套件 · 控制台</span>
+    </div>
+    <nav>
+      <a href="#compose">✦ 发起运行</a>
+      <a href="#runs">↳ 运行记录</a>
+      <a href="#usage">▤ 网关用量</a>
+      <a href="#roles">◇ 角色与载体</a>
+    </nav>
+    <div>
+      <div class="sec-label">服务状态</div>
+      <div class="health" id="health"></div>
+    </div>
+    <div>
+      <div class="sec-label">使用帮助</div>
+      <nav>
+        <a href="#" id="helpZh">📖 使用文档（中文）</a>
+        <a href="#" id="helpEn">📖 Usage (English)</a>
+        <a href="#" id="helpConst">⚖️ 宪章 Constitution</a>
+        <a href="#" id="helpMem">🧠 学习记忆 Memory</a>
+      </nav>
+    </div>
+    <div class="ext">
+      <div class="sec-label">外部看板</div>
+      <a href="http://localhost:3000" target="_blank">Agent UI <span>↗</span></a>
+      <a href="http://localhost:4000/ui" target="_blank">LiteLLM 看板 <span>↗</span></a>
+      <a href="http://localhost:8000/docs" target="_blank">AgentOS API <span>↗</span></a>
+    </div>
+  </aside>
+
+  <main>
+    <h1 class="page-h">开发套件中枢</h1>
+    <p class="page-sub">一处发起多 Agent 研发流程、查看产物、观测网关用量与后端健康。</p>
+
+    <section id="compose">
+      <div class="composer">
+        <textarea id="task" rows="2" placeholder="描述一个开发任务，例如：为 Buddys 实现 capture —— 把一句话解析成结构化 inventory items（name/qty/unit），未识别归入 unrecognized…"></textarea>
+        <div class="toolbar">
+          <select id="stages">
+            <option value="">全 5 阶段</option>
+            <option value="brainstorm,plan,implement">仅订阅 3 阶段</option>
+          </select>
+          <select id="execSel" title="implement 阶段用哪个执行器"><option value="">implement: chat</option></select>
+          <input id="budget" type="number" step="0.001" min="0" placeholder="预算$ (可选)" title="软预算护栏：本次累计花费超过则停剩余阶段并 NO-GO" style="width:108px;font-size:12px">
+          <input id="iterate" type="number" min="0" max="10" placeholder="迭代N (可选)" title="迭代循环：评判 NO-GO 就回灌构建者修复并重测重评，最多 N 轮直到通过" style="width:100px;font-size:12px">
+          <input id="contract" type="number" min="0" max="20" placeholder="合同N (可选)" title="Sprint Contract：implement 前评判者先约定 N 条可测验收点，注入构建者并作为 Eval Gate" style="width:100px;font-size:12px">
+          <label class="toggle"><input type="checkbox" id="subsonly" checked> 订阅替代 tester/reviewer（免 key，审查仍跨厂商）</label>
+          <span class="spacer"></span>
+          <button class="btn" id="runBtn">运行 <span>▶</span></button>
+        </div>
+      </div>
+      <div class="run-msg" id="runMsg"></div>
+      <div id="progressBox" style="display:none;margin-top:10px;padding:10px 14px;background:#1a1a2e;border-radius:8px;border:1px solid #2a2a4a">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span id="progressLabel" style="font-size:13px;color:#a0a0c0">准备中…</span>
+          <span id="progressPct" style="font-size:12px;color:#6060a0">0%</span>
+        </div>
+        <div style="background:#2a2a4a;border-radius:4px;height:6px;overflow:hidden">
+          <div id="progressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#4f46e5,#7c3aed);transition:width 0.4s ease"></div>
+        </div>
+        <div id="progressMsg" style="font-size:11px;color:#5050a0;margin-top:6px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+      </div>
+    </section>
+
+    <section id="runs">
+      <div class="card card-pad">
+        <div class="card-head"><h2 class="title">运行记录 · RUNS.md 总台账</h2><span class="meta" id="runsMeta"></span></div>
+        <table>
+          <thead><tr><th>时间</th><th>任务</th><th>Gate</th><th>用量</th><th>各阶段 载体→实际模型</th></tr></thead>
+          <tbody id="runs"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="detail" style="display:none">
+      <div class="card card-pad">
+        <div class="card-head"><h2 class="title" id="detailTitle">运行产物</h2><span class="meta ts" id="detailTs"></span><button class="tab" id="rerunBtn" style="display:none;margin-left:auto">✎ 改一改重跑</button></div>
+        <div class="tabs" id="detailTabs"></div>
+        <div class="doc" id="detailBody"></div>
+        <div id="detailBuild"></div>
+      </div>
+    </section>
+
+    <div class="grid2">
+      <section id="usage">
+        <div class="card card-pad">
+          <div class="card-head"><h2 class="title">网关用量</h2><span class="meta" id="usageTotal"></span></div>
+          <table>
+            <thead><tr><th>模型</th><th>调用</th><th>tokens</th><th>花费</th></tr></thead>
+            <tbody id="usageBody"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+          </table>
+          <div class="note">订阅后端走 OAuth、不按 token 计费，故花费 $0（仅记 token）。填了 GLM/DeepSeek/MiniMax key 后这三个会显示真实花费。</div>
+        </div>
+      </section>
+
+      <section id="roles">
+        <div class="card card-pad">
+          <div class="card-head"><h2 class="title">角色 → 载体 → 后端</h2></div>
+          <table>
+            <thead><tr><th>阶段</th><th>载体</th><th>后端模型</th></tr></thead>
+            <tbody id="rolesBody"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+          </table>
+          <div class="note" style="margin-top:10px">改角色后端（写入 config，需重启网关生效）：</div>
+          <div id="remapPanel"></div>
+          <div class="run-msg" id="remapMsg"></div>
+        </div>
+
+        <div class="card card-pad" style="margin-top:14px">
+          <div class="card-head"><h2 class="title">✎ 编辑角色流水线</h2><span class="meta" id="rolesEditMsg"></span></div>
+          <div id="rolesEditNote" class="note" style="margin-bottom:8px"></div>
+          <datalist id="carrierOpts"></datalist>
+          <div id="rolesEditor"></div>
+          <div class="row" style="gap:8px;margin-top:10px">
+            <button class="btn" id="roleAddBtn">＋ 添加阶段</button>
+            <span class="spacer"></span>
+            <button class="tab" id="roleResetBtn" title="删除控制台角色文件，恢复内置默认/其它来源">恢复默认</button>
+            <button class="btn" id="roleSaveBtn">保存</button>
+          </div>
+          <div class="note" style="margin-top:8px">carrier 直接写后端名（deepseek/glm/…）→ 免改网关、免重启；或写 loom-* 载体。保存即对 <code>devkit run</code> 与控制台同时生效。</div>
+        </div>
+      </section>
+    </div>
+
+    <section id="ask">
+      <div class="card card-pad">
+        <div class="card-head"><h2 class="title">快速咨询 · @ask-model（借鉴 Kode）</h2><span class="meta" id="askMsg"></span></div>
+        <div class="row" style="gap:8px">
+          <select id="askModel" style="font-size:12px;min-width:170px"></select>
+          <textarea id="askPrompt" rows="1" placeholder="临时问选中的模型一句（不开整条 loop）…" style="flex:1;min-height:38px"></textarea>
+          <button class="btn" id="askBtn">问</button>
+          <button class="btn" id="askCmpBtn" title="并行问 5 个基础后端，并排比较">⇉ 对比后端</button>
+        </div>
+        <div class="doc" id="askAns" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <section id="insight">
+      <div class="card card-pad">
+        <div class="card-head"><h2 class="title">后端真活性</h2><span class="meta" id="liveMsg"></span><button class="tab" id="liveBtn" style="margin-left:auto">刷新</button></div>
+        <div id="liveBody" class="empty">点「刷新」探测（5 次计费推理，关降级）</div>
+        <div class="note" style="margin-top:6px">关掉降级链的真实推理探测——挂了不被别的后端悄悄兜住。按需点刷新，结果缓存 ≤60s。</div>
+      </div>
+      <div class="card card-pad" style="margin-top:14px">
+        <div class="card-head"><h2 class="title">额度薅羊毛 🐑</h2><span class="meta" id="quotaMsg"></span></div>
+        <div id="quotaBody" class="empty">加载中…</div>
+        <div class="note" style="margin-top:6px">声明免费额度：<code>cp loom.quota.example.toml loom.quota.toml</code>（只统计经本网关花掉的部分）。</div>
+      </div>
+      <div class="card card-pad" style="margin-top:14px">
+        <div class="card-head"><h2 class="title">模型评分 ⭐</h2><span class="meta" id="scoreMsg"></span></div>
+        <div id="scoreBody" class="empty">加载中…</div>
+        <div class="note" style="margin-top:6px">综合 = 实际使用 + 你的 👍/👎 + 官网评测（<code>loom.scores.toml</code> 自填，Loom 不杜撰）。</div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function colorDiff(s){ return (s||'').split('\n').map(l=>{const e=esc(l);
+  if(l.startsWith('+')&&!l.startsWith('+++')) return '<span class="dadd">'+e+'</span>';
+  if(l.startsWith('-')&&!l.startsWith('---')) return '<span class="ddel">'+e+'</span>';
+  if(l.startsWith('@@')) return '<span class="dhunk">'+e+'</span>';
+  return e;}).join('\n'); }
+async function j(u,o){ try{const r=await fetch(u,o);return await r.json();}catch(e){return null;} }
+
+/* ── minimal markdown renderer (headings/bold/code/lists/tables) ── */
+function mdInline(s){ return esc(s).replace(/`([^`]+)`/g,(m,c)=>'<code>'+c+'</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>'); }
+function mdTable(rows){
+  const cells=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+  let out='<table>',head=true;
+  rows.forEach(r=>{
+    if(/^\s*\|?[\s:|-]+\|?\s*$/.test(r)&&r.includes('-')){head=false;return;}
+    const tag=head?'th':'td';
+    out+='<tr>'+cells(r).map(c=>'<'+tag+'>'+mdInline(c)+'</'+tag+'>').join('')+'</tr>';
+    head=false;
+  });
+  return out+'</table>';
+}
+function md(src){
+  const parts=(src||'').split(/(```[\s\S]*?```)/g); let html='';
+  for(const part of parts){
+    if(part.startsWith('```')){ html+='<pre class="code"><code>'+esc(part.replace(/^```[^\n]*\n?/,'').replace(/```\s*$/,''))+'</code></pre>'; continue; }
+    const L=part.split('\n'); let i=0;
+    while(i<L.length){
+      const line=L[i];
+      if(/^\s*$/.test(line)){i++;continue;}
+      if(/^\s*\|.*\|\s*$/.test(line)){ const t=[]; while(i<L.length&&/^\s*\|.*\|\s*$/.test(L[i])){t.push(L[i]);i++;} html+=mdTable(t); continue; }
+      const h=line.match(/^(#{1,6})\s+(.*)$/); if(h){ const n=h[1].length; html+=`<h${n}>${mdInline(h[2])}</h${n}>`; i++; continue; }
+      if(/^\s*---+\s*$/.test(line)){ html+='<hr>'; i++; continue; }
+      if(/^\s*[-*]\s+/.test(line)){ html+='<ul>'; while(i<L.length&&/^\s*[-*]\s+/.test(L[i])){ html+='<li>'+mdInline(L[i].replace(/^\s*[-*]\s+/,''))+'</li>'; i++; } html+='</ul>'; continue; }
+      const para=[]; while(i<L.length&&!/^\s*$/.test(L[i])&&!/^\s*\|/.test(L[i])&&!/^#{1,6}\s/.test(L[i])&&!/^\s*[-*]\s/.test(L[i])&&!/^\s*---+\s*$/.test(L[i])){para.push(L[i]);i++;}
+      html+='<p>'+para.map(mdInline).join('<br>')+'</p>';
+    }
+  }
+  return html;
+}
+
+async function loadHealth(){
+  const h=await j('/api/health')||{};
+  const items=[['litellm','LiteLLM 网关'],['agentos','AgentOS'],['agent_ui','Agent UI'],['cliproxy','CLIProxy · 订阅']];
+  $('#health').innerHTML=items.map(([k,n])=>`<div class="hrow"><span class="dot ${h[k]?'up':'down'}"></span>${n}</div>`).join('');
+}
+async function loadRoles(){
+  const r=await j('/api/roles')||[];
+  $('#rolesBody').innerHTML=r.length?r.map(x=>`<tr><td>${esc(x.stage)}<div style="color:var(--faint);font-size:11px">${esc(x.role)}</div></td><td><code>${esc(x.carrier)}</code></td><td style="color:var(--muted);font-size:12px"><code>${esc(x.backend)}</code></td></tr>`).join(''):'<tr><td colspan="3" class="empty">—</td></tr>';
+}
+async function loadUsage(){
+  const u=await j('/api/usage')||{by_model:[],total:0};
+  $('#usageTotal').textContent=`累计 ${u.total} 次调用`;
+  $('#usageBody').innerHTML=u.by_model.length?u.by_model.map(m=>`<tr><td style="font-size:12px"><code>${esc(m.model)}</code></td><td class="num">${m.calls}</td><td class="num">${m.tokens.toLocaleString()}</td><td class="num">$${m.spend.toFixed(4)}</td></tr>`).join(''):'<tr><td colspan="4" class="empty">暂无</td></tr>';
+}
+const gatePill=g=>{const no=/NO-GO/.test(g);return `<span class="pill ${no?'nogo':'go'}">${no?'NO-GO':'GO'}</span>`;};
+const fmtUsage=x=>{const t=(x.tokens||0).toLocaleString();const c=(x.cost||0)>0?` · $${x.cost.toFixed(4)}`:'';return `<span class="num" style="font-size:12px">${t}tok${c}</span>`;};
+const stageChips=st=>`<div class="chips">${(st||[]).map(s=>`<span class="chip ${s.status==='OK'?'ok':'blocked'}">${esc(s.stage)}→${esc(s.model)}</span>`).join('')}</div>`;
+async function loadRuns(){
+  const r=await j('/api/runs')||[];
+  $('#runsMeta').textContent=`${r.length} 次运行`;
+  $('#runs').innerHTML=r.length?r.map(x=>`<tr class="run" data-ts="${esc(x.ts)}"><td class="ts">${esc(x.ts)}</td><td class="tasktd">${esc(x.task)}</td><td>${gatePill(x.gate)}</td><td>${fmtUsage(x)}</td><td>${stageChips(x.stages)}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">还没有运行。在上方「发起运行」试一次。</td></tr>';
+  document.querySelectorAll('tr.run').forEach(tr=>tr.onclick=()=>loadDetail(tr.dataset.ts));
+}
+async function loadDetail(ts){
+  const d=await j('/api/run/'+ts); if(!d||!d.files)return;
+  $('#detail').style.display='block'; $('#detailTitle').textContent='运行产物'; $('#detailTs').textContent=ts;
+  const tabs=$('#detailTabs'); tabs.innerHTML='';
+  const show=f=>{document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.n===f.name));$('#detailBody').innerHTML=md(f.content);};
+  d.files.forEach((f,i)=>{const b=document.createElement('span');b.className='tab'+(i===0?' active':'');b.dataset.n=f.name;b.textContent=f.name;b.onclick=()=>show(f);tabs.appendChild(b);});
+  if(d.files[0])show(d.files[0]);
+  const tf=(d.files||[]).find(f=>f.name==='00-task.md');
+  const taskText=tf?tf.content.replace('# 任务','').trim():'';
+  const rb=$('#rerunBtn');
+  if(taskText){ rb.style.display='inline-block'; rb.onclick=()=>{ $('#task').value=taskText; $('#task').scrollIntoView({behavior:'smooth',block:'center'}); $('#task').focus(); }; }
+  else rb.style.display='none';
+  renderBuild(ts, d.build);
+  $('#detail').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function renderBuild(ts, b){
+  const bd=$('#detailBuild');
+  if(!b){ bd.innerHTML=''; return; }
+  const pill=b.tests_ok?'<span class="pill go">测试通过</span>':'<span class="pill nogo">测试未过</span>';
+  const files=b.files.length?b.files.map(f=>`<span class="chip ok bfile" data-f="${esc(f)}" style="cursor:pointer">${esc(f)}</span>`).join(''):'<span style="color:var(--faint)">（未识别到代码文件）</span>';
+  bd.innerHTML=`<hr><div class="card-head"><h2 class="title">构建产物 · sandbox build/（点文件名看内容）</h2>${pill}`
+    +`<button class="tab" id="diffBtn" style="margin-left:auto" title="对比上一次带 build 的运行（配合「改一改重跑」看改了什么）">⇄ 改动预览</button></div>`
+    +`<div class="chips" style="margin-bottom:8px">${files}</div>`
+    +`<pre class="code" id="bfileView" style="max-height:260px;display:none"></pre>`
+    +`<div id="diffView" style="display:none"></div>`
+    +`<div class="note">测试输出：</div><pre class="code" style="max-height:180px">${esc(b.test_output||'')}</pre>`
+    +(b.tests_ok?`<div class="row"><button class="btn" id="applyBtn">⬇ 一键 apply 到 devkit/applied/</button><span class="run-msg" id="applyMsg"></span></div>`
+                :`<div class="note">测试未过，apply 已禁用（人类门：先修绿）。</div>`);
+  document.querySelectorAll('.bfile').forEach(c=>c.onclick=()=>{const v=$('#bfileView');v.style.display='block';v.textContent=(b.contents||{})[c.dataset.f]||'(空)';});
+  $('#diffBtn').onclick=async()=>{
+    const dv=$('#diffView'); dv.style.display='block'; dv.innerHTML='<div class="note">对比中…</div>';
+    const r=await j('/api/diff?ts='+encodeURIComponent(ts));
+    if(!r||r.error){ dv.innerHTML='<div class="note">✗ '+esc((r&&r.error)||'失败')+'</div>'; return; }
+    const changed=r.files.filter(f=>f.status!=='same');
+    if(!changed.length){ dv.innerHTML='<div class="note">与 <code>'+esc(r.against)+'</code> 的 build 完全相同（无改动）。</div>'; return; }
+    const badge={changed:'改',new:'新',deleted:'删'};
+    dv.innerHTML='<div class="note">对比基线 <code>'+esc(r.against)+'</code> · '+r.changed+'/'+r.total+' 文件有改动</div>'
+      +changed.map(f=>`<div style="margin:6px 0"><span class="chip ${f.status==='deleted'?'nogo':'ok'}">${badge[f.status]||''} ${esc(f.name)}</span>`
+        +(f.diff?`<pre class="code diff" style="max-height:240px">${colorDiff(f.diff)}</pre>`:'')+'</div>').join('');
+  };
+  if(b.tests_ok){
+    $('#applyBtn').onclick=async()=>{
+      $('#applyMsg').textContent='apply 中…'; $('#applyBtn').disabled=true;
+      const r=await j('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ts})});
+      $('#applyBtn').disabled=false;
+      $('#applyMsg').innerHTML=r&&r.applied?('✓ 已 apply 到 <code>'+esc(r.target)+'</code>：'+r.applied.map(esc).join(', ')):('✗ '+esc((r&&r.error)||'失败'));
+    };
+  }
+}
+$('#runBtn').onclick=async()=>{
+  const task=$('#task').value.trim(); if(!task){$('#runMsg').textContent='请输入任务';return;}
+  const carriers=$('#subsonly').checked?['verify=codex-sub','review=codex-sub']:[];
+  $('#runMsg').textContent='已发起…'; $('#runBtn').disabled=true;
+  const r=await j('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task,stages:$('#stages').value,carriers,executor:$('#execSel').value,budget:$('#budget').value,iterate:$('#iterate').value,contract:$('#contract').value})});
+  if(!r||!r.ok||!r.ts){ $('#runBtn').disabled=false; $('#runMsg').textContent='✗ '+esc((r&&r.msg)||'失败'); return; }
+  pollRun(r.ts);
+};
+async function pollRun(ts){
+  let n=0;
+  const tick=async()=>{
+    n++;
+    const d=await j('/api/run/'+ts)||{};
+    const st=(d.stages_done||[]);
+    const chips=st.length?st.map(s=>`<span class="chip ok">${esc(s)}✓</span>`).join(''):'<span style="color:var(--faint)">启动中…</span>';
+    if(d.done){ $('#runMsg').innerHTML='✓ 完成 <span class="mono">'+esc(ts)+'</span>'; $('#runBtn').disabled=false; loadRuns(); loadUsage(); loadDetail(ts); hideProgress(); return; }
+    $('#runMsg').innerHTML=`⏳ 运行中 <span class="mono">${esc(ts)}</span> · 已完成 ${chips}`;
+    if(n>150){ $('#runMsg').innerHTML='（运行较久，去「运行记录」查看）'; $('#runBtn').disabled=false; loadRuns(); hideProgress(); return; }
+    setTimeout(tick,2000);
+  };
+  tick();
+  startProgressPolling();
+}
+let _progressTimer=null;
+function hideProgress(){ $('#progressBox').style.display='none'; if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;} }
+function startProgressPolling(){
+  if(_progressTimer) return;
+  $('#progressBox').style.display='block';
+  const poll=async()=>{
+    const p=await j('/api/progress'); if(!p) return;
+    if(p.status==='done'||p.status==='idle'){ hideProgress(); return; }
+    const stageNames={'brainstorm':'构思','plan':'计划','implement':'实现','verify':'验证','review':'评审'};
+    const stageName=stageNames[p.stage]||p.stage||'';
+    $('#progressLabel').textContent=`${stageName} · ${p.run_id||''}`;
+    $('#progressPct').textContent=(p.pct||0)+'%';
+    $('#progressBar').style.width=(p.pct||0)+'%';
+    $('#progressMsg').textContent=p.message||'';
+  };
+  poll();
+  _progressTimer=setInterval(poll,2000);
+}
+async function loadHelp(lang){
+  const d=await j('/api/help?lang='+lang); if(!d)return;
+  $('#detail').style.display='block'; $('#detailTitle').textContent='使用文档'; $('#detailTs').textContent=d.name;
+  $('#detailTabs').innerHTML=''; $('#detailBody').innerHTML=md(d.content); $('#detailBuild').innerHTML=''; $('#rerunBtn').style.display='none';
+  $('#detail').scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function loadDoc(name,title){
+  const d=await j('/api/doc?name='+encodeURIComponent(name)); if(!d)return;
+  $('#detail').style.display='block'; $('#detailTitle').textContent=title; $('#detailTs').textContent=d.name;
+  $('#detailTabs').innerHTML=''; $('#detailBody').innerHTML=md(d.content); $('#detailBuild').innerHTML=''; $('#rerunBtn').style.display='none';
+  $('#detail').scrollIntoView({behavior:'smooth',block:'start'});
+}
+$('#helpZh').onclick=e=>{e.preventDefault();loadHelp('zh');};
+$('#helpEn').onclick=e=>{e.preventDefault();loadHelp('en');};
+$('#helpConst').onclick=e=>{e.preventDefault();loadDoc('CONSTITUTION.md','宪章 Constitution');};
+$('#helpMem').onclick=e=>{e.preventDefault();loadDoc('MEMORY.md','学习记忆 Memory');};
+function tick(){loadHealth();loadUsage();loadRuns();}
+async function loadCarriers(){
+  const d=await j('/api/carriers'); if(!d||!d.carriers)return;
+  $('#remapPanel').innerHTML=d.carriers.map(c=>`<div class="row" style="gap:6px;margin:3px 0">
+    <span class="mono" style="font-size:11px;min-width:128px">${esc(c.carrier)}</span>
+    <select class="remapSel" data-c="${esc(c.carrier)}" style="font-size:12px;padding:3px 6px">${d.targets.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>
+    <button class="tab remapBtn" data-c="${esc(c.carrier)}">改</button></div>`).join('');
+  document.querySelectorAll('.remapBtn').forEach(b=>b.onclick=async()=>{
+    const c=b.dataset.c, t=document.querySelector('.remapSel[data-c="'+CSS.escape(c)+'"]').value;
+    $('#remapMsg').textContent='写入中…';
+    const r=await j('/api/remap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({carrier:c,target:t})});
+    $('#remapMsg').innerHTML=r&&r.ok?('✓ '+esc(c)+' → '+esc(t)+'。重启网关生效：<code>'+esc(r.restart)+'</code>'):('✗ '+esc((r&&r.error)||'失败'));
+    loadRoles();
+  });
+}
+async function loadExecutors(){
+  const a=await j('/api/executors')||{chat:true};
+  const opts=[['','implement: chat']];
+  if(a.hermes) opts.push(['hermes','implement: hermes (agent)']);
+  if(a.openclaw) opts.push(['openclaw','implement: openclaw (agent)']);
+  $('#execSel').innerHTML=opts.map(([v,l])=>`<option value="${v}">${esc(l)}</option>`).join('');
+}
+let ASK_TARGETS=[];
+async function loadAskModels(){
+  const d=await j('/api/carriers')||{carriers:[],targets:[]};
+  ASK_TARGETS=d.targets||[];
+  const ms=[...d.carriers.map(c=>c.carrier), ...ASK_TARGETS];
+  $('#askModel').innerHTML=ms.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+}
+async function doAsk(model, compare){
+  const prompt=$('#askPrompt').value.trim();
+  if(!prompt){$('#askMsg').textContent='请输入问题';return;}
+  $('#askMsg').textContent=compare?'并行问 '+ASK_TARGETS.length+' 个后端…':'问询中…';
+  $('#askBtn').disabled=true; $('#askCmpBtn').disabled=true; $('#askAns').innerHTML='';
+  const r=await j('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model,prompt})});
+  $('#askBtn').disabled=false; $('#askCmpBtn').disabled=false;
+  if(!r||(!r.ok&&!r.error)){ $('#askMsg').textContent='✗ 失败'; return; }
+  if(r.compare){            // 多模型并排比较
+    $('#askMsg').innerHTML=`<span class="num">${r.tot_tokens}tok · $${(r.tot_cost||0).toFixed(4)}</span> · ${r.results.length} 个后端并行`;
+    $('#askAns').innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">'+
+      r.results.map(x=>`<div class="card card-pad" style="margin:0">
+        <div class="card-head" style="margin-bottom:6px"><h2 class="title" style="font-size:13px">${esc(x.model)}</h2>
+        <span class="meta">${x.ok?`<span class="num">${x.tokens}tok · $${(x.cost||0).toFixed(4)}</span>`:'✗'}</span></div>
+        <div class="doc">${x.ok?md(x.content):'<span style="color:#b91c1c">'+esc(x.error||'失败')+'</span>'}</div></div>`).join('')+'</div>';
+  } else if(r.ok){
+    $('#askMsg').innerHTML=`<span class="num">${r.tokens}tok · $${(r.cost||0).toFixed(4)}</span> · ${esc(r.served)}`;
+    $('#askAns').innerHTML=md(r.content);
+  } else { $('#askMsg').textContent='✗ '+esc(r.error||'失败'); }
+}
+$('#askBtn').onclick=()=>doAsk($('#askModel').value,false);
+$('#askCmpBtn').onclick=()=>{ if(!ASK_TARGETS.length){$('#askMsg').textContent='无可对比后端';return;} doAsk(ASK_TARGETS.join(','),true); };
+
+function _bar(pct){ if(pct==null)return ''; const n=Math.round(Math.min(Math.max(pct,0),100)/100*10);
+  return '<span class="mono" style="letter-spacing:-1px">'+'█'.repeat(n)+'<span style="color:var(--faint)">'+'·'.repeat(10-n)+'</span></span>'; }
+async function loadQuota(){
+  const d=await j('/api/quota'); const b=$('#quotaBody');
+  if(!d||!d.rows){ b.innerHTML='<div class="empty">加载失败</div>'; return; }
+  $('#quotaMsg').innerHTML = d.recommend?('💡 优先薅 <span class="chip ok">'+esc(d.recommend)+'</span>'):'';
+  let h='<table><thead><tr><th>后端</th><th>类型</th><th>已用$</th><th>免费$</th><th>剩余$</th><th>进度</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    const kindc = r.kind==='订阅'?'<span class="chip ok">订阅</span>':(r.kind==='免费额度'?'<span class="chip">免费</span>':'<span class="chip blocked">付费</span>');
+    h+=`<tr><td class="mono">${esc(r.backend)}</td><td>${kindc}</td><td class="num">${r.used_usd.toFixed(5)}</td>`
+      +`<td>${r.free_usd?r.free_usd.toFixed(2):'—'}</td><td class="num">${r.remaining_usd!=null?r.remaining_usd.toFixed(4):'—'}</td>`
+      +`<td>${_bar(r.pct_used)} ${r.pct_used!=null?r.pct_used+'%':''}</td></tr>`;
+  }
+  b.innerHTML=h+'</tbody></table>'+(d.gateway_ok?'':'<div class="note">⚠️ 网关不可达，已用量按 0</div>');
+}
+async function loadScores(){
+  const d=await j('/api/scores'); const b=$('#scoreBody');
+  if(!d||!d.rows){ b.innerHTML='<div class="empty">加载失败</div>'; return; }
+  const w=d.weights; $('#scoreMsg').innerHTML=`权重 实际${w.actual}·用户${w.user}·官网${w.official}`;
+  let h='<table><thead><tr><th>后端</th><th>次数</th><th>成功率</th><th>均延迟</th><th>均$/次</th><th>评价</th><th>官网</th><th>综合</th><th></th></tr></thead><tbody>';
+  for(const r of d.rows){
+    const comp=r.composite!=null?`<span class="num" style="font-weight:600">${r.composite}</span>`:'—';
+    h+=`<tr><td class="mono">${esc(r.backend)}</td><td>${r.uses}</td><td>${r.ok_rate!=null?r.ok_rate+'%':'—'}</td>`
+      +`<td>${r.avg_lat!=null?r.avg_lat+'s':'—'}</td><td class="num">${r.avg_cost!=null?r.avg_cost.toFixed(5):'—'}</td>`
+      +`<td>👍${r.up} 👎${r.down}</td><td>${r.official!=null?Math.round(r.official):'—'}</td><td>${comp}</td>`
+      +`<td class="mono"><a href="#" data-rate="${esc(r.backend)}" data-up="1" style="text-decoration:none">👍</a> `
+      +`<a href="#" data-rate="${esc(r.backend)}" data-up="0" style="text-decoration:none">👎</a></td></tr>`;
+  }
+  b.innerHTML=h+'</tbody></table>';
+  b.querySelectorAll('[data-rate]').forEach(a=>a.onclick=async e=>{e.preventDefault();
+    await j('/api/rate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({backend:a.dataset.rate,up:a.dataset.up==='1'})});
+    loadScores();});
+}
+let ROLE_STATE=[];
+async function loadRolesEditor(){
+  const d=await j('/api/roles/full')||{stages:[],carriers:[]};
+  ROLE_STATE=(d.stages||[]).map(s=>({...s}));
+  $('#carrierOpts').innerHTML=(d.carriers||[]).map(c=>`<option value="${esc(c)}">`).join('');
+  let note=`来源：<code>${esc(d.source||'')}</code> · 保存到：<code>${esc(d.save_target||'')}</code>`;
+  if(d.source && d.source!=='(内置默认 5 角色)' && d.save_target && !d.source.endsWith(d.save_target))
+    note+=` <span style="color:#b91c1c">⚠ 当前生效的是上面这个文件，优先级高于控制台文件；保存后若不生效，删掉它即可。</span>`;
+  $('#rolesEditNote').innerHTML=note;
+  if(d.error) $('#rolesEditMsg').innerHTML='<span style="color:#b91c1c">配置有误：'+esc(d.error)+'</span>';
+  renderRolesEditor();
+}
+function renderRolesEditor(){
+  const box=$('#rolesEditor');
+  box.innerHTML=ROLE_STATE.map((s,i)=>`
+   <div class="card card-pad" style="margin:0 0 8px;background:var(--surface-2)">
+     <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+       <span class="chip mono">${i+1}</span>
+       <input data-i="${i}" data-f="key" value="${esc(s.key||'')}" placeholder="key" style="width:104px;font-size:12px">
+       <input data-i="${i}" data-f="role" value="${esc(s.role||'')}" placeholder="role" style="width:84px;font-size:12px">
+       <input data-i="${i}" data-f="title" value="${esc(s.title||'')}" placeholder="title" style="flex:1;min-width:110px;font-size:12px">
+       <input data-i="${i}" data-f="carrier" value="${esc(s.carrier||'')}" placeholder="carrier" list="carrierOpts" style="width:140px;font-size:12px">
+       <select data-i="${i}" data-f="executor" style="font-size:12px" title="执行器">
+         ${['chat','hermes','openclaw'].map(x=>`<option value="${x}"${(s.executor||'chat')===x?' selected':''}>${x}</option>`).join('')}
+       </select>
+       <input data-i="${i}" data-f="max_tokens" value="${s.max_tokens||''}" placeholder="max_tok" type="number" min="1" title="本阶段 token 上限（留空=默认）" style="width:78px;font-size:12px">
+       <button class="tab" data-act="up" data-i="${i}" title="上移">↑</button>
+       <button class="tab" data-act="down" data-i="${i}" title="下移">↓</button>
+       <button class="tab" data-act="del" data-i="${i}" title="删除" style="color:#b91c1c">🗑</button>
+     </div>
+     <textarea data-i="${i}" data-f="system" rows="2" placeholder="system（角色契约 / 系统提示）" style="width:100%;margin-top:6px;font-size:12px;box-sizing:border-box">${esc(s.system||'')}</textarea>
+   </div>`).join('')||'<div class="empty">无阶段，点「＋ 添加阶段」</div>';
+  box.querySelectorAll('input,textarea,select').forEach(el=>{const h=()=>{ROLE_STATE[+el.dataset.i][el.dataset.f]=el.value;};el.oninput=h;el.onchange=h;});
+  box.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{const i=+b.dataset.i,a=b.dataset.act;
+    if(a==='del') ROLE_STATE.splice(i,1);
+    else if(a==='up'&&i>0)[ROLE_STATE[i-1],ROLE_STATE[i]]=[ROLE_STATE[i],ROLE_STATE[i-1]];
+    else if(a==='down'&&i<ROLE_STATE.length-1)[ROLE_STATE[i+1],ROLE_STATE[i]]=[ROLE_STATE[i],ROLE_STATE[i+1]];
+    renderRolesEditor();});
+}
+$('#roleAddBtn').onclick=()=>{ROLE_STATE.push({key:'',role:'',title:'',carrier:'deepseek',executor:'chat',max_tokens:'',system:''});renderRolesEditor();};
+$('#roleSaveBtn').onclick=async()=>{
+  $('#rolesEditMsg').textContent='保存中…';
+  const r=await j('/api/roles/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stages:ROLE_STATE})});
+  if(r&&r.ok){ $('#rolesEditMsg').innerHTML=`✓ 已保存 ${r.n} 个角色 → <code>${esc(r.path||'')}</code>`; loadRoles(); loadRolesEditor(); }
+  else $('#rolesEditMsg').innerHTML='<span style="color:#b91c1c">✗ '+esc((r&&r.error)||'失败')+'</span>';
+};
+$('#roleResetBtn').onclick=async()=>{
+  if(!confirm('删除控制台角色文件，恢复内置默认/其它来源？'))return;
+  await j('/api/roles/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  $('#rolesEditMsg').textContent='已恢复默认'; loadRoles(); loadRolesEditor();
+};
+// 后端真活性：懒加载——只在点「刷新」时探测（每次=5 次计费推理），绝不在 init / tick 里自动打
+$('#liveBtn').onclick=async()=>{
+  const b=$('#liveBody'), btn=$('#liveBtn'); const label=btn.textContent;
+  btn.disabled=true; btn.textContent='探测中…'; $('#liveMsg').textContent=''; b.innerHTML='<div class="empty">探测中…</div>';
+  const d=await j('/api/liveness');
+  btn.disabled=false; btn.textContent=label;
+  if(!d||!d.rows){ b.innerHTML='<div class="empty" style="color:var(--red)">✗ 网关不可达 / 探测失败</div>'; return; }
+  $('#liveMsg').innerHTML=(d.cached?('缓存 ≤'+(d.ttl||60)+'s'):'🟢 实时探测')+(d.dead&&d.dead.length?(' · <span style="color:var(--red)">'+d.dead.length+' 非服务</span>'):' · 全活 ✓');
+  const M={serving:['ok','✓ 服务中'],expired:['blocked','⏰ 过期需重登'],down:['nogo','✗ 挂了']};
+  b.innerHTML='<table><thead><tr><th>后端</th><th>状态</th><th>详情</th></tr></thead><tbody>'+
+    d.rows.map(r=>{const m=M[r.state]||['nogo',r.state||(r.ok?'✓':'✗')];
+      const tail=r.action?('<span style="color:var(--amber)">→ '+esc(r.action)+'</span>'):esc(r.detail||'');
+      return `<tr><td class="mono">${esc(r.backend)}</td><td><span class="chip ${m[0]}">${esc(m[1])}</span></td><td style="color:var(--muted);font-size:12px">${tail}</td></tr>`;}).join('')
+    +'</tbody></table>'
+    +(d.token_unavailable?'<div class="note" style="margin-top:6px">⏰ 过期 / ✗ 挂了 的区分需读 token 文件；本容器未挂载 <code>~/.cli-proxy-api</code>，订阅后端的过期判定请看宿主机 <code>./loom doctor</code>（或给 console 加只读挂载）。</div>':'');
+};
+loadRoles(); loadCarriers(); loadExecutors(); loadAskModels(); loadQuota(); loadScores(); loadRolesEditor(); tick(); setInterval(tick,8000);
+</script>
+</body>
+</html>

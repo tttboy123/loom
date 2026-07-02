@@ -1,0 +1,7 @@
+[
+  {"name":"contract_protected","import":"from blocks import build_blocks","expr":"build_blocks('t','s',[],contract='C')[0]","expect":{"name":"contract","text":"C","prio":0,"protected":true}},
+  {"name":"no_contract_first_is_system","import":"from blocks import build_blocks","expr":"build_blocks('t','s',[])[0]['name']","expect":"system"},
+  {"name":"upstream_prio2","import":"from blocks import build_blocks","expr":"[b['prio'] for b in build_blocks('t','s',[('u1','x')])]","expect":[1,1,2]},
+  {"name":"names_order","import":"from blocks import build_blocks","expr":"[b['name'] for b in build_blocks('t','s',[('u1','x')],contract='C',failure='F')]","expect":["contract","failure","system","task","u1"]},
+  {"name":"protected_only_contract_failure","import":"from blocks import build_blocks","expr":"[b['name'] for b in build_blocks('t','s',[('u1','x')],contract='C',failure='F') if b['protected']]","expect":["contract","failure"]}
+]

@@ -1,0 +1,13 @@
+# CLIProxyAPI（订阅代理）容器化 —— 配 restart:always，根治宿主机裸进程被杀。
+# OAuth token 仍由宿主机 ~/.cli-proxy-api 提供（compose 挂载进来），无需重新登录。
+# 注意：用 linux/aarch64 构建（容器内是 Linux），与宿主机的 darwin 二进制不同。
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+RUN curl -fL --retry 3 -o cliproxy.tgz \
+      https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.27/CLIProxyAPI_7.2.27_linux_aarch64.tar.gz \
+    && tar -xzf cliproxy.tgz && rm cliproxy.tgz \
+    && chmod +x cli-proxy-api
+EXPOSE 8317
+CMD ["./cli-proxy-api", "--config", "/app/config.yaml"]

@@ -1,0 +1,6 @@
+# devkit 运行总台账
+
+| 时间戳 | 任务摘要 | 各阶段 载体→实际模型 | Gate | 产物目录 |
+| --- | --- | --- | --- | --- |
+| 2026-06-22 08:57:01 | dogfood 验证：确认运行总台账 RUNS.md 能被真实追加 | brainstorm:buddys-product→buddys-product, plan:buddys-orchestrator→buddys-orchestrator, implement:buddys-dev→buddys-dev | GO | devkit/runs/20260622-085629 |
+| 2026-06-22 01:28:33 | 控制台容器化 smoke test：确认容器内 devkit 能经网关产出并落盘 | brainstorm:buddys-product→buddys-product | GO | devkit/runs/20260622-012821 |

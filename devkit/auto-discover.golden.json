@@ -1,0 +1,12 @@
+[
+  {"name": "from_fitness_low_okrate", "import": "from discover import from_fitness", "expr": "from_fitness([{'task_type':'feature','backend':'glm','ok_rate':30,'runs':3}])[0]['type']", "expect": "improve_carrier"},
+  {"name": "from_fitness_skip_high_okrate", "import": "from discover import from_fitness", "expr": "from_fitness([{'task_type':'feature','backend':'glm','ok_rate':80,'runs':3}])", "expect": []},
+  {"name": "from_fitness_skip_low_runs", "import": "from discover import from_fitness", "expr": "from_fitness([{'task_type':'feature','backend':'glm','ok_rate':20,'runs':1}])", "expect": []},
+  {"name": "from_fitness_add_coverage_zero_runs", "import": "from discover import from_fitness", "expr": "from_fitness([{'task_type':'doc','backend':'glm','ok_rate':0,'runs':0}])[0]['type']", "expect": "add_coverage"},
+  {"name": "from_fitness_sorted_by_okrate", "import": "from discover import from_fitness", "expr": "from_fitness([{'task_type':'a','backend':'x','ok_rate':40,'runs':3},{'task_type':'b','backend':'y','ok_rate':10,'runs':2}])[0]['task_type']", "expect": "b"},
+  {"name": "from_suggestions_high_kept", "import": "from discover import from_suggestions", "expr": "len(from_suggestions([{'type':'carrier','detail':'use deepseek','priority':'high'},{'type':'quota','detail':'low','priority':'low'}]))", "expect": 1},
+  {"name": "from_suggestions_carrier_type", "import": "from discover import from_suggestions", "expr": "from_suggestions([{'type':'carrier','detail':'x','priority':'high'}])[0]['type']", "expect": "switch_carrier"},
+  {"name": "from_suggestions_golden_type", "import": "from discover import from_suggestions", "expr": "from_suggestions([{'type':'golden','detail':'x','priority':'medium'}])[0]['type']", "expect": "fix_golden"},
+  {"name": "merge_dedup", "import": "from discover import merge", "expr": "len(merge([[{'type':'a','task_type':'x','backend':'b'},{'type':'a','task_type':'x','backend':'b'}]])) ", "expect": 1},
+  {"name": "merge_max_total", "import": "from discover import merge", "expr": "len(merge([[{'type':'a','task_type':str(i),'backend':''} for i in range(20)]],max_total=5))", "expect": 5}
+]

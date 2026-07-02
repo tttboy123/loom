@@ -1,0 +1,10 @@
+[
+  {"name":"asset_module_exists","import":"from devkit import asset","expr":"callable(asset.load_assets)","expect":true},
+  {"name":"load_empty_returns_list","import":"import pathlib,tempfile; from devkit import asset","expr":"isinstance(asset.load_assets(pathlib.Path(tempfile.mkdtemp())/'nope.toml'), list)","expect":true},
+  {"name":"add_and_get","import":"import pathlib,tempfile; from devkit import asset","expr":"(lambda d: asset.add_asset('test','rule','content',path=d/'a.toml') and asset.get_asset('test',d/'a.toml')['name'])(pathlib.Path(tempfile.mkdtemp()))","expect":"test"},
+  {"name":"add_deduplicates","import":"import pathlib,tempfile; from devkit import asset","expr":"(lambda d: [asset.add_asset('x','rule','v1',path=d/'a.toml'), asset.add_asset('x','rule','v2',path=d/'a.toml')] and len(asset.load_assets(d/'a.toml')))(pathlib.Path(tempfile.mkdtemp()))","expect":1},
+  {"name":"remove_returns_true","import":"import pathlib,tempfile; from devkit import asset","expr":"(lambda d: asset.add_asset('del','rule','c',path=d/'a.toml') and asset.remove_asset('del',d/'a.toml'))(pathlib.Path(tempfile.mkdtemp()))","expect":true},
+  {"name":"remove_missing_returns_false","import":"import pathlib,tempfile; from devkit import asset","expr":"asset.remove_asset('nosuchname',pathlib.Path(tempfile.mkdtemp())/'a.toml')","expect":false},
+  {"name":"asset_has_required_keys","import":"import pathlib,tempfile; from devkit import asset","expr":"(lambda d: set(asset.add_asset('k','skill','c',['tag1'],path=d/'a.toml').keys()) >= {'name','type','content','tags'})(pathlib.Path(tempfile.mkdtemp()))","expect":true},
+  {"name":"cmd_asset_exists","import":"import devkit.__main__ as m","expr":"callable(getattr(m,'_cmd_asset',None))","expect":true}
+]

@@ -1,0 +1,12 @@
+[
+  {"name":"learn_module_exists","import":"from devkit import learn","expr":"callable(learn.analyze) and callable(learn.suggest_carrier) and callable(learn.quota_trend)","expect":true},
+  {"name":"analyze_empty_returns_structure","import":"import pathlib,tempfile; from devkit import learn","expr":"set(learn.analyze(pathlib.Path(tempfile.mkdtemp())).keys()) >= {'suggestions','summary'}","expect":true},
+  {"name":"analyze_summary_has_fields","import":"import pathlib,tempfile; from devkit import learn","expr":"set(learn.analyze(pathlib.Path(tempfile.mkdtemp()))['summary'].keys()) >= {'total_runs','go_rate','avg_cost_usd','total_cost_usd'}","expect":true},
+  {"name":"analyze_suggestions_is_list","import":"import pathlib,tempfile; from devkit import learn","expr":"isinstance(learn.analyze(pathlib.Path(tempfile.mkdtemp()))['suggestions'], list)","expect":true},
+  {"name":"suggest_carrier_no_data_returns_none","import":"import pathlib,tempfile; from devkit import learn","expr":"learn.suggest_carrier('feature', pathlib.Path(tempfile.mkdtemp())) is None","expect":true},
+  {"name":"quota_trend_returns_structure","import":"import pathlib,tempfile; from devkit import learn","expr":"set(learn.quota_trend(pathlib.Path(tempfile.mkdtemp())).keys()) >= {'recent_10_cost','avg_cost','max_cost','trend'}","expect":true},
+  {"name":"quota_trend_no_data_stable","import":"import pathlib,tempfile; from devkit import learn","expr":"learn.quota_trend(pathlib.Path(tempfile.mkdtemp()))['trend']","expect":"stable"},
+  {"name":"suggestion_has_required_fields","import":"import pathlib,tempfile,json; from devkit import learn","expr":"(lambda d: all(set(s.keys()) >= {'type','confidence','reason','action','data'} for s in learn.analyze(d)['suggestions']) if learn.analyze(d)['suggestions'] else True)(pathlib.Path(tempfile.mkdtemp()))","expect":true},
+  {"name":"analyze_empty_dir_go_rate_zero","import":"import pathlib,tempfile; from devkit import learn","expr":"learn.analyze(pathlib.Path(tempfile.mkdtemp()))['summary']['total_runs']","expect":0},
+  {"name":"no_exceptions_on_bad_dir","import":"from devkit import learn","expr":"(lambda: (learn.analyze(None), learn.quota_trend(None), True)[-1])()","expect":true}
+]

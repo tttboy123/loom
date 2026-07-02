@@ -1,0 +1,12 @@
+[
+  {"name":"task_center_exists","import":"from devkit import task_center as TC","expr":"callable(TC.new_task) and callable(TC.link_run) and callable(TC.get_task)","expect":true},
+  {"name":"new_task_returns_dict","import":"import pathlib,tempfile,json; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"set(TC.new_task('实现 word_count').keys()) >= {'id','title','created','runs','status'}","expect":true},
+  {"name":"new_task_runs_empty","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"TC.new_task('my task')['runs']","expect":[]},
+  {"name":"new_task_status_open","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"TC.new_task('my task')['status']","expect":"open"},
+  {"name":"list_tasks_sorted_desc","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"(lambda: [TC.new_task('first','aa'), TC.new_task('second','bb')] and TC.list_tasks()[0]['id'])()","expect":"bb"},
+  {"name":"link_run_appends","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"(lambda: [TC.new_task('t','tk1'), TC.link_run('tk1','run-abc')] and TC.get_task('tk1')['runs'])()","expect":["run-abc"]},
+  {"name":"link_run_idempotent","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"(lambda: [TC.new_task('t','tk2'), TC.link_run('tk2','r1'), TC.link_run('tk2','r1')] and len(TC.get_task('tk2')['runs']))()","expect":1},
+  {"name":"get_missing_returns_none","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"TC.get_task('no-such') is None","expect":true},
+  {"name":"close_task_sets_closed","import":"import pathlib,tempfile; from devkit import task_center as TC; TC.TASKS_FILE = pathlib.Path(tempfile.mkdtemp())/'tasks.json'","expr":"(lambda: [TC.new_task('t','cl1'), TC.close_task('cl1')] and TC.get_task('cl1')['status'])()","expect":"closed"},
+  {"name":"cmd_task_exists","import":"import devkit.__main__ as m","expr":"callable(getattr(m,'_cmd_task',None))","expect":true}
+]

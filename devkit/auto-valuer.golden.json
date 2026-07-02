@@ -1,0 +1,12 @@
+[
+  {"name": "score_returns_dict", "import": "from valuer import score", "expr": "isinstance(score({'type':'improve_carrier'},{'ok_rate':20,'runs':3,'priority':'high'}),dict)", "expect": true},
+  {"name": "score_has_score_field", "import": "from valuer import score", "expr": "'score' in score({'type':'x'},{}) and isinstance(score({'type':'x'})['score'],int)", "expect": true},
+  {"name": "score_clamped_0_100", "import": "from valuer import score", "expr": "0 <= score({'type':'x','priority':'low'},{'ok_rate':90,'runs':0})['score'] <= 100", "expect": true},
+  {"name": "score_high_priority_beats_low", "import": "from valuer import score", "expr": "score({'type':'x'},{'ok_rate':40,'runs':3,'priority':'high'})['score'] > score({'type':'x'},{'ok_rate':40,'runs':3,'priority':'low'})['score']", "expect": true},
+  {"name": "score_low_okrate_beats_high", "import": "from valuer import score", "expr": "score({'type':'x'},{'ok_rate':20,'runs':3,'priority':'medium'})['score'] > score({'type':'x'},{'ok_rate':80,'runs':3,'priority':'medium'})['score']", "expect": true},
+  {"name": "score_has_reason", "import": "from valuer import score", "expr": "bool(score({'type':'x'},{}).get('reason',''))", "expect": true},
+  {"name": "rank_sorted_desc", "import": "from valuer import rank", "expr": "rank([{'type':'a'},{'type':'b'}],[{'ok_rate':10,'runs':3,'priority':'high'},{'ok_rate':80,'runs':1,'priority':'low'}])[0]['score'] >= rank([{'type':'a'},{'type':'b'}],[{'ok_rate':10,'runs':3,'priority':'high'},{'ok_rate':80,'runs':1,'priority':'low'}])[1]['score']", "expect": true},
+  {"name": "top_n_returns_n", "import": "from valuer import top_n", "expr": "len(top_n([{'type':str(i)} for i in range(10)],[{}]*10,n=3))", "expect": 3},
+  {"name": "top_n_fewer_than_n", "import": "from valuer import top_n", "expr": "len(top_n([{'type':'a'}],[{}],n=5))", "expect": 1},
+  {"name": "deterministic_no_random", "import": "from valuer import score", "expr": "score({'type':'x'},{'ok_rate':40,'runs':3,'priority':'medium'})['score'] == score({'type':'x'},{'ok_rate':40,'runs':3,'priority':'medium'})['score']", "expect": true}
+]

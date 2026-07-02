@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Loom —— 一条命令管理本地「多 Agent + 多厂商模型」研发套件。
+#   ./loom up [full]   启动（默认 lite 核心；full 含聊天 UI + 编排）
+#   ./loom run "任务"   跑一遍研发流程（透传 devkit 参数）
+#   ./loom autopilot     后台 iterate 监督器（5 分钟健康巡检 + 自动重启 + 重部署）
+#   ./loom doctor      体检
+#   ./loom open|down|logs|login
+# =============================================================================
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+cd "$(dirname "$0")"
+
+C(){ printf "\033[1;36m%s\033[0m\n" "$*"; }
+OK(){ printf "\033[1;32m✓ %s\033[0m\n" "$*"; }
+ERR(){ printf "\033[1;31m✗ %s\033[0m\n" "$*" >&2; }
+
+ensure_engine(){
+  command -v docker >/dev/null 2>&1 || { ERR "未找到 docker（应在 ~/.local/bin）"; exit 1; }
+  if ! docker info >/dev/null 2>&1; then
+    command -v colima >/dev/null 2>&1 || { ERR "Docker 引擎未运行，且未装 colima。"; exit 1; }
+    C "Docker 引擎未运行，启动 colima（vz, 4C/4G）…"
+    colima start --vm-type vz --cpu 4 --memory 4 --disk 60
+  fi
+}
+
+probe(){ curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer sk-cliproxy-local" "$1" 2>/dev/null || echo 000; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  up)
+    ensure_engine
+    if [ "${1:-}" = "full" ]; then
+      C "启动满栈（含聊天 UI + 编排）…"; docker compose --profile full up -d
+    else
+      C "启动 lite 核心（控制台 + 网关 + 订阅代理）…"; docker compose up -d
+    fi
+    OK "就绪 →  控制台 http://localhost:8899"
+    ;;
+  down)
+    C "停止并清理容器…"; docker compose --profile full down
+    ;;
+  run)
+    [ -n "${1:-}" ] || { ERR "用法：./loom run \"任务描述\""; exit 1; }
+    python3 -m devkit auto "$@" --yes --loop
+    ;;
+  autopilot)
+    bash scripts/loom-iterate-supervisor.sh "$@"
+    ;;
+  setup)
+    python3 -m devkit setup "$@"
+    ;;
+  status)
+    C "任务队列快照（含任务编号）："
+    python3 scripts/loom-task-queue-status.py --backlog devkit/backlog.json --run-root . --log-file devkit/logs/task-queue-status.log
+    C "最近决策："
+    python3 -m devkit decisions -n 5 2>/dev/null || echo "  (无决策日志)"
+    ;;
+  task-queue)
+    backlog_file="${1:-devkit/backlog.json}"
+    python3 scripts/loom-task-queue-status.py --backlog "$backlog_file" --run-root . --log-file devkit/logs/task-queue-status.log
+    ;;
+  bench)
+    python3 -m devkit bench "$@"
+    ;;
+  ask)
+    [ -n "${1:-}" ] || { ERR "用法：./loom ask \"问题\" [--models deepseek,glm]"; exit 1; }
+    python3 -m devkit ask "$@"
+    ;;
+  diff)
+    [ -n "${1:-}" ] || { ERR "用法：./loom diff <运行id> [--against <运行id>]"; exit 1; }
+    python3 -m devkit diff "$@"
+    ;;
+  roles)
+    python3 -m devkit roles "${@:-list}"
+    ;;
+  quota)
+    python3 -m devkit quota "$@"
+    ;;
+  scores)
+    python3 -m devkit scores "$@"
+    ;;
+  stages)
+    python3 -m devkit stages "$@"
+    ;;
+  rate)
+    [ -n "${1:-}" ] || { ERR "用法：./loom rate <后端> up|down [--note ...]"; exit 1; }
+    python3 -m devkit rate "$@"
+    ;;
+  backlog)
+    python3 -m devkit backlog "$@"
+    ;;
+  feature)
+    python3 -m devkit feature "$@"
+    ;;
+  doctor)
+    ensure_engine
+    C "服务状态："
+    docker compose --profile full ps --format '  {{.Service}}: {{.Status}}' 2>/dev/null | grep -v MOONSHOT || true
+    C "端点："
+    for spec in "8899|控制台(中枢)" "4000/health/liveliness|LiteLLM 网关" "8317/v1/models|订阅代理" "3000|Agent UI(full)"; do
+      url="${spec%%|*}"; name="${spec##*|}"
+      printf "  %-20s %s\n" "$name" "$(probe "http://localhost:$url")"
+    done
+    C "执行器（可按阶段嵌入工作流）："
+    python3 -c "from devkit import executors as e;[print('  %-9s %s'%(k,'✓ 可用' if v else '✗ 未安装')) for k,v in e.available().items()]" 2>/dev/null \
+      || echo "  (devkit 不可用)"
+    C "后端健康（真活性 + 凭据就绪，K8s 探针式：区分 过期需重登 / 真挂 / 在服务）："
+    python3 -c "
+import os
+from devkit.insight import health
+from devkit.rdloop import load_master_key
+M={'serving':'✓ 服务中','expired':'⏰ 过期需重登','down':'✗ 挂了'}
+for r in health(os.environ.get('LITELLM_BASE_URL','http://localhost:4000'), load_master_key()):
+    tail = (' → '+r['action']) if r['action'] else (('  '+r['detail'][:60]) if r['state']!='serving' else '')
+    print('  %-16s %-12s%s'%(r['backend'], M.get(r['state'], r['state']), tail))
+" 2>/dev/null || echo "  (devkit 不可用 / 未配 master key)"
+    ;;
+  open)
+    open "http://localhost:8899" 2>/dev/null || C "请手动打开 http://localhost:8899"
+    ;;
+  login)
+    C "在宿主机刷新订阅 OAuth（会弹浏览器）…"
+    P=../cliproxy
+    [ -x "$P/cli-proxy-api" ] || { ERR "找不到 $P/cli-proxy-api（订阅登录用的宿主机二进制）"; exit 1; }
+    "$P/cli-proxy-api" --config "$P/config.yaml" --claude-login || true
+    "$P/cli-proxy-api" --config "$P/config.yaml" --codex-login || true
+    docker compose restart cliproxy && OK "token 已刷新，cliproxy 已重启"
+    ;;
+  logs)
+    docker compose --profile full logs -f ${1:-}
+    ;;
+  verify-ui)
+    C "真机验证控制台 UI（Playwright 渲染 + 断言面板 + 抓 JS 错误）…"
+    PP="${PWDEPS:-/tmp/pwdeps}"
+    PYTHONPATH="$PP:${PYTHONPATH:-}" python3 scripts/verify_console.py "${1:-http://localhost:8899}"
+    ;;
+  test)
+    C "跑 devkit 单元/合同测试（纯标准库，无需 live 网关）…"
+    PYTHONPATH=. python3 devkit/test_runs_log.py \
+      && PYTHONPATH=. python3 -m unittest devkit.test_features -v \
+      && OK "全部测试通过" || { ERR "有测试失败"; exit 1; }
+    ;;
+  *)
+    cat <<'EOF'
+Loom —— 本地多 Agent 研发套件
+
+入门（小白用户）：
+  ./loom setup        一键引导：填写 API key → 写 .env → 启动网关 → 验证可达
+  ./loom run "任务"   启动自治 Agent Team 执行任务（自动循环直到完成）
+  ./loom autopilot    启动后台 iterate 守护（需服务端与 backlog 就绪）
+  ./loom status       查看 backlog 队列进度 + 最近决策（含任务编号）
+
+进阶：
+  ./loom up [full]    启动（默认 lite；full 含聊天 UI + 编排）
+  ./loom bench        跑 carrier benchmark（评估各模型速度/质量/成本）
+  ./loom ask "问题"   临时向单个/多个 carrier 提问（--models deepseek,glm）
+  ./loom autopilot --sleep 90 --backlog devkit/backlog.json   后台无人看守持续反思迭代
+  ./loom diff <id>    对比两次运行的 build/ 产物
+  ./loom roles [init] 定义/查看角色流水线
+  ./loom task-queue [path]   查看任务队列快照（可传 backlog 文件路径）
+  ./loom quota        模型额度看板
+  ./loom scores       模型评分（使用数据 + 口碑）
+  ./loom stages       按阶段透视成本/tokens
+  ./loom rate <后端>  记录一次实际体验（up/down）
+  ./loom backlog "想法" 把应用想法拆成特性清单
+  ./loom feature      增量构建下一个特性（--count K 连做）
+  ./loom doctor       体检：引擎 / 服务 / 端点
+  ./loom open         浏览器打开控制台
+  ./loom login        刷新订阅 OAuth
+  ./loom logs [服务]  跟踪日志
+  ./loom test         跑单元/合同测试（CI 友好，无需网关）
+  ./loom down         停止
+
+详见 USAGE.zh.md / USAGE.en.md / ROADMAP.md
+EOF
+    ;;
+esac

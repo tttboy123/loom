@@ -1,0 +1,11 @@
+# 叠加层：启用「订阅产品后端」。compose 会自动把它合并进 docker-compose.yml。
+# 不想用订阅后端时，删除/重命名本文件即可回到纯 API 模式。
+services:
+  litellm:
+    # 全量配置：Claude Code+Codex(订阅) + GLM+MiniMax+DeepSeek(API) + 降级链
+    volumes:
+      - ./litellm/config.full.yaml:/app/config.yaml:ro
+    env_file: [.env]
+    # 让容器内的 LiteLLM 能访问宿主机上原生运行的 CLIProxyAPI(:8317)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

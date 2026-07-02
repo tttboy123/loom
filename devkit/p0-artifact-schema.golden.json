@@ -1,0 +1,12 @@
+[
+  {"name":"has_all_13_keys","import":"from devkit.artifact import make","expr":"set(make('implement','dev','T','body').keys()) == {'stage','role','title','body','fields','carrier','task_type','tokens','cost','verdict','tests_passed','window_used','budget_report'}","expect":true},
+  {"name":"new_fields_default_none","import":"from devkit.artifact import make","expr":"[make('plan','orch','T','b')[k] for k in ['carrier','task_type','tokens','cost','verdict','tests_passed','window_used','budget_report']]","expect":[null,null,null,null,null,null,null,null]},
+  {"name":"carrier_kwarg","import":"from devkit.artifact import make","expr":"make('implement','dev','T','b',carrier='glm')['carrier']","expect":"glm"},
+  {"name":"task_type_kwarg","import":"from devkit.artifact import make","expr":"make('implement','dev','T','b',task_type='backend-fix')['task_type']","expect":"backend-fix"},
+  {"name":"tokens_kwarg","import":"from devkit.artifact import make","expr":"make('implement','dev','T','b',tokens=1234)['tokens']","expect":1234},
+  {"name":"cost_kwarg","import":"from devkit.artifact import make","expr":"make('implement','dev','T','b',cost=0.00123)['cost']","expect":0.00123},
+  {"name":"verdict_kwarg","import":"from devkit.artifact import make","expr":"make('verify','tester','T','b',verdict='GO')['verdict']","expect":"GO"},
+  {"name":"tests_passed_true","import":"from devkit.artifact import make","expr":"make('verify','tester','T','b',tests_passed=True)['tests_passed']","expect":true},
+  {"name":"budget_report_kwarg","import":"from devkit.artifact import make","expr":"make('implement','dev','T','b',budget_report={'kept':['task'],'dropped':[],'used':100})['budget_report']['used']","expect":100},
+  {"name":"fields_deep_copy","import":"from devkit.artifact import make","expr":"(lambda: (lambda f,a: (f.__setitem__('x',1), a['fields'].get('x') is None))(({'k':'v'}), make('plan','r','T','b',fields={'k':'v'}))[-1])()","expect":true}
+]

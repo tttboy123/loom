@@ -1,0 +1,34 @@
+# 最稳起步栈：只用官方镜像，无构建、无 clone、不依赖自写代码。
+# 目的：先让你在浏览器看到一个能聊天的控制台 + 验证多厂商/降级管道。
+#
+#   docker compose -f docker-compose.minimal.yml up -d
+#   浏览器开 http://localhost:3000
+#
+# 默认用 mock 配置（零 key、零花费）。换真实 key：把下面 litellm 的
+# config.mock.yaml 改成 config.yaml，并在同目录放好 .env（含各厂商 key）。
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm/config.mock.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    # 用真实 key 时取消下面注释，并把上面的 mock 换成 config.yaml
+    # env_file: [.env]
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    environment:
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: sk-local-demo        # = config.mock.yaml 里的 master_key
+      WEBUI_AUTH: "false"                   # 本地演示免登录
+    ports:
+      - "3000:8080"
+    depends_on:
+      - litellm
+    volumes:
+      - openwebui:/app/backend/data
+
+volumes:
+  openwebui:

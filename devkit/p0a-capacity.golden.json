@@ -1,0 +1,9 @@
+[
+  {"name": "estimate_sum", "import": "from capacity import estimate", "expr": "estimate([0.1, 0.2, 0.3])", "expect": 0.6},
+  {"name": "estimate_empty_is_float", "import": "from capacity import estimate", "expr": "estimate([])", "expect": 0.0},
+  {"name": "verdict_unknown", "import": "from capacity import verdict", "expr": "verdict(5, None)", "expect": "Unknown"},
+  {"name": "verdict_zero_cost_safe", "import": "from capacity import verdict", "expr": "verdict(0.0, 10)", "expect": "Safe"},
+  {"name": "verdict_safe", "import": "from capacity import verdict", "expr": "verdict(3, 10)", "expect": "Safe"},
+  {"name": "verdict_risky", "import": "from capacity import verdict", "expr": "verdict(7, 10)", "expect": "Risky"},
+  {"name": "verdict_insufficient", "import": "from capacity import verdict", "expr": "verdict(12, 10)", "expect": "Insufficient"}
+]

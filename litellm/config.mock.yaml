@@ -1,0 +1,36 @@
+# =============================================================================
+# 本地“看效果”用的 mock 配置 —— 不需要任何真实厂商 key，不产生费用。
+# 用 LiteLLM 的 mock_response 模拟厂商返回，并刻意让主模型“坏掉”来演示降级。
+#
+# 启动:  litellm --config litellm/config.mock.yaml --port 4000
+# =============================================================================
+
+model_list:
+  # 一个永远能成功的“健康”模型（模拟正常 Claude）
+  - model_name: claude-sonnet
+    litellm_params:
+      model: openai/claude-sonnet-4-5
+      mock_response: "【mock claude-sonnet】我是主力模型，正常返回。"
+
+  # 一个刻意指向不存在地址、必定报错的模型（模拟某厂商挂了）
+  - model_name: glm-flagship
+    litellm_params:
+      model: openai/glm-4.6
+      api_base: http://127.0.0.1:9   # 不可达端口 → 必然失败
+      api_key: fake
+
+  # 降级目标：健康的备用模型（模拟 GPT 兜底）
+  - model_name: gpt-flagship
+    litellm_params:
+      model: openai/gpt-5
+      mock_response: "【mock gpt-flagship】我是降级后的备用模型，已成功兜底。"
+
+litellm_settings:
+  # glm-flagship 坏掉时 → 自动切到 gpt-flagship
+  fallbacks:
+    - glm-flagship: ["gpt-flagship"]
+  num_retries: 1
+  request_timeout: 10
+
+general_settings:
+  master_key: sk-local-demo

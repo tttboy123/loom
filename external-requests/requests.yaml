@@ -1,0 +1,90 @@
+schema_version: "0.1"
+updated_at: "2026-07-01T21:47:24+08:00"
+owner: "Loom external requests inbox"
+intake_prompt: "prompts/intake.prompt.md"
+sources:
+  - id: "buddys"
+    type: "external-project"
+    request_root: "requests/buddys"
+    prompt_root: "prompts/buddys"
+requests:
+  - id: "loom-upstream-001-devflow-capability-alignment"
+    source: "buddys"
+    status: "accepted_split"
+    priority: "P0"
+    title: "Support full external-project devflow without product-specific patching"
+    last_intake:
+      run_id: "external-requests-intake-20260701"
+      decision: "accept_split"
+      note: "Umbrella request; keep as parent for external task intake, execution closeout, queue, and verification slices."
+    files:
+      request_doc: "requests/buddys/001-devflow-capability-alignment.request.md"
+      scan_prompt: "prompts/buddys/001-devflow-capability-alignment.scan.prompt.md"
+    constraints:
+      - "must_not_require_buddys_specific_doc_system"
+      - "must_not_hardcode_buddys_models_or_roles_as_global_defaults"
+      - "must_work_with_external_task_sources_and_per_run_overrides"
+  - id: "loom-upstream-002-materialization-and-apply-contract"
+    source: "buddys"
+    status: "slice_1_implemented"
+    priority: "P0"
+    title: "Materialize contracted repo outputs and expose apply outcome for external projects"
+    last_intake:
+      run_id: "external-requests-intake-20260701"
+      decision: "accept_implement_minimal_slice"
+      note: "Slice 1 adds generic required-output materialization and apply-outcome classification."
+    files:
+      request_doc: "requests/buddys/002-materialization-and-apply-contract.request.md"
+      scan_prompt: "prompts/buddys/002-materialization-and-apply-contract.scan.prompt.md"
+    constraints:
+      - "must_not_assume_buddys_repo_layout"
+      - "must_not_require_buddys_overlay_validator"
+      - "must_focus_on_generic_external_project_apply_and_materialization_semantics"
+  - id: "loom-upstream-003-external-verification-surface-contract"
+    source: "buddys"
+    status: "accepted_deferred"
+    priority: "P1"
+    title: "Expose a stable verification surface for external-project tasks without shadow-build ambiguity"
+    last_intake:
+      run_id: "external-requests-intake-20260701"
+      decision: "accept_defer"
+      note: "Verification-surface semantics are valid but intentionally kept out of the materialization slice."
+    files:
+      request_doc: "requests/buddys/003-external-verification-surface-contract.request.md"
+      scan_prompt: "prompts/buddys/003-external-verification-surface-contract.scan.prompt.md"
+    constraints:
+      - "must_not_hardcode_buddys_test_paths"
+      - "must_not_require_buddys_runner_wrappers"
+      - "must_help_generic_external_projects_distinguish_inner_sandbox_results_from_repo_truth"
+  - id: "loom-upstream-004-external-queue-lease-and-recovery"
+    source: "buddys"
+    status: "accepted_deferred"
+    priority: "P0"
+    title: "Provide lease-backed running state and stale-run recovery semantics for external queue callers"
+    last_intake:
+      run_id: "external-requests-intake-20260701"
+      decision: "accept_defer"
+      note: "Lease, heartbeat, and stale recovery should be a separate P0 slice after materialization contract."
+    files:
+      request_doc: "requests/buddys/004-external-queue-lease-and-recovery.request.md"
+      scan_prompt: "prompts/buddys/004-external-queue-lease-and-recovery.scan.prompt.md"
+    constraints:
+      - "must_not_require_buddys_backlog_lanes_or_state_files"
+      - "must_not_hardcode_buddys_retry_policy"
+      - "must_help_generic_external_project_queue_runners_detect_and_reclaim_stale_running_work"
+  - id: "loom-upstream-005-external-candidate-drift-and-failure-classification"
+    source: "buddys"
+    status: "slice_1_mapping_implemented"
+    priority: "P0"
+    title: "Expose candidate-drift detection and structured failure classes for external queue runners"
+    last_intake:
+      run_id: "external-requests-005-intake-20260701"
+      decision: "accept_split"
+      note: "Slice 1 adds generic failure_kind and next_action_hint mapping; candidate drift gate and packet emitter wiring remain deferred."
+    files:
+      request_doc: "requests/buddys/005-external-candidate-drift-and-failure-classification.request.md"
+      scan_prompt: "prompts/buddys/005-external-candidate-drift-and-failure-classification.scan.prompt.md"
+    constraints:
+      - "must_not_require_buddys_specific_task_contracts_or_doc_rules"
+      - "must_not_hardcode_buddys_model_routing"
+      - "must_help_generic_external_queue_runners_distinguish_bad_candidates_from_real_product_failures"

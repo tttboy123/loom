@@ -1,0 +1,19 @@
+# CLIProxyAPI 配置 —— 把订阅产品（Claude Code / Codex 等）的 OAuth 登录
+# 包装成本地 OpenAI 兼容接口，监听 http://localhost:8317
+#
+# 完整字段以官方 config.example.yaml 为准：
+# https://github.com/router-for-me/CLIProxyAPI/blob/main/config.example.yaml
+port: 8317
+
+# OAuth token 存放目录（--claude-login / --codex-login 后会写到这里）
+auth-dir: "~/.cli-proxy-api"
+
+# 给本地访问设一个 key，LiteLLM 用它来调（与 LiteLLM 配置里的 api_key 对应）
+api-keys:
+  - "sk-cliproxy-local"
+
+remote-management:
+  allow-remote: false
+  secret-key: ""
+
+debug: false

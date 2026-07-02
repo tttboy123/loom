@@ -1,0 +1,12 @@
+[
+  {"name":"parse_go","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('All tests GO')['verdict']","expect":"GO"},
+  {"name":"parse_nogo","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('NO-GO: test failed')['verdict']","expect":"NO-GO"},
+  {"name":"parse_fail","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('3 errors FAIL')['verdict']","expect":"NO-GO"},
+  {"name":"parse_unknown","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('分析中...')['verdict']","expect":"UNKNOWN"},
+  {"name":"parse_nogo_priority","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('PASS but NO-GO overall')['verdict']","expect":"NO-GO"},
+  {"name":"parse_pass","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('5/5 PASS')['verdict']","expect":"GO"},
+  {"name":"parse_emoji","import":"from devkit.executors import _parse_verify_report","expr":"_parse_verify_report('结果 ✅')['verdict']","expect":"GO"},
+  {"name":"codex_in_run","import":"from devkit.executors import run; import pathlib","expr":"run('codex','p','codex-sub',pathlib.Path('/tmp'),'http://x','k')[2]","expect":"codex"},
+  {"name":"unknown_executor_false","import":"from devkit.executors import run; import pathlib","expr":"run('bogus','p','m',pathlib.Path('/tmp'),'gw','k')[0]","expect":false},
+  {"name":"unknown_executor_msg","import":"from devkit.executors import run; import pathlib","expr":"'未知' in run('bogus','p','m',pathlib.Path('/tmp'),'gw','k')[1]","expect":true}
+]

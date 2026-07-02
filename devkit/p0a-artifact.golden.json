@@ -1,0 +1,12 @@
+[
+  {"name": "make_stage", "import": "from artifact import make", "expr": "make('plan','p','t','b')['stage']", "expect": "plan"},
+  {"name": "make_fields_copy", "import": "from artifact import make", "expr": "make('p','r','t','b',{'contract':'c'})['fields']['contract']", "expect": "c"},
+  {"name": "make_fields_default_empty", "import": "from artifact import make", "expr": "make('p','r','t','b')['fields']", "expect": {}},
+  {"name": "make_fields_is_copy", "import": "from artifact import make", "expr": "(lambda d: (make('p','r','t','b',d), d.update(x=1), 'x' in make('p','r','t','b',{}).get('fields',{}))[2])({})", "expect": false},
+  {"name": "extract_implement_one", "import": "from artifact import extract_fields", "expr": "extract_fields('implement','# devkit/foo.py')['patch_targets']", "expect": ["devkit/foo.py"]},
+  {"name": "extract_implement_none", "import": "from artifact import extract_fields", "expr": "extract_fields('implement','print(1)')['patch_targets']", "expect": []},
+  {"name": "extract_review_failure", "import": "from artifact import extract_fields", "expr": "'failure' in extract_fields('review','NO-GO 这里要改')", "expect": true},
+  {"name": "extract_other_empty", "import": "from artifact import extract_fields", "expr": "extract_fields('plan','whatever')", "expect": {}},
+  {"name": "protected_filter", "import": "from artifact import protected, make", "expr": "sorted(protected(make('s','r','t','b',{'contract':'c','x':'y'})))", "expect": ["contract"]},
+  {"name": "protected_names", "import": "from artifact import PROTECTED", "expr": "sorted(PROTECTED)", "expect": ["contract", "failure", "patch_targets"]}
+]

@@ -1,0 +1,16 @@
+[
+  {"name": "pick_next_first_ready", "import": "from autoloop import pick_next", "expr": "pick_next([{'id':'a','status':'done','deps':[]},{'id':'b','status':'pending','deps':['a']},{'id':'c','status':'pending','deps':[]}])['id']", "expect": "b"},
+  {"name": "pick_next_first_no_deps", "import": "from autoloop import pick_next", "expr": "pick_next([{'id':'x','status':'pending','deps':[]}])['id']", "expect": "x"},
+  {"name": "pick_next_none_when_deps_not_done", "import": "from autoloop import pick_next", "expr": "pick_next([{'id':'a','status':'pending','deps':['missing']}])", "expect": null},
+  {"name": "pick_next_skip_running", "import": "from autoloop import pick_next", "expr": "pick_next([{'id':'a','status':'running','deps':[]},{'id':'b','status':'pending','deps':[]}])['id']", "expect": "b"},
+  {"name": "pick_next_empty_backlog", "import": "from autoloop import pick_next", "expr": "pick_next([])", "expect": null},
+  {"name": "advance_pending_start", "import": "from autoloop import advance_state", "expr": "advance_state('pending','start')", "expect": "running"},
+  {"name": "advance_running_success", "import": "from autoloop import advance_state", "expr": "advance_state('running','success')", "expect": "done"},
+  {"name": "advance_running_failure", "import": "from autoloop import advance_state", "expr": "advance_state('running','failure')", "expect": "failed"},
+  {"name": "advance_running_stop", "import": "from autoloop import advance_state", "expr": "advance_state('running','stop')", "expect": "stopped"},
+  {"name": "advance_done_terminal", "import": "from autoloop import advance_state", "expr": "advance_state('done','start')", "expect": "done"},
+  {"name": "advance_failed_terminal", "import": "from autoloop import advance_state", "expr": "advance_state('failed','start')", "expect": "failed"},
+  {"name": "run_once_default_stages", "import": "from autoloop import run_once", "expr": "run_once({'task':'build X'})['stages']", "expect": "plan,implement,verify"},
+  {"name": "run_once_carrier_expansion", "import": "from autoloop import run_once", "expr": "'implement=deepseek' in run_once({'task':'t','carrier':{'implement':'deepseek'}})['carriers']", "expect": true},
+  {"name": "run_once_has_run_id", "import": "from autoloop import run_once", "expr": "run_once({'task':'t'})['run_id'].startswith('auto-')", "expect": true}
+]

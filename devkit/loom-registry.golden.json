@@ -1,0 +1,11 @@
+[
+  {"name": "load_returns_list", "import": "from registry import load", "expr": "isinstance(load(), list)", "expect": true},
+  {"name": "get_none_for_missing", "import": "from registry import get", "expr": "get('nonexistent_stage_xyz') is None", "expect": true},
+  {"name": "validate_ok_minimal", "import": "from registry import validate", "expr": "validate({'key':'plan','trust_level':1,'max_cost_per_run':0.05,'allowed_executors':['chat']})['ok']", "expect": true},
+  {"name": "validate_bad_trust", "import": "from registry import validate", "expr": "validate({'key':'x','trust_level':9,'max_cost_per_run':0.1,'allowed_executors':['chat']})['ok']", "expect": false},
+  {"name": "validate_bad_cost", "import": "from registry import validate", "expr": "validate({'key':'x','trust_level':1,'max_cost_per_run':-1,'allowed_executors':['chat']})['ok']", "expect": false},
+  {"name": "validate_empty_executors", "import": "from registry import validate", "expr": "validate({'key':'x','trust_level':1,'max_cost_per_run':0.1,'allowed_executors':[]})['ok']", "expect": false},
+  {"name": "validate_empty_key", "import": "from registry import validate", "expr": "validate({'key':'','trust_level':1,'max_cost_per_run':0.1,'allowed_executors':['chat']})['ok']", "expect": false},
+  {"name": "validate_errors_list", "import": "from registry import validate", "expr": "isinstance(validate({'key':'','trust_level':9,'max_cost_per_run':-1,'allowed_executors':[]}).get('errors',[]), list)", "expect": true},
+  {"name": "get_returns_dict_if_found", "import": "from registry import load, get", "expr": "all(get(e['key']) is not None for e in load()) if load() else True", "expect": true}
+]

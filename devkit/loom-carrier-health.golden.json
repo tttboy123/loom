@@ -1,0 +1,52 @@
+[
+  {
+    "id": "probe_all_empty",
+    "expr": "probe_all([], 'http://x', 'k')",
+    "expect": {}
+  },
+  {
+    "id": "healthy_carriers_filters_ok",
+    "expr": "healthy_carriers({'glm': {'ok': True, 'latency_ms': 50.0, 'error': ''}, 'bad': {'ok': False, 'latency_ms': 0.0, 'error': 'timeout'}})",
+    "expect": ["glm"]
+  },
+  {
+    "id": "healthy_carriers_sorted_by_latency",
+    "expr": "healthy_carriers({'slow': {'ok': True, 'latency_ms': 200.0, 'error': ''}, 'fast': {'ok': True, 'latency_ms': 30.0, 'error': ''}})",
+    "expect": ["fast", "slow"]
+  },
+  {
+    "id": "healthy_carriers_empty_input",
+    "expr": "healthy_carriers({})",
+    "expect": []
+  },
+  {
+    "id": "probe_unreachable_ok_false",
+    "expr": "probe('unreachable-carrier', 'http://127.0.0.1:19999', 'fake-key', timeout=1)['ok']",
+    "expect": false
+  },
+  {
+    "id": "probe_unreachable_latency_zero",
+    "expr": "probe('unreachable-carrier', 'http://127.0.0.1:19999', 'fake-key', timeout=1)['latency_ms']",
+    "expect": 0.0
+  },
+  {
+    "id": "load_cache_nonexistent",
+    "expr": "load_cache('/tmp/nonexistent_health_xyz_abc.json')",
+    "expect": {}
+  },
+  {
+    "id": "save_load_roundtrip",
+    "expr": "(lambda p: (save_cache({'glm': {'ok': True, 'latency_ms': 50.0, 'error': ''}}, p), load_cache(p))[1])('/tmp/test_carrier_health_roundtrip.json')['glm']['ok']",
+    "expect": true
+  },
+  {
+    "id": "healthy_carriers_single",
+    "expr": "healthy_carriers({'a': {'ok': True, 'latency_ms': 100.0, 'error': ''}})",
+    "expect": ["a"]
+  },
+  {
+    "id": "probe_has_required_fields",
+    "expr": "set(['ok','latency_ms','error']).issubset(set(probe('bad', 'http://127.0.0.1:19999', 'k', timeout=1).keys()))",
+    "expect": true
+  }
+]

@@ -1,0 +1,8 @@
+[
+  {"name":"recommend_model_exists","import":"from devkit.insight import recommend_model","expr":"callable(recommend_model)","expect":true},
+  {"name":"no_history_returns_none_backend","import":"import pathlib,tempfile; from devkit.insight import recommend_model","expr":"recommend_model('实现一个函数', pathlib.Path(tempfile.mkdtemp()))['backend']","expect":null},
+  {"name":"no_history_returns_zero_uses","import":"import pathlib,tempfile; from devkit.insight import recommend_model","expr":"recommend_model('实现一个函数', pathlib.Path(tempfile.mkdtemp()))['uses']","expect":0},
+  {"name":"result_has_required_keys","import":"import pathlib,tempfile; from devkit.insight import recommend_model","expr":"set(recommend_model('任务', pathlib.Path(tempfile.mkdtemp())).keys()) >= {'task_type','backend','ok_rate','avg_cost','uses','reason'}","expect":true},
+  {"name":"infers_task_type","import":"import pathlib,tempfile; from devkit.insight import recommend_model","expr":"isinstance(recommend_model('实现一个 Python 函数', pathlib.Path(tempfile.mkdtemp()))['task_type'], str)","expect":true},
+  {"name":"main_has_recommend_route","import":"import devkit.__main__ as m","expr":"callable(getattr(m, '_cmd_recommend', None))","expect":true}
+]

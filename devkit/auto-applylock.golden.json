@@ -1,0 +1,8 @@
+[
+  {"name": "rdloop_human", "import": "from applylock import requires_human", "expr": "requires_human('devkit/rdloop.py')", "expect": true},
+  {"name": "tests_human", "import": "from applylock import requires_human", "expr": "requires_human('devkit/test_features.py')", "expect": true},
+  {"name": "golden_human", "import": "from applylock import requires_human", "expr": "requires_human('a/b/x.golden.json')", "expect": true},
+  {"name": "business_auto", "import": "from applylock import requires_human", "expr": "requires_human('devkit/recipes.py')", "expect": false},
+  {"name": "classify_human", "import": "from applylock import classify", "expr": "classify('devkit/rdloop.py')", "expect": "human"},
+  {"name": "classify_auto", "import": "from applylock import classify", "expr": "classify('devkit/foo.py')", "expect": "auto"}
+]
