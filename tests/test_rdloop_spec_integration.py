@@ -156,6 +156,94 @@ class WorkItemValidationTest(unittest.TestCase):
         ]
         self.assertIsNone(pick_next_pending(items))
 
+    def test_pick_next_pending_accepts_legacy_flat_shape(self):
+        """Pre-migration backlog rows are flat dicts (id/status/task/...) — no
+        envelope, no kind/metadata/spec. They MUST be picked without raising,
+        otherwise every read of devkit/backlog.json blows up."""
+        from devkit.rdloop import pick_next_pending
+
+        flat_items = [
+            {"id": "a", "status": "done", "task": "old task A"},
+            {"id": "b", "status": "pending", "task": "ship fallback", "priority": "high"},
+            {"id": "c", "status": "pending", "task": "different one"},
+        ]
+        picked = pick_next_pending(flat_items)
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked["id"], "b")
+        self.assertEqual(picked["status"], "pending")
+        self.assertEqual(picked["task"], "ship fallback")
+
+    def test_pick_next_pending_mixed_shape_picks_first_pending(self):
+        """First-pending wins across shapes; envelope items still go through
+        schema validation, flat items skip it."""
+        from devkit.rdloop import pick_next_pending
+
+        mixed = [
+            {"id": "flat-1", "status": "done", "task": "x"},
+            {"id": "flat-2", "status": "pending", "task": "from legacy backlog"},
+            _valid_work_item("env-1", "pending"),
+        ]
+        # First pending is the flat entry (index 1) — envelope guard NOT triggered.
+        picked = pick_next_pending(mixed)
+        self.assertEqual(picked["id"], "flat-2")
+
+        # Swap order so the only pending is the envelope entry — schema validates it.
+        mixed_envelope_first = [
+            _valid_work_item("env-1", "pending"),
+            {"id": "flat-x", "status": "pending", "task": "x"},
+            {"id": "flat-y", "status": "done", "task": "y"},
+        ]
+        picked2 = pick_next_pending(mixed_envelope_first)
+        self.assertEqual(picked2["metadata"]["id"], "env-1")
+
+    def test_pick_next_pending_envelope_still_raises_on_malformed(self):
+        """The legacy-flat fallback does NOT relax the loud-failure contract
+        for envelope items — a malformed envelope is still a programmer
+        error."""
+        from devkit.rdloop import pick_next_pending, SpecValidationError
+
+        # Pending + envelope-shaped + missing objective → schema MUST reject.
+        bad_envelope = {
+            "kind": "WorkItem",
+            "metadata": {"id": "bad"},
+            "spec": {"status": "pending"},  # pending + envelope + missing objective
+        }
+        with self.assertRaises(SpecValidationError):
+            pick_next_pending([bad_envelope])
+
+        # Also test the case where a valid-flat sibling is in front — the
+        # malformed envelope must STILL raise when its turn comes.
+        items_with_bad = [
+            {"id": "good_flat", "status": "running", "task": "ignore me"},
+            bad_envelope,
+        ]
+        with self.assertRaises(SpecValidationError):
+            pick_next_pending(items_with_bad)
+
+    def test_pick_next_pending_real_devkit_backlog_json(self):
+        """End-to-end probe against the actual devkit/backlog.json file. The
+        legacy flat shape used in production backlog rows must be usable in
+        rdloop without schema migration. Skip if backlog.json is missing or
+        has no pending rows."""
+        import json
+        from devkit.rdloop import pick_next_pending
+
+        bl_path = ROOT / "devkit" / "backlog.json"
+        if not bl_path.exists():
+            self.skipTest("devkit/backlog.json not present")
+        items = json.loads(bl_path.read_text(encoding="utf-8"))
+        if not isinstance(items, list):
+            self.skipTest("backlog.json is not a list")
+        pending_rows = [r for r in items if isinstance(r, dict) and str(r.get("status", "")).lower() == "pending"]
+        if not pending_rows:
+            self.skipTest("backlog.json has no 'pending' rows to pick")
+
+        picked = pick_next_pending(items)
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked["status"], "pending")
+        self.assertIn("id", picked)
+        self.assertIn("task", picked)
+
 
 # --------------------------------------------------------------------------- #
 # 3. GateSpec schema-aware final gate (3 tests)

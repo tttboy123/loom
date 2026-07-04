@@ -133,18 +133,44 @@ def validate_work_item(item) -> dict:
     return item
 
 
+def _looks_like_work_item_envelope(entry: dict) -> bool:
+    """True when an entry already carries the WorkItem envelope shape.
+
+    Envelope shape is `kind/metadata/spec` (see devkit/protocol_schemas/work_item.schema.json).
+    The current `devkit/backlog.json` rows are flat dicts (id/status/task/...) — they
+    predate the schema and haven't been migrated. They are LEGITIMATELY not envelope-
+    shaped, so we accept them as legacy and skip schema validation.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if "kind" not in entry:
+        return False
+    if not isinstance(entry.get("metadata"), dict):
+        return False
+    if not isinstance(entry.get("spec"), dict):
+        return False
+    return True
+
+
 def pick_next_pending(items: list | None) -> dict | None:
     """Select the next pending WorkItem from a backlog.
 
-    Validates each candidate against the WorkItem schema before considering it,
-    so a malformed row is rejected loudly (SpecValidationError) instead of being
-    silently skipped — consistent with rdloop's "treat protocol violations as
-    programmer errors" stance. Returns None when the list is empty or has no
-    work items with status == 'pending'.
+    Accepts BOTH shapes:
 
-    Items may carry status in either WorkItem spec shape (spec.status) or a
-    flat backlog shape (item['status']). We accept both because the new
-    WorkItem schema is still being adopted in the wider codebase.
+    1. **Envelope shape** (Phase B target) — `kind/metadata/spec` dicts that
+       validate against `devkit/protocol_schemas/work_item.schema.json`. A
+       malformed envelope item is rejected loudly (SpecValidationError) —
+       consistent with rdloop's "treat protocol violations as programmer
+       errors" stance.
+
+    2. **Legacy flat shape** (current `devkit/backlog.json`) — `id/status/task/...`
+       dicts that predate the schema migration. Their `status == 'pending'`
+       is sufficient; the schema guard is intentionally skipped so the
+       pre-migration backlog doesn't blow up on every rdloop call.
+
+    Returns the first entry whose status (read from either `entry["status"]` or
+    `entry["spec"]["status"]`) is `'pending'`. Returns ``None`` when the list is
+    empty or every entry is in a non-pending state.
     """
     if not items:
         return None
@@ -154,8 +180,10 @@ def pick_next_pending(items: list | None) -> dict | None:
         status = str(entry.get("status") or (entry.get("spec") or {}).get("status") or "").strip().lower()
         if status != "pending":
             continue
-        # validate first; if the entry doesn't conform we fail loud
-        validate_work_item(entry)
+        # Envelope items: validate loudly on schema violation.
+        # Flat items: skip the schema guard — they're legacy, accepted as-is.
+        if _looks_like_work_item_envelope(entry):
+            validate_work_item(entry)
         return entry
     return None
 
