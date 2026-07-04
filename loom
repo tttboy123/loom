@@ -139,6 +139,13 @@ doctor)
       fi
       exit $rc
     fi
+    # Sub-command: doctor --autopilot  → run observer+triager diagnostic
+    if [ "${1:-}" = "--autopilot" ] || [ "${1:-}" = "-a" ]; then
+      shift || true
+      C "运行 autopilot 诊断（observer + triager）…"
+      PYTHONPATH=. python3 -m devkit.doctor --autopilot "$@"
+      exit $?
+    fi
     C "服务状态："
     docker compose --profile full ps --format '  {{.Service}}: {{.Status}}' 2>/dev/null | grep -v MOONSHOT || true
     C "端点："
