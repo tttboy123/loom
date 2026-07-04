@@ -55,6 +55,8 @@ devkit/RUNS.md
 devkit/backlog.json
 devkit/backlog.archive.*.json
 devkit/backlog.human-required.json
+devkit/backlog.json.bak*
+devkit/backlog.failed-audit.*.json
 devkit/work-items/
 devkit/loom.roles.toml        # 控制台写入的本地覆盖
 runs/

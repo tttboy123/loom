@@ -80,6 +80,14 @@ fi
 
 export PYTHONUNBUFFERED=1
 
+# Use the project's venv Python (Python 3.10+ required by devkit/__main__.py).
+# Fall back to system python3 only if .venv is missing — and warn loudly.
+PY="$ROOT/.venv/bin/python3"
+if [[ ! -x "$PY" ]]; then
+  PY="python3"
+  echo "[$(date '+%F %T')] WARN: .venv/bin/python3 not found, falling back to system python3 (will fail on Python <3.10)" >&2
+fi
+
 run_once() {
   local compact_flag=(--compact-model "$COMPACT_MODEL")
   if [[ "$NO_COMPACT" -eq 1 ]]; then
@@ -87,13 +95,13 @@ run_once() {
   fi
 
   if [[ "$ALLOW_CACHE" -eq 1 ]]; then
-    python3 -m devkit iterate \
+    "$PY" -m devkit iterate \
       --backlog "$BACKLOG" \
       --max-rounds "$MAX_ROUNDS" \
       --reflect-carrier "$REFLECT_CARRIER" \
       "${compact_flag[@]}"
   else
-    LOOM_NO_CACHE=1 python3 -m devkit iterate \
+    LOOM_NO_CACHE=1 "$PY" -m devkit iterate \
       --backlog "$BACKLOG" \
       --max-rounds "$MAX_ROUNDS" \
       --reflect-carrier "$REFLECT_CARRIER" \
