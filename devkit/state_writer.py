@@ -46,11 +46,50 @@ def transition_task(
     writer: str = "state_writer",
     protocol_version: str = PROTOCOL_VERSION,
     extra: dict | None = None,
+    estimated_cost_usd: float | None = None,
+    cost_limit_usd: float | None = None,
 ) -> dict:
     items, wrapped = _load_backlog(backlog_path)
     target = _normalize_status(to_status)
     if not target:
         raise TransitionError("target status is required", failure_code="INVALID_STATUS")
+
+    # Phase B budget hook — only enforces when the caller passes a non-None
+    # cost. Backward compatible: existing callers that omit this arg see no
+    # behaviour change. The check happens after target validation but before
+    # any state mutation, mirroring the other guards in this function.
+    if estimated_cost_usd is not None:
+        from devkit import budget as _budget
+        try:
+            _budget.check(
+                task_id,
+                estimated_cost_usd,
+                limit_usd=cost_limit_usd,
+            )
+        except _budget.BudgetExceeded as _exc:
+            _append_event(
+                event_path,
+                _event_record(
+                    task_id=task_id,
+                    actor=actor,
+                    source_task_id=source_task_id,
+                    reason=reason,
+                    protocol_version=protocol_version,
+                    previous_status=None,
+                    target_status=target,
+                    outcome="rejected",
+                    failure_code="BUDGET_EXCEEDED",
+                    extra={
+                        "cost_usd": _exc.cost_usd,
+                        "limit_usd": _exc.limit_usd,
+                        **(extra or {}),
+                    },
+                ),
+            )
+            raise TransitionError(
+                f"transition rejected: {_exc}",
+                failure_code="BUDGET_EXCEEDED",
+            )
 
     item = next((entry for entry in items if str(entry.get("id", "")).strip() == str(task_id).strip()), None)
     if item is None:
