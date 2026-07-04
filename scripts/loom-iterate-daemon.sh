@@ -88,6 +88,12 @@ if [[ ! -x "$PY" ]]; then
   echo "[$(date '+%F %T')] WARN: .venv/bin/python3 not found, falling back to system python3 (will fail on Python <3.10)" >&2
 fi
 
+# Heartbeat file — written on every iteration. The external watchdog reads
+# this file's mtime to detect a stuck/dead daemon.
+HEARTBEAT_FILE="${LOOM_HEARTBEAT_FILE:-$ROOT/devkit/logs/heartbeat.daemon}"
+mkdir -p "$(dirname "$HEARTBEAT_FILE")"
+touch "$HEARTBEAT_FILE"
+
 run_once() {
   local compact_flag=(--compact-model "$COMPACT_MODEL")
   if [[ "$NO_COMPACT" -eq 1 ]]; then
@@ -122,6 +128,9 @@ while true; do
     fi
     echo "[$(date '+%F %T')] 一轮完成 rc=$RC"
   } >>"$LOG_FILE" 2>&1
+
+  # Refresh heartbeat so the watchdog knows we're still alive.
+  touch "$HEARTBEAT_FILE"
 
   if [[ "$ONCE" -eq 1 ]]; then
     exit 0

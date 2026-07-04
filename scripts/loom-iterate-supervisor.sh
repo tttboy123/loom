@@ -59,6 +59,25 @@ log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$msg" >> "$SUPERVISOR_LOG_FILE"
 }
 
+# ---------- Signal handlers ----------
+# SIGUSR1 = "watchdog wants me to restart the worker NOW" (skips cooldown).
+# SIGUSR2 = reserved for future use (e.g. dump state).
+# SIGTERM = clean shutdown.
+WATCHDOG_RESTART_REQUESTED=0
+WATCHDOG_RESTART_REASON=""
+
+on_sigusr1() {
+  WATCHDOG_RESTART_REQUESTED=1
+  WATCHDOG_RESTART_REASON="watchdog SIGUSR1"
+}
+on_sigterm() {
+  log "收到 SIGTERM，停止 supervise 并 stop_worker"
+  stop_worker || true
+  exit 0
+}
+trap on_sigusr1 USR1
+trap on_sigterm TERM
+
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --backlog)
@@ -303,6 +322,10 @@ LAST_RESTART_TS_FILE="$ROOT/devkit/logs/iterate-supervisor.state"
 log "Loom iterate 监督器启动"
 log "backlog=$BACKLOG max_rounds=$MAX_ROUNDS reflect=$REFLECT_CARRIER compact=$COMPACT_MODEL sleep=${SLEEP_SECONDS}s check_interval=${CHECK_INTERVAL}s"
 
+# Write our own pid so the external watchdog (loom-watchdog.sh) can find us
+# even if it runs before the worker pid file is created.
+echo $$ > "$ROOT/devkit/logs/loom-iterate-supervisor.pid"
+
 if [[ "$ONCE" -eq 1 ]]; then
   daemon_cmd
   bash "$WORKER_CMD" "${ITERATE_CMD[@]}"
@@ -312,7 +335,12 @@ fi
 start_worker
 
 while true; do
-  if ! is_worker_running; then
+  if (( WATCHDOG_RESTART_REQUESTED )); then
+    log "watchdog 请求立即重启 worker：$WATCHDOG_RESTART_REASON"
+    self_heal "$WATCHDOG_RESTART_REASON" || true
+    WATCHDOG_RESTART_REQUESTED=0
+    WATCHDOG_RESTART_REASON=""
+  elif ! is_worker_running; then
     self_heal "iterate worker 未运行"
   elif has_backlog_stuck; then
     self_heal "backlog 运行任务连续卡住（attempts >=2）"
@@ -330,5 +358,14 @@ while true; do
   else
     log "任务队列快照脚本缺失：$TASK_QUEUE_STATUS_SCRIPT"
   fi
-  sleep "$CHECK_INTERVAL"
+  # Sleep in short slices so SIGUSR1 (or SIGTERM) is observed within ~5s
+  # instead of waiting for the full CHECK_INTERVAL to elapse.
+  elapsed=0
+  while (( elapsed < CHECK_INTERVAL )); do
+    if (( WATCHDOG_RESTART_REQUESTED )); then
+      break
+    fi
+    sleep 5
+    elapsed=$(( elapsed + 5 ))
+  done
 done
