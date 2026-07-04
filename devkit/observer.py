@@ -93,6 +93,11 @@ class ObserverSnapshot:
     watchdog: WatchdogEvents = field(default_factory=WatchdogEvents)
     collected_at: str = ""
     source_paths: dict = field(default_factory=dict)
+    # Phase A — primary work item this snapshot is "about". Triager uses this
+    # to attach metadata.work_item_id to the incidents it produces. ``None``
+    # means the snapshot is autopilot-wide (e.g. quarantine / supervisor
+    # missing) and the triager falls back to a system sentinel.
+    work_item_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -196,11 +201,19 @@ def collect_backlog(path: pathlib.Path = BACKLOG_PATH) -> BacklogState:
     data = _read_json(path)
     if not data:
         return BacklogState()
-    tasks = data.get("tasks", [])
+    # Backlog may be a bare list or {"tasks": [...]}
+    if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+        tasks = data["tasks"]
+    elif isinstance(data, list):
+        tasks = data
+    else:
+        tasks = []
     by_status: dict = {}
     by_priority: dict = {}
     lease_reasons: dict = {}
     for t in tasks:
+        if not isinstance(t, dict):
+            continue
         s = t.get("status", "unknown")
         by_status[s] = by_status.get(s, 0) + 1
         p = t.get("priority", "unknown")
@@ -215,6 +228,34 @@ def collect_backlog(path: pathlib.Path = BACKLOG_PATH) -> BacklogState:
         lease_reclaimed=sum(lease_reasons.values()),
         last_lease_reclaim_reasons=lease_reasons,
     )
+
+
+def _first_recent_running_work_item_id(path: pathlib.Path) -> Optional[str]:
+    """Return the id of the most recently seen ``running`` task, if any.
+
+    Phase A helper: the triager needs a primary work item to attach to the
+    incidents it emits. Prefer running > blocked > failed. If the backlog is
+    a bare list (not a dict wrapper), that path is also handled.
+    """
+    data = _read_json(path)
+    if not data:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+        items = data["tasks"]
+    elif isinstance(data, list):
+        items = data
+    else:
+        return None
+    # Priority order: running first, then blocked, then failed, then anything
+    for target_status in ("running", "blocked", "failed"):
+        for t in items:
+            if not isinstance(t, dict):
+                continue
+            if str(t.get("status", "")).lower() == target_status:
+                wid = str(t.get("id", "")).strip()
+                if wid:
+                    return wid
+    return None
 
 
 def collect_watchdog(log_path: pathlib.Path = WATCHDOG_LOG,
@@ -278,6 +319,7 @@ def snapshot(
 
     bl = collect_backlog(backlog_path)
     wd = collect_watchdog(logs_dir / "watchdog.log")
+    work_item_id = _first_recent_running_work_item_id(backlog_path)
 
     return ObserverSnapshot(
         autopilot=ap,
@@ -297,4 +339,5 @@ def snapshot(
             "backlog": str(backlog_path),
             "watchdog_log": str(logs_dir / "watchdog.log"),
         },
+        work_item_id=work_item_id,
     )

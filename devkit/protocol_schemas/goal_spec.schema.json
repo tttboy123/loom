@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalSpec",
+  "type": "object",
+  "required": ["kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "const": "loom.dev/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "GoalSpec"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "created_by": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "required": ["objective"],
+      "properties": {
+        "objective": { "type": "string" },
+        "scope": { "type": "string" },
+        "owner_role": { "type": "string" },
+        "priority": { "type": "string" },
+        "acceptance": { "type": "array" },
+        "budget": { "type": "object" },
+        "fallback": { "type": "object" },
+        "cooldown": { "type": "object" },
+        "evidence": { "type": "object" },
+        "source": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

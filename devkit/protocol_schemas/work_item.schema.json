@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkItem",
+  "type": "object",
+  "required": ["kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "const": "loom.dev/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "WorkItem"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "goal_id": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "required": ["objective"],
+      "properties": {
+        "objective": { "type": "string" },
+        "owner_role": { "type": "string" },
+        "status": { "type": "string" },
+        "acceptance": { "type": "array" },
+        "input_refs": { "type": "array" },
+        "evidence_refs": { "type": "array" },
+        "lineage": { "type": "object" },
+        "lease": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
