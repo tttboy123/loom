@@ -17,6 +17,24 @@ C(){ printf "\033[1;36m%s\033[0m\n" "$*"; }
 OK(){ printf "\033[1;32m✓ %s\033[0m\n" "$*"; }
 ERR(){ printf "\033[1;31m✗ %s\033[0m\n" "$*" >&2; }
 
+# Resolve Python interpreter — use venv if present, else system python3
+# (BLOCKER P0-1: devkit requires 3.10+ for PEP 604 union types; system
+#  python3 on macOS is 3.9.6 and breaks every `./loom <cmd>` invocation).
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ] && [ -x "./.venv/bin/python3" ]; then
+  PYTHON_BIN="./.venv/bin/python3"
+fi
+if [ -z "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
+# Fail-fast: refuse to run if Python is too old.
+if ! "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+  ERR "Python interpreter $PYTHON_BIN is < 3.10; devkit requires 3.10+."
+  ERR "  Fix: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+  ERR "  Or:  PYTHON_BIN=/path/to/python3.10+ ./loom <cmd>"
+  exit 1
+fi
+
 ensure_engine(){
   command -v docker >/dev/null 2>&1 || { ERR "未找到 docker（应在 ~/.local/bin）"; exit 1; }
   if ! docker info >/dev/null 2>&1; then
@@ -74,63 +92,63 @@ case "$cmd" in
     ;;
   run)
     [ -n "${1:-}" ] || { ERR "用法：./loom run \"任务描述\""; exit 1; }
-    python3 -m devkit auto "$@" --yes --loop
+    "$PYTHON_BIN" -m devkit auto "$@" --yes --loop
     ;;
   autopilot)
     bash scripts/loom-iterate-supervisor.sh "$@"
     ;;
   setup)
-    python3 -m devkit setup "$@"
+    "$PYTHON_BIN" -m devkit setup "$@"
     ;;
   status)
     C "任务队列快照（含任务编号）："
-    python3 scripts/loom-task-queue-status.py --backlog devkit/backlog.json --run-root . --log-file devkit/logs/task-queue-status.log
+    "$PYTHON_BIN" scripts/loom-task-queue-status.py --backlog devkit/backlog.json --run-root . --log-file devkit/logs/task-queue-status.log
     C "最近决策："
-    python3 -m devkit decisions -n 5 2>/dev/null || echo "  (无决策日志)"
+    "$PYTHON_BIN" -m devkit decisions -n 5 2>/dev/null || echo "  (无决策日志)"
     ;;
   task-queue)
     backlog_file="${1:-devkit/backlog.json}"
-    python3 scripts/loom-task-queue-status.py --backlog "$backlog_file" --run-root . --log-file devkit/logs/task-queue-status.log
+    "$PYTHON_BIN" scripts/loom-task-queue-status.py --backlog "$backlog_file" --run-root . --log-file devkit/logs/task-queue-status.log
     ;;
   bench)
-    python3 -m devkit bench "$@"
+    "$PYTHON_BIN" -m devkit bench "$@"
     ;;
   ask)
     [ -n "${1:-}" ] || { ERR "用法：./loom ask \"问题\" [--models deepseek,glm]"; exit 1; }
-    python3 -m devkit ask "$@"
+    "$PYTHON_BIN" -m devkit ask "$@"
     ;;
   diff)
     [ -n "${1:-}" ] || { ERR "用法：./loom diff <运行id> [--against <运行id>]"; exit 1; }
-    python3 -m devkit diff "$@"
+    "$PYTHON_BIN" -m devkit diff "$@"
     ;;
   roles)
-    python3 -m devkit roles "${@:-list}"
+    "$PYTHON_BIN" -m devkit roles "${@:-list}"
     ;;
   quota)
-    python3 -m devkit quota "$@"
+    "$PYTHON_BIN" -m devkit quota "$@"
     ;;
   scores)
-    python3 -m devkit scores "$@"
+    "$PYTHON_BIN" -m devkit scores "$@"
     ;;
   stages)
-    python3 -m devkit stages "$@"
+    "$PYTHON_BIN" -m devkit stages "$@"
     ;;
   rate)
     [ -n "${1:-}" ] || { ERR "用法：./loom rate <后端> up|down [--note ...]"; exit 1; }
-    python3 -m devkit rate "$@"
+    "$PYTHON_BIN" -m devkit rate "$@"
     ;;
   backlog)
-    python3 -m devkit backlog "$@"
+    "$PYTHON_BIN" -m devkit backlog "$@"
     ;;
   feature)
-    python3 -m devkit feature "$@"
+    "$PYTHON_BIN" -m devkit feature "$@"
     ;;
 doctor)
     ensure_engine
     # Sub-command: doctor --opensource  → run the Agent Gate
     if [ "${1:-}" = "--opensource" ] || [ "${1:-}" = "-o" ]; then
       C "运行开源就绪度 Gate（devkit.gate.opensource）…"
-      PYTHONPATH=. python3 -m devkit.gate.opensource .
+      PYTHONPATH=. "$PYTHON_BIN" -m devkit.gate.opensource .
       rc=$?
       if [ "$rc" -eq 0 ]; then
         OK "开源 Gate 通过"
@@ -143,7 +161,7 @@ doctor)
     if [ "${1:-}" = "--autopilot" ] || [ "${1:-}" = "-a" ]; then
       shift || true
       C "运行 autopilot 诊断（observer + triager）…"
-      PYTHONPATH=. python3 -m devkit.doctor --autopilot "$@"
+      PYTHONPATH=. "$PYTHON_BIN" -m devkit.doctor --autopilot "$@"
       exit $?
     fi
     C "服务状态："
@@ -154,10 +172,10 @@ doctor)
       printf "  %-20s %s\n" "$name" "$(probe "http://localhost:$url")"
     done
     C "执行器（可按阶段嵌入工作流）："
-    python3 -c "from devkit import executors as e;[print('  %-9s %s'%(k,'✓ 可用' if v else '✗ 未安装')) for k,v in e.available().items()]" 2>/dev/null \
+    "$PYTHON_BIN" -c "from devkit import executors as e;[print('  %-9s %s'%(k,'✓ 可用' if v else '✗ 未安装')) for k,v in e.available().items()]" 2>/dev/null \
       || echo "  (devkit 不可用)"
     C "后端健康（真活性 + 凭据就绪，K8s 探针式：区分 过期需重登 / 真挂 / 在服务）："
-    python3 -c "
+    "$PYTHON_BIN" -c "
 import os
 from devkit.insight import health
 from devkit.rdloop import load_master_key
@@ -184,12 +202,12 @@ for r in health(os.environ.get('LITELLM_BASE_URL','http://localhost:4000'), load
   verify-ui)
     C "真机验证控制台 UI（Playwright 渲染 + 断言面板 + 抓 JS 错误）…"
     PP="${PWDEPS:-/tmp/pwdeps}"
-    PYTHONPATH="$PP:${PYTHONPATH:-}" python3 scripts/verify_console.py "${1:-http://localhost:8899}"
+    PYTHONPATH="$PP:${PYTHONPATH:-}" "$PYTHON_BIN" scripts/verify_console.py "${1:-http://localhost:8899}"
     ;;
   test)
     C "跑 devkit 单元/合同测试（纯标准库，无需 live 网关）…"
-    PYTHONPATH=. python3 devkit/test_runs_log.py \
-      && PYTHONPATH=. python3 -m unittest devkit.test_features -v \
+    PYTHONPATH=. "$PYTHON_BIN" devkit/test_runs_log.py \
+      && PYTHONPATH=. "$PYTHON_BIN" -m unittest devkit.test_features -v \
       && OK "全部测试通过" || { ERR "有测试失败"; exit 1; }
     ;;
   *)
