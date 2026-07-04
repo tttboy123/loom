@@ -1,6 +1,8 @@
 # budget.py
 
 import math
+import os
+import pathlib
 
 DEFAULT_WINDOW = 32768
 CARRIER_WINDOWS = {
@@ -30,6 +32,59 @@ def est_tokens(text: str) -> int:
 
 def budget_tokens(window: int, reserve: float = 0.4) -> int:
     return int(window * (1 - reserve))
+
+DEFAULT_COST_LIMIT_USD = float(os.environ.get("LOOM_COST_LIMIT_USD", "5.00"))
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised when a state transition would exceed the per-call cost limit."""
+
+    def __init__(self, message: str, *, task_id: str, cost_usd: float, limit_usd: float) -> None:
+        super().__init__(message)
+        self.task_id = str(task_id)
+        self.cost_usd = float(cost_usd)
+        self.limit_usd = float(limit_usd)
+
+
+def check(task_id: str, cost_usd: float, *, limit_usd: float | None = None) -> dict:
+    """Enforce a per-task USD budget on a state transition.
+
+    Returns ``{"ok": True, "task_id": ..., "cost_usd": ..., "limit_usd": ...}``
+    when the cost fits; raises :class:`BudgetExceeded` otherwise. The limit
+    defaults to ``DEFAULT_COST_LIMIT_USD`` (``$5.00``) and can be overridden
+    via the ``LOOM_COST_LIMIT_USD`` environment variable or ``limit_usd=``.
+
+    ``check()`` is intentionally stateless — the post-call accounting is the
+    caller's responsibility. The state_writer hook uses this as a *gate*
+    before persisting an expensive transition.
+    """
+    if cost_usd is None:
+        return {
+            "ok": True,
+            "task_id": str(task_id),
+            "cost_usd": 0.0,
+            "limit_usd": float(limit_usd) if limit_usd is not None else DEFAULT_COST_LIMIT_USD,
+            "checked": False,
+        }
+    cost = float(cost_usd)
+    limit = float(limit_usd) if limit_usd is not None else DEFAULT_COST_LIMIT_USD
+    if cost < 0:
+        raise ValueError(f"cost_usd must be non-negative, got {cost}")
+    if cost > limit:
+        raise BudgetExceeded(
+            f"task {task_id!r} cost ${cost:.4f} exceeds per-call limit ${limit:.4f}",
+            task_id=str(task_id),
+            cost_usd=cost,
+            limit_usd=limit,
+        )
+    return {
+        "ok": True,
+        "task_id": str(task_id),
+        "cost_usd": cost,
+        "limit_usd": limit,
+        "checked": True,
+    }
+
 
 def pack(blocks, budget, est=est_tokens):
     """

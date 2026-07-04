@@ -15,8 +15,11 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import re
+import shlex
 import socket
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -28,8 +31,326 @@ from devkit.delivery_mode import display_label as _delivery_display_label
 from devkit.delivery_mode import resolve_delivery_mode as _resolve_delivery_mode
 from devkit.delivery_mode import resolved_targets as _resolved_delivery_targets
 from devkit.model_aliases import normalize_model_name
+from devkit import producer_log as _producer_log
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent  # agent-platform/
+PROTOCOL_SCHEMAS_DIR = pathlib.Path(__file__).resolve().parent / "protocol_schemas"
+
+
+# --------------------------------------------------------------------------- #
+# Spec validation helpers (Phase B integration)
+#
+# Before Phase B the JSON schemas under devkit/protocol_schemas/ were
+# decorative — write_run_protocol_bundle() emitted the documents but nothing
+# checked that rdloop input (goal specs / work items) actually conformed. These
+# helpers turn the schemas into functional guards:
+#   - validate_goal_spec(spec)   : used at run_once() entry to fail fast on bad input
+#   - pick_next_pending(items)   : selects the next WorkItem, validating the shape
+#   - evaluate_final_gate(...)   : GateSpec schema-aware wrapper around the
+#                                 existing _resolve_gate_status ad-hoc decision
+#
+# All helpers fail loud (raise) on schema mismatch instead of warning, matching
+# the rdloop style of treating protocol violations as programmer errors.
+# --------------------------------------------------------------------------- #
+class SpecValidationError(ValueError):
+    """Raised when a runtime payload violates its devkit/protocol_schemas/* contract."""
+
+    def __init__(self, message: str, *, kind: str, errors: list | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.errors = list(errors or [])
+
+
+def _load_schema(kind: str) -> dict:
+    """Load a protocol_schemas/<kind>.schema.json and cache it on the module."""
+    cache: dict = globals().setdefault("_PROTOCOL_SCHEMA_CACHE", {})  # type: ignore[assignment]
+    if kind in cache:
+        return cache[kind]
+    name = re.sub(r"(?<!^)(?=[A-Z])", "_", str(kind)).lower()
+    path = PROTOCOL_SCHEMAS_DIR / f"{name}.schema.json"
+    if not path.exists():
+        raise SpecValidationError(f"protocol schema not found for kind {kind!r}", kind=kind)
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    cache[kind] = schema
+    return schema
+
+
+def _jsonschema_validate(payload: dict, schema: dict, *, kind: str) -> None:
+    """Run jsonschema.validate and re-raise as SpecValidationError with detail."""
+    try:
+        import jsonschema as _js  # local import: optional dep, but tests already use it
+    except ImportError as exc:  # pragma: no cover — venv always has jsonschema in this repo
+        raise SpecValidationError(
+            f"jsonschema is required to validate {kind}; install via devkit/requirements-dev.txt",
+            kind=kind,
+        ) from exc
+    try:
+        _js.validate(instance=payload, schema=schema)
+    except _js.ValidationError as exc:
+        raise SpecValidationError(
+            f"{kind} payload does not conform to {schema.get('title', kind)} schema: {exc.message}",
+            kind=kind,
+            errors=[str(exc.message)],
+        ) from exc
+
+
+def validate_goal_spec(spec) -> dict:
+    """Validate a GoalSpec payload against devkit/protocol_schemas/goal_spec.schema.json.
+
+    Accepts either a dict, a JSON string, or a pathlib.Path to a file. Returns
+    the (normalized) dict on success; raises SpecValidationError on mismatch.
+    """
+    if isinstance(spec, pathlib.Path):
+        spec = json.loads(spec.read_text(encoding="utf-8"))
+    elif isinstance(spec, str):
+        spec = json.loads(spec)
+    if not isinstance(spec, dict):
+        raise SpecValidationError(
+            f"GoalSpec payload must be a dict, got {type(spec).__name__}",
+            kind="GoalSpec",
+        )
+    schema = _load_schema("GoalSpec")
+    _jsonschema_validate(spec, schema, kind="GoalSpec")
+    return spec
+
+
+def validate_work_item(item) -> dict:
+    """Validate a WorkItem payload against devkit/protocol_schemas/work_item.schema.json.
+
+    Accepts dict, JSON string, or pathlib.Path. Raises SpecValidationError on mismatch.
+    """
+    if isinstance(item, pathlib.Path):
+        item = json.loads(item.read_text(encoding="utf-8"))
+    elif isinstance(item, str):
+        item = json.loads(item)
+    if not isinstance(item, dict):
+        raise SpecValidationError(
+            f"WorkItem payload must be a dict, got {type(item).__name__}",
+            kind="WorkItem",
+        )
+    schema = _load_schema("WorkItem")
+    _jsonschema_validate(item, schema, kind="WorkItem")
+    return item
+
+
+def pick_next_pending(items: list | None) -> dict | None:
+    """Select the next pending WorkItem from a backlog.
+
+    Validates each candidate against the WorkItem schema before considering it,
+    so a malformed row is rejected loudly (SpecValidationError) instead of being
+    silently skipped — consistent with rdloop's "treat protocol violations as
+    programmer errors" stance. Returns None when the list is empty or has no
+    work items with status == 'pending'.
+
+    Items may carry status in either WorkItem spec shape (spec.status) or a
+    flat backlog shape (item['status']). We accept both because the new
+    WorkItem schema is still being adopted in the wider codebase.
+    """
+    if not items:
+        return None
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or (entry.get("spec") or {}).get("status") or "").strip().lower()
+        if status != "pending":
+            continue
+        # validate first; if the entry doesn't conform we fail loud
+        validate_work_item(entry)
+        return entry
+    return None
+
+
+def evaluate_final_gate(
+    *,
+    blocked: list,
+    review_blocked: bool,
+    review_requested_changes: bool,
+    tests_failed: bool,
+    over_budget: bool,
+    gate_spec=None,
+) -> tuple[str, list[str]]:
+    """GateSpec-aware final verdict.
+
+    Loads devkit/protocol_schemas/gate_spec.schema.json as a baseline and:
+      - validates ``gate_spec`` if it's a dict (loud failure on shape mismatch)
+      - tolerates the runtime ``devkit.task_contract.GateSpec`` dataclass
+        (different shape, used by the in-loop decision helper) — we still
+        load the schema so callers can see what the contract expects
+      - delegates the actual verdict logic to the existing
+        ``_resolve_gate_status`` so behaviour stays bit-for-bit compatible
+      - returns ``(status_code, reasons)`` exactly like _resolve_gate_status
+    """
+    # Always load the schema so the integration is functional, even when the
+    # caller passes a non-document GateSpec (e.g. the task_contract dataclass).
+    schema = _load_schema("GateSpec")
+
+    gate_spec_dict: dict | None = None
+    if isinstance(gate_spec, dict):
+        gate_spec_dict = gate_spec
+    elif gate_spec is not None:
+        try:
+            import dataclasses as _dc
+            if _dc.is_dataclass(gate_spec):
+                gate_spec_dict = _dc.asdict(gate_spec)
+        except Exception:
+            gate_spec_dict = None
+    if gate_spec_dict is not None:
+        # The on-disk document carries kind/metadata/spec wrappers; the
+        # task_contract dataclass does not. Skip validation when the
+        # wrapper is absent — the verdict path is exercised either way.
+        if "kind" in gate_spec_dict or "metadata" in gate_spec_dict or "spec" in gate_spec_dict:
+            _jsonschema_validate(gate_spec_dict, schema, kind="GateSpec")
+
+    return _resolve_gate_status(
+        blocked=blocked,
+        review_blocked=review_blocked,
+        review_requested_changes=review_requested_changes,
+        tests_failed=tests_failed,
+        over_budget=over_budget,
+    )
+
+
+def evidence_packet_artifact_source(rel_path: str, *, workspace: pathlib.Path, build_dir: pathlib.Path) -> str:
+    """Classify an artifact's source for the EvidencePacket.
+
+    Returns one of:
+      - ``inner_sandbox``   : the file lives inside the build_dir sandbox
+                              (materialized by an agent, never written to repo)
+      - ``materialized_repo``: the file was copied into the workspace (e.g. by
+                              apply_to_git / apply_files — the canonical
+                              repo-level artifact)
+      - ``declared``        : the file is a declared artifact (declared_artifacts)
+                              that already existed pre-loop
+      - ``runtime_support`` : runtime-only files (harness/devkit/verify) copied
+                              in by _materialize_support_tree
+      - ``unknown``         : can't classify (test stubs etc.)
+    """
+    rel = str(rel_path or "").replace("\\", "/").lstrip("./")
+    if not rel:
+        return "unknown"
+    if rel.startswith("harness/") or rel.startswith("verify/") or rel.startswith("devkit/"):
+        return "runtime_support"
+    try:
+        build_dir_resolved = build_dir.resolve()
+    except Exception:
+        build_dir_resolved = pathlib.Path(build_dir)
+    try:
+        workspace_resolved = workspace.resolve()
+    except Exception:
+        workspace_resolved = pathlib.Path(workspace)
+    candidate = build_dir_resolved / rel
+    try:
+        candidate.relative_to(build_dir_resolved)
+    except ValueError:
+        return "unknown"
+    if not candidate.is_file():
+        return "declared"
+    if build_dir_resolved == workspace_resolved:
+        return "materialized_repo"
+    return "inner_sandbox"
+
+
+# --------------------------------------------------------------------------- #
+# Manifest entry builder (Phase B integration)
+# --------------------------------------------------------------------------- #
+_REPORT_EXTS = {".md", ".markdown", ".txt", ".json", ".html", ".csv", ".yaml", ".yml"}
+
+
+def _entry_kind_for(rel_path: str) -> str:
+    base = os.path.basename(rel_path)
+    if base.startswith("test_") and base.endswith(".py"):
+        return "test"
+    if base == "conftest.py" or f"/{rel_path}/".count("/tests/") > 0:
+        return "test"
+    if pathlib.Path(rel_path).suffix.lower() in _REPORT_EXTS:
+        return "report"
+    return "candidate"
+
+
+def _entry_source_for(rel_path: str, *, build_dir: pathlib.Path) -> str:
+    """Classify an entry's source for the new build_manifest API."""
+    rel = str(rel_path or "").replace("\\", "/").lstrip("./")
+    if not rel:
+        return "loom_runtime"
+    if rel.startswith("harness/") or rel.startswith("verify/") or rel.startswith("devkit/"):
+        return "loom_runtime"
+    return "inner_sandbox" if (pathlib.Path(build_dir) / rel).is_file() else "user_supplied"
+
+
+def _build_manifest_entries(
+    *,
+    build_dir: pathlib.Path,
+    materialized_files: list,
+    declared_artifacts: list | None = None,
+    report_only: bool = False,
+    workspace: pathlib.Path | None = None,
+) -> list[dict]:
+    """Build a list of manifest entry dicts for ``artifact_manifest.build_manifest``.
+
+    Each entry carries the legacy fields the rdloop downstream code depends on
+    (``path``, ``kind``, ``applyable``, ``sha256``, ``size``, ``source_stage``)
+    plus the schema-required ``source``. Decoupling this from ``build_manifest``
+    lets the schema-aligned writer stay focused on the contract.
+    """
+    declared_artifacts = list(declared_artifacts or [])
+    seen: set[str] = set()
+    entries: list[dict] = []
+    build_dir = pathlib.Path(build_dir)
+
+    for rel in materialized_files:
+        norm = str(rel or "").replace("\\", "/").lstrip("./")
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        path = build_dir / norm
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            data = b""
+        entries.append({
+            "path": norm,
+            "kind": _entry_kind_for(norm),
+            "source_stage": "implement",
+            "applyable": (not report_only) and (_entry_kind_for(norm) != "test"),
+            "sha256": _hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "source": _entry_source_for(norm, build_dir=build_dir),
+        })
+
+    for rel in declared_artifacts:
+        norm = str(rel or "").replace("\\", "/").lstrip("./")
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        path = build_dir / norm
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            data = b""
+        entries.append({
+            "path": norm,
+            "kind": "evidence",
+            "source_stage": "runtime",
+            "applyable": False,
+            "sha256": _hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "source": "user_supplied",
+        })
+
+    return entries
+_STAGE_FALLBACKS = {
+    "loom-dev": ["minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"],
+    "loom-tester": ["minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"],
+    "loom-reviewer": ["minimax-m27-highspeed", "minimax-m27", "minimax", "glm", "deepseek"],
+    "loom-orchestrator": ["minimax-m27-highspeed", "minimax-m27", "minimax", "glm", "deepseek"],
+    "minimax": ["minimax", "minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"],
+    "minimax-m27-highspeed": ["minimax-m27-highspeed", "minimax-m27", "glm", "deepseek"],
+    "minimax-m27": ["minimax-m27", "glm", "deepseek"],
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -88,9 +409,15 @@ STAGES: List[Stage] = [
     ),
     Stage(
         "verify", "tester", "loom-tester", "验证 / Eval",
-        "你是【测试 / 验证】角色。基于上游实现设计并（以描述方式）执行 eval："
+        "你是【测试 / 验证】角色。基于上游实现设计并执行验证："
+        "优先跑可执行测试，而不是只写口头判断。"
+        "若任务涉及 HTTP API / contract，默认补或复用 OpenAPI schema，并优先调用 Schemathesis"
+        "（例如 `python3 scripts/run_console_schemathesis.py` 或等价命令）对 `/api/openapi.json` 做"
+        "contract / fuzz / unsupported-method 验证。"
         "喂 ≥1 个**非 happy-path 的真实输入**；检查**未知输入是否被忠实回报**（不静默丢、不幻觉）；"
-        "旗舰用例端到端是否真成立。逐条给 PASS/FAIL + 证据。",
+        "旗舰用例端到端是否真成立。输出必须包含这些小节：Verification commands、Schema path、"
+        "Endpoints covered、Coverage result、Fuzz result、Failures / repro。"
+        "逐条给 PASS/FAIL + 证据，并明确写出实际执行的测试命令。",
     ),
     Stage(
         "review", "reviewer", "loom-reviewer", "独立审查",
@@ -265,6 +592,87 @@ def _request_json_with_retry(url: str, api_key: str, payload: dict, timeout: int
                 raise
         time.sleep(min(1.5, 0.25 * (idx + 1)))
     raise last_exc  # pragma: no cover
+
+
+_TIMEOUT_FAILURE_CODES = {
+    "request": "MODEL_TIMEOUT",
+    "retry": "MODEL_RETRY_TIMEOUT",
+    "continuation": "MODEL_CONTINUATION_TIMEOUT",
+}
+
+
+def _bounded_timeout(value: int | None, fallback: int) -> int:
+    try:
+        bounded = int(value or 0)
+    except (TypeError, ValueError):
+        bounded = 0
+    if bounded <= 0:
+        bounded = int(fallback)
+    return max(1, bounded)
+
+
+def _timeout_failure_code(phase: str) -> str:
+    return _TIMEOUT_FAILURE_CODES.get(str(phase or "").strip().lower(), "MODEL_TIMEOUT")
+
+
+def _failure_reason_kind(error: str = "", failure_code: str | None = None) -> str:
+    code = str(failure_code or "").strip().upper()
+    lowered = str(error or "").lower()
+    if code in {
+        "MODEL_TIMEOUT",
+        "MODEL_RETRY_TIMEOUT",
+        "MODEL_CONTINUATION_TIMEOUT",
+    } or "timeout" in lowered or "timed out" in lowered:
+        return "timeout"
+    if code in {"MODEL_RATE_LIMIT", "MODEL_QUOTA_EXHAUSTED", "HTTP_429"} or "429" in lowered or "rate limit" in lowered:
+        return "rate_limit"
+    if code.startswith("HTTP_401") or "401" in lowered or "unauthorized" in lowered or "api key" in lowered:
+        return "auth"
+    if code.startswith("HTTP_5") or "service unavailable" in lowered or "overloaded" in lowered:
+        return "provider_http"
+    if code == "MODEL_NETWORK_ERROR" or "remote end closed connection" in lowered or "connection" in lowered:
+        return "network"
+    if code in {
+        "EMPTY_RESPONSE",
+        "EMPTY_REASONING_ONLY",
+        "EMPTY_REASONING_ONLY_LENGTH",
+        "EMPTY_REASONING_ONLY_LENGTH_RETRY_EMPTY",
+        "EMPTY_RESPONSES_NO_OUTPUT",
+        "EMPTY_NO_TEXT_FIELDS",
+        "EMPTY_TOOL_NOISE",
+    } or "empty response" in lowered:
+        return "empty_response"
+    return "unknown"
+
+
+def _exception_failure_code(exc: Exception, *, phase: str) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP_{exc.code}"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return _timeout_failure_code(phase)
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        lowered = str(reason or exc).lower()
+        if isinstance(reason, (TimeoutError, socket.timeout)) or "timeout" in lowered or "timed out" in lowered:
+            return _timeout_failure_code(phase)
+        return "MODEL_NETWORK_ERROR"
+    return f"EXC_{type(exc).__name__.upper()}"
+
+
+def _exception_diag(exc: Exception, *, model: str, phase: str, timeout: int) -> dict:
+    code = _exception_failure_code(exc, phase=phase)
+    diag = {
+        "served_model": model,
+        "failure_phase": phase,
+        "failure_code": code,
+        "failure_reason_kind": _failure_reason_kind(str(exc), code),
+        "timeout_seconds": _bounded_timeout(timeout, 1),
+    }
+    if isinstance(exc, urllib.error.HTTPError):
+        diag["http_error"] = exc.code
+    else:
+        diag["exception"] = type(exc).__name__
+    return diag
 
 
 def _should_retry_final_text(extracted: dict) -> bool:
@@ -531,6 +939,7 @@ def _extract_chat_completion_text(payload: dict) -> str:
 def gateway_chat(
     base_url: str, api_key: str, model: str, system: str, user: str,
     max_tokens: int = 900, timeout: int = 180, tags: Optional[list] = None,
+    retry_timeout: int | None = None, continuation_timeout: int | None = None,
     _db=None,
 ) -> Tuple[bool, str, str, int, float]:
     """带精确缓存的网关调用。命中返 (True, content, served, 0, 0.0)（计费为 0，预算/台账依然正确）。
@@ -539,7 +948,10 @@ def gateway_chat(
     _cache_local.response_diag = None
     _cache_local.failure_code = None
     if not CACHE_ENABLED:
-        return _uncached_gateway_chat(base_url, api_key, model, system, user, max_tokens, timeout, tags)
+        return _uncached_gateway_chat(
+            base_url, api_key, model, system, user, max_tokens, timeout, tags,
+            retry_timeout=retry_timeout, continuation_timeout=continuation_timeout,
+        )
     from devkit import cache as _cache
     db = _CACHE_DB if _db is None else _db
     key = _cache_key(model, system, user, max_tokens)
@@ -553,7 +965,8 @@ def gateway_chat(
             _cache_local.failure_code = None
             return True, got.get("content", ""), got.get("served", model), 0, 0.0
     ok, content, served, tokens, cost = _uncached_gateway_chat(
-        base_url, api_key, model, system, user, max_tokens, timeout, tags)
+        base_url, api_key, model, system, user, max_tokens, timeout, tags,
+        retry_timeout=retry_timeout, continuation_timeout=continuation_timeout)
     if ok and _has_cacheable_text_content(content):   # 只缓存成功且最终有正文的结果
         _cache.put(db, key, {"content": content, "served": served}, CACHE_MAX_ROWS)
     return ok, content, served, tokens, cost
@@ -562,6 +975,7 @@ def gateway_chat(
 def _uncached_gateway_chat(
     base_url: str, api_key: str, model: str, system: str, user: str,
     max_tokens: int = 900, timeout: int = 180, tags: Optional[list] = None,
+    retry_timeout: int | None = None, continuation_timeout: int | None = None,
 ) -> Tuple[bool, str, str, int, float]:
     """返回 (ok, content_or_error, actual_model_served, total_tokens, cost_usd)。
 
@@ -580,19 +994,32 @@ def _uncached_gateway_chat(
     payload["model"] = _resolve_request_model(model, is_direct_minimax=is_direct_minimax)
     if tags and not is_direct_minimax:
         payload["metadata"] = {"tags": tags}   # LiteLLM 日志按 run/stage 过滤
+    request_timeout = _bounded_timeout(timeout, 180)
+    retry_timeout = _bounded_timeout(retry_timeout, request_timeout)
+    continuation_timeout = _bounded_timeout(continuation_timeout, request_timeout)
     try:
-        d, cost = _request_json_with_retry(request_url, request_key, payload, timeout)
+        d, cost = _request_json_with_retry(request_url, request_key, payload, request_timeout)
         tokens = int((d.get("usage") or {}).get("total_tokens", 0) or 0)
         extracted = _extract_response_payload(d)
         if _should_retry_final_text(extracted):
             retry_payload = _build_final_text_retry_payload(payload)
-            d2, cost2 = _request_json_with_retry(request_url, request_key, retry_payload, timeout)
+            try:
+                d2, cost2 = _request_json_with_retry(request_url, request_key, retry_payload, retry_timeout)
+            except Exception as exc:  # noqa: BLE001
+                diag = dict(extracted.get("diag") or {})
+                diag["retry_attempted"] = True
+                diag["retry_reason"] = extracted.get("failure_code")
+                diag.update(_exception_diag(exc, model=model, phase="retry", timeout=retry_timeout))
+                _cache_local.response_diag = diag
+                _cache_local.failure_code = diag["failure_code"]
+                return False, f"{type(exc).__name__} during retry: {exc}", model, tokens, cost
             extracted2 = _extract_response_payload(d2)
             if extracted2.get("normalized_text", "").strip():
                 usage2 = int((d2.get("usage") or {}).get("total_tokens", 0) or 0)
                 diag2 = dict(extracted2.get("diag") or {})
                 diag2["retry_attempted"] = True
                 diag2["retry_reason"] = extracted.get("failure_code")
+                diag2["retry_timeout_seconds"] = retry_timeout
                 _cache_local.response_diag = diag2
                 _cache_local.failure_code = extracted2.get("failure_code")
                 return True, extracted2["text"], d2.get("model", model), tokens + usage2, cost + cost2
@@ -600,17 +1027,28 @@ def _uncached_gateway_chat(
             diag["retry_attempted"] = True
             diag["retry_reason"] = extracted.get("failure_code")
             diag["retry_failed_code"] = extracted2.get("failure_code")
+            diag["retry_timeout_seconds"] = retry_timeout
             extracted["diag"] = diag
             extracted["failure_code"] = f"{extracted.get('failure_code')}_RETRY_EMPTY"
         continuation_rounds = 0
         while _should_continue_truncated_text(extracted) and continuation_rounds < _MAX_CONTINUATION_ROUNDS:
             continuation_rounds += 1
-            d2, cost2 = _request_json_with_retry(
-                request_url,
-                request_key,
-                _build_truncated_continuation_payload(payload, extracted["text"]),
-                timeout,
-            )
+            try:
+                d2, cost2 = _request_json_with_retry(
+                    request_url,
+                    request_key,
+                    _build_truncated_continuation_payload(payload, extracted["text"]),
+                    continuation_timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                diag = dict(extracted.get("diag") or {})
+                diag["continuation_attempted"] = True
+                diag["continuation_rounds"] = continuation_rounds
+                diag["partial_text_len"] = len(extracted.get("text", ""))
+                diag.update(_exception_diag(exc, model=model, phase="continuation", timeout=continuation_timeout))
+                _cache_local.response_diag = diag
+                _cache_local.failure_code = diag["failure_code"]
+                return False, f"{type(exc).__name__} during continuation: {exc}", model, tokens, cost
             extracted2 = _extract_response_payload(d2)
             merged = _merge_continuation_text(extracted["text"], extracted2.get("text", ""))
             merged_normalized = normalize(merged)
@@ -619,6 +1057,7 @@ def _uncached_gateway_chat(
             diag["continuation_rounds"] = continuation_rounds
             diag["continuation_finish_reason"] = (extracted2.get("diag") or {}).get("finish_reason")
             diag["continued_text_len"] = len(extracted2.get("text", ""))
+            diag["continuation_timeout_seconds"] = continuation_timeout
             if not merged_normalized.strip():
                 diag["continuation_failed_code"] = extracted2.get("failure_code")
                 extracted["diag"] = diag
@@ -642,12 +1081,13 @@ def _uncached_gateway_chat(
         return True, content, d.get("model", model), tokens, cost
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:300]
-        _cache_local.response_diag = {"http_error": e.code, "served_model": model}
-        _cache_local.failure_code = f"HTTP_{e.code}"
+        _cache_local.response_diag = _exception_diag(e, model=model, phase="request", timeout=request_timeout)
+        _cache_local.response_diag["error_preview"] = detail
+        _cache_local.failure_code = _cache_local.response_diag["failure_code"]
         return False, f"HTTP {e.code}: {detail}", model, 0, 0.0
     except Exception as e:  # noqa: BLE001
-        _cache_local.response_diag = {"exception": type(e).__name__, "served_model": model}
-        _cache_local.failure_code = f"EXC_{type(e).__name__.upper()}"
+        _cache_local.response_diag = _exception_diag(e, model=model, phase="request", timeout=request_timeout)
+        _cache_local.failure_code = _cache_local.response_diag["failure_code"]
         return False, f"{type(e).__name__}: {e}", model, 0, 0.0
 
 
@@ -666,14 +1106,14 @@ _COMPACT_SYS = (
 
 
 def compact_text(text: str, base_url: str, api_key: str, model: str,
-                 tags: Optional[List[str]] = None) -> Tuple[str, int, float]:
-    """把一段长文压成要点。返回 (摘要, tokens, cost)。失败则回退截断，零成本。"""
+                 tags: Optional[List[str]] = None) -> Tuple[str, int, float, bool]:
+    """把一段长文压成要点。返回 (摘要, tokens, cost, degraded)。失败则回退截断。"""
     ok, content, _served, tokens, cost = gateway_chat(
         base_url, api_key, model, _COMPACT_SYS, text[:8000],
         COMPACT_MAX_TOKENS, tags=tags or ["devkit:compact"])
     if ok and content.strip():
-        return content.strip(), tokens, cost
-    return text[:3500], 0, 0.0
+        return content.strip(), tokens, cost, False
+    return text[:3500], 0, 0.0, True
 
 
 def _safe_write_text(path: pathlib.Path, content: str, encoding: str = "utf-8") -> None:
@@ -695,31 +1135,60 @@ def _exec_stage(st: "Stage", user: str, carrier: str, executor: str, stage_max: 
                 base_url: str, api_key: str, ts: str, run_dir: pathlib.Path,
                 os_sandbox: bool, suffix: str = ""):
     """执行一个阶段（chat 走网关 / 否则走 agentic 执行器），返回 (ok, content, served, tokens, cost, dt)。"""
+    from devkit import stage_progress as _stage_progress
+
     system = NO_TOOLS_PREAMBLE + CONSTITUTION + st.system
     t0 = time.time()
-    cached = False
-    if executor == "chat":
-        ok, content, served, tokens, cost = gateway_chat(
-            base_url, api_key, carrier, system, user, stage_max,
-            tags=[f"run:{ts}", f"stage:{st.key}", "iterate"])
-        cached = getattr(_cache_local, "hit", False)
-        if ok:
-            content = normalize(content)
-    else:
-        from devkit import executors
-        sandbox = executors.sandbox_dir(run_dir, st.key + suffix)
-        ok, content, _ex = executors.run(executor, system + "\n\n" + user, carrier,
-                                         sandbox, base_url, api_key, os_sandbox=os_sandbox)
-        served, tokens, cost = f"{executor}({carrier})", 0, 0.0
+    failure_code = None
+    with _stage_progress.StageHeartbeat(
+        run_dir,
+        st.key + suffix,
+        run_id=ts,
+        carrier=carrier,
+        executor=executor,
+        path_family="rdloop",
+    ) as _progress:
+        if executor == "chat":
+            ok, content, served, tokens, cost, diag, failure_code = _gateway_chat_with_fallback(
+                base_url=base_url,
+                api_key=api_key,
+                carrier=carrier,
+                stage_key=st.key,
+                system=system,
+                user=user,
+                max_tokens=stage_max,
+                timeout=180,
+                tags=[f"run:{ts}", f"stage:{st.key}", "iterate"],
+            )
+            _cache_local.response_diag = diag
+            _cache_local.failure_code = failure_code
+        else:
+            from devkit import executors
+            sandbox = executors.sandbox_dir(run_dir, st.key + suffix)
+            ok, content, _ex = executors.run(executor, system + "\n\n" + user, carrier,
+                                             sandbox, base_url, api_key, os_sandbox=os_sandbox)
+            served, tokens, cost = f"{executor}({carrier})", 0, 0.0
+        _progress.finish("ok" if ok else "blocked", served=served, tokens=tokens, failure_code=failure_code)
     return ok, content, served, tokens, cost, time.time() - t0
 
 
 def _materialize_test(impl_text: str, build_dir: pathlib.Path, golden):
     """物化 implement 产物 + 硬 gate + 跑测试(+golden)。"""
     from devkit import apply as _apply
-    files = _apply.materialize(impl_text, build_dir)
+    materialization = None
+    try:
+        files = _apply.materialize(impl_text, build_dir)
+    except _apply.MaterializeAstError as exc:
+        files = []
+        materialization = {
+            "status": "missing",
+            "failure_code": "MATERIALIZE_AST_FAIL",
+            "file_count": 0,
+            "files": [],
+            "ast_failures": exc.failures,
+        }
     _ensure_runtime_dirs(build_dir)
-    materialization = _apply.diagnose_materialization(impl_text, files)
+    materialization = materialization or _apply.diagnose_materialization(impl_text, files)
     collect = _apply.collect_tests(build_dir) if files else {
         "ok": False,
         "runner": None,
@@ -745,39 +1214,14 @@ def _materialize_test(impl_text: str, build_dir: pathlib.Path, golden):
     return tests_failed, tout, files, eval_sum, materialization, collect
 
 
-_REPORT_ONLY_EXTS = {".md", ".markdown", ".txt", ".json", ".html", ".csv", ".yaml", ".yml"}
-_CODE_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".sh", ".bash"}
-_REPORT_SIGNALS = (
-    "只输出", "纯 .md 输出", "纯.md输出", "审计报告", "诊断报告", "markdown", "report only", "report-only",
-    "只读", "read-only", "run-log.md", "diagnostic", "diagnose", "定位为什么", "完整 traceback",
-)
-
-
 def _task_prefers_report_only(task: str) -> bool:
-    lowered = (task or "").lower()
-    return (
-        any(sig in task for sig in _REPORT_SIGNALS if not sig.isascii())
-        or any(sig in lowered for sig in _REPORT_SIGNALS if sig.isascii())
-    )
+    from devkit import task_contract as _task_contract
+    return _task_contract.task_prefers_report_only(task)
 
 
 def _is_report_only_artifact(task: str, files: List[str]) -> bool:
-    """报告/诊断类任务只要求产物，不强制 pytest collect。"""
-    if not files:
-        return False
-    exts = {pathlib.Path(f).suffix.lower() for f in files}
-    if any(name.endswith("_test.py") or os.path.basename(name).startswith("test_") for name in files):
-        return False
-    has_code_files = any(ext in _CODE_EXTS for ext in exts)
-    if exts and exts.issubset(_REPORT_ONLY_EXTS):
-        return True
-    code_files = [f for f in files if pathlib.Path(f).suffix.lower() in _CODE_EXTS]
-    code_files_under_runs = bool(code_files) and all(
-        pathlib.PurePosixPath(f.replace("\\", "/")).parts[:1] == ("runs",) for f in code_files
-    )
-    if has_code_files:
-        return code_files_under_runs and _task_prefers_report_only(task)
-    return _task_prefers_report_only(task)
+    from devkit import task_contract as _task_contract
+    return _task_contract.files_look_report_only(files) and _task_contract.task_prefers_report_only(task)
 
 
 def _applylock_blocks_success(task: str, report_only_artifact: bool, locked_files: List[str]) -> bool:
@@ -797,10 +1241,216 @@ def _applylock_blocks_success(task: str, report_only_artifact: bool, locked_file
     return False
 
 
+def _sha256_file(path: pathlib.Path) -> str:
+    return _hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _run_artifact_producer(
+    *,
+    build_dir: pathlib.Path,
+    run_dir: pathlib.Path,
+    artifact_paths: List[str],
+    commands: List[str],
+) -> dict:
+    normalized_artifacts = [
+        str(path or "").strip().replace("\\", "/").lstrip("./")
+        for path in artifact_paths
+        if str(path or "").strip()
+    ]
+    evidence = {
+        "ok": True,
+        "commands": [],
+        "artifacts": [],
+        "missing": [],
+        "failure_code": None,
+        "reason": "",
+    }
+    if not normalized_artifacts:
+        evidence["reason"] = "no declared artifacts"
+        return evidence
+
+    missing_before: list[str] = []
+    for rel in normalized_artifacts:
+        path = build_dir / rel
+        if path.is_file():
+            evidence["artifacts"].append({
+                "path": rel,
+                "exists": True,
+                "size": path.stat().st_size,
+                "sha256": _sha256_file(path),
+                "source": "preexisting",
+            })
+        else:
+            missing_before.append(rel)
+    if not missing_before:
+        evidence["reason"] = "artifacts already materialized"
+        return evidence
+    if not commands:
+        evidence["ok"] = False
+        evidence["missing"] = missing_before
+        evidence["failure_code"] = "ARTIFACT_PRODUCER_MISSING"
+        evidence["reason"] = "declared artifact missing and no producer command provided"
+        return evidence
+
+    commands = _augment_producer_commands(list(commands or []))
+    evidence["artifacts"] = []
+    rc_paths: list[pathlib.Path] = []
+    script_lines = ["set +e"]
+    for idx, cmd in enumerate(commands, start=1):
+        stdout_path = run_dir / f"artifact-producer-{idx:02d}.stdout.txt"
+        stderr_path = run_dir / f"artifact-producer-{idx:02d}.stderr.txt"
+        rc_path = run_dir / f"artifact-producer-{idx:02d}.rc"
+        rc_paths.append(rc_path)
+        script_lines.extend([
+            "{",
+            cmd,
+            f"}} > {shlex.quote(str(stdout_path))} 2> {shlex.quote(str(stderr_path))}",
+            "rc=$?",
+            f"printf '%s' \"$rc\" > {shlex.quote(str(rc_path))}",
+            "if [ \"$rc\" -ne 0 ]; then",
+            "  exit 1",
+            "fi",
+        ])
+    proc = subprocess.run(
+        "\n".join(script_lines),
+        cwd=str(build_dir),
+        shell=True,
+        executable="/bin/bash",
+        capture_output=True,
+        text=True,
+    )
+    for idx, cmd in enumerate(commands, start=1):
+        stdout_path = run_dir / f"artifact-producer-{idx:02d}.stdout.txt"
+        stderr_path = run_dir / f"artifact-producer-{idx:02d}.stderr.txt"
+        rc_path = rc_paths[idx - 1]
+        try:
+            exit_code = int((rc_path.read_text(encoding="utf-8") or "").strip())
+        except Exception:
+            exit_code = 1 if proc.returncode else 0
+        evidence["commands"].append({
+            "command": cmd,
+            "exit_code": exit_code,
+            "stdout_path": str(stdout_path.relative_to(run_dir)),
+            "stderr_path": str(stderr_path.relative_to(run_dir)),
+        })
+        if exit_code != 0:
+            captured = _producer_log.capture(
+                cmd,
+                cwd=str(build_dir),
+                log_dir=str(run_dir),
+                label="producer",
+            )
+            evidence["producer_stdout_path"] = pathlib.Path(captured["stdout_path"]).name
+            evidence["producer_stderr_path"] = pathlib.Path(captured["stderr_path"]).name
+            evidence["last_stdout_tail"] = captured["last_stdout_tail"]
+            evidence["last_stderr_tail"] = captured["last_stderr_tail"]
+            diff_path = run_dir / "producer_diff.json"
+            _safe_write_text(diff_path, json.dumps(captured, ensure_ascii=False, indent=2))
+            evidence["producer_diff_path"] = str(diff_path.relative_to(run_dir))
+            evidence["ok"] = False
+            evidence["failure_code"] = "ARTIFACT_PRODUCER_FAILED"
+            evidence["reason"] = f"producer command failed: {cmd}"
+            return evidence
+
+    missing_after: list[str] = []
+    for rel in normalized_artifacts:
+        path = build_dir / rel
+        if not path.is_file():
+            missing_after.append(rel)
+            continue
+        evidence["artifacts"].append({
+            "path": rel,
+            "exists": True,
+            "size": path.stat().st_size,
+            "sha256": _sha256_file(path),
+            "source": "producer",
+        })
+    evidence["missing"] = missing_after
+    if missing_after:
+        evidence["ok"] = False
+        evidence["failure_code"] = "ARTIFACT_MISSING"
+        evidence["reason"] = "producer finished but declared artifact still missing"
+        return evidence
+    evidence["reason"] = "artifact producer completed"
+    return evidence
+
+
+def _augment_producer_commands(commands: list[str]) -> list[str]:
+    out: list[str] = []
+    wants_pytest = any("pytest" in str(cmd or "") for cmd in commands)
+    has_pytest_install = any(
+        ("pip install" in str(cmd or "") and "pytest" in str(cmd or ""))
+        or ("-r" in str(cmd or "") and "requirements" in str(cmd or ""))
+        for cmd in commands
+    )
+    injected = False
+    for cmd in commands:
+        text = str(cmd or "")
+        out.append(text)
+        if injected or not wants_pytest or has_pytest_install:
+            continue
+        if "python -m venv" in text or ".venv/bin/activate" in text or "source .venv/" in text:
+            out.append("python -m pip install -U pytest")
+            injected = True
+    return out
+
+
+def _canonical_task_id(task_id: str | None, run_id: str) -> str:
+    value = str(task_id or "").strip()
+    if not value:
+        value = str(run_id or "").strip()
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._")
+    return value or str(run_id or "run")
+
+
+def _report_only_task_type(task_kind: str, gate_mode: str) -> str:
+    from devkit import report_only_policy as _report_only
+
+    return _report_only.report_only_task_type(task_kind, gate_mode)
+
+
+def _extract_report_only_keywords(task: str) -> list[str]:
+    # 先把“是否真的接入新 gate”跑通。当前 report-only 任务文本没有稳定的
+    # acceptance keyword contract，贸然抽关键词会把大量合法报告误判为 NO-GO。
+    # 因此主循环先只要求 canonical evidence 存在且非空；更强的关键词契约
+    # 后续再由 task schema 显式提供。
+    _ = task
+    return []
+
+
+def _prepare_report_only_evidence(
+    *,
+    build_dir: pathlib.Path,
+    task_id: str,
+    files: list[str],
+    impl_text: str,
+) -> pathlib.Path:
+    from devkit import report_only_policy as _report_only
+
+    return _report_only.prepare_report_only_evidence(
+        build_dir=build_dir,
+        task_id=task_id,
+        files=files,
+        impl_text=impl_text,
+    )
+
+
+def _bridge_gate_to_runtime_result(bridge_result, *, mode: str, success_output: str) -> tuple[object, dict]:
+    from devkit import report_only_policy as _report_only
+
+    return _report_only.bridge_gate_to_runtime_result(
+        bridge_result,
+        mode=mode,
+        success_output=success_output,
+    )
+
+
 def _blocked_retry_hint(reason: str) -> str:
     lowered = (reason or "").lower()
     if "api key" in lowered or "auth" in lowered or "401" in lowered:
         return "检查 provider key 或登录态"
+    if "429" in lowered or "rate limit" in lowered or "token plan" in lowered:
+        return "切换 fallback 模型或降低瞬时并发"
     if "未知执行器" in reason or "unknown executor" in lowered:
         return "修正 executor 配置"
     if "命令未找到" in reason or "not found" in lowered or "未安装" in reason:
@@ -813,8 +1463,41 @@ def _blocked_retry_hint(reason: str) -> str:
 
 
 def _ensure_runtime_dirs(build_dir: pathlib.Path) -> None:
-    """给诊断/探针脚本预建常见运行时输出目录。"""
+    """给 build/ 预置运行时 support tree，避免 verify/import 依赖工作区漏穿透。"""
     (build_dir / "runs").mkdir(parents=True, exist_ok=True)
+    _materialize_support_tree(build_dir)
+
+
+def _materialize_support_tree(build_dir: pathlib.Path) -> None:
+    repo_root = ROOT
+    copy_specs = (
+        ("devkit", "*.py", False),
+        ("harness", "*.py", True),
+        ("verify", "*.py", True),
+    )
+    for rel_root, pattern, recursive in copy_specs:
+        src_root = repo_root / rel_root
+        if not src_root.exists():
+            continue
+        dst_root = build_dir / rel_root
+        dst_root.mkdir(parents=True, exist_ok=True)
+        iterator = src_root.rglob(pattern) if recursive else src_root.glob(pattern)
+        for src_path in iterator:
+            if not src_path.is_file():
+                continue
+            if _is_test_support_path(src_path.relative_to(src_root)):
+                continue
+            rel_path = src_path.relative_to(src_root)
+            dst_path = dst_root / rel_path
+            if dst_path.exists():
+                continue
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+
+
+def _is_test_support_path(rel_path: pathlib.Path) -> bool:
+    name = rel_path.name
+    return name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py")
 
 
 def _cascade_rounds(cascade: list, iterate: int) -> int:
@@ -828,6 +1511,151 @@ def _cascade_rounds(cascade: list, iterate: int) -> int:
 def _cascade_carrier(cascade: list, round_idx: int, fallback: str) -> str:
     """第 round_idx 轮的 generator 载体：cascade[min(idx, 末档)]；无 cascade 则用 fallback。"""
     return cascade[min(round_idx, len(cascade) - 1)] if cascade else fallback
+
+
+def _is_retryable_stage_error(error: str) -> bool:
+    lowered = (error or "").lower()
+    return (
+        "429" in lowered
+        or "rate limit" in lowered
+        or "too many requests" in lowered
+        or "token plan" in lowered
+        or "at capacity" in lowered
+        or "service unavailable" in lowered
+        or "timeout" in lowered
+        or "timed out" in lowered
+        or "remote end closed connection without response" in lowered
+        or "http 500" in lowered
+        or "http 502" in lowered
+        or "http 503" in lowered
+        or "http 504" in lowered
+        or "empty response" in lowered
+    )
+
+
+def _stage_timeout_profile(stage_key: str, carrier: str) -> dict:
+    stage = str(stage_key or "").strip().lower()
+    normalized = str(carrier or "").strip().lower()
+    is_minimax = "minimax" in normalized
+    is_control_plane = normalized in {"codex-sub", "loom-product", "loom-orchestrator", "loom-reviewer"}
+    if stage == "implement":
+        request = 420 if is_minimax else 240
+        retry = 180
+        continuation = 240
+    elif stage in {"verify", "review"}:
+        request = 150 if is_minimax else 90
+        retry = 90
+        continuation = 120
+    elif stage in {"brainstorm", "plan"}:
+        request = 240 if is_minimax else 150
+        retry = 120
+        continuation = 150
+    else:
+        request = 180 if is_minimax else 120
+        retry = 90
+        continuation = 120
+    if is_control_plane:
+        request = min(request, 90 if stage in {"verify", "review"} else 120)
+        retry = min(retry, 75)
+        continuation = min(continuation, 90)
+    retry = min(retry, request)
+    return {
+        "request": request,
+        "retry": retry,
+        "continuation": continuation,
+    }
+
+
+def _stage_fallback_candidates(carrier: str, stage_key: str) -> list[str]:
+    normalized = normalize_model_name(carrier, stage=stage_key)
+    raw = _STAGE_FALLBACKS.get(normalized, [normalized])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        mapped = normalize_model_name(item, stage=stage_key)
+        if not mapped or mapped in seen:
+            continue
+        seen.add(mapped)
+        out.append(mapped)
+    return out or [normalized]
+
+
+def _gateway_chat_with_fallback(
+    *,
+    base_url: str,
+    api_key: str,
+    carrier: str,
+    stage_key: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+    timeout: int,
+    tags: Optional[list] = None,
+) -> Tuple[bool, str, str, int, float, dict, str | None]:
+    candidates = _stage_fallback_candidates(carrier, stage_key)
+    attempted: list[str] = []
+    last_error = "all carriers failed"
+    last_failure_code: str | None = None
+    last_provider_diag: dict | None = None
+    total_tokens = 0
+    total_cost = 0.0
+    timeout_profile = _stage_timeout_profile(stage_key, carrier)
+    for idx, candidate in enumerate(candidates):
+        attempted.append(candidate)
+        try:
+            ok, content, served, tokens, cost = gateway_chat(
+                base_url, api_key, candidate, system, user, max_tokens,
+                timeout=timeout_profile["request"],
+                retry_timeout=timeout_profile["retry"],
+                continuation_timeout=timeout_profile["continuation"],
+                tags=tags,
+            )
+        except TypeError as exc:
+            if "retry_timeout" not in str(exc) and "continuation_timeout" not in str(exc):
+                raise
+            ok, content, served, tokens, cost = gateway_chat(
+                base_url, api_key, candidate, system, user, max_tokens,
+                timeout=timeout_profile["request"],
+                tags=tags,
+            )
+        total_tokens += int(tokens or 0)
+        total_cost += float(cost or 0.0)
+        last_provider_diag = dict(getattr(_cache_local, "response_diag", None) or {})
+        diag = {
+            "served_model": served,
+            "attempted_models": list(attempted),
+            "fallback_used": len(attempted) > 1,
+            "timeout_profile": dict(timeout_profile),
+        }
+        if last_provider_diag:
+            diag["provider_diag"] = last_provider_diag
+        if ok:
+            text = normalize(content) if content else ""
+            if text.strip():
+                return True, text, served, total_tokens, total_cost, diag, None
+            last_error = "empty response"
+            last_failure_code = getattr(_cache_local, "failure_code", None) or "EMPTY_RESPONSE"
+        else:
+            last_error = str(content or "").strip() or "unknown error"
+            last_failure_code = getattr(_cache_local, "failure_code", None)
+        if idx == len(candidates) - 1 or not _is_retryable_stage_error(last_error):
+            break
+    failure_code = last_failure_code
+    if failure_code == "HTTP_429":
+        if "(2062)" in last_error or "速率限制" in last_error:
+            failure_code = "MODEL_RATE_LIMIT"
+        else:
+            failure_code = "MODEL_QUOTA_EXHAUSTED"
+    return False, (
+        f"stage fallback exhausted; attempted {', '.join(attempted)}; last_error={last_error}"
+    ), attempted[-1], total_tokens, total_cost, {
+        "served_model": attempted[-1],
+        "attempted_models": attempted,
+        "fallback_used": len(attempted) > 1,
+        "failure_reason_kind": _failure_reason_kind(last_error, failure_code),
+        "timeout_profile": dict(timeout_profile),
+        **({"provider_diag": last_provider_diag} if last_provider_diag else {}),
+    }, failure_code
 
 
 def _wants_changes(review_text: str) -> bool:
@@ -844,6 +1672,100 @@ def _fail_detail(tout: str, eval_sum: str) -> str:
     if tout and "跳过测试" not in tout:
         parts.append(f"### 测试输出\n```\n{tout[:1200]}\n```")
     return "\n\n".join(parts)
+
+
+def _candidate_metadata(
+    *,
+    run_dir: pathlib.Path,
+    build_dir: pathlib.Path,
+    workspace_path: pathlib.Path,
+    delivery_mode: str,
+    apply_target: str | None,
+    apply_git: str | None,
+) -> dict:
+    return {
+        "candidate_path": str(build_dir.resolve()),
+        "workspace_path": str(workspace_path),
+        "sandbox_kind": "run_build_sandbox",
+        "run_path": str(run_dir.resolve()),
+        "delivery_mode": delivery_mode,
+        "apply_target": apply_target,
+        "apply_git": apply_git,
+    }
+
+
+def _resolve_gate_status(
+    *,
+    blocked: list[str],
+    review_blocked: bool,
+    review_requested_changes: bool,
+    tests_failed: bool,
+    over_budget: bool,
+) -> tuple[str, list[str]]:
+    reasons = ((["有阶段未跑通"] if blocked and not review_blocked else [])
+               + (["review_timeout"] if review_blocked else [])
+               + (["构建测试/Eval 未过"] if tests_failed else [])
+               + ([f"超预算"] if over_budget else [])
+               + (["review_request_changes"] if review_requested_changes else []))
+    if review_blocked:
+        return "review_timeout", reasons
+    if review_requested_changes:
+        return "review_request_changes", reasons
+    if tests_failed:
+        return "tests_failed", reasons
+    if blocked:
+        return "blocked", reasons
+    if over_budget:
+        return "over_budget", reasons
+    return "suggested_go", []
+
+
+def _resolve_candidate_state(
+    *,
+    stages_present: list[str],
+    blocked: list[str],
+    tests_failed: bool,
+    has_candidate_files: bool,
+) -> str:
+    if "implement" not in stages_present:
+        return ""
+    if not has_candidate_files:
+        return ""
+    state = "materialized"
+    if not tests_failed:
+        state = "build_ready"
+    if "verify" in stages_present and "verify" not in blocked and not tests_failed:
+        state = "verified"
+    return state
+
+
+def _candidate_preflight_failure(
+    *,
+    output_protocol: dict | None,
+    response_diag: dict | None,
+) -> dict | None:
+    proto = dict(output_protocol or {})
+    diag = dict(response_diag or {})
+    reasons: list[str] = []
+    finish_reason = str(diag.get("finish_reason", "") or "").strip().lower()
+    if finish_reason == "length":
+        reasons.append("finish_reason=length")
+    if bool(proto.get("suggested_continue")):
+        reasons.append("output_protocol.suggested_continue")
+    incomplete = [
+        str(entry.get("path", "")).strip()
+        for entry in proto.get("files", [])
+        if isinstance(entry, dict) and not bool(entry.get("complete_guess", True))
+    ]
+    if incomplete:
+        reasons.append("incomplete_files=" + ",".join(incomplete[:3]))
+    if not reasons:
+        return None
+    return {
+        "failure_code": "TRUNCATED_CANDIDATE",
+        "reason": " / ".join(reasons),
+        "incomplete_files": incomplete,
+    }
 
 
 def _build_feedback(fail_detail: str, review_text: str) -> str:
@@ -887,6 +1809,7 @@ def run_loop(
     blind_review: bool = False,
     physical_verify: bool = False,
     health_probe: bool = False,
+    task_id: Optional[str] = None,
 ) -> dict:
     stages = stages or STAGES
     carrier_overrides = dict(carrier_overrides or {})   # 拷贝：cascade 会就地改 implement，别污染调用方
@@ -901,6 +1824,7 @@ def run_loop(
         raise SystemExit("找不到 LITELLM_MASTER_KEY（设环境变量或填 agent-platform/.env）")
 
     ts = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")  # 控制台可指定 ts，便于实时跟踪
+    resolved_task_id = _canonical_task_id(task_id, ts)
     run_dir = out_root / ts
     run_dir.mkdir(parents=True, exist_ok=True)
     _safe_write_text(run_dir / "00-task.md", f"# 任务\n\n{task}\n")
@@ -921,6 +1845,7 @@ def run_loop(
     blocked_details: dict[str, str] = {}
     tot_tokens, tot_cost = 0, 0.0
     over_budget = False
+    compact_degraded_stages: list[str] = []
     contract_done = False         # Sprint Contract 只在 implement 前生成一次
     from devkit import memory as _memory
     from devkit.tasktype import infer_task_type as _infer_task_type
@@ -1058,50 +1983,66 @@ def run_loop(
         # 执行器：运行时 --executor 覆盖 > 角色文件里写的 > chat
         executor = executor_map.get(st.key) or getattr(st, "executor", None) or "chat"
         stage_max = getattr(st, "max_tokens", None) or _budget.carrier_max_tokens(carrier) or max_tokens  # 角色>per-carrier(推理模型)>run 级默认
+        from devkit import stage_progress as _stage_progress
+
         t0 = time.time()
         system = NO_TOOLS_PREAMBLE + CONSTITUTION + st.system  # 全局宪章 + 角色专属规则
-        # 控制面 codex-sub 长尾较重：优先缩短首跳并尽快切 fallback；
-        # 执行面 MiniMax 仍保留较长预算。
-        _dispatch_timeout = 600 if "minimax" in carrier.lower() else 180
+        _timeout_profile = _stage_timeout_profile(st.key, carrier)
         cached = False
-        if executor == "chat":
-            if carrier in {"codex-sub", "loom-product", "loom-orchestrator", "loom-reviewer"}:
-                from devkit.ask import ask_one_with_fallback
-                resp = ask_one_with_fallback(
-                    [carrier], user, base_url, api_key,
-                    max_tokens=stage_max,
-                    tag=f"stage:{st.key}",
-                    timeout=None,
-                    extra_tags=[f"run:{ts}", "rdloop"],
-                )
-                ok = bool(resp.get("ok"))
-                content = resp.get("content") if ok else resp.get("error", "")
-                served = resp.get("served", resp.get("model", carrier))
-                tokens = int(resp.get("tokens", 0) or 0)
-                cost = float(resp.get("cost", 0.0) or 0.0)
-                cached = getattr(_cache_local, "hit", False)
-                response_diag = {
-                    "served_model": served,
-                    "attempted_models": resp.get("attempted_models", [carrier]),
-                    "fallback_used": len(resp.get("attempted_models", [])) > 1,
-                }
-                failure_code = resp.get("failure_code")
+        with _stage_progress.StageHeartbeat(
+            run_dir,
+            st.key,
+            run_id=ts,
+            task_id=resolved_task_id,
+            carrier=carrier,
+            executor=executor,
+            path_family="rdloop",
+        ) as _progress:
+            if executor == "chat":
+                if carrier in {"codex-sub", "loom-product", "loom-orchestrator", "loom-reviewer"}:
+                    from devkit.ask import ask_one_with_fallback
+                    resp = ask_one_with_fallback(
+                        [carrier], user, base_url, api_key,
+                        max_tokens=stage_max,
+                        tag=f"stage:{st.key}",
+                        timeout=_timeout_profile["request"],
+                        extra_tags=[f"run:{ts}", "rdloop"],
+                    )
+                    ok = bool(resp.get("ok"))
+                    content = resp.get("content") if ok else resp.get("error", "")
+                    served = resp.get("served", resp.get("model", carrier))
+                    tokens = int(resp.get("tokens", 0) or 0)
+                    cost = float(resp.get("cost", 0.0) or 0.0)
+                    cached = getattr(_cache_local, "hit", False)
+                    response_diag = {
+                        "served_model": served,
+                        "attempted_models": resp.get("attempted_models", [carrier]),
+                        "fallback_used": len(resp.get("attempted_models", [])) > 1,
+                        "timeout_profile": dict(_timeout_profile),
+                        "failure_reason_kind": _failure_reason_kind(str(resp.get("error", "")), resp.get("failure_code")),
+                    }
+                    failure_code = resp.get("failure_code")
+                else:
+                    ok, content, served, tokens, cost, response_diag, failure_code = _gateway_chat_with_fallback(
+                        base_url=base_url,
+                        api_key=api_key,
+                        carrier=carrier,
+                        stage_key=st.key,
+                        system=system,
+                        user=user,
+                        max_tokens=stage_max,
+                        timeout=_timeout_profile["request"],
+                        tags=[f"run:{ts}", f"stage:{st.key}"],
+                    )
+                    cached = getattr(_cache_local, "hit", False)
             else:
-                ok, content, served, tokens, cost = gateway_chat(
-                    base_url, api_key, carrier, system, user, stage_max,
-                    timeout=_dispatch_timeout,
-                    tags=[f"run:{ts}", f"stage:{st.key}"])
-                cached = getattr(_cache_local, "hit", False)
-                response_diag = getattr(_cache_local, "response_diag", None)
-                failure_code = getattr(_cache_local, "failure_code", None)
-        else:
-            from devkit import executors  # 延迟导入，避免包初始化期循环
-            sandbox = executors.sandbox_dir(run_dir, st.key)
-            ok, content, _ex = executors.run(executor, system + "\n\n" + user, carrier, sandbox,
-                                             base_url, api_key, os_sandbox=os_sandbox)
-            served, tokens, cost = f"{executor}({carrier})", 0, 0.0
-            response_diag = {"executor": executor, "served_model": served}
-            failure_code = None
+                from devkit import executors  # 延迟导入，避免包初始化期循环
+                sandbox = executors.sandbox_dir(run_dir, st.key)
+                ok, content, _ex = executors.run(executor, system + "\n\n" + user, carrier, sandbox,
+                                                 base_url, api_key, os_sandbox=os_sandbox)
+                served, tokens, cost = f"{executor}({carrier})", 0, 0.0
+                response_diag = {"executor": executor, "served_model": served}
+                failure_code = None
         dt = time.time() - t0
         tot_tokens += tokens
         tot_cost += cost
@@ -1117,6 +2058,7 @@ def run_loop(
                 reason = "缓存命中为空正文" if cached else "返回空正文"
                 content = (f"[空内容兜底] 载体 {carrier} {reason}（served={served}, "
                            f"tokens={tokens}, cost=${cost:.5f}, code={failure_code}）")
+        _progress.finish("ok" if ok else "blocked", served=served, tokens=tokens, failure_code=failure_code)
         status = "OK" if ok else "BLOCKED"
         served_note = (f"  实际={served}  {tokens}tok ${cost:.5f}" + ("  (缓存)" if cached else "")) if ok else ""
         print(f"  [{i}/{len(stages)}] {st.key:10s} via {executor:8s} 载体={carrier:18s} {status} ({dt:.1f}s){served_note}")
@@ -1170,12 +2112,14 @@ def run_loop(
             artifacts.append((st, content))
             # compact 指针：产物太长就立刻压成要点，供下游阶段复用（成本计入总账）
             if compact_model and len(content) > COMPACT_THRESHOLD:
-                summ, ctk, cco = compact_text(
+                summ, ctk, cco, cdegraded = compact_text(
                     content, base_url, api_key, compact_model,
                     tags=[f"run:{ts}", f"stage:{st.key}", "compact"])
                 compacted[st.key] = summ
                 tot_tokens += ctk
                 tot_cost += cco
+                if cdegraded:
+                    compact_degraded_stages.append(st.key)
                 print(f"       ↳ compact {len(content)}→{len(summ)} 字 via {compact_model}"
                       f"  +{ctk}tok ${cco:.5f}")
         log_rows.append(f"| {st.key} | {carrier} | {served if ok else '-'} | {status} | {dt:.1f}s | {tokens} | ${cost:.5f} |")
@@ -1189,6 +2133,12 @@ def run_loop(
 
     # ---- 构建 & 测试：把 implement 产出物化、跑测试（apply 是人类门）----
     build_note, tests_failed, eval_sum = "", False, ""
+    artifact_manifest = None
+    output_protocol = {}
+    gate_spec = None
+    gate_result = None
+    collect = {}
+    hard_failure_code: str | None = None
     iter_rounds, iter_cost, iter_converged = 0, 0.0, None  # 迭代循环状态（默认不迭代）
     cascade_path = [cascade[0]] if cascade else []         # 各轮实际用的 generator 载体（round0=初始）
     final_review_text = next((txt for s, txt in artifacts if s.key == "review"), "")
@@ -1196,18 +2146,71 @@ def run_loop(
     if impl_text:
         from devkit import apply as _apply
         build_dir = run_dir / "build"
-        files = _apply.materialize(impl_text, build_dir)
+        output_protocol = _apply.build_output_protocol(
+            impl_text,
+            materialized_files=[],
+            response_diag=_impl_response_diag,
+        )
+        candidate_preflight = _candidate_preflight_failure(
+            output_protocol=output_protocol,
+            response_diag=_impl_response_diag,
+        )
+        materialization_override = None
+        files: list[str] = []
+        if candidate_preflight is None:
+            try:
+                files = _apply.materialize(impl_text, build_dir)
+            except _apply.MaterializeAstError as exc:
+                materialization_override = {
+                    "status": "missing",
+                    "failure_code": "MATERIALIZE_AST_FAIL",
+                    "file_count": 0,
+                    "files": [],
+                    "ast_failures": exc.failures,
+                }
+        else:
+            materialization_override = {
+                "status": "missing",
+                "failure_code": "TRUNCATED_CANDIDATE",
+                "file_count": 0,
+                "files": [],
+                "preflight_reason": candidate_preflight["reason"],
+                "incomplete_files": candidate_preflight["incomplete_files"],
+            }
         _ensure_runtime_dirs(build_dir)
-        if not files and _task_prefers_report_only(task) and impl_text.strip():
+        _pre_gate_spec = _task_contract.build_gate_spec(task, _contract, [])
+        if (
+            not files
+            and materialization_override is None
+            and _task_prefers_report_only(task)
+            and impl_text.strip()
+            and _pre_gate_spec.mode != "artifact_json"
+        ):
             _safe_write_text(build_dir / "run-log.md", impl_text.strip() + "\n")
             files = ["run-log.md"]
-        materialization = _apply.diagnose_materialization(impl_text, files)
+        materialization = materialization_override or _apply.diagnose_materialization(impl_text, files)
+        materialization.update(
+            _candidate_metadata(
+                run_dir=run_dir,
+                build_dir=build_dir,
+                workspace_path=ROOT,
+                delivery_mode=_delivery_mode,
+                apply_target=apply_target,
+                apply_git=apply_git,
+            )
+        )
         output_protocol = _apply.build_output_protocol(
             impl_text,
             materialized_files=files,
             response_diag=_impl_response_diag,
         )
-        report_only_artifact = _is_report_only_artifact(task, files)
+        gate_spec = _task_contract.build_gate_spec(task, _contract, files)
+        if not files and materialization_override is None and gate_spec.mode == "artifact_json" and gate_spec.artifact_path:
+            files = _apply.materialize_declared_artifact(impl_text, build_dir, gate_spec.artifact_path)
+            if files:
+                materialization = _apply.diagnose_materialization(impl_text, files)
+        report_only_artifact = gate_spec.mode in {"artifact_json", "report_only", "manual_review"} or _is_report_only_artifact(task, files)
+        declared_artifacts = [gate_spec.artifact_path] if gate_spec.artifact_path else []
         _contract_paths = _task_contract.validate_materialized_paths(_contract, files)
         if not _contract_paths["ok"]:
             blocked_files = list(_contract_paths["blocked"])
@@ -1258,23 +2261,177 @@ def run_loop(
                     pass
             _safe_write_text(run_dir / "88-build-and-test.md", build_note)
             gate = "NO-GO（任务契约阻止阶段漂移）"
-            _safe_write_text(run_dir / "99-gate.md", f"# Gate 建议\n\n{gate}\n")
+            _safe_write_text(
+                run_dir / "99-gate.md",
+                "# Gate 建议\n\n"
+                f"- gate: {gate}\n"
+                "- status_code: task_contract_blocked\n",
+            )
+            try:
+                from devkit import artifact_manifest as _artifact_manifest
+                from devkit import protocol as _protocol
+
+                _blocked_manifest = _artifact_manifest.build_manifest(
+                    manifest_id=f"manifest-{ts}",
+                    entries=_build_manifest_entries(
+                        build_dir=build_dir,
+                        materialized_files=files,
+                        declared_artifacts=declared_artifacts,
+                        report_only=(_delivery_mode == "report-only"),
+                        workspace=ROOT,
+                    ),
+                    run_id=ts,
+                    workspace_path=str(ROOT),
+                    candidate_path=str(build_dir.name),
+                    source="inner_sandbox" if (_delivery_mode == "report-only") else "loom_runtime",
+                )
+                _safe_write_text(
+                    run_dir / "artifact-manifest.json",
+                    json.dumps(_blocked_manifest, ensure_ascii=False, indent=2),
+                )
+                _protocol.write_run_protocol_bundle(
+                    run_dir=run_dir,
+                    run_id=ts,
+                    objective=task,
+                    delivery_mode=_delivery_mode,
+                    task_kind=_contract.task_kind,
+                    status_code="task_contract_blocked",
+                    gate=gate,
+                    candidate_state="materialized" if files else None,
+                    review_text="",
+                    blocked=[],
+                    tests_failed=True,
+                    gate_spec=gate_spec,
+                    output_protocol=output_protocol,
+                    artifact_manifest=_blocked_manifest,
+                    collect=collect,
+                    gate_result=None,
+                )
+            except Exception:
+                pass
             return {
                 "run_dir": str(run_dir),
                 "gate": gate,
+                "status_code": "task_contract_blocked",
+                "degraded": [],
                 "tokens": tot_tokens,
                 "cost": tot_cost,
                 "blocked": blocked_details,
             }
-        collect = _apply.collect_tests(build_dir) if files and not report_only_artifact else {
-            "ok": False,
-            "runner": None,
-            "collected": 0,
-            "output": ("（report-only 产物，跳过测试收集）" if report_only_artifact
-                       else "（未识别到代码文件，跳过 collect）"),
-            "failure_code": (None if report_only_artifact
-                             else materialization.get("failure_code") or "MATERIALIZE_NO_FILES"),
-        }
+        from devkit import gates as _gates
+        if gate_spec.mode == "artifact_json":
+            producer_evidence = _run_artifact_producer(
+                build_dir=build_dir,
+                run_dir=run_dir,
+                artifact_paths=declared_artifacts,
+                commands=list(output_protocol.get("verify_commands") or []),
+            )
+            output_protocol["producer_evidence"] = producer_evidence
+            if producer_evidence["ok"]:
+                gate_result = _gates.evaluate_gate_spec(
+                    _gates.GateSpec(mode=gate_spec.mode, artifact_path=gate_spec.artifact_path, checks=gate_spec.checks),
+                    task_text=task,
+                    acceptance=[task],
+                    workspace=build_dir,
+                    pytest_collected=0,
+                )
+                collect = {
+                    "ok": gate_result.is_go(),
+                    "runner": "artifact_json",
+                    "collected": 0,
+                    "output": "；".join(gate_result.reasons),
+                    "failure_code": None if gate_result.is_go() else "ARTIFACT_JSON_GATE_FAILED",
+                }
+            else:
+                gate_result = _gates.GateResult(
+                    _gates.Decision.NO_GO,
+                    "artifact_json",
+                    [producer_evidence["reason"]],
+                    checked=["producer"],
+                    missing=list(producer_evidence.get("missing") or []),
+                    failure_code=producer_evidence["failure_code"] or "ARTIFACT_JSON_GATE_FAILED",
+                )
+                collect = {
+                    "ok": False,
+                    "runner": "artifact_json",
+                    "collected": 0,
+                    "output": producer_evidence["reason"],
+                    "failure_code": producer_evidence["failure_code"] or "ARTIFACT_JSON_GATE_FAILED",
+                }
+            report_only_artifact = True
+        elif gate_spec.mode in {"report_only", "manual_review"}:
+            from devkit import _rdloop_bridge as _bridge
+
+            _prepare_report_only_evidence(
+                build_dir=build_dir,
+                task_id=resolved_task_id,
+                files=files,
+                impl_text=impl_text,
+            )
+            bridge_task = {
+                "task_id": resolved_task_id,
+                "task_type": _report_only_task_type(_contract.task_kind, gate_spec.mode),
+                "candidate_state": "materialized" if files else "missing",
+                "acceptance_keywords": _extract_report_only_keywords(task),
+            }
+            bridge_result = _bridge.call_gate_for_task(bridge_task, runs_dir=build_dir / "runs")
+            gate_result, collect = _bridge_gate_to_runtime_result(
+                bridge_result,
+                mode=gate_spec.mode,
+                success_output=(
+                    "（manual-review 任务，跳过自动测试收集）"
+                    if gate_spec.mode == "manual_review"
+                    else "（report-only 产物，跳过测试收集）"
+                ),
+            )
+            report_only_artifact = True
+        else:
+            verify_commands = list(output_protocol.get("verify_commands") or [])
+            verify_cmd = verify_commands[0] if verify_commands else ""
+            from devkit import gate_collect as _gate_collect
+            if files and not report_only_artifact and _gate_collect.should_skip_pytest(verify_cmd, files):
+                gate_result = _gates.run_command_artifact_gate(
+                    task_text=task,
+                    workspace=build_dir,
+                    verify_commands=verify_commands,
+                )
+                collect = {
+                    "ok": gate_result.is_go(),
+                    "runner": "verify_command",
+                    "collected": 0,
+                    "output": "；".join([reason for reason in gate_result.reasons if reason]),
+                    "failure_code": gate_result.failure_code,
+                }
+            else:
+                collect = _apply.collect_tests(build_dir) if files and not report_only_artifact else {
+                    "ok": False,
+                    "runner": None,
+                    "collected": 0,
+                    "output": ("（report-only 产物，跳过测试收集）" if report_only_artifact
+                               else "（未识别到代码文件，跳过 collect）"),
+                    "failure_code": (None if report_only_artifact
+                                     else materialization.get("failure_code") or "MATERIALIZE_NO_FILES"),
+                }
+        from devkit import artifact_manifest as _artifact_manifest
+        artifact_manifest = _artifact_manifest.build_manifest(
+            manifest_id=f"manifest-{ts}",
+            entries=_build_manifest_entries(
+                build_dir=build_dir,
+                materialized_files=files,
+                declared_artifacts=declared_artifacts,
+                report_only=(_delivery_mode == "report-only"),
+                workspace=ROOT,
+            ),
+            run_id=ts,
+            workspace_path=str(ROOT),
+            candidate_path=str(build_dir.name),
+            source="inner_sandbox" if (_delivery_mode == "report-only") else "loom_runtime",
+        )
+        applyable_files = [e["path"] for e in artifact_manifest["entries"] if e.get("applyable")]
+        _safe_write_text(
+            run_dir / "artifact-manifest.json",
+            json.dumps(artifact_manifest, ensure_ascii=False, indent=2),
+        )
         # T16 物理验证（smoke import）：在子进程里导入每个模块，捕获导入期错误
         if physical_verify:
             from devkit import verify as _verify
@@ -1288,19 +2445,40 @@ def run_loop(
         if not files:
             tpassed, tout = False, collect["output"]
         elif report_only_artifact:
-            tpassed, tout = True, collect.get("output", "")
+            tpassed, tout = (gate_result.is_go() if gate_result is not None else True), collect.get("output", "")
+        elif gate_result is not None and gate_result.mode == "verify_command":
+            tpassed, tout = gate_result.is_go(), collect.get("output", "")
         elif collect.get("failure_code"):
             tpassed, tout = False, collect.get("output", "")
         else:
             tpassed, tout = _apply.run_tests(build_dir)
+        if gate_result is None and gate_spec.mode == "pytest":
+            gate_result = _gates.evaluate_gate_spec(
+                _gates.GateSpec(mode="pytest"),
+                task_text=task,
+                acceptance=[task],
+                workspace=build_dir,
+                pytest_collected=int(collect.get("collected") or 0),
+                pytest_passed=int(collect.get("collected") or 0) if tpassed else 0,
+                pytest_failed=0 if tpassed else (1 if collect.get("collected") else 0),
+            )
         _safe_write_text(build_dir / "_test-output.txt", tout)
-        verdict = "✅ report-only 产物已生成" if report_only_artifact else {
+        verdict = (
+            "✅ report-only 证据通过"
+            if report_only_artifact and gate_result is not None and gate_result.is_go()
+            else "❌ report-only 证据未通过"
+            if report_only_artifact
+            else {
             True: "✅ 测试通过", False: "❌ 测试失败", None: "⚠️ 无测试文件"
         }[tpassed]
+        )
         # evidence gate：默认失败契约，必须拿出物理证据才能 GO
         from devkit import evidence as _evidence
         _ev_verdict = (
-            {"verdict": "GO", "reason": "report-only artifact"}
+            {
+                "verdict": "GO" if gate_result and gate_result.is_go() else "NO-GO",
+                "reason": "report-only artifact" if gate_result and gate_result.is_go() else "report-only evidence gate failed",
+            }
             if report_only_artifact
             else _evidence.gate({
                 "has_test_output": tpassed is not None and bool(files),
@@ -1320,6 +2498,19 @@ def run_loop(
                 _impl_art["failure_code"] = hard_failure_code or ("TESTS_FAILED" if tpassed is False else None)
                 _impl_art["materialization"] = materialization
                 _impl_art["output_protocol"] = output_protocol
+                _impl_art["gate_spec"] = {
+                    "mode": gate_spec.mode,
+                    "artifact_path": gate_spec.artifact_path,
+                    "checks": list(gate_spec.checks),
+                }
+                _impl_art["gate_verdict"] = {
+                    "decision": gate_result.decision.value if gate_result else ("NO-GO" if tests_failed else "GO"),
+                    "mode": gate_result.mode if gate_result else gate_spec.mode,
+                    "reasons": list(gate_result.reasons) if gate_result else [],
+                    "checked": list(getattr(gate_result, "checked", []) or []),
+                    "missing": list(getattr(gate_result, "missing", []) or []),
+                    "failure_code": hard_failure_code or getattr(gate_result, "failure_code", None),
+                }
                 _impl_art["test_collection"] = collect
                 _safe_write_text(
                     _impl_artifact_path,
@@ -1449,20 +2640,33 @@ def run_loop(
             print(f"  ↻ 迭代结束：{iter_rounds} 轮 · {'收敛✅' if iter_converged else '未收敛❌'} · 迭代花费 ${iter_cost:.5f}"
                   + (f" · 实走 {' → '.join(cascade_path)}" if cascade else ""))
 
+        review_stage_present = "review" in _all_stage_keys
+        review_blocked = review_stage_present and ("review" in blocked_details)
+        review_requested_changes = review_stage_present and _wants_changes(final_review_text)
+        review_gate_open = (not review_stage_present) or (not review_blocked and not review_requested_changes)
+        if review_stage_present and not review_gate_open:
+            build_note += (
+                "\n> ⏸ 候选区结果已保留；review 未完成或要求修改，"
+                "禁止自动 apply 到主工作区。\n"
+            )
+
         # applylock：检查哪些文件需要人类 apply（harness 核心 / test_* / *.golden.json）
         from devkit import applylock as _applylock
         _allow_apply_mode_tests = bool(apply_target or apply_git)
         _lock = _applylock.ApplyLock(
             allowed_test_prefixes=(
-                ("tests/",) if _allow_apply_mode_tests else _applylock.DEFAULT_ALLOWED_TEST_PREFIXES
+                _applylock.DEFAULT_APPLY_MODE_ALLOWED_TEST_PREFIXES
+                if _allow_apply_mode_tests
+                else _applylock.DEFAULT_ALLOWED_TEST_PREFIXES
             )
         )
         _lock_ctx = _applylock.RunContext.get(run_id=ts, runs_dir=ROOT / "devkit" / "runs")
-        _locked_files = [f for f in (files or []) if _lock.is_protected(f, _lock_ctx)]
+        _manifest_decision = _applylock.classify_manifest(artifact_manifest["entries"], lock=_lock, ctx=_lock_ctx)
+        _locked_files = [item["path"] for item in _manifest_decision["blocked"]]
         _exempted_files = [
-            f"{f} ({_lock.exemption_reason(f, _lock_ctx)})"
-            for f in (files or [])
-            if not _lock.is_protected(f, _lock_ctx) and _lock.exemption_reason(f, _lock_ctx)
+            f"{item['path']} ({item['reason']})"
+            for item in _manifest_decision["allowed"]
+            if item.get("reason") not in {"auto", "non_applyable"}
         ]
         if _exempted_files:
             build_note += f"\n> 🟢 applylock 放行：{', '.join(_exempted_files)}\n"
@@ -1489,19 +2693,22 @@ def run_loop(
             if "review" not in carrier_overrides:
                 carrier_overrides["review"] = "codex-sub"
                 print(f"  🔺 T8 强审查升级：review 载体自动提升至 codex-sub（harness 文件需强审查）")
-        if apply_target and files and not tests_failed:
-            applied = _apply.apply_files(build_dir, apply_target)
+        if apply_target and applyable_files and not tests_failed and review_gate_open:
+            applied = _apply.apply_files(build_dir, apply_target, files=applyable_files)
             build_note += f"\n> ✅ 已 apply 到 `{apply_target}`：{', '.join(applied)}\n"
             print(f"  ✅ apply → {apply_target}: {', '.join(applied)}")
+        elif apply_target and not review_gate_open:
+            build_note += "\n> ⛔ review 未完成或未通过，未 apply（候选区已保留，主工作区保持不变）\n"
+            print("  ⛔ review 未完成或未通过，未 apply")
         elif apply_target and tests_failed:
             build_note += "\n> ⛔ 测试未过，未 apply（人类门：先修绿再 --apply）\n"
             print("  ⛔ 测试未过，未 apply")
-        if apply_git and files and not tests_failed:
+        if apply_git and applyable_files and not tests_failed and review_gate_open:
             # ratchet 门：golden.json 只增不减（自我修改护栏）
             from devkit import ratchet as _ratchet
             _ratchet_blocked = False
             _repo_root = pathlib.Path(apply_git)
-            for _f in files:
+            for _f in applyable_files:
                 if not _f.endswith(".golden.json"):
                     continue
                 _new_path = build_dir / _f
@@ -1523,7 +2730,7 @@ def run_loop(
                 build_note += "\n> ⛔ ratchet 护栏触发，未 git apply（测试集被弱化）\n"
             else:
                 br = apply_branch or f"loom/{ts}"
-                gr = _apply.apply_to_git(build_dir, apply_git, br, message=f"loom: {str(task)[:60]}")
+                gr = _apply.apply_to_git(build_dir, apply_git, br, message=f"loom: {str(task)[:60]}", files=applyable_files)
                 if gr.get("error"):
                     build_note += f"\n> ⛔ git apply 失败：{gr['error']}\n"
                     print(f"  ⛔ git apply 失败：{gr['error']}")
@@ -1531,12 +2738,18 @@ def run_loop(
                     build_note += (f"\n> ✅ git apply：`{gr['repo']}` 分支 `{gr['branch']}` "
                                    f"commit `{gr['commit']}`（{len(gr['applied'])} 文件，未 push）\n")
                     print(f"  ✅ git → 分支 {gr['branch']} commit {gr['commit']} ({len(gr['applied'])} files, 未 push)")
+        elif apply_git and not review_gate_open:
+            build_note += "\n> ⛔ review 未完成或未通过，未 git apply（候选区已保留）\n"
+            print("  ⛔ review 未完成或未通过，未 git apply")
         elif apply_git and tests_failed:
             build_note += "\n> ⛔ 测试未过，未 git apply\n"
 
     # 汇总 + go/no-go（report-only：只给建议，真实合并仍是 human gate）
     tests_failed = tests_failed or _codex_verify_failed  # 确保无 impl_text 分支也能 OR 进来
     blocked = [r.split("|")[1].strip() for r in log_rows if "BLOCKED" in r]
+    review_stage_present = "review" in _all_stage_keys
+    review_blocked = review_stage_present and ("review" in blocked)
+    review_requested_changes = review_stage_present and _wants_changes(final_review_text)
     blocked_note = ""
     if blocked:
         blocked_lines = []
@@ -1545,12 +2758,22 @@ def run_loop(
             hint = _blocked_retry_hint(reason)
             blocked_lines.append(f"> - {stage_key}: {reason}" + (f"；{hint}" if hint else ""))
         blocked_note = "\n> 未跑通阶段：\n" + "\n".join(blocked_lines) + "\n"
-    reasons = ((["有阶段未跑通"] if blocked else [])
-               + (["构建测试/Eval 未过"] if tests_failed else [])
-               + ([f"超预算 ${budget:.4f}"] if over_budget else [])
-               # 迭代模式下，评判者仍 REQUEST-CHANGES 也算 NO-GO（让评判真正成为 gate）
-               + (["评判者 REQUEST-CHANGES"] if ((iterate or cascade) and _wants_changes(final_review_text)) else []))
+    status_code, reasons = evaluate_final_gate(
+        blocked=blocked,
+        review_blocked=review_blocked,
+        review_requested_changes=review_requested_changes,
+        tests_failed=tests_failed,
+        over_budget=over_budget,
+        gate_spec=gate_spec,
+    )
+    candidate_state = _resolve_candidate_state(
+        stages_present=_all_stage_keys,
+        blocked=blocked,
+        tests_failed=tests_failed,
+        has_candidate_files=bool(files if impl_text else []),
+    )
     gate = f"NO-GO（{' / '.join(reasons)}）" if reasons else "建议 GO（需人类最终确认）"
+    degraded_statuses = (["compact_degraded"] if compact_degraded_stages else [])
     run_log = (
         f"# R&D Loop Run {ts}\n\n"
         f"- 任务：{task}\n- 网关：{base_url}\n- 级别：{_delivery_display_label(_delivery_mode)}\n"
@@ -1560,14 +2783,52 @@ def run_loop(
         + "\n".join(log_rows)
         + build_note
         + f"\n\n## Gate 建议\n\n{gate}\n"
+        + f"\n## 结构化状态\n\n- status_code: `{status_code}`\n"
+        + (f"- candidate_state: `{candidate_state}`\n" if candidate_state else "")
+        + (f"- degraded: `{', '.join(degraded_statuses)}`\n" if degraded_statuses else "")
         + blocked_note
     )
     _safe_write_text(run_dir / "run-log.md", run_log)
+    _safe_write_text(
+        run_dir / "99-gate.md",
+        "# Gate 建议\n\n"
+        f"- gate: {gate}\n"
+        f"- status_code: {status_code}\n"
+        + (f"- failure_code: {hard_failure_code}\n" if hard_failure_code else "")
+        + (f"- candidate_state: {candidate_state}\n" if candidate_state else "")
+        + (f"- degraded: {', '.join(degraded_statuses)}\n" if degraded_statuses else "")
+        + (f"- blocked: {', '.join(blocked)}\n" if blocked else ""),
+    )
+    try:
+        from devkit import protocol as _protocol
+
+        _protocol.write_run_protocol_bundle(
+            run_dir=run_dir,
+            run_id=ts,
+            objective=task,
+            delivery_mode=_delivery_mode,
+            task_kind=_contract.task_kind,
+            status_code=status_code,
+            gate=gate,
+            candidate_state=candidate_state,
+            review_text=final_review_text,
+            blocked=blocked,
+            tests_failed=tests_failed,
+            gate_spec=gate_spec,
+            output_protocol=output_protocol,
+            artifact_manifest=artifact_manifest,
+            collect=collect,
+            gate_result=gate_result,
+        )
+    except Exception:
+        pass
     append_run_ledger(task, stage_meta, gate, run_dir, tot_tokens, tot_cost)
     _memory.record(task, gate, next((txt for s, txt in artifacts if s.key == "review"), ""))
     iter_note = (f"  迭代：{iter_rounds} 轮 {'收敛✅' if iter_converged else '未收敛❌'}" if iterate else "")
     print(f"\n✓ 完成。产物目录：{run_dir}\n  Gate：{gate}  用量：{tot_tokens} tok · ${tot_cost:.5f}{iter_note}")
-    return {"run_dir": str(run_dir), "gate": gate, "blocked": blocked,
+    return {"run_dir": str(run_dir), "gate": gate, "status_code": status_code,
+            "candidate_state": candidate_state,
+            "degraded": degraded_statuses, "blocked": blocked,
             "tokens": tot_tokens, "cost": round(tot_cost, 6),
             "iterations": iter_rounds, "converged": iter_converged,
             "iterate_cost": round(iter_cost, 6), "cascade_path": cascade_path}
