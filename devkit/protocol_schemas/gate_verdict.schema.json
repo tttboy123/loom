@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateVerdict",
+  "description": "Phase D — Loom Gatekeeper final verdict. The Gatekeeper reads devkit/runs/<run_id>/evidence.json (or its inputs) and emits a single decision so the Runner no longer owns final state authority.",
+  "type": "object",
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "const": "loom.dev/v1",
+      "description": "Protocol version — must match the rest of the Phase A/B/D schemas."
+    },
+    "kind": {
+      "type": "string",
+      "const": "GateVerdict",
+      "description": "Discriminator for GateVerdict envelopes."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Identity / lineage of this verdict.",
+      "required": ["id", "run_id", "work_item_id", "timestamp"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable verdict id (e.g. verdict-<run_id>-<short-uuid>)."
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Run this verdict belongs to (matches devkit/runs/<run_id>/)."
+        },
+        "work_item_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Work item id this verdict is about."
+        },
+        "timestamp": {
+          "type": "string",
+          "minLength": 1,
+          "description": "UTC ISO-8601 timestamp of when the verdict was produced."
+        },
+        "schema_version": {
+          "type": "string",
+          "description": "Optional schema version stamp (e.g. 'gate_verdict.schema.json@v1')."
+        }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "description": "The actual gate decision and the evidence used to derive it.",
+      "required": ["evidence_source", "passed", "reason", "failure_codes"],
+      "properties": {
+        "evidence_source": {
+          "type": "string",
+          "enum": ["inner_sandbox", "materialized_repo", "external_signal", "unknown"],
+          "description": "Classification of where the evidence came from. Phase D Gatekeeper classifies this; Runner trusts the verdict."
+        },
+        "passed": {
+          "type": "boolean",
+          "description": "True only when every required gate is satisfied."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable summary of the verdict (e.g. 'all_gates_passed', 'BUDGET_EXCEEDED: cost=12.34 cap=5.00')."
+        },
+        "failure_codes": {
+          "type": "array",
+          "description": "Machine-readable failure codes. Empty when passed=true.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "EVIDENCE_MISSING",
+              "TEST_REGRESSION",
+              "BUDGET_EXCEEDED",
+              "EVIDENCE_INVALID",
+              "SCHEMA_VALIDATION_ERROR"
+            ]
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "checks": {
+          "type": "object",
+          "description": "Per-check detail snapshot. Useful for debugging without re-reading evidence.json.",
+          "properties": {
+            "evidence_file_present": { "type": "boolean" },
+            "tests_passed_count": { "type": "integer", "minimum": 0 },
+            "tests_failed_count": { "type": "integer", "minimum": 0 },
+            "cost_usd": { "type": "number", "minimum": 0 },
+            "budget_cap_usd": { "type": "number", "minimum": 0 },
+            "artifact_manifest_source": { "type": "string" },
+            "artifact_manifest_present": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "lineage": {
+          "type": "object",
+          "description": "Optional provenance — carries whichever subset of evidence_packet / artifact_manifest lineage that influenced the verdict.",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
