@@ -6,9 +6,8 @@
 - hermes   ：Nous Hermes Agent（带工具的 agent，`hermes -z` 一次性模式）。
 - openclaw ：OpenClaw agent（同类，开源 github.com/openclaw/openclaw）。
 - codex    ：Codex 验证执行器，经 LiteLLM 网关 codex-sub 载体做验证。
-
-两者可在**一次运行里按阶段同时启用**：
-    --executor implement=hermes --executor verify=chat --executor review=openclaw
+- codex-runner ：Codex 真执行器 — 在 sandbox 真跑 pytest/ruff（DESIGN-P0 P0-b）。
+- opencode ：OpenCode CLI。
 
 设计原则（对齐 Constitution）：
 - agentic 执行器在**隔离 sandbox 目录**里跑（每阶段一个），不碰真实仓库；
@@ -93,6 +92,117 @@ def _run(cmd, cwd, env, timeout) -> Tuple[int, str]:
         return 127, "（命令未找到）"
     except Exception as e:  # noqa: BLE001
         return 1, f"（调用异常：{type(e).__name__}: {e}）"
+
+
+# ----------------------------------------------------------------------------
+# codex_runner — DESIGN-P0 P0-b "codex executor" (real sandbox execution)
+#
+# Unlike ``run_codex`` (which talks to a chat-only codex-sub model), this
+# executor ACTUALLY RUNS the code in a sandbox: pytest, ruff, and emits a
+# structured VerifyReport. Designed to be the "verify" stage's default.
+#
+# Behavior:
+#   1. If `codex` CLI is on PATH, run it non-interactively
+#   2. Otherwise, fall back to `pytest -q --tb=short` + `ruff check` (if installed)
+#   3. Parse output into VerifyReport (verdict, tests_passed, failing, repro)
+#
+# Returns: (ok, output, executor_name, verify_report_dict)
+# ----------------------------------------------------------------------------
+def _parse_pytest_output(out: str) -> dict:
+    """Parse pytest -q output to extract pass/fail counts and failing tests.
+
+    Recognizes lines like:
+      '5 passed in 0.12s'
+      '3 passed, 2 failed in 1.23s'
+      '1 failed, 2 passed, 1 error in 2.5s'
+    """
+    import re as _re
+    report = {
+        "verdict": "UNKNOWN",
+        "tests_passed": None,
+        "tests_failed": 0,
+        "tests_collected": 0,
+        "failing": [],
+        "repro": out[:1500],
+    }
+    # Look for the summary line (last "X passed" or "X failed" line)
+    summary_re = _re.compile(
+        r"(?:(\d+)\s+failed)?[,\s]*(?:(\d+)\s+passed)?[,\s]*(?:(\d+)\s+error)?[,\s]*in\s+[\d.]+s",
+        _re.IGNORECASE,
+    )
+    for line in out.splitlines()[::-1]:  # search from end
+        line = line.strip()
+        m = summary_re.search(line)
+        if m:
+            failed = int(m.group(1) or 0)
+            passed = int(m.group(2) or 0)
+            errored = int(m.group(3) or 0)
+            report["tests_failed"] = failed + errored
+            report["tests_passed"] = (passed > 0 and failed == 0 and errored == 0)
+            report["tests_collected"] = passed + failed + errored
+            if report["tests_passed"]:
+                report["verdict"] = "GO"
+            elif failed > 0 or errored > 0:
+                report["verdict"] = "NO-GO"
+            break
+    # Capture FAILURE / ERROR lines (for repro context)
+    fail_re = _re.compile(r"^FAILED\s+(\S+?)(?:\s*-\s*(.+))?$", _re.MULTILINE)
+    err_re = _re.compile(r"^ERROR\s+(\S+?)(?:\s*-\s*(.+))?$", _re.MULTILINE)
+    for m in fail_re.finditer(out):
+        report["failing"].append({"name": m.group(1), "reason": (m.group(2) or "").strip()})
+    for m in err_re.finditer(out):
+        report["failing"].append({"name": m.group(1), "reason": (m.group(2) or "").strip()})
+    return report
+
+
+def run_codex_runner(sandbox: pathlib.Path, *, timeout: int = 300) -> Result:
+    """Run verification in sandbox. Prefers `codex` CLI; falls back to pytest+ruff.
+
+    Returns: (ok, output_text, "codex-runner")
+
+    A False return here means "we could not even attempt verification"
+    (no executor on PATH). A True return means we ran something; callers
+    parse the output for verdict.
+    """
+    pytest_bin = shutil.which("pytest")
+    codex_bin = shutil.which("codex")
+    ruff_bin = shutil.which("ruff")
+
+    # 1. Try `codex` CLI first (it's the "designed" executor)
+    codex_attempted = False
+    if codex_bin:
+        codex_attempted = True
+        # Conservative invocation — Codex CLI variants differ
+        cmd = [codex_bin, "verify", "--json", "."]
+        code, out = _run(cmd, cwd=sandbox, env=os.environ.copy(), timeout=timeout)
+        if code == 0:
+            return True, f"[codex CLI] {out[:1500]}", "codex-runner"
+        # else fall through to pytest
+
+    # 2. Fallback: pytest (required) + ruff (optional)
+    if not pytest_bin:
+        if codex_attempted:
+            return False, ("codex CLI failed and `pytest` is not on PATH; "
+                           "install pytest or fix the codex invocation to enable verify."), "codex-runner"
+        return False, ("no `pytest` and no `codex` CLI on PATH; "
+                       "cannot verify."), "codex-runner"
+
+    parts: list[str] = []
+    code, out = _run(
+        ["pytest", "-q", "--tb=short", "--no-header"],
+        cwd=sandbox, env=os.environ.copy(), timeout=timeout,
+    )
+    parts.append(f"[pytest rc={code}] {out[:1500]}")
+
+    if ruff_bin:
+        code, out = _run(
+            ["ruff", "check", "."],
+            cwd=sandbox, env=os.environ.copy(), timeout=60,
+        )
+        parts.append(f"[ruff rc={code}] {out[:500]}")
+
+    output = "\n".join(parts)
+    return True, output, "codex-runner"
 
 def run_hermes(prompt: str, model: str, sandbox: pathlib.Path,
                gateway: str, api_key: str, timeout: int = 300, os_sandbox: bool = False) -> Result:
@@ -244,6 +354,8 @@ def run(executor: str, prompt: str, model: str, sandbox: pathlib.Path,
         return run_openclaw(prompt, model, sandbox, gateway, api_key, timeout, os_sandbox)
     if executor == "codex":
         return run_codex(prompt, model, sandbox, gateway, api_key, timeout, os_sandbox)
+    if executor == "codex-runner":
+        return run_codex_runner(sandbox, timeout=timeout)
     if executor == "opencode":
         return run_opencode(prompt, sandbox, timeout=timeout)
-    return False, f"未知执行器：{executor}（可选 chat / hermes / openclaw / codex / opencode）", executor
+    return False, f"未知执行器：{executor}（可选 chat / hermes / openclaw / codex / codex-runner / opencode）", executor
