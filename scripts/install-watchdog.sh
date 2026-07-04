@@ -56,7 +56,7 @@ install_macos() {
   <string>$ROOT/devkit/logs/watchdog.plist.err</string>
 
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
 </dict>
 </plist>
 EOF
