@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from devkit import observer
 from devkit.observer import (
     ObserverSnapshot,
     HEARTBEAT_FRESH_S,
@@ -34,6 +35,74 @@ from devkit.observer import (
 
 VERDICT_ORDER = ["HEALTHY", "WARN", "DEGRADED", "STALLED", "QUARANTINED", "HARD_DEAD"]
 VERDICT_RANK = {v: i for i, v in enumerate(VERDICT_ORDER)}
+
+# ----------------------------------------------------------------------------
+# Phase A — incident mapping
+# ----------------------------------------------------------------------------
+# Sentinel for incidents not tied to a specific work item (autopilot-wide).
+# A real work item id, if any, comes from ObserverSnapshot.work_item_id.
+SYSTEM_WORK_ITEM_ID = "system:autopilot"
+
+# Maps triager finding code -> incident spec.kind (one of the whitelist
+# dispatch keys in devkit/repairer.py). Codes not in this table do not
+# produce an incident (transient noise that the watchdog handles on its own).
+_FINDING_TO_INCIDENT_KIND: dict[str, str] = {
+    "AUTOPILOT_NOT_STARTED": "repair_needed",
+    "SUPERVISOR_DEAD": "repair_needed",
+    "DAEMON_DEAD": "stale_running",
+    "HEARTBEAT_DEAD": "stale_running",
+    "HEARTBEAT_STALE": "stale_running",
+    "BACKOFF_QUARANTINE_THRESHOLD": "manual_block",
+    "BACKOFF_CLIMBING": "stale_running",
+    "BACKOFF_MINOR": "stale_running",
+    "QUARANTINED": "manual_block",
+    "BACKLOG_LEASE_RECLAIMS_HIGH": "stale_running",
+    "BACKLOG_LEASE_RECLAIMS": "stale_running",
+    "WATCHDOG_HEALING_REPEATED": "stale_running",
+}
+
+
+def _to_incident(finding: "Finding", *, snapshot_work_item_id: Optional[str] = None) -> dict:
+    """Convert a Finding to a dict that conforms to incident.schema.json.
+
+    The returned dict has:
+      - api_version, kind
+      - metadata.id (required), metadata.work_item_id (optional)
+      - spec.kind, spec.severity (required), spec.evidence_refs (optional)
+    """
+    spec_kind = _FINDING_TO_INCIDENT_KIND.get(finding.code)
+    work_item_id = str(snapshot_work_item_id or "").strip() or SYSTEM_WORK_ITEM_ID
+    # Generate a stable id; severity is appended so the same code at different
+    # severities produces distinct incidents.
+    incident_id = f"incident-{finding.code.lower()}-{finding.severity}"
+    evidence_refs: list = []
+    if isinstance(finding.evidence, dict):
+        # Surface string values; numeric / None are dropped. Strings equal to
+        # "None" (a common sentinel from str(None)) are also dropped.
+        for k, v in finding.evidence.items():
+            if isinstance(v, str):
+                s = v.strip()
+                if s and s != "None":
+                    evidence_refs.append(s)
+            elif isinstance(v, (int, float)):
+                evidence_refs.append(f"{k}={v}")
+    return {
+        "api_version": "loom.dev/v1",
+        "kind": "Incident",
+        "metadata": {
+            "id": incident_id,
+            "work_item_id": work_item_id,
+            "detected_by": "triager",
+            "source_code": finding.code,
+        },
+        "spec": {
+            "kind": spec_kind or "stale_running",
+            "severity": finding.severity,
+            "message": finding.message,
+            "hint": finding.hint,
+            "evidence_refs": evidence_refs,
+        },
+    }
 
 
 @dataclass
@@ -55,6 +124,9 @@ class TriageReport:
     findings: list  # list[Finding]
     next_verdict_if_worse: Optional[str] = None
     generated_at: str = ""
+    # Phase A — incident-compatible output. Each finding → one Incident
+    # (see _to_incident). The list is empty when there are no findings.
+    incidents: list = field(default_factory=list)  # list[dict] (Incident dicts)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -310,12 +382,24 @@ def triage(snap: ObserverSnapshot) -> TriageReport:
     summary = _build_summary(verdict, findings)
     next_worse = _next_worse(verdict)
 
+    # Phase A: convert each finding into an incident (one per finding) for
+    # the repairer to consume via dispatch(). Findings whose code is not in
+    # the incident-kind map are intentionally skipped — they are watchdog
+    # self-handled signals, not repair actions.
+    snapshot_wiid = getattr(snap, "work_item_id", None)
+    incidents = [
+        _to_incident(f, snapshot_work_item_id=snapshot_wiid)
+        for f in findings
+        if f.code in _FINDING_TO_INCIDENT_KIND
+    ]
+
     return TriageReport(
         verdict=verdict,
         summary=summary,
         findings=findings,
         next_verdict_if_worse=next_worse,
         generated_at=datetime.now(timezone.utc).isoformat(),
+        incidents=incidents,
     )
 
 
@@ -333,3 +417,18 @@ def _next_worse(verdict: str) -> Optional[str]:
     if idx + 1 < len(VERDICT_ORDER):
         return VERDICT_ORDER[idx + 1]
     return None
+
+
+if __name__ == "__main__":
+    import json as _json
+    snap = observer.snapshot()
+    rep = triage(snap)
+    out = {
+        "verdict": rep.verdict,
+        "summary": rep.summary,
+        "finding_count": len(rep.findings),
+        "incident_count": len(rep.incidents),
+        "incidents": rep.incidents,
+        "next_verdict_if_worse": rep.next_verdict_if_worse,
+    }
+    print(_json.dumps(out, ensure_ascii=False, indent=2))
