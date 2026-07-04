@@ -357,3 +357,78 @@ graph TD
 - watchdog `HEARTBEAT_STALE_S=120` (2min) 期望 30s 一次
 - **结果**：watchdog 永远报 stale，但 daemon 是 alive 的
 - 修法（HB_FREQ task）：daemon main loop 期间每 30s 独立 touch heartbeat，跟 iterate 异步
+
+---
+
+## 🆕 新架构完整 ready 时间表（基于今晚实测差距）
+
+> 数据来源：`grep` rdloop.py 看 6 spec 实际 import + 6 个 spec schema 跟代码对比 + 之前列的差表
+
+### 4 个阶段（按依赖关系）
+
+**Phase A（明早 10-12am）— PR#3b Repairer**
+- `devkit/repairer.py` + 5 个 whitelist 动作（reclaim / release / insert / throttle / mark_blocked）
+- Incident schema runtime validation
+- TriageReport → Incident 转换
+- ~300 行
+- **解锁**：Repair lane 完整（Phase 4 验收）
+
+**Phase B（明午 14-16pm）— rdloop 集成 6 spec**
+- GoalSpec：backlog task 用 GoalSpec schema 校验
+- WorkItem：task 描述对齐 WorkItem schema（最小可 lease 字段）
+- GateSpec：rdloop `evaluate_final_gate` 读 GateSpec 而非 ad-hoc
+- budget：rdloop gate 调用 `budget.check`，PROTECTED 字段真生效
+- ~400 行
+- **解锁**：6 spec 全部"decorative → functional"
+
+**Phase C（明晚 19-21pm）— A2A + MCP stub**
+- `devkit/protocol.py` 扩展为独立 A2A server（至少 1 个 AgentCard 能注册）
+- MCP resources/tools 暴露（backlog / events / runs / evidence / incidents）
+- 双向通信（AgentCard 互相 handoff）
+- ~600 行
+- **解锁**：从"in-process 模拟"到"协议层真的能通信"
+
+**Phase D（Day 2-3）— Gatekeeper + Scheduler**
+- Gatekeeper：rdloop gate 结果用 Gatekeeper 验证，区分"inner_sandbox / materialized_repo / unknown"
+- Scheduler：替代 `iterate.py` 的"取下一个 task"循环，跨项目工作
+- ~800 行
+- **解锁**：目标控制回路完整（"Runner 不拥有最终状态"）
+
+**Phase E（Day 4-7）— MapReduce 拆 PR#4a/b/c**
+- PR#4a：selector + shards.jsonl
+- PR#4b：mapper worker (read-only)
+- PR#4c：reducer + validator
+- ~1500 行
+- **解锁**：cluster 模式（吞吐 ×4-8）
+
+### 总估算
+
+| Phase | 工作量 | 累计 |
+|---|---|---|
+| A | 300 行 / 2h | 300 |
+| B | 400 行 / 2h | 700 |
+| C | 600 行 / 4h | 1300 |
+| D | 800 行 / 5h | 2100 |
+| E | 1500 行 / 8h | 3600 |
+
+**新架构 ready 总工作量：~3600 行 / 21h**。按今晚 1100 行/晚的速率（含 debug + 修 bug） = **3-4 个工作日**。
+
+### 与之前估算的差
+
+| 之前说 | 实际 | 差 |
+|---|---|---|
+| 500-700 行 / 1 周 | 3600 行 / 3-4 个工作日 | **大 5-7 倍** |
+
+之前**严重低估**。因为：
+- 我以为 M（rdloop 集成）是 150 行，实际 6 spec 都要动 = 400 行
+- 我以为 PR#3b 修完就能接 autopilot，实际 A2A + MCP 还是 stub
+- MapReduce 之前估 600-800 实际要拆 3 个 PR
+
+### 现实路径
+
+- **明早**（2-3h）：Phase A + Phase B 完成 → 6 spec functional + Repair lane 完整
+- **明晚**（4h）：Phase C 启动 → A2A/MCP stub
+- **Day 2-3**：Gatekeeper + Scheduler
+- **Day 4-7**：MapReduce
+
+**autopilot 退役时间表**：Day 4-7，新架构能完整接管时。
