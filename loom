@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Loom —— 一条命令管理本地「多 Agent + 多厂商模型」研发套件。
-#   ./loom up [full]   启动（默认 lite 核心；full 含聊天 UI + 编排）
+#   ./loom up [full|mock]   启动（默认 lite 核心；full 含聊天 UI + 编排；
+#                                  mock 用零 key 的 mock 配置启动网关）
 #   ./loom run "任务"   跑一遍研发流程（透传 devkit 参数）
 #   ./loom autopilot     后台 iterate 监督器（5 分钟健康巡检 + 自动重启 + 重部署）
 #   ./loom doctor      体检
+#   ./loom doctor --opensource   开源就绪度体检（Agent Gate）
 #   ./loom open|down|logs|login
 # =============================================================================
 set -euo pipefail
@@ -26,16 +28,46 @@ ensure_engine(){
 
 probe(){ curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer sk-cliproxy-local" "$1" 2>/dev/null || echo 000; }
 
+# Detect whether the user has any real model credentials configured.
+# Returns 0 (true) if at least one provider key is non-empty AND non-placeholder.
+has_real_keys(){
+  local env_file=".env"
+  [ -f "$env_file" ] || return 1
+  grep -Eq '^(ZHIPU_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)=[^[:space:]"]' "$env_file" \
+    && ! grep -Eq '^(ZHIPU_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)=(sk-change-me|""?$|$)' "$env_file"
+}
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   up)
     ensure_engine
-    if [ "${1:-}" = "full" ]; then
-      C "启动满栈（含聊天 UI + 编排）…"; docker compose --profile full up -d
-    else
-      C "启动 lite 核心（控制台 + 网关 + 订阅代理）…"; docker compose up -d
-    fi
-    OK "就绪 →  控制台 http://localhost:8899"
+    profile="${1:-lite}"
+    case "$profile" in
+      full)
+        C "启动满栈（含聊天 UI + 编排）…"; docker compose --profile full up -d
+        OK "就绪 →  控制台 http://localhost:8899 · Agent UI http://localhost:3000"
+        ;;
+      mock)
+        C "启动 mock 栈（零 key、零花费，只为看 UI 效果）…"
+        docker compose -f docker-compose.minimal.yml up -d
+        OK "就绪 →  Open WebUI http://localhost:3000 · LiteLLM http://localhost:4000/ui"
+        C "提示：mock 模式下模型不会真实调用，仅返回 mock_response。"
+        ;;
+      lite|"")
+        if ! has_real_keys; then
+          C "检测到 .env 中没有真实模型 key，自动切换到 mock 栈（用户无感）"
+          C "若想用真实模型：cp .env.example .env，填入 key，再 ./loom up"
+          docker compose -f docker-compose.minimal.yml up -d
+          OK "就绪 →  Open WebUI http://localhost:3000 · LiteLLM http://localhost:4000/ui（mock 模式）"
+        else
+          C "启动 lite 核心（控制台 + 网关 + 订阅代理）…"; docker compose up -d
+          OK "就绪 →  控制台 http://localhost:8899"
+        fi
+        ;;
+      *)
+        ERR "未知的 profile：$profile（可选：full | mock | lite）"; exit 1
+        ;;
+    esac
     ;;
   down)
     C "停止并清理容器…"; docker compose --profile full down
@@ -93,12 +125,24 @@ case "$cmd" in
   feature)
     python3 -m devkit feature "$@"
     ;;
-  doctor)
+doctor)
     ensure_engine
+    # Sub-command: doctor --opensource  → run the Agent Gate
+    if [ "${1:-}" = "--opensource" ] || [ "${1:-}" = "-o" ]; then
+      C "运行开源就绪度 Gate（devkit.gate.opensource）…"
+      PYTHONPATH=. python3 -m devkit.gate.opensource .
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        OK "开源 Gate 通过"
+      else
+        ERR "开源 Gate 未通过（见上方 blockers）"
+      fi
+      exit $rc
+    fi
     C "服务状态："
     docker compose --profile full ps --format '  {{.Service}}: {{.Status}}' 2>/dev/null | grep -v MOONSHOT || true
     C "端点："
-    for spec in "8899|控制台(中枢)" "4000/health/liveliness|LiteLLM 网关" "8317/v1/models|订阅代理" "3000|Agent UI(full)"; do
+    for spec in "8899|控制台(中枢)" "4000/health/liveleness|LiteLLM 网关" "8317/v1/models|订阅代理" "3000|Agent UI(full)"; do
       url="${spec%%|*}"; name="${spec##*|}"
       printf "  %-20s %s\n" "$name" "$(probe "http://localhost:$url")"
     done
@@ -152,7 +196,8 @@ Loom —— 本地多 Agent 研发套件
   ./loom status       查看 backlog 队列进度 + 最近决策（含任务编号）
 
 进阶：
-  ./loom up [full]    启动（默认 lite；full 含聊天 UI + 编排）
+  ./loom up [full|mock]   启动（默认 lite；full 含聊天 UI + 编排；mock 零 key 演示）
+  ./loom doctor [--opensource]   体检：引擎/服务/端点；带 --opensource 跑开源 Gate
   ./loom bench        跑 carrier benchmark（评估各模型速度/质量/成本）
   ./loom ask "问题"   临时向单个/多个 carrier 提问（--models deepseek,glm）
   ./loom autopilot --sleep 90 --backlog devkit/backlog.json   后台无人看守持续反思迭代
@@ -165,7 +210,6 @@ Loom —— 本地多 Agent 研发套件
   ./loom rate <后端>  记录一次实际体验（up/down）
   ./loom backlog "想法" 把应用想法拆成特性清单
   ./loom feature      增量构建下一个特性（--count K 连做）
-  ./loom doctor       体检：引擎 / 服务 / 端点
   ./loom open         浏览器打开控制台
   ./loom login        刷新订阅 OAuth
   ./loom logs [服务]  跟踪日志

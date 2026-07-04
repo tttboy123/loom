@@ -1,0 +1,18 @@
+# devkit/RUNS.md — Loom 运行台账
+
+> **本文件不入仓**（`.gitignore` 已配置）。每次 `./loom run` / `devkit auto`
+> 会追加一条记录，包括 task、状态、模型、成本、gate 结论。
+
+## 字段
+
+| 字段 | 含义 |
+|---|---|
+| `run_id` | 唯一 ID（时间戳） |
+| `task` | 任务摘要 |
+| `stages` | 跑过的 stage 列表 |
+| `carrier` | 实际服务的 carrier |
+| `tokens_in/out` | token 用量 |
+| `cost_usd` | 本次花费 |
+| `gate` | GO / NO-GO / REQUEST-CHANGES |
+| `duration_s` | 耗时 |
+| `notes` | 备注（违规、修复、人类门） |

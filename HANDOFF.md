@@ -4,7 +4,7 @@
 
 ## 0. 先读什么
 
-- 项目根：`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/agent-platform/`
+- 项目根：`<REPO_ROOT>`（克隆后为你自己的本地路径）
 - 当前目录不是 git 仓库，不要假设能用 `git status` 复核。
 - 先读当前真相：
   - `README.md`

@@ -1,36 +1,74 @@
+# ===== OS / Editor =====
 .DS_Store
-.claude/*.lock
-*.pyc
-__pycache__/
+.idea/
+.vscode/
+*.swp
+*.swo
 
+# ===== Python =====
+*.pyc
+*.pyo
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== Secrets =====
 .env
 .env.*
 !.env.example
 
-.pytest_cache/
-.mypy_cache/
-
+# ===== Node / UI =====
 node_modules/
-ui/
 ui/node_modules/
+ui/.next/
+ui/out/
+ui/build/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
+# ===== Caches & tooling =====
+coverage/
+build/
+dist/
+out/
+
+# ===== Loose log files =====
+*.log
+console-server.log
+console-trigger.log
+
+# ===== Loom runtime state (large, regenerable) =====
 devkit/runs/
 devkit/logs/
 devkit/.cache/
 devkit/reflections/
 devkit/decisions.jsonl
+devkit/events.jsonl
+devkit/MEMORY.md
+devkit/RUNS.md
+devkit/backlog.json
+devkit/backlog.archive.*.json
+devkit/backlog.human-required.json
+devkit/work-items/
+devkit/loom.roles.toml        # 控制台写入的本地覆盖
 runs/
 task-runs/
 run-log.md
 
-coverage/
-build/
-dist/
-out/
-.next/
+# ===== Tool-specific caches =====
+.schemathesis/
+.hypothesis/
+_diag/
+inspect-materialize-signature-*/
+applylock/__pycache__/
 
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-*.log
+# ===== Legacy / experiment =====
+agent-platform/agent-platform/   # accidental nested clone
+external-requests/              # contains user-specific upstream queues
+.claude/                        # Claude Code session state

@@ -5,7 +5,7 @@
 ## 1. 启动服务
 
 ```bash
-cd /Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/agent-platform
+cd <REPO_ROOT>          # 你克隆下来的本地路径
 ./loom up
 ./loom doctor
 ```

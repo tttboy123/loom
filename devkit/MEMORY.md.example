@@ -1,0 +1,24 @@
+# devkit/MEMORY.md — Loom 运行时的累积记忆
+
+> **本文件不入仓**（`.gitignore` 已配置）。每次 Loom 运行时，
+> devkit 会把学到的偏好、卡点、修复方式追加到这里。
+> Fork 后你自己的 MEMORY.md 会从空开始增长。
+
+## 初始化结构
+
+```markdown
+# Loom Memory
+
+## 学到的偏好（每次 run 自动追加）
+- 2026-XX-XX run-id-xxx：xxx 偏好
+
+## 已知坑（自动归类）
+- ...
+
+## 修复历史（追溯用）
+- ...
+```
+
+## 重置
+
+直接删除本文件即可。Loom 会按需要重建。

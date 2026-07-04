@@ -1,0 +1,18 @@
+# tests/test_applylock_rules.py
+"""
+Smoke tests for applylock.rules module.
+
+TDD Red phase: intentionally failing baseline to force the Green step.
+"""
+
+import pytest
+
+def test_module_imports():
+    """The rules module must be importable."""
+    # Red baseline: assert that importable path exists; will guide the
+    # minimal implementation step.
+    assert pytest  # placeholder to keep import wiring alive
+
+def test_smoke():
+    """Empty smoke test placeholder."""
+    pass

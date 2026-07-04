@@ -1,0 +1,5 @@
+{
+  "pytest_version": "8.4.1",
+  "pip_freeze_pytest": ["pytest==8.4.1"],
+  "collect_demo_ok": true
+}
