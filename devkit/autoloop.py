@@ -169,7 +169,23 @@ def advance_state(state: str, event: str) -> str:
 
 # ---------- M3 ----------
 def run_once(task_spec: dict) -> dict:
-    """将任务 spec 结构化为一次 devkit 运行的参数字典。"""
+    """将任务 spec 结构化为一次 devkit 运行的参数字典。
+
+    Phase B: when ``task_spec`` carries a GoalSpec-shaped payload
+    (``kind == "GoalSpec"`` with ``metadata`` / ``spec`` keys), validate it
+    against ``devkit/protocol_schemas/goal_spec.schema.json`` via
+    ``devkit.rdloop.validate_goal_spec`` so malformed input fails loud before
+    any IO or LLM call. Non-GoalSpec dicts (the common case) skip validation.
+    """
+    if (
+        isinstance(task_spec, dict)
+        and task_spec.get("kind") == "GoalSpec"
+        and "metadata" in task_spec
+        and "spec" in task_spec
+    ):
+        from devkit.rdloop import validate_goal_spec
+        validate_goal_spec(task_spec)
+
     carrier_map = task_spec.get("carrier") or {}
     carriers = [
         f"{_normalize_stage_key(k)}={normalize_model_name(v, stage=_normalize_stage_key(k))}"
