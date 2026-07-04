@@ -5,6 +5,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Resolve venv Python (mirrors loom shell wrapper). Some downstream tools
+# (setsid wrapper, task-queue-status script) need 3.10+ for PEP 604.
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]] && [[ -x "$ROOT/.venv/bin/python3" ]]; then
+  PYTHON_BIN="$ROOT/.venv/bin/python3"
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python3"
+fi
+if ! "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+  echo "[$(date '+%F %T')] ERROR: $PYTHON_BIN is < 3.10; cannot supervise iterate." >&2
+  exit 1
+fi
+
 USAGE='用法：
   scripts/loom-iterate-supervisor.sh [options]
 
@@ -188,12 +202,18 @@ is_worker_running() {
 
 stop_worker() {
   is_worker_running || return 0
-  log "停止旧 iterate 守护进程 $iter_pid"
-  kill -TERM "$iter_pid" 2>/dev/null || true
+  # Use process group (PGID) kill so we also reap the daemon's child
+  # python iterate process. Without this, every self-heal left a
+  # python devkit iterate orphan parented to PID 1, accumulating
+  # one extra process every few minutes.
+  log "停止旧 iterate 守护进程 $iter_pid (PGID=-$iter_pid)"
+  kill -TERM -- "-$iter_pid" 2>/dev/null || true
   sleep 5
-  if kill -0 "$iter_pid" 2>/dev/null; then
-    kill -KILL "$iter_pid" 2>/dev/null || true
+  if kill -0 -- "-$iter_pid" 2>/dev/null; then
+    kill -KILL -- "-$iter_pid" 2>/dev/null || true
   fi
+  # Reap any stragglers (defensive — pid file may have been stale)
+  pkill -KILL -P "$iter_pid" 2>/dev/null || true
   rm -f "$WORKER_PID_FILE"
   iter_pid=""
 }
@@ -212,12 +232,48 @@ start_worker() {
   build_iterate_cmd
   log "启动 iterate worker [$now]：scripts/loom-iterate-daemon.sh ${ITERATE_CMD[*]}"
   mkdir -p "$(dirname "$WORKER_OUT_FILE")"
-  if nohup bash "$WORKER_CMD" "${ITERATE_CMD[@]}" >>"$WORKER_OUT_FILE" 2>&1 & then
-    iter_pid=$!
-    echo "$iter_pid" > "$WORKER_PID_FILE"
-    log "iterate worker 启动成功，PID=$iter_pid"
+  # Spawn the daemon in its own process group. We do this by:
+  #   1) writing a tiny Python one-liner that calls os.setsid() and
+  #      then os.execvp("bash", ["bash", WORKER_CMD, ...]).
+  #      os.setsid() is the portable way to put a child into a new
+  #      session + new process group on macOS (no `setsid` binary).
+  #   2) The Python wrapper writes its own PID to the pid file (== PGID)
+  #      so stop_worker can later `kill -TERM -- -$pid` to reap the
+  #      whole group (daemon.sh + its python iterate child) at once.
+  #   3) We wait briefly to confirm the child survived bootstrap;
+  #      a "command not found" from the python wrapper would otherwise
+  #      leave a stale pid file pointing at a dead process.
+  local py_args=("$WORKER_CMD")
+  for a in "${ITERATE_CMD[@]}"; do py_args+=("$a"); done
+  (
+    "$PYTHON_BIN" - "$WORKER_OUT_FILE" "$WORKER_PID_FILE" "${py_args[@]}" <<'PY'
+import os, sys, subprocess
+out_file, pid_file, *cmd = sys.argv[1:]
+try:
+    os.setsid()
+except OSError:
+    pass
+with open(pid_file, "w", encoding="utf-8") as fp:
+    fp.write(f"{os.getpid()}\n")
+with open(out_file, "ab", buffering=0) as out:
+    os.dup2(out.fileno(), 1)
+    os.dup2(out.fileno(), 2)
+os.execvp(cmd[0], cmd)
+PY
+  ) &
+  iter_pid=""
+  for _ in 1 2 3 4 5; do
+    sleep 0.2
+    iter_pid="$(cat "$WORKER_PID_FILE" 2>/dev/null || echo '')"
+    if [[ -n "$iter_pid" ]] && kill -0 "$iter_pid" 2>/dev/null; then
+      break
+    fi
+  done
+  if [[ -n "$iter_pid" ]] && kill -0 "$iter_pid" 2>/dev/null; then
+    log "iterate worker 启动成功，PID=$iter_pid (PGID=-$iter_pid)"
   else
-    log "iterate worker 启动失败"
+    log "iterate worker 启动失败（spawned PID='$iter_pid' 不存在）"
+    rm -f "$WORKER_PID_FILE"
     return 1
   fi
 }
