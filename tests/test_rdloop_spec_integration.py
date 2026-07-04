@@ -404,6 +404,55 @@ class SpecIntegrationTest(unittest.TestCase):
         with self.assertRaises(ManifestBuildError):
             build_manifest(manifest_id="m-bad", entries=["x.py"], source="unknown")
 
+    def test_build_manifest_accepts_rel_path_key(self):
+        """Input alias: ``rel_path`` is accepted as a more descriptive synonym
+        for ``path`` on input dicts. The schema-validated output must still
+        round-trip — i.e. the dict produced contains ``path`` (not
+        ``rel_path``) but is otherwise unchanged."""
+        from devkit.artifact_manifest import build_manifest, validate_manifest
+
+        manifest = build_manifest(
+            manifest_id="m-relpath",
+            entries=[{"rel_path": "src/pkg.py", "source": "inner_sandbox"}],
+            run_id="r-relpath",
+        )
+        # Output uses 'path', not 'rel_path'.
+        entry = manifest["spec"]["entries"][0]
+        self.assertEqual(entry["path"], "src/pkg.py")
+        self.assertNotIn("rel_path", entry)
+        # Other metadata keys flow through unchanged.
+        self.assertEqual(entry["source"], "inner_sandbox")
+        # And the whole manifest still validates against the schema.
+        validate_manifest(manifest)
+
+    def test_build_manifest_normalizes_rel_path_to_path(self):
+        """Even when callers pass both keys (or only ``rel_path``) the output
+        dict must contain exactly one canonical ``path`` key — never both
+        ``path`` and ``rel_path`` simultaneously."""
+        from devkit.artifact_manifest import build_manifest
+
+        # Mixed input — strings, dicts with path, dicts with rel_path, dicts
+        # with both keys (the latter is a caller bug, but we still produce a
+        # single, normalized output).
+        manifest = build_manifest(
+            manifest_id="m-norm",
+            entries=[
+                "bare.txt",
+                {"path": "with_path.txt"},
+                {"rel_path": "with_relpath.txt"},
+                {"path": "winner.txt", "rel_path": "ignored.txt"},
+            ],
+        )
+        paths = [e["path"] for e in manifest["spec"]["entries"]]
+        self.assertEqual(
+            paths,
+            ["bare.txt", "with_path.txt", "with_relpath.txt", "winner.txt"],
+        )
+        for entry in manifest["spec"]["entries"]:
+            # No entry should carry both keys; with the last fixture, the
+            # 'path' value wins (matches the original 'path' precedence).
+            self.assertNotIn("rel_path", entry, f"unexpected rel_path in {entry!r}")
+
     def test_rdloop_evaluate_final_gate_wired_into_run_loop_signature(self):
         """Smoke test: evaluate_final_gate is exported from rdloop, callable
         with the same kwargs run_loop uses, and produces a valid verdict."""

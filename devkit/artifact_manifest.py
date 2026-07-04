@@ -64,11 +64,21 @@ def _validate_entries(entries: Any) -> list[dict]:
         if isinstance(raw, str):
             out.append({"path": raw})
             continue
-        if isinstance(raw, dict) and raw.get("path"):
-            out.append(dict(raw))
-            continue
+        if isinstance(raw, dict):
+            # Accept either 'path' or 'rel_path' on input. Output is always
+            # normalized to 'path' so downstream readers see a single key —
+            # never emit both 'path' and 'rel_path' in the same dict.
+            raw_path = raw.get("path") or raw.get("rel_path")
+            if raw_path:
+                normalized = {"path": raw_path}
+                for key, value in raw.items():
+                    if key in ("path", "rel_path"):
+                        continue
+                    normalized[key] = value
+                out.append(normalized)
+                continue
         raise ManifestBuildError(
-            f"entries[{idx}] must be a string path or dict with 'path', got {type(raw).__name__}"
+            f"entries[{idx}] must be a string path or dict with 'path' or 'rel_path', got {type(raw).__name__}"
         )
     return out
 
@@ -94,10 +104,19 @@ def build_manifest(
 ) -> dict:
     """Return a dict conforming to ``artifact_manifest.schema.json``.
 
+    The ``manifest_id`` kwarg is written into ``metadata.id`` (schema contract)
+    — there is intentionally no top-level ``manifest_id`` field on the output
+    dict. ``metadata.id`` is the single source of truth per the schema's
+    ``metadata.required: ["id"]`` constraint; mirror fields are not emitted
+    so callers cannot drift between two equivalent representations.
+
     Required
     --------
     * ``manifest_id``: written into ``metadata.id``; non-empty.
     * ``entries``: iterable of str paths or ``{"path": str, ...}`` dicts.
+      Dicts may also use ``{"rel_path": str, ...}`` as a more descriptive
+      alias on input; output is always normalized to ``{"path": ...}``
+      (the two keys are never both emitted in the same dict).
 
     Optional
     --------
