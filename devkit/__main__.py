@@ -1440,9 +1440,23 @@ def _cmd_auto(argv) -> int:
 
         run_args = _autoloop.run_once(item)
 
-        # Scheduler 路径：claim → run → release。Claim 在 dry-run / as_json 之前
-        # 进行，让 dry-run 也能验证 lease 流程是否能正常 claim（不会真的运行）。
-        # Release 用 try/finally 保证 dry-run / as_json / 异常退出也会清理。
+        # dry-run / as-json short-circuit BEFORE claiming any lease or
+        # touching state — `run_once` itself is pure struct construction
+        # (no IO, no LLM call), so calling it for the print is cheap and
+        # harmless.
+        if a.as_json:
+            print(_json.dumps(run_args, ensure_ascii=False, indent=2))
+            return 0
+
+        if a.dry_run:
+            print(f"（dry-run）选中任务：{item.get('id','?')}")
+            print(f"  task   = {run_args['task']!r}")
+            print(f"  stages = {run_args['stages']}")
+            print(f"  run_id = {run_args['run_id']}")
+            print(f"  (no lease claimed, no LLM call)")
+            return 0
+
+        # Scheduler 路径：claim → run → release。try/finally 保证异常退出也释放。
         _scheduler_mod = None
         _claimed = False
         if use_scheduler:
@@ -1464,16 +1478,6 @@ def _cmd_auto(argv) -> int:
                     print(f"⚠ 释放 lease 失败：{exc}")
 
         try:
-            if a.as_json:
-                print(_json.dumps(run_args, ensure_ascii=False, indent=2))
-                return 0
-
-            if a.dry_run:
-                print(f"（dry-run）选中任务：{item.get('id','?')}")
-                print(f"  task   = {run_args['task']!r}")
-                print(f"  stages = {run_args['stages']}")
-                print(f"  run_id = {run_args['run_id']}")
-                return 0
 
             # 对所有就绪任务打分（无论 --yes 与否，决策日志都需要）
             from devkit import valuer as _valuer, decision_log as _dlog
