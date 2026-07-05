@@ -1,3 +1,19 @@
+---
+name: agentteam-runtime
+description: "Operationalize single-agent / agent-team / cluster orchestration in Loom via the three-source capability surface: governance protocol, team cockpit UX, gate-driven acceptance. Use when the user asks for an agent team, multi-agent run, gate-driven artifact acceptance, team cockpit, role/owner/state-machine setup, UnknownsMap emission, or 5-element handoff envelope."
+license: MIT
+compatibility: Requires Loom runtime (devkit/state_writer.py, devkit/protocol.py, devkit/gatekeeper.py, devkit/repairer.py)
+metadata:
+  author: "lune"
+  version: "0.1.0"
+  source: "loom-agent-team-runtime-proposal.md (lune, 2026-07-05)"
+  derived_from:
+    - "MiniMax-M3 / Claude / Codex capability surface"
+    - "CANTS 5-element handoff envelope"
+  tags: "loom,multi-agent,team-runtime,governance,handoff,gate,cockpit,unknowns-map"
+  category: "loom-runtime"
+---
+
 # agentteam-runtime
 
 Operationalize single-agent / agent-team / cluster orchestration by

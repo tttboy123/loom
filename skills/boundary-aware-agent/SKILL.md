@@ -1,3 +1,21 @@
+---
+name: boundary-aware-agent
+description: "Externalize Fable-5/Opus-style capability boundary into reusable artifacts so any model (MiniMax, Codex, Claude, open-source, mid-tier) can apply the 'find your blindspot, know your boundary, prove with evidence, fix yourself' workflow. Use when the orchestrator or producer agent needs to recognize capability boundaries, run a Blindspot Pass, build a BoundaryCard, evaluate model_fit vs risk_domain, gate evidence, or apply the 8-step controlled self-improvement loop."
+license: MIT
+compatibility: Requires Loom runtime (devkit/state_writer.py, devkit/repairer.py) + capability evidence schema
+metadata:
+  author: "lune"
+  version: "0.1.0"
+  source: "model-self-improvement-and-boundary-awareness.md (lune, 2026-07-05)"
+  refers_to_models:
+    - "Claude Fable 5 / Mythos 5 (Anthropic, 2026-06-09, $10/$50 per million tokens)"
+    - "MiniMax-M3, codex-sub, DeepSeek, GLM (Loom local cluster)"
+  derived_from:
+    - "Blindspot Pass + Boundary Card + Evidence-grounding + Controlled self-improvement (4-layer framework)"
+  tags: "loom,model-capability,boundary,blindspot,evidence,improvement-loop,per-model-adaptation"
+  category: "loom-runtime"
+---
+
 # boundary-aware-agent
 
 Externalize Fable-5/Opus-style capability boundary into reusable
