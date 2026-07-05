@@ -100,7 +100,8 @@ _PATH_LEAK_SKIP = {
     ".cache",
     "backlog.archive",
     # legacy / experiment
-    "agent-platform",
+    # NB: do NOT add the project dir name here (e.g. "agent-platform") —
+    # would skip every file in the repo when gate runs from project root.
     "external-requests",
     "applylock",   # legacy applylock dir vs devkit/applylock.py collision
 }
