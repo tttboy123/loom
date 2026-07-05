@@ -11,11 +11,34 @@ services:
     image: ghcr.io/berriai/litellm:main-stable
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     volumes:
-      - ./litellm/config.mock.yaml:/app/config.yaml:ro
+      - ./litellm/config.full.yaml:/app/config.yaml:ro    # 真实厂商配置（mock.yaml 是零 key 演示用）
     ports:
       - "4000:4000"
-    # 用真实 key 时取消下面注释，并把上面的 mock 换成 config.yaml
-    # env_file: [.env]
+    env_file: [.env]                                       # 注入 MINIMAX_API_KEY / ZHIPU_API_KEY / DEEPSEEK_API_KEY / LITELLM_MASTER_KEY
+    environment:
+      # pg 不在 compose 里管（agent-platform-postgres-1 已存在并 healthy），但 litellm 必须知道它
+      # 这是 1.91.0 强制要求：没有 DATABASE_URL 会 sys.exit(1)
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-postgresql://agno:agno@postgres:5432/agno}
+    depends_on:
+      - postgres   # agent-platform-postgres-1 已在同 network 跑，DNS 解析到 172.18.0.4
+
+  # postgres 已经在 agent-platform-postgres-1 跑着（同 network，DNS 解析到 172.18.0.4），
+  # 这里 declare 是为了 litellm 的 depends_on 合法。Compose 会看到已有同名 container 跳过重建。
+  postgres:
+    image: postgres:16
+    container_name: agent-platform-postgres-1
+    environment:
+      POSTGRES_USER: agno
+      POSTGRES_PASSWORD: agno
+      POSTGRES_DB: agno
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agno"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -32,3 +55,4 @@ services:
 
 volumes:
   openwebui:
+  pgdata:        # 给 external postgres 留个占位（实际由全量 docker-compose.yml 的 agent-platform-postgres-1 持有同名卷）
