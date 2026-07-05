@@ -1211,6 +1211,36 @@ def _run_selected_backlog_item(backlog: list, bl_path: pathlib.Path, item: dict,
     return event, result
 
 
+def _load_run_verdict(run_dir):
+    """Load the Phase D GateVerdict payload from ``<run_dir>/verdict.json``.
+
+    Phase F: ``run_loop`` is expected to write a typed
+    :class:`devkit.gatekeeper.GateVerdict` to ``verdict.json`` after
+    Phase E's ``unify-run-gate`` lands. The reflection loop consumes
+    that verdict via :func:`devkit.iterate.infer_failure_code` so the
+    repairer gets a code it can act on, instead of the legacy text-regex
+    guess.
+
+    This helper is fail-open: any I/O / parse error returns ``None``
+    so the caller falls back to the existing text-regex path. The
+    verdict payload is returned in its wire shape (a plain ``dict``) so
+    ``infer_failure_code`` can introspect ``spec.passed`` and
+    ``spec.failure_codes`` directly.
+    """
+    if not run_dir:
+        return None
+    try:
+        import json as _json
+        import pathlib as _pathlib
+        verdict_path = _pathlib.Path(run_dir) / "verdict.json"
+        if not verdict_path.exists():
+            return None
+        with verdict_path.open("r", encoding="utf-8") as fh:
+            return _json.load(fh)
+    except Exception:  # noqa: BLE001 — fail-open: never block reflection
+        return None
+
+
 def _cmd_auto(argv) -> int:
     """Layer B 自治驱动循环：从 backlog.json 中自动选取就绪任务并依次运行。"""
     from devkit import autoloop as _autoloop, decision_log as _dlog
@@ -1533,6 +1563,7 @@ def _cmd_iterate(argv) -> int:
             reflection.get("summary", ""),
             result.get("gate", ""),
             run_log,
+            gate_verdict=_load_run_verdict(run_dir),
         )
         applied = _iterate.apply_reflection(
             backlog_after,
