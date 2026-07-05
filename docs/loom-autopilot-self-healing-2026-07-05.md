@@ -161,7 +161,7 @@ if $NEED_RESTART; then
   # 强制杀 daemon（孤儿清理）
   if [ -f "$DAEMON_PID_FILE" ]; then
     kill -9 "$(cat "$DAEMON_PID_FILE")" 2>/dev/null || true
-    /Users/lune/.mavis/bin/mavis-trash -- "$DAEMON_PID_FILE"
+    $(command -v mavis-trash 2>/dev/null || echo mavis-trash) -- "$DAEMON_PID_FILE"
   fi
 
   # 退避等待
@@ -322,7 +322,7 @@ macOS 用 launchd：
   <key>Label</key><string>com.loom.watchdog</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/agent-platform/scripts/loom-watchdog.sh</string>
+    <string>$REPO_ROOT/scripts/loom-watchdog.sh</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>60</integer>  <!-- 每 60s 跑一次 -->

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 
 from devkit.delivery_mode import normalize_delivery_mode
 
@@ -29,6 +30,13 @@ _ALLOW_REPORT_TEST_SIGNALS = (
     "allow verification tests",
     "allow generated tests",
 )
+_MANUAL_REVIEW_SIGNALS = (
+    "人工复核",
+    "人工审核",
+    "human gate",
+    "manual review",
+    "manual-review",
+)
 _DEFAULT_REPORT_ONLY_FORBIDDEN_PREFIXES = (
     "tests/",
     "devkit/test",
@@ -37,6 +45,8 @@ _DEFAULT_REPORT_ONLY_FORBIDDEN_PREFIXES = (
 _SAFE_REPORT_TEST_PREFIXES = (
     "tests/test_diag",
 )
+_JSON_PATH_RE = re.compile(r"([A-Za-z0-9_\-./\\]+?\.json)\b")
+_FIELD_RE = re.compile(r"(?:含|包含|字段)\s*[`\"']?([A-Za-z_][A-Za-z0-9_]*)[`\"']?")
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,53 @@ class TaskContract:
     allow_report_tests: bool
     allowed_artifact_paths: tuple[str, ...]
     forbidden_artifact_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GateSpec:
+    mode: str
+    artifact_path: str | None = None
+    checks: tuple[dict, ...] = ()
+
+
+def task_prefers_report_only(task: str, contract: TaskContract | None = None) -> bool:
+    from devkit import report_only_policy as _report_only
+
+    text = task or ""
+    normalized_delivery = normalize_delivery_mode(getattr(contract, "delivery_mode", "") or "")
+    return _report_only.task_prefers_report_only(
+        text,
+        normalized_delivery_mode=normalized_delivery,
+        explicit_signals=_REPORT_ONLY_SIGNALS,
+    )
+
+
+def files_look_report_only(files: list[str] | None) -> bool:
+    normalized_files = [
+        str(path or "").strip().replace("\\", "/").lstrip("./")
+        for path in (files or [])
+        if str(path or "").strip()
+    ]
+    if not normalized_files:
+        return False
+    exts = {os.path.splitext(path)[1].lower() for path in normalized_files}
+    if any(os.path.basename(path).startswith("test_") and path.endswith(".py") for path in normalized_files):
+        return False
+    if exts and exts.issubset({".md", ".markdown", ".txt", ".json", ".html", ".csv", ".yaml", ".yml"}):
+        return True
+    code_files = [path for path in normalized_files if os.path.splitext(path)[1].lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".sh", ".bash"}]
+    if not code_files:
+        return False
+    return all(path.split("/", 1)[0] == "runs" for path in code_files)
+
+
+def task_prefers_manual_review(task: str) -> bool:
+    text = task or ""
+    lowered = text.lower()
+    return (
+        any(sig in text for sig in _MANUAL_REVIEW_SIGNALS if not sig.isascii())
+        or any(sig in lowered for sig in _MANUAL_REVIEW_SIGNALS if sig.isascii())
+    )
 
 
 def _normalize_prefixes(values) -> tuple[str, ...]:
@@ -139,3 +196,44 @@ def validate_materialized_paths(contract: TaskContract, files: list[str]) -> dic
             else f"task-contract-forbidden-artifact-paths:{','.join(blocked)}"
         ),
     }
+
+
+def build_gate_spec(task: str, contract: TaskContract, files: list[str] | None = None) -> GateSpec:
+    normalized_files = [
+        str(path or "").strip().replace("\\", "/").lstrip("./")
+        for path in (files or [])
+        if str(path or "").strip()
+    ]
+    text = str(task or "")
+    lowered = text.lower()
+    json_files = [path for path in normalized_files if path.lower().endswith(".json")]
+    report_files = [path for path in normalized_files if os.path.splitext(path)[1].lower() in {".md", ".markdown", ".txt", ".html", ".csv", ".yaml", ".yml"}]
+    json_path = _extract_json_path(text) or (json_files[0] if json_files else None)
+    field_names = _extract_field_names(text)
+    if task_prefers_manual_review(text):
+        return GateSpec(mode="manual_review")
+    if json_path and ("json" in lowered or "json.load" in lowered or "json 文件" in text):
+        checks = [{"type": "exists"}, {"type": "min_size", "bytes": 10}, {"type": "json_load"}]
+        checks.extend({"type": "field_present", "field": name} for name in field_names)
+        return GateSpec(mode="artifact_json", artifact_path=json_path, checks=tuple(checks))
+    if task_prefers_report_only(text, contract) and (report_files or json_files or files_look_report_only(normalized_files) or contract.task_kind in {"diag", "report", "audit"}):
+        return GateSpec(mode="report_only")
+    return GateSpec(mode="pytest")
+
+
+def _extract_json_path(text: str) -> str | None:
+    match = _JSON_PATH_RE.search(text or "")
+    if not match:
+        return None
+    return match.group(1).replace("\\", "/").lstrip("./")
+
+
+def _extract_field_names(text: str) -> tuple[str, ...]:
+    seen: list[str] = []
+    for match in _FIELD_RE.finditer(text or ""):
+        field = match.group(1)
+        if field.lower() in {"json", "file"}:
+            continue
+        if field not in seen:
+            seen.append(field)
+    return tuple(seen)
