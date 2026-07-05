@@ -1,7 +1,9 @@
-# UnknownsMap v1 — every team run emits this before any Inbox -> Assigned
+# UnknownsMap v1 — boundary-aware-agent skill version
 
 unknowns_map:
   run_id: run_20260706_001
+  emitted_at: 2026-07-06T12:00:00+08:00
+  emitted_by: orchestrator_role + claude-fable-5
 
   user_unknowns:
     - id: acceptance_criteria
@@ -40,7 +42,10 @@ unknowns_map:
       default_action: assume_default_ceiling
 
 # Resolution workflow:
-#   1. Orchestrator emits this on team.yaml creation.
-#   2. plan_gate reviews; per unknown either resolves, marks assumption, or escalates.
-#   3. After plan_gate, map becomes part of run root and is reused by every handoff.
-#   4. Improvement auditor counts which unknowns caused rework and adjusts templates.
+#   1. Orchestrator emits this at team.yaml creation.
+#   2. plan_gate reviews; each unknown either resolves, marks
+#      assumption, or escalates.
+#   3. After plan_gate, map becomes part of run root.
+#   4. Improvement auditor counts which unknowns caused rework.
+
+shared_with: agentteam-runtime skill

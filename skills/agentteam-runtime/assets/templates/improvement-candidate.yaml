@@ -1,31 +1,41 @@
-# ImprovementCandidate v1 — must NEVER be auto-applied to running runtime
+# ImprovementCandidate v1 (boundary-aware-agent version)
+
 improvement_candidate:
-  id: ic_20260706_001
+  schema_version: 1
+
+  id: ic_<run>_<n>
   source_runs:
     - run_20260706_001
 
   finding:
-    type: redundant_tool_call
+    type: redundant_tool_call           # enum, see references/improvement-loop.md
     summary: "Researcher re-fetched the same source twice in run_20260706_001."
+    evidence_refs:
+      - "trace/events.jsonl#events_42_to_55"
 
   proposed_change:
-    target: references/governance-protocol.md
-    patch_type: routing_rule
+    target: "references/governance-protocol.md"
+    patch_type: routing_rule            # enum, see references/improvement-loop.md
     summary: "Add shared source cache step before parallel research fan-out."
 
   expected_gain:
     latency: "-10%"
     token_cost: "-8%"
+    quality: "+0.05 (rubric)"
 
   risk:
-    level: medium
+    level: medium                        # low | medium | high
     notes:
       - "Cache may preserve stale context if not invalidated."
 
   eval_plan:
-    - "Replay 3 previous research tasks; compare source coverage and cost."
+    - test_type: trace_replay
+      command: "scripts/replay_research_redundancy.py --task T3"
+      expected: "no duplicate source fetch within same run"
 
   approval:
     required_by:
       - reviewer
-      - human_for_core_policy    # required when patch_type ∈ prohibited
+      - human_for_core_policy            # required if patch_type ∈ prohibited
+
+shared_with: agentteam-runtime skill
