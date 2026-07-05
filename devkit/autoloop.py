@@ -186,7 +186,22 @@ def run_once(task_spec: dict) -> dict:
         from devkit.rdloop import validate_goal_spec
         validate_goal_spec(task_spec)
 
-    carrier_map = task_spec.get("carrier") or {}
+    # Phase B legacy flat-shape: `carrier` may be a single string
+    # ("deepseek") instead of a stage→carrier dict. Default to applying
+    # the string to all four standard stages; carrier=None or dict
+    # also handled.
+    _raw_carrier = task_spec.get("carrier")
+    if isinstance(_raw_carrier, str):
+        carrier_map = {
+            "plan": _raw_carrier,
+            "implement": _raw_carrier,
+            "verify": _raw_carrier,
+            "review": _raw_carrier,
+        }
+    elif isinstance(_raw_carrier, dict):
+        carrier_map = _raw_carrier
+    else:
+        carrier_map = {}
     carriers = [
         f"{_normalize_stage_key(k)}={normalize_model_name(v, stage=_normalize_stage_key(k))}"
         for k, v in carrier_map.items()

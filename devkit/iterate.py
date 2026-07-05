@@ -1,4 +1,40 @@
-"""Project-level iteration helpers for autonomous run -> reflect -> continue loops."""
+"""Project-level iteration helpers for autonomous run -> reflect -> continue loops.
+
+Phase F (infer_failure_code bridge)
+-----------------------------------
+
+:func:`infer_failure_code` accepts an optional ``gate_verdict`` keyword
+argument that, when provided, lets the typed Phase D ``GateVerdict`` win
+over the legacy text-regex path. This is the seam Phase E's
+``unify-run-gate`` open: ``run_loop`` writes a ``verdict.json`` carrying
+a typed :class:`devkit.gatekeeper.GateVerdict`, and downstream
+:func:`apply_reflection` consumes that verdict to figure out the next
+action — instead of scraping free-text run logs.
+
+Behavior:
+
+* When ``gate_verdict`` is ``None`` (the default), the function falls
+  back to the original text-regex scan. Existing callers keep identical
+  behavior.
+* When ``gate_verdict`` is provided, the function inspects
+  ``spec.failure_codes`` (in order) and returns the first Phase D code
+  that maps to a Phase A repairer code via
+  :func:`devkit.failure_codes.phase_d_to_phase_a`. If the verdict is
+  ``passed=True`` (no failure codes), or all listed codes are
+  un-mappable (e.g. ``EVIDENCE_MISSING``), the function returns ``""``
+  so the verdict wins over any text the caller might also pass.
+
+Accepted shapes for ``gate_verdict``:
+
+* A plain ``dict`` shaped like ``{"spec": {"passed": bool,
+  "failure_codes": [...]}, ...}`` — the wire format of
+  :meth:`devkit.gatekeeper.GateVerdict.to_dict`.
+* A :class:`devkit.gatekeeper.GateVerdict` dataclass instance — the
+  function introspects ``.spec`` directly.
+
+Any other shape falls back to the text-regex path silently
+(``gate_verdict`` is treated as ``None`` for forward-compat).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +42,7 @@ import json
 import pathlib
 import re
 from datetime import datetime
+from typing import Any, Mapping
 
 from devkit import autoloop
 
@@ -117,7 +154,62 @@ def parse_reflection(text: str) -> dict:
     }
 
 
-def infer_failure_code(*texts: str) -> str:
+def _verdict_to_spec(gate_verdict: Any) -> dict:
+    """Coerce a GateVerdict (dict, dataclass, or None) to its ``spec`` dict.
+
+    Returns an empty dict if the input cannot be coerced — callers should
+    treat that as "no verdict spec available" and fall back to the
+    text-regex path. The empty dict has ``passed`` defaulting to
+    ``None`` and ``failure_codes`` defaulting to ``[]`` so the verdict
+    path is skipped (no early-return, no Phase D translation attempted).
+    """
+    if gate_verdict is None:
+        return {}
+    spec: Any = None
+    if isinstance(gate_verdict, Mapping):
+        spec = gate_verdict.get("spec")  # wire-format dict from .to_dict()
+    elif hasattr(gate_verdict, "spec"):
+        spec = gate_verdict.spec           # GateVerdict dataclass
+    if isinstance(spec, Mapping):
+        return dict(spec)
+    return {}
+
+
+def infer_failure_code(
+    *texts: str,
+    gate_verdict: dict | None = None,
+) -> str:
+    """Extract the most likely failure code from free-text and/or a typed verdict.
+
+    Phase F (infer_failure_code bridge):
+
+    * If ``gate_verdict`` is provided, look at its ``spec.failure_codes``
+      in order. Translate the first Phase D code that maps to a Phase A
+      repairer code via :func:`devkit.failure_codes.phase_d_to_phase_a`
+      and return that translated value. If the verdict is ``passed=True``
+      (no failure codes) or all listed codes are un-mappable, return
+      ``""`` so the verdict wins over text.
+    * Otherwise, fall through to the original text-regex path: scan
+      each ``texts`` for an uppercase token matching
+      ``[A-Z][A-Z0-9_]{5,}`` and return the first non-trivial match.
+      Excluded tokens: ``REQUEST``, ``CHANGES``, ``STALLED_NO_READY_TASK``.
+
+    The default ``gate_verdict=None`` keeps the legacy behavior — all
+    existing callers see no change.
+    """
+    if gate_verdict is not None:
+        from devkit.failure_codes import phase_d_to_phase_a
+        spec = _verdict_to_spec(gate_verdict)
+        codes = spec.get("failure_codes") or []
+        if isinstance(codes, (list, tuple)):
+            for code in codes:
+                mapped = phase_d_to_phase_a(str(code))
+                if mapped:
+                    return mapped
+        # Verdict is the source of truth: if it passed cleanly, or every
+        # listed failure_code is un-mappable to a repairer code, return
+        # "" rather than fall through to text scraping.
+        return ""
     for text in texts:
         body = str(text or "")
         for match in _FAILURE_CODE_RE.finditer(body):

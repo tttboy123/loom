@@ -12,17 +12,20 @@ Loom 研发流程套件（devkit）—— 用「角色模型载体」跑一遍 R
 """
 from __future__ import annotations
 
+import functools
 import json
+import logging
 import os
 import pathlib
-import shutil
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import time
 import urllib.error
 import urllib.request
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -35,6 +38,42 @@ from devkit import producer_log as _producer_log
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent  # agent-platform/
 PROTOCOL_SCHEMAS_DIR = pathlib.Path(__file__).resolve().parent / "protocol_schemas"
+
+# Module-level logger for the run_loop / verdict-write path. Lazily-named so
+# callers (and the gate) can route warnings to the standard `devkit.rdloop`
+# logger channel instead of swallowing them silently.
+logger = logging.getLogger("devkit.rdloop")
+
+
+# --------------------------------------------------------------------------- #
+# Deprecation shim for the Phase-B ``evaluate_final_gate`` kwargs-style gate.
+#
+# Phase D introduced ``devkit.gatekeeper.evaluate_run_gate`` which returns a
+# typed ``GateVerdict`` alongside the legacy ``(status_code, reasons)``. New
+# code paths (rdloop.run_loop) call ``evaluate_run_gate`` directly; the
+# kwarg-shape ``evaluate_final_gate`` is kept around for direct callers
+# (notably the regression suite under ``tests/test_rdloop_spec_integration``)
+# but every call now emits a ``DeprecationWarning`` that points at the
+# recommended replacement.
+# --------------------------------------------------------------------------- #
+def _deprecated(func):
+    """Emit ``DeprecationWarning`` on every call; return the underlying result.
+
+    Used to retire Phase-B-only public helpers without breaking out-of-tree
+    callers in one commit — the warning is the documented contract.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        warnings.warn(
+            f"devkit.rdloop.{func.__name__} is deprecated; "
+            "use devkit.gatekeeper.evaluate_run_gate instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +238,12 @@ def evaluate_final_gate(
 ) -> tuple[str, list[str]]:
     """GateSpec-aware final verdict.
 
+    .. deprecated::
+        Use :func:`devkit.gatekeeper.evaluate_run_gate` instead. This
+        kwarg-shape helper is kept for direct callers and the regression
+        suite; ``run_loop`` no longer calls it. Emits a
+        ``DeprecationWarning`` on every invocation.
+
     Loads devkit/protocol_schemas/gate_spec.schema.json as a baseline and:
       - validates ``gate_spec`` if it's a dict (loud failure on shape mismatch)
       - tolerates the runtime ``devkit.task_contract.GateSpec`` dataclass
@@ -236,6 +281,9 @@ def evaluate_final_gate(
         tests_failed=tests_failed,
         over_budget=over_budget,
     )
+
+
+evaluate_final_gate = _deprecated(evaluate_final_gate)
 
 
 def evidence_packet_artifact_source(rel_path: str, *, workspace: pathlib.Path, build_dir: pathlib.Path) -> str:
@@ -2786,14 +2834,39 @@ def run_loop(
             hint = _blocked_retry_hint(reason)
             blocked_lines.append(f"> - {stage_key}: {reason}" + (f"；{hint}" if hint else ""))
         blocked_note = "\n> 未跑通阶段：\n" + "\n".join(blocked_lines) + "\n"
-    status_code, reasons = evaluate_final_gate(
-        blocked=blocked,
-        review_blocked=review_blocked,
-        review_requested_changes=review_requested_changes,
-        tests_failed=tests_failed,
-        over_budget=over_budget,
-        gate_spec=gate_spec,
+    # Phase D wire-up: call the typed run-gate bridge instead of the
+    # legacy kwargs-shaped helper. The bridge sanitises gate_inputs (Phase-B
+    # bool flags → Phase-D enums, writer-native scalars forwarded
+    # verbatim, unknown keys dropped) and returns the typed GateVerdict
+    # alongside the legacy ``(status_code, reasons)`` tuple — the latter
+    # preserves the existing reflection/memory consumer shape unchanged.
+    from devkit import gatekeeper as _gatekeeper
+
+    gate_inputs = {
+        "blocked": blocked,
+        "review_blocked": review_blocked,
+        "review_requested_changes": review_requested_changes,
+        "tests_failed": tests_failed,
+        "over_budget": over_budget,
+        "gate_spec": gate_spec,
+    }
+    status_code, reasons, gate_verdict = _gatekeeper.evaluate_run_gate(
+        run_id=ts,
+        work_item_id=resolved_task_id,
+        run_dir=run_dir,
+        gate_inputs=gate_inputs,
     )
+    # Persist the typed verdict next to the run artefacts. Fail-open
+    # (logger.warning, not silent ``pass``) so a broken write does not
+    # block the loop but operators can still see what happened in the log.
+    try:
+        _gatekeeper.write_verdict(gate_verdict, run_dir / "verdict.json")
+    except Exception as exc:  # noqa: BLE001 — fail-open, log the cause
+        logger.warning(
+            "run_loop: write_verdict(%s/verdict.json) failed: %s",
+            run_dir,
+            exc,
+        )
     candidate_state = _resolve_candidate_state(
         stages_present=_all_stage_keys,
         blocked=blocked,

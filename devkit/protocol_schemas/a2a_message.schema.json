@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentMessage",
+  "description": "A2A inter-agent message envelope — handoff, request, response, or broadcast.",
+  "type": "object",
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "const": "loom.dev/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "AgentMessage"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["id", "from_agent", "to_agent", "timestamp"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique message identifier (UUID recommended)."
+        },
+        "from_agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Sender agent id (must match a registered AgentCard.metadata.id)."
+        },
+        "to_agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Recipient agent id (must match a registered AgentCard.metadata.id), or '*' for broadcast."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp (UTC preferred)."
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "required": ["kind", "body"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["handoff", "request", "response", "broadcast"],
+          "description": "Message semantics: handoff (transfer control), request (expect response), response (reply to a request), broadcast (one-to-many)."
+        },
+        "body": {
+          "type": "object",
+          "description": "Free-form payload. Schema is up to the participating agents."
+        },
+        "correlation_id": {
+          "type": "string",
+          "description": "Used to pair a response with its request (and to dedupe broadcasts). Optional for handoff and broadcast."
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional time-to-live hint for routing/queueing."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

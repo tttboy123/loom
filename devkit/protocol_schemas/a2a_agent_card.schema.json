@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentCard",
+  "description": "A2A Agent Card — declarative identity + capability advertisement for a Loom agent.",
+  "type": "object",
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "const": "loom.dev/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "AgentCard"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable agent identifier (e.g. 'triager', 'repairer', 'observer')."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable display name."
+        },
+        "description": { "type": "string" },
+        "version": { "type": "string" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "required": ["capabilities", "endpoint", "protocol_version"],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Capability strings this agent advertises (e.g. 'backlog.read', 'evidence.write', 'incident.dispatch', 'repair.execute')."
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Either an in-process callable reference ('devkit.repairer.dispatch') or an HTTP path ('/agents/repairer')."
+        },
+        "protocol_version": {
+          "type": "string",
+          "const": "loom.dev/v1"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
