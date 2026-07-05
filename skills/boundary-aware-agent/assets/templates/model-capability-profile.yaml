@@ -1,0 +1,64 @@
+# ModelCapabilityProfile v1 — per-model capability + restriction declaration
+
+model_capability_profile:
+  schema_version: 1
+
+  id: claude-fable-5
+  human_name: "Claude Fable 5"
+  vendor: anthropic
+  family: claude
+  release_date: 2026-06-09
+
+  class: frontier_long_horizon       # see references/model-capability-profile.md
+
+  pricing_usd_per_million_tokens:
+    input: 10
+    output: 50
+
+  context_window_tokens: 1000000
+
+  strengths:
+    - "long-horizon planning"
+    - "code generation (SWE-Bench Pro 80.3%)"
+    - "vision-grounded reasoning"
+    - "scientific review"
+
+  weak_spots:
+    - "short chats are over-priced for the capability"
+    - "tendency to over-plan under 'high effort' prompts"
+    - "may perform unrequested cleanup actions"
+
+  recommended_tasks:
+    - "complex multi-day R&D runs"
+    - "code review on critical paths"
+    - "designing new architecture"
+
+  forbidden_or_gate_required:
+    - "permission policy change"
+    - "safety rule change"
+    - "system prompt modification"
+    - "model routing change"
+
+  required_scaffolding:
+    - "strict output schema"
+    - "handoff envelope (5-element)"
+    - "external verifier for risks ≥ high"
+
+  capability_classifier:
+    present: true
+    routes_to: claude-opus-4.8
+    triggers:
+      - "cybersecurity instructions"
+      - "biological/chemical weapon content"
+      - "model distillation requests"
+
+  rate_limits:
+    requests_per_minute: 50
+    tokens_per_minute: 5000000
+
+  public_evidence:
+    swe_bench_pro: 0.803
+    gdp_pdf_vision: 0.298
+
+# Naming: id MUST be machine-readable and unique across profiles.
+# The runtime loads from `.loom/models/profiles/<id>.yaml`.

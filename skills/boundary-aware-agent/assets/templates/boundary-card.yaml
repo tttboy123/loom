@@ -1,0 +1,58 @@
+# BoundaryCard v1 — per-task capability / context / tool / risk statement
+
+boundary_card:
+  task_id: T2
+  boundary_id: bc_<run>_<task>
+  emitted_at: 2026-07-06T12:05:00+08:00
+  emitted_by: builder_role + <model_id>
+
+  model_fit:
+    score: 0.72                       # [0, 1]
+    candidate_models:
+      - "<model_a>"
+      - "<model_b>"
+    chosen: "<model_a>"
+    rationale: "..."
+
+  context_sufficiency:
+    status: sufficient                # sufficient | partial | insufficient
+    missing:
+      - "..."
+
+  tool_sufficiency:
+    status: sufficient                # sufficient | partial | insufficient
+    missing:
+      - "..."
+
+  date_sensitivity:
+    status: fresh                     # fresh | recency_risk | time_critical
+    notes:
+      - "..."
+
+  risk_domain:
+    level: medium                     # low | medium | high | critical
+    risk_factors:
+      - type: external_side_effect
+        severity: medium
+        rationale: "touches a non-sandbox artifact"
+
+  required_evidence:
+    - type: tests
+      command: "pytest tests/test_T2.py"
+      evidence_path: "evidence/T2/"
+      reproducible: true
+
+  stop_conditions:
+    - "Do not modify devkit/runtime/ without human approval."
+    - "Abort if cost > 0.5 USD per task."
+
+  escalation:
+    auto_to: "reviewer"
+    on_violation: "refuse handoff and route to reviewer"
+
+  audit:
+    schema_version: 1
+    source_skill: boundary-aware-agent@v0.1.0
+
+# Validation: if model_fit.score < 0.5, refuse execution; if risk.level
+# ∈ {high, critical} and escalation.empty, refuse handoff.

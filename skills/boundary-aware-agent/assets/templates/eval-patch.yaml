@@ -1,0 +1,27 @@
+# EvalPatch v1 — regression test for an ImprovementCandidate
+
+eval_patch:
+  schema_version: 1
+
+  id: eval_<n>
+  candidate_ref: ic_<run>_<n>
+
+  test_type: trace_replay               # trace_replay | static | live
+  test_command: "scripts/replay_<id>.py --task T3"
+  expected: "no duplicate source fetch within same run"
+
+  # Required for canary: run at least once successfully before
+  # the candidate is eligible for promotion.
+  baseline_run_id: null                # filled when first run completes
+
+  regression_target:
+    metric: redundant_tool_call_rate   # one of metrics.md
+    target_value: "<= 0.05"
+    measurement_window: "30 days"
+
+  # Boundary: if eval regresses, what happens?
+  rollback_policy:
+    auto_rollback: true
+    on_regression_pct: 0.10           # 10% relative regression triggers rollback
+
+related_to: boundary-aware-agent skill

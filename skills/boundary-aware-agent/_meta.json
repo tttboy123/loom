@@ -1,0 +1,60 @@
+{
+  "name": "boundary-aware-agent",
+  "version": "0.1.0-draft",
+  "status": "discussion",
+  "date": "2026-07-06",
+  "derived_from": "model-self-improvement-and-boundary-awareness.md (2026-07-05, lune draft)",
+  "refers_to_models": [
+    {
+      "name": "Claude Fable 5",
+      "vendor": "Anthropic",
+      "released": "2026-06-09",
+      "tier": "frontier_public",
+      "pricing_usd_per_million_tokens": "10 / 50",
+      "notes": "Mythos-class public version. Adds capability classifier that routes sensitive requests to Opus 4.8."
+    },
+    {
+      "name": "Claude Mythos 5",
+      "vendor": "Anthropic",
+      "tier": "frontier_restricted",
+      "notes": "Available only to Glasswing partners and approved researchers."
+    }
+  ],
+  "purpose": "Externalize the Fable-5/Opus-style capability boundary into reusable artifacts (Blindspot Pass, Boundary Card, Model Capability Profile) so other models — MiniMax, Codex, open-source, mid-tier — benefit too.",
+  "scope_articles": [
+    "Per-agent blindspot pass before planning",
+    "Boundary card for current task (model fit, context fit, tool fit, risk)",
+    "Model capability profile (per-model strengths and gates)",
+    "Evidence-grounded execution (no claim without proof)",
+    "Controlled self-improvement loop (8-step)"
+  ],
+  "out_of_scope": [
+    "Modifying the chosen model's weights or system prompt",
+    "Self-approval of permission, safety or routing changes",
+    "Bypassing the Loom runtime gates defined in agentteam-runtime skill"
+  ],
+  "consumes": [
+    "agentteam-runtime skill (for run context, gate policy, handoff envelope)"
+  ],
+  "produces": [
+    "UnknownsMap YAML (shared with agentteam-runtime)",
+    "BoundaryCard YAML",
+    "ModelCapabilityProfile YAML",
+    "ImprovementCandidate YAML (shared with agentteam-runtime)",
+    "EvalPatch YAML",
+    "Blindspot Pass prompt pack"
+  ],
+  "audience_split": {
+    "skill_designer": "blindspot-pass.md, boundary-card.md, model-capability-profile.md",
+    "prompt_engineer": "prompt-pack.md, per-model-adaptation.md, pitfalls.md",
+    "ops": "improvement-loop.md, metrics.md, evaluation-modes.md",
+    "reviewer": "pitfalls.md, evidence-grounding.md"
+  },
+  "verification": {
+    "phase0_done": "All templates render in YAML; prompt pack verified against 3 sample inputs each",
+    "phase1_done": "Blindspot Pass runs as part of loom run preflight; refusal rules fire on violation",
+    "phase2_done": "Improvement loop emits candidates for 5 failure patterns; eval patch generator ships 1 regression test per candidate",
+    "phase3_done": "Canary promotion flow and rollback work; none of the 4 prohibited patch types ever auto-promote"
+  },
+  "naming_note": "Original draft called this layer 'CBAL' (Capability Boundary Awareness Layer). Renamed to drop the 'Layer' suffix and to avoid namespace overlap with 'CBF' (Control Barrier Functions) used in the companion control-theory doc."
+}
