@@ -533,12 +533,38 @@ def _summarize_evidence(evidence: dict | None) -> dict:
     # counters from the most common locations without requiring a schema.
     summary = evidence.get("summary") if isinstance(evidence.get("summary"), dict) else {}
     spec = evidence.get("spec") if isinstance(evidence.get("spec"), dict) else {}
+    # Phase D EvidencePacket writer (``devkit/evidence_writer.write_run_evidence``)
+    # embeds a structured counters object under ``spec.metrics`` — and the
+    # canonical ``spec.summary`` is a string (per `evidence_packet.schema.json`).
+    # When the summary isn't a dict, fall back to ``spec.metrics`` first so
+    # the packet output is consumable by the gatekeeper without a parallel
+    # summary-table rewrite.
+    metrics = spec.get("metrics") if isinstance(spec.get("metrics"), dict) else {}
     results = evidence.get("results") if isinstance(evidence.get("results"), list) else []
     if not results and isinstance(evidence.get("stages"), list):
         results = list(evidence.get("stages") or [])
 
-    passed = _coerce_int(summary.get("tests_passed", summary.get("passed", 0)))
-    failed = _coerce_int(summary.get("tests_failed", summary.get("failed", 0)))
+    def _first_int(*candidates: Any) -> int:
+        for cand in candidates:
+            if cand is None or cand == "":
+                continue
+            value = _coerce_int(cand)
+            if value:
+                return value
+        return 0
+
+    passed = _first_int(
+        summary.get("tests_passed"),
+        summary.get("passed"),
+        metrics.get("tests_passed"),
+        spec.get("tests_passed"),
+    )
+    failed = _first_int(
+        summary.get("tests_failed"),
+        summary.get("failed"),
+        metrics.get("tests_failed"),
+        spec.get("tests_failed"),
+    )
     if not passed and not failed and results:
         for entry in results:
             if not isinstance(entry, dict):
@@ -557,15 +583,22 @@ def _summarize_evidence(evidence: dict | None) -> dict:
     cost = _coerce_float(
         summary.get("cost_usd",
                     spec.get("cost_usd",
-                              evidence.get("cost_usd", 0.0)))
+                             metrics.get("cost_usd",
+                                         evidence.get("cost_usd", 0.0))))
     )
     cap = _coerce_float(
         summary.get("budget_cap_usd",
                     spec.get("budget_cap_usd",
-                             evidence.get("budget_cap_usd", DEFAULT_BUDGET_CAP_USD)))
+                             metrics.get("budget_cap_usd",
+                                         evidence.get("budget_cap_usd", DEFAULT_BUDGET_CAP_USD))))
     )
 
+    # The artifact manifest may live at the top level (legacy/Phase B
+    # envelope) or under spec (Phase D EvidencePacket). Look at both so the
+    # gatekeeper works with either writer.
     manifest = evidence.get("artifact_manifest")
+    if not isinstance(manifest, dict) and isinstance(spec.get("artifact_manifest"), dict):
+        manifest = spec["artifact_manifest"]
     manifest_source = ""
     manifest_present = False
     if isinstance(manifest, dict):
@@ -636,6 +669,36 @@ def _classify_from_summary(summary: dict) -> str:
 
 
 # ----------------------------------------------------------------------------
+# Evidence location + verdict composition
+# ----------------------------------------------------------------------------
+def _locate_evidence_file(edir: pathlib.Path, run_id: str) -> tuple[pathlib.Path | None, dict | None, str]:
+    """Locate the evidence payload under ``edir`` for ``run_id``.
+
+    Lookup order (first hit wins; missing-file reads are silent):
+
+    1. ``<edir>/<run_id>/evidence_packet.json`` — the canonical Phase D
+       per-run packet written by ``devkit.evidence_writer.write_run_evidence``.
+    2. ``<edir>/evidence.json`` — the legacy Phase B top-level dump used by
+       pre-Phase-D tests (the writer was added without an upgrade path).
+    3. ``None`` if neither exists.
+
+    Returns ``(path, payload_or_none, picked_label)`` where ``picked_label``
+    is one of ``"evidence_packet"`` / ``"evidence_legacy"`` / ``"missing"``
+    — the verdict line preserves the picked location so callers can tell
+    which path was used.
+    """
+    packet_path = edir / run_id / "evidence_packet.json"
+    packet = _read_evidence(packet_path)
+    if packet is not None:
+        return packet_path, packet, "evidence_packet"
+    legacy_path = edir / "evidence.json"
+    legacy = _read_evidence(legacy_path)
+    if legacy is not None:
+        return legacy_path, legacy, "evidence_legacy"
+    return None, None, "missing"
+
+
+# ----------------------------------------------------------------------------
 # evaluate_final_gate — the main entry point used by the Runner
 # ----------------------------------------------------------------------------
 def evaluate_final_gate(
@@ -646,11 +709,21 @@ def evaluate_final_gate(
     evidence_packet: dict | Any | None = None,
     budget_cap_usd: float | None = None,
 ) -> GateVerdict:
-    """Read ``<evidence_dir>/evidence.json`` and produce a final verdict.
+    """Read the per-run evidence packet (or legacy ``evidence.json``) and produce a verdict.
+
+    Lookup under ``evidence_dir`` for ``run_id``:
+
+    1. ``<evidence_dir>/<run_id>/evidence_packet.json`` — canonical Phase D
+       per-run packet written by :func:`devkit.evidence_writer.write_run_evidence`.
+    2. ``<evidence_dir>/evidence.json`` — legacy Phase B top-level dump,
+       kept as a transparent fallback so pre-existing tests keep working.
+
+    When **neither** file exists, the verdict is ``passed=False`` with code
+    ``EVIDENCE_MISSING`` and the reason names both candidate paths.
 
     Failure conditions (any one flips ``passed=False`` and adds its code):
 
-    * evidence file missing → ``EVIDENCE_MISSING``
+    * neither evidence file found → ``EVIDENCE_MISSING``
     * any test failed (or stage marked ``failure``/``regression``) → ``TEST_REGRESSION``
     * ``cost_usd`` > budget cap (default :data:`DEFAULT_BUDGET_CAP_USD`,
       overridable by kwarg or env ``LOOM_COST_LIMIT_USD``) → ``BUDGET_EXCEEDED``
@@ -660,7 +733,7 @@ def evaluate_final_gate(
     Evidence source priority:
 
     1. ``evidence_packet`` argument (typed packet wins).
-    2. ``spec.source`` inside ``evidence.json``.
+    2. ``spec.source`` inside the evidence file.
     3. ``EVIDENCE_UNKNOWN``.
     """
     rid = _ensure_str(run_id, "run_id")
@@ -672,13 +745,15 @@ def evaluate_final_gate(
     failure_codes: list[str] = []
     reasons: list[str] = []
 
-    evidence_path = edir / "evidence.json"
-    evidence = _read_evidence(evidence_path)
+    evidence_path, evidence, picked_label = _locate_evidence_file(edir, rid)
     summary = _summarize_evidence(evidence)
 
     if evidence is None:
         failure_codes.append(FC_EVIDENCE_MISSING)
-        reasons.append(f"evidence.json missing at {evidence_path}")
+        reasons.append(
+            f"evidence missing under {edir} for run_id={rid!r} "
+            f"(looked for <edir>/<run_id>/evidence_packet.json and <edir>/evidence.json)"
+        )
 
     tests_failed = int(summary.get("tests_failed_count", 0)) > 0
     if tests_failed:
@@ -721,6 +796,9 @@ def evaluate_final_gate(
     lineage: dict[str, Any] = {}
     if isinstance(evidence, dict) and isinstance(evidence.get("lineage"), dict):
         lineage = dict(evidence["lineage"])
+    if evidence_path is not None:
+        lineage["evidence_path"] = str(evidence_path)
+        lineage["evidence_source_kind"] = picked_label
 
     return GateVerdict.build(
         run_id=rid,
