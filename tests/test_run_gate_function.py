@@ -5,7 +5,7 @@ The five scenarios required by the task spec:
 1. Happy path: synthetic run_dir with 00-task.md + 99-gate.md →
    ``evaluate_run_gate`` returns ``("ok", [], gate_verdict)`` with
    ``gate_verdict.passed=True``.
-2. Failed path: synthetic run_dir, ``gate_inputs.tests_failed=1`` →
+2. Failed path: synthetic run_dir, ``gate_inputs.tests_failed=True`` →
    returns non-``ok`` status, reasons contains ``"tests_failed"``,
    ``gate_verdict.failure_codes`` contains ``"TEST_REGRESSION"``.
 3. ``failure_codes_override`` parameter: when passed, it replaces
@@ -15,10 +15,18 @@ The five scenarios required by the task spec:
 5. Empty run_dir (no files): gate falls through to ``EVIDENCE_MISSING``,
    ``verdict.passed=False``, reasons contains the translated string.
 
-Plus 3 supporting tests for the public-surface / signature contract and
-the ``evidence_dir`` override (so the function can be exercised without
-writing into the canonical ``devkit/evidence`` directory the way
-production code does).
+Plus a dedicated ``TestGateInputsSanitization`` class that pins down the
+**Phase B ↔ Phase D bridge contract** for ``gate_inputs``: Phase-B
+boolean flags (``tests_failed``, ``over_budget``, ``blocked``, …) are
+translated to Phase-D enums and routed through ``failure_codes_override``;
+writer-native scalars are forwarded verbatim; unknown keys are filtered
+without crashing. This is what makes the function callable from rdloop
+without rewriting the call site — rdloop hands in a dict whose keys are
+both ``blocked`` / ``over_budget`` / ``review_blocked`` (Phase-B flags
+the writer would reject) and any writer-native scalars it wants.
+The previous attempt (commit ``0ea0602``) forwarded ``**gate_inputs``
+verbatim and crashed on rdloop's keys — this test class is the regression
+guard for that fix.
 
 Verification target
 -------------------
@@ -119,6 +127,11 @@ class TestFailedPath(unittest.TestCase):
         self.evidence_dir = self.tmp / "evidence"
 
     def test_returns_non_ok_with_translated_reason(self):
+        # ``tests_failed=True`` is the spec's exact example — Phase-B boolean
+        # gate flag (rdloop's interface). The new sanitization layer should
+        # detect it, translate to TEST_REGRESSION, and route it through
+        # failure_codes_override (NOT forward it to the writer, which would
+        # reject a bool under the int|None tests_failed parameter).
         status_code, reasons, verdict = evaluate_run_gate(
             run_id="r-gate-fail",
             work_item_id="wi-gate-fail",
@@ -128,7 +141,7 @@ class TestFailedPath(unittest.TestCase):
                 "status_code": "tests_failed",
                 "gate": "NO_GO",
                 "tests_passed": 10,
-                "tests_failed": 1,
+                "tests_failed": True,  # Phase-B flag, NOT writer-native int
                 "cost_usd": 0.5,
                 "budget_cap_usd": 5.0,
             },
@@ -329,6 +342,202 @@ class TestPublicSurface(unittest.TestCase):
 
         self.assertIn("phase_d_to_phase_b", fc.__all__)
         self.assertIn("PHASE_D_TO_PHASE_B", fc.__all__)
+
+
+# ============================================================================
+# Test 6 — gate_inputs sanitization (Phase B ↔ Phase D bridge contract)
+# ============================================================================
+class TestGateInputsSanitization(unittest.TestCase):
+    """The bridge must accept rdloop's gate-status dict and writer-native
+    scalars interchangeably, without crashing on Phase-B flags the writer
+    would reject. This is the regression guard for the verifier-rejected
+    attempt 1 — prior version forwarded ``**gate_inputs`` verbatim and
+    crashed on ``blocked`` / ``over_budget`` / ``review_blocked`` / etc.
+
+    The contract tested here:
+
+    * Phase-B boolean flags (``tests_failed``, ``over_budget``,
+      ``blocked``, ``review_blocked``, ``review_requested_changes``,
+      ``review_timeout``, and the ``review_request_changes`` alias)
+      are translated to Phase D enums.
+
+    * Writer-native scalars (``cost_usd``, ``budget_cap_usd``,
+      ``tests_passed``, ``tests_failed:int``, ``status_code``, ``gate``,
+      …) are forwarded to the writer verbatim.
+
+    * ``tests_failed`` has dual meaning: ``bool`` → Phase-B flag,
+      ``int`` → writer-native count (verified below).
+
+    * Unknown keys are dropped with an INFO log; the function never
+      raises ``TypeError`` on unknown kwarg.
+
+    * ``_sanitize_gate_inputs`` and ``_combine_override`` are exposed
+      for direct unit-level checks.
+    """
+
+    def setUp(self):
+        self.tmp_ctx = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_ctx.cleanup)
+        self.tmp = pathlib.Path(self.tmp_ctx.name)
+        self.run_dir = _make_run_dir(self.tmp, name="r-gate-sanitize")
+        _write_run_dir(self.run_dir)
+        self.evidence_dir = self.tmp / "evidence"
+
+    def test_phase_b_blocked_flag_translates_to_evidence_invalid(self):
+        status_code, reasons, verdict = evaluate_run_gate(
+            run_id="r-blocked",
+            work_item_id="wi-blocked",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir,
+            gate_inputs={"blocked": True},
+        )
+        self.assertEqual(status_code, "task_contract_blocked")
+        self.assertFalse(verdict.passed)
+        self.assertIn("EVIDENCE_INVALID", verdict.failure_codes)
+        self.assertIn("blocked", reasons)
+        # the bool NEVER reaches the writer — it would have crashed the
+        # writer (no ``blocked`` kwarg) before the fix.
+        self.assertNotIn("blocked", list((self.evidence_dir / "r-blocked" / "evidence_packet.json").exists() and []))
+
+    def test_phase_b_over_budget_flag_translates_to_budget_exceeded(self):
+        status_code, _, verdict = evaluate_run_gate(
+            run_id="r-over-budget",
+            work_item_id="wi-over-budget",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir,
+            gate_inputs={"over_budget": True},
+        )
+        self.assertEqual(status_code, "task_contract_blocked")
+        self.assertIn("BUDGET_EXCEEDED", verdict.failure_codes)
+
+    def test_phase_b_review_flags_are_silently_dropped(self):
+        # review_blocked, review_requested_changes, review_timeout have
+        # no Phase D equivalent — they should be dropped silently
+        # rather than crashing.
+        status_code, reasons, verdict = evaluate_run_gate(
+            run_id="r-review",
+            work_item_id="wi-review",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir,
+            gate_inputs={
+                "review_blocked": True,
+                "review_requested_changes": True,
+                "review_request_changes": True,
+                "review_timeout": True,
+                "tests_passed": 10,
+                "cost_usd": 0.5,
+            },
+        )
+        # no derived codes — review is gate-evidence-orthogonal
+        self.assertEqual(status_code, "ok")
+        self.assertTrue(verdict.passed)
+        self.assertEqual(reasons, [])
+
+    def test_unknown_keys_do_not_crash(self):
+        # The motivating bug: rdloop hands in dicts whose keys include
+        # Phase-B flags the writer would reject. The fix MUST NOT
+        # TypeError on unknown kwargs.
+        status_code, _, verdict = evaluate_run_gate(
+            run_id="r-unknown",
+            work_item_id="wi-unknown",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir,
+            gate_inputs={
+                "totally_unknown_key_1": "ignored",
+                "totally_unknown_key_2": 999,
+                # and a writer-native scalar that should still work:
+                "tests_passed": 5,
+                "cost_usd": 0.5,
+            },
+        )
+        self.assertEqual(status_code, "ok")  # writer-native scalars ok
+        self.assertTrue(verdict.passed)
+
+    def test_mixed_phase_b_flags_and_writer_kwargs(self):
+        # The realistic case: rdloop's gate-status dict + writer-native
+        # scalars interleaved.
+        status_code, reasons, verdict = evaluate_run_gate(
+            run_id="r-mixed",
+            work_item_id="wi-mixed",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir,
+            gate_inputs={
+                "blocked": True,
+                "tests_failed": True,
+                "review_blocked": True,
+                "tests_passed": 10,
+                "cost_usd": 0.5,
+                "budget_cap_usd": 5.0,
+                "status_code": "blocked",
+                "gate": "NO_GO",
+            },
+        )
+        # tests_failed + blocked → TEST_REGRESSION + EVIDENCE_INVALID
+        self.assertEqual(status_code, "task_contract_blocked")
+        self.assertIn("TEST_REGRESSION", verdict.failure_codes)
+        self.assertIn("EVIDENCE_INVALID", verdict.failure_codes)
+        # review_blocked silently dropped
+        self.assertNotIn("review_blocked", verdict.failure_codes)
+        # reasons translated
+        self.assertIn("tests_failed", reasons)
+        self.assertIn("blocked", reasons)
+
+    def test_tests_failed_bool_vs_int_dual_meaning(self):
+        # bool → Phase-B flag → TEST_REGRESSION via override
+        s_int, _, v_int = evaluate_run_gate(
+            run_id="r-tests-int",
+            work_item_id="wi-tests-int",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir / "int",
+            gate_inputs={"tests_failed": 3, "tests_passed": 0, "cost_usd": 0.5},
+        )
+        self.assertIn("TEST_REGRESSION", v_int.failure_codes)
+        # False bool is silent — no failure
+        s_false, _, v_false = evaluate_run_gate(
+            run_id="r-tests-false",
+            work_item_id="wi-tests-false",
+            run_dir=self.run_dir,
+            evidence_dir=self.evidence_dir / "false",
+            gate_inputs={"tests_failed": False, "tests_passed": 5, "cost_usd": 0.5},
+        )
+        self.assertTrue(v_false.passed)
+
+    def test_sanitize_unit_level(self):
+        # Direct unit-level check of the helper
+        from devkit.gatekeeper import _sanitize_gate_inputs
+
+        # all Phase-B bool flags translated, writer-native ints forwarded
+        writer, derived = _sanitize_gate_inputs(
+            {
+                "tests_failed": True,
+                "over_budget": True,
+                "blocked": True,
+                "review_blocked": True,
+                "tests_passed": 10,
+                "tests_failed_legacy_int": 5,  # not actually a writer key
+                "cost_usd": 0.5,
+            }
+        )
+        self.assertEqual(set(derived), {"TEST_REGRESSION", "BUDGET_EXCEEDED", "EVIDENCE_INVALID"})
+        # review_blocked has no Phase D mapping — no entry in ``derived``
+        self.assertNotIn("REVIEW_BLOCKED_OR_SOMETHING", derived)
+        self.assertEqual(writer.get("cost_usd"), 0.5)
+        self.assertEqual(writer.get("tests_passed"), 10)
+
+    def test_combine_override_unit_level(self):
+        from devkit.gatekeeper import _combine_override
+
+        # explicit None + derived → derived wins
+        self.assertEqual(_combine_override(None, ["A"]), ["A"])
+        # explicit list + derived → explicit first, derived appended (de-duped)
+        self.assertEqual(_combine_override(["B"], ["A"]), ["B", "A"])
+        self.assertEqual(_combine_override(["B"], ["B", "A"]), ["B", "A"])
+        # empty explicit + derived → still append derived
+        self.assertEqual(_combine_override([], ["A"]), ["A"])
+        # no derived → explicit preserved
+        self.assertEqual(_combine_override(["B"], []), ["B"])
+        # both empty
+        self.assertEqual(_combine_override([], []), [])
 
 
 if __name__ == "__main__":

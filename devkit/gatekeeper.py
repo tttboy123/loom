@@ -821,6 +821,156 @@ def evaluate_final_gate(
 # ----------------------------------------------------------------------------
 # evaluate_run_gate — the *only* end-of-run entry point callers should use
 # ----------------------------------------------------------------------------
+
+# Phase-B gate-status boolean flags → Phase-D enum. ``None`` means
+# "no Phase D equivalent" (the flag is gate-evidence-orthogonal and is
+# silently skipped). Mirrors the canonical mapping from
+# ``devkit/failure_codes.py`` but is keyed by rdloop's kwargs rather
+# than free-string status codes — that's the contract rdloop actually
+# hands the bridge at the call site (see rdloop.evaluate_final_gate).
+_PHASE_B_GATE_FLAG_TO_PHASE_D: dict[str, str | None] = {
+    "tests_failed":             "TEST_REGRESSION",
+    "over_budget":              "BUDGET_EXCEEDED",
+    "blocked":                  "EVIDENCE_INVALID",
+    # Review is gate-evidence-orthogonal — no Phase D equivalent.
+    "review_blocked":           None,
+    "review_requested_changes": None,
+    "review_request_changes":   None,  # legacy alias
+    "review_timeout":           None,
+}
+
+
+# Keyword-only argument names accepted by ``evidence_writer.write_run_evidence``
+# (excluding the positional ``run_dir`` / ``run_id`` / ``work_item_id``).
+# Used to whitelist ``gate_inputs`` before forwarding so callers can safely
+# hand in a dictionary carrying Phase-B flags, writer-native scalars, or
+# legacy aliases without crashing on unknown kwargs.
+_EVIDENCE_WRITER_KEYS: frozenset[str] = frozenset({
+    "status_code",
+    "gate",
+    "gate_inputs",        # the writer's own sub-dict, unrelated to ours
+    "cost_usd",
+    "budget_cap_usd",
+    "tests_passed",
+    "tests_failed",       # writer accepts int; bools go through Phase-B path
+    "artifact_manifest",
+    "evidence_source",
+    "events_log_path",
+    "evidence_root",
+    "summary_extras",
+    "extra_spec",
+    "evidence_id",
+})
+
+
+def _sanitize_gate_inputs(
+    raw: dict | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Split ``raw`` into ``(writer_kwargs, derived_phase_codes)``.
+
+    Behavior:
+
+    * Phase-B boolean gate flags — those listed in
+      :data:`_PHASE_B_GATE_FLAG_TO_PHASE_D` when the value is a ``bool``
+      — are popped and translated to Phase D enums (collected into
+      ``derived_phase_codes``). ``tests_failed=True`` therefore *does
+      not* reach the writer; instead it contributes
+      ``TEST_REGRESSION`` to ``derived_phase_codes``.
+
+    * Writer-native keys — anything in :data:`_EVIDENCE_WRITER_KEYS`
+      with the correct type — are forwarded verbatim.
+
+    * ``tests_failed`` has dual meaning: ``bool`` → Phase-B flag;
+      ``int`` → writer-native count. Anything else is dropped with an
+      INFO log to avoid silent surprises.
+
+    * Unknown keys are dropped at INFO; this is what makes the bridge
+      safe to call from rdloop's existing kwargs dict (which contains
+      ``blocked``, ``over_budget``, ``review_blocked``, etc. as well as
+      whatever rdloop produces internally). The previous implementation
+      forwarded ``**raw`` verbatim and crashed on those.
+
+    Returns
+    -------
+    ``(writer_kwargs, derived_phase_codes)``
+
+    ``writer_kwargs`` is ready to splat into ``write_run_evidence``.
+    ``derived_phase_codes`` is in the same order as the Phase-B flags
+    were inspected (i.e. stable: ``tests_failed`` before ``over_budget``).
+    Duplicate enums are preserved in order (the caller's downstream
+    :func:`devkit.failure_codes.phase_d_to_phase_b` handles them
+    idempotently; the verdict lineage records the full list).
+    """
+    raw = dict(raw or {})
+    derived: list[str] = []
+
+    # 1. Pull out Phase-B bool gate flags (typed dispatch on bool value).
+    for flag, phase_d in _PHASE_B_GATE_FLAG_TO_PHASE_D.items():
+        if flag not in raw:
+            continue
+        value = raw[flag]
+        if isinstance(value, bool):
+            raw.pop(flag)
+            if value and phase_d is not None:
+                derived.append(phase_d)
+
+    # 2. Whitelist writer kwargs.
+    writer_kwargs: dict[str, Any] = {
+        k: v for k, v in raw.items() if k in _EVIDENCE_WRITER_KEYS
+    }
+
+    # 3. Surface anything we ignored so future regressions are visible.
+    ignored = {k: v for k, v in raw.items() if k not in _EVIDENCE_WRITER_KEYS}
+    if ignored:
+        # INFO rather than WARNING — Phase-B bool flags (the common case)
+        # are intentionally ignored here, the "ignored" log only flags the
+        # truly unknown tail.
+        logger.info(
+            "evaluate_run_gate: dropped %d gate_inputs key(s) not in writer's "
+            "signature: %s",
+            len(ignored),
+            sorted(ignored.keys()),
+        )
+
+    return writer_kwargs, derived
+
+
+def _combine_override(
+    explicit: list[str] | None,
+    derived: list[str],
+) -> list[str] | None:
+    """Combine the explicit ``failure_codes_override`` with codes derived
+    from Phase-B boolean gate flags.
+
+    Semantics:
+
+    * ``explicit=None`` and ``derived=[]`` → caller passed nothing, no
+      override → ``return None``.
+    * ``explicit=None`` and ``derived=[...]`` → use the derived list as
+      the override so booleans ``tests_failed=True`` etc. still drive the
+      verdict.
+    * ``explicit=[...]`` (any non-None) → combine. Caller's explicit
+      list wins ordering; derived codes that aren't already present are
+      appended (preserving derived order). Empty explicit list
+      ``[]`` means "explicitly nothing" and is returned as ``[]``
+      (verdict becomes ``passed=True``); derived codes are appended so
+      a run with ``tests_failed=True`` and an explicit empty override
+      still flips the gate to ``TEST_REGRESSION`` — that's the safe
+      direction.
+    """
+    if not derived:
+        return explicit
+    if explicit is None:
+        return list(derived)
+    combined = list(explicit)
+    seen = set(explicit)
+    for code in derived:
+        if code not in seen:
+            combined.append(code)
+            seen.add(code)
+    return combined
+
+
 def evaluate_run_gate(
     run_id: str,
     work_item_id: str,
@@ -847,14 +997,31 @@ def evaluate_run_gate(
         Path to the per-run directory the writer reads for
         ``00-task.md`` / ``99-gate.md`` / ``events.jsonl``.
     gate_inputs
-        Optional dict of extra kwargs forwarded to
-        :func:`devkit.evidence_writer.write_run_evidence` (e.g.
-        ``{"tests_failed": 3, "cost_usd": 0.42}``).
+        Optional dict that may contain any combination of:
+
+        * **Phase-B boolean gate flags** (``tests_failed``, ``over_budget``,
+          ``blocked``, ``review_blocked``, ``review_requested_changes``,
+          ``review_timeout``) — when passed as ``bool`` they are
+          translated to Phase D enums and drive
+          ``failure_codes_override`` internally.
+        * **Writer-native scalars** (``cost_usd``, ``budget_cap_usd``,
+          ``tests_passed``, ``tests_failed:int``, ``status_code``,
+          ``gate``, etc.) — forwarded verbatim to
+          :func:`devkit.evidence_writer.write_run_evidence`.
+        * **Unknown keys** — dropped at INFO log; the bridge never
+          crashes on unexpected kwargs (rdloop's gate-status dict is
+          the motivating case).
+
+        ``tests_failed`` is overloaded: ``bool`` → Phase-B flag (treated
+        as a runtime boolean), ``int`` → writer-native count of
+        failing tests.
     failure_codes_override
         Optional Phase D enum list that *replaces* the gate's own
-        verdict.failure_codes (e.g. when the caller has richer signal
-        than the file). When provided, ``passed`` is recomputed from
-        the override (empty list → ``passed=True``).
+        ``verdict.failure_codes`` (e.g. when the caller has richer
+        signal than the file). When provided, ``passed`` is recomputed
+        from the override (empty list → ``passed=True``). Any codes
+        derived from Phase-B boolean flags in ``gate_inputs`` are
+        appended to this list (caller's ordering preserved first).
     evidence_dir
         Where ``write_run_evidence`` and ``evaluate_final_gate`` look.
         Defaults to ``pathlib.Path("devkit/evidence")`` (relative paths
@@ -886,27 +1053,35 @@ def evaluate_run_gate(
     wid = _ensure_str(work_item_id, "work_item_id")
     run_dir_p = pathlib.Path(run_dir) if not isinstance(run_dir, pathlib.Path) else run_dir
 
-    # 2. Default evidence_dir to the canonical Phase D location.
+    # Default evidence_dir to the canonical Phase D location.
     edir = (
         pathlib.Path(evidence_dir)
         if evidence_dir is not None
         else pathlib.Path("devkit/evidence")
     )
 
+    # Sanitize gate_inputs — extract Phase-B boolean flags into a list of
+    # derived Phase D enums; pass the rest to the writer as a strict
+    # whitelist. This is the core fix for the Phase B ↔ Phase D bridge:
+    # before this, ``**(gate_inputs or {})`` was forwarded verbatim and
+    # rdloop's gate kwargs (``blocked``, ``over_budget``, …) would crash
+    # the writer with a TypeError on unknown kwarg.
+    writer_kwargs, derived_from_flags = _sanitize_gate_inputs(gate_inputs)
+    writer_kwargs.setdefault("evidence_root", edir)
+
+    # Combine any derived codes with the explicit override. ``_combine_override``
+    # is the documented half of the contract — preserve caller ordering, append
+    # derived codes (with de-dup) so a run with both an override AND bool flags
+    # accumulates rather than overrides.
+    effective_override = _combine_override(failure_codes_override, derived_from_flags)
+
     # 1. Materialize the evidence file so the gate can read it.
-    # Forward ``evidence_dir`` to the writer as ``evidence_root`` so the two
-    # paths never diverge (caller can't get a verdict from a packet the writer
-    # wrote elsewhere). The gate's resolution of relative paths mirrors the
-    # writer's, so leaving both as ``Path("devkit/evidence")`` is identical to
-    # passing a fully resolved absolute path.
-    gate_kwargs = dict(gate_inputs or {})
-    gate_kwargs.setdefault("evidence_root", edir)
     try:
         evidence_path = evidence_writer.write_run_evidence(
             run_dir=run_dir_p,
             run_id=rid,
             work_item_id=wid,
-            **gate_kwargs,
+            **writer_kwargs,
         )
     except ValidationError:
         # The writer validates against the schema; on failure it already
@@ -917,41 +1092,56 @@ def evaluate_run_gate(
         logger.warning("evaluate_run_gate: write_run_evidence failed: %s", exc)
         raise
 
-    # 3. Read it back + emit a typed verdict.
+    # 2. Read it back + emit a typed verdict.
     gate_verdict: GateVerdict = evaluate_final_gate(
         run_id=rid,
         work_item_id=wid,
         evidence_dir=edir,
     )
 
-    # 4. Optional override — when the caller has richer signal than the
-    #    file (e.g. it knows a specific test failed before the writer was
-    #    told) we replace the gate's own failure_codes.
-    if failure_codes_override:
-        codes = [str(c) for c in failure_codes_override if str(c).strip()]
-        reason = "all_gates_passed" if not codes else (
-            "; ".join(codes) if gate_verdict.reason == "all_gates_passed" else gate_verdict.reason
-        )
-        gate_verdict = dataclasses.replace(
-            gate_verdict,
-            spec={
-                **gate_verdict.spec,
-                "failure_codes": codes,
-                "passed": not codes,
-                "reason": reason,
-            },
-        )
+    # 3. Optional override — when the caller (or Phase-B boolean flags)
+    #    have richer signal than the file, we replace the gate's own
+    #    failure_codes.
+    if effective_override:
+        codes = [str(c) for c in effective_override if str(c).strip()]
+        if codes:
+            reason = (
+                "all_gates_passed" if gate_verdict.reason == "all_gates_passed"
+                else gate_verdict.reason
+            )
+            if reason == "all_gates_passed":
+                reason = "; ".join(codes)
+            gate_verdict = dataclasses.replace(
+                gate_verdict,
+                spec={
+                    **gate_verdict.spec,
+                    "failure_codes": codes,
+                    "passed": False,
+                    "reason": reason,
+                },
+            )
+        else:
+            # Empty override — caller explicitly says "no failure codes".
+            gate_verdict = dataclasses.replace(
+                gate_verdict,
+                spec={
+                    **gate_verdict.spec,
+                    "failure_codes": [],
+                    "passed": True,
+                    "reason": "all_gates_passed",
+                },
+            )
 
-    # 5. Translate Phase D enum → Phase B free string.
-    reasons: list[str] = []
-    for code in gate_verdict.failure_codes:
-        translated = phase_d_to_phase_b(code)
-        reasons.append(translated if translated else code)
+    # 4. Translate Phase D enum → Phase B free string.
+    reasons = [
+        phase_d_to_phase_b(code) or code
+        for code in gate_verdict.failure_codes
+    ]
 
-    # 6. Derive a legacy status_code.
+    # 5. Derive a legacy status_code.
     status_code = "ok" if gate_verdict.passed else "task_contract_blocked"
 
-    # 7. Stash evidence path into lineage so callers can audit the file
+    # 6. Stash evidence path into lineage so callers can audit the file
     #    that drove the verdict (purely informational, not asserted by
     #    GateVerdict schema; harmless when absent).
     try:
