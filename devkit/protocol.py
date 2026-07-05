@@ -674,6 +674,284 @@ def _make_tool_heartbeat(default_path: pathlib.Path) -> ToolHandler:
 
 
 # --------------------------------------------------------------------------- #
+# Default A2A agents (observer / triager / repairer)
+#
+# These three AgentCards turn ``ProtocolServer()`` from a capability
+# surface with no live agents into a working mini-cluster: any A2A
+# message addressed to ``observer``, ``triager``, or ``repairer`` is
+# routed to the corresponding module function via an in-process
+# ``@server.on_message(...)`` handler.
+#
+# The handlers use **lazy imports** of ``devkit.observer``,
+# ``devkit.triager``, and ``devkit.repairer``. None of those modules
+# currently import ``devkit.protocol``, so a top-level import would not
+# be circular today — but the defensive lazy import keeps the import
+# graph stable if any of them grows a backward dependency on the
+# protocol package in the future.
+# --------------------------------------------------------------------------- #
+DEFAULT_AGENT_OBSERVER = "observer"
+DEFAULT_AGENT_TRIAGER = "triager"
+DEFAULT_AGENT_REPAIRER = "repairer"
+
+DEFAULT_AGENT_IDS: tuple[str, ...] = (
+    DEFAULT_AGENT_OBSERVER,
+    DEFAULT_AGENT_TRIAGER,
+    DEFAULT_AGENT_REPAIRER,
+)
+
+
+def _default_agent_cards() -> list[dict]:
+    """Return the 3 Loom-default AgentCard dicts (validated against the schema)."""
+    return [
+        {
+            "api_version": PROTOCOL_VERSION,
+            "kind": AGENT_CARD_KIND,
+            "metadata": {
+                "id": DEFAULT_AGENT_OBSERVER,
+                "name": "Observer",
+                "description": (
+                    "Read-only observer over Loom autopilot state: "
+                    "backlog, runs, evidence, events."
+                ),
+            },
+            "spec": {
+                "capabilities": [
+                    "backlog.read",
+                    "runs.read",
+                    "evidence.read",
+                    "events.read",
+                ],
+                "endpoint": f"inproc://{DEFAULT_AGENT_OBSERVER}",
+                "protocol_version": PROTOCOL_VERSION,
+            },
+        },
+        {
+            "api_version": PROTOCOL_VERSION,
+            "kind": AGENT_CARD_KIND,
+            "metadata": {
+                "id": DEFAULT_AGENT_TRIAGER,
+                "name": "Triager",
+                "description": (
+                    "Classifies Loom autopilot findings into incidents "
+                    "for the repairer to consume."
+                ),
+            },
+            "spec": {
+                "capabilities": [
+                    "incident.classify",
+                    "findings.write",
+                    "backlog.read",
+                ],
+                "endpoint": f"inproc://{DEFAULT_AGENT_TRIAGER}",
+                "protocol_version": PROTOCOL_VERSION,
+            },
+        },
+        {
+            "api_version": PROTOCOL_VERSION,
+            "kind": AGENT_CARD_KIND,
+            "metadata": {
+                "id": DEFAULT_AGENT_REPAIRER,
+                "name": "Repairer",
+                "description": (
+                    "Dispatches whitelisted repair actions from incident "
+                    "specs to the matching internal repair module."
+                ),
+            },
+            "spec": {
+                "capabilities": [
+                    "incident.dispatch",
+                    "repair.execute",
+                    "backlog.read",
+                ],
+                "endpoint": f"inproc://{DEFAULT_AGENT_REPAIRER}",
+                "protocol_version": PROTOCOL_VERSION,
+            },
+        },
+    ]
+
+
+def _observer_handler(msg: dict) -> dict:
+    """A2A handler — invoke ``devkit.observer.snapshot(**body)``.
+
+    Body is forwarded as kwargs to ``observer.snapshot``. Empty body
+    uses the module's default paths. The returned ``ObserverSnapshot``
+    is serialised via ``to_dict()``.
+    """
+    body = msg.get("spec", {}).get("body") if isinstance(msg, dict) else None
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        from devkit import observer as _observer  # lazy: keep import graph clean
+        snap = _observer.snapshot(**body)
+        if hasattr(snap, "to_dict"):
+            payload = snap.to_dict()
+        elif isinstance(snap, dict):
+            payload = snap
+        else:
+            payload = {"value": snap}
+        return {
+            "status": "ok",
+            "agent_id": DEFAULT_AGENT_OBSERVER,
+            "result": payload,
+        }
+    except Exception as exc:  # noqa: BLE001 - wrap so A2A caller sees a typed error
+        logger.warning("observer handler raised: %s", exc)
+        return {
+            "status": "error",
+            "agent_id": DEFAULT_AGENT_OBSERVER,
+            "failure_code": "HANDLER_RAISED",
+            "message": str(exc),
+        }
+
+
+def _triager_handler(msg: dict) -> dict:
+    """A2A handler — invoke ``devkit.triager.triage(snap)``.
+
+    Body shape::
+
+        {
+          "logs_dir":     "<override path, optional>",
+          "backlog_path": "<override path, optional>"
+        }
+
+    The handler first takes a snapshot via
+    ``observer.snapshot(**body)`` (so callers can drive triage against
+    ad-hoc ``logs_dir`` / ``backlog_path`` overrides), then dispatches
+    to ``triager.triage(snap)``.
+
+    Note: the task spec named this function ``triager.classify(...)``
+    but the codebase module only exposes ``triage(snap)`` (no
+    ``classify`` symbol). We dispatch to the actual public API and
+    document the divergence in the deliverable.
+    """
+    body = msg.get("spec", {}).get("body") if isinstance(msg, dict) else None
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        from devkit import observer as _observer  # lazy
+        from devkit import triager as _triager    # lazy
+        snap = _observer.snapshot(**body)
+        report = _triager.triage(snap)
+        if hasattr(report, "to_dict"):
+            payload = report.to_dict()
+        elif isinstance(report, dict):
+            payload = report
+        else:
+            payload = {"value": report}
+        return {
+            "status": "ok",
+            "agent_id": DEFAULT_AGENT_TRIAGER,
+            "result": payload,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("triager handler raised: %s", exc)
+        return {
+            "status": "error",
+            "agent_id": DEFAULT_AGENT_TRIAGER,
+            "failure_code": "HANDLER_RAISED",
+            "message": str(exc),
+        }
+
+
+def _repairer_handler(msg: dict) -> dict:
+    """A2A handler — invoke ``devkit.repairer.dispatch(incident, **kwargs)``.
+
+    Body shape::
+
+        {
+          "incident":      {<Incident dict, required>} ,
+          "backlog_path":  "<optional>",
+          "event_path":    "<optional>",
+          "throttle_path": "<optional>",
+          "incident_log":  "<optional>"
+        }
+
+    The handler rejects bodies missing ``incident`` with a typed
+    ``BAD_ARGUMENTS`` failure (no module call is made). On success the
+    returned ``RepairResult`` is serialised via ``to_dict()``.
+    """
+    body = msg.get("spec", {}).get("body") if isinstance(msg, dict) else None
+    if not isinstance(body, dict):
+        body = {}
+    incident = body.get("incident")
+    if not isinstance(incident, dict):
+        return {
+            "status": "error",
+            "agent_id": DEFAULT_AGENT_REPAIRER,
+            "failure_code": "BAD_ARGUMENTS",
+            "message": "body.incident (dict) is required",
+        }
+    dispatch_kwargs = {k: v for k, v in body.items() if k != "incident"}
+    try:
+        from devkit import repairer as _repairer  # lazy
+        result = _repairer.dispatch(incident, **dispatch_kwargs)
+        if hasattr(result, "to_dict"):
+            payload = result.to_dict()
+        elif isinstance(result, dict):
+            payload = result
+        else:
+            payload = {"value": result}
+        return {
+            "status": "ok",
+            "agent_id": DEFAULT_AGENT_REPAIRER,
+            "result": payload,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("repairer handler raised: %s", exc)
+        return {
+            "status": "error",
+            "agent_id": DEFAULT_AGENT_REPAIRER,
+            "failure_code": "HANDLER_RAISED",
+            "message": str(exc),
+        }
+
+
+def register_default_agents(server: ProtocolServer) -> None:
+    """Register the 3 Loom-default A2A agents on ``server``.
+
+    Idempotent: re-registering replaces the AgentCards and handlers in
+    place. Use ``server.unregister_agent(...)`` to clear any one agent
+    or ``server = ProtocolServer(auto_register_loom=False,
+    auto_register_agents=False)`` to start with an empty A2A registry.
+
+    The three agents are:
+
+    * ``observer`` — ``backlog.read``, ``runs.read``, ``evidence.read``,
+      ``events.read``. Handler delegates to
+      ``devkit.observer.snapshot(**body)``.
+    * ``triager`` — ``incident.classify``, ``findings.write``,
+      ``backlog.read``. Handler delegates to
+      ``devkit.triager.triage(snap)`` (the spec named this
+      ``triager.classify`` but the module exposes only ``triage``).
+    * ``repairer`` — ``incident.dispatch``, ``repair.execute``,
+      ``backlog.read``. Handler delegates to
+      ``devkit.repairer.dispatch(incident, **body)``.
+    """
+    if not isinstance(server, ProtocolServer):
+        raise TypeError(
+            f"register_default_agents expected ProtocolServer, got {type(server).__name__}"
+        )
+
+    # Register / overwrite the AgentCards first so introspection
+    # (``list_agents()``) shows the right identity even before the
+    # handlers fire.
+    for card in _default_agent_cards():
+        server.register_agent(card)
+
+    # Then bind the handlers. The decorator stores them in the same
+    # server-side dict ``register_agent`` doesn't touch, so this order
+    # is safe.
+    server.on_message(DEFAULT_AGENT_OBSERVER)(_observer_handler)
+    server.on_message(DEFAULT_AGENT_TRIAGER)(_triager_handler)
+    server.on_message(DEFAULT_AGENT_REPAIRER)(_repairer_handler)
+
+    logger.info(
+        "register_default_agents registered ids=%s",
+        list(DEFAULT_AGENT_IDS),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ProtocolServer — bundles all four registries
 # --------------------------------------------------------------------------- #
 Handler = Callable[[AgentMessage], Any]
@@ -698,6 +976,7 @@ class ProtocolServer:
         self,
         *,
         auto_register_loom: bool = True,
+        auto_register_agents: bool = True,
         backlog_path: Optional[pathlib.Path] = None,
         incident_log: Optional[pathlib.Path] = None,
         event_log: Optional[pathlib.Path] = None,
@@ -728,6 +1007,10 @@ class ProtocolServer:
         self._runs_dir = pathlib.Path(runs_dir) if runs_dir else DEFAULT_RUNS_DIR
         self._heartbeat_path = pathlib.Path(heartbeat_path) if heartbeat_path else DEFAULT_HEARTBEAT_PATH
         self._evidence_dir = pathlib.Path(evidence_dir) if evidence_dir else DEFAULT_EVIDENCE_DIR
+
+        # Toggle for the A2A default-agent registration (independent from
+        # the loom-default resources/tools toggle above).
+        self._auto_register_agents = bool(auto_register_agents)
 
         if auto_register_loom:
             self._register_loom_defaults()
@@ -883,6 +1166,12 @@ class ProtocolServer:
             }
         )
         self._tool_handlers[LOOM_TOOL_HEARTBEAT] = _make_tool_heartbeat(self._heartbeat_path)
+
+        # A2A default agents (observer / triager / repairer). Off by
+        # passing ``auto_register_agents=False`` so callers that only want
+        # MCP surfaces (resources / tools) can opt out cleanly.
+        if self._auto_register_agents:
+            register_default_agents(self)
 
     # ================================================================== #
     # A2A — AgentCard registry
@@ -1396,6 +1685,10 @@ __all__ = [
     "EVIDENCE_PACKET_FILENAME",
     "PROTOCOL_BUNDLE_KIND",
     "PROTOCOL_BUNDLE_FILENAME",
+    "DEFAULT_AGENT_OBSERVER",
+    "DEFAULT_AGENT_TRIAGER",
+    "DEFAULT_AGENT_REPAIRER",
+    "DEFAULT_AGENT_IDS",
     # Errors
     "ProtocolError",
     "ValidationFailed",
@@ -1419,6 +1712,8 @@ __all__ = [
     "ProtocolServer",
     "default_server",
     "reset_default_server",
-    # Run protocol bundle (rdloop integration)
+# Run protocol bundle (rdloop integration)
     "write_run_protocol_bundle",
+    # Default agents (A2A / MCP)
+    "register_default_agents",
 ]
