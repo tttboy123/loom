@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunProtocolBundle",
+  "description": "Aggregated protocol envelope emitted at the end of an rdloop run. Tolerant of missing optional files (00-task.md / 99-gate.md / events.jsonl).",
+  "type": "object",
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {
+      "type": "string",
+      "const": "loom.dev/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "RunProtocolBundle"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["id", "run_id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable envelope id; format: protocol-bundle-<utc-timestamp>."
+        },
+        "run_id": {
+          "type": "string",
+          "description": "The rdloop run_id (typically a UTC timestamp slug)."
+        },
+        "written_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp of when the envelope was assembled."
+        },
+        "run_dir": {
+          "type": ["string", "null"],
+          "description": "Absolute path of the rdloop run_dir the bundle was written into."
+        }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "required": ["objective", "sources", "status"],
+      "properties": {
+        "objective": {
+          "type": ["string", "null"],
+          "description": "Verbatim text body of run_dir/00-task.md (or null if the file was missing)."
+        },
+        "objective_path": {
+          "type": ["string", "null"],
+          "description": "Path of 00-task.md relative to run_dir (or null)."
+        },
+        "sources": {
+          "type": "object",
+          "description": "Which run_dir files were ingested, by relative path. Each entry is null if the file was missing or unreadable.",
+          "properties": {
+            "task_path": { "type": ["string", "null"] },
+            "gate_path": { "type": ["string", "null"] },
+            "events_path": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "status": {
+          "type": "object",
+          "description": "Final run status (passed straight from rdloop.py call args; tolerant of nulls).",
+          "properties": {
+            "delivery_mode": { "type": ["string", "null"] },
+            "task_kind": { "type": ["string", "null"] },
+            "status_code": { "type": ["string", "null"] },
+            "gate": { "type": ["string", "null"] },
+            "candidate_state": { "type": ["string", "null"] },
+            "blocked": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "tests_failed": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "artifacts": {
+          "type": "object",
+          "description": "Inline snapshots of the supporting artifacts captured by rdloop at completion.",
+          "properties": {
+            "review_text": { "type": ["string", "null"] },
+            "gate_spec": { "type": ["object", "null"] },
+            "output_protocol": { "type": ["object", "null"] },
+            "artifact_manifest": { "type": ["object", "null"] },
+            "collect": { "type": ["object", "null"] },
+            "gate_result": { "type": ["object", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "events": {
+          "type": "array",
+          "description": "Parsed JSONL events from run_dir/events.jsonl, capped at 200 entries (most recent). Empty when the file is missing.",
+          "items": { "type": "object" },
+          "maxItems": 200
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
