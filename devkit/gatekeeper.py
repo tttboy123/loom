@@ -27,6 +27,11 @@ Public API
 * :func:`write_verdict` — atomic JSON write.
 * :func:`load_verdict` — load + validate a stored verdict.
 * :func:`validate_verdict` — jsonschema check (used internally; exposed for tests).
+* :func:`evaluate_run_gate` — bridge end-of-run: write evidence, read it,
+  produce the typed verdict, and translate the result back to the legacy
+  Phase B ``(status_code, reasons)`` shape rdloop understands. This is the
+  *only* function that talks to :func:`devkit.evidence_writer.write_run_evidence`
+  from inside the gate — keep it here so the gating seam stays narrow.
 
 Failure codes
 -------------
@@ -54,6 +59,7 @@ import pathlib
 import threading
 import time
 import uuid
+import dataclasses
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
@@ -812,6 +818,154 @@ def evaluate_final_gate(
     )
 
 
+# ----------------------------------------------------------------------------
+# evaluate_run_gate — the *only* end-of-run entry point callers should use
+# ----------------------------------------------------------------------------
+def evaluate_run_gate(
+    run_id: str,
+    work_item_id: str,
+    *,
+    run_dir: pathlib.Path | str,
+    gate_inputs: dict | None = None,
+    failure_codes_override: list[str] | None = None,
+    evidence_dir: pathlib.Path | str | None = None,
+) -> tuple[str, list[str], GateVerdict]:
+    """End-of-run gate: materialize evidence, read it, translate verdict.
+
+    This is the bridge function that keeps Phase B (rdloop) and Phase D
+    (typed GateVerdict) on the same seam. It is intentionally
+    self-contained — a test can call it without touching ``rdloop``. The
+    companion task ``unify-run-gate-wiring`` will swap rdloop's call to
+    use this function instead of its own ``evaluate_final_gate`` kwargs
+    signature.
+
+    Parameters
+    ----------
+    run_id, work_item_id
+        Identifiers used by both the gate and the writer. Required.
+    run_dir
+        Path to the per-run directory the writer reads for
+        ``00-task.md`` / ``99-gate.md`` / ``events.jsonl``.
+    gate_inputs
+        Optional dict of extra kwargs forwarded to
+        :func:`devkit.evidence_writer.write_run_evidence` (e.g.
+        ``{"tests_failed": 3, "cost_usd": 0.42}``).
+    failure_codes_override
+        Optional Phase D enum list that *replaces* the gate's own
+        verdict.failure_codes (e.g. when the caller has richer signal
+        than the file). When provided, ``passed`` is recomputed from
+        the override (empty list → ``passed=True``).
+    evidence_dir
+        Where ``write_run_evidence`` and ``evaluate_final_gate`` look.
+        Defaults to ``pathlib.Path("devkit/evidence")`` (relative paths
+        are resolved against the repo root, matching
+        :func:`evaluate_final_gate`).
+
+    Returns
+    -------
+    ``(status_code, reasons, gate_verdict)``
+
+    * ``status_code`` — legacy Phase B free string the runner can use
+      in tooltips/logs (``"ok"`` when the gate passed,
+      ``"task_contract_blocked"`` otherwise).
+    * ``reasons`` — list of translated Phase B free strings derived
+      from :attr:`GateVerdict.failure_codes` via
+      :func:`devkit.failure_codes.phase_d_to_phase_b`. When a Phase D
+      code has no Phase B equivalent the original enum is kept so the
+      caller sees it.
+    * ``gate_verdict`` — the typed :class:`GateVerdict`. Callers that
+      want strong typed access ignore the first two return values and
+      look at this one directly.
+    """
+    # Imports kept local to avoid an import cycle (failure_codes ↔ gatekeeper
+    # both want to be importable without the other already loaded).
+    from devkit import evidence_writer
+    from devkit.failure_codes import phase_d_to_phase_b
+
+    rid = _ensure_str(run_id, "run_id")
+    wid = _ensure_str(work_item_id, "work_item_id")
+    run_dir_p = pathlib.Path(run_dir) if not isinstance(run_dir, pathlib.Path) else run_dir
+
+    # 2. Default evidence_dir to the canonical Phase D location.
+    edir = (
+        pathlib.Path(evidence_dir)
+        if evidence_dir is not None
+        else pathlib.Path("devkit/evidence")
+    )
+
+    # 1. Materialize the evidence file so the gate can read it.
+    # Forward ``evidence_dir`` to the writer as ``evidence_root`` so the two
+    # paths never diverge (caller can't get a verdict from a packet the writer
+    # wrote elsewhere). The gate's resolution of relative paths mirrors the
+    # writer's, so leaving both as ``Path("devkit/evidence")`` is identical to
+    # passing a fully resolved absolute path.
+    gate_kwargs = dict(gate_inputs or {})
+    gate_kwargs.setdefault("evidence_root", edir)
+    try:
+        evidence_path = evidence_writer.write_run_evidence(
+            run_dir=run_dir_p,
+            run_id=rid,
+            work_item_id=wid,
+            **gate_kwargs,
+        )
+    except ValidationError:
+        # The writer validates against the schema; on failure it already
+        # logged at WARNING. We deliberately don't swallow this — the
+        # caller wants to know evidence couldn't be written.
+        raise
+    except Exception as exc:
+        logger.warning("evaluate_run_gate: write_run_evidence failed: %s", exc)
+        raise
+
+    # 3. Read it back + emit a typed verdict.
+    gate_verdict: GateVerdict = evaluate_final_gate(
+        run_id=rid,
+        work_item_id=wid,
+        evidence_dir=edir,
+    )
+
+    # 4. Optional override — when the caller has richer signal than the
+    #    file (e.g. it knows a specific test failed before the writer was
+    #    told) we replace the gate's own failure_codes.
+    if failure_codes_override:
+        codes = [str(c) for c in failure_codes_override if str(c).strip()]
+        reason = "all_gates_passed" if not codes else (
+            "; ".join(codes) if gate_verdict.reason == "all_gates_passed" else gate_verdict.reason
+        )
+        gate_verdict = dataclasses.replace(
+            gate_verdict,
+            spec={
+                **gate_verdict.spec,
+                "failure_codes": codes,
+                "passed": not codes,
+                "reason": reason,
+            },
+        )
+
+    # 5. Translate Phase D enum → Phase B free string.
+    reasons: list[str] = []
+    for code in gate_verdict.failure_codes:
+        translated = phase_d_to_phase_b(code)
+        reasons.append(translated if translated else code)
+
+    # 6. Derive a legacy status_code.
+    status_code = "ok" if gate_verdict.passed else "task_contract_blocked"
+
+    # 7. Stash evidence path into lineage so callers can audit the file
+    #    that drove the verdict (purely informational, not asserted by
+    #    GateVerdict schema; harmless when absent).
+    try:
+        lineage = dict(gate_verdict.spec.get("lineage", {}) or {})
+        lineage["evidence_path"] = str(evidence_path)
+        lineage["writer_kind"] = "evidence_writer.write_run_evidence"
+        spec_with_lineage = {**gate_verdict.spec, "lineage": lineage}
+        gate_verdict = dataclasses.replace(gate_verdict, spec=spec_with_lineage)
+    except Exception:  # noqa: BLE001 — lineage is advisory, never break the verdict
+        pass
+
+    return status_code, reasons, gate_verdict
+
+
 __all__ = [
     # dataclass
     "GateVerdict",
@@ -834,6 +988,7 @@ __all__ = [
     # API
     "classify_evidence_source",
     "evaluate_final_gate",
+    "evaluate_run_gate",
     "write_verdict",
     "load_verdict",
     "validate_verdict",

@@ -63,6 +63,13 @@ Irreversibility notes:
 * Phase B → Phase A (via Phase D) is **lossy**: a Phase B
   ``review_requested_changes`` cannot reach Phase A because it cannot
   pass through Phase D.
+
+Phase D → Phase B (the reverse direction) is **partial**: only
+``TEST_REGRESSION``, ``BUDGET_EXCEEDED`` and ``EVIDENCE_INVALID`` have
+canonical Phase B equivalents. ``EVIDENCE_MISSING`` and
+``SCHEMA_VALIDATION_ERROR`` have no Phase B counterpart. Use
+:func:`phase_d_to_phase_b` and fall back to the original enum on
+``None``.
 """
 from __future__ import annotations
 
@@ -172,6 +179,22 @@ ALL_PHASE_A_FOR_PHASE_D: dict[str, tuple[str, ...]] = {
 
 
 # ----------------------------------------------------------------------------
+# Phase D → Phase B — reverse mapping (the complement to PHASE_B_TO_PHASE_D).
+# Only one Phase B reason is the canonical inverse of each Phase D enum;
+# callers that need richer reverse coverage should fall back to the original
+# enum string. Unlike PHASE_B_TO_PHASE_D, this mapping is partial:
+# ``EVIDENCE_MISSING`` has no Phase B equivalent (it pre-dates the
+# ``_resolve_gate_status`` vocabulary) and ``SCHEMA_VALIDATION_ERROR`` is
+# not emitted by Phase B at all.
+# ----------------------------------------------------------------------------
+PHASE_D_TO_PHASE_B: dict[str, str] = {
+    "TEST_REGRESSION":   "tests_failed",
+    "BUDGET_EXCEEDED":   "over_budget",
+    "EVIDENCE_INVALID":  "blocked",
+}
+
+
+# ----------------------------------------------------------------------------
 # Translation functions — thin wrappers over the dicts above, with
 # defensive validation (unknown inputs return None, no exception).
 # ----------------------------------------------------------------------------
@@ -197,6 +220,25 @@ def phase_d_to_phase_a(enum: str) -> str | None:
     if not isinstance(enum, str):
         return None
     return PHASE_D_TO_PHASE_A.get(enum)
+
+
+def phase_d_to_phase_b(enum: str) -> str | None:
+    """Translate a Phase D enum to its canonical Phase B free-string reason.
+
+    Returns ``None`` when the Phase D code has no Phase B equivalent
+    (``EVIDENCE_MISSING`` pre-dates ``_resolve_gate_status``;
+    ``SCHEMA_VALIDATION_ERROR`` is not a status that rdloop emits). For
+    Phase D codes listed in :data:`PHASE_D_TO_PHASE_B` we return the
+    single canonical Phase B reason that ``_resolve_gate_status`` would
+    produce for the same underlying condition.
+
+    Tolerates unknown / non-string input by returning ``None`` — callers
+    that need richer reverse coverage should fall back to the original
+    enum string when this function returns ``None``.
+    """
+    if not isinstance(enum, str):
+        return None
+    return PHASE_D_TO_PHASE_B.get(enum)
 
 
 def phase_b_to_phase_a(reason: str) -> str | None:
@@ -323,10 +365,12 @@ __all__ = [
     # mapping tables
     "PHASE_B_TO_PHASE_D",
     "PHASE_D_TO_PHASE_A",
+    "PHASE_D_TO_PHASE_B",
     "ALL_PHASE_A_FOR_PHASE_D",
     # single-hop translators
     "phase_b_to_phase_d",
     "phase_d_to_phase_a",
+    "phase_d_to_phase_b",
     # composed / multi translators
     "phase_b_to_phase_a",
     "all_phase_a_for_phase_d",
@@ -337,4 +381,4 @@ __all__ = [
     # chain translator
     "translate_chain",
     "TranslationResult",
-]
+]  
