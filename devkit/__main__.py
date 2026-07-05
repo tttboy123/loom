@@ -1211,8 +1211,117 @@ def _run_selected_backlog_item(backlog: list, bl_path: pathlib.Path, item: dict,
     return event, result
 
 
+# ----------------------------------------------------------------------------
+# Autopilot scheduler integration (Phase D, unify-autopilot-callers).
+# ----------------------------------------------------------------------------
+DEFAULT_AUTO_LEASE_FILENAME = "auto-lease.json"
+
+
+def _default_auto_lease_path() -> pathlib.Path:
+    """Default lease file for the autopilot outer loop.
+
+    Lives under ``devkit/runs/`` so it sits with the other run-time artifacts
+    and is easy to inspect / clean. The directory is created lazily by the
+    scheduler when the lease is claimed.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    return repo_root / "devkit" / "runs" / DEFAULT_AUTO_LEASE_FILENAME
+
+
+def _select_next_via_scheduler(
+    backlog_path: pathlib.Path,
+    *,
+    lease_path: pathlib.Path | None = None,
+    use_scheduler: bool = True,
+) -> tuple[dict | None, "object | None"]:
+    """Pick the next ready backlog item, optionally via the Phase D Scheduler.
+
+    Returns ``(item, decision)`` where ``item`` is the backlog dict ready
+    to feed :func:`devkit.autoloop.run_once`, and ``decision`` is the
+    scheduler's :class:`devkit.scheduler.ScheduleDecision` (or ``None``
+    when running in legacy mode, or when the scheduler itself returned
+    no decision).
+
+    Behaviour matrix:
+
+    * ``use_scheduler=True`` + ``select_next_pending`` returns a ready
+      decision → ``(item, decision)``.
+    * ``use_scheduler=True`` + nothing ready + blocked items exist →
+      ``(None, decision_with_reason_blocked)``. The first blocked
+      decision's ``blocked_by`` list is what callers should log.
+    * ``use_scheduler=True`` + empty / missing backlog →
+      ``(None, None)``.
+    * ``use_scheduler=False`` → legacy ``autoloop.pick_next`` over the
+      freshly-loaded backlog (no scheduler decision object).
+
+    The scheduler reads the backlog file directly, so we re-load it here
+    to avoid drift between the in-memory backlog the rest of the loop is
+    carrying and the snapshot the scheduler sees.
+    """
+    import json as _json
+
+    from devkit import autoloop as _autoloop
+    from devkit import scheduler as _scheduler
+
+    if not use_scheduler:
+        try:
+            raw = _json.loads(backlog_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, None
+        items = raw if isinstance(raw, list) else (
+            raw.get("tasks") if isinstance(raw, dict) else []
+        ) or []
+        items = [i for i in items if isinstance(i, dict)]
+        return _autoloop.pick_next(items), None
+
+    try:
+        decision = _scheduler.select_next_pending(backlog_path, lease_path)
+    except Exception as exc:  # noqa: BLE001 — fail-open, fall back to legacy
+        print(f"⚠ scheduler 调用失败，回退到 legacy 选路：{exc}")
+        try:
+            raw = _json.loads(backlog_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, None
+        items = raw if isinstance(raw, list) else (
+            raw.get("tasks") if isinstance(raw, dict) else []
+        ) or []
+        items = [i for i in items if isinstance(i, dict)]
+        return _autoloop.pick_next(items), None
+
+    if decision is not None and decision.is_actionable():
+        try:
+            raw = _json.loads(backlog_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, decision
+        items = raw if isinstance(raw, list) else (
+            raw.get("tasks") if isinstance(raw, dict) else []
+        ) or []
+        for entry in items:
+            if isinstance(entry, dict) and entry.get("id") == decision.work_item_id:
+                return entry, decision
+        # scheduler picked an id we can't find locally (race / stale file)
+        return None, decision
+
+    # Nothing actionable. Surface blocked reasons for logging.
+    try:
+        blocked = _scheduler.list_blocked(backlog_path, lease_path)
+    except Exception:  # noqa: BLE001
+        blocked = []
+    if blocked:
+        return None, blocked[0]
+    return None, None
+
+
 def _cmd_auto(argv) -> int:
-    """Layer B 自治驱动循环：从 backlog.json 中自动选取就绪任务并依次运行。"""
+    """Layer B 自治驱动循环：从 backlog.json 中自动选取就绪任务并依次运行。
+
+    默认走 Phase D Scheduler（``select_next_pending``）选取下一个就绪任务，
+    并通过 ``scheduler.claim_lease`` / ``scheduler.release_lease`` 维护一个
+    跨进程的 lease（默认 ``devkit/runs/auto-lease.json``）。
+
+    通过 ``--no-scheduler`` 可以回退到 legacy 的 ``autoloop.pick_next`` 路径，
+    用于紧急回滚或 A/B 对比。
+    """
     from devkit import autoloop as _autoloop, decision_log as _dlog
     from devkit.rdloop import ROOT
     import json as _json
@@ -1230,6 +1339,10 @@ def _cmd_auto(argv) -> int:
                    help="跳过人类优先级确认（T12 gate），直接运行")
     p.add_argument("--loop", action="store_true",
                    help="自动循环：持续运行 backlog 中所有就绪任务直到清空")
+    p.add_argument("--no-scheduler", action="store_true",
+                   help="回退到 legacy autoloop.pick_next 选路（默认使用 Phase D Scheduler）")
+    p.add_argument("--lease-path", default=str(_default_auto_lease_path()),
+                   help="Scheduler lease 文件路径（默认 devkit/runs/auto-lease.json）")
     a = p.parse_args(argv)
 
     # Layer B 产品模式：从愿景生成 backlog（T13）
@@ -1251,12 +1364,38 @@ def _cmd_auto(argv) -> int:
     backlog = _prune_human_only_pending(bl_path, backlog)
 
     total_run = 0
+    use_scheduler = not a.no_scheduler
+    lease_path = pathlib.Path(a.lease_path)
     while True:
         backlog = _reclaim_stale_running(bl_path, backlog)
         backlog = _prune_stale_pending(bl_path, backlog)
         backlog = _prune_human_only_pending(bl_path, backlog)
-        item = _autoloop.pick_next(backlog)
+        # 始终重新从磁盘读一次 backlog 再喂给 scheduler，避免 in-memory 状态漂移
+        item, decision = _select_next_via_scheduler(
+            bl_path,
+            lease_path=lease_path,
+            use_scheduler=use_scheduler,
+        )
         if item is None:
+            if decision is not None and getattr(decision, "reason", "") == "blocked":
+                # 单个 decision 只覆盖第一个 blocked 任务；调 list_blocked 把全部
+                # blocked 的 task_id + blocked_by 列出来，方便运维一眼看到根因。
+                from devkit import scheduler as _scheduler_log
+                _blocked_all = _scheduler_log.list_blocked(bl_path, lease_path) or []
+                if _blocked_all:
+                    _lines = [
+                        f"  - {d.work_item_id} (blocked_by={','.join(d.blocked_by) or '?'})"
+                        for d in _blocked_all
+                    ]
+                    print("⛔ 所有待运行任务均被阻塞：")
+                    print("\n".join(_lines))
+                else:
+                    _by = ",".join(getattr(decision, "blocked_by", []) or []) or "?"
+                    print(f"⛔ 所有待运行任务均被阻塞（blocked_by={_by}）")
+            elif decision is not None and getattr(decision, "reason", "") == "leased":
+                print(f"⏳ 所有就绪任务已被其他 run lease 占用（{getattr(decision, 'blocked_by', []) or '?'}）")
+            elif decision is not None and getattr(decision, "reason", "") == "over_budget":
+                print(f"💸 所有就绪任务超过预算上限（{getattr(decision, 'blocked_by', []) or '?'}）")
             if a.loop:
                 added = _refill_backlog(bl_path, backlog)
                 if added:
@@ -1271,85 +1410,111 @@ def _cmd_auto(argv) -> int:
 
         run_args = _autoloop.run_once(item)
 
-        if a.as_json:
-            print(_json.dumps(run_args, ensure_ascii=False, indent=2))
-            return 0
-
-        if a.dry_run:
-            print(f"（dry-run）选中任务：{item.get('id','?')}")
-            print(f"  task   = {run_args['task']!r}")
-            print(f"  stages = {run_args['stages']}")
-            print(f"  run_id = {run_args['run_id']}")
-            return 0
-
-        # 对所有就绪任务打分（无论 --yes 与否，决策日志都需要）
-        from devkit import valuer as _valuer, decision_log as _dlog
-        _pending = [e for e in backlog if e.get("status") == "pending"]
-        _scored = _valuer.top_n(
-            _pending,
-            [{"priority": e.get("priority", "medium")} for e in _pending],
-            n=min(5, len(_pending)),
-        ) if _pending else []
-        _chosen_scored = next(
-            (r for r in _scored if r["candidate"].get("id") == item.get("id")), {}
-        )
-        _alts = [
-            {"task_id": r["candidate"].get("id"), "score": r["score"], "reason": r["reason"]}
-            for r in _scored if r["candidate"].get("id") != item.get("id")
-        ]
-        # 落盘决策记录（outcome=pending，运行后更新）
-        _dlog.append(
-            task_id=item.get("id", "?"),
-            task_text=run_args["task"],
-            run_id=run_args["run_id"],
-            score=_chosen_scored.get("score", 0),
-            reason=_chosen_scored.get("reason", ""),
-            alternatives=_alts,
-            sync_backlog=True,
-            backlog_path=bl_path,
-            priority=item.get("priority"),
-        )
-
-        # T12 人类优先级门：展示候选任务评分，等待确认
-        if not a.yes:
-            if len(_pending) > 1:
-                print(f"\n📋 就绪任务（按价值评分，共 {len(_pending)} 个）：")
-                for _j, _r in enumerate(_scored, 1):
-                    _c = _r["candidate"]
-                    _marker = "◀ 自动选中" if _c.get("id") == item.get("id") else ""
-                    print(f"  {_j}. [{_r['score']}分] {_c.get('id','?')} — {_c.get('task','')[:60]} {_marker}")
-            print(f"\n▶ 准备运行：{item.get('id','?')}")
-            print(f"  task  = {run_args['task']!r}")
-            print(f"  stages = {run_args['stages']}")
-            print(f"  run_id = {run_args['run_id']}")
-            try:
-                ans = input("\n确认运行此任务？[y/N/跳过=s] ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\n已取消")
-                return 1
-            if ans == "s":
-                for entry in backlog:
-                    if entry.get("id") == item.get("id"):
-                        entry["status"] = "skipped"
-                merged = _write_backlog(bl_path, backlog)
-                backlog[:] = merged
-                _dlog.update_outcome(run_args["run_id"], "skipped", sync_backlog=True, backlog_path=bl_path)
-                print(f"  跳过 {item.get('id')}，继续下一个…")
-                if not a.loop:
-                    return 0
+        # Scheduler 路径：claim → run → release。Claim 在 dry-run / as_json 之前
+        # 进行，让 dry-run 也能验证 lease 流程是否能正常 claim（不会真的运行）。
+        # Release 用 try/finally 保证 dry-run / as_json / 异常退出也会清理。
+        _scheduler_mod = None
+        _claimed = False
+        if use_scheduler:
+            from devkit import scheduler as _scheduler_mod
+            _claimed = _scheduler_mod.claim_lease(
+                decision.work_item_id if decision is not None else item.get("id", "?"),
+                run_args["run_id"],
+                lease_path,
+            )
+            if not _claimed:
+                print(f"⚠ 无法 claim lease（wid={item.get('id','?')}）；跳过本次，循环重试")
                 continue
-            if ans not in ("y", "yes", "是", "ok"):
-                _dlog.update_outcome(run_args["run_id"], "cancelled", sync_backlog=True, backlog_path=bl_path)
-                print("已取消")
-                return 1
 
-        event, _result = _run_selected_backlog_item(backlog, bl_path, item, run_args)
-        total_run += 1
+        def _release() -> None:
+            if use_scheduler and _claimed and _scheduler_mod is not None:
+                try:
+                    _scheduler_mod.release_lease(lease_path)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"⚠ 释放 lease 失败：{exc}")
 
-        if not a.loop:
-            return 0 if event == "success" else 1
-        # loop 模式：失败不停，继续下一个（失败的留在 failed 状态）
-        backlog = _json.loads(bl_path.read_text(encoding="utf-8"))
+        try:
+            if a.as_json:
+                print(_json.dumps(run_args, ensure_ascii=False, indent=2))
+                return 0
+
+            if a.dry_run:
+                print(f"（dry-run）选中任务：{item.get('id','?')}")
+                print(f"  task   = {run_args['task']!r}")
+                print(f"  stages = {run_args['stages']}")
+                print(f"  run_id = {run_args['run_id']}")
+                return 0
+
+            # 对所有就绪任务打分（无论 --yes 与否，决策日志都需要）
+            from devkit import valuer as _valuer, decision_log as _dlog
+            _pending = [e for e in backlog if e.get("status") == "pending"]
+            _scored = _valuer.top_n(
+                _pending,
+                [{"priority": e.get("priority", "medium")} for e in _pending],
+                n=min(5, len(_pending)),
+            ) if _pending else []
+            _chosen_scored = next(
+                (r for r in _scored if r["candidate"].get("id") == item.get("id")), {}
+            )
+            _alts = [
+                {"task_id": r["candidate"].get("id"), "score": r["score"], "reason": r["reason"]}
+                for r in _scored if r["candidate"].get("id") != item.get("id")
+            ]
+            # 落盘决策记录（outcome=pending，运行后更新）
+            _dlog.append(
+                task_id=item.get("id", "?"),
+                task_text=run_args["task"],
+                run_id=run_args["run_id"],
+                score=_chosen_scored.get("score", 0),
+                reason=_chosen_scored.get("reason", ""),
+                alternatives=_alts,
+                sync_backlog=True,
+                backlog_path=bl_path,
+                priority=item.get("priority"),
+            )
+
+            # T12 人类优先级门：展示候选任务评分，等待确认
+            if not a.yes:
+                if len(_pending) > 1:
+                    print(f"\n📋 就绪任务（按价值评分，共 {len(_pending)} 个）：")
+                    for _j, _r in enumerate(_scored, 1):
+                        _c = _r["candidate"]
+                        _marker = "◀ 自动选中" if _c.get("id") == item.get("id") else ""
+                        print(f"  {_j}. [{_r['score']}分] {_c.get('id','?')} — {_c.get('task','')[:60]} {_marker}")
+                print(f"\n▶ 准备运行：{item.get('id','?')}")
+                print(f"  task  = {run_args['task']!r}")
+                print(f"  stages = {run_args['stages']}")
+                print(f"  run_id = {run_args['run_id']}")
+                try:
+                    ans = input("\n确认运行此任务？[y/N/跳过=s] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n已取消")
+                    return 1
+                if ans == "s":
+                    for entry in backlog:
+                        if entry.get("id") == item.get("id"):
+                            entry["status"] = "skipped"
+                    merged = _write_backlog(bl_path, backlog)
+                    backlog[:] = merged
+                    _dlog.update_outcome(run_args["run_id"], "skipped", sync_backlog=True, backlog_path=bl_path)
+                    print(f"  跳过 {item.get('id')}，继续下一个…")
+                    if not a.loop:
+                        return 0
+                    continue
+                if ans not in ("y", "yes", "是", "ok"):
+                    _dlog.update_outcome(run_args["run_id"], "cancelled", sync_backlog=True, backlog_path=bl_path)
+                    print("已取消")
+                    return 1
+
+            event, _result = _run_selected_backlog_item(backlog, bl_path, item, run_args)
+            total_run += 1
+
+            if not a.loop:
+                return 0 if event == "success" else 1
+            # loop 模式：失败不停，继续下一个（失败的留在 failed 状态）
+            backlog = _json.loads(bl_path.read_text(encoding="utf-8"))
+        finally:
+            _release()
 
 
 def _cmd_iterate(argv) -> int:
