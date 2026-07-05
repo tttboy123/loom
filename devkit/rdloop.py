@@ -2503,7 +2503,7 @@ def run_loop(
             candidate_path=str(build_dir.name),
             source="inner_sandbox" if (_delivery_mode == "report-only") else "loom_runtime",
         )
-        applyable_files = [e["path"] for e in artifact_manifest["entries"] if e.get("applyable")]
+        applyable_files = [e["path"] for e in artifact_manifest["spec"]["entries"] if e.get("applyable")]
         _safe_write_text(
             run_dir / "artifact-manifest.json",
             json.dumps(artifact_manifest, ensure_ascii=False, indent=2),
@@ -2737,7 +2737,7 @@ def run_loop(
             )
         )
         _lock_ctx = _applylock.RunContext.get(run_id=ts, runs_dir=ROOT / "devkit" / "runs")
-        _manifest_decision = _applylock.classify_manifest(artifact_manifest["entries"], lock=_lock, ctx=_lock_ctx)
+        _manifest_decision = _applylock.classify_manifest(artifact_manifest["spec"]["entries"], lock=_lock, ctx=_lock_ctx)
         _locked_files = [item["path"] for item in _manifest_decision["blocked"]]
         _exempted_files = [
             f"{item['path']} ({item['reason']})"
@@ -2849,6 +2849,7 @@ def run_loop(
         "tests_failed": tests_failed,
         "over_budget": over_budget,
         "gate_spec": gate_spec,
+        "artifact_manifest": artifact_manifest,
     }
     status_code, reasons, gate_verdict = _gatekeeper.evaluate_run_gate(
         run_id=ts,
