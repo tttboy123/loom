@@ -1,0 +1,85 @@
+# GatePolicy v1 — referenced from team.yaml or set as default
+
+# Default tier for any reviewer role. Overridable per gate.
+default_reviewer:
+  tier: high_reasoning   # balanced | high_reasoning | frontier_safety_consulted
+
+# Required evidence per artifact class. Same source as Loom Blueprint Phase 3.
+required_evidence:
+  code_change:
+    - diff
+    - tests_or_reason
+    - risk_review
+    - rollback_plan
+  research:
+    - source_list
+    - uncertainty_notes
+    - date_sensitivity_check
+  design_doc:
+    - decision_table
+    - runtime_contract
+    - open_questions
+  incident_resolution:
+    - root_cause_or_assumption
+    - reproducer_or_evidence_chain
+    - regression_test_plan
+
+# Hard refusal rules (gate refuses Done / acceptance if any true).
+blocking_rules:
+  - id: missing_acceptance
+    severity: high
+    rule: "No task can move to Done without acceptance criteria."
+  - id: self_review_only
+    severity: high
+    rule: "Producer cannot be the only reviewer."
+  - id: unverifiable_claim
+    severity: medium
+    rule: "Claims requiring evidence must attach evidence or be marked as assumptions."
+  - id: snapshot_stale
+    severity: medium
+    rule: "Snapshot age at gate time must be ≤ 5 seconds."
+
+# Soft (warning, not block).
+soft_rules:
+  - id: redundant_tool_call
+    severity: low
+  - id: unknowns_over_clarifying
+    severity: low
+  - id: gate_round_trip
+    severity: medium
+
+# Gate types (each run declares which apply).
+gates:
+  plan_gate:
+    when: before_execution
+    reviewer: reviewer
+    blocking: true
+  handoff_gate:
+    when: per_cross_role_handoff
+    reviewer: reviewer
+    blocking: true
+  evidence_gate:
+    when: per_artifact
+    reviewer: reviewer
+    blocking: true
+  integration_gate:
+    when: before_merge_to_main
+    reviewer: reviewer
+    blocking: true
+  acceptance_gate:
+    when: before_done
+    reviewer: reviewer
+    blocking: true
+  improvement_gate:
+    when: before_promote_candidate
+    reviewer: reviewer
+    blocking: true
+
+# Cost allocation per gate (rough).
+cost_allocation:
+  plan_gate: 0.05
+  evidence_gate: 0.10
+  integration_gate: 0.10
+  acceptance_gate: 0.10
+  improvement_gate: 0.05
+  sum_max: 0.40    # team-wide cap; over 40% suggests over-gating

@@ -1,0 +1,37 @@
+# Handoff (5 elements: CANTS)
+task_id: T2
+from: builder
+to: reviewer
+status: review
+
+# C — Completed
+completed:
+  - "Created Loom Agent Team Runtime proposal."
+  - "Drafted Unknowns Map covering scope, acceptance, and risk."
+
+# A — Artifacts
+artifacts:
+  - path: "outputs/loom-agent-team-runtime-proposal.md"
+    type: markdown
+  - path: "evidence/T2/outputs/diff.patch"
+    type: diff
+
+# N — Notes (verification)
+verification:
+  commands:
+    - "markdown-lint optional"
+  evidence_refs:
+    - "evidence/T2/"
+
+# T — Things gone wrong (known_issues)
+known_issues:
+  - "Provisional team topology; can be reviewed at plan_gate."
+
+# S — Suggested next_action
+next_action:
+  type: review
+  requested_by: reviewer
+  eta_sla: 3600        # seconds — reviewer should act within this time
+
+# Handoff validation passes iff all 5 elements are non-empty AND
+# `to` ≠ `from` AND `artifacts` paths exist.

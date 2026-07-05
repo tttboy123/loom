@@ -1,0 +1,21 @@
+# TaskBoard snapshot — taken at any tick.
+tasks:
+  - id: T1
+    title: "Generate Unknowns Map"
+    owner: orchestrator
+    state: done
+    acceptance:
+      - "Unknowns are categorized by user, agent, execution."
+    last_updated: "2026-07-06T12:05:00+08:00"
+  - id: T2
+    title: "Produce proposal artifact"
+    owner: builder
+    state: review
+    depends_on: [T1]
+    last_updated: "2026-07-06T12:30:00+08:00"
+  - id: T3
+    title: "Review proposal against gate policy"
+    owner: reviewer
+    state: inbox
+    depends_on: [T2]
+    last_updated: "2026-07-06T12:00:00+08:00"

@@ -1,0 +1,43 @@
+{
+  "name": "agentteam-runtime",
+  "version": "0.1.0-draft",
+  "status": "discussion",
+  "date": "2026-07-06",
+  "derived_from": "loom-agent-team-runtime-proposal.md (2026-07-05, lune draft)",
+  "purpose": "Operationalize single-agent / agent-team / cluster orchestration in Loom by absorbing governance protocol, team cockpit, and gate-driven acceptance from three reference models.",
+  "scope_articles": [
+    "Agent-team runtime and protocol",
+    "Three-source capability absorption (MiniMax / Claude / Codex)",
+    "Team spec + handoff envelope + gate policy data objects",
+    "Cockpit UX requirements (mirror Claude Agent Teams shape, persist as Loom runtime)",
+    "Self-improvement candidate generation (gated only)"
+  ],
+  "out_of_scope": [
+    "Modifying the chosen model (Fable 5 / Codex / MiniMax / any) itself",
+    "Self-approval of permission, safety or model-routing changes",
+    "Replacing Loom's existing state machine or evidence pipeline"
+  ],
+  "consumes": [
+    "boundary-aware-agent skill (for per-agent Blindspot Pass and capability boundary)"
+  ],
+  "produces": [
+    "TeamSpec YAML",
+    "HandoffEnvelope YAML (5-element)",
+    "UnknownsMap YAML (shared with boundary-aware-agent)",
+    "EvidencePacket (Loom primitive — referenced, not redefined)",
+    "GatePolicy YAML",
+    "ImprovementCandidate YAML (gated)"
+  ],
+  "audience_split": {
+    "runtime_engineer": "team-spec.md, governance-protocol.md, runtime-contract.md, gate-policy.md",
+    "skill_designer": "three-sources-capability.md, unknowns-map.md, cockpit-views.md",
+    "operator": "implementation-phases.md, failure-modes.md",
+    "reviewer": "gate-policy.md, failure-modes.md, unknowns-map.md"
+  },
+  "verification": {
+    "phase0_done": "validate_team_spec.py + lint_handoff.py can lint the included templates",
+    "phase1_done": "loom team run CLI creates .loom/runs/<id>/ directory with team.yaml + task-board.yaml",
+    "phase2_done": "team mailbox + task board rendered in cockpit (CLI or web)",
+    "phase3_done": "improvement candidates emitted from run traces, none auto-promoted to runtime"
+  }
+}

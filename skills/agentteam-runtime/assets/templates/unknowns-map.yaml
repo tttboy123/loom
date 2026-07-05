@@ -1,0 +1,46 @@
+# UnknownsMap v1 — every team run emits this before any Inbox -> Assigned
+
+unknowns_map:
+  run_id: run_20260706_001
+
+  user_unknowns:
+    - id: acceptance_criteria
+      question: "What does the user accept as 'done'?"
+      default_action: infer_then_confirm_if_high_risk
+    - id: audience
+      question: "Who consumes this artifact? Internal team, customer, regulator?"
+      default_action: infer_from_context
+    - id: scope_boundary
+      question: "Which files / directories are in scope? Out of scope?"
+      default_action: ask_user_or_default_to_repo
+    - id: time_budget
+      question: "When is 'late'? Are there deadlines?"
+      default_action: infer_then_assume
+
+  agent_unknowns:
+    - id: repo_truth
+      question: "Do we need to read repo/doc structure to verify the answer?"
+      default_action: read_before_design
+    - id: prior_run
+      question: "Was this attempted before? What broke?"
+      default_action: query_run_trace
+    - id: date_sensitivity
+      question: "Does this become stale quickly (citations, prices, API state)?"
+      default_action: browse_or_mark_as_assumption
+
+  execution_unknowns:
+    - id: write_scope
+      question: "Which files / branches can be modified? Sandbox only, or main?"
+      default_action: default_to_restricted
+    - id: tools_required
+      question: "What tools does the team need? (search, run tests, fetch URL, write diff)"
+      default_action: list_in_team_spec
+    - id: cost_ceiling
+      question: "How much is the user willing to spend?"
+      default_action: assume_default_ceiling
+
+# Resolution workflow:
+#   1. Orchestrator emits this on team.yaml creation.
+#   2. plan_gate reviews; per unknown either resolves, marks assumption, or escalates.
+#   3. After plan_gate, map becomes part of run root and is reused by every handoff.
+#   4. Improvement auditor counts which unknowns caused rework and adjusts templates.

@@ -1,0 +1,31 @@
+# ImprovementCandidate v1 — must NEVER be auto-applied to running runtime
+improvement_candidate:
+  id: ic_20260706_001
+  source_runs:
+    - run_20260706_001
+
+  finding:
+    type: redundant_tool_call
+    summary: "Researcher re-fetched the same source twice in run_20260706_001."
+
+  proposed_change:
+    target: references/governance-protocol.md
+    patch_type: routing_rule
+    summary: "Add shared source cache step before parallel research fan-out."
+
+  expected_gain:
+    latency: "-10%"
+    token_cost: "-8%"
+
+  risk:
+    level: medium
+    notes:
+      - "Cache may preserve stale context if not invalidated."
+
+  eval_plan:
+    - "Replay 3 previous research tasks; compare source coverage and cost."
+
+  approval:
+    required_by:
+      - reviewer
+      - human_for_core_policy    # required when patch_type ∈ prohibited

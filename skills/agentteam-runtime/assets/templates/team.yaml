@@ -1,0 +1,75 @@
+# TeamSpec (version 1) — minimum complete example
+version: 1
+team:
+  id: loom-agent-team-runtime-demo
+  mode: agent-team
+  topology: hierarchical
+  lead: orchestrator
+
+goal:
+  summary: "实现或研究用户给定任务"
+  success_criteria:
+    - "产出有明确 artifact"
+    - "关键结论有 evidence"
+    - "变更通过 gate"
+
+unknowns_map:
+  required:
+    - id: scope
+      question: "任务边界是否清楚？"
+      resolution: "agent infer / ask user / defer"
+    - id: acceptance
+      question: "如何判断完成？"
+      resolution: "must define before execution"
+
+roles:
+  - id: orchestrator
+    purpose: "拆解任务、分配角色、收口结果"
+    model_policy: high_reasoning
+    can_write: false
+    must_be_non_producer: true
+  - id: builder
+    purpose: "实现候选产物"
+    model_policy: balanced
+    can_write: true
+    must_be_non_producer: true
+  - id: reviewer
+    purpose: "审查风险、证据和验收"
+    model_policy: high_reasoning
+    can_write: false
+    must_be_non_producer: true
+
+task_graph:
+  - id: T1
+    title: "恢复上下文并生成 Unknowns Map"
+    owner: orchestrator
+    state: inbox
+    acceptance:
+      - "Unknowns are categorized by user, agent, execution."
+  - id: T2
+    title: "生成方案或候选实现"
+    owner: builder
+    depends_on: [T1]
+    state: inbox
+    acceptance:
+      - "Artifact matches acceptance criteria from team.goal.success_criteria."
+      - "EvidencePacket exists under evidence/T2/."
+  - id: T3
+    title: "审查并验收"
+    owner: reviewer
+    depends_on: [T2]
+    state: inbox
+    acceptance:
+      - "All handoff elements present (CANTS)."
+      - "Required gates passed (at least acceptance_gate)."
+
+gates:
+  - id: plan_gate
+    required_before: execution
+    reviewer: reviewer
+  - id: evidence_gate
+    required_before: T2_done
+    reviewer: reviewer
+  - id: acceptance_gate
+    required_before: done
+    reviewer: reviewer
