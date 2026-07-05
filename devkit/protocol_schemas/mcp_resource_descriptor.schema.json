@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResourceDescriptor",
+  "description": "MCP-compatible resource descriptor — declares a read-only resource addressable by URI.",
+  "type": "object",
+  "required": ["kind", "uri", "name", "description", "mime_type", "protocol_version"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "ResourceDescriptor"
+    },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-zA-Z][a-zA-Z0-9+.-]*://.+",
+      "description": "Resource URI (e.g. 'loom://backlog', 'loom://runs')."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable resource name."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable description of what this resource exposes."
+    },
+    "mime_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "IANA media type (e.g. 'application/json', 'text/plain')."
+    },
+    "protocol_version": {
+      "type": "string",
+      "const": "loom.dev/v1"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
