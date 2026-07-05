@@ -130,7 +130,7 @@ loom_release_team = Team(
 | `GitignoreComplete` | blocker | 必须排除：`.schemathesis/` `.hypothesis/` `_diag/` `*.log` `devkit/MEMORY.md` `devkit/RUNS.md` |
 | `WorktreeClean` | warning | `git status --porcelain` 为空（除 `.example` 文件外） |
 | `MockModeRunnable` | warning | `litellm/config.mock.yaml` 可被 LiteLLM 加载 |
-| `PathsScrubbed` | blocker | 提交文档中无 `/Users/lune/`、`/home/<user>/` 这类绝对路径 |
+| `PathsScrubbed` | blocker | 提交文档中无 `./`, `$HOME/`, or `./scripts/...` 这类绝对路径 |
 | `ConsentMentions` | warning | `SECURITY.md` 或 README 提及订阅代理的 ToS 风险 |
 
 ### 4.3 公开 API
