@@ -1,12 +1,13 @@
-# Loom Gatekeeper + Scheduler (Phase D)
+# Loom Gatekeeper + Scheduler (Phase D + E)
 
 > **Status**: implemented in `devkit/gatekeeper.py` and `devkit/scheduler.py`
-> on `feat/phase-d-gatekeeper-scheduler` @ `d145ea3`.
+> on `feat/phase-e-unify` @ `dac80a6` (Phase D → E merge).
 > **Date**: 2026-07-05.
 > **Scope**: typed final-state verdict (`GateVerdict`) + typed next-task
-> driver (`ScheduleDecision`). **Does not** replace `iterate.py`'s
-> `run_loop` or `devkit/__main__.py`'s autopilot gate; integration is
-> opt-in (see "Integration status" below).
+> driver (`ScheduleDecision`). Phase E wired `run_loop` →
+> `evaluate_run_gate` and the autopilot `_cmd_auto` →
+> `select_next_pending`; see "Integration status" below.
+> **See also**: [ADR 0015](architecture-decisions/0015-phase-e-unify-and-migrate.md).
 
 ## What these two modules are
 
@@ -275,59 +276,56 @@ All 159 tests pass (`test_gatekeeper_scheduler 52/52`, `test_repairer
    know about (calibration drift, TOCTOU, verifier drift, …). This
    phase is the foundation; the next phase adds the broader taxonomy.
 
-## Integration status (as-of 2026-07-05)
+## Integration status (as-of 2026-07-05, post-Phase-E merge)
 
-Both modules ship but **the autopilot does not call them**. This is the
-honest status of the Phase D delivery:
+**All callers ARE now wired.** Phase E migrated every direct gate /
+scheduler call site to the typed Phase D APIs:
 
 | Caller | Uses Gatekeeper? | Uses Scheduler? |
 |---|---|---|
-| `devkit/__main__.py auto` | ❌ direct gate logic | ❌ direct backlog loop |
-| `devkit/iterate.py` | ❌ direct gate logic | ❌ direct backlog loop |
+| `devkit/__main__.py _cmd_auto` (autopilot) | n/a (gate is in runner) | ✅ `select_next_pending` + claim/release lease |
+| `devkit/rdloop.py run_loop` | ✅ `_gatekeeper.evaluate_run_gate(...)` | n/a |
+| `devkit/iterate.py` (reflection loop) | reads typed `GateVerdict` from `<run_dir>/verdict.json` via Phase F bridge | n/a |
 | `devkit/repairer.py` | n/a | n/a |
 | `devkit/state_writer.py` | n/a | n/a |
 | `devkit/protocol.py` (Phase C) | n/a | n/a |
 
-### Proposed migration (not yet executed)
+Legacy escape hatches (preserved behind explicit flags for rollback
+safety):
 
-Step 1 — wire `evaluate_final_gate` into the runner:
+- `devkit auto --no-scheduler` → falls back to `autoloop.pick_next`.
+- `rdloop.evaluate_final_gate` → wrapped in `_deprecated` decorator
+  emitting `DeprecationWarning` pointing at `gatekeeper.evaluate_run_gate`.
+- `devkit/lease.py` without `lease_path=` kwarg → legacy in-band
+  `task["lease"]` (1800s default); opt-in `lease_path=` switches to
+  scheduler-managed (300s default).
 
-```python
-# iterate.py (proposed patch)
-from devkit import gatekeeper
+### How evidence flows into the gate
 
-verdict = gatekeeper.evaluate_final_gate(
-    run_id=current_run_id,
-    work_item_id=current_wi_id,
-    evidence_dir=current_evidence_dir,
-)
-if not verdict.passed:
-    # Branch on verdict.failure_codes[0] for the specific recovery path
-    # instead of pattern-matching the run-log.
-    handle_gate_failure(verdict)
+Phase E introduced `devkit/evidence_writer.write_run_evidence(run_id,
+spec, evidence_dir)` as the single canonical writer of
+`devkit/evidence/<run-id>/evidence_packet.json`. The flow is:
+
+```text
+run_loop
+  ├─ evaluate_run_gate(...)         # gatekeeper module
+  │    └─ calls evidence_writer.write_run_evidence(...)
+  │         └─ writes <evidence_dir>/<run_id>/evidence_packet.json
+  │              (atomic, schema-validated)
+  ├─ evaluate_final_gate(evidence_dir) → GateVerdict
+  │    └─ reads <evidence_dir>/<run_id>/evidence_packet.json
+  │         (with legacy fallback to <evidence_dir>/evidence.json)
+  └─ write_verdict(GateVerdict, <run_dir>/verdict.json)
+       (atomic, fail-open with logger.warning)
 ```
 
-Step 2 — wire `select_next_pending` into the autopilot:
+Both the evidence packet and the verdict are atomic-written
+(`.tmp + os.replace`) and JSON-Schema-validated against their
+respective schemas (`evidence_packet.schema.json`,
+`gate_verdict.schema.json`). A regression in the writer is caught by
+the schema validator before the file is renamed into place.
 
-```python
-# devkit/__main__.py auto (proposed patch)
-from devkit import scheduler
-
-decision = scheduler.select_next_pending(
-    backlog_path=backlog_path,
-    lease_path=current_lease_path,
-)
-if not decision.is_actionable():
-    log(f"no work: {decision.reason}")
-    return
-scheduler.claim_lease(decision.work_item_id, current_run_id, current_lease_path)
-run(decision.work_item_id)
-```
-
-Step 3 — add an ADR under `docs/architecture-decisions/` describing the
-separation of concerns: Runner drives execution, Gatekeeper owns
-verdict, Scheduler owns selection.
-
-Items (1)–(3) are mechanical but should land together to avoid a
-half-migrated state where some paths use the new typed APIs and others
-don't.
+The reflection loop (`iterate.infer_failure_code`) reads
+`<run_dir>/verdict.json` (the gate's typed output) and passes it via
+the Phase F `gate_verdict=` kwarg, so the repairer gets a structured
+code instead of a regex-matched text fragment.
