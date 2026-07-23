@@ -1,0 +1,52 @@
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+*.out
+
+# Go
+go.work
+go.work.sum
+vendor/
+
+# Node (if any)
+node_modules/
+package-lock.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config / secrets — DO NOT COMMIT
+.env
+.env.local
+*.local
+*.key
+*.pem
+
+# AgentKey vault — never commit user credentials
+.agentkey/
+loom-vault/
+*.vault
+
+# Runtime data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+loom.db
+loom-data/
+
+# Logs
+*.log
+logs/
