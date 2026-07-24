@@ -10,8 +10,8 @@ Updated: 2026-07-24
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: `S2-W1` accepted after preserved Review 1 `FAIL`, Repair 1 RED/GREEN,
-  full strict checks, and fresh implementation Review 2 `PASS`
+- Slice 2: `S2-W1` accepted and locally committed at `954416a`; `S2-W2`
+  discovery coordination accepted after fresh implementation Reviewer `PASS`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,8 +49,8 @@ Updated: 2026-07-24
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W1_GREEN_REVIEWER_PASS`
-- Product changes after the Slice 1 completion commit: none
+- Status: `S2-W2_GREEN_REVIEWER_PASS`
+- Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
 - Contract SHA256:
@@ -92,8 +92,37 @@ Updated: 2026-07-24
 - Authority correction: Bridge/JSON-RPC/JSONL, AgentGrant, claim generation,
   prepare lease, WorkItem dispatch, and real Runtime Adapter remain Slice 3
   under `TECH-PLAN.md §14`; later research drafts are Candidate material
-- Next gate: strictly scoped local S2-W1 atomic commit, then S2-W2 contract
-  freeze and fresh contract review
+- S2-W2 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W2/contract.md`
+- S2-W2 contract SHA256:
+  active normalized `7f8dab95bf7a98d3e7615252fc3d490fa5108fad956b29eea82c3b049e96d3c9`;
+  original reviewed `8ab4fdfadda9808a4ed2c0f750efc850d60db48e8f147758c8356e5702d53ed1`
+- S2-W2 contract review:
+  `.loom-evidence/phase1-slice2/S2-W2/contract-review.md`
+- S2-W2 contract Reviewer: `PASS`; findings: none blocking
+- S2-W2 EOF-only contract amendment and fresh review:
+  `.loom-evidence/phase1-slice2/S2-W2/contract-amendment-1.md`,
+  `.loom-evidence/phase1-slice2/S2-W2/contract-amendment-1-review.md`;
+  semantic changes: none; Reviewer: `PASS`
+- S2-W2 boundary: injected RuntimeProbe coordination, validated model and
+  capability observations, deterministic immutable digest snapshot; no concrete
+  CLI probe, daemon scheduling, persistence, Runtime execution, or activation
+- S2-W2 mandatory RED: exit `1`; missing frozen discovery symbols only
+- S2-W2 pre-review regression RED: exit `1`; immutable snapshot accessors
+  missing; probe-ID one-time capture coverage added
+- S2-W2 product digests:
+  `discovery.go=2543d956...0dbc24`,
+  `discovery_test.go=9482ce30...0895`
+- S2-W2 Controller checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W2 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W2/deliverable.md`
+- S2-W2 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W2/implementation-review.md`
+- S2-W2 implementation Reviewer: `PASS`; findings: none blocking
+- Candidate last line: `VERDICT: PASS`
+- Next gate: strictly scoped local S2-W2 atomic commit, then freeze S2-W3
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 
