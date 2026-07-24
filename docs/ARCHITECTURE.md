@@ -1,289 +1,363 @@
-# Loom 架构图 & 流程图
+# Loom 架构与流程
 
-> 草稿 v0.1 · 2026-07-24
-> 对应: [PRODUCT-PLAN.md](../PRODUCT-PLAN.md) / [TECH-PLAN.md](../TECH-PLAN.md)
->
-> 全部 Mermaid。GitHub 原生渲染。也可以贴 [mermaid.live](https://mermaid.live) 看。
->
-> 图序：先 4 张架构图（系统 / 2-tier / 内部 / 数据），再 3 张流程图（任务生命周期 / bridge 消息 / AgentKey token）。
+> 草稿 v0.2 · 2026-07-24
+> 对应：[产品方案](../PRODUCT-PLAN.md) / [技术方案](../TECH-PLAN.md)
+> 本文中的 Mermaid 是架构图权威源；PNG 快照不作为当前事实。
 
----
+## 0. 整体技术架构
 
-## 1. 系统总览（系统架构）
+本文件保留产品流程和领域状态图。按抽象层拆分的整体技术架构见：
 
-**这张说什么**：Loom 在整个系统里的位置。Loom 是个本地 daemon，坐在用户和 agent 之间。不指挥 agent，只观察 + 桥接 + 透明。
+- [System Context](architecture/c4-context.md)
+- [Containers](architecture/c4-containers.md)
+- [Loom Daemon Components](architecture/c4-components-daemon.md)
+- [Local Deployment](architecture/c4-deployment.md)
+- [Explicit Agent Dynamic Flow](architecture/c4-dynamic-agent-mode.md)
+- [Trust Boundaries](architecture/trust-boundaries.md)
 
-```mermaid
-flowchart TB
-    User["👤 User<br/>(CLI / TUI / Web)"]
-    Loom["🧵 Loom Daemon<br/>(本地进程)"]
-    Planner["🧠 Planner<br/>(高级模型)"]
-    Executor["🔧 Executor<br/>(性价比模型)"]
-    Provider["☁️ Provider API<br/>(Anthropic / OpenAI / ...)"]
+Phase 1 的总体形态是本地模块化单体 daemon。CLI/TUI、Agent Runtime 和 Evolution Sidecar
+都是独立进程；只有 daemon 可以提交权威状态转移，只有 Credential Broker 可以解析真实
+Provider 凭证。
 
-    User -->|"1. 描述问题"| Loom
-    Loom -->|"2. 启动任务"| Planner
-    Planner -->|"3. dispatch 步骤"| Executor
-    Executor -->|"4. 调 API"| Provider
-    Executor -.->|"5. emit events"| Loom
-    Planner -.->|"5. emit events"| Loom
-    Loom -.->|"6. 渲染 3 个 view"| User
-    User -->|"7. 批准 / 回滚"| Loom
-```
+## 1. 使用入口
 
-**关键点**：
-- Loom **不直接调 Provider**。Planner 调 Provider，Loom 只在中间传递 + 抓 events。
-- Planner 和 Executor 都是 subprocess，跟 Loom 通过 stdio JSON 通信。
-- 用户看到的是 Loom 渲染的 3 个 view，不是 agent 自己的输出。
-
----
-
-## 2. 2-tier 模型分层（核心差异化）
-
-**这张说什么**：高级模型当大脑、便宜模型当手脚。成本结构上规划 5-15%、执行 85-95%。
+普通对话与 Agent 模式是两个明确入口。普通任务不会因为内容复杂而自动创建团队。
 
 ```mermaid
-flowchart TB
-    Task["📋 用户任务<br/>(e.g. 修 PR #42)"]
-    
-    subgraph "Tier 1: Planner（高级模型）"
-        direction TB
-        P1["Claude Opus 4.7"]
-        P2["GPT-5"]
-        P3["Gemini 3 Pro"]
-    end
-    
-    subgraph "Tier 2: Executor（性价比模型）"
-        direction TB
-        E1["MiniMax M2.7<br/>$0.2/1M"]
-        E2["GLM-4.7<br/>$0.6/1M"]
-        E3["DeepSeek V3"]
-    end
-    
-    Result["📄 结果 + 收据"]
-    
-    Task -->|理解 + 拆解| Plan
-    Plan["Planner 选 Executor"] -->|dispatch| Exec
-    Exec["Executor 跑 tool calls"] --> Result
-    
-    Plan -.-|"占总 cost 5-15%"| Note1["💰 规划贵但准"]
-    Exec -.-|"占总 cost 85-95%"| Note2["💰 执行便宜但粗"]
+flowchart TD
+    Input["User Input"] --> Trigger{"Explicit Agent trigger?"}
+    Trigger -->|"No: plain input"| Chat["Conversation Mode"]
+    Chat --> Reply["Reply / continue conversation"]
+    Chat -.-> Suggest["Optional: suggest Use Agent"]
+    Suggest -.-> Trigger
+
+    Trigger -->|"Yes: Use Agent / select / assign"| AgentMode["Agent Mode"]
+    AgentMode --> Resolve["Resolve Team"]
 ```
 
-**关键点**：
-- Planner / Executor 全部由**用户定义**。可以是 Opus+MiniMax，也可以是 GPT-5+DeepSeek。
-- 同一个 task 里 planner 不变，executor 可以动态换（failover 到更便宜的）。
-- 真正的成本节省来自：高级模型只跑规划（少），便宜模型跑执行（多）。
+显式 Agent trigger 包括：
 
----
+- 点击或调用 Use Agent；
+- 选择一个 Agent；
+- 选择一个 Team；
+- 把工作分派给 Agent/Team；
+- 在对话中明确要求使用 Agent 团队执行。
 
-## 3. Loom Daemon 内部结构（组件图）
+普通对话可以建议切换，但不能替用户切换。
 
-**这张说什么**：Loom daemon 内部有哪些组件，各自干什么。
+## 2. 团队解析与 Team Draft
 
 ```mermaid
-flowchart TB
-    subgraph "Loom Daemon"
-        direction TB
-        Bridge["🔌 Bridge<br/>(stdio JSON 通信)"]
-        AgentKey["🔐 AgentKey Vault<br/>(age 加密)"]
-        Store[("💾 Event Store<br/>(SQLite, append-only)")]
-        
-        subgraph "View Engines"
-            Obs["📋 Observation"]
-            Cost["💰 Cost"]
-            Gov["🛡 Governance"]
-        end
-        
-        Rules["📜 User Rules<br/>(YAML)"]
-    end
-    
-    Bridge <-->|"stdin/stdout"| External["Planner / Executor<br/>(subprocess)"]
-    AgentKey -.->|"scoped token 注入"| Bridge
-    Bridge -->|"写 events"| Store
-    Store -->|"读 + 聚合"| Obs
-    Store -->|"读 + 计算"| Cost
-    Store -->|"读 + 匹配"| Gov
-    Rules --> Gov
-    Gov -->|"warn / hook"| Alert["🔔 告警 / 动作"]
+flowchart TD
+    Start["Explicit Agent Mode"] --> Selected{"What did user select?"}
+
+    Selected -->|"Complete Team"| Direct["Load saved Team"]
+    Direct --> Instantiate["Create TeamInstance"]
+
+    Selected -->|"Single Agent"| Leader{"Selected Agent is Main Agent?"}
+    Leader -->|"Yes"| Single["Create team with selected Main Agent"]
+    Leader -->|"No"| Complete["Add default Main Agent"]
+    Single --> Instantiate
+    Complete --> Draft
+
+    Selected -->|"No target"| Default{"Project or reusable Team matches?"}
+    Default -->|"Yes"| Direct
+    Default -->|"No"| Draft["Main Agent proposes Team Draft"]
+
+    Draft --> Question["Ask one material question"]
+    Question --> Revision["Create next Draft revision"]
+    Revision --> Open{"Unresolved decisions?"}
+    Open -->|"Yes"| Question
+    Open -->|"No"| Confirm["User confirms Draft"]
+    Confirm --> Instantiate
+    Instantiate --> Board["Team + Task Board"]
 ```
 
-**关键点**：
-- **Bridge 是唯一对外接口**，所有跟 planner/executor 的通信都从这里过。
-- **Event Store 是单一数据源**，3 个 view 都从它读（避免 view 之间数据不一致）。
-- **AgentKey 跟 Bridge 之间是单向的**：key → token → 注入，从不反过来。
+用户保存并显式选择的完整 Team 直接加载。任何由模型生成、补全或扩权的团队都必须经过用户确认。
 
----
-
-## 4. 事件驱动的 3 个 view（数据流）
-
-**这张说什么**：events 从 agent 流到 store，3 个 view 引擎各取所需，governance 还会触发外部动作。
+## 3. Agent 定义与实例
 
 ```mermaid
 flowchart LR
-    subgraph "Event Sources"
-        Exec["🔧 Executor"]
-        Plan["🧠 Planner"]
+    subgraph Catalog["Agent Catalog"]
+        Project["Project Agent"]
+        Reusable["Reusable Agent"]
+        Transient["Transient Agent Proposal"]
     end
-    
-    Store[("💾 Event Store<br/>SQLite<br/>append-only")]
-    
-    subgraph "View Engines"
-        Obs["📋 Observation<br/>时间线 + 决策点"]
-        Cost["💰 Cost<br/>provider / model / token / $"]
-        Gov["🛡 Governance<br/>规则匹配 + 告警"]
-    end
-    
-    Rules["📜 User Rules"]
-    Alert["🔔 告警<br/>(warn / log / hook)"]
-    Render["🖥 CLI / TUI / Web<br/>实时渲染"]
-    
-    Exec -->|event| Store
-    Plan -->|event| Store
-    Store --> Obs
-    Store --> Cost
-    Store --> Gov
-    Rules --> Gov
-    Gov --> Alert
-    Obs --> Render
-    Cost --> Render
-    Gov --> Render
+
+    Resolve["Resolution<br/>project > reusable > transient"] --> Definition["AgentDefinition"]
+    Project --> Resolve
+    Reusable --> Resolve
+    Transient --> Resolve
+
+    Definition --> Bind["Bind for this Team"]
+    Runtime["RuntimeProfile<br/>adapter / provider / model<br/>auth / budget / timeout"] --> Bind
+    Bind --> Instance["AgentInstance"]
+
+    Instance --> Main{"Main?"}
+    Main -->|"Yes"| Coordinator["Plan / dispatch / synthesize"]
+    Main -->|"No"| Worker["Execute bounded WorkItem"]
 ```
 
-**关键点**：
-- 3 个 view 是**只读消费者**，互不干扰，可以独立扩展。
-- Governance 引擎是**唯一有副作用**的（触发 alert / hook），其他都是只读。
-- Event Store 是 append-only，不能改不能删（审计性）。
+AgentDefinition 与 RuntimeProfile 分离。同一个角色可以换模型和 Provider，而不复制职责定义。
 
----
+每个 TeamInstance 恰好一个 Main Agent。Main Agent 可以重排现有成员，但不能退化为直接执行和自我验收。
 
-## 5. 任务生命周期（状态机）
+## 4. 系统组件
 
-**这张说什么**：一个 task 从创建到结束的所有状态。
+```mermaid
+flowchart TB
+    subgraph Client["Client"]
+        Conversation["Conversation"]
+        AgentEntry["Use Agent"]
+        Board["Board"]
+        Approval["Approval"]
+    end
+
+    subgraph Daemon["Loom Local Daemon"]
+        ModeRouter["Mode Router"]
+        TeamResolver["Team Resolver"]
+        MainAgent["Main Agent Runtime"]
+        Scheduler["Task Graph + Scheduler"]
+        Rules["Customer Rule Engine"]
+        Verification["Acceptance + Verifier Router"]
+        Broker["Credential Broker"]
+        Journal[("Event Journal")]
+        ReadModels[("Read Models")]
+    end
+
+    subgraph External["Agent Execution"]
+        Adapter["Runtime Adapter"]
+        Agents["SubAgent Processes"]
+    end
+
+    Provider["Provider API / Router"]
+    Sidecar["Evolution Sidecar"]
+
+    Conversation --> ModeRouter
+    AgentEntry --> ModeRouter
+    ModeRouter --> TeamResolver
+    TeamResolver --> MainAgent
+    MainAgent --> Scheduler
+    Scheduler --> Rules
+    Rules --> Adapter
+    Adapter --> Agents
+    Agents --> Verification
+    Agents --> Broker
+    Broker --> Provider
+
+    Daemon --> Journal
+    Journal --> ReadModels
+    ReadModels --> Board
+    Rules --> Approval
+    Journal --> Sidecar
+```
+
+Loom 是轻量本地编排器，不实现底层 Agent 推理循环。它拥有团队、任务图、进程、规则、批准、验收和投影；Agent Runtime 负责实际推理与工具调用。
+
+## 5. 领域关系
+
+```mermaid
+erDiagram
+    WORK_REQUEST ||--o| TEAM_DRAFT : may_create
+    WORK_REQUEST ||--o| TEAM_INSTANCE : starts
+    TEAM_DRAFT ||--o| TEAM_INSTANCE : accepted_as
+    TEAM_INSTANCE ||--|{ AGENT_INSTANCE : contains
+    AGENT_DEFINITION ||--o{ AGENT_INSTANCE : instantiates
+    RUNTIME_PROFILE ||--o{ AGENT_INSTANCE : configures
+    TEAM_INSTANCE ||--|{ WORK_ITEM : owns
+    WORK_ITEM }o--o{ WORK_ITEM : depends_on
+    WORK_ITEM ||--o{ RUN : attempts
+    AGENT_INSTANCE ||--o{ RUN : performs
+    RUN ||--o{ EVENT : emits
+    RUN ||--o{ EVIDENCE : produces
+    RULE ||--o{ APPROVAL_REQUEST : triggers
+    WORK_ITEM ||--o{ APPROVAL_REQUEST : waits_for
+    EVENT ||--o{ EVOLUTION_CANDIDATE : informs
+```
+
+关键区分：
+
+- Definition 是可版本化配置；
+- Instance 是一次团队运行中的实体；
+- Run 是一次具体执行尝试；
+- Event 是事实；
+- 看板状态是 Event 的投影；
+- Sidecar 产出 Candidate，不直接改变运行对象。
+
+## 6. 工作项生命周期
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Submitted: 用户描述问题
-    Submitted --> Planning: 启动 Planner
-    Planning --> Executing: dispatch 步骤
-    Executing --> Executing: 更多步骤 / retry
-    Executing --> Done: 期望状态达成
-    Executing --> Failed: terminal error
-    Done --> Approved: 用户批准
-    Done --> Rejected: 用户回滚
-    Failed --> Retrying: 失败可恢复
-    Retrying --> Executing
-    Approved --> [*]
-    Rejected --> [*]
+    [*] --> Draft
+    Draft --> Ready: contract frozen
+    Ready --> Assigned: Main Agent dispatches
+    Assigned --> Running: Agent starts
+
+    Running --> WaitingApproval: customer rule requires approval
+    WaitingApproval --> Running: approved
+    WaitingApproval --> Cancelled: rejected or cancelled
+
+    Running --> ReadyForReview: Executor submits Evidence
+    ReadyForReview --> Verifying: deterministic acceptance
+    Verifying --> Ready: acceptance failed and retry allowed
+    Verifying --> Done: acceptance passed
+
+    Running --> Blocked
+    Running --> Failed
+    Running --> Cancelled
+    Blocked --> Ready: blocker resolved
+
+    Done --> [*]
     Failed --> [*]
+    Cancelled --> [*]
 ```
 
-**关键点**：
-- `Submitted / Planning / Executing` 都是中间态，对用户透明。
-- `Done` 是**期望状态自动判定**（不是用户标），用户只需要 approve 或 reject。
-- `Failed → Retrying` 是 planner 内部决策，Loom 不管。
+Executor 不能直接产生 Done。只有验收路径可以把 WorkItem 投影为 Done。
 
----
-
-## 6. Bridge 消息流（时序图）
-
-**这张说什么**：一次 task 跑下来，Loom / Planner / Executor 之间的消息流长什么样。
+## 7. 客户规则与批准
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor U as 👤 User
-    participant L as 🧵 Loom
-    participant P as 🧠 Planner
-    participant E as 🔧 Executor
-    
-    U->>L: task "修 PR #42"
-    L->>P: task { executors, scope }
-    P->>L: dispatch step 1: 读文件
-    L->>E: dispatch { instruction }
-    E-->>L: event tool_call (read)
-    E-->>L: event cost ($0.001)
-    E-->>L: result done
-    L-->>U: 渲染 obs/cost view (实时)
-    P->>L: dispatch step 2: 改代码
-    L->>E: dispatch { instruction }
-    E-->>L: event file_change
-    E-->>L: result done
-    P->>L: dispatch step 3: 跑测试
-    L->>E: dispatch { run: npm test }
-    E-->>L: event test_pass
-    E-->>L: result done
-    P->>L: task complete (期望达成)
-    L-->>U: 渲染 receipt + 3 view 终态
-    U->>L: ✅ 批准
+    participant A as Agent
+    participant L as Loom Rule Engine
+    participant S as State Projection
+    participant U as User
+
+    A->>L: propose action
+    L->>L: evaluate customer rules
+
+    alt require_approval
+        L->>S: create pending ApprovalRequest
+        L-->>A: pause WorkItem
+        L-->>U: show request, reason, impact
+        U->>L: approve / reject / cancel
+        L->>S: persist decision
+        L-->>A: resume or terminate
+    else customer allows action
+        L-->>A: continue
+    else customer denies action
+        L-->>A: reject
+    end
 ```
 
-**关键点**：
-- Loom 永远在中间（不会让 Planner 直接跟 Executor 通）。
-- 每个 step 都是 dispatch → events → result 的闭环。
-- User 实时看到 view（不是 task 跑完才看到）。
+客户决定规则条件和执行效果。Loom 保证已匹配的 `require_approval` 不会因 UI 关闭、daemon 重启或 Agent 退出而被绕过。
 
----
-
-## 7. AgentKey Scoped Token（安全流程）
-
-**这张说什么**：provider API key 怎么从 vault 流到 executor，executor 怎么用，边界在哪。
+## 8. Bridge 消息流
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant E as 🔧 Executor
-    participant L as 🧵 Loom
-    participant V as 🔐 AgentKey Vault
-    participant P as ☁️ Provider API
-    
-    Note over V: 真 key 永远不离开 vault
-    Note over E: 启动 task X
-    
-    E->>L: request token { task: X, provider: minimax }
-    L->>V: 解密 (master password)
-    V-->>L: 真 API key (内存中)
-    L->>L: 生成 scoped token<br/>task=X / provider=minimax / ttl=1h
-    L-->>E: scoped token (注入 env)
-    
-    E->>P: API call (with scoped token)
-    P-->>E: response
-    
-    Note over E: token 用完即弃<br/>不持久化
-    Note over L: 真 key 用完立即从内存清零
-    
-    Note over V: 持久化的永远是加密 blob<br/>需要 master password 才能解开
+    actor U as User
+    participant L as Loom
+    participant M as Main Agent
+    participant W as SubAgent
+    participant V as Acceptance / Verifier
+
+    U->>L: explicit Use Agent
+    L->>M: generate or load team
+    L-->>U: Team Draft when needed
+    U->>L: confirm
+    L->>M: TeamInstance + Work contract
+    M->>L: dispatch bounded WorkItem
+    L->>W: JSONL dispatch
+    W-->>L: ack
+    W-->>L: ordered events
+    W-->>L: Evidence + ready_for_review
+    L->>V: deterministic acceptance
+
+    alt high risk or customer rule
+        V->>V: independent verification
+    end
+
+    V-->>L: pass / fail
+    L-->>U: update Board
 ```
 
-**关键点**：
-- **真 key 只在内存中存在**，从 vault 解密到用完，路径就是「解密 → 签 token → 清零」。
-- Scoped token 是**短时效 + 任务绑定**，即使泄漏，影响范围有限。
-- Executor 永远拿不到真 key，只能用 token 调 API。
-- 如果 executor 想要调范围外的 provider，会被 Loom 拒绝（task scope check）。
+每条 Bridge 消息都有版本、唯一消息 ID、Run、序号和相关 ID。重复消息不能产生重复执行。
 
----
+## 9. Credential Broker
 
-## 8. Phase 1 实施顺序（参考）
+Loom 临时凭证只用于访问 Loom Broker。Provider 不验证 Loom 自签凭证。
 
-这张给 Phase 1 动手用，不算正式架构图：
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent
+    participant L as Loom
+    participant B as Credential Broker
+    participant K as OS Keychain
+    participant P as Provider
 
-| Day | 内容 | 对应组件 |
-|---|---|---|
-| 1-2 | Event Store + SQLite schema | §3 Store, §4 数据流 |
-| 3 | stdio JSON bridge + mock planner/executor | §3 Bridge, §6 消息流 |
-| 4 | 3 view 渲染（CLI text） | §3 View Engines |
-| 5 | 端到端跑 "修 PR #42" demo | §1 系统总览, §5 生命周期 |
-| 6-7 | 修 bug + 整理 demo | — |
+    L->>B: create scoped local Grant
+    B-->>A: localhost endpoint + one-time token
+    A->>B: model request + local token
+    B->>B: validate Run / provider / model / budget / expiry
+    B->>K: resolve Provider credential
+    K-->>B: credential in memory
+    B->>P: Provider request with official credential
+    P-->>B: response + usage
+    B-->>A: response
+    L->>B: revoke Grant on terminal
+```
 
----
+认证能力分为：
 
-## 9. 怎么查看这些图
+```text
+brokered
+→ provider_ephemeral
+→ native_auth
+```
 
-**选项 A: GitHub**
-把代码 push 上去后，GitHub 原生渲染 Mermaid（在 markdown 文件里直接显示）。
+只有 `brokered` 能统一保证 Agent 不接触真实 Provider Key。`native_auth` 使用 Agent CLI 自己的登录状态，必须在 UI 中如实标记。
 
-**选项 B: mermaid.live**
-打开 https://mermaid.live ，把每段 ` ```mermaid ... ``` ` 里的代码贴进去，实时看图 + 导出 PNG/SVG。
+## 10. Event、投影和三个视图
 
-**选项 C: VS Code**
-装 `Markdown Preview Mermaid Support` 扩展，markdown 文件实时预览。
+```mermaid
+flowchart LR
+    Sources["Mode / Team / Scheduler<br/>Agent / Rule / Verifier / Broker"] --> Journal[("Append-only Event Journal")]
+
+    Journal --> TeamProjection["Team Projection"]
+    Journal --> TaskProjection["Task Projection"]
+    Journal --> CostProjection["Cost Projection"]
+    Journal --> ApprovalProjection["Approval Projection"]
+
+    TeamProjection --> Observation["Observation View"]
+    TaskProjection --> Observation
+    CostProjection --> Cost["Cost View"]
+    ApprovalProjection --> Governance["Governance View"]
+```
+
+Event Journal 是事实源；Projection 可以重建。三个视图不直接修改任务。
+
+## 11. 共进化 Sidecar
+
+```mermaid
+flowchart TD
+    Terminal["Terminal Runs + Evidence"] --> Filter["Permission + redaction filter"]
+    Filter --> Learn["Extract memory / procedure / collaboration pattern"]
+    Learn --> Candidate["Versioned Candidate"]
+    Candidate --> Eval["Offline evaluation"]
+    Eval --> Digest["Personal improvement digest"]
+    Digest --> Decision{"User decision"}
+    Decision -->|"Activate"| Catalog["Memory / Skill / Agent Catalog"]
+    Decision -->|"Reject"| Archive["Retain decision history"]
+    Decision -->|"Later"| Candidate
+```
+
+Sidecar 默认本地、按用户与项目隔离并加密。它不阻塞任务，也不在线修改运行中的 Agent。
+
+## 12. Phase 1 纵向切片
+
+```mermaid
+flowchart LR
+    S1["Slice 1<br/>Mode + Journal"] --> S2["Slice 2<br/>Agent Catalog + Team Draft"]
+    S2 --> S3["Slice 3<br/>Real Runtime + Task Graph"]
+    S3 --> S4["Slice 4<br/>Rules + Approval + Acceptance"]
+    S4 --> S5["Slice 5<br/>Board + Two WorkPackages"]
+```
+
+Phase 1 必须使用一个真实 Agent Runtime。Mock 只用于单元测试，不作为真实纵向 Demo。
+
+完整 Schema、协议约束和 15 项验收见 [TECH-PLAN.md](../TECH-PLAN.md)。
