@@ -203,6 +203,22 @@ test/evidence only. The repaired Candidate passes the complete strict matrix;
 fresh independent Repair 1 review returned `PASS` with no findings. S2-W10 is
 accepted and not activated.
 
+`S2-W11` is frozen at
+`.loom-evidence/phase1-slice2/S2-W11/contract.md` for a pure saved-Team Runtime
+binding Candidate. It re-resolves the exact saved Team and validates explicit
+per-role online RuntimeInstance selections through the accepted Runtime
+binding contract, including shared-capacity bounds. It does not reserve
+capacity, create instances/tasks, persist state, or execute anything. Fresh
+independent contract review returned `PASS` with no blocking findings.
+Mandatory RED failed only on missing frozen S2-W11 symbols. The minimal
+Candidate passes the full strict verification matrix. Fresh independent
+implementation Review 1 returned `FAIL`: unselected discovery observations were
+not fully revalidated and source/validation failure proof was incomplete.
+Repair 1 is bounded to full observation revalidation plus those tests. The
+repaired Candidate passes the complete strict matrix; fresh independent Repair
+1 review returned `PASS` with no findings. S2-W11 is accepted and not
+activated.
+
 ## Authoritative entry points
 
 - Product behavior: [`../PRODUCT-PLAN.md`](../PRODUCT-PLAN.md)
