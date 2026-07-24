@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W11_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W12_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -430,7 +430,31 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W11/implementation-review-2.md`
 - S2-W11 Repair 1 Reviewer: `PASS`; findings: none blocking
 - S2-W11 Candidate last line: `VERDICT: PASS`
-- Next gate: freeze and independently review the next bounded Slice 2 contract
+- Accepted S2-W11 local commit: `d5850f2`
+- S2-W12 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W12/contract.md`
+- S2-W12 boundary: direct saved-Team instantiation plan Candidate only; Main
+  planned, unassigned SubAgents dormant, no resource creation
+- S2-W12 contract SHA256:
+  `7660be0d3fe4ddbdc8119a1b8c279de52f981a53c3d701f4918002002042a664`
+- S2-W12 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W12/contract-review.md`
+- S2-W12 contract Reviewer: `PASS`; findings: none blocking
+- S2-W12 mandatory RED: exit `1`; missing frozen direct saved-Team
+  instantiation-plan symbols only
+- S2-W12 product/test digests:
+  `saved_team_instantiation.go=e404fbee...ef0207a`,
+  `saved_team_instantiation_test.go=8b2f1570...880c82`
+- S2-W12 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/import/scope `PASS`
+- S2-W12 deliverable:
+  `.loom-evidence/phase1-slice2/S2-W12/deliverable.md`
+- S2-W12 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W12/implementation-review.md`
+- S2-W12 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W12 Candidate last line: `VERDICT: PASS`
+- Next gate: local atomic S2-W12 commit, then freeze and independently review
+  the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 

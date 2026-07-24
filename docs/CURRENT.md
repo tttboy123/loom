@@ -101,6 +101,18 @@ checks. Fresh independent implementation review returned `PASS` with no
 blocking findings. S2-W4 is accepted, locally committed at `0a98851`, and not
 activated.
 
+`S2-W12` is frozen at
+`.loom-evidence/phase1-slice2/S2-W12/contract.md` for a pure direct saved-Team
+instantiation-plan Candidate. It revalidates explicit S2-W9 `load_team` routing
+and S2-W11 Runtime binding, plans the TeamInstance plus Main seed, and keeps
+unassigned SubAgents dormant. It creates no Draft, resources, tasks, state, or
+execution. Fresh independent contract review returned `PASS` with no blocking
+findings. Mandatory RED failed only on missing frozen S2-W12 symbols. The
+minimal Candidate now passes focused, package, 50-run focused race, repository,
+repository-race, vet, format, diff, import-boundary, and scope checks. Fresh
+independent implementation review returned `PASS` with no blocking findings.
+S2-W12 is accepted, ready for its local atomic commit, and not activated.
+
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
 Team Draft content Candidate. It closes the content dependency that must precede
@@ -232,10 +244,10 @@ activated.
 
 ## Next development checkpoint
 
-Freeze and independently review the next bounded Slice 2 contract.
-The saved-Team direct path and atomic TeamInstance/AgentInstance/WorkItem
-creation remain later Slice 2 boundaries. Concrete local probes and daemon
-scheduling still require later frozen Slice 2 contracts. Bridge, real Runtime
+Locally commit accepted S2-W12, then freeze and independently review the next
+bounded Slice 2 contract. Atomic TeamInstance/AgentInstance/WorkItem creation
+remains a later Slice 2 boundary. Concrete local probes and daemon scheduling
+still require later frozen Slice 2 contracts. Bridge, real Runtime
 Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
 Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
 release, runtime activation, credential changes, and FastContext installation
