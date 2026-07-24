@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W8_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W9_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -306,6 +306,39 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W8/implementation-review-2.md`
 - S2-W8 Repair 1 Reviewer: `PASS`; findings: none blocking
 - S2-W8 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W8 local commit: `af5f158`
+- S2-W9 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W9/contract.md`
+- S2-W9 boundary: explicit Agent-mode Team resolution Candidate only; no Draft,
+  instance, persistence, or execution
+- S2-W9 contract SHA256:
+  `8cd136b1cab71b4298d637637d3d4fd9d2f3708ae340269b6bbdc80db1da6333`
+- S2-W9 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W9/contract-review.md`
+- S2-W9 contract Reviewer: `PASS`; findings: none blocking
+- S2-W9 mandatory RED: exit `1`; missing frozen Team Resolver symbols only
+- S2-W9 product/test digests:
+  `resolver.go=dc47d766...d5033e`,
+  `resolver_test.go=4ece2a60...6fec9`
+- S2-W9 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/import/scope `PASS`
+- S2-W9 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W9/deliverable.md`;
+  last line `VERDICT: PENDING_REVIEW`
+- S2-W9 implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W9/implementation-review-1.md`
+- S2-W9 implementation Reviewer: `FAIL`; no product defect; direct
+  fail-closed test proof incomplete
+- S2-W9 Repair 1/3:
+  `.loom-evidence/phase1-slice2/S2-W9/repair-1-contract.md`
+- S2-W9 Repair 1 boundary: test/evidence only; no product change
+- S2-W9 Repair 1 checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W9 Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W9/implementation-review-2.md`
+- S2-W9 Repair 1 Reviewer: `PASS`; findings: none blocking
+- S2-W9 Candidate last line: `VERDICT: PASS`
 - Next gate: freeze and independently review the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
