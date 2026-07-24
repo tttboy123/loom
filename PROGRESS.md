@@ -10,8 +10,9 @@ Updated: 2026-07-24
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: `S2-W1` accepted and locally committed at `954416a`; `S2-W2`
-  discovery coordination accepted after fresh implementation Reviewer `PASS`
+- Slice 2: `S2-W1` committed at `954416a`; `S2-W2` committed at `1170062`;
+  `S2-W3` accepted after Contract Repair 1 and fresh implementation Reviewer
+  `PASS`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +50,7 @@ Updated: 2026-07-24
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W2_GREEN_REVIEWER_PASS`
+- Status: `S2-W3_GREEN_REVIEWER_PASS`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -122,7 +123,36 @@ Updated: 2026-07-24
   `.loom-evidence/phase1-slice2/S2-W2/implementation-review.md`
 - S2-W2 implementation Reviewer: `PASS`; findings: none blocking
 - Candidate last line: `VERDICT: PASS`
-- Next gate: strictly scoped local S2-W2 atomic commit, then freeze S2-W3
+- Accepted S2-W2 local commit: `1170062`
+- S2-W3 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W3/contract.md`
+- S2-W3 Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W3/contract-review-1.md`;
+  verdict `FAIL`; blocker: Agent and Runtime-scoped model count units ambiguous
+- S2-W3 Contract Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W3/contract-repair-1.md`;
+  selected Agents, online Runtimes, Runtime/model pairs, and normalized sets now
+  have explicit `max`/`max + 1` semantics
+- S2-W3 Contract Review 2:
+  `.loom-evidence/phase1-slice2/S2-W3/contract-review-2.md`;
+  verdict `PASS`; findings: none blocking
+- S2-W3 boundary: bounded immutable Team Draft catalog plus pure membership and
+  ceiling validation; no Draft revision, default Main Agent, Team load,
+  TeamInstance, persistence, process, or execution authority
+- S2-W3 mandatory RED: exit `1`; missing frozen catalog symbols only
+- S2-W3 product digests:
+  `catalog.go=f001d06d...746f7`,
+  `catalog_test.go=62ec7080...dc431`
+- S2-W3 Controller checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W3 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W3/deliverable.md`
+- S2-W3 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W3/implementation-review.md`
+- S2-W3 implementation Reviewer: `PASS`; findings: none
+- Candidate last line: `VERDICT: PASS`
+- Next gate: strictly scoped local S2-W3 atomic commit, then freeze S2-W4
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 
