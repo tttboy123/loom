@@ -1,6 +1,6 @@
 # Loom Phase 1 Slice 1 Progress
 
-Updated: 2026-07-24
+Updated: 2026-07-25
 
 ## Execution truth
 
@@ -11,7 +11,8 @@ Updated: 2026-07-24
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
 - Slice 2: S2-W1 `954416a`, S2-W2 `1170062`, S2-W3 `e196107`, S2-W4
-  `0a98851`; S2-W5 structured Team Draft content contract frozen for review
+  `0a98851`, S2-W5 `567967c`; S2-W6 accepted and locally committed in this
+  checkpoint
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +50,7 @@ Updated: 2026-07-24
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W5_IMPLEMENTATION_REPAIR_1_PASS_READY_FOR_LOCAL_COMMIT`
+- Status: `S2-W6_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -214,7 +215,39 @@ Updated: 2026-07-24
 - S2-W5 fresh Repair 1 implementation review:
   `.loom-evidence/phase1-slice2/S2-W5/implementation-review-2.md`
 - S2-W5 Repair 1 Reviewer: `PASS`; findings: none
-- Next gate: exact-scope cached audit and one authorized local atomic commit
+- Accepted S2-W5 local commit: `567967c`
+- S2-W6 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W6/contract.md`
+- S2-W6 boundary: pure immutable composition of S2-W4 revisions with validated
+  S2-W5 content and binding digest; gaps require a question; eligibility
+  requires exact latest gap-free proposed content
+- S2-W6 contract SHA256:
+  `fca127c6115ab031ea7aef98aebc8eb05ad5f38f89ccf0ee39ad4fdad966ee5c`
+- S2-W6 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W6/contract-review.md`
+- S2-W6 contract Reviewer: `PASS`; findings: none blocking
+- S2-W6 mandatory RED: exit `1`; missing frozen structured Draft symbols only
+- S2-W6 product digest:
+  `structured_draft.go=cfa37e43...e1d5`
+- S2-W6 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W6/implementation-review-1.md`;
+  verdict `FAIL`; no product defect; missing complete answer/edit typed failure
+  and zero-output proof
+- S2-W6 Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W6/repair-1-contract.md`;
+  product changes: none; repair attempt `1/3`
+- S2-W6 Repair 1 test digest:
+  `structured_draft_test.go=019b222c...09768`
+- S2-W6 Repair 1 checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W6 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W6/deliverable.md`;
+  last line `VERDICT: PASS`
+- S2-W6 fresh Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W6/implementation-review-2.md`
+- S2-W6 Repair 1 Reviewer: `PASS`; findings: none
+- Next gate: freeze and independently review the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 
