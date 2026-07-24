@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W12_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W13_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -453,7 +453,29 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W12/implementation-review.md`
 - S2-W12 implementation Reviewer: `PASS`; findings: none blocking
 - S2-W12 Candidate last line: `VERDICT: PASS`
-- Next gate: local atomic S2-W12 commit, then freeze and independently review
+- Accepted S2-W12 local commit: `e8ddc82`
+- S2-W13 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W13/contract.md`
+- S2-W13 boundary: pure saved-Team TeamInstance/Main AgentInstance record set;
+  dormant SubAgents remain non-active; no state write or execution
+- S2-W13 contract SHA256:
+  `0d3b38f6427e808ae92afcdb90c459fe3b1395560c943b49bae13469239d96a9`
+- S2-W13 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W13/contract-review.md`
+- S2-W13 contract Reviewer: `PASS`; findings: none blocking
+- S2-W13 mandatory RED: exit `1`; missing frozen record-set symbols only
+- S2-W13 product/test digests:
+  `saved_team_instances.go=491a2688...89ac0`,
+  `saved_team_instances_test.go=8cc31b7a...eadc86`
+- S2-W13 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/import/scope `PASS`
+- S2-W13 deliverable:
+  `.loom-evidence/phase1-slice2/S2-W13/deliverable.md`
+- S2-W13 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W13/implementation-review.md`
+- S2-W13 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W13 Candidate last line: `VERDICT: PASS`
+- Next gate: local atomic S2-W13 commit, then freeze and independently review
   the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
