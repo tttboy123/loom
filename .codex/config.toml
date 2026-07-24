@@ -1,0 +1,35 @@
+# Project-local Codex development team.
+#
+# Up to three child agents may support the primary Controller. AGENTS.md keeps
+# one writer per branch/worktree/Candidate lineage.
+
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 3
+max_depth = 1
+
+[agents.explorer]
+description = "Read-only Loom codebase explorer for current-path evidence."
+config_file = "agents/explorer.toml"
+
+[agents.code_analyst]
+description = "FastContext-compatible read-only code localization expert."
+config_file = "agents/code-analyst.toml"
+
+[agents.developer]
+description = "Scoped Loom implementer for one accepted WorkItem."
+config_file = "agents/developer.toml"
+
+[agents.reviewer]
+description = "Independent read-only reviewer for correctness and safety."
+config_file = "agents/reviewer.toml"
+
+[agents.docs_researcher]
+description = "Read-only researcher for current primary documentation."
+config_file = "agents/docs-researcher.toml"
+
+[agents.problem_analyst]
+description = "Fresh read-only analyst for repeated or cross-layer failures."
+config_file = "agents/problem-analyst.toml"

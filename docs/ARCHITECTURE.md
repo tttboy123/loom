@@ -1,6 +1,6 @@
 # Loom 架构与流程
 
-> 草稿 v0.2 · 2026-07-24
+> 草稿 v0.3 · 2026-07-24
 > 对应：[产品方案](../PRODUCT-PLAN.md) / [技术方案](../TECH-PLAN.md)
 > 本文中的 Mermaid 是架构图权威源；PNG 快照不作为当前事实。
 
@@ -13,11 +13,12 @@
 - [Loom Daemon Components](architecture/c4-components-daemon.md)
 - [Local Deployment](architecture/c4-deployment.md)
 - [Explicit Agent Dynamic Flow](architecture/c4-dynamic-agent-mode.md)
+- [Run Dispatch Dynamic Flow](architecture/c4-dynamic-run-dispatch.md)
 - [Trust Boundaries](architecture/trust-boundaries.md)
 
-Phase 1 的总体形态是本地模块化单体 daemon。CLI/TUI、Agent Runtime 和 Evolution Sidecar
-都是独立进程；只有 daemon 可以提交权威状态转移，只有 Credential Broker 可以解析真实
-Provider 凭证。
+Phase 1 的总体形态是本地模块化单体 daemon。它自动发现本机 RuntimeInstance，为每个 Run 创建
+受管 workspace、认领代次和 AgentGrant。CLI/TUI、Agent Runtime 和 Evolution Sidecar 都是独立
+进程；只有 daemon 可以提交权威状态转移，只有 Credential Broker 可以解析真实 Provider 凭证。
 
 ## 1. 使用入口
 
@@ -75,6 +76,14 @@ flowchart TD
 
 用户保存并显式选择的完整 Team 直接加载。任何由模型生成、补全或扩权的团队都必须经过用户确认。
 
+生成 Team Draft 前，Loom 冻结一个有界目录快照：AgentDefinition、在线 RuntimeInstance、真实模型、
+Skill、成员、权限上限、预算与并发。Main Agent 只能引用快照中的 ID，或者返回能力缺口，不能编造
+不存在的 Runtime、模型或权限。
+
+Team Draft 使用“对话 + 实时草案”表达：每轮只问一个关键问题，同时产生结构化 revision。用户点击
+确认前不创建 AgentInstance。Team 也不能退化为 Main Agent 的显示别名；每个激活 SubAgent 都必须
+拥有明确 WorkItem、独立 Run、AgentGrant 和 Evidence。
+
 ## 3. Agent 定义与实例
 
 ```mermaid
@@ -92,6 +101,7 @@ flowchart LR
 
     Definition --> Bind["Bind for this Team"]
     Runtime["RuntimeProfile<br/>adapter / provider / model<br/>auth / budget / timeout"] --> Bind
+    RuntimeInstance["RuntimeInstance<br/>device / executable / version<br/>status / capabilities / capacity"] --> Bind
     Bind --> Instance["AgentInstance"]
 
     Instance --> Main{"Main?"}
@@ -99,7 +109,8 @@ flowchart LR
     Main -->|"No"| Worker["Execute bounded WorkItem"]
 ```
 
-AgentDefinition 与 RuntimeProfile 分离。同一个角色可以换模型和 Provider，而不复制职责定义。
+AgentDefinition、RuntimeProfile 与 RuntimeInstance 分离。同一个角色可以换模型和 Provider，而不复制
+职责定义；运行时策略也不会把机器、可执行文件和在线状态写进可复用角色。
 
 每个 TeamInstance 恰好一个 Main Agent。Main Agent 可以重排现有成员，但不能退化为直接执行和自我验收。
 
@@ -117,12 +128,15 @@ flowchart TB
     subgraph Daemon["Loom Local Daemon"]
         ModeRouter["Mode Router"]
         TeamResolver["Team Resolver"]
+        RuntimeRegistry["Runtime Registry"]
         MainAgent["Main Agent Runtime"]
         Scheduler["Task Graph + Scheduler"]
+        Grant["AgentGrant Authorizer"]
         Rules["Customer Rule Engine"]
         Verification["Acceptance + Verifier Router"]
         Broker["Credential Broker"]
         Journal[("Event Journal")]
+        Workspaces[("Managed Workspaces")]
         ReadModels[("Read Models")]
     end
 
@@ -137,11 +151,15 @@ flowchart TB
     Conversation --> ModeRouter
     AgentEntry --> ModeRouter
     ModeRouter --> TeamResolver
+    TeamResolver --> RuntimeRegistry
     TeamResolver --> MainAgent
     MainAgent --> Scheduler
     Scheduler --> Rules
-    Rules --> Adapter
+    Rules --> Grant
+    Grant --> Adapter
+    RuntimeRegistry --> Adapter
     Adapter --> Agents
+    Adapter --> Workspaces
     Agents --> Verification
     Agents --> Broker
     Broker --> Provider
@@ -165,10 +183,13 @@ erDiagram
     TEAM_INSTANCE ||--|{ AGENT_INSTANCE : contains
     AGENT_DEFINITION ||--o{ AGENT_INSTANCE : instantiates
     RUNTIME_PROFILE ||--o{ AGENT_INSTANCE : configures
+    RUNTIME_INSTANCE ||--o{ AGENT_INSTANCE : hosts
     TEAM_INSTANCE ||--|{ WORK_ITEM : owns
     WORK_ITEM }o--o{ WORK_ITEM : depends_on
     WORK_ITEM ||--o{ RUN : attempts
     AGENT_INSTANCE ||--o{ RUN : performs
+    RUNTIME_INSTANCE ||--o{ RUN : claims
+    RUN ||--o{ AGENT_GRANT : authorizes
     RUN ||--o{ EVENT : emits
     RUN ||--o{ EVIDENCE : produces
     RULE ||--o{ APPROVAL_REQUEST : triggers
@@ -185,7 +206,9 @@ erDiagram
 - 看板状态是 Event 的投影；
 - Sidecar 产出 Candidate，不直接改变运行对象。
 
-## 6. 工作项生命周期
+## 6. WorkItem 与 Run 生命周期
+
+### 6.1 WorkItem
 
 ```mermaid
 stateDiagram-v2
@@ -214,6 +237,36 @@ stateDiagram-v2
 ```
 
 Executor 不能直接产生 Done。只有验收路径可以把 WorkItem 投影为 Done。
+
+### 6.2 Run 认领
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued
+    Queued --> Claimed: bind RuntimeInstance + generation
+    Claimed --> Preparing: create workspace + AgentGrant
+    Preparing --> Running: process started + ack
+
+    Claimed --> Queued: prepare lease expired / new generation
+    Preparing --> Queued: prepare lease expired / new generation
+
+    Running --> WaitingApproval
+    WaitingApproval --> Running: approved
+    Running --> ReadyForReview: Evidence submitted
+
+    Running --> Failed: process exit / timeout
+    Running --> Cancelled: cancel
+    WaitingApproval --> Cancelled: rejected
+    ReadyForReview --> Completed: accepted
+
+    Completed --> [*]
+    Failed --> [*]
+    Cancelled --> [*]
+```
+
+每次重新认领都递增 `claim_generation`。旧代次的 start、heartbeat、Evidence 和 terminal 被拒绝；
+对应 AgentGrant 同步撤销。Agent 返回结果只是一条提议，Evidence 引用和 `RunTerminalCommitted`
+在本地 SQLite 事务落盘后才成为终态。
 
 ## 7. 客户规则与批准
 
@@ -252,6 +305,7 @@ sequenceDiagram
     actor U as User
     participant L as Loom
     participant M as Main Agent
+    participant G as AgentGrant Authorizer
     participant W as SubAgent
     participant V as Acceptance / Verifier
 
@@ -259,11 +313,13 @@ sequenceDiagram
     L->>M: generate or load team
     L-->>U: Team Draft when needed
     U->>L: confirm
-    L->>M: TeamInstance + Work contract
+    L->>M: TeamInstance + catalog-bound Work contract
     M->>L: dispatch bounded WorkItem
-    L->>W: JSONL dispatch
-    W-->>L: ack
-    W-->>L: ordered events
+    L->>L: claim Run + generation + prepare lease
+    L->>G: issue scoped AgentGrant
+    L->>W: JSONL dispatch + generation + assigned workspace
+    W-->>L: ack with matching generation
+    W-->>L: authorized ordered events
     W-->>L: Evidence + ready_for_review
     L->>V: deterministic acceptance
 
@@ -272,14 +328,19 @@ sequenceDiagram
     end
 
     V-->>L: pass / fail
+    L->>L: commit Evidence references + terminal Event
+    L->>G: revoke AgentGrant
     L-->>U: update Board
 ```
 
-每条 Bridge 消息都有版本、唯一消息 ID、Run、序号和相关 ID。重复消息不能产生重复执行。
+每条 Bridge 消息都有版本、唯一消息 ID、Run、认领代次、RuntimeInstance、序号和相关 ID。
+重复消息或旧代次消息不能产生重复执行或覆盖新终态。
 
-## 9. Credential Broker
+## 9. AgentGrant 与 Credential Broker
 
-Loom 临时凭证只用于访问 Loom Broker。Provider 不验证 Loom 自签凭证。
+`AgentGrant` 允许一个 Agent 在当前 Run、AgentInstance 和 claim generation 中调用指定 Loom
+本地操作。它不能访问 Provider。`CredentialGrant` 只在 Broker 模式下允许 Broker 访问冻结的
+Provider、模型与额度。两者明文都不持久化，Provider 也不验证 Loom 自签凭证。
 
 ```mermaid
 sequenceDiagram
@@ -290,7 +351,7 @@ sequenceDiagram
     participant K as OS Keychain
     participant P as Provider
 
-    L->>B: create scoped local Grant
+    L->>B: create scoped CredentialGrant
     B-->>A: localhost endpoint + one-time token
     A->>B: model request + local token
     B->>B: validate Run / provider / model / budget / expiry
@@ -316,20 +377,23 @@ brokered
 
 ```mermaid
 flowchart LR
-    Sources["Mode / Team / Scheduler<br/>Agent / Rule / Verifier / Broker"] --> Journal[("Append-only Event Journal")]
+    Sources["Mode / Team / Runtime / Scheduler<br/>Grant / Agent / Rule / Verifier / Broker"] --> Journal[("Append-only Event Journal")]
 
     Journal --> TeamProjection["Team Projection"]
     Journal --> TaskProjection["Task Projection"]
+    Journal --> RuntimeProjection["Runtime Projection"]
     Journal --> CostProjection["Cost Projection"]
     Journal --> ApprovalProjection["Approval Projection"]
 
     TeamProjection --> Observation["Observation View"]
     TaskProjection --> Observation
+    RuntimeProjection --> Observation
     CostProjection --> Cost["Cost View"]
     ApprovalProjection --> Governance["Governance View"]
 ```
 
-Event Journal 是事实源；Projection 可以重建。三个视图不直接修改任务。
+Event Journal 是事实源；Projection 可以重建。对话中的实时 Draft、执行 timeline 和高级看板读取
+同一投影，不能直接修改任务或成为第二套 Issue 权威。
 
 ## 11. 共进化 Sidecar
 
@@ -352,12 +416,12 @@ Sidecar 默认本地、按用户与项目隔离并加密。它不阻塞任务，
 
 ```mermaid
 flowchart LR
-    S1["Slice 1<br/>Mode + Journal"] --> S2["Slice 2<br/>Agent Catalog + Team Draft"]
-    S2 --> S3["Slice 3<br/>Real Runtime + Task Graph"]
+    S1["Slice 1<br/>Mode + Journal"] --> S2["Slice 2<br/>Catalog + Runtime Discovery + Team Draft"]
+    S2 --> S3["Slice 3<br/>Grant + Lease + Real Runtime + Task Graph"]
     S3 --> S4["Slice 4<br/>Rules + Approval + Acceptance"]
     S4 --> S5["Slice 5<br/>Board + Two WorkPackages"]
 ```
 
 Phase 1 必须使用一个真实 Agent Runtime。Mock 只用于单元测试，不作为真实纵向 Demo。
 
-完整 Schema、协议约束和 15 项验收见 [TECH-PLAN.md](../TECH-PLAN.md)。
+完整 Schema、协议约束和 22 项验收见 [TECH-PLAN.md](../TECH-PLAN.md)。

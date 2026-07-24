@@ -14,6 +14,7 @@ C4Dynamic
   Container_Boundary(daemon, "Loom Daemon") {
     Component(modeRouter, "Mode Router", "Application service", "Accepts explicit Agent trigger")
     Component(teamResolver, "Team Resolver", "Domain service", "Loads Team or builds Team Draft")
+    Component(runtimeRegistry, "Runtime Registry", "Domain and adapter service", "Provides online Runtime, model and capability IDs")
     Component(mainCoordinator, "Main Agent Coordinator", "Domain service", "Compiles and assigns WorkItems")
     Component(scheduler, "Scheduler and Supervisor", "Process service", "Runs bounded Agent processes")
     Component(ruleEngine, "Rule and Approval Engine", "Policy service", "Applies customer execution rules")
@@ -23,21 +24,26 @@ C4Dynamic
   Rel(user, client, "1. Explicitly selects Use Agent, Agent or Team")
   Rel(client, modeRouter, "2. Submits structured Agent-mode intent", "Local API")
   Rel(modeRouter, teamResolver, "3. Requests team resolution")
-  Rel(teamResolver, client, "4. Returns Team Draft only when generation is required")
-  Rel(user, client, "5. Confirms generated Team Draft")
-  Rel(teamResolver, mainCoordinator, "6. Creates accepted TeamInstance")
-  Rel(mainCoordinator, scheduler, "7. Submits dependency-aware WorkItems")
-  Rel(scheduler, ruleEngine, "8. Evaluates proposed execution")
-  Rel(scheduler, agentRuntime, "9. Dispatches approved bounded Run", "JSONL/stdio")
-  Rel(agentRuntime, scheduler, "10. Submits ordered events and evidence")
-  Rel(scheduler, acceptance, "11. Requests risk-based acceptance")
-  Rel(acceptance, stateStore, "12. Records pass or failure evidence", "SQLite transaction")
-  Rel(stateStore, client, "13. Projects board terminal state")
-  Rel(client, user, "14. Shows result, evidence and cost")
+  Rel(teamResolver, runtimeRegistry, "4. Reads bounded Agent, Runtime, model, Skill and permission catalog")
+  Rel(teamResolver, client, "5. Returns schema-valid live Team Draft when generation is required")
+  Rel(user, client, "6. Answers one material question or edits Draft")
+  Rel(client, teamResolver, "7. Creates revision and validates catalog IDs")
+  Rel(user, client, "8. Confirms generated Team Draft")
+  Rel(teamResolver, mainCoordinator, "9. Creates TeamInstance bound to real RuntimeInstances")
+  Rel(mainCoordinator, scheduler, "10. Submits dependency-aware WorkItems")
+  Rel(scheduler, ruleEngine, "11. Evaluates proposed execution")
+  Rel(scheduler, agentRuntime, "12. Starts governed Run dispatch flow", "Claim + JSONL/stdio")
+  Rel(agentRuntime, scheduler, "13. Submits ordered events and evidence")
+  Rel(scheduler, acceptance, "14. Requests risk-based acceptance")
+  Rel(acceptance, stateStore, "15. Records pass or failure evidence", "SQLite transaction")
+  Rel(stateStore, client, "16. Projects timeline, board and terminal state")
+  Rel(client, user, "17. Shows result, evidence and cost")
 ```
 
 ## Alternate paths
 
 - 用户选择完整 Team 时跳过 Team Draft。
-- `require_approval` 在第 8 步暂停 Run，客户决定后恢复或终止。
+- Team Draft 只能引用第 4 步目录快照中的真实 ID；缺失能力显示为 `capability_gap`。
+- `require_approval` 在第 11 步暂停 Run，客户决定后恢复或终止。
 - 验收失败返回可重试状态，不产生 Done。
+- 第 12 步的认领代次、AgentGrant 和 terminal 细节见 [Run Dispatch Flow](c4-dynamic-run-dispatch.md)。

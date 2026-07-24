@@ -16,7 +16,7 @@ C4Context
   System_Ext(collaboration, "Collaboration Platforms", "Optional boards, issue trackers and team adapters")
 
   Rel(user, loom, "Chats, explicitly invokes agents, approves actions and reviews results")
-  Rel(loom, agentRuntimes, "Creates and supervises bounded agent runs", "Runtime adapters")
+  Rel(loom, agentRuntimes, "Discovers capabilities and supervises generation-bound agent runs", "Runtime adapters")
   Rel(agentRuntimes, providers, "Calls models when using native authentication", "Provider protocol")
   Rel(loom, providers, "Proxies brokered model requests", "HTTPS")
   Rel(loom, osSecurity, "Resolves secrets and enforces local process boundaries", "OS APIs")
