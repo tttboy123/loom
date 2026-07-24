@@ -98,8 +98,26 @@ with no blocking findings. Mandatory RED failed only on missing frozen Draft
 symbols. The minimal Candidate passed focused, package, 50-run focused race,
 repository, repository-race, vet, format, diff, import-boundary, and scope
 checks. Fresh independent implementation review returned `PASS` with no
-blocking findings. S2-W4 is accepted, not activated, and awaiting its authorized
-local atomic commit.
+blocking findings. S2-W4 is accepted, locally committed at `0a98851`, and not
+activated.
+
+`S2-W5` is frozen at
+`.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
+Team Draft content Candidate. It closes the content dependency that must precede
+acceptance: exact Agent/RuntimeProfile/RuntimeInstance/model coverage, a bounded
+first-task DAG with acceptance criteria, customer-rule summary, approval
+markers, explicit capability gaps, and gap-free readiness. It does not attach
+content to a revision, accept a Draft, create Team/Agent/WorkItem records,
+persist state, allocate capacity, call a model, or execute anything. Fresh
+independent Contract Repair 1 review returned `PASS` with no blocking findings.
+Mandatory RED failed only on missing frozen S2-W5 symbols. The minimal Candidate
+passed the strict check matrix. Fresh implementation Review 1 found no product
+correctness or security defect but returned `FAIL` for two missing test proofs
+and the absent pre-commit deliverable. Repair 1 adds the one-SubAgent readiness
+case, dependency-edge digest sensitivity, and pending-review deliverable without
+changing production behavior. All strict checks pass again; fresh Repair 1
+implementation review returned `PASS` with no findings. S2-W5 is accepted, not
+activated, and awaiting its authorized local atomic commit.
 
 ## Authoritative entry points
 
@@ -114,12 +132,12 @@ local atomic commit.
 
 ## Next development checkpoint
 
-Obtain a fresh independent S2-W4 contract Reviewer PASS before mandatory RED.
-Actual Draft acceptance/rejection/expiry, default Main Agent, defined Team load,
-and TeamInstance creation remain later Slice 2 boundaries. Concrete local probes
-and daemon scheduling still require later frozen Slice 2 contracts. Bridge,
-real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
-dispatch remain Slice 3 boundaries even when research drafts propose them
-earlier. Push, merge, release, runtime activation, credential changes, and
-FastContext installation remain unauthorized. The optional local FastContext
-Spike remains separate and was not installed or activated.
+Perform the exact-scope S2-W5 cached audit and one authorized local atomic
+commit. Actual Draft attachment/acceptance/rejection/expiry, default Main Agent,
+defined Team load, and TeamInstance creation remain later Slice 2 boundaries.
+Concrete local probes and daemon scheduling still require later frozen Slice 2
+contracts. Bridge, real Runtime Adapter execution, AgentGrant, claim generation,
+and WorkItem dispatch remain Slice 3 boundaries even when research drafts
+propose them earlier. Push, merge, release, runtime activation, credential
+changes, and FastContext installation remain unauthorized. The optional local
+FastContext Spike remains separate and was not installed or activated.

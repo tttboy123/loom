@@ -10,8 +10,8 @@ Updated: 2026-07-24
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 `954416a`, S2-W2 `1170062`, S2-W3 `e196107`; S2-W4 Team Draft
-  revision-core Candidate passed all checks and fresh implementation review
+- Slice 2: S2-W1 `954416a`, S2-W2 `1170062`, S2-W3 `e196107`, S2-W4
+  `0a98851`; S2-W5 structured Team Draft content contract frozen for review
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-24
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W4_IMPLEMENTATION_REVIEW_PASS_READY_FOR_LOCAL_COMMIT`
+- Status: `S2-W5_IMPLEMENTATION_REPAIR_1_PASS_READY_FOR_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -175,6 +175,45 @@ Updated: 2026-07-24
   `.loom-evidence/phase1-slice2/S2-W4/implementation-review.md`
 - S2-W4 implementation Reviewer: `PASS`; findings: none blocking
 - Candidate last line: `VERDICT: PASS`
+- Accepted S2-W4 local commit: `0a98851`
+- S2-W5 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W5/contract.md`
+- S2-W5 boundary: pure immutable structured Draft content with exact role and
+  Runtime binding coverage, bounded first-task DAG, acceptance criteria,
+  customer-rule summary, approval markers, capability gaps, and readiness
+  Candidate only
+- S2-W5 Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W5/contract-review-1.md`;
+  verdict `FAIL`; blockers: main-only/no-task content could become ready and
+  the current checkpoint still named S2-W4
+- S2-W5 Contract Repair 1: require one or two SubAgents, at least one
+  SubAgent-owned task, typed main-only rejection, and explicit RED coverage
+- S2-W5 repaired contract SHA256:
+  `ba32fae6a1155916d77a4a1bcd9838693572968b046438318c41532351e4631b`
+- S2-W5 Contract Review 2:
+  `.loom-evidence/phase1-slice2/S2-W5/contract-review-2.md`;
+  verdict `PASS`; findings: none blocking
+- S2-W5 mandatory RED: exit `1`; missing frozen content symbols only
+- S2-W5 product digest:
+  `draft_content.go=b2e284c1...f95041`
+- S2-W5 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W5/implementation-review-1.md`;
+  verdict `FAIL`; no product defect; missing one-SubAgent positive proof,
+  dependency-edge digest proof, and pre-commit deliverable
+- S2-W5 Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W5/repair-1-contract.md`;
+  product changes: none; repair attempt `1/3`
+- S2-W5 Repair 1 test digest:
+  `draft_content_test.go=4864d4b4...2d9c0`
+- S2-W5 Repair 1 checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W5 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W5/deliverable.md`;
+  last line `VERDICT: PASS`
+- S2-W5 fresh Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W5/implementation-review-2.md`
+- S2-W5 Repair 1 Reviewer: `PASS`; findings: none
 - Next gate: exact-scope cached audit and one authorized local atomic commit
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
