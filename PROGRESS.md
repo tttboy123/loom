@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W13_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W14_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -475,8 +475,30 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W13/implementation-review.md`
 - S2-W13 implementation Reviewer: `PASS`; findings: none blocking
 - S2-W13 Candidate last line: `VERDICT: PASS`
-- Next gate: local atomic S2-W13 commit, then freeze and independently review
-  the next bounded Slice 2 contract
+- Accepted S2-W13 local commit: `89dbff3`
+- S2-W14 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W14/contract.md`
+- S2-W14 boundary: bounded atomic Journal batch append only; no schema,
+  Team/Agent payload, projection, resource creation, or execution
+- S2-W14 contract SHA256:
+  `6618f29e7bc8817624e82e115325cc2c9f754db5e6f2d5d06d708dca9a6383f4`
+- S2-W14 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W14/contract-review.md`
+- S2-W14 contract Reviewer: `PASS`; findings: none blocking
+- S2-W14 mandatory RED: exit `1`; missing frozen batch symbols only
+- S2-W14 product/test digests:
+  `store.go=59e6df0f...cbdda1`,
+  `batch_test.go=2099c961...1bda5f`
+- S2-W14 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/migration/scope `PASS`
+- S2-W14 deliverable:
+  `.loom-evidence/phase1-slice2/S2-W14/deliverable.md`
+- S2-W14 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W14/implementation-review.md`
+- S2-W14 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W14 Candidate last line: `VERDICT: PASS`
+- Next gate: local atomic S2-W14 commit, then freeze and independently review
+  the saved-Team StateWriter boundary
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 
