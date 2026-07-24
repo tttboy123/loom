@@ -10,9 +10,8 @@ Updated: 2026-07-24
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: `S2-W1` committed at `954416a`; `S2-W2` committed at `1170062`;
-  `S2-W3` accepted after Contract Repair 1 and fresh implementation Reviewer
-  `PASS`
+- Slice 2: S2-W1 `954416a`, S2-W2 `1170062`, S2-W3 `e196107`; S2-W4 Team Draft
+  revision-core Candidate passed all checks and fresh implementation review
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -50,7 +49,7 @@ Updated: 2026-07-24
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W3_GREEN_REVIEWER_PASS`
+- Status: `S2-W4_IMPLEMENTATION_REVIEW_PASS_READY_FOR_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -152,7 +151,31 @@ Updated: 2026-07-24
   `.loom-evidence/phase1-slice2/S2-W3/implementation-review.md`
 - S2-W3 implementation Reviewer: `PASS`; findings: none
 - Candidate last line: `VERDICT: PASS`
-- Next gate: strictly scoped local S2-W3 atomic commit, then freeze S2-W4
+- Accepted S2-W3 local commit: `e196107`
+- S2-W4 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W4/contract.md`
+- S2-W4 boundary: immutable Draft revisions, one unresolved question, catalog
+  revalidation, stale command rejection, acceptance eligibility Candidate only;
+  no acceptance, TeamInstance, persistence, model call, or execution
+- S2-W4 contract SHA256:
+  `153f6efc24d724649257a1c68ec80a8e482e368b4d8adc38cb691f1c3645fcfc`
+- S2-W4 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W4/contract-review.md`
+- S2-W4 contract Reviewer: `PASS`; findings: none blocking
+- S2-W4 mandatory RED: exit `1`; missing frozen Draft symbols only
+- S2-W4 product digests:
+  `draft.go=dbaf71ac...e0a95`,
+  `draft_test.go=15233838...38c75`
+- S2-W4 Controller checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W4 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W4/deliverable.md`
+- S2-W4 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W4/implementation-review.md`
+- S2-W4 implementation Reviewer: `PASS`; findings: none blocking
+- Candidate last line: `VERDICT: PASS`
+- Next gate: exact-scope cached audit and one authorized local atomic commit
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 
