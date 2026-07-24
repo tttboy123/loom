@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W6_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W7_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -247,6 +247,28 @@ Updated: 2026-07-25
 - S2-W6 fresh Repair 1 implementation review:
   `.loom-evidence/phase1-slice2/S2-W6/implementation-review-2.md`
 - S2-W6 Repair 1 Reviewer: `PASS`; findings: none
+- Accepted S2-W6 local commit: `b810800`
+- S2-W7 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W7/contract.md`
+- S2-W7 boundary: explicit typed accepted/rejected/expired terminal Draft
+  decision over one exact S2-W6 revision; no resource creation or execution
+- S2-W7 contract SHA256:
+  `44646dd98c830072105469f4f9e52d40711de470f2af948bc091291dbb8308f4`
+- S2-W7 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W7/contract-review.md`
+- S2-W7 contract Reviewer: `PASS`; findings: none blocking
+- S2-W7 mandatory RED: exit `1`; missing frozen terminal decision symbols only
+- S2-W7 product/test digests:
+  `draft_decision.go=9966e171...87b77c`,
+  `draft_decision_test.go=b5fab077...35c8d0`
+- S2-W7 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/import/scope `PASS`
+- S2-W7 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W7/deliverable.md`;
+  last line `VERDICT: PASS`
+- S2-W7 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W7/implementation-review.md`
+- S2-W7 implementation Reviewer: `PASS`; findings: none blocking
 - Next gate: freeze and independently review the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
