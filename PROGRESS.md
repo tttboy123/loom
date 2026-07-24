@@ -5,13 +5,15 @@ Updated: 2026-07-24
 ## Execution truth
 
 - Workspace: `/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild`
-- Candidate lineage: detached `8e207b8`, the same commit currently referenced by
-  `codex/loom-platform`
+- Slice 1 completion commit: `5861f82`
+- Current branch: `codex/loom-platform-slice2`
+- Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Terminal boundary: Slice 1 only
-- Commit, push, merge, release, activation, credential changes, paid remote work,
-  and FastContext installation: prohibited
+- Slice 2: human-authorized and open for contract freezing; implementation not
+  started
+- Push, merge, release, activation, credential changes, paid remote work, and
+  FastContext installation: prohibited
 
 ## WorkItems
 
@@ -42,8 +44,17 @@ Updated: 2026-07-24
 - Five accepted WorkItem deliverables end with `VERDICT: PASS`
 - Final evidence:
   `.loom-evidence/phase1-slice1/final-verification.md`
-- State: Slice 1 locally complete, uncommitted, not activated; stop before
-  Slice 2
+- State: Slice 1 committed at `5861f82`, not activated
+
+## Slice 2 transition
+
+- Branch: `codex/loom-platform-slice2`
+- Status: `READY_FOR_CONTRACT`
+- Product changes after the Slice 1 completion commit: none
+- Next gate: freeze one bounded Slice 2 WorkItem contract before RED or
+  implementation
+- No push, merge, release, runtime activation, credential change, paid remote
+  work, or FastContext installation is authorized
 
 ## Drafts (in `.loom-drafts/`, untracked, awaiting review)
 

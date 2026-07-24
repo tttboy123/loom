@@ -43,8 +43,9 @@ Updated: 2026-07-24
   demo exists.
 - Autonomous execution and production activation are not enabled.
 
-The branch is therefore **Slice 1 implemented, final-digest verified, and
-locally complete, but uncommitted and not activated**.
+Slice 1 is committed at `5861f82`. The current branch is
+`codex/loom-platform-slice2`; Slice 2 is human-authorized and open for contract
+freezing, but its product implementation has not started. Nothing is activated.
 
 ## Authoritative entry points
 
@@ -59,6 +60,8 @@ locally complete, but uncommitted and not activated**.
 
 ## Next development checkpoint
 
-Stop at the Slice 1 terminal boundary. Starting Slice 2, committing, pushing,
-merging, or activating any runtime requires new human direction. The optional
-local FastContext Spike remains separate and was not installed or activated.
+Freeze the first bounded Slice 2 WorkItem contract from `TECH-PLAN.md §14`
+before changing product behavior. Push, merge, release, runtime activation,
+credential changes, and FastContext installation remain unauthorized. The
+optional local FastContext Spike remains separate and was not installed or
+activated.
