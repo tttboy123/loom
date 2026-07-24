@@ -148,6 +148,22 @@ Candidate passed the full strict verification matrix. Fresh independent
 implementation review returned `PASS` with no findings. S2-W7 is accepted,
 locally committed in this checkpoint, and not activated.
 
+`S2-W8` is frozen at
+`.loom-evidence/phase1-slice2/S2-W8/contract.md` for an immutable saved
+TeamDefinition core: exactly one Main, at most two SubAgents, stable
+AgentDefinition/RuntimeProfile references, project-over-reusable resolution,
+and a pure complete-team load Candidate. It does not select a default Main,
+route Mode input, create a Draft or TeamInstance, bind a live RuntimeInstance,
+persist state, or execute anything. Fresh independent contract review is the
+current gate and returned `PASS` with no blocking findings. Mandatory RED is
+complete: it failed only on missing frozen S2-W8 symbols. The minimal Candidate
+passed the full strict verification matrix. Fresh implementation Review 1
+returned `FAIL`: duplicate non-winners could block resolution and a zero-value
+copied accessor could panic. Repair 1 is bounded to those two product/test
+defects. The repaired Candidate passes the full strict matrix; fresh independent
+Repair 1 implementation review returned `PASS` with no findings. S2-W8 is
+accepted, locally committed in this checkpoint, and not activated.
+
 ## Authoritative entry points
 
 - Product behavior: [`../PRODUCT-PLAN.md`](../PRODUCT-PLAN.md)
@@ -162,11 +178,11 @@ locally committed in this checkpoint, and not activated.
 ## Next development checkpoint
 
 Freeze and independently review the next bounded Slice 2 contract. Default Main
-Agent, defined Team load, and the atomic TeamInstance/AgentInstance/WorkItem
-creation path remain later Slice 2 boundaries. Concrete local probes and daemon
-scheduling still require later frozen Slice 2 contracts. Bridge, real Runtime
-Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
-Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
-release, runtime activation, credential changes, and FastContext installation
-remain unauthorized. The optional local FastContext Spike remains separate and
-was not installed or activated.
+routing and the atomic TeamInstance/AgentInstance/WorkItem creation path remain
+later Slice 2 boundaries. Concrete local probes and daemon scheduling still
+require later frozen Slice 2 contracts. Bridge, real Runtime Adapter execution,
+AgentGrant, claim generation, and WorkItem dispatch remain Slice 3 boundaries
+even when research drafts propose them earlier. Push, merge, release, runtime
+activation, credential changes, and FastContext installation remain
+unauthorized. The optional local FastContext Spike remains separate and was not
+installed or activated.

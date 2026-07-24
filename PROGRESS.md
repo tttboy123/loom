@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W7_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W8_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -269,6 +269,43 @@ Updated: 2026-07-25
 - S2-W7 fresh implementation review:
   `.loom-evidence/phase1-slice2/S2-W7/implementation-review.md`
 - S2-W7 implementation Reviewer: `PASS`; findings: none blocking
+- Accepted S2-W7 local commit: `ab88c5c`
+- S2-W8 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W8/contract.md`
+- S2-W8 boundary: immutable saved TeamDefinition core and pure complete-team
+  load Candidate; no default-Main routing, live binding, resource creation, or
+  execution
+- S2-W8 contract SHA256:
+  `1c02f1e05d1c43ec057bd62955fcc1084f6f0098e79ac02fcd7675ddad81072e`
+- S2-W8 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W8/contract-review.md`
+- S2-W8 contract Reviewer: `PASS`; findings: none blocking
+- S2-W8 mandatory RED: exit `1`; missing frozen TeamDefinition symbols only
+- S2-W8 product/test digests:
+  `team_definition.go=eacdf87e...379d76`,
+  `team_definition_test.go=8d5db7bd...744f1c`
+- S2-W8 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/import/scope `PASS`
+- S2-W8 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W8/deliverable.md`;
+  last line `VERDICT: PENDING_REVIEW`
+- S2-W8 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W8/implementation-review-1.md`;
+  verdict `FAIL`; duplicate non-winners blocked resolution and zero-value
+  SubAgent accessor panicked
+- S2-W8 Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W8/repair-1-contract.md`;
+  product repair attempt `1/3`
+- S2-W8 Repair 1 product/test digests:
+  `team_definition.go=e93944c3...7e8b3d`,
+  `team_definition_test.go=f45213d5...cfc846`
+- S2-W8 Repair 1 strict checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W8 fresh Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W8/implementation-review-2.md`
+- S2-W8 Repair 1 Reviewer: `PASS`; findings: none blocking
+- S2-W8 Candidate last line: `VERDICT: PASS`
 - Next gate: freeze and independently review the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
