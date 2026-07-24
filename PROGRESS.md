@@ -10,8 +10,8 @@ Updated: 2026-07-24
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: human-authorized and open for contract freezing; implementation not
-  started
+- Slice 2: `S2-W1` accepted after preserved Review 1 `FAIL`, Repair 1 RED/GREEN,
+  full strict checks, and fresh implementation Review 2 `PASS`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,10 +49,51 @@ Updated: 2026-07-24
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `READY_FOR_CONTRACT`
+- Status: `S2-W1_GREEN_REVIEWER_PASS`
 - Product changes after the Slice 1 completion commit: none
-- Next gate: freeze one bounded Slice 2 WorkItem contract before RED or
-  implementation
+- Frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W1/contract.md`
+- Contract SHA256:
+  `3b3a54f71419d59ac67c81edface6bcc1dd2ff9c6603bc4c3cce83be4bc599d0`
+- Fresh review evidence:
+  `.loom-evidence/phase1-slice2/S2-W1/contract-review.md`
+- Reviewer verdict: `PASS`; findings: none blocking
+- Mandatory RED: exit `1`; missing frozen domain symbols; no
+  environment/syntax/dependency failure
+- Controller GREEN: focused `0`; package `0`; race `-count=50` `0`; impact
+  `0`; repository race `0`; vet `0`; gofmt/diff/scope `PASS`
+- Candidate evidence:
+  `.loom-evidence/phase1-slice2/S2-W1/deliverable.md`
+- Implementation Review 1: `FAIL`; required findings: empty Definition ID
+  crossed stable IDs, profile-switching proof was hollow, and commit scope
+  classification was incomplete
+- Review 1 evidence:
+  `.loom-evidence/phase1-slice2/S2-W1/review-1.md`
+- Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W1/repair-1-contract.md`
+- Product repair attempt: `1/3`
+- Repair 1 RED: exit `1`; empty Definition ID incorrectly returned success
+- Repair 1 GREEN: focused/package/race-50/impact/repository-race/vet all exit
+  `0`; gofmt/diff/branch-head/owned-scope/import boundary `PASS`
+- Repair 1 product digests:
+  `definition.go=97a1918e...699788`,
+  `definition_test.go=1881b873...2d82`,
+  `catalog.go=a892e6bd...d3a9`,
+  `catalog_test.go=b7422099...5ec8`
+- Fresh implementation Review 2: `PASS`; findings: none blocking
+- Review 2 evidence:
+  `.loom-evidence/phase1-slice2/S2-W1/review-2.md`
+- Scope classification: four frozen Go files are Developer-owned;
+  `docs/CURRENT.md`, `PROGRESS.md`, and S2-W1 evidence are Controller-owned;
+  pre-existing `AGENTS.md`, `.codex/`, and `.loom-drafts/` are excluded from
+  the S2-W1 commit
+- S2-W1 boundary: pure AgentDefinition, RuntimeProfile, RuntimeInstance, scope
+  resolution, and side-effect-free compatibility validation only
+- Authority correction: Bridge/JSON-RPC/JSONL, AgentGrant, claim generation,
+  prepare lease, WorkItem dispatch, and real Runtime Adapter remain Slice 3
+  under `TECH-PLAN.md §14`; later research drafts are Candidate material
+- Next gate: strictly scoped local S2-W1 atomic commit, then S2-W2 contract
+  freeze and fresh contract review
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 

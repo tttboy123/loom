@@ -44,8 +44,18 @@ Updated: 2026-07-24
 - Autonomous execution and production activation are not enabled.
 
 Slice 1 is committed at `5861f82`. The current branch is
-`codex/loom-platform-slice2`; Slice 2 is human-authorized and open for contract
-freezing, but its product implementation has not started. Nothing is activated.
+`codex/loom-platform-slice2`. The bounded `S2-W1` contract for pure
+AgentDefinition and Runtime catalog domain contracts is frozen at
+`.loom-evidence/phase1-slice2/S2-W1/contract.md` and passed a fresh independent
+read-only Reviewer with no blocking findings. Its RED-first pure-domain
+Candidate passed Controller focused, package, race, impact, repository-race,
+vet, format, and scope checks, but fresh implementation Review 1 returned
+`FAIL`: empty Definition ID could resolve across roles and the profile-switching
+acceptance proof was hollow. Repair 1 added a regression RED, requires an
+explicit stable ID, removes wildcard resolution, and replaces the hollow proof;
+all strict Controller checks passed again, and fresh independent implementation
+Review 2 returned `PASS` with no blocking findings. `S2-W1` is accepted.
+Nothing is activated.
 
 ## Authoritative entry points
 
@@ -60,8 +70,11 @@ freezing, but its product implementation has not started. Nothing is activated.
 
 ## Next development checkpoint
 
-Freeze the first bounded Slice 2 WorkItem contract from `TECH-PLAN.md §14`
-before changing product behavior. Push, merge, release, runtime activation,
-credential changes, and FastContext installation remain unauthorized. The
-optional local FastContext Spike remains separate and was not installed or
-activated.
+Create the authorized strictly scoped local S2-W1 atomic commit, then freeze one
+bounded S2-W2 contract from the remaining `TECH-PLAN.md §14` Slice 2 boundary
+and obtain a fresh contract Reviewer PASS before RED or implementation. Bridge,
+real Runtime Adapter, AgentGrant, claim generation, and WorkItem dispatch
+remain Slice 3 boundaries even when research drafts propose them earlier. Push,
+merge, release, runtime activation, credential changes, and FastContext
+installation remain unauthorized. The optional local FastContext Spike remains
+separate and was not installed or activated.
