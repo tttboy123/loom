@@ -180,6 +180,29 @@ only and adds those zero-Candidate proofs without changing production behavior.
 The complete Repair 1 strict matrix passes. Fresh independent Repair 1 review
 returned `PASS` with no findings. S2-W9 is accepted and not activated.
 
+`S2-W10` is frozen at
+`.loom-evidence/phase1-slice2/S2-W10/contract.md` for a pure accepted-Draft
+instantiation-plan Candidate. It will normalize the exact accepted Main,
+SubAgent, Runtime/Profile selections, bounded task DAG, customer-rule metadata,
+and ceilings without allocating or creating TeamInstance, AgentInstance,
+WorkItem, Run, grant, process, or persistent state. Fresh independent contract
+Review 1 returned `FAIL` because the Candidate confused the accepted requested
+budget/concurrency with the catalog ceilings. Contract Repair 1 now preserves
+both separately and binds both into validation and digest proof. Contract
+Repair 1 review returned `FAIL` because it incorrectly required a strictly
+positive requested budget, while the accepted catalog contract permits zero.
+Contract Repair 2 restores non-negative budget, positive concurrency, and their
+separate upper ceilings. Fresh independent Repair 2 contract review is the
+current gate and returned `PASS` with no blocking findings. Mandatory RED failed
+only on missing frozen S2-W10 symbols. The minimal Candidate passes the full
+strict verification matrix. Fresh independent implementation review is the
+current gate and returned `FAIL` with no product defect: direct test proof was
+incomplete for full role-selection preservation/no-widening, complete digest
+sensitivity, and reference-mismatch propagation. Implementation Repair 1 is
+test/evidence only. The repaired Candidate passes the complete strict matrix;
+fresh independent Repair 1 review returned `PASS` with no findings. S2-W10 is
+accepted and not activated.
+
 ## Authoritative entry points
 
 - Product behavior: [`../PRODUCT-PLAN.md`](../PRODUCT-PLAN.md)
@@ -193,12 +216,12 @@ returned `PASS` with no findings. S2-W9 is accepted and not activated.
 
 ## Next development checkpoint
 
-Freeze and independently review the next bounded Slice 2 contract. The atomic
-TeamInstance/AgentInstance/WorkItem creation path remains a later Slice 2
-boundary. Concrete local probes and daemon scheduling still require later
-frozen Slice 2 contracts. Bridge, real Runtime Adapter execution, AgentGrant,
-claim generation, and WorkItem dispatch remain Slice 3 boundaries even when
-research drafts propose them earlier. Push, merge, release, runtime activation,
-credential changes, and FastContext installation remain unauthorized. The
-optional local FastContext Spike remains separate and was not installed or
-activated.
+Freeze and independently review the next bounded Slice 2 contract.
+The saved-Team direct path and atomic TeamInstance/AgentInstance/WorkItem
+creation remain later Slice 2 boundaries. Concrete local probes and daemon
+scheduling still require later frozen Slice 2 contracts. Bridge, real Runtime
+Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
+Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
+release, runtime activation, credential changes, and FastContext installation
+remain unauthorized. The optional local FastContext Spike remains separate and
+was not installed or activated.

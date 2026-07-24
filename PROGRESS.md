@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W9_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W10_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -339,6 +339,62 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W9/implementation-review-2.md`
 - S2-W9 Repair 1 Reviewer: `PASS`; findings: none blocking
 - S2-W9 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W9 local commit: `c5e9eed`
+- S2-W10 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W10/contract.md`
+- S2-W10 boundary: accepted-Draft instantiation plan Candidate only; no
+  resource allocation, persistence, or execution
+- S2-W10 contract SHA256:
+  `72a98b3d02bb9fd2221e5eb56b695bbb3ed1a9c436b9fcd4a6e796f174872327`
+- S2-W10 contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W10/contract-review-1.md`
+- S2-W10 contract Reviewer: `FAIL`; requested budget/concurrency omitted and
+  confused with catalog ceilings
+- S2-W10 Contract Repair 1/3:
+  `.loom-evidence/phase1-slice2/S2-W10/contract-repair-1.md`
+- S2-W10 repaired contract SHA256:
+  `5b6e9c660c0a871549da0e45be55d2a2bbb05e54f1e0ad370665a949597917b0`
+- S2-W10 Contract Repair 1 SHA256:
+  `acd5a921ebdc95597172d8bc82522c31086c9a248de267c9272d357b8f288994`
+- S2-W10 Contract Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W10/contract-review-2.md`
+- S2-W10 Contract Repair 1 Reviewer: `FAIL`; zero requested budget was
+  incorrectly rejected
+- S2-W10 Contract Repair 2/3:
+  `.loom-evidence/phase1-slice2/S2-W10/contract-repair-2.md`
+- S2-W10 Repair 2 contract SHA256:
+  `342e9ed09cdb0a638d4a9f5dfcbdab8e79e1d9f42ac7315c910d443e7e58874f`
+- S2-W10 Contract Repair 2 SHA256:
+  `362aaeaeec9e42b6cc7515cf78457820ed48fde8da89a3e0ee0ddce164d3d23b`
+- S2-W10 Contract Repair 2 review:
+  `.loom-evidence/phase1-slice2/S2-W10/contract-review-3.md`
+- S2-W10 Contract Repair 2 Reviewer: `PASS`; findings: none blocking
+- S2-W10 mandatory RED: exit `1`; missing frozen instantiation-plan symbols only
+- S2-W10 product/test digests:
+  `instantiation_plan.go=da779746...52f0be`,
+  `instantiation_plan_test.go=32852d90...8e222`
+- S2-W10 checks: focused `0`; package `0`; focused race `-count=50` `0`;
+  impact `0`; repository race `0`; vet `0`; gofmt/diff/import/scope `PASS`
+- S2-W10 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W10/deliverable.md`;
+  last line `VERDICT: PENDING_REVIEW`
+- S2-W10 implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W10/implementation-review-1.md`
+- S2-W10 implementation Reviewer: `FAIL`; no product defect; direct role,
+  digest, and reference-failure proof incomplete
+- S2-W10 Implementation Repair 1/3:
+  `.loom-evidence/phase1-slice2/S2-W10/implementation-repair-1-contract.md`
+- S2-W10 Repair 1 boundary: test/evidence only; no product change
+- S2-W10 repaired product/test digests:
+  `instantiation_plan.go=da779746...52f0be`,
+  `instantiation_plan_test.go=66c48820...2a72f`
+- S2-W10 Repair 1 checks: focused `0`; package `0`; focused race
+  `-count=50` `0`; impact `0`; repository race `0`; vet `0`;
+  gofmt/diff/import/scope `PASS`
+- S2-W10 Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W10/implementation-review-2.md`
+- S2-W10 Repair 1 Reviewer: `PASS`; findings: none blocking
+- S2-W10 Candidate last line: `VERDICT: PASS`
 - Next gate: freeze and independently review the next bounded Slice 2 contract
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
