@@ -394,10 +394,28 @@ exact source/count/digest-bound S2-W20 Candidate. Controller focused, package,
 impact, focused-race-50, repository, repository-race, vet, format, diff,
 import, mutation, non-disclosure, and real SQLite exact-retry checks pass. Fresh
 implementation review independently passed the complete matrix and returned
-`PASS` with no findings. S2-W27 is accepted pending its exact-scope local atomic
-commit. It allocates no Event metadata, accesses no Journal/projection directly,
+`PASS` with no findings. S2-W27 is accepted and locally committed at `7ec635b`.
+It allocates no Event metadata, accesses no Journal/projection directly,
 chooses no status policy, and adds no scheduling, daemon, Runtime activation, or
 Slice 3 authority.
+
+`S2-W28` is frozen at
+`.loom-evidence/phase1-slice2/S2-W28/contract.md` for the concrete prepared
+committer adapter required by S2-W27. Fresh independent contract review returned
+`PASS`. Mandatory RED failed only on missing frozen symbols. The minimal
+Candidate binds an accepted S2-W20 appender and caller-authoritative input
+provider, validates typed-nil/context boundaries, calls the provider once, and
+delegates exactly once to `state.CommitRuntimeDiscoverySnapshot`. Controller
+focused, package, impact, focused-race-50, repository, repository-race, vet,
+format, diff, import, mutation, non-disclosure, and real SQLite S2-W27 exact
+retry checks pass. Implementation Review 1 returned `FAIL` because the exported
+adapter zero value could panic. Repair 1 passed contract review; its RED
+reproduced the panic, the minimal binding revalidation is GREEN, and the full
+matrix passes on fresh rerun. Fresh Repair 1 implementation review independently
+passed the complete matrix and returned `PASS` with no findings. S2-W28 is
+accepted pending its exact-scope local atomic commit. It allocates no Event
+metadata and adds no concrete Journal/projection/status/scheduler/daemon/
+activation/Slice 3 authority.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -530,11 +548,11 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W27 exact-scope local atomic commit, then freeze the next
-smallest Phase 1 Runtime boundary. Discovery scheduling and
-daemon entry/config remain separate later WorkItems. Bridge, real Runtime
-Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
-Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
+Create the accepted S2-W28 exact-scope local atomic commit, then freeze the next
+smallest Phase 1 Runtime boundary. Discovery scheduling and daemon entry/config
+remain separate later WorkItems. Bridge, real Runtime Adapter execution,
+AgentGrant, claim generation, and WorkItem dispatch remain Slice 3 boundaries
+even when research drafts propose them earlier. Push, merge,
 release, runtime activation, credential changes, and FastContext installation
 remain unauthorized. The
 optional local FastContext Spike remains separate and was not installed or

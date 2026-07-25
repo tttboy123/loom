@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W26 accepted and locally committed; latest accepted
-  commit `494579d`
+- Slice 2: S2-W1 through S2-W27 accepted and locally committed; latest accepted
+  commit `7ec635b`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W27_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W28_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1045,6 +1045,44 @@ Updated: 2026-07-25
 - S2-W27 implementation Reviewer: `PASS`; findings: none; complete strict
   matrix independently passed
 - S2-W27 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W27 local commit: `7ec635b`
+- S2-W28 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W28/contract.md`
+- S2-W28 contract SHA256:
+  `424554aca51c6d00ff1624e3d5cba386843b4c6aaa2edcf58bcce3e068b1ade8`
+- S2-W28 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W28/contract-review.md`
+- S2-W28 contract Reviewer: `PASS`; findings: none blocking
+- S2-W28 boundary: concrete S2-W27 committer adapter binds an accepted S2-W20
+  appender and injected caller-authoritative input provider; provider once,
+  S2-W20 once, no metadata allocation, concrete Journal/projection, status
+  policy, scheduling, daemon, activation, or Slice 3
+- S2-W28 mandatory RED: exit `1`; failed only on missing frozen symbols
+- S2-W28 product/test digests:
+  `runtime_discovery_committer.go=9daf0916...6907`,
+  `runtime_discovery_committer_test.go=14adfaf8...73aa`
+- S2-W28 strict matrix: focused `0`; app package `0`; app/runtime/
+  discoveryscan/state/journal impact `0`; focused race `-count=50` `0`;
+  repository `0`; repository race `0`; vet `0`; gofmt, diff, import, mutation,
+  non-disclosure, real SQLite S2-W27 exact retry, and scope checks `PASS`
+- S2-W28 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W28/deliverable.md`
+- S2-W28 Implementation Review 1: `FAIL`; exported zero-value adapter could
+  panic on nil stored provider
+- S2-W28 Repair 1 contract/review: frozen test plus method-boundary stored
+  binding validation; contract Reviewer `PASS`
+- S2-W28 Repair RED: reproduced nil-pointer panic; minimal repair GREEN
+- S2-W28 repaired hashes:
+  `runtime_discovery_committer.go=aba00945...1434`,
+  `runtime_discovery_committer_test.go=ac9ab0e3...f6f6`
+- S2-W28 repaired matrix: all checks pass on fresh rerun; first repository-race
+  run preserved one unrelated Pi child-marker timing failure, isolated race
+  `-count=10` and fresh repository-race rerun both passed
+- S2-W28 Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W28/implementation-review-2.md`
+- S2-W28 Repair 1 implementation Reviewer: `PASS`; findings: none; zero-value
+  panic closure and complete strict matrix independently verified
+- S2-W28 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
