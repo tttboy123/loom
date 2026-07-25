@@ -549,9 +549,9 @@ func runtimeStatusProjectionCandidate(
 			discoveryEvents, observation.Instance.ID,
 		)
 		baseline[index] = loomruntime.RuntimeStatusBaseline{
-			Instance:              observation.Instance,
-			LastDiscoveryEventID:  event.ID,
-			LastDiscoverySequence: event.Seq,
+			Instance:         observation.Instance,
+			PreviousEventID:  event.ID,
+			PreviousSequence: event.Seq,
 		}
 		current := observation
 		current.Instance.Status = toStatus

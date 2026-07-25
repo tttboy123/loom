@@ -12,7 +12,7 @@ import (
 
 const (
 	maxRuntimeStatusReconciliationEntries = 32
-	runtimeStatusBaselineDigestVersion    = 1
+	runtimeStatusBaselineDigestVersion    = 2
 	runtimeStatusCandidateDigestVersion   = 1
 )
 
@@ -25,9 +25,9 @@ var (
 )
 
 type RuntimeStatusBaseline struct {
-	Instance              RuntimeInstance
-	LastDiscoveryEventID  string
-	LastDiscoverySequence int64
+	Instance         RuntimeInstance
+	PreviousEventID  string
+	PreviousSequence int64
 }
 
 type RuntimeStatusTransition struct {
@@ -108,8 +108,8 @@ func ReconcileObservedRuntimeStatuses(
 			ToStatus:              observation.Instance.Status,
 			SourceProbeID:         observation.SourceProbeID,
 			SourceDiscoveryDigest: current.Digest(),
-			PreviousEventID:       previous.LastDiscoveryEventID,
-			PreviousSequence:      previous.LastDiscoverySequence,
+			PreviousEventID:       previous.PreviousEventID,
+			PreviousSequence:      previous.PreviousSequence,
 		})
 	}
 
@@ -168,8 +168,8 @@ func validateRuntimeStatusBaseline(
 		normalized, err := NewRuntimeInstance(entry.Instance)
 		if err != nil ||
 			!reflect.DeepEqual(normalized, entry.Instance) ||
-			entry.LastDiscoveryEventID == "" ||
-			entry.LastDiscoverySequence <= 0 ||
+			entry.PreviousEventID == "" ||
+			entry.PreviousSequence <= 0 ||
 			index > 0 && entry.Instance.ID == ordered[index-1].Instance.ID {
 			return nil, ErrInvalidRuntimeStatusBaseline
 		}
@@ -231,8 +231,8 @@ type runtimeStatusBaselineRecord struct {
 	Status               RuntimeStatus `json:"status"`
 	ObservedCapabilities []string      `json:"observed_capabilities"`
 	Capacity             int           `json:"capacity"`
-	LastDiscoveryEventID string        `json:"last_discovery_event_id"`
-	LastSequence         int64         `json:"last_sequence"`
+	PreviousEventID      string        `json:"previous_event_id"`
+	PreviousSequence     int64         `json:"previous_sequence"`
 }
 
 func digestRuntimeStatusBaseline(input []RuntimeStatusBaseline) (string, error) {
@@ -247,8 +247,8 @@ func digestRuntimeStatusBaseline(input []RuntimeStatusBaseline) (string, error) 
 			Status:               entry.Instance.Status,
 			ObservedCapabilities: append([]string(nil), entry.Instance.ObservedCapabilities...),
 			Capacity:             entry.Instance.Capacity,
-			LastDiscoveryEventID: entry.LastDiscoveryEventID,
-			LastSequence:         entry.LastDiscoverySequence,
+			PreviousEventID:      entry.PreviousEventID,
+			PreviousSequence:     entry.PreviousSequence,
 		}
 	}
 	encoded, err := json.Marshal(runtimeStatusBaselineDigestPayload{

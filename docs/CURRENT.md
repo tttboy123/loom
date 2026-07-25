@@ -336,7 +336,33 @@ package, impact, focused-race-30, repository, repository-race, vet, format,
 diff, import, duplicate-payload, non-disclosure, atomic-rebuild, and scope
 checks. Fresh independent implementation review returned `PASS` with no
 blocking findings after independently rerunning the complete matrix. S2-W24 is
-accepted pending its local atomic commit.
+accepted and locally committed at `9838779`.
+
+`S2-W25` is frozen at
+`.loom-evidence/phase1-slice2/S2-W25/contract.md` for a pure bounded adapter
+from copied S2-W24 Runtime projection records to the next S2-W22 status
+baseline. It also explicitly amends the S2-W22 baseline provenance names from
+discovery-specific to generic previous status-bearing facts and increments the
+baseline digest version to `2`. Contract Review 1 returned `FAIL` because the
+initial wording admitted a forged discovery/previous Event pair. Contract
+Repair 1 requires Event ID equality if and only if sequence equality; fresh
+independent Repair Review 2 returned `PASS`. Mandatory RED failed only on the
+missing adapter/error symbols. The minimal Candidate passes focused,
+package/impact, focused-race-30, repository, repository-race, vet, format,
+diff, import, non-disclosure, mutation-isolation, forged-provenance, and scope
+checks. Fresh independent Implementation Review 1 returned `FAIL`: cross-record
+Event ID reuse could mint provenance that accepted Journal replay cannot
+produce. Bounded Repair 1 is frozen to reject all same-role and cross-role reuse
+among discovery, current status, and previous status Event IDs across Runtime
+records. Fresh Repair 1 contract review returned `PASS` with no blocking
+findings. Mandatory Repair RED failed on all nine same-role/cross-role reuse
+combinations. The minimal Event-ID owner-set repair passes the complete strict
+matrix again, preserving the valid same-record first-status alias. Fresh
+independent Repair 1 implementation review returned `PASS` with no findings
+after independently rerunning the complete matrix. S2-W25 is accepted pending
+its local atomic commit. It does not replay/query the Journal, append Events,
+invoke discovery/reconciliation, schedule a scan, start a daemon, run Pi, or
+activate a Runtime.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -469,12 +495,12 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W24 local atomic commit, then freeze the next smallest
-Runtime discovery orchestration boundary. Discovery scheduling and daemon
-entry/config remain separate later WorkItems. Bridge, real Runtime Adapter
-execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
-boundaries even when research drafts propose them earlier. Push, merge, release,
-runtime activation, credential changes, and FastContext installation remain
-unauthorized. The
+Create the accepted S2-W25 exact-scope local atomic commit, then freeze the next
+smallest Runtime discovery orchestration boundary. Discovery scheduling and
+daemon entry/config remain separate later WorkItems. Bridge, real Runtime
+Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
+Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
+release, runtime activation, credential changes, and FastContext installation
+remain unauthorized. The
 optional local FastContext Spike remains separate and was not installed or
 activated.

@@ -106,6 +106,28 @@ func TestReconcileObservedRuntimeStatusesOrdersAndDigestsDeterministically(t *te
 	}
 }
 
+func TestReconcileObservedRuntimeStatusesUsesPreviousStatusBearingProvenance(t *testing.T) {
+	baseline := []RuntimeStatusBaseline{
+		statusBaseline(t, "runtime.a", RuntimeOnline, 7),
+	}
+	baseline[0].PreviousEventID = "event.status.runtime.a"
+	current := statusDiscovery(t, []statusObservationSpec{
+		{id: "runtime.a", status: RuntimeOffline},
+	})
+	candidate, err := ReconcileObservedRuntimeStatuses(
+		context.Background(), baseline, current,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitions := candidate.Transitions()
+	if len(transitions) != 1 ||
+		transitions[0].PreviousEventID != "event.status.runtime.a" ||
+		transitions[0].PreviousSequence != 7 {
+		t.Fatalf("transition provenance = %#v", transitions)
+	}
+}
+
 func TestReconcileObservedRuntimeStatusesDoesNotInferAbsence(t *testing.T) {
 	baseline := []RuntimeStatusBaseline{
 		statusBaseline(t, "runtime.baseline", RuntimeOnline, 1),
@@ -256,11 +278,11 @@ func TestReconcileObservedRuntimeStatusesRejectsIdentityAndInvalidSources(t *tes
 			return input
 		}},
 		{name: "empty event id", change: func(input []RuntimeStatusBaseline) []RuntimeStatusBaseline {
-			input[0].LastDiscoveryEventID = ""
+			input[0].PreviousEventID = ""
 			return input
 		}},
 		{name: "zero sequence", change: func(input []RuntimeStatusBaseline) []RuntimeStatusBaseline {
-			input[0].LastDiscoverySequence = 0
+			input[0].PreviousSequence = 0
 			return input
 		}},
 		{name: "duplicate id", change: func(input []RuntimeStatusBaseline) []RuntimeStatusBaseline {
@@ -418,7 +440,10 @@ func TestReconcileObservedRuntimeStatusesDigestCoversSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	baselineChanged := cloneStatusBaselines(baseline)
-	baselineChanged[0].LastDiscoverySequence++
+	if runtimeStatusBaselineDigestVersion != 2 {
+		t.Fatalf("runtimeStatusBaselineDigestVersion = %d, want 2", runtimeStatusBaselineDigestVersion)
+	}
+	baselineChanged[0].PreviousSequence++
 	changedBaseline, err := ReconcileObservedRuntimeStatuses(
 		context.Background(), baselineChanged, current,
 	)
@@ -467,8 +492,8 @@ func TestReconcileObservedRuntimeStatusesDigestCoversSemantics(t *testing.T) {
 			value.Instance.ObservedCapabilities = []string{"models", "sandbox", "version"}
 		},
 		func(value *RuntimeStatusBaseline) { value.Instance.Capacity++ },
-		func(value *RuntimeStatusBaseline) { value.LastDiscoveryEventID += ".changed" },
-		func(value *RuntimeStatusBaseline) { value.LastDiscoverySequence++ },
+		func(value *RuntimeStatusBaseline) { value.PreviousEventID += ".changed" },
+		func(value *RuntimeStatusBaseline) { value.PreviousSequence++ },
 	}
 	for index, mutate := range baselineMutations {
 		changed := cloneStatusBaselines(baseline)
@@ -643,9 +668,9 @@ func statusBaseline(
 		t.Fatal(err)
 	}
 	return RuntimeStatusBaseline{
-		Instance:              instance,
-		LastDiscoveryEventID:  "event." + id,
-		LastDiscoverySequence: sequence,
+		Instance:         instance,
+		PreviousEventID:  "event." + id,
+		PreviousSequence: sequence,
 	}
 }
 

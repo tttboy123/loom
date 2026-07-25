@@ -643,9 +643,9 @@ func runtimeStatusWriterCandidate(
 		current := previous
 		current.Status = loomruntime.RuntimeOffline
 		baseline[index] = loomruntime.RuntimeStatusBaseline{
-			Instance:              previous,
-			LastDiscoveryEventID:  "event.discovery." + id,
-			LastDiscoverySequence: int64(index + 1),
+			Instance:         previous,
+			PreviousEventID:  "event.discovery." + id,
+			PreviousSequence: int64(index + 1),
 		}
 		observations[index] = loomruntime.RuntimeObservation{
 			Instance: current,
@@ -700,9 +700,9 @@ func runtimeStatusWriterNoChangeCandidate(
 	candidate, err := loomruntime.ReconcileObservedRuntimeStatuses(
 		context.Background(),
 		[]loomruntime.RuntimeStatusBaseline{{
-			Instance:              instance,
-			LastDiscoveryEventID:  "event.discovery.runtime.a",
-			LastDiscoverySequence: 1,
+			Instance:         instance,
+			PreviousEventID:  "event.discovery.runtime.a",
+			PreviousSequence: 1,
 		}},
 		snapshot,
 	)

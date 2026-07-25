@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W24_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W25_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -890,6 +890,82 @@ Updated: 2026-07-25
 - S2-W24 implementation Reviewer: `PASS`; findings: none blocking; complete
   strict matrix independently passed
 - S2-W24 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W24 local commit: `9838779`
+- S2-W25 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W25/contract.md`
+- S2-W25 original contract SHA256:
+  `a771b8438fdf7293609d687b06d3426d8d5dc153e6b47d80618dc034e6112dbd`
+- S2-W25 S2-W22 amendment:
+  `.loom-evidence/phase1-slice2/S2-W25/s2-w22-amendment.md`
+- S2-W25 amendment SHA256:
+  `737585e1e8084e21e3287b145211b145e2bff4eac692b221bb5c88e5162cbcc7`
+- S2-W25 Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W25/contract-review-1.md`
+- S2-W25 Contract Review 1: `FAIL`; original validation admitted a forged
+  discovery/previous Event pair
+- S2-W25 Contract Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W25/contract-repair-1.md`
+- S2-W25 repaired contract SHA256:
+  `52e04294aaf86313b09bb769be134095921fdeb6a3818e412b4565e2650985e3`
+- S2-W25 repaired boundary: pure zero-through-32 copied projection-to-baseline
+  adapter; discovery and previous Event ID equality must match sequence equality
+  in both directions; no Journal replay/write, discovery/reconciliation,
+  scheduling, daemon, Pi process, or activation
+- S2-W25 fresh Contract Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W25/contract-review-2.md`
+- S2-W25 repaired-contract Reviewer: `PASS`; findings: none blocking
+- S2-W25 mandatory RED: exit `1`; failed only on missing
+  `BuildRuntimeStatusBaselines` and
+  `ErrInvalidRuntimeStatusBaselineProjection`
+- S2-W25 product/test digests:
+  `status_reconciliation.go=89e10f9e...9123`,
+  `status_reconciliation_test.go=effa3c4e...bf6`,
+  `runtime_status_writer_test.go=4bda177b...80e8`,
+  `runtime_status_test.go=e11f1a59...3351`,
+  `runtime_status_baseline.go=d1ba17f8...927`,
+  `runtime_status_baseline_test.go=33d30de9...a42f`
+- S2-W25 strict matrix: focused adapter `0`; renamed S2-W22 `0`;
+  writer/projection regression `0`; package/impact `0`; focused race
+  `-count=30` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  import, non-disclosure, mutation-isolation, forged-provenance, and scope
+  checks `PASS`
+- S2-W25 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W25/deliverable.md`
+- S2-W25 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W25/implementation-review-1.md`
+- S2-W25 Implementation Review 1: `FAIL`; cross-record Event ID reuse could
+  mint baseline provenance impossible under accepted Journal replay
+- S2-W25 Implementation Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W25/implementation-repair-1-contract.md`
+- S2-W25 active amended contract SHA256:
+  `d47939a110667b640cb3f264a7edb74557ee9e0988e99928549cd358cd297a49`
+- S2-W25 Repair 1 boundary: reject every same-role/cross-role reuse across
+  Runtime records among discovery, current status, and previous status Event
+  IDs; allow only the valid same-record first-status discovery/previous alias
+- S2-W25 Repair 1 product/test state before contract review: unchanged from the
+  reviewed Candidate
+- S2-W25 fresh Implementation Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W25/implementation-repair-1-contract-review.md`
+- S2-W25 Repair 1 contract Reviewer: `PASS`; findings: none blocking
+- S2-W25 mandatory Repair RED: exit `1`; all nine cross-record same-role/
+  cross-role Event ID combinations were incorrectly accepted by the reviewed
+  Candidate; no unrelated failure
+- S2-W25 Repair 1 behavior: one combined Event-ID-to-Runtime owner set rejects
+  reuse by a different Runtime while preserving the valid same-record first
+  status discovery/previous alias
+- S2-W25 Repair 1 product/test digests:
+  `runtime_status_baseline.go=b39b8183...68b86`,
+  `runtime_status_baseline_test.go=51a58e60...6c317`;
+  all other Candidate product/test hashes unchanged
+- S2-W25 Repair 1 strict matrix: focused adapter `0`; renamed S2-W22 `0`;
+  writer/projection regression `0`; package/impact `0`; focused race
+  `-count=30` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  import, non-disclosure, nine-combination ownership, and scope checks `PASS`
+- S2-W25 fresh Implementation Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W25/implementation-review-2.md`
+- S2-W25 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix independently passed
+- S2-W25 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
