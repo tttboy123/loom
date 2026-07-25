@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W36 accepted and locally committed; latest accepted
-  commit `38891c3`
+- Slice 2: S2-W1 through S2-W37 accepted and locally committed; latest accepted
+  commit `9175f94`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W37_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W38_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1494,6 +1494,93 @@ Updated: 2026-07-25
 - S2-W37 Candidate last line: `VERDICT: PASS`
 - S2-W37 fresh pre-commit matrix: focused/app/impact/focused-race-50/
   repository/repository-race/vet/format/diff all `PASS`
+- Accepted S2-W37 local commit: `9175f94`
+- S2-W37 post-commit focused/repository checks: `PASS`
+- S2-W38 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W38/contract.md`
+- S2-W38 contract SHA256:
+  `81e7cb6c...d3a3b`
+- S2-W38 fresh Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W38/contract-review-1.md`
+- S2-W38 contract Reviewer: `PASS`; findings: none
+- S2-W38 Controller contract check:
+  `.loom-evidence/phase1-slice2/S2-W38/controller-contract-check-1.md`
+- S2-W38 Controller contract check: `FAIL`; recurrence-only composition would
+  read stale bound projection after a committed observation; no implementation
+  began
+- S2-W38 Contract Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W38/contract-repair-1.md`
+- S2-W38 Repair 1 fresh Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W38/contract-repair-1-review-1.md`
+- S2-W38 Repair 1 contract Reviewer: `FAIL`; separate projection may not be the
+  observer's bound read model, and partial-success language exceeded
+  post-S2-W37 observability; no implementation began
+- S2-W38 same-class stale-projection failure count: `2`; fresh read-only
+  problem analysis required before Contract Repair 2
+- S2-W38 fresh Problem Analysis 1:
+  `.loom-evidence/phase1-slice2/S2-W38/problem-analysis-1.md`
+- S2-W38 Problem Analysis 1: lifecycle binding defect; use only the observer's
+  captured private read model; no post-refresh context check; S2-W37 errors
+  remain five-zero without a no-write claim
+- S2-W38 Contract Repair 2:
+  `.loom-evidence/phase1-slice2/S2-W38/contract-repair-2.md`
+- S2-W38 Repair 2 fresh Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W38/contract-repair-2-review-1.md`
+- S2-W38 Repair 2 contract Reviewer: `PASS`; findings: none
+- S2-W38 first RED attempt: discarded because Go's compile-error limit hid one
+  test-fixture field error; product file removed before retry
+- S2-W38 valid mandatory RED: focused compile failed only on missing repaired
+  frozen error/function symbols
+- S2-W38 product/test SHA256:
+  `runtime_observation_loop.go=33d7e462...0c9c0`,
+  `runtime_observation_loop_test.go=258c84a0...9029`
+- S2-W38 Controller strict matrix: focused/app/impact/focused-race-50/
+  repository/repository-race/vet/format/diff all `PASS`
+- S2-W38 post-success refresh failure proof: exact successful tuple plus
+  refresh error, authoritative Event retained, previous projection preserved,
+  no retry
+- S2-W38 real SQLite proof: same read model/observer/trigger/scripted factory,
+  no test-side inter-call rebuild, exact discovery/discovery/status Events at
+  sequences 1/2/3 and final changed-display/online projection
+- S2-W38 Candidate evidence:
+  `.loom-evidence/phase1-slice2/S2-W38/deliverable.md`
+- S2-W38 fresh Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W38/implementation-review-1.md`
+- S2-W38 Implementation Reviewer 1: `FAIL`; missing direct none/discovery/
+  status success-path runtime order/count group; no product defect
+- S2-W38 Implementation Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W38/implementation-repair-1-contract.md`
+- S2-W38 Repair 1 fresh Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W38/implementation-repair-1-contract-review-1.md`
+- S2-W38 Repair 1 contract Reviewer: `PASS`; findings: none
+- S2-W38 Repair 1: test/evidence only; product SHA locked
+  `33d7e462...0c9c0`; product repair attempt remains `0/3`
+- S2-W38 Repair 1 mandatory RED: failed only on four missing unique case-local
+  none/discovery/status/order coverage markers
+- S2-W38 Repair 1 test SHA256:
+  `runtime_observation_loop_test.go=60c65473...ff06`
+- S2-W38 Repair 1 direct success proof: none exposes A before factory and B
+  after factory-side append/post-refresh with writers `0/0`; discovery and
+  status use real prepared committers behind recording wrappers with exact
+  trigger→factory→probe→selected-writer traces, counts, and post-refresh
+  sequence 2 facts
+- S2-W38 Repair 1 complete strict matrix and product-lock check: `PASS`;
+  product SHA remains `33d7e462...0c9c0`
+- S2-W38 fresh Implementation Review 2:
+  `.loom-evidence/phase1-slice2/S2-W38/implementation-review-2.md`
+- S2-W38 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix and product lock independently passed
+- S2-W38 Candidate last line: `VERDICT: PASS`
+- S2-W38 fresh pre-commit matrix: focused/app/impact/focused-race-50/
+  repository/repository-race/vet/format/diff/product-lock all `PASS`
+- S2-W38 Repair 2 boundary: exact bound projection only; await→context→
+  pre-refresh decorator, exact S2-W37 once, post-success refresh; successful
+  tuple plus error only for post-S2-W37 rebuild failure; no recurrence/
+  serialization/scheduler/config/daemon/retry/activation authority
+- S2-W38 repaired boundary: trigger-scoped pre-refresh, one exact S2-W37 call,
+  and post-success projection refresh; post-commit refresh errors retain exact
+  successful outputs plus error; no loop/time/scheduler/config/daemon/retry/
+  activation or direct lower-layer authority
 - Next gate: exact staged-scope audit and one local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,

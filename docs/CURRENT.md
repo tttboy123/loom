@@ -639,7 +639,68 @@ discovery/discovery/status chain with exact Event sequences and final rebuilt
 Runtime facts. Fresh independent Implementation Review 1 returned `PASS` with no findings
 after independently rerunning the complete strict matrix. S2-W37 is accepted
 and its fresh pre-commit strict matrix passes. It is pending only its exact
-staged-scope audit and one scoped local atomic commit; nothing is activated.
+staged-scope audit and one scoped local atomic commit. It is locally committed
+at `9175f94`; post-commit focused and repository checks pass, and nothing is
+activated.
+
+`S2-W38` is frozen at
+`.loom-evidence/phase1-slice2/S2-W38/contract.md` for the context-bounded
+recurrence layer above S2-W37. Each successful injected trigger produces
+exactly one accepted observation and the first trigger, context, or downstream
+error terminates without retry. It adds no clock, timer, ticker, channel,
+signal, configuration, daemon entry, goroutine, concrete scheduling policy, or
+Runtime activation. Fresh independent Contract Review 1 returned `PASS` with
+no findings. Before mandatory RED, Controller code-truth review found that the
+accepted prepared observer does not rebuild its bound in-memory projection
+after writes, so a recurrence-only loop would compare later observations
+against stale Runtime facts and could not prove the required
+discovery/discovery/status chain. No product or test implementation began.
+Contract Repair 1 postpones recurrence and instead freezes one
+projection-synchronized triggered observation: an unexported trigger decorator
+refreshes committed projection facts before S2-W37, and a second refresh makes
+a successful write visible before return. Post-commit refresh errors preserve
+the exact successful outputs plus error rather than hiding committed authority.
+Fresh Repair 1 contract review is the current gate.
+Fresh Repair 1 Contract Review 1 returned `FAIL`: a separately passed
+projection could differ from the observer's actual bound read model, and the
+post-commit partial-success language exceeded what S2-W37 can observe. No
+implementation began. Because the projection mismatch repeats the same stale
+read-model failure class, fresh read-only problem analysis is mandatory before
+Contract Repair 2.
+Fresh Problem Analysis 1 confirmed that the defect is the application
+composition/read-model lifecycle boundary, not Journal, replay, planning,
+trigger, or writer behavior. Contract Repair 2 removes the separate projection
+parameter, captures only `observer.readModel`, rejects a zero-value observer,
+uses one await→context→pre-refresh decorator around exact S2-W37, and
+post-refreshes only after S2-W37 success. Only post-success rebuild failure
+returns the exact successful path-specific tuple plus error; every S2-W37 error
+remains five-zero and makes no claim that no Event committed. No context check
+follows a successful post-refresh. Fresh Repair 2 contract review is the
+current gate. Fresh Repair 2 Contract Review 1 returned `PASS` with no
+findings. The first RED attempt was discarded after a test-fixture field error
+was found behind Go's compile-error limit; product was removed, the fixture was
+corrected, and a clean test-only mandatory RED failed only on the repaired
+frozen error/function symbols. The minimal Candidate captures the observer's
+exact private read model, composes one await→context→pre-refresh decorator with
+exact S2-W37, and post-refreshes the same projection only after success. The
+complete strict Controller matrix passes, including the full downstream error
+surface, transparent post-success refresh failure, static authority proof, and
+a same-observer SQLite discovery sequence 1→discovery 2→status 3 chain with no
+test-side inter-call rebuild. Fresh independent implementation review is the
+current gate. Fresh Implementation Review 1 returned `FAIL` on one mandatory
+test-proof gap and found no product defect: none/discovery/status success paths
+were not collected in one direct runtime order/count group. Implementation
+Repair 1 is frozen as test-only with the product hash locked; fresh Repair 1
+contract review returned `PASS` with no findings. Mandatory Repair RED is the
+current gate. Mandatory Repair RED failed only on four missing unique
+case-local success markers. The repaired tests now directly prove exact
+none/discovery/status pre-refresh→observer→write→post-refresh behavior and
+counts using real Journal fixtures and prepared committers. The complete
+strict matrix passes again and product remains byte-for-byte unchanged. Fresh
+Repair 1 Implementation Review 2 returned `PASS` with no findings after
+independently rerunning the complete strict matrix and product lock. S2-W38 is
+accepted and its fresh pre-commit strict matrix/product lock passes. It is
+pending only exact staged-scope audit and one local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -772,8 +833,8 @@ activated.
 
 ## Next development checkpoint
 
-Run the fresh S2-W37 pre-commit matrix and exact staged-scope audit, then
-create its one authorized local atomic commit.
+Run the fresh S2-W38 pre-commit matrix and exact staged-scope audit, then create
+its one authorized local atomic commit.
 Scheduling and daemon entry/config remain separate later WorkItems. Bridge,
 real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
 dispatch remain Slice 3 boundaries even when research drafts propose them
