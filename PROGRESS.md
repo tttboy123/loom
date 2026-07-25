@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W21_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W22_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -766,7 +766,56 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W21/implementation-review.md`
 - S2-W21 implementation Reviewer: `PASS`; findings: none blocking
 - S2-W21 Candidate last line: `VERDICT: PASS`
-- Next gate: S2-W21 local atomic commit
+- Accepted S2-W21 local commit: `366bc48`
+- S2-W22 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W22/contract.md`
+- S2-W22 contract SHA256:
+  `5f8f2a1e06950d927925fb49b7c70f7c177ebf1229193d47b30cff603e989de9`
+- S2-W22 boundary: pure observed status transitions for matching stable
+  baseline/current identities; no new/absent-ID inference, Event persistence,
+  projection, discovery execution, scheduling, or activation
+- S2-W22 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W22/contract-review.md`
+- S2-W22 contract Reviewer: `PASS`; findings: none blocking
+- S2-W22 mandatory RED: exit `1`; failed only on missing frozen baseline,
+  transition, Candidate, reconciliation, and digest symbols
+- S2-W22 product/test digests:
+  `status_reconciliation.go=c81658d7...2c3ee`,
+  `status_reconciliation_test.go=5b9fc0b0...e6e84`
+- S2-W22 strict matrix: focused `0`; package `0`; impact `0`; focused race
+  `-count=50` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  pure-domain import, no-write/no-probe/no-execution, branch/head, and scope
+  checks `PASS`
+- S2-W22 implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W22/implementation-review-1.md`
+- S2-W22 implementation Review 1: `FAIL`; no product defect; missing direct
+  baseline-set addition digest proof and independent same-status non-status
+  inventory-change proof
+- S2-W22 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W22/repair-1-contract.md`
+- S2-W22 Repair 1 contract SHA256:
+  `8461af09f56b0de5bb5220b80c8fcdeb5157497fbec930d45f2d9dae08fc3f9d`
+- S2-W22 Repair 1: tests only; product digest remains exactly
+  `c81658d781889d4b0e240539db45bc93cd9579263797184d59eb28a40e12c3ee`
+- S2-W22 Repair 1 proof: baseline-set addition changes both baseline and
+  Candidate digests while reorder remains stable; independent display name,
+  executable version, capabilities, capacity, model IDs, and source probe
+  changes remain valid zero-transition same-status Candidates
+- S2-W22 Repair 1 strict matrix: focused `0`; package `0`; impact `0`; focused
+  race `-count=50` `0`; repository `0`; repository race `0`; vet `0`; gofmt,
+  diff, product-hash, and scope checks `PASS`
+- S2-W22 transient matrix note: one concurrent full-repository run hit only the
+  pre-existing three-second Pi metadata timeout; the target passed sequentially
+  `-count=20`, full repository passed sequentially, and repository race passed
+- S2-W22 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W22/deliverable.md`
+- S2-W22 fresh Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W22/implementation-review-2.md`
+- S2-W22 Repair 1 implementation Reviewer: `PASS`; findings: none blocking;
+  both test-proof gaps closed; product unchanged; transient concurrent Pi
+  timeout independently not reproduced and does not affect verdict
+- S2-W22 Candidate last line: `VERDICT: PASS`
+- Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

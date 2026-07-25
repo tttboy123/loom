@@ -277,8 +277,30 @@ Mandatory RED failed only on the missing frozen Runtime projection symbols.
 The minimal implementation passes focused, package, impact,
 focused-race-30, repository, repository-race, vet, format, diff, import,
 non-disclosure, and scope checks. Fresh independent implementation review
-returned `PASS` with no blocking findings. S2-W21 is accepted and ready for
-its local atomic commit.
+returned `PASS` with no blocking findings. S2-W21 is accepted and locally
+committed at `366bc48`.
+
+`S2-W22` is frozen at
+`.loom-evidence/phase1-slice2/S2-W22/contract.md` for a pure observed Runtime
+status reconciliation Candidate. It compares a bounded S2-W21-derived baseline
+with one accepted S2-W2 snapshot and emits Candidate transitions only for
+matching stable identities whose observed accepted status changed. New or
+absent IDs create no status transition because S2-W2 carries no negative probe
+coverage proof. It does not append Events, update projection, run discovery,
+infer offline status, schedule work, or activate a Runtime. Fresh independent
+contract review returned `PASS` with no blocking findings. Mandatory RED is
+failed only on the missing frozen S2-W22 symbols. The minimal pure Candidate
+passes focused, package, impact, focused-race-50, repository, repository-race,
+vet, format, diff, pure-domain import, no-write/no-probe/no-execution, and scope
+checks. Fresh independent implementation Review 1 found no product defect and
+returned `FAIL` for two test-proof gaps: baseline-set addition digest
+sensitivity and independent same-status non-status inventory changes. Repair 1
+changes tests only, preserves the product digest exactly, and passes the complete
+strict matrix after a sequential retry of one unrelated concurrent Pi adapter
+timeout. Fresh independent Repair 1 implementation review independently passed
+the complete strict matrix, confirmed both gaps closed and the product unchanged,
+and returned `PASS` with no blocking findings. S2-W22 is accepted pending its
+local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -411,11 +433,12 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W21 local atomic commit, then freeze the next smallest
-Slice 2 boundary. Runtime status reconciliation, discovery scheduling, and
-daemon entry/config remain separate WorkItems. Bridge, real Runtime Adapter
-execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
-boundaries even when research drafts propose them earlier. Push, merge,
-release, runtime activation, credential changes, and FastContext installation
-remain unauthorized. The optional local FastContext Spike remains separate and
-was not installed or activated.
+Create the accepted S2-W22 local atomic commit, then freeze the next smallest
+TECH-PLAN-aligned Slice 2 WorkItem. Status Event persistence/projection,
+discovery scheduling, and daemon entry/config remain separate WorkItems. Bridge,
+real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
+dispatch remain Slice 3 boundaries even when research drafts propose them
+earlier. Push, merge, release, runtime activation, credential changes, and
+FastContext installation remain unauthorized. The
+optional local FastContext Spike remains separate and was not installed or
+activated.
