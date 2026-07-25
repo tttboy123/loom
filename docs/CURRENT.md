@@ -253,8 +253,32 @@ fix but returned `FAIL` because direct deadline-context proof was missing.
 Test-only Repair 2 now proves `context.DeadlineExceeded`, zero Candidate, and
 zero append calls; production is unchanged and the complete strict matrix
 passes again. Fresh independent Repair 2 implementation review returned
-`PASS` with no blocking findings. S2-W20 is accepted and ready for its local
-atomic commit.
+`PASS` with no blocking findings. S2-W20 is accepted and locally committed at
+`501ac33`.
+
+`S2-W21` is frozen at
+`.loom-evidence/phase1-slice2/S2-W21/contract.md` for the Runtime discovery
+read-model projection. It extends the accepted rebuildable projection with one
+deep-copied Runtime inventory map sourced only from committed canonical
+`RuntimeInstanceDiscovered` Events. It permits valid higher-sequence
+rediscovery while preserving stable device/adapter identity. It does not infer
+status from absence, handle `RuntimeInstanceStatusChanged`, run discovery,
+write state, schedule work, or activate a Runtime. Fresh independent contract
+Review 1 returned `REPAIR` because it overconstrained caller-owned Event ID,
+idempotency key, and correlation metadata. The repaired contract limits
+projection authority to nonempty metadata plus accepted Journal/replay conflict
+rules and explicitly accepts fresh alternate nonempty values. Fresh independent
+repaired-contract review returned `PASS` with no blocking findings. Mandatory
+RED preflight then found that the illustrative contract incorrectly required a
+nonempty executable version while accepted `runtime.NewRuntimeInstance` allows
+it to be empty. Contract Amendment 1 preserves the accepted Runtime authority
+and fresh independent review returned `PASS` with no blocking findings.
+Mandatory RED failed only on the missing frozen Runtime projection symbols.
+The minimal implementation passes focused, package, impact,
+focused-race-30, repository, repository-race, vet, format, diff, import,
+non-disclosure, and scope checks. Fresh independent implementation review
+returned `PASS` with no blocking findings. S2-W21 is accepted and ready for
+its local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -387,11 +411,11 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W20 local atomic commit, then freeze the next smallest
-Slice 2 boundary. Runtime projection, absence/status reconciliation, discovery
-scheduling, and daemon entry/config remain separate WorkItems. Bridge, real
-Runtime Adapter execution, AgentGrant, claim generation, and WorkItem dispatch
-remain Slice 3 boundaries even when research drafts propose them earlier.
-Push, merge, release, runtime activation, credential changes, and FastContext
-installation remain unauthorized. The optional local FastContext Spike remains
-separate and was not installed or activated.
+Create the accepted S2-W21 local atomic commit, then freeze the next smallest
+Slice 2 boundary. Runtime status reconciliation, discovery scheduling, and
+daemon entry/config remain separate WorkItems. Bridge, real Runtime Adapter
+execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
+boundaries even when research drafts propose them earlier. Push, merge,
+release, runtime activation, credential changes, and FastContext installation
+remain unauthorized. The optional local FastContext Spike remains separate and
+was not installed or activated.

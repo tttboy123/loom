@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W20_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W21_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -723,7 +723,50 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W20/implementation-review-3.md`
 - S2-W20 Repair 2 Reviewer: `PASS`; findings: none blocking
 - S2-W20 Candidate last line: `VERDICT: PASS`
-- Next gate: S2-W20 local atomic commit
+- Accepted S2-W20 local commit: `501ac33`
+- S2-W21 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W21/contract.md`
+- S2-W21 contract SHA256:
+  `9061a1c1c40aa3be77a85933a77627af8b93a57cc75ea787996faff37a13cfbb`
+- S2-W21 boundary: rebuildable latest Runtime inventory from committed
+  `RuntimeInstanceDiscovered` Events; no absence/status inference,
+  `RuntimeInstanceStatusChanged`, discovery execution, write, scheduling, or
+  activation
+- S2-W21 Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W21/contract-review-1.md`
+- S2-W21 Contract Review 1: `REPAIR`; caller-owned Event ID, idempotency key,
+  and correlation metadata lacked an authority for arbitrary changed values
+- S2-W21 repaired metadata rule: reject emptiness and accepted replay
+  conflicts; accept fresh alternate nonempty unique caller-owned values
+- S2-W21 fresh repaired-contract review:
+  `.loom-evidence/phase1-slice2/S2-W21/contract-review-2.md`
+- S2-W21 repaired-contract Reviewer: `PASS`; findings: none blocking
+- S2-W21 Contract Amendment 1:
+  `.loom-evidence/phase1-slice2/S2-W21/contract-amendment-1.md`
+- S2-W21 Contract Amendment 1 SHA256:
+  `275ac81c5b1511f26f4a2f50c18fdf198af813753376d6fe89d7bc288936309a`
+- S2-W21 Amendment 1: executable version is projected exactly and may be empty,
+  matching accepted `runtime.NewRuntimeInstance`; no product change started
+- S2-W21 fresh Amendment 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W21/contract-review-3.md`
+- S2-W21 Amendment 1 Reviewer: `PASS`; findings: none blocking
+- S2-W21 mandatory RED: exit `1`; failed only on missing frozen
+  `RuntimeInstances`, projection-local `RuntimeInstance`, and apply behavior
+- S2-W21 product/test digests:
+  `projection.go=1c9e0bd2...02206`,
+  `projection_test.go=9e507713...a29c`,
+  `runtime_discovery.go=e74677aa...5a751`,
+  `runtime_discovery_test.go=07e35017...c8c64`
+- S2-W21 strict matrix: focused `0`; package `0`; impact `0`; focused race
+  `-count=30` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  import, non-disclosure, identity, branch/head, and scope checks `PASS`
+- S2-W21 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W21/deliverable.md`
+- S2-W21 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W21/implementation-review.md`
+- S2-W21 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W21 Candidate last line: `VERDICT: PASS`
+- Next gate: S2-W21 local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

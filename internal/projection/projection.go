@@ -61,11 +61,12 @@ func (s journalSource) Events(ctx context.Context) ([]journal.Event, error) {
 }
 
 type Snapshot struct {
-	Modes          map[string]string
-	WorkItems      map[string]WorkItem
-	Evidence       map[string]Evidence
-	Teams          map[string]TeamInstance
-	AgentInstances map[string]AgentInstance
+	Modes            map[string]string
+	WorkItems        map[string]WorkItem
+	Evidence         map[string]Evidence
+	Teams            map[string]TeamInstance
+	AgentInstances   map[string]AgentInstance
+	RuntimeInstances map[string]RuntimeInstance
 }
 
 type WorkItem struct {
@@ -351,6 +352,17 @@ func (s Snapshot) apply(event journal.Event) error {
 			return fmt.Errorf("%w: conflicting AgentInstance create", ErrInvalidProjectionEvent)
 		}
 		s.AgentInstances[agent.ID] = agent
+	case "RuntimeInstanceDiscovered":
+		instance, err := projectRuntimeDiscoveryEvent(event)
+		if err != nil {
+			return err
+		}
+		if existing, ok := s.RuntimeInstances[instance.ID]; ok &&
+			(existing.DeviceID != instance.DeviceID ||
+				existing.AdapterType != instance.AdapterType) {
+			return fmt.Errorf("%w: conflicting RuntimeInstance identity", ErrInvalidProjectionEvent)
+		}
+		s.RuntimeInstances[instance.ID] = cloneProjectedRuntimeInstance(instance)
 	default:
 		return nil
 	}
@@ -649,11 +661,12 @@ func decodeRelevantPayload(event journal.Event, target any) error {
 
 func emptySnapshot() Snapshot {
 	return Snapshot{
-		Modes:          make(map[string]string),
-		WorkItems:      make(map[string]WorkItem),
-		Evidence:       make(map[string]Evidence),
-		Teams:          make(map[string]TeamInstance),
-		AgentInstances: make(map[string]AgentInstance),
+		Modes:            make(map[string]string),
+		WorkItems:        make(map[string]WorkItem),
+		Evidence:         make(map[string]Evidence),
+		Teams:            make(map[string]TeamInstance),
+		AgentInstances:   make(map[string]AgentInstance),
+		RuntimeInstances: make(map[string]RuntimeInstance),
 	}
 }
 
@@ -673,6 +686,9 @@ func (s Snapshot) clone() Snapshot {
 	}
 	for id, agent := range s.AgentInstances {
 		out.AgentInstances[id] = agent
+	}
+	for id, instance := range s.RuntimeInstances {
+		out.RuntimeInstances[id] = cloneProjectedRuntimeInstance(instance)
 	}
 	return out
 }

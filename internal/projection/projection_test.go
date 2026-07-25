@@ -72,8 +72,9 @@ func TestRebuildFromCommittedJournalIsDeterministic(t *testing.T) {
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestA},
 		},
-		Teams:          map[string]TeamInstance{},
-		AgentInstances: map[string]AgentInstance{},
+		Teams:            map[string]TeamInstance{},
+		AgentInstances:   map[string]AgentInstance{},
+		RuntimeInstances: map[string]RuntimeInstance{},
 	}
 	if got := first.Snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("first Snapshot() = %#v, want %#v", got, want)
@@ -110,8 +111,9 @@ func TestRebuildCanonicalizesOutOfOrderAndDuplicateEvents(t *testing.T) {
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestB},
 		},
-		Teams:          map[string]TeamInstance{},
-		AgentInstances: map[string]AgentInstance{},
+		Teams:            map[string]TeamInstance{},
+		AgentInstances:   map[string]AgentInstance{},
+		RuntimeInstances: map[string]RuntimeInstance{},
 	}
 	if got := projection.Snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Snapshot() = %#v, want %#v", got, want)
