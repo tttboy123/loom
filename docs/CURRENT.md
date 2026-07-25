@@ -152,7 +152,20 @@ repository-race, vet, format, diff, and scope checks. Review 1 required a
 bounded Repair 1 for real same-ID Team shadow and complete digest-sensitivity
 evidence; that matrix also exposed and fixed exact payload-byte digest binding.
 Fresh independent Repair 1 review returned `PASS` with no blocking findings.
-S2-W15 is accepted, ready for its local atomic commit, and not activated.
+S2-W15 is accepted, locally committed at `560834a`, and not activated.
+
+`S2-W16` is frozen at
+`.loom-evidence/phase1-slice2/S2-W16/contract.md` for a rebuildable
+TeamInstance/Main AgentInstance read model over the two S2-W15 facts. It changes
+no schema, CLI, WorkItem, daemon, resource, process, or execution behavior.
+Contract Review 1 required only an ownership wording repair to explicitly reopen
+the accepted S1-W4 projection files. Fresh independent repaired-contract review
+returned `PASS` with no blocking findings. Mandatory RED failed only on missing
+frozen Snapshot fields. The implementation passes focused, package, 50-run
+focused race, repository, repository-race, vet, format, diff, and import/scope
+checks. Implementation Review 1 required a bounded payload-presence Repair 1;
+fresh independent Repair 1 review returned `PASS` with no blocking findings.
+S2-W16 is accepted, ready for its local atomic commit, and not activated.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -285,9 +298,9 @@ activated.
 
 ## Next development checkpoint
 
-Locally commit accepted S2-W15, then freeze and independently review the
-Team/Agent read-model projection for the new committed facts. WorkItem creation
-remains a later independent boundary. Concrete local probes and daemon
+Locally commit accepted S2-W16, then freeze the next bounded Slice 2 boundary.
+WorkItem creation remains a later independent boundary. Concrete local probes
+and daemon
 scheduling still require later frozen Slice 2 contracts. Bridge, real Runtime
 Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
 Slice 3 boundaries even when research drafts propose them earlier. Push, merge,

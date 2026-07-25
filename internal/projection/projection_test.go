@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -69,6 +72,8 @@ func TestRebuildFromCommittedJournalIsDeterministic(t *testing.T) {
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestA},
 		},
+		Teams:          map[string]TeamInstance{},
+		AgentInstances: map[string]AgentInstance{},
 	}
 	if got := first.Snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("first Snapshot() = %#v, want %#v", got, want)
@@ -105,6 +110,8 @@ func TestRebuildCanonicalizesOutOfOrderAndDuplicateEvents(t *testing.T) {
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestB},
 		},
+		Teams:          map[string]TeamInstance{},
+		AgentInstances: map[string]AgentInstance{},
 	}
 	if got := projection.Snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Snapshot() = %#v, want %#v", got, want)
@@ -484,6 +491,724 @@ func TestRebuildSerializesConcurrentCandidatesAndCanceledWaiterDoesNotSwap(t *te
 	}
 	if got := projection.Snapshot(); got.Modes["stream-a"] != "conversation" {
 		t.Fatalf("snapshot after canceled waiter = %#v, want holding rebuild only", got)
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsFromJournal(t *testing.T) {
+	ctx := context.Background()
+	db := openProjectionTestDB(t)
+	store := journal.NewStore(db)
+	events := savedTeamProjectionEvents(t, savedTeamProjectionOptions{
+		dormantCount: 2,
+	})
+	if got, err := store.AppendBatch(ctx, events); err != nil || len(got) != 2 {
+		t.Fatalf("AppendBatch() = (%#v,%v)", got, err)
+	}
+
+	first := New(db)
+	if err := first.Rebuild(ctx); err != nil {
+		t.Fatalf("first Rebuild() error = %v", err)
+	}
+	second := New(db)
+	if err := second.Rebuild(ctx); err != nil {
+		t.Fatalf("second Rebuild() error = %v", err)
+	}
+	if !reflect.DeepEqual(first.Snapshot(), second.Snapshot()) {
+		t.Fatalf("recreated snapshots differ: first=%#v second=%#v", first.Snapshot(), second.Snapshot())
+	}
+	assertSavedTeamProjectionSnapshot(t, first.Snapshot(), savedTeamProjectionOptions{
+		dormantCount: 2,
+	})
+}
+
+func TestRebuildSavedTeamInstanceFactsCardinalityScopeAndOrder(t *testing.T) {
+	tests := []struct {
+		name    string
+		options savedTeamProjectionOptions
+	}{
+		{name: "project main only", options: savedTeamProjectionOptions{}},
+		{name: "project one dormant", options: savedTeamProjectionOptions{dormantCount: 1}},
+		{name: "project two dormant", options: savedTeamProjectionOptions{dormantCount: 2}},
+		{name: "reusable same-ID shadow", options: savedTeamProjectionOptions{
+			dormantCount:   2,
+			teamScope:      "reusable",
+			agentScope:     "reusable",
+			teamVersion:    2,
+			agentVersion:   3,
+			teamProjectID:  "",
+			agentProjectID: "",
+		}},
+		{name: "project Team reusable Agent fallback", options: savedTeamProjectionOptions{
+			dormantCount:   2,
+			teamScope:      "project",
+			agentScope:     "reusable",
+			teamProjectID:  "project.one",
+			agentProjectID: "",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := savedTeamProjectionEvents(t, tt.options)
+			projection := newForTestSource(eventSliceSource{
+				events: []journal.Event{events[1], events[0]},
+			})
+			if err := projection.Rebuild(context.Background()); err != nil {
+				t.Fatalf("Rebuild() error = %v", err)
+			}
+			assertSavedTeamProjectionSnapshot(t, projection.Snapshot(), tt.options)
+		})
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsRejectsInvalidTeamFacts(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*journal.Event)
+	}{
+		{name: "empty event id", change: func(event *journal.Event) { event.ID = "" }},
+		{name: "empty idempotency key", change: func(event *journal.Event) { event.IdempotencyKey = "" }},
+		{name: "zero emitted at", change: func(event *journal.Event) { event.EmittedAt = time.Time{} }},
+		{name: "wrong stream", change: func(event *journal.Event) { event.StreamID = "team_instance:other" }},
+		{name: "wrong sequence", change: func(event *journal.Event) { event.Seq = 2 }},
+		{name: "empty correlation", change: func(event *journal.Event) { event.CorrelationID = "" }},
+		{name: "unexpected causation", change: func(event *journal.Event) { event.CausationID = "event.other" }},
+		{name: "malformed payload", change: func(event *journal.Event) { event.PayloadJSON = []byte(`{`) }},
+		{name: "unknown payload field", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["unknown"] = true
+		})},
+		{name: "missing dormant list", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload, "dormant_sub_agents")
+		})},
+		{name: "missing Team count", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload, "team_instance_count")
+		})},
+		{name: "missing Agent count", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload, "agent_instance_count")
+		})},
+		{name: "missing active count", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload, "active_sub_agent_count")
+		})},
+		{name: "missing WorkItem count", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload, "work_item_count")
+		})},
+		{name: "missing Team id", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["id"] = ""
+		})},
+		{name: "wrong work request", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["work_request_id"] = "request.other"
+		})},
+		{name: "invalid source kind", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["source_kind"] = "draft"
+		})},
+		{name: "invalid state", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["state"] = "running"
+		})},
+		{name: "zero version", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["team_definition_version"] = float64(0)
+		})},
+		{name: "invalid project scope", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["scope_identity"].(map[string]any)["project_id"] = ""
+		})},
+		{name: "missing Team project id", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload["team"].(map[string]any)["scope_identity"].(map[string]any), "project_id")
+		})},
+		{name: "missing Team generation id", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload["team"].(map[string]any)["scope_identity"].(map[string]any), "generation_id")
+		})},
+		{name: "invalid reusable scope", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			team := payload["team"].(map[string]any)
+			team["team_definition_scope"] = "reusable"
+		})},
+		{name: "invalid Team digest", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team"].(map[string]any)["team_definition_digest"] = "invalid"
+		})},
+		{name: "source plan mismatch", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["source_plan_digest"] = digestA
+		})},
+		{name: "invalid record digest", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["source_record_set_digest"] = "invalid"
+		})},
+		{name: "invalid Team count", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team_instance_count"] = float64(2)
+		})},
+		{name: "invalid Agent count", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["agent_instance_count"] = float64(2)
+		})},
+		{name: "active dormant Agent", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["active_sub_agent_count"] = float64(1)
+		})},
+		{name: "future WorkItem", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["work_item_count"] = float64(1)
+		})},
+		{name: "too many dormant", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			dormant := payload["dormant_sub_agents"].([]any)
+			payload["dormant_sub_agents"] = append(dormant, dormant[0])
+		})},
+		{name: "invalid dormant state", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["dormant_sub_agents"].([]any)[0].(map[string]any)["dormant"] = false
+		})},
+		{name: "duplicate dormant Agent", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			dormant := payload["dormant_sub_agents"].([]any)
+			dormant[1].(map[string]any)["agent_definition_id"] =
+				dormant[0].(map[string]any)["agent_definition_id"]
+		})},
+		{name: "unsorted dormant", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			dormant := payload["dormant_sub_agents"].([]any)
+			dormant[0], dormant[1] = dormant[1], dormant[0]
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := savedTeamProjectionEvents(t, savedTeamProjectionOptions{dormantCount: 2})
+			tt.change(&events[0])
+			assertSavedTeamProjectionRebuildError(t, events)
+		})
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsRejectsInvalidAgentFacts(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*journal.Event)
+	}{
+		{name: "empty event id", change: func(event *journal.Event) { event.ID = "" }},
+		{name: "empty idempotency key", change: func(event *journal.Event) { event.IdempotencyKey = "" }},
+		{name: "zero emitted at", change: func(event *journal.Event) { event.EmittedAt = time.Time{} }},
+		{name: "wrong stream", change: func(event *journal.Event) { event.StreamID = "agent_instance:other" }},
+		{name: "wrong sequence", change: func(event *journal.Event) { event.Seq = 2 }},
+		{name: "empty correlation", change: func(event *journal.Event) { event.CorrelationID = "" }},
+		{name: "empty causation", change: func(event *journal.Event) { event.CausationID = "" }},
+		{name: "malformed payload", change: func(event *journal.Event) { event.PayloadJSON = []byte(`{`) }},
+		{name: "unknown payload field", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["unknown"] = true
+		})},
+		{name: "missing Agent id", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["main_agent"].(map[string]any)["id"] = ""
+		})},
+		{name: "zero version", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["main_agent"].(map[string]any)["agent_definition_version"] = float64(0)
+		})},
+		{name: "not Main", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["main_agent"].(map[string]any)["is_main"] = false
+		})},
+		{name: "invalid state", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["main_agent"].(map[string]any)["state"] = "running"
+		})},
+		{name: "invalid Agent scope", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["main_agent"].(map[string]any)["agent_definition_scope"] = "transient"
+		})},
+		{name: "missing Agent project id", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload["main_agent"].(map[string]any)["scope_identity"].(map[string]any), "project_id")
+		})},
+		{name: "missing Agent generation id", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			delete(payload["main_agent"].(map[string]any)["scope_identity"].(map[string]any), "generation_id")
+		})},
+		{name: "invalid binding accepted", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["runtime_binding"].(map[string]any)["accepted"] = false
+		})},
+		{name: "binding profile mismatch", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["runtime_binding"].(map[string]any)["profile_id"] = "profile.other"
+		})},
+		{name: "binding instance mismatch", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["runtime_binding"].(map[string]any)["instance_id"] = "runtime.other"
+		})},
+		{name: "invalid plan digest", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["source_plan_digest"] = "invalid"
+		})},
+		{name: "invalid record digest", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["source_record_set_digest"] = "invalid"
+		})},
+		{name: "zero Team created at", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["team_created_at"] = float64(0)
+		})},
+		{name: "invalid binding digest", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["binding_digest"] = "invalid"
+		})},
+		{name: "invalid discovery digest", change: mutateSavedTeamProjectionPayload(t, func(payload map[string]any) {
+			payload["runtime_discovery_digest"] = "invalid"
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := savedTeamProjectionEvents(t, savedTeamProjectionOptions{dormantCount: 2})
+			tt.change(&events[1])
+			assertSavedTeamProjectionRebuildError(t, events)
+		})
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsRejectsBrokenLinks(t *testing.T) {
+	tests := []struct {
+		name   string
+		events func(*testing.T) []journal.Event
+	}{
+		{name: "missing Main", events: func(t *testing.T) []journal.Event {
+			return savedTeamProjectionEvents(t, savedTeamProjectionOptions{})[:1]
+		}},
+		{name: "orphan Main", events: func(t *testing.T) []journal.Event {
+			return savedTeamProjectionEvents(t, savedTeamProjectionOptions{})[1:]
+		}},
+		{name: "wrong Team id", events: mutateSavedTeamProjectionEvents(func(t *testing.T, events []journal.Event) {
+			mutateSavedTeamProjectionEventPayload(t, &events[1], func(payload map[string]any) {
+				payload["main_agent"].(map[string]any)["team_instance_id"] = "team-instance.other"
+			})
+		})},
+		{name: "wrong work request", events: mutateSavedTeamProjectionEvents(func(_ *testing.T, events []journal.Event) {
+			events[1].CorrelationID = "request.other"
+		})},
+		{name: "wrong causation", events: mutateSavedTeamProjectionEvents(func(_ *testing.T, events []journal.Event) {
+			events[1].CausationID = "event.team.other"
+		})},
+		{name: "wrong plan digest", events: mutateSavedTeamProjectionEvents(func(t *testing.T, events []journal.Event) {
+			mutateSavedTeamProjectionEventPayload(t, &events[1], func(payload map[string]any) {
+				payload["source_plan_digest"] = digestA
+			})
+		})},
+		{name: "wrong record digest", events: mutateSavedTeamProjectionEvents(func(t *testing.T, events []journal.Event) {
+			mutateSavedTeamProjectionEventPayload(t, &events[1], func(payload map[string]any) {
+				payload["source_record_set_digest"] = digestB
+			})
+		})},
+		{name: "wrong created at", events: mutateSavedTeamProjectionEvents(func(t *testing.T, events []journal.Event) {
+			mutateSavedTeamProjectionEventPayload(t, &events[1], func(payload map[string]any) {
+				payload["team_created_at"] = float64(1_721_865_601)
+			})
+		})},
+		{name: "duplicate Main", events: func(t *testing.T) []journal.Event {
+			events := savedTeamProjectionEvents(t, savedTeamProjectionOptions{})
+			second := cloneProjectionEvent(events[1])
+			second.ID = "event.agent.second"
+			second.StreamID = "agent_instance:agent-instance.second"
+			second.IdempotencyKey = "key.agent.second"
+			mutateSavedTeamProjectionEventPayload(t, &second, func(payload map[string]any) {
+				payload["main_agent"].(map[string]any)["id"] = "agent-instance.second"
+			})
+			return append(events, second)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertSavedTeamProjectionRebuildError(t, tt.events(t))
+		})
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsFailurePreservesSnapshot(t *testing.T) {
+	ctx := context.Background()
+	source := &mutableSource{events: savedTeamProjectionEvents(t, savedTeamProjectionOptions{
+		dormantCount: 2,
+	})}
+	projection := newForTestSource(source)
+	if err := projection.Rebuild(ctx); err != nil {
+		t.Fatalf("valid Rebuild() error = %v", err)
+	}
+	before := projection.Snapshot()
+
+	invalid := savedTeamProjectionEvents(t, savedTeamProjectionOptions{dormantCount: 2})
+	invalid[1].CausationID = "event.other"
+	source.set(invalid)
+	if err := projection.Rebuild(ctx); !errors.Is(err, ErrInvalidProjectionEvent) {
+		t.Fatalf("invalid Rebuild() error = %v", err)
+	}
+	if got := projection.Snapshot(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("snapshot after invalid links = %#v, want %#v", got, before)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	source.set(savedTeamProjectionEvents(t, savedTeamProjectionOptions{}))
+	if err := projection.Rebuild(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Rebuild() error = %v", err)
+	}
+	if got := projection.Snapshot(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("snapshot after cancellation = %#v, want %#v", got, before)
+	}
+
+	db := openProjectionTestDB(t)
+	store := journal.NewStore(db)
+	if _, err := store.AppendBatch(ctx, savedTeamProjectionEvents(t, savedTeamProjectionOptions{})); err != nil {
+		t.Fatalf("AppendBatch() error = %v", err)
+	}
+	fromDB := New(db)
+	if err := fromDB.Rebuild(ctx); err != nil {
+		t.Fatalf("database Rebuild() error = %v", err)
+	}
+	dbBefore := fromDB.Snapshot()
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := fromDB.Rebuild(ctx); err == nil {
+		t.Fatal("closed database Rebuild() error = nil")
+	}
+	if got := fromDB.Snapshot(); !reflect.DeepEqual(got, dbBefore) {
+		t.Fatalf("snapshot after closed database = %#v, want %#v", got, dbBefore)
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsSerializesConcurrentRebuilds(t *testing.T) {
+	ctx := context.Background()
+	source := newBlockingSource()
+	projection := newForTestSource(source)
+
+	slowCall := source.setNext(savedTeamProjectionEvents(t, savedTeamProjectionOptions{
+		dormantCount: 1,
+	}))
+	slowErr := make(chan error, 1)
+	go func() {
+		slowErr <- projection.Rebuild(ctx)
+	}()
+	slowCall.waitStarted(t)
+
+	fastOptions := savedTeamProjectionOptions{
+		dormantCount:   2,
+		teamScope:      "reusable",
+		agentScope:     "reusable",
+		teamProjectID:  "",
+		agentProjectID: "",
+	}
+	fastCall := source.setNext(savedTeamProjectionEvents(t, fastOptions))
+	fastErr := make(chan error, 1)
+	go func() {
+		fastErr <- projection.Rebuild(ctx)
+	}()
+
+	slowCall.release()
+	if err := <-slowErr; err != nil {
+		t.Fatalf("slow Rebuild() error = %v", err)
+	}
+	fastCall.waitStarted(t)
+	fastCall.release()
+	if err := <-fastErr; err != nil {
+		t.Fatalf("fast Rebuild() error = %v", err)
+	}
+	assertSavedTeamProjectionSnapshot(t, projection.Snapshot(), fastOptions)
+
+	holdingCall := source.setNext(savedTeamProjectionEvents(t, savedTeamProjectionOptions{}))
+	holdingErr := make(chan error, 1)
+	go func() {
+		holdingErr <- projection.Rebuild(ctx)
+	}()
+	holdingCall.waitStarted(t)
+
+	waiterCtx, cancel := context.WithCancel(ctx)
+	canceledErr := make(chan error, 1)
+	go func() {
+		canceledErr <- projection.Rebuild(waiterCtx)
+	}()
+	cancel()
+	holdingCall.release()
+	if err := <-holdingErr; err != nil {
+		t.Fatalf("holding Rebuild() error = %v", err)
+	}
+	if err := <-canceledErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter Rebuild() error = %v", err)
+	}
+	assertSavedTeamProjectionSnapshot(
+		t, projection.Snapshot(), savedTeamProjectionOptions{},
+	)
+}
+
+func TestRebuildSavedTeamInstanceFactsSnapshotMutationIsolation(t *testing.T) {
+	projection := newForTestSource(eventSliceSource{events: savedTeamProjectionEvents(
+		t, savedTeamProjectionOptions{dormantCount: 2},
+	)})
+	if err := projection.Rebuild(context.Background()); err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	mutated := projection.Snapshot()
+	team := mutated.Teams["team-instance.one"]
+	team.DormantSubAgents[0].AgentDefinitionID = "mutated"
+	mutated.Teams["team-instance.one"] = team
+	delete(mutated.Teams, "team-instance.one")
+	agent := mutated.AgentInstances["agent-instance.main"]
+	agent.RuntimeInstanceID = "mutated"
+	mutated.AgentInstances["agent-instance.main"] = agent
+	delete(mutated.AgentInstances, "agent-instance.main")
+
+	got := projection.Snapshot()
+	if got.Teams["team-instance.one"].DormantSubAgents[0].AgentDefinitionID != "agent.sub.one" {
+		t.Fatalf("Team after caller mutation = %#v", got.Teams)
+	}
+	if got.AgentInstances["agent-instance.main"].RuntimeInstanceID != "runtime.shared" {
+		t.Fatalf("Agent after caller mutation = %#v", got.AgentInstances)
+	}
+}
+
+func TestRebuildSavedTeamInstanceFactsProductionBoundary(t *testing.T) {
+	content, err := os.ReadFile("projection.go")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	file, err := parser.ParseFile(
+		token.NewFileSet(), "projection.go", content, parser.ImportsOnly,
+	)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	allowed := map[string]bool{
+		`"bytes"`:                            true,
+		`"context"`:                          true,
+		`"database/sql"`:                     true,
+		`"encoding/json"`:                    true,
+		`"errors"`:                           true,
+		`"fmt"`:                              true,
+		`"sort"`:                             true,
+		`"strings"`:                          true,
+		`"sync"`:                             true,
+		`"time"`:                             true,
+		`"loom-pi-rebuild/internal/journal"`: true,
+	}
+	for _, imported := range file.Imports {
+		if !allowed[imported.Path.Value] {
+			t.Fatalf("projection.go imports forbidden package %s", imported.Path.Value)
+		}
+	}
+}
+
+type savedTeamProjectionOptions struct {
+	dormantCount   int
+	teamScope      string
+	agentScope     string
+	teamVersion    int
+	agentVersion   int
+	teamProjectID  string
+	agentProjectID string
+}
+
+func normalizeSavedTeamProjectionOptions(
+	options savedTeamProjectionOptions,
+) savedTeamProjectionOptions {
+	if options.teamScope == "" {
+		options.teamScope = "project"
+		options.teamProjectID = "project.one"
+	}
+	if options.agentScope == "" {
+		options.agentScope = "project"
+		options.agentProjectID = "project.one"
+	}
+	if options.teamVersion == 0 {
+		options.teamVersion = 1
+	}
+	if options.agentVersion == 0 {
+		options.agentVersion = 1
+	}
+	return options
+}
+
+func savedTeamProjectionEvents(
+	t *testing.T,
+	options savedTeamProjectionOptions,
+) []journal.Event {
+	t.Helper()
+	options = normalizeSavedTeamProjectionOptions(options)
+	dormant := []any{
+		map[string]any{
+			"dormant":             true,
+			"agent_definition_id": "agent.sub.one",
+			"runtime_profile_id":  "profile.sub.one",
+			"runtime_instance_id": "runtime.shared",
+		},
+		map[string]any{
+			"dormant":             true,
+			"agent_definition_id": "agent.sub.two",
+			"runtime_profile_id":  "profile.sub.two",
+			"runtime_instance_id": "runtime.shared",
+		},
+	}[:options.dormantCount]
+	teamPayload := map[string]any{
+		"team": map[string]any{
+			"id":                      "team-instance.one",
+			"work_request_id":         "request.one",
+			"source_kind":             "saved_team",
+			"team_definition_id":      "team.delivery",
+			"team_definition_version": options.teamVersion,
+			"team_definition_scope":   options.teamScope,
+			"scope_identity": map[string]any{
+				"project_id":    options.teamProjectID,
+				"generation_id": "",
+			},
+			"team_definition_digest": digestA,
+			"source_plan_digest":     digestB,
+			"state":                  "created",
+			"created_at":             int64(1_721_865_600),
+		},
+		"dormant_sub_agents":       dormant,
+		"source_plan_digest":       digestB,
+		"source_record_set_digest": digestA,
+		"team_instance_count":      1,
+		"agent_instance_count":     1,
+		"active_sub_agent_count":   0,
+		"work_item_count":          0,
+	}
+	mainPayload := map[string]any{
+		"main_agent": map[string]any{
+			"id":                       "agent-instance.main",
+			"team_instance_id":         "team-instance.one",
+			"agent_definition_id":      "agent.main",
+			"agent_definition_version": options.agentVersion,
+			"agent_definition_scope":   options.agentScope,
+			"scope_identity": map[string]any{
+				"project_id":    options.agentProjectID,
+				"generation_id": "",
+			},
+			"runtime_profile_id":  "profile.main",
+			"runtime_instance_id": "runtime.shared",
+			"is_main":             true,
+			"state":               "created",
+		},
+		"runtime_binding": map[string]any{
+			"accepted":    true,
+			"profile_id":  "profile.main",
+			"instance_id": "runtime.shared",
+		},
+		"source_plan_digest":       digestB,
+		"source_record_set_digest": digestA,
+		"team_created_at":          int64(1_721_865_600),
+		"binding_digest":           digestB,
+		"runtime_discovery_digest": digestA,
+	}
+	return []journal.Event{
+		{
+			ID:             "event.team.created",
+			StreamID:       "team_instance:team-instance.one",
+			Seq:            1,
+			IdempotencyKey: "key.team.created",
+			Type:           "TeamInstanceCreated",
+			SchemaVersion:  1,
+			EmittedAt:      time.Date(2026, 7, 25, 2, 30, 0, 0, time.UTC),
+			CorrelationID:  "request.one",
+			PayloadJSON:    savedTeamProjectionPayload(t, teamPayload),
+		},
+		{
+			ID:             "event.agent.created",
+			StreamID:       "agent_instance:agent-instance.main",
+			Seq:            1,
+			IdempotencyKey: "key.agent.created",
+			Type:           "AgentInstanceCreated",
+			SchemaVersion:  1,
+			EmittedAt:      time.Date(2026, 7, 25, 2, 30, 0, 0, time.UTC),
+			CorrelationID:  "request.one",
+			CausationID:    "event.team.created",
+			PayloadJSON:    savedTeamProjectionPayload(t, mainPayload),
+		},
+	}
+}
+
+func assertSavedTeamProjectionSnapshot(
+	t *testing.T,
+	snapshot Snapshot,
+	options savedTeamProjectionOptions,
+) {
+	t.Helper()
+	options = normalizeSavedTeamProjectionOptions(options)
+	if len(snapshot.Teams) != 1 || len(snapshot.AgentInstances) != 1 {
+		t.Fatalf("saved-Team snapshot = %#v", snapshot)
+	}
+	team := snapshot.Teams["team-instance.one"]
+	if team.ID != "team-instance.one" ||
+		team.WorkRequestID != "request.one" ||
+		team.SourceKind != "saved_team" ||
+		team.TeamDefinitionID != "team.delivery" ||
+		team.TeamDefinitionVersion != options.teamVersion ||
+		team.TeamDefinitionScope != options.teamScope ||
+		team.ScopeIdentity.ProjectID != options.teamProjectID ||
+		team.TeamDefinitionDigest != digestA ||
+		team.SourcePlanDigest != digestB ||
+		team.SourceRecordSetDigest != digestA ||
+		team.State != "created" ||
+		team.CreatedAt != 1_721_865_600 ||
+		len(team.DormantSubAgents) != options.dormantCount ||
+		team.TeamInstanceCount != 1 ||
+		team.AgentInstanceCount != 1 ||
+		team.ActiveSubAgentCount != 0 ||
+		team.WorkItemCount != 0 ||
+		team.CreationEventID != "event.team.created" {
+		t.Fatalf("TeamInstance = %#v", team)
+	}
+	agent := snapshot.AgentInstances["agent-instance.main"]
+	if agent.ID != "agent-instance.main" ||
+		agent.TeamInstanceID != team.ID ||
+		agent.WorkRequestID != team.WorkRequestID ||
+		agent.AgentDefinitionID != "agent.main" ||
+		agent.AgentDefinitionVersion != options.agentVersion ||
+		agent.AgentDefinitionScope != options.agentScope ||
+		agent.ScopeIdentity.ProjectID != options.agentProjectID ||
+		agent.RuntimeProfileID != "profile.main" ||
+		agent.RuntimeInstanceID != "runtime.shared" ||
+		!agent.IsMain ||
+		agent.State != "created" ||
+		!agent.RuntimeBinding.Accepted ||
+		agent.RuntimeBinding.ProfileID != agent.RuntimeProfileID ||
+		agent.RuntimeBinding.InstanceID != agent.RuntimeInstanceID ||
+		agent.SourcePlanDigest != team.SourcePlanDigest ||
+		agent.SourceRecordSetDigest != team.SourceRecordSetDigest ||
+		agent.TeamCreatedAt != team.CreatedAt ||
+		agent.BindingDigest != digestB ||
+		agent.RuntimeDiscoveryDigest != digestA ||
+		agent.CreationEventID != "event.agent.created" ||
+		agent.TeamCreationEventID != team.CreationEventID {
+		t.Fatalf("AgentInstance = %#v", agent)
+	}
+}
+
+func mutateSavedTeamProjectionPayload(
+	t *testing.T,
+	change func(map[string]any),
+) func(*journal.Event) {
+	t.Helper()
+	return func(event *journal.Event) {
+		mutateSavedTeamProjectionEventPayload(t, event, change)
+	}
+}
+
+func mutateSavedTeamProjectionEventPayload(
+	t *testing.T,
+	event *journal.Event,
+	change func(map[string]any),
+) {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	change(payload)
+	event.PayloadJSON = savedTeamProjectionPayload(t, payload)
+}
+
+func mutateSavedTeamProjectionEvents(
+	change func(*testing.T, []journal.Event),
+) func(*testing.T) []journal.Event {
+	return func(t *testing.T) []journal.Event {
+		t.Helper()
+		events := savedTeamProjectionEvents(t, savedTeamProjectionOptions{})
+		change(t, events)
+		return events
+	}
+}
+
+func savedTeamProjectionPayload(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return data
+}
+
+func cloneProjectionEvent(event journal.Event) journal.Event {
+	event.PayloadJSON = append([]byte(nil), event.PayloadJSON...)
+	return event
+}
+
+func assertSavedTeamProjectionRebuildError(t *testing.T, events []journal.Event) {
+	t.Helper()
+	projection := newForTestSource(eventSliceSource{events: events})
+	if err := projection.Rebuild(context.Background()); !errors.Is(err, ErrInvalidProjectionEvent) &&
+		!errors.Is(err, ErrSequenceGap) {
+		t.Fatalf("Rebuild() error = %v, want invalid saved-Team projection", err)
+	}
+	if got := projection.Snapshot(); len(got.Teams) != 0 || len(got.AgentInstances) != 0 {
+		t.Fatalf("failed rebuild swapped saved-Team snapshot %#v", got)
 	}
 }
 

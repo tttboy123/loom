@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W15_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W16_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -526,8 +526,41 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W15/implementation-review-2.md`
 - S2-W15 Repair 1 Reviewer: `PASS`; findings: none blocking
 - S2-W15 Candidate last line: `VERDICT: PASS`
-- Next gate: local atomic S2-W15 commit, then freeze and independently review
-  Team/Agent read-model projection
+- Accepted S2-W15 local commit: `560834a`
+- S2-W16 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W16/contract.md`
+- S2-W16 boundary: rebuildable Team/Main Agent read-model projection only; no
+  schema, CLI, resource, process, WorkItem, or execution
+- S2-W16 contract SHA256:
+  `2cc5a6a6354dba52228625467f849b4c5ac5dbd58fec2c0aeedd5e4a1a559fb1`
+- S2-W16 contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W16/contract-review-1.md`
+- S2-W16 contract Review 1: `REPAIR`; bounded S1-W4 projection ownership
+  wording conflict only, with no technical contract blocker
+- S2-W16 repaired contract review:
+  `.loom-evidence/phase1-slice2/S2-W16/contract-review-2.md`
+- S2-W16 repaired contract Reviewer: `PASS`; findings: none blocking
+- S2-W16 mandatory RED: failed only on missing frozen Snapshot fields/types
+- S2-W16 product:
+  `internal/projection/projection.go`
+- S2-W16 tests:
+  `internal/projection/projection_test.go`
+- S2-W16 strict matrix: focused, package, focused-race-50, repository,
+  repository-race, vet, format, diff, and import/scope checks all `PASS`
+- S2-W16 implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W16/implementation-review-1.md`
+- S2-W16 Review 1: `REPAIR`; required zero/empty payload field presence was not
+  distinguishable from omission
+- S2-W16 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W16/repair-1-contract.md`
+- S2-W16 Repair 1: private pointer-backed fact decoding plus missing-field RED
+  matrix; public read-model shape unchanged
+- S2-W16 fresh Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W16/implementation-review-2.md`
+- S2-W16 Repair 1 Reviewer: `PASS`; findings: none blocking
+- S2-W16 Candidate last line: `VERDICT: PASS`
+- Next gate: local atomic S2-W16 commit, then freeze the next bounded Slice 2
+  boundary
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,9 +61,11 @@ func (s journalSource) Events(ctx context.Context) ([]journal.Event, error) {
 }
 
 type Snapshot struct {
-	Modes     map[string]string
-	WorkItems map[string]WorkItem
-	Evidence  map[string]Evidence
+	Modes          map[string]string
+	WorkItems      map[string]WorkItem
+	Evidence       map[string]Evidence
+	Teams          map[string]TeamInstance
+	AgentInstances map[string]AgentInstance
 }
 
 type WorkItem struct {
@@ -75,6 +78,67 @@ type Evidence struct {
 	ID         string
 	WorkItemID string
 	Digest     string
+}
+
+type ScopeIdentity struct {
+	ProjectID    string `json:"project_id"`
+	GenerationID string `json:"generation_id"`
+}
+
+type DormantSubAgent struct {
+	Dormant           bool   `json:"dormant"`
+	AgentDefinitionID string `json:"agent_definition_id"`
+	RuntimeProfileID  string `json:"runtime_profile_id"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+}
+
+type TeamInstance struct {
+	ID                    string
+	WorkRequestID         string
+	SourceKind            string
+	TeamDefinitionID      string
+	TeamDefinitionVersion int
+	TeamDefinitionScope   string
+	ScopeIdentity         ScopeIdentity
+	TeamDefinitionDigest  string
+	SourcePlanDigest      string
+	SourceRecordSetDigest string
+	State                 string
+	CreatedAt             int64
+	DormantSubAgents      []DormantSubAgent
+	TeamInstanceCount     int
+	AgentInstanceCount    int
+	ActiveSubAgentCount   int
+	WorkItemCount         int
+	CreationEventID       string
+}
+
+type RuntimeBinding struct {
+	Accepted   bool   `json:"accepted"`
+	ProfileID  string `json:"profile_id"`
+	InstanceID string `json:"instance_id"`
+}
+
+type AgentInstance struct {
+	ID                     string
+	TeamInstanceID         string
+	WorkRequestID          string
+	AgentDefinitionID      string
+	AgentDefinitionVersion int
+	AgentDefinitionScope   string
+	ScopeIdentity          ScopeIdentity
+	RuntimeProfileID       string
+	RuntimeInstanceID      string
+	IsMain                 bool
+	State                  string
+	RuntimeBinding         RuntimeBinding
+	SourcePlanDigest       string
+	SourceRecordSetDigest  string
+	TeamCreatedAt          int64
+	BindingDigest          string
+	RuntimeDiscoveryDigest string
+	CreationEventID        string
+	TeamCreationEventID    string
 }
 
 type Projection struct {
@@ -178,6 +242,9 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 	}
+	if err := candidate.validateSavedTeamLinks(); err != nil {
+		return Snapshot{}, err
+	}
 	return candidate, nil
 }
 
@@ -260,8 +327,297 @@ func (s Snapshot) apply(event journal.Event) error {
 			return fmt.Errorf("%w: conflicting evidence", ErrInvalidProjectionEvent)
 		}
 		s.Evidence[payload.EvidenceID] = evidence
+	case "TeamInstanceCreated":
+		team, err := projectSavedTeamInstance(event)
+		if err != nil {
+			return err
+		}
+		if existing, ok := s.Teams[team.ID]; ok {
+			if equalProjectedTeamInstance(existing, team) {
+				return nil
+			}
+			return fmt.Errorf("%w: conflicting TeamInstance create", ErrInvalidProjectionEvent)
+		}
+		s.Teams[team.ID] = cloneProjectedTeamInstance(team)
+	case "AgentInstanceCreated":
+		agent, err := projectSavedTeamMainAgentInstance(event)
+		if err != nil {
+			return err
+		}
+		if existing, ok := s.AgentInstances[agent.ID]; ok {
+			if existing == agent {
+				return nil
+			}
+			return fmt.Errorf("%w: conflicting AgentInstance create", ErrInvalidProjectionEvent)
+		}
+		s.AgentInstances[agent.ID] = agent
 	default:
 		return nil
+	}
+	return nil
+}
+
+type savedTeamInstanceCreatedPayload struct {
+	Team                  savedTeamInstanceFactRecord `json:"team"`
+	DormantSubAgents      *[]DormantSubAgent          `json:"dormant_sub_agents"`
+	SourcePlanDigest      string                      `json:"source_plan_digest"`
+	SourceRecordSetDigest string                      `json:"source_record_set_digest"`
+	TeamInstanceCount     *int                        `json:"team_instance_count"`
+	AgentInstanceCount    *int                        `json:"agent_instance_count"`
+	ActiveSubAgentCount   *int                        `json:"active_sub_agent_count"`
+	WorkItemCount         *int                        `json:"work_item_count"`
+}
+
+type savedTeamInstanceFactRecord struct {
+	ID                    string                     `json:"id"`
+	WorkRequestID         string                     `json:"work_request_id"`
+	SourceKind            string                     `json:"source_kind"`
+	TeamDefinitionID      string                     `json:"team_definition_id"`
+	TeamDefinitionVersion int                        `json:"team_definition_version"`
+	TeamDefinitionScope   string                     `json:"team_definition_scope"`
+	ScopeIdentity         savedTeamScopeIdentityFact `json:"scope_identity"`
+	TeamDefinitionDigest  string                     `json:"team_definition_digest"`
+	SourcePlanDigest      string                     `json:"source_plan_digest"`
+	State                 string                     `json:"state"`
+	CreatedAt             int64                      `json:"created_at"`
+}
+
+type savedTeamMainAgentCreatedPayload struct {
+	MainAgent              savedTeamMainAgentFactRecord `json:"main_agent"`
+	RuntimeBinding         RuntimeBinding               `json:"runtime_binding"`
+	SourcePlanDigest       string                       `json:"source_plan_digest"`
+	SourceRecordSetDigest  string                       `json:"source_record_set_digest"`
+	TeamCreatedAt          int64                        `json:"team_created_at"`
+	BindingDigest          string                       `json:"binding_digest"`
+	RuntimeDiscoveryDigest string                       `json:"runtime_discovery_digest"`
+}
+
+type savedTeamMainAgentFactRecord struct {
+	ID                     string                     `json:"id"`
+	TeamInstanceID         string                     `json:"team_instance_id"`
+	AgentDefinitionID      string                     `json:"agent_definition_id"`
+	AgentDefinitionVersion int                        `json:"agent_definition_version"`
+	AgentDefinitionScope   string                     `json:"agent_definition_scope"`
+	ScopeIdentity          savedTeamScopeIdentityFact `json:"scope_identity"`
+	RuntimeProfileID       string                     `json:"runtime_profile_id"`
+	RuntimeInstanceID      string                     `json:"runtime_instance_id"`
+	IsMain                 bool                       `json:"is_main"`
+	State                  string                     `json:"state"`
+}
+
+type savedTeamScopeIdentityFact struct {
+	ProjectID    *string `json:"project_id"`
+	GenerationID *string `json:"generation_id"`
+}
+
+func projectSavedTeamInstance(event journal.Event) (TeamInstance, error) {
+	var payload savedTeamInstanceCreatedPayload
+	if err := decodeExactProjectionPayload(event, &payload); err != nil {
+		return TeamInstance{}, err
+	}
+	team := payload.Team
+	scopeIdentity, scopePresent := projectedScopeIdentity(team.ScopeIdentity)
+	if !validSavedTeamProjectionEnvelope(event) ||
+		event.Seq != 1 ||
+		event.CausationID != "" ||
+		team.ID == "" ||
+		event.StreamID != "team_instance:"+team.ID ||
+		team.WorkRequestID == "" ||
+		event.CorrelationID != team.WorkRequestID ||
+		team.SourceKind != "saved_team" ||
+		team.TeamDefinitionID == "" ||
+		team.TeamDefinitionVersion <= 0 ||
+		!scopePresent ||
+		!validProjectedScope(team.TeamDefinitionScope, scopeIdentity) ||
+		!validSHA256Digest(team.TeamDefinitionDigest) ||
+		!validSHA256Digest(team.SourcePlanDigest) ||
+		!validSHA256Digest(payload.SourcePlanDigest) ||
+		team.SourcePlanDigest != payload.SourcePlanDigest ||
+		!validSHA256Digest(payload.SourceRecordSetDigest) ||
+		team.State != "created" ||
+		team.CreatedAt <= 0 ||
+		payload.DormantSubAgents == nil ||
+		payload.TeamInstanceCount == nil ||
+		payload.AgentInstanceCount == nil ||
+		payload.ActiveSubAgentCount == nil ||
+		payload.WorkItemCount == nil ||
+		*payload.TeamInstanceCount != 1 ||
+		*payload.AgentInstanceCount != 1 ||
+		*payload.ActiveSubAgentCount != 0 ||
+		*payload.WorkItemCount != 0 ||
+		!validProjectedDormantSubAgents(*payload.DormantSubAgents) {
+		return TeamInstance{}, ErrInvalidProjectionEvent
+	}
+	return TeamInstance{
+		ID:                    team.ID,
+		WorkRequestID:         team.WorkRequestID,
+		SourceKind:            team.SourceKind,
+		TeamDefinitionID:      team.TeamDefinitionID,
+		TeamDefinitionVersion: team.TeamDefinitionVersion,
+		TeamDefinitionScope:   team.TeamDefinitionScope,
+		ScopeIdentity:         scopeIdentity,
+		TeamDefinitionDigest:  team.TeamDefinitionDigest,
+		SourcePlanDigest:      team.SourcePlanDigest,
+		SourceRecordSetDigest: payload.SourceRecordSetDigest,
+		State:                 team.State,
+		CreatedAt:             team.CreatedAt,
+		DormantSubAgents:      cloneProjectedDormantSubAgents(*payload.DormantSubAgents),
+		TeamInstanceCount:     *payload.TeamInstanceCount,
+		AgentInstanceCount:    *payload.AgentInstanceCount,
+		ActiveSubAgentCount:   *payload.ActiveSubAgentCount,
+		WorkItemCount:         *payload.WorkItemCount,
+		CreationEventID:       event.ID,
+	}, nil
+}
+
+func projectSavedTeamMainAgentInstance(event journal.Event) (AgentInstance, error) {
+	var payload savedTeamMainAgentCreatedPayload
+	if err := decodeExactProjectionPayload(event, &payload); err != nil {
+		return AgentInstance{}, err
+	}
+	main := payload.MainAgent
+	scopeIdentity, scopePresent := projectedScopeIdentity(main.ScopeIdentity)
+	if !validSavedTeamProjectionEnvelope(event) ||
+		event.Seq != 1 ||
+		event.CorrelationID == "" ||
+		event.CausationID == "" ||
+		main.ID == "" ||
+		event.StreamID != "agent_instance:"+main.ID ||
+		main.TeamInstanceID == "" ||
+		main.AgentDefinitionID == "" ||
+		main.AgentDefinitionVersion <= 0 ||
+		!scopePresent ||
+		!validProjectedScope(main.AgentDefinitionScope, scopeIdentity) ||
+		main.RuntimeProfileID == "" ||
+		main.RuntimeInstanceID == "" ||
+		!main.IsMain ||
+		main.State != "created" ||
+		!payload.RuntimeBinding.Accepted ||
+		payload.RuntimeBinding.ProfileID != main.RuntimeProfileID ||
+		payload.RuntimeBinding.InstanceID != main.RuntimeInstanceID ||
+		!validSHA256Digest(payload.SourcePlanDigest) ||
+		!validSHA256Digest(payload.SourceRecordSetDigest) ||
+		payload.TeamCreatedAt <= 0 ||
+		!validSHA256Digest(payload.BindingDigest) ||
+		!validSHA256Digest(payload.RuntimeDiscoveryDigest) {
+		return AgentInstance{}, ErrInvalidProjectionEvent
+	}
+	return AgentInstance{
+		ID:                     main.ID,
+		TeamInstanceID:         main.TeamInstanceID,
+		WorkRequestID:          event.CorrelationID,
+		AgentDefinitionID:      main.AgentDefinitionID,
+		AgentDefinitionVersion: main.AgentDefinitionVersion,
+		AgentDefinitionScope:   main.AgentDefinitionScope,
+		ScopeIdentity:          scopeIdentity,
+		RuntimeProfileID:       main.RuntimeProfileID,
+		RuntimeInstanceID:      main.RuntimeInstanceID,
+		IsMain:                 main.IsMain,
+		State:                  main.State,
+		RuntimeBinding:         payload.RuntimeBinding,
+		SourcePlanDigest:       payload.SourcePlanDigest,
+		SourceRecordSetDigest:  payload.SourceRecordSetDigest,
+		TeamCreatedAt:          payload.TeamCreatedAt,
+		BindingDigest:          payload.BindingDigest,
+		RuntimeDiscoveryDigest: payload.RuntimeDiscoveryDigest,
+		CreationEventID:        event.ID,
+		TeamCreationEventID:    event.CausationID,
+	}, nil
+}
+
+func (s Snapshot) validateSavedTeamLinks() error {
+	mainByTeam := make(map[string]int, len(s.Teams))
+	for _, agent := range s.AgentInstances {
+		team, ok := s.Teams[agent.TeamInstanceID]
+		if !ok ||
+			agent.WorkRequestID != team.WorkRequestID ||
+			agent.SourcePlanDigest != team.SourcePlanDigest ||
+			agent.SourceRecordSetDigest != team.SourceRecordSetDigest ||
+			agent.TeamCreatedAt != team.CreatedAt ||
+			agent.TeamCreationEventID != team.CreationEventID {
+			return ErrInvalidProjectionEvent
+		}
+		mainByTeam[team.ID]++
+		if mainByTeam[team.ID] > 1 {
+			return ErrInvalidProjectionEvent
+		}
+	}
+	for teamID := range s.Teams {
+		if mainByTeam[teamID] != 1 {
+			return ErrInvalidProjectionEvent
+		}
+	}
+	return nil
+}
+
+func validSavedTeamProjectionEnvelope(event journal.Event) bool {
+	return event.ID != "" &&
+		event.IdempotencyKey != "" &&
+		!event.EmittedAt.IsZero()
+}
+
+func projectedScopeIdentity(
+	input savedTeamScopeIdentityFact,
+) (ScopeIdentity, bool) {
+	if input.ProjectID == nil || input.GenerationID == nil {
+		return ScopeIdentity{}, false
+	}
+	return ScopeIdentity{
+		ProjectID:    *input.ProjectID,
+		GenerationID: *input.GenerationID,
+	}, true
+}
+
+func validProjectedScope(scope string, identity ScopeIdentity) bool {
+	switch scope {
+	case "project":
+		return identity.ProjectID != "" && identity.GenerationID == ""
+	case "reusable":
+		return identity.ProjectID == "" && identity.GenerationID == ""
+	default:
+		return false
+	}
+}
+
+func validProjectedDormantSubAgents(input []DormantSubAgent) bool {
+	if len(input) > 2 {
+		return false
+	}
+	for index, current := range input {
+		if !current.Dormant ||
+			current.AgentDefinitionID == "" ||
+			current.RuntimeProfileID == "" ||
+			current.RuntimeInstanceID == "" {
+			return false
+		}
+		if index > 0 {
+			if input[index-1].AgentDefinitionID == current.AgentDefinitionID ||
+				!lessProjectedDormantSubAgent(input[index-1], current) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func lessProjectedDormantSubAgent(left, right DormantSubAgent) bool {
+	if left.AgentDefinitionID != right.AgentDefinitionID {
+		return left.AgentDefinitionID < right.AgentDefinitionID
+	}
+	if left.RuntimeProfileID != right.RuntimeProfileID {
+		return left.RuntimeProfileID < right.RuntimeProfileID
+	}
+	return left.RuntimeInstanceID < right.RuntimeInstanceID
+}
+
+func decodeExactProjectionPayload(event journal.Event, target any) error {
+	if !json.Valid(event.PayloadJSON) {
+		return fmt.Errorf("%w: malformed payload", ErrInvalidProjectionEvent)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(event.PayloadJSON)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidProjectionEvent, err)
 	}
 	return nil
 }
@@ -293,9 +649,11 @@ func decodeRelevantPayload(event journal.Event, target any) error {
 
 func emptySnapshot() Snapshot {
 	return Snapshot{
-		Modes:     make(map[string]string),
-		WorkItems: make(map[string]WorkItem),
-		Evidence:  make(map[string]Evidence),
+		Modes:          make(map[string]string),
+		WorkItems:      make(map[string]WorkItem),
+		Evidence:       make(map[string]Evidence),
+		Teams:          make(map[string]TeamInstance),
+		AgentInstances: make(map[string]AgentInstance),
 	}
 }
 
@@ -310,7 +668,54 @@ func (s Snapshot) clone() Snapshot {
 	for id, evidence := range s.Evidence {
 		out.Evidence[id] = evidence
 	}
+	for id, team := range s.Teams {
+		out.Teams[id] = cloneProjectedTeamInstance(team)
+	}
+	for id, agent := range s.AgentInstances {
+		out.AgentInstances[id] = agent
+	}
 	return out
+}
+
+func cloneProjectedTeamInstance(input TeamInstance) TeamInstance {
+	input.DormantSubAgents = cloneProjectedDormantSubAgents(input.DormantSubAgents)
+	return input
+}
+
+func cloneProjectedDormantSubAgents(input []DormantSubAgent) []DormantSubAgent {
+	if len(input) == 0 {
+		return []DormantSubAgent{}
+	}
+	return append([]DormantSubAgent(nil), input...)
+}
+
+func equalProjectedTeamInstance(left, right TeamInstance) bool {
+	if left.ID != right.ID ||
+		left.WorkRequestID != right.WorkRequestID ||
+		left.SourceKind != right.SourceKind ||
+		left.TeamDefinitionID != right.TeamDefinitionID ||
+		left.TeamDefinitionVersion != right.TeamDefinitionVersion ||
+		left.TeamDefinitionScope != right.TeamDefinitionScope ||
+		left.ScopeIdentity != right.ScopeIdentity ||
+		left.TeamDefinitionDigest != right.TeamDefinitionDigest ||
+		left.SourcePlanDigest != right.SourcePlanDigest ||
+		left.SourceRecordSetDigest != right.SourceRecordSetDigest ||
+		left.State != right.State ||
+		left.CreatedAt != right.CreatedAt ||
+		left.TeamInstanceCount != right.TeamInstanceCount ||
+		left.AgentInstanceCount != right.AgentInstanceCount ||
+		left.ActiveSubAgentCount != right.ActiveSubAgentCount ||
+		left.WorkItemCount != right.WorkItemCount ||
+		left.CreationEventID != right.CreationEventID ||
+		len(left.DormantSubAgents) != len(right.DormantSubAgents) {
+		return false
+	}
+	for index := range left.DormantSubAgents {
+		if left.DormantSubAgents[index] != right.DormantSubAgents[index] {
+			return false
+		}
+	}
+	return true
 }
 
 type streamSeq struct {
