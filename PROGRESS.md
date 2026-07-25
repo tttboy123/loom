@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W25 accepted and locally committed; latest accepted
-  commit `38d914b`
+- Slice 2: S2-W1 through S2-W26 accepted and locally committed; latest accepted
+  commit `494579d`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W26_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W27_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1017,6 +1017,34 @@ Updated: 2026-07-25
 - S2-W26 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
   strict matrix independently passed
 - S2-W26 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W26 local commit: `494579d`
+- S2-W27 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W27/contract.md`
+- S2-W27 contract SHA256:
+  `7235cb0abf89842fcd3498aebeeb494231e3b01cc02a5bb97f67de2ae9b9b764`
+- S2-W27 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W27/contract-review.md`
+- S2-W27 contract Reviewer: `PASS`; findings: none blocking
+- S2-W27 boundary: one explicit app command runs S2-W26 once, skips commit for
+  empty/all-absent, calls one injected committer for non-empty, and accepts
+  only an exact S2-W20 Candidate; no Event metadata allocation, direct
+  Journal/projection, status policy, scheduling, daemon, activation, or Slice 3
+- S2-W27 mandatory RED: exit `1`; failed only on missing frozen app symbols;
+  no syntax, existing-package, dependency, SQLite, or environment failure
+- S2-W27 product/test digests:
+  `runtime_discovery.go=be752147...ec4a`,
+  `runtime_discovery_test.go=473db85b...04d3`
+- S2-W27 strict matrix: focused `0`; app package `0`; app/runtime/
+  discoveryscan/state/journal impact `0`; focused race `-count=50` `0`;
+  repository `0`; repository race `0`; vet `0`; gofmt, diff, import, mutation,
+  non-disclosure, real SQLite exact retry, and scope checks `PASS`
+- S2-W27 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W27/deliverable.md`
+- S2-W27 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W27/implementation-review.md`
+- S2-W27 implementation Reviewer: `PASS`; findings: none; complete strict
+  matrix independently passed
+- S2-W27 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,

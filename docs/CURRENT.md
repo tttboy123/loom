@@ -380,8 +380,24 @@ Test-only Repair 1 passed fresh contract review; Repair RED proved that test was
 absent, the exact-32 success/once-per-factory proof is now added, and the full
 strict matrix passes again with product unchanged. Fresh Repair 1 implementation
 review independently passed the full matrix and returned `PASS` with no
-findings. S2-W26 is accepted pending its exact-scope local atomic commit. No scan
-is scheduled or activated, and absence does not infer Runtime status.
+findings. S2-W26 is accepted and locally committed at `494579d`. No scan is
+scheduled or activated, and absence does not infer Runtime status.
+
+`S2-W27` is frozen at
+`.loom-evidence/phase1-slice2/S2-W27/contract.md` for one explicit application
+coordination from accepted S2-W26 configured discovery to an injected accepted
+S2-W20 commit boundary. Fresh independent contract review returned `PASS`.
+Mandatory RED failed only on missing frozen app symbols. The minimal Candidate
+prevalidates the committer before observation, returns empty/all-absent scans
+without commit, commits a non-empty snapshot exactly once, and accepts only an
+exact source/count/digest-bound S2-W20 Candidate. Controller focused, package,
+impact, focused-race-50, repository, repository-race, vet, format, diff,
+import, mutation, non-disclosure, and real SQLite exact-retry checks pass. Fresh
+implementation review independently passed the complete matrix and returned
+`PASS` with no findings. S2-W27 is accepted pending its exact-scope local atomic
+commit. It allocates no Event metadata, accesses no Journal/projection directly,
+chooses no status policy, and adds no scheduling, daemon, Runtime activation, or
+Slice 3 authority.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -514,7 +530,7 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W26 exact-scope local atomic commit, then freeze the next
+Create the accepted S2-W27 exact-scope local atomic commit, then freeze the next
 smallest Phase 1 Runtime boundary. Discovery scheduling and
 daemon entry/config remain separate later WorkItems. Bridge, real Runtime
 Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
