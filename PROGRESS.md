@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W14_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W15_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -497,8 +497,37 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W14/implementation-review.md`
 - S2-W14 implementation Reviewer: `PASS`; findings: none blocking
 - S2-W14 Candidate last line: `VERDICT: PASS`
-- Next gate: local atomic S2-W14 commit, then freeze and independently review
-  the saved-Team StateWriter boundary
+- Accepted S2-W14 local commit: `f293a9f`
+- S2-W15 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W15/contract.md`
+- S2-W15 boundary: exact saved-Team Team/Main StateWriter facts only; no
+  projection, WorkItem, process, or execution
+- S2-W15 contract SHA256:
+  `01f476ffa03f392bd88bb31615005ceb547a54ced4485aa3779ee28b01a0bd74`
+- S2-W15 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W15/contract-review.md`
+- S2-W15 contract Reviewer: `PASS`; findings: none blocking
+- S2-W15 mandatory RED: failed only on missing frozen S2-W15 symbols
+- S2-W15 product:
+  `internal/state/saved_team_writer.go`
+- S2-W15 tests:
+  `internal/state/saved_team_writer_test.go`
+- S2-W15 strict matrix: focused, package, focused-race-50, repository,
+  repository-race, vet, format, diff, and import/scope checks all `PASS`
+- S2-W15 implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W15/implementation-review-1.md`
+- S2-W15 Review 1: `REPAIR`; bounded same-ID shadow and digest-sensitivity
+  evidence gaps, with no blocking production boundary finding
+- S2-W15 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W15/repair-1-contract.md`
+- S2-W15 Repair 1: real simultaneous same-ID project/reusable Team shadow,
+  full Event/source sensitivity matrix, and exact payload-byte digest binding
+- S2-W15 fresh Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W15/implementation-review-2.md`
+- S2-W15 Repair 1 Reviewer: `PASS`; findings: none blocking
+- S2-W15 Candidate last line: `VERDICT: PASS`
+- Next gate: local atomic S2-W15 commit, then freeze and independently review
+  Team/Agent read-model projection
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 

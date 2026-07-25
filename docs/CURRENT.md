@@ -137,8 +137,22 @@ with no blocking findings. Mandatory RED failed only on missing frozen S2-W14
 symbols. The minimal implementation passes focused, package, 50-run focused
 race, repository, repository-race, vet, format, diff, migration, and scope
 checks. Fresh independent implementation review returned `PASS` with no
-blocking findings. S2-W14 is accepted, ready for its local atomic commit, and
-not activated.
+blocking findings. S2-W14 is accepted, locally committed at `f293a9f`, and not
+activated.
+
+`S2-W15` is frozen at
+`.loom-evidence/phase1-slice2/S2-W15/contract.md` for the direct saved-Team
+StateWriter. It revalidates the exact S2-W13 record set and atomically appends
+only `TeamInstanceCreated` plus `AgentInstanceCreated` through S2-W14. It does
+not change projection, schema, WorkItems, Runs, grants, processes, or execution.
+Fresh independent contract review returned `PASS` with no blocking findings.
+Mandatory RED failed only on missing frozen S2-W15 symbols. The minimal
+implementation passes focused, package, 50-run focused race, repository,
+repository-race, vet, format, diff, and scope checks. Review 1 required a
+bounded Repair 1 for real same-ID Team shadow and complete digest-sensitivity
+evidence; that matrix also exposed and fixed exact payload-byte digest binding.
+Fresh independent Repair 1 review returned `PASS` with no blocking findings.
+S2-W15 is accepted, ready for its local atomic commit, and not activated.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -271,9 +285,9 @@ activated.
 
 ## Next development checkpoint
 
-Locally commit accepted S2-W14, then freeze and independently review the
-saved-Team StateWriter boundary. WorkItem creation remains later. Concrete
-local probes and daemon
+Locally commit accepted S2-W15, then freeze and independently review the
+Team/Agent read-model projection for the new committed facts. WorkItem creation
+remains a later independent boundary. Concrete local probes and daemon
 scheduling still require later frozen Slice 2 contracts. Bridge, real Runtime
 Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
 Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
