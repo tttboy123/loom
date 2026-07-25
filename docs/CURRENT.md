@@ -195,6 +195,11 @@ residual risk. Contract Repair 1 freezes `errors.Join` inspectability,
 same-group-only cleanup proof, and search-directory identity revalidation
 without overclaiming interpreter-byte binding. Fresh repaired-contract review
 returned `PASS` with no blocking findings. Mandatory RED is the current gate.
+Mandatory RED failed only on missing frozen symbols. The minimal Candidate now
+passes focused, package, focused-race-30, repository, repository-race, vet,
+format, diff, Event/payload/order, real-SQLite atomicity/conflict,
+non-disclosure, import, and scope checks. Fresh independent implementation
+review is the current gate.
 Mandatory RED failed only on missing frozen symbols and the initial focused
 Candidate became green, but the strict matrix correctly rejected concrete
 `os/exec` inside the accepted pure-domain `internal/runtime` package. Contract
@@ -227,7 +232,29 @@ implementation review returned `PASS` with no blocking findings. One Reviewer
 repository non-race run failed while run concurrently with repository-race;
 isolated rerun and two ten-run reproductions passed, so it is preserved as
 transient evidence rather than a confirmed defect. S2-W19 is accepted and
-ready for its local atomic commit.
+locally committed at `1b2c486`.
+
+`S2-W19` is locally committed at `1b2c486`. `S2-W20` is frozen at
+`.loom-evidence/phase1-slice2/S2-W20/contract.md` for the Runtime discovery
+StateWriter. It converts one non-empty accepted S2-W2 snapshot into a bounded
+atomic batch of canonical `RuntimeInstanceDiscovered` Events, requiring exact
+per-instance Event metadata coverage and exact immutable appender results. It
+does not run discovery, infer absence/offline transitions, update projection,
+schedule a daemon, or activate a Runtime. Fresh independent contract review
+returned `PASS` with no blocking findings. Mandatory RED failed only on the
+missing frozen writer/input/Candidate/error symbols. The minimal implementation
+passes the strict focused, package, focused-race-30, repository,
+repository-race, vet, format, diff, import-boundary, and scope matrix. Fresh
+independent Implementation Review 1 returned `FAIL` because same-instant
+non-UTC `EmittedAt` values passed exact appender-result comparison. Repair 1
+adds the missing RED proof and requires UTC locations on both compared Events;
+the complete strict matrix passes again. Repair Review 2 confirmed the product
+fix but returned `FAIL` because direct deadline-context proof was missing.
+Test-only Repair 2 now proves `context.DeadlineExceeded`, zero Candidate, and
+zero append calls; production is unchanged and the complete strict matrix
+passes again. Fresh independent Repair 2 implementation review returned
+`PASS` with no blocking findings. S2-W20 is accepted and ready for its local
+atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -360,12 +387,11 @@ activated.
 
 ## Next development checkpoint
 
-Create the authorized strictly scoped S2-W19 local atomic commit, then freeze
-only the next bounded Slice 2 contract. Daemon scheduling, Event persistence/
-status transitions, and projection remain separately frozen Slice 2
-boundaries. Bridge, real Runtime Adapter execution, AgentGrant, claim
-generation, and WorkItem dispatch remain Slice 3 boundaries even when research
-drafts propose them earlier. Push, merge, release, runtime activation,
-credential changes, and FastContext installation remain unauthorized. The
-optional local FastContext Spike remains separate and was not installed or
-activated.
+Create the accepted S2-W20 local atomic commit, then freeze the next smallest
+Slice 2 boundary. Runtime projection, absence/status reconciliation, discovery
+scheduling, and daemon entry/config remain separate WorkItems. Bridge, real
+Runtime Adapter execution, AgentGrant, claim generation, and WorkItem dispatch
+remain Slice 3 boundaries even when research drafts propose them earlier.
+Push, merge, release, runtime activation, credential changes, and FastContext
+installation remain unauthorized. The optional local FastContext Spike remains
+separate and was not installed or activated.

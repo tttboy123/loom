@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W19_ACCEPTED_PENDING_COMMIT`
+- Status: `S2-W20_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -669,7 +669,61 @@ Updated: 2026-07-25
   concurrently with repository-race; isolated rerun and two ten-run
   reproductions passed, so it was not confirmed as a product blocker
 - S2-W19 Candidate last line: `VERDICT: PASS`
-- Next gate: create the authorized strictly scoped S2-W19 local atomic commit
+- Accepted S2-W19 local commit: `1b2c486`
+- S2-W20 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W20/contract.md`
+- S2-W20 contract SHA256:
+  `d403da481f25754d144f3721e696d21ba67479626b2a91c1551f6f87a199e0b6`
+- S2-W20 boundary: atomic canonical `RuntimeInstanceDiscovered` Event batch
+  for one non-empty accepted S2-W2 snapshot; no discovery execution, absence/
+  status inference, projection, scheduler, daemon, or activation
+- S2-W20 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W20/contract-review.md`
+- S2-W20 contract Reviewer: `PASS`; findings: none blocking
+- S2-W20 mandatory RED: exit `1`; failed only on missing frozen writer, input,
+  Candidate, and typed-error symbols
+- S2-W20 product/test digests:
+  `runtime_discovery_writer.go=35740067...cea6c`,
+  `runtime_discovery_writer_test.go=f4358ab9...5e701`
+- S2-W20 strict matrix: focused `0`; package `0`; focused race `-count=30`
+  `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff, Event
+  payload/order, SQLite atomicity/conflict, import, branch/head, and scope
+  checks `PASS`
+- S2-W20 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W20/deliverable.md`
+- S2-W20 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W20/implementation-review-1.md`
+- S2-W20 Implementation Review 1: `FAIL`; same-instant non-UTC `EmittedAt`
+  values were not rejected as an exact appender-result mismatch
+- S2-W20 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W20/repair-1-contract.md`
+- S2-W20 Repair 1 contract SHA256:
+  `6cead182bd9c872cbedc386c3596580610a24b8b2b608d2dc9fad67dc17a596a`
+- S2-W20 Repair 1 RED: exit `1`; the previous writer returned no error for the
+  non-UTC timestamp-location mutation
+- S2-W20 Repair 1: requires UTC locations on both compared Events; no Event,
+  payload, digest, journal, source-validation, or scope semantics changed
+- S2-W20 Repair 1 strict matrix: focused `0`; package `0`; focused race
+  `-count=30` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  import, branch/head, and scope checks `PASS`
+- S2-W20 Repair Review 2:
+  `.loom-evidence/phase1-slice2/S2-W20/implementation-review-2.md`
+- S2-W20 Repair Review 2: `FAIL`; Repair 1 product gap closed, but frozen
+  deadline-context proof was missing
+- S2-W20 Repair 2 contract:
+  `.loom-evidence/phase1-slice2/S2-W20/repair-2-contract.md`
+- S2-W20 Repair 2 contract SHA256:
+  `b717d5ee61c9c012f849908f7432c8b2c75008409110de36143023ba0d9c699a`
+- S2-W20 Repair 2: test-only proof for `context.DeadlineExceeded`, zero
+  Candidate, and zero append calls; product hash unchanged
+- S2-W20 Repair 2 strict matrix: focused `0`; package `0`; focused race
+  `-count=30` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  import, branch/head, and scope checks `PASS`
+- S2-W20 Repair 2 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W20/implementation-review-3.md`
+- S2-W20 Repair 2 Reviewer: `PASS`; findings: none blocking
+- S2-W20 Candidate last line: `VERDICT: PASS`
+- Next gate: S2-W20 local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used
