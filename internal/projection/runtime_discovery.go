@@ -11,21 +11,31 @@ import (
 )
 
 type RuntimeInstance struct {
-	ID                   string
-	DeviceID             string
-	AdapterType          string
-	DisplayName          string
-	ExecutableVersion    string
-	Status               string
-	ObservedCapabilities []string
-	Capacity             int
-	ModelIDs             []string
-	DiscoveryDigest      string
-	SourceProbeID        string
-	DiscoveryID          string
-	DiscoveredAt         time.Time
-	DiscoveryEventID     string
-	DiscoverySequence    int64
+	ID                         string
+	DeviceID                   string
+	AdapterType                string
+	DisplayName                string
+	ExecutableVersion          string
+	Status                     string
+	ObservedCapabilities       []string
+	Capacity                   int
+	ModelIDs                   []string
+	DiscoveryDigest            string
+	SourceProbeID              string
+	DiscoveryID                string
+	DiscoveredAt               time.Time
+	DiscoveryEventID           string
+	DiscoverySequence          int64
+	StatusReconciliationID     string
+	StatusReconciliationDigest string
+	StatusBaselineDigest       string
+	StatusDiscoveryDigest      string
+	StatusSourceProbeID        string
+	StatusChangedAt            time.Time
+	StatusEventID              string
+	StatusSequence             int64
+	StatusPreviousEventID      string
+	StatusPreviousSequence     int64
 }
 
 type runtimeDiscoveryProjectionPayload struct {

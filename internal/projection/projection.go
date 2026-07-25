@@ -363,6 +363,16 @@ func (s Snapshot) apply(event journal.Event) error {
 			return fmt.Errorf("%w: conflicting RuntimeInstance identity", ErrInvalidProjectionEvent)
 		}
 		s.RuntimeInstances[instance.ID] = cloneProjectedRuntimeInstance(instance)
+	case "RuntimeInstanceStatusChanged":
+		existing, ok := s.RuntimeInstances[runtimeInstanceIDFromStream(event.StreamID)]
+		if !ok {
+			return fmt.Errorf("%w: status before RuntimeInstance discovery", ErrInvalidProjectionEvent)
+		}
+		instance, err := projectRuntimeStatusEvent(event, existing)
+		if err != nil {
+			return err
+		}
+		s.RuntimeInstances[instance.ID] = cloneProjectedRuntimeInstance(instance)
 	default:
 		return nil
 	}

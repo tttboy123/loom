@@ -83,13 +83,13 @@ func TestRebuildRuntimeDiscoveryFactsOrderEmptyAndUnrelated(t *testing.T) {
 
 	unrelated := projectionEvent(
 		"event.status",
-		"runtime_status:runtime.a",
+		"runtime_heartbeat:runtime.a",
 		1,
 		"key.status",
-		"RuntimeInstanceStatusChanged",
-		map[string]string{"status": "offline"},
+		"RuntimeHeartbeatObserved",
+		map[string]string{"heartbeat": "observed"},
 	)
-	unrelated.CorrelationID = "status.check"
+	unrelated.CorrelationID = "heartbeat.check"
 	unrelated.CausationID = "event.discovery"
 	ignored := newForTestSource(eventSliceSource{events: []journal.Event{unrelated}})
 	if err := ignored.Rebuild(context.Background()); err != nil {
@@ -438,7 +438,6 @@ func TestRebuildRuntimeDiscoveryFactsProductionBoundary(t *testing.T) {
 			"credential",
 			"scheduler",
 			"daemon",
-			"RuntimeInstanceStatusChanged",
 			"PRIVATE_PATH",
 			"PRIVATE_SECRET",
 		} {

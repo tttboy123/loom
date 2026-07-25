@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W23_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W24_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -859,6 +859,37 @@ Updated: 2026-07-25
 - S2-W23 implementation Reviewer: `PASS`; findings: none blocking; complete
   strict matrix independently passed; Pi cleanup transient not reproduced
 - S2-W23 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W23 local commit: `1ba3238`
+- S2-W24 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W24/contract.md`
+- S2-W24 contract SHA256:
+  `4e5e0ce7b75b432c7c8c11ba87a23d35237569ee1a11fb99504af020712c8ec7`
+- S2-W24 boundary: project canonical `RuntimeInstanceStatusChanged` facts into
+  status plus separate status provenance while preserving discovery/inventory;
+  no Event append, discovery/reconciliation, next-baseline construction,
+  scheduling, daemon, or activation
+- S2-W24 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W24/contract-review.md`
+- S2-W24 contract Reviewer: `PASS`; findings: none blocking
+- S2-W24 mandatory RED: exit `1`; failed only on the ten missing frozen status
+  read-model fields before status product/dispatch behavior existed
+- S2-W24 product/test digests:
+  `projection.go=783d258f...d2671`,
+  `runtime_discovery.go=6ec9bac4...40599`,
+  `runtime_status.go=8bf7d0f3...bb2b1`,
+  `runtime_discovery_test.go=33e5963d...a37f1`,
+  `runtime_status_test.go=ff8f08cc...7967c`
+- S2-W24 strict matrix: focused `0`; projection package `0`; impact `0`;
+  focused race `-count=30` `0`; repository `0`; repository race `0`; vet `0`;
+  gofmt, diff, import, duplicate-payload, non-disclosure, atomic-rebuild, and
+  scope checks `PASS`
+- S2-W24 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W24/deliverable.md`
+- S2-W24 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W24/implementation-review.md`
+- S2-W24 implementation Reviewer: `PASS`; findings: none blocking; complete
+  strict matrix independently passed
+- S2-W24 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,

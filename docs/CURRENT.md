@@ -320,7 +320,23 @@ focused-race-30, repository, repository-race, vet, format, diff, import,
 non-disclosure, exact-next, real-Journal conflict, and scope checks. Fresh
 independent implementation review returned `PASS` with no blocking findings
 after independently rerunning the strict matrix. S2-W23 is accepted pending its
-local atomic commit.
+local atomic commit. It is locally committed at `1ba3238`.
+
+`S2-W24` is frozen at
+`.loom-evidence/phase1-slice2/S2-W24/contract.md` for
+`RuntimeInstanceStatusChanged` read-model projection. It validates exact
+status-bearing provenance and updates only status plus separate status metadata
+while preserving discovery/inventory facts. Later accepted rediscovery clears
+status-transition metadata and remains the latest discovery fact. It does not
+append Events, run discovery/reconciliation, build the next baseline, schedule
+work, start a daemon, or activate a Runtime. Fresh independent contract review
+returned `PASS` with no blocking findings. Mandatory RED failed only on the ten
+missing frozen status read-model fields. The minimal projection passes focused,
+package, impact, focused-race-30, repository, repository-race, vet, format,
+diff, import, duplicate-payload, non-disclosure, atomic-rebuild, and scope
+checks. Fresh independent implementation review returned `PASS` with no
+blocking findings after independently rerunning the complete matrix. S2-W24 is
+accepted pending its local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -453,9 +469,9 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W23 local atomic commit, then freeze the status Event
-projection as a separate smallest WorkItem. Discovery scheduling and daemon
-entry/config remain later Slice 2 WorkItems. Bridge, real Runtime Adapter
+Create the accepted S2-W24 local atomic commit, then freeze the next smallest
+Runtime discovery orchestration boundary. Discovery scheduling and daemon
+entry/config remain separate later WorkItems. Bridge, real Runtime Adapter
 execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
 boundaries even when research drafts propose them earlier. Push, merge, release,
 runtime activation, credential changes, and FastContext installation remain
