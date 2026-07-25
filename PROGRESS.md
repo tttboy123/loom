@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W22_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W23_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -815,6 +815,50 @@ Updated: 2026-07-25
   both test-proof gaps closed; product unchanged; transient concurrent Pi
   timeout independently not reproduced and does not affect verdict
 - S2-W22 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W22 local commit: `b0cf75f`
+- S2-W23 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W23/contract.md`
+- S2-W23 contract SHA256:
+  `9c8669e9db0c42a77a67dc31f5674d0fbb1fc4ea0c6f532c18eb6d68f0963767`
+- S2-W23 boundary: one non-empty accepted S2-W22 Candidate to an exact atomic
+  batch of canonical `RuntimeInstanceStatusChanged` Events; no discovery,
+  reconciliation, absence inference, projection, scheduling, daemon, or
+  activation
+- S2-W23 Contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W23/contract-review-1.md`
+- S2-W23 Contract Review 1: `REPAIR`; sequence greater than previous could
+  append a gap that projection replay rejects and admit a repeated stale fact
+- S2-W23 Contract Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W23/contract-repair-1.md`
+- S2-W23 repaired contract SHA256:
+  `2a5cb17ad5b4a4e6353c2fffabb5107c6e8b274b34c27d64ab2bdbdd9df1613a`
+- S2-W23 Contract Repair 1 SHA256:
+  `8fe530cad6d866b3be50d8f80d2a905960aa0720552aafb174ae242ef4fda1c5`
+- S2-W23 Repair 1: require exact `PreviousSequence + 1`; lower/equal/higher
+  values fail before append; Journal proves occupied exact-next rejection
+- S2-W23 fresh repaired-contract review:
+  `.loom-evidence/phase1-slice2/S2-W23/contract-review-2.md`
+- S2-W23 repaired-contract Reviewer: `PASS`; findings: none blocking
+- S2-W23 mandatory RED: exit `1`; failed only on missing frozen writer, input,
+  commit Candidate, and sentinel symbols before the product file existed
+- S2-W23 product/test digests:
+  `runtime_status_writer.go=ed7f217f...05659`,
+  `runtime_status_writer_test.go=b29f878a...a7a4a`
+- S2-W23 strict matrix: focused `0`; state/runtime/journal/projection impact
+  `0`; focused race `-count=30` `0`; repository `0`; repository race `0`; vet
+  `0`; gofmt, diff, import, non-disclosure, exact-next, real-Journal conflict,
+  and scope checks `PASS`
+- S2-W23 transient matrix note: the first repository-race run hit only the
+  existing Pi process-group cleanup marker timing test; that focused race test
+  passed `-count=10`, repository race then passed sequentially, and no Pi file
+  changed
+- S2-W23 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W23/deliverable.md`
+- S2-W23 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W23/implementation-review.md`
+- S2-W23 implementation Reviewer: `PASS`; findings: none blocking; complete
+  strict matrix independently passed; Pi cleanup transient not reproduced
+- S2-W23 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,

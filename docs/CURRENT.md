@@ -300,6 +300,26 @@ strict matrix after a sequential retry of one unrelated concurrent Pi adapter
 timeout. Fresh independent Repair 1 implementation review independently passed
 the complete strict matrix, confirmed both gaps closed and the product unchanged,
 and returned `PASS` with no blocking findings. S2-W22 is accepted pending its
+local atomic commit. It is locally committed at `b0cf75f`.
+
+`S2-W23` is frozen at
+`.loom-evidence/phase1-slice2/S2-W23/contract.md` for the Runtime status
+StateWriter. It revalidates one non-empty accepted S2-W22 Candidate, requires an
+exact caller-metadata bijection, emits canonical
+`RuntimeInstanceStatusChanged` Events, and accepts only one exact atomic
+appender result. It does not run discovery/reconciliation, infer status from
+absence, update projection, schedule work, start a daemon, or activate a
+Runtime. Fresh independent Contract Review 1 returned `REPAIR`: allowing any
+sequence greater than the previous discovery sequence could append a gap that
+accepted projection replay cannot rebuild and could admit a repeated stale
+status fact. Contract Repair 1 now requires the exact next sequence and adds an
+occupied-next-sequence Journal proof. Fresh independent repaired-contract
+review returned `PASS` with no blocking findings. Mandatory RED failed only on
+the missing frozen S2-W23 symbols. The minimal writer passes focused, impact,
+focused-race-30, repository, repository-race, vet, format, diff, import,
+non-disclosure, exact-next, real-Journal conflict, and scope checks. Fresh
+independent implementation review returned `PASS` with no blocking findings
+after independently rerunning the strict matrix. S2-W23 is accepted pending its
 local atomic commit.
 
 `S2-W5` is frozen at
@@ -433,12 +453,12 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W22 local atomic commit, then freeze the next smallest
-TECH-PLAN-aligned Slice 2 WorkItem. Status Event persistence/projection,
-discovery scheduling, and daemon entry/config remain separate WorkItems. Bridge,
-real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
-dispatch remain Slice 3 boundaries even when research drafts propose them
-earlier. Push, merge, release, runtime activation, credential changes, and
-FastContext installation remain unauthorized. The
+Create the accepted S2-W23 local atomic commit, then freeze the status Event
+projection as a separate smallest WorkItem. Discovery scheduling and daemon
+entry/config remain later Slice 2 WorkItems. Bridge, real Runtime Adapter
+execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
+boundaries even when research drafts propose them earlier. Push, merge, release,
+runtime activation, credential changes, and FastContext installation remain
+unauthorized. The
 optional local FastContext Spike remains separate and was not installed or
 activated.
