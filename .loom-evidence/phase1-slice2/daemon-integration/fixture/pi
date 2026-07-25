@@ -1,0 +1,25 @@
+#!/bin/sh
+
+mode_file="${0%/*}/mode"
+mode=""
+IFS= read -r mode < "$mode_file" || exit 8
+
+if [ "$mode" = "fail" ]; then
+  exit 9
+fi
+
+if [ "$1" = "--version" ]; then
+  if [ "$mode" = "inventory" ]; then
+    printf '2.0.0\n'
+  else
+    printf '1.0.0\n'
+  fi
+  exit 0
+fi
+
+printf 'provider model context max-out thinking images\n'
+if [ "$mode" = "inventory" ]; then
+  printf 'provider model-b 200K 32K no no\n'
+else
+  printf 'provider model-a 200K 32K no no\n'
+fi

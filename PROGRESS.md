@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W37 accepted and locally committed; latest accepted
-  commit `9175f94`
+- Slice 2: S2-W1 through S2-W38 accepted and locally committed; latest accepted
+  commit `39a9e0a`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W38_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-EXIT-1_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1581,7 +1581,46 @@ Updated: 2026-07-25
   and post-success projection refresh; post-commit refresh errors retain exact
   successful outputs plus error; no loop/time/scheduler/config/daemon/retry/
   activation or direct lower-layer authority
-- Next gate: exact staged-scope audit and one local atomic commit
+- S2-W38 local atomic commit: `39a9e0a`; post-commit focused and repository
+  checks: `PASS`; nothing activated
+- Slice 2 Exit Contract:
+  `.loom-evidence/phase1-slice2/EXIT-CONTRACT.md`;
+  SHA256 `c7639aef...ac7614`; fresh Contract Reviewer: `PASS`
+- Exit Contract policy: no thin W39/W40; only the merged
+  `S2-EXIT-1 Local Runtime Observation Daemon Integration` may close the
+  remaining Slice 2 lifecycle boundary
+- S2-EXIT-1 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-EXIT-1/contract.md`;
+  SHA256 `e50fa0a...d4710d0`; fresh Contract Reviewer: `PASS`
+- S2-EXIT-1 mandatory RED: failed only on missing frozen daemon/command symbols
+- S2-EXIT-1 Candidate: explicit configuration, private SQLite state and
+  sibling process lock, real clock and metadata identities, serial
+  projection-synchronized recurrence, foreground `loomd`, bounded/cancelable
+  lifecycle, close/restart/recovery, and safe deterministic result output
+- S2-EXIT-1 Implementation Review 1: `FAIL` only for incomplete direct
+  metadata-failure/zero-append and complete configuration-rejection proof; no
+  product/security/Slice 3 defect
+- S2-EXIT-1 Repair 1 contract and fresh Contract Review: `PASS`; same lineage,
+  no new WorkItem, one behavior-preserving unexported sequence helper
+  extraction plus bounded tests/evidence
+- S2-EXIT-1 Repair 1 mandatory RED: failed only on seven exact missing markers
+- S2-EXIT-1 Repair 1 direct GREEN: duplicate/invalid identity, non-UTC time,
+  exact identity-source cancellation, and sequence overflow proven; real
+  SQLite remains `events=0` for pre-append failures
+- S2-EXIT-1 complete config GREEN: parent/state/isolation/Runtime-directory/
+  interval/timeout/max-cycle/typed-nil identity matrix rejects with unchanged
+  state and no lock side effect
+- S2-EXIT-1 complete matrix: focused, impact, command, focused-race-30,
+  command-race-10, repository, repository-race, vet, format, and diff `PASS`
+- S2-EXIT-1 controlled live proof:
+  `.loom-evidence/phase1-slice2/daemon-integration/live-canary.md` and
+  `S2-EXIT-1/repair-1-green.md`; compiled foreground lifecycle, restart,
+  recovery, real timer/cancel, permissions, residue, and no-orphan checks
+  `PASS`; ambient user Pi readiness is not claimed
+- S2-EXIT-1 fresh Repair 1 Implementation Reviewer: `PASS`; findings: none
+- S2-EXIT-1 Candidate last line: `VERDICT: PASS`
+- Next gate: fresh pre-commit matrix, exact staged-scope audit, one authorized
+  local atomic commit, then fresh whole-Slice Reviewer
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

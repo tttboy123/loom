@@ -700,7 +700,8 @@ strict matrix passes again and product remains byte-for-byte unchanged. Fresh
 Repair 1 Implementation Review 2 returned `PASS` with no findings after
 independently rerunning the complete strict matrix and product lock. S2-W38 is
 accepted and its fresh pre-commit strict matrix/product lock passes. It is
-pending only exact staged-scope audit and one local atomic commit.
+locally committed at `39a9e0a`; post-commit focused and repository checks pass.
+Nothing is activated.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -833,11 +834,43 @@ activated.
 
 ## Next development checkpoint
 
-Run the fresh S2-W38 pre-commit matrix and exact staged-scope audit, then create
-its one authorized local atomic commit.
-Scheduling and daemon entry/config remain separate later WorkItems. Bridge,
-real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
-dispatch remain Slice 3 boundaries even when research drafts propose them
-earlier. Push, merge, release, runtime activation, credential changes, and
-FastContext installation remain unauthorized. The optional local FastContext
-Spike remains separate and was not installed or activated.
+The reviewed Slice 2 Exit Contract is frozen at
+`.loom-evidence/phase1-slice2/EXIT-CONTRACT.md` with SHA-256
+`c7639aef...ac7614`. Fresh independent Contract Review 1 returned `PASS` with
+no blocking findings. The contract classifies accepted S2-W1 through S2-W38 by
+`DONE`, `PARTIAL`, and `MISSING` and permits only one additional Slice 2
+product WorkItem:
+`Local Runtime Observation Daemon Integration`. That merged boundary must
+close concrete clock/trigger, validated configuration, daemon lifecycle,
+serialized projection-aware recurrence, cancel/restart/recovery, the
+non-activation proof, and a controlled foreground live canary. It must not be
+split into thin scheduler, constructor, entry, or forwarding WorkItems.
+
+After that one Candidate passes its complete matrix and implementation review,
+run a fresh whole-Slice Reviewer. Slice 2 may exit only on `PASS`; otherwise
+stop at `HUMAN_REQUIRED` rather than adding another thin WorkItem. Bridge, real
+Runtime Adapter execution, AgentGrant, claim generation, and WorkItem dispatch
+remain Slice 3 boundaries. Resident service activation, push, merge, release,
+credential changes, and FastContext installation remain unauthorized.
+
+The sole merged `S2-EXIT-1` contract is frozen at
+`.loom-evidence/phase1-slice2/S2-EXIT-1/contract.md`; fresh independent
+Contract Review 1 returned `PASS`. Mandatory RED failed only on the frozen
+missing daemon/entry symbols. The Candidate now integrates explicit
+configuration, private SQLite state and process lock, production clock and
+Event metadata, serial S2-W38 recurrence, cancellation/restart/recovery, and a
+real foreground `loomd`. Focused, impact, 30-run focused race, repository,
+repository-race, vet, format, and diff checks pass. The controlled live canary
+also passes discovery, no-write restart, rediscovery, failure recovery, signal
+cancellation, permission, residue, and no-orphan checks. Implementation Review
+1 found no product, security, or Slice 3 leakage defect but returned `FAIL`
+because direct metadata-failure/zero-append proof and the complete
+configuration rejection matrix were missing. Repair 1 remains in the same
+lineage; its bounded contract and fresh Contract Review passed, mandatory RED
+was captured, and the repaired Candidate now passes the direct proof, complete
+matrix, focused race, full repository/race, vet, format, diff, and compiled
+canary checks. Fresh independent Repair 1 Implementation Review returned
+`PASS` with no findings. S2-EXIT-1 is accepted pending its fresh pre-commit
+matrix, exact staged-scope audit, and one authorized local atomic commit.
+Slice 2 remains open until a fresh whole-Slice Reviewer returns `PASS` against
+the Exit Contract after that commit.
