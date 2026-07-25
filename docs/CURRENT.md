@@ -413,9 +413,37 @@ adapter zero value could panic. Repair 1 passed contract review; its RED
 reproduced the panic, the minimal binding revalidation is GREEN, and the full
 matrix passes on fresh rerun. Fresh Repair 1 implementation review independently
 passed the complete matrix and returned `PASS` with no findings. S2-W28 is
-accepted pending its exact-scope local atomic commit. It allocates no Event
-metadata and adds no concrete Journal/projection/status/scheduler/daemon/
-activation/Slice 3 authority.
+accepted and locally committed at `9296832`. It allocates no Event metadata and
+adds no concrete Journal/projection/status/scheduler/daemon/activation/Slice 3
+authority.
+
+`S2-W29` is frozen at
+`.loom-evidence/phase1-slice2/S2-W29/contract.md` for one explicit application
+coordination from an accepted S2-W25 Runtime status baseline and S2-W2 discovery
+snapshot through accepted S2-W22 reconciliation to an injected accepted S2-W23
+commit boundary. A valid zero-transition reconciliation skips commit. It does
+not run discovery, build the projection baseline, prepare Event metadata, read
+Journal/projection state, schedule a scan, start a daemon, or activate a
+Runtime. Fresh independent contract review returned `PASS` with no findings.
+Mandatory RED failed only on missing frozen symbols. The minimal Candidate
+passes focused, package, impact, focused-race-50, repository, repository-race,
+vet, format, diff, import, mutation, non-disclosure, and real temporary SQLite
+exact-retry checks. Implementation Review 1 returned `FAIL`: the no-change path
+skipped the post-reconciliation context gate, later result facts lacked isolated
+proof, and the static AST proof was a no-op. Repair 1 is frozen to close exactly
+those three gaps without changing the public API or authority boundary. Fresh
+Repair 1 Contract Review 1 returned `FAIL` because the proposed result
+interface would require a forbidden Journal import. Amendment 1 replaces only
+that mechanism with a private primitive fact record populated from the concrete
+S2-W23 Candidate, preserving the import and authority boundary. Fresh Amendment
+1 review returned `PASS` with no findings. Mandatory Repair RED reproduced the
+delayed no-change cancellation as an incorrect success and then failed on the
+missing primitive fact validator. The minimal repair is GREEN: the context gate
+now precedes the no-change return, all seven concrete result facts have isolated
+single-field proof, and real AST/source boundary assertions replace the no-op.
+The complete strict matrix passes again. Fresh Repair 1 implementation review
+independently returned `PASS` with no findings. S2-W29 is accepted pending its
+exact-scope local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -548,7 +576,7 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W28 exact-scope local atomic commit, then freeze the next
+Create the accepted S2-W29 exact-scope local atomic commit, then freeze the next
 smallest Phase 1 Runtime boundary. Discovery scheduling and daemon entry/config
 remain separate later WorkItems. Bridge, real Runtime Adapter execution,
 AgentGrant, claim generation, and WorkItem dispatch remain Slice 3 boundaries

@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W27 accepted and locally committed; latest accepted
-  commit `7ec635b`
+- Slice 2: S2-W1 through S2-W28 accepted and locally committed; latest accepted
+  commit `9296832`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W28_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W29_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1083,6 +1083,58 @@ Updated: 2026-07-25
 - S2-W28 Repair 1 implementation Reviewer: `PASS`; findings: none; zero-value
   panic closure and complete strict matrix independently verified
 - S2-W28 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W28 local commit: `9296832`
+- S2-W29 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W29/contract.md`
+- S2-W29 contract SHA256:
+  `9a56217e50d0e1a93e37b33bd043c1dbd8c6fa11b762b66000264c71fab97dbe`
+- S2-W29 boundary: one-shot coordination of accepted S2-W22 reconciliation
+  with an injected accepted S2-W23 committer; zero-transition no-commit,
+  no discovery execution, metadata allocation, projection/Journal access,
+  scheduling, daemon, Runtime activation, or Slice 3
+- S2-W29 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W29/contract-review.md`
+- S2-W29 contract Reviewer: `PASS`; findings: none
+- S2-W29 mandatory RED: exit `1`; failed only on missing frozen symbols
+- S2-W29 product/test digests:
+  `runtime_status.go=127ccf36...6e11`,
+  `runtime_status_test.go=9742ee41...533c`
+- S2-W29 strict matrix: focused `0`; app package `0`; app/runtime/state/
+  projection/journal impact `0`; focused race `-count=50` `0`; repository `0`;
+  repository race `0`; vet `0`; gofmt, diff, import, mutation, real SQLite exact
+  append/retry, non-disclosure, and scope checks `PASS`
+- S2-W29 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W29/deliverable.md`
+- S2-W29 Implementation Review 1: `FAIL`; zero-transition path skipped the
+  post-reconciliation context gate, result mismatch tests did not isolate later
+  checks, and the static AST assertion was a no-op
+- S2-W29 Repair 1 contract: move the context gate before no-change return,
+  validate a private public-accessor result interface with isolated one-field
+  mutations, and replace the no-op static check with real AST/source assertions
+- S2-W29 Repair 1 Contract Review 1: `FAIL`; the proposed interface's
+  `Events() []journal.Event` method would require a forbidden product Journal
+  import
+- S2-W29 Repair 1 Amendment 1: replace the interface with a primitive private
+  fact record populated from the concrete S2-W23 Candidate; isolate all seven
+  checks without changing imports or public API
+- S2-W29 Repair 1 Amendment 1 Reviewer: `PASS`; findings: none
+- S2-W29 Repair RED 1: delayed no-change cancellation reproduced incorrect
+  nil-error success
+- S2-W29 Repair RED 2: failed on missing primitive result facts and validator
+- S2-W29 repaired product/test digests:
+  `runtime_status.go=23caf1af...6e92c`,
+  `runtime_status_test.go=fd51e606...c93c1`
+- S2-W29 Repair 1: context gate now precedes no-change return; concrete S2-W23
+  accessors reduce to isolated primitive facts; seven single-field mutations
+  and real AST/source negative assertions are GREEN
+- S2-W29 repaired strict matrix: focused `0`; app package `0`; app/runtime/
+  state/projection/journal impact `0`; focused race `-count=50` `0`;
+  repository `0`; repository race `0`; vet `0`; gofmt/diff `PASS`
+- S2-W29 Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W29/implementation-review-2.md`
+- S2-W29 Repair 1 implementation Reviewer: `PASS`; findings: none; all three
+  Review 1 gaps and the complete strict matrix independently verified
+- S2-W29 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
