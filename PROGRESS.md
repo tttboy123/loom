@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W33 accepted and locally committed; latest accepted
-  commit `affd2a6`
+- Slice 2: S2-W1 through S2-W34 accepted and locally committed; latest accepted
+  commit `a6eb816`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W34_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W35_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1339,6 +1339,45 @@ Updated: 2026-07-25
   plus caller-supplied projection to S2-W33 once; no S2-W27 unconditional
   commit, projection query/rebuild, metadata, retry, scheduler, daemon/config,
   activation, or Slice 3 authority
+- Accepted S2-W34 local commit: `a6eb816`
+- S2-W35 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W35/contract.md`
+- S2-W35 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W35/contract-review.md`
+- S2-W35 contract Reviewer: `PASS`; findings: none
+- S2-W35 mandatory RED: failed only on missing frozen coordinator/error symbols
+- S2-W35 Candidate product/test SHA256:
+  `runtime_observation_projected.go=08409802...fe04`,
+  `runtime_observation_projected_test.go=7ec0bfd0...7b1`
+- S2-W35 Controller strict matrix: focused, app, impact, focused-race-50,
+  repository, repository-race, vet, format, diff, projected SQLite
+  discovery-priority/status-only idempotency, mutation, and static boundary all
+  `PASS`
+- S2-W35 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W35/deliverable.md`
+- S2-W35 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W35/implementation-review-1.md`
+- S2-W35 Review 1: `FAIL`; SQLite exact-Events test-proof gap; no product defect
+- S2-W35 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W35/implementation-repair-1-contract.md`
+- S2-W35 Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W35/implementation-repair-1-contract-review.md`
+- S2-W35 Repair 1 contract Reviewer: `PASS`; findings: none
+- S2-W35 Repair 1 scope: test-only Event types/sequences, exact retry, and final
+  rebuilt projection facts; product SHA frozen unchanged
+- S2-W35 Repair 1 mandatory RED: failed only on the three missing canonical
+  coverage markers
+- S2-W35 Repair 1: exact persisted Event types/sequences, exact retry Candidate
+  identity, and final rebuilt Runtime facts are now directly asserted; complete
+  strict matrix `PASS`; product SHA unchanged
+- S2-W35 fresh Implementation Review 2:
+  `.loom-evidence/phase1-slice2/S2-W35/implementation-review-2.md`
+- S2-W35 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix independently passed
+- S2-W35 Candidate last line: `VERDICT: PASS`
+- S2-W35 boundary: read accepted projection Snapshot once, delegate exact
+  copied baseline to S2-W34 once; no rebuild, direct Journal/SQLite, metadata,
+  retry, scheduler, daemon/config, activation, or Slice 3 authority
 - Next gate: fresh pre-commit matrix, exact staged-scope audit, local atomic
   commit
 - Verification used deterministic temporary fixtures only; installed Pi, user

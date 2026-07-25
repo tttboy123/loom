@@ -555,7 +555,29 @@ complete strict matrix passes again, and product remains byte-for-byte
 unchanged. Fresh Repair 1 implementation review returned `PASS` with no
 findings after
 independently rerunning the complete strict matrix. S2-W34 is accepted pending
-its one scoped local atomic commit.
+its one scoped local atomic commit. It is locally committed at `a6eb816`, and
+nothing is activated.
+
+`S2-W35` is frozen at
+`.loom-evidence/phase1-slice2/S2-W35/contract.md` for one caller-triggered
+projected configured Runtime observation cycle. It reads one accepted copied
+Snapshot from a bound `*projection.Projection`, then delegates exactly once to
+S2-W34. It does not rebuild projection, access Journal/SQLite directly,
+prepare metadata, retry, schedule, load config, start a daemon, or activate a
+Runtime. Fresh contract review returned `PASS` with no findings. Mandatory RED
+failed only on the missing frozen symbols. The minimal Candidate passes the
+complete strict matrix, including real projected mixed-discovery then
+status-only SQLite idempotency. Implementation Review 1 returned `FAIL` on one
+test-proof gap and found no
+product defect: the SQLite chain did not directly assert Event types/sequences
+or final rebuilt Runtime facts. Repair 1 is frozen as test-only; fresh
+repair-contract review returned `PASS` with no findings. Mandatory Repair RED
+failed only on the three missing coverage markers. The test-only repair now
+proves exact persisted Event types/sequences, exact retry Candidate identity,
+and final rebuilt Runtime facts. Product remains byte-for-byte unchanged and
+the complete strict matrix passes again. Fresh Repair 1 implementation review
+returned `PASS` with no findings after independently rerunning the complete
+strict matrix. S2-W35 is accepted pending its one scoped local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -688,7 +710,7 @@ activated.
 
 ## Next development checkpoint
 
-Create the S2-W34 local atomic commit only after a fresh pre-commit matrix and
+Create the S2-W35 local atomic commit only after a fresh pre-commit matrix and
 exact staged-scope audit.
 Scheduling and daemon entry/config remain separate later WorkItems. Bridge,
 real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
