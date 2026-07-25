@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W35 accepted and locally committed; latest accepted
-  commit `c8ecc2a`
+- Slice 2: S2-W1 through S2-W36 accepted and locally committed; latest accepted
+  commit `38891c3`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W36_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W37_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1455,8 +1455,46 @@ Updated: 2026-07-25
   projection/committers; each explicit RunOnce delegates exactly once to
   S2-W35; no direct lower-layer composition, retry, scheduler, daemon/config,
   activation, or Slice 3 authority
-- Next gate: fresh pre-commit matrix, exact staged-scope audit, local atomic
-  commit
+- Accepted S2-W36 local commit: `38891c3`
+- S2-W37 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W37/contract.md`
+- S2-W37 contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W37/contract-review-1.md`
+- S2-W37 contract Review 1: `FAIL`; typed-nil validation/import whitelist
+  ambiguity; no implementation began
+- S2-W37 Amendment 1:
+  `.loom-evidence/phase1-slice2/S2-W37/contract-amendment-1.md`
+- S2-W37 Amendment 1: require accepted same-package
+  `nilAppInterface(trigger)`; no new import/API/authority
+- S2-W37 fresh Amendment Review 2:
+  `.loom-evidence/phase1-slice2/S2-W37/contract-review-2.md`
+- S2-W37 Amendment Reviewer: `PASS`; findings: none
+- S2-W37 mandatory RED: focused compile failed only on missing frozen trigger
+  interface, error, and function symbols
+- S2-W37 product/test SHA256:
+  `runtime_observation_trigger.go=47baf06b...1be6`,
+  `runtime_observation_trigger_test.go=a1389a84...91e8`
+- S2-W37 Controller strict matrix: focused/app/impact/focused-race-50/
+  repository/repository-race/vet/format/diff all `PASS`
+- S2-W37 direct proof: nil and typed-nil inputs, pre/post-trigger context,
+  trigger error/cancellation, complete downstream error matrix, exact
+  selected/opposite call counts, five-zero failures, and no retry/fallback
+- S2-W37 real SQLite proof: two triggered discovery calls plus two triggered
+  status calls yield exact discovery/discovery/status Events at sequences
+  1/2/3 and final changed-display/online projection facts
+- S2-W37 boundary: await one injected trigger then invoke accepted S2-W36 once;
+  no time/timer/ticker/channel/signal/loop/goroutine/config/daemon/activation or
+  direct lower-layer authority
+- S2-W37 Candidate evidence:
+  `.loom-evidence/phase1-slice2/S2-W37/deliverable.md`
+- S2-W37 fresh Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W37/implementation-review-1.md`
+- S2-W37 implementation Reviewer: `PASS`; findings: none; complete strict
+  matrix independently passed
+- S2-W37 Candidate last line: `VERDICT: PASS`
+- S2-W37 fresh pre-commit matrix: focused/app/impact/focused-race-50/
+  repository/repository-race/vet/format/diff all `PASS`
+- Next gate: exact staged-scope audit and one local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

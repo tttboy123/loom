@@ -616,7 +616,30 @@ five zero outputs, and exact factory/discovery/status call tuple `1/0/0`. The
 complete strict matrix passes again, product remains byte-for-byte unchanged,
 and fresh Repair 2 implementation review returned `PASS` with no findings
 after independently rerunning the complete strict matrix. S2-W36 is accepted
-pending its one scoped local atomic commit.
+pending its one scoped local atomic commit. It is locally committed at
+`38891c3`, and nothing is activated.
+
+`S2-W37` is frozen at
+`.loom-evidence/phase1-slice2/S2-W37/contract.md` for one injected
+trigger→prepared-observer coordination. It awaits one trigger and calls S2-W36
+once, without importing time or adding a timer, ticker, loop, goroutine,
+configuration, daemon lifecycle, retry, projection rebuild, or Runtime
+activation. Fresh contract Review 1 returned `FAIL` because typed-nil trigger
+validation appeared incompatible with the new-file import whitelist. No
+implementation began. Amendment 1 explicitly requires the already accepted
+same-package `nilAppInterface` helper and no new import or authority; fresh
+amendment review returned `PASS` with no findings. Mandatory RED failed only
+on the missing frozen trigger interface, error, and function symbols. The
+minimal Candidate awaits the injected trigger exactly once, then delegates
+exactly once to S2-W36; every trigger, context, or downstream error returns
+five zero outputs without fallback or retry. The complete strict Controller
+matrix passes, including the direct downstream error surface, exact call
+counts, static no-scheduling proof, and a real SQLite
+discovery/discovery/status chain with exact Event sequences and final rebuilt
+Runtime facts. Fresh independent Implementation Review 1 returned `PASS` with no findings
+after independently rerunning the complete strict matrix. S2-W37 is accepted
+and its fresh pre-commit strict matrix passes. It is pending only its exact
+staged-scope audit and one scoped local atomic commit; nothing is activated.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -749,8 +772,8 @@ activated.
 
 ## Next development checkpoint
 
-Create the S2-W36 local atomic commit only after a fresh pre-commit matrix and
-exact staged-scope audit.
+Run the fresh S2-W37 pre-commit matrix and exact staged-scope audit, then
+create its one authorized local atomic commit.
 Scheduling and daemon entry/config remain separate later WorkItems. Bridge,
 real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
 dispatch remain Slice 3 boundaries even when research drafts propose them
