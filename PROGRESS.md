@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W34 accepted and locally committed; latest accepted
-  commit `a6eb816`
+- Slice 2: S2-W1 through S2-W35 accepted and locally committed; latest accepted
+  commit `c8ecc2a`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W35_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W36_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1378,6 +1378,83 @@ Updated: 2026-07-25
 - S2-W35 boundary: read accepted projection Snapshot once, delegate exact
   copied baseline to S2-W34 once; no rebuild, direct Journal/SQLite, metadata,
   retry, scheduler, daemon/config, activation, or Slice 3 authority
+- Accepted S2-W35 local commit: `c8ecc2a`
+- S2-W36 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W36/contract.md`
+- S2-W36 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W36/contract-review.md`
+- S2-W36 contract Reviewer: `PASS`; findings: none
+- S2-W36 mandatory RED: focused compile failed only on missing frozen
+  observer/constructor/error symbols
+- S2-W36 Candidate product/test SHA256:
+  `runtime_observer.go=a9421c3b...9213`,
+  `runtime_observer_test.go=5c645321...515c`
+- S2-W36 Controller strict matrix: focused, app, impact, focused-race-50,
+  repository, repository-race, vet, format, diff, prepared SQLite
+  discovery-priority/status-only exact Events, explicit retry idempotency,
+  final projection, mutation, and static boundary all `PASS`
+- S2-W36 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W36/deliverable.md`
+- S2-W36 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-review-1.md`
+- S2-W36 Review 1: `FAIL`; direct context/downstream error-matrix test-proof
+  gap; no product defect
+- S2-W36 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-repair-1-contract.md`
+- S2-W36 Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-repair-1-contract-review.md`
+- S2-W36 Repair 1 contract Reviewer: `PASS`; findings: none
+- S2-W36 Repair 1 scope: test-only direct error matrix; product hash frozen
+  unchanged
+- S2-W36 Repair 1 mandatory RED: failed only on all twelve missing canonical
+  error-case markers
+- S2-W36 Repair 1 test SHA256:
+  `runtime_observer_test.go=8ce88b02...94e2`
+- S2-W36 Repair 1: canceled/deadline, identity drift, missing/typed-nil
+  discovery/status writer, writer error/result mismatch, and delayed
+  cancellation now directly prove five-zero/exact-call/no-retry behavior;
+  complete strict matrix `PASS`; product SHA unchanged
+- S2-W36 fresh Implementation Review 2:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-review-2.md`
+- S2-W36 Review 2: `FAIL`; configured-discovery failure still used anonymous
+  committers and lacked direct zero-call proof; no product defect
+- S2-W36 repeated-failure rule: second same-class proof failure requires fresh
+  read-only problem analyst before Repair 2
+- S2-W36 fresh problem analysis:
+  `.loom-evidence/phase1-slice2/S2-W36/problem-analysis-1.md`
+- S2-W36 problem analysis: false-green contract-to-test traceability gap; no
+  product defect; configured-discovery tuple `1/0/0` required
+- S2-W36 Repair 2 contract:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-repair-2-contract.md`
+- S2-W36 Repair 2 scope: test-only named configured-discovery sentinel and
+  exact factory/discovery/status call tuple `1/0/0`; product hash frozen
+- S2-W36 Repair 2 contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-repair-2-contract-review-1.md`
+- S2-W36 Repair 2 contract Review 1: `FAIL`; global call-count marker collision;
+  no implementation began
+- S2-W36 Repair 2 Amendment 1:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-repair-2-contract-amendment-1.md`
+- S2-W36 Repair 2 Amendment 1: unique case-local factory/committer markers;
+  behavior/scope/product lock unchanged
+- S2-W36 Repair 2 fresh Amendment Review 2:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-repair-2-contract-review-2.md`
+- S2-W36 Repair 2 Amendment Reviewer: `PASS`; findings: none
+- S2-W36 Repair 2 mandatory RED: failed only on all four missing unique
+  case-local behavior markers
+- S2-W36 Repair 2 test SHA256:
+  `runtime_observer_test.go=ee80f702...b23a`
+- S2-W36 Repair 2: configured-discovery sentinel, five-zero outputs, and exact
+  runtime factory/discovery/status call tuple `1/0/0`; complete strict matrix
+  `PASS`; product SHA unchanged
+- S2-W36 fresh Implementation Review 3:
+  `.loom-evidence/phase1-slice2/S2-W36/implementation-review-3.md`
+- S2-W36 Repair 2 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix independently passed
+- S2-W36 Candidate last line: `VERDICT: PASS`
+- S2-W36 boundary: immutable shallow-copied factory binding plus accepted
+  projection/committers; each explicit RunOnce delegates exactly once to
+  S2-W35; no direct lower-layer composition, retry, scheduler, daemon/config,
+  activation, or Slice 3 authority
 - Next gate: fresh pre-commit matrix, exact staged-scope audit, local atomic
   commit
 - Verification used deterministic temporary fixtures only; installed Pi, user

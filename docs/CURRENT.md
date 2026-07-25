@@ -578,6 +578,45 @@ and final rebuilt Runtime facts. Product remains byte-for-byte unchanged and
 the complete strict matrix passes again. Fresh Repair 1 implementation review
 returned `PASS` with no findings after independently rerunning the complete
 strict matrix. S2-W35 is accepted pending its one scoped local atomic commit.
+It is locally committed at `c8ecc2a`, and nothing is activated.
+
+`S2-W36` is frozen at
+`.loom-evidence/phase1-slice2/S2-W36/contract.md` for one immutable prepared
+observer that shallow-copies configured probe-factory bindings and delegates
+each explicit `RunOnce` exactly once to accepted S2-W35. It adds no interval,
+ticker, goroutine, daemon/config entry, projection rebuild, retry, or Runtime
+activation. Fresh contract review returned `PASS` with no findings. Mandatory
+RED failed only on the missing frozen symbols. The minimal Candidate
+shallow-copies factory bindings, performs no construction-time work, and
+delegates every explicit `RunOnce` exactly once to S2-W35. The complete strict
+matrix passes, including a real SQLite discovery-priority then status-only
+chain with exact Events, idempotent explicit retry, and final rebuilt Runtime
+facts. Fresh Implementation Review 1 returned `FAIL` on one test-proof gap and
+found no product defect: the prepared-observer boundary did not directly cover
+the complete context/downstream error surface. Repair 1 is frozen as test-only
+with the product hash locked unchanged. Fresh Repair 1 contract review returned
+`PASS` with no findings. Mandatory Repair RED failed only on all twelve missing
+canonical markers. The test-only repair now directly covers context,
+identity-drift, selected missing/typed-nil writer, writer error/result mismatch,
+and delayed-cancellation failures with five-zero/no-retry proof. The complete
+strict matrix passes again and product remains unchanged. Fresh Repair 1
+implementation Review 2 returned `FAIL` on one remaining proof omission and
+again found no product defect: the configured-discovery failure case used
+anonymous committers and did not assert their zero call counts. This is the
+second same-class failure. Fresh read-only problem analysis confirmed a
+false-green contract-to-test traceability gap and no product defect. Repair 2
+is frozen as test-only to prove the configured-discovery
+factory/discovery/status call tuple `1/0/0`. Repair 2 contract Review 1
+returned `FAIL` because two proposed global markers already existed in
+unrelated tests. No implementation began. Amendment 1 makes all four mandatory
+RED markers unique and case-local; fresh amendment review returned `PASS` with
+no findings. Mandatory Repair 2 RED failed only on all four missing case-local
+markers. The test-only repair now proves the configured-discovery sentinel,
+five zero outputs, and exact factory/discovery/status call tuple `1/0/0`. The
+complete strict matrix passes again, product remains byte-for-byte unchanged,
+and fresh Repair 2 implementation review returned `PASS` with no findings
+after independently rerunning the complete strict matrix. S2-W36 is accepted
+pending its one scoped local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -710,7 +749,7 @@ activated.
 
 ## Next development checkpoint
 
-Create the S2-W35 local atomic commit only after a fresh pre-commit matrix and
+Create the S2-W36 local atomic commit only after a fresh pre-commit matrix and
 exact staged-scope audit.
 Scheduling and daemon entry/config remain separate later WorkItems. Bridge,
 real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
