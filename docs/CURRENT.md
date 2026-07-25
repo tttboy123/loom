@@ -442,8 +442,24 @@ missing primitive fact validator. The minimal repair is GREEN: the context gate
 now precedes the no-change return, all seven concrete result facts have isolated
 single-field proof, and real AST/source boundary assertions replace the no-op.
 The complete strict matrix passes again. Fresh Repair 1 implementation review
-independently returned `PASS` with no findings. S2-W29 is accepted pending its
-exact-scope local atomic commit.
+independently returned `PASS` with no findings. S2-W29 is accepted and locally
+committed at `51d0489`.
+
+`S2-W30` is frozen at
+`.loom-evidence/phase1-slice2/S2-W30/contract.md` for the concrete prepared
+committer adapter required by S2-W29. It binds an accepted S2-W23 appender and
+caller-authoritative status commit input provider, validates zero/nil/
+typed-nil/context boundaries, calls the provider once, and delegates exactly
+once to `state.CommitRuntimeStatusTransitions`. It allocates no Event metadata
+and adds no concrete Journal/projection/discovery/status-policy/scheduler/
+daemon/activation/Slice 3 authority. Fresh independent contract review returned
+`PASS` with no findings. Mandatory RED failed only on missing frozen symbols.
+The minimal Candidate passes focused, package, impact, focused-race-50,
+repository, repository-race, vet, format, diff, zero-value, import, mutation,
+non-disclosure, and real temporary SQLite exact-retry checks. Fresh independent
+implementation review returned `PASS` with no findings after independently
+rerunning the complete matrix. S2-W30 is accepted pending its exact-scope local
+atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -576,7 +592,7 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W29 exact-scope local atomic commit, then freeze the next
+Create the accepted S2-W30 exact-scope local atomic commit, then freeze the next
 smallest Phase 1 Runtime boundary. Discovery scheduling and daemon entry/config
 remain separate later WorkItems. Bridge, real Runtime Adapter execution,
 AgentGrant, claim generation, and WorkItem dispatch remain Slice 3 boundaries
