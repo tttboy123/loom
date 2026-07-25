@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S3_W2_ACCEPTED`
+- Status: `S3_W3_ACCEPTED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1709,7 +1709,52 @@ Updated: 2026-07-25
 - S3-W2 fresh pre-commit matrix: focused, 30-run focused race, repository,
   repository-race, vet, fuzz, format, diff, marker, export, and scope checks
   `PASS`
-- Current gate: exact Candidate staging and authorized local atomic commit
+- S3-W2 accepted local commit: `5517a06`; post-commit focused and repository
+  tests `PASS`
+- S3-W3 frozen boundary: one AgentGrant local security authority for random
+  one-time token issuance, hash-only persistence, exact Run/generation/
+  operation binding, linearized authorization, rotation/revocation, and
+  rebuildable projection; no Broker, adapter, supervisor, or Team DAG
+- S3-W3 Contract Review 1: `PASS`; findings: none
+- S3-W3 Amendment 1: correct impossible Run-versus-Grant one-loser proof to
+  the two safe serial orders and freeze per-Run cross-generation RequestID
+  uniqueness; no API/owned-scope/capability expansion
+- S3-W3 Amendment 1 Contract Review 1: `PASS`; findings: none
+- S3-W3 mandatory RED: `PASS` as RED; all six markers exactly once and focused
+  compile failure only on missing frozen S3-W3 symbols/behavior
+- S3-W3 complete Candidate: one-time random token issuance, hash-only Event
+  persistence, exact Run/generation/operation binding, linearized
+  authorization, rotation/revocation, and strict rebuildable projection
+- S3-W3 security repair: targeted RED proved nested `%#v` could disclose the
+  token through the containing struct; private redacting storage now keeps
+  `%v`, `%+v`, `%#v`, JSON, Events, SQLite, projection, and errors clean
+- S3-W3 Candidate verification: focused `PASS`; focused race `-count=30`
+  `PASS`; repository/race/vet/fuzz/format/diff/marker/export/coverage/scope/
+  token-leak checks `PASS`; authorization coverage 85.3%, projection coverage
+  82.8%
+- S3-W3 Implementation Review 1: `FAIL`; four in-scope product findings:
+  S3-W2 opaque-ID compatibility, operational historical Run-reference
+  validation, four-way Journal conflict normalization, and duplicate JSON-key
+  rejection
+- S3-W3 Repair 1 freezes exactly those four closures; no API, Event schema,
+  owned-scope, or capability expansion
+- S3-W3 Repair 1 Contract Review 1: `PASS`; findings: none
+- S3-W3 Repair 1 mandatory RED: `PASS` as RED; all four markers exactly once
+  and focused failures only on the four frozen product gaps
+- S3-W3 Repair 1 Candidate: all four findings closed with no public API/Event
+  schema/owned-scope/capability expansion
+- S3-W3 Repair 1 verification: focused, 30-run focused race, repository,
+  repository-race, vet, fuzz, format, diff, all ten markers, export, coverage,
+  scope, and token-surface checks `PASS`; authorization coverage 85.4%,
+  projection coverage 82.9%
+- S3-W3 Implementation Review 2: `PASS`; findings: none; independent
+  focused/full/race/vet/fuzz/format/diff/marker checks `PASS`
+- S3-W3 fresh final pre-commit matrix: focused, 30-run focused race,
+  repository, repository-race, vet, fuzz, format, diff, marker, export, and
+  exact-scope checks `PASS`
+- S3-W3 accepted for exact atomic local commit
+- Current gate: S3-W4 contract governance; no S3-W4 product work before fresh
+  Contract Review `PASS`
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

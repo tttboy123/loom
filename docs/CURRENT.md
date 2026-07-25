@@ -933,5 +933,48 @@ evidence-only repair, both exact full-suite commands then passed three
 consecutive isolated attempts with no product change, package exclusion, or
 `-p 1`. Fresh independent Implementation Review 2 returned `PASS` with no
 findings. The fresh final pre-commit matrix and exact Candidate scope checks
-pass. S3-W2 is accepted and ready for its authorized local atomic commit; no
+pass. S3-W2 is accepted and locally committed at `5517a06`; post-commit focused
+and repository tests pass. S3-W3 is frozen as one complete AgentGrant local
+security authority covering random one-time token issuance, hash-only
+persistence, exact Run/generation/operation binding, linearized authorization,
+rotation/revocation, and rebuildable projection. Fresh independent S3-W3
+Contract Review returned `PASS` with no findings. A pre-RED feasibility audit
+then corrected one impossible concurrency proof: Run-versus-Grant races must
+accept either Run-first/Grant-conflict or Grant-first/then-Run success, while
+same-Grant-stream contenders still have one winner. Amendment 1 also makes
+per-Run RequestID uniqueness explicit without changing API, owned scope, or
+capability. Fresh independent Amendment 1 Contract Review returned `PASS` with
+no findings. Complete mandatory RED failed only on missing frozen S3-W3
+symbols/behavior. The complete Candidate now issues one-time random tokens,
+persists only their SHA-256 hashes, enforces exact Run/generation/operation
+bindings, linearizes authorization, rotation, and revocation facts, and
+strictly rebuilds AgentGrant projection state. A targeted security regression
+found and closed nested `%#v` token disclosure before review. Focused,
+30-run focused race, repository, repository-race, vet, fuzz, format, diff,
+marker, export, coverage, scope, and token-leak checks pass. The current gate
+was fresh independent S3-W3 Implementation Review. Review 1 returned `FAIL`
+with four in-scope product findings: opaque-ID compatibility, operational
+historical Run-reference validation, Journal conflict normalization, and
+duplicate JSON-key rejection. Repair 1 freezes exactly those closures without
+API, Event schema, owned-scope, or capability expansion. Its current gate is
+fresh independent Repair Contract Review before repair RED. That review
+returned `PASS` with no findings; the current gate is complete test-only Repair
+RED before any repair implementation. Repair RED failed exactly on all four
+frozen gaps with all four markers exactly once; the current gate is the minimal
+in-scope Repair 1 implementation. No capability is activated.
+Repair 1 is now complete: S3-W2-compatible opaque IDs, exact operational
+historical Run-reference validation, four-way Journal conflict normalization,
+and recursive duplicate JSON-key rejection all pass their mandatory RED/GREEN
+proof. Focused, 30-run focused race, repository, repository-race, vet, fuzz,
+format, diff, marker, export, coverage, scope, and token-surface checks pass.
+The current gate is fresh independent S3-W3 Implementation Review 2; no
 capability is activated.
+Implementation Review 2 returned `PASS` with no findings after independently
+rerunning focused, repository, race, vet, fuzz, format, diff, and marker
+checks. The current gate is the fresh final pre-commit matrix and exact
+Candidate staging; no capability is activated.
+The fresh final pre-commit matrix also passed, including the required 30-run
+focused race and whole-repository race. S3-W3 is accepted for its exact atomic
+local commit. The next gate is S3-W4 managed workspace/Runtime adapter/
+supervisor contract governance; no S3-W4 product work is authorized before
+fresh Contract Review `PASS`, and no capability is activated.

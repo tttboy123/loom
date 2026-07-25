@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +63,7 @@ type Snapshot struct {
 	Modes            map[string]string
 	WorkItems        map[string]WorkItem
 	Runs             map[string]Run
+	AgentGrants      map[string]AgentGrant
 	Evidence         map[string]Evidence
 	Teams            map[string]TeamInstance
 	AgentInstances   map[string]AgentInstance
@@ -89,6 +89,21 @@ type Run struct {
 	PrepareLeaseExpiresAt time.Time
 	TerminalStatus        string
 	TerminalReason        string
+}
+
+type AgentGrant struct {
+	ID                string
+	WorkItemID        string
+	RunID             string
+	ClaimID           string
+	ClaimGeneration   int64
+	RuntimeInstanceID string
+	AgentInstanceID   string
+	AllowedOperations []string
+	IssuedAt          time.Time
+	ExpiresAt         time.Time
+	RevokedAt         time.Time
+	RevocationReason  string
 }
 
 type Evidence struct {
@@ -225,6 +240,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	seenByStreamSeq := make(map[streamSeq]journal.Event)
 	nextSeq := make(map[string]int64)
 	var runAuthorityEvents []journal.Event
+	var grantAuthorityEvents []journal.Event
 
 	for _, event := range ordered {
 		if err := ctx.Err(); err != nil {
@@ -260,6 +276,10 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 			runAuthorityEvents = append(runAuthorityEvents, event)
 			continue
 		}
+		if isGrantAuthorityProjectionEvent(event) {
+			grantAuthorityEvents = append(grantAuthorityEvents, event)
+			continue
+		}
 		if isRunAuthorityRuntimeReferenceEvent(event) {
 			runAuthorityEvents = append(runAuthorityEvents, event)
 		}
@@ -268,6 +288,14 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		}
 	}
 	if err := applyRunAuthorityProjection(ctx, &candidate, runAuthorityEvents); err != nil {
+		return Snapshot{}, err
+	}
+	if err := applyGrantAuthorityProjection(
+		ctx,
+		&candidate,
+		runAuthorityEvents,
+		grantAuthorityEvents,
+	); err != nil {
 		return Snapshot{}, err
 	}
 	if err := candidate.validateSavedTeamLinks(); err != nil {
@@ -660,15 +688,66 @@ func lessProjectedDormantSubAgent(left, right DormantSubAgent) bool {
 }
 
 func decodeExactProjectionPayload(event journal.Event, target any) error {
-	if !json.Valid(event.PayloadJSON) {
+	if !json.Valid(event.PayloadJSON) ||
+		hasDuplicateProjectionJSONKeys(event.PayloadJSON) {
 		return fmt.Errorf("%w: malformed payload", ErrInvalidProjectionEvent)
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(event.PayloadJSON)))
+	decoder := json.NewDecoder(bytes.NewReader(event.PayloadJSON))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidProjectionEvent, err)
 	}
 	return nil
+}
+
+func hasDuplicateProjectionJSONKeys(payload []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	return scanDuplicateProjectionJSONValue(decoder)
+}
+
+func scanDuplicateProjectionJSONValue(decoder *json.Decoder) bool {
+	token, err := decoder.Token()
+	if err != nil {
+		return true
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return false
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return true
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return true
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return true
+			}
+			seen[key] = struct{}{}
+			if scanDuplicateProjectionJSONValue(decoder) {
+				return true
+			}
+		}
+		_, err = decoder.Token()
+		return err != nil
+	case '[':
+		for decoder.More() {
+			if scanDuplicateProjectionJSONValue(decoder) {
+				return true
+			}
+		}
+		_, err = decoder.Token()
+		return err != nil
+	default:
+		return true
+	}
 }
 
 func validSHA256Digest(digest string) bool {
@@ -701,6 +780,7 @@ func emptySnapshot() Snapshot {
 		Modes:            make(map[string]string),
 		WorkItems:        make(map[string]WorkItem),
 		Runs:             make(map[string]Run),
+		AgentGrants:      make(map[string]AgentGrant),
 		Evidence:         make(map[string]Evidence),
 		Teams:            make(map[string]TeamInstance),
 		AgentInstances:   make(map[string]AgentInstance),
@@ -718,6 +798,10 @@ func (s Snapshot) clone() Snapshot {
 	}
 	for id, run := range s.Runs {
 		out.Runs[id] = run
+	}
+	for id, grant := range s.AgentGrants {
+		grant.AllowedOperations = append([]string(nil), grant.AllowedOperations...)
+		out.AgentGrants[id] = grant
 	}
 	for id, evidence := range s.Evidence {
 		out.Evidence[id] = evidence
