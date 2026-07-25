@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W31 accepted and locally committed; latest accepted
-  commit `b00f8d8`
+- Slice 2: S2-W1 through S2-W32 accepted and locally committed; latest accepted
+  commit `26bf981`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W32_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W33_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1272,8 +1272,32 @@ Updated: 2026-07-25
 - S2-W32 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
   strict matrix independently passed
 - S2-W32 Candidate last line: `VERDICT: PASS`
-- Next gate: fresh pre-commit strict matrix, exact staged-scope audit, and one
-  authorized local atomic commit
+- Accepted S2-W32 local commit: `26bf981`
+- S2-W33 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W33/contract.md`
+- S2-W33 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W33/contract-review.md`
+- S2-W33 contract Reviewer: `PASS`; findings: none
+- S2-W33 mandatory RED: failed only on missing frozen coordinator/error symbols
+- S2-W33 Candidate product/test SHA256:
+  `runtime_observation_write.go=951f454...6773`,
+  `runtime_observation_write_test.go=a3703902...947`
+- S2-W33 Controller strict matrix: focused, app, impact, focused-race-50,
+  repository, repository-race, vet, format, diff, real SQLite discovery-priority
+  then status-only chain, idempotent retries, and static boundary all `PASS`
+- S2-W33 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W33/deliverable.md`
+- S2-W33 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W33/implementation-review.md`
+- S2-W33 implementation Reviewer: `PASS`; findings: none; complete strict
+  matrix independently passed
+- S2-W33 Candidate last line: `VERDICT: PASS`
+- S2-W33 boundary: plan once; none writes nothing; discovery invokes only
+  discovery committer; status invokes only S2-W31; zero non-selected outputs;
+  no discovery execution, projection query, metadata, retry, scheduler, daemon,
+  activation, or Slice 3 authority
+- Next gate: fresh pre-commit matrix, exact staged-scope audit, local atomic
+  commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

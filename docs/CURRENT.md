@@ -515,7 +515,22 @@ digest unchanged. The minimal repair binds `planned` into the versioned payload,
 and the focused plus complete strict matrix pass again without classification
 or authority changes. Fresh Repair 1 implementation review returned `PASS`
 with no findings after independently rerunning the complete matrix. S2-W32 is
-accepted and ready for its scoped local atomic commit; nothing is activated.
+accepted, locally committed at `26bf981`, and nothing is activated.
+
+`S2-W33` is frozen at
+`.loom-evidence/phase1-slice2/S2-W33/contract.md` for one caller-triggered
+ADR-0007 write cycle. It computes S2-W32 once, returns without writing for
+`none`, delegates only the discovery committer for `discovery`, or delegates
+only S2-W31 for `status`; every non-selected output remains zero. It does not
+run discovery, query/rebuild projection state, prepare metadata, retry,
+schedule, start a daemon, infer absence, or activate a Runtime. Fresh contract
+review returned `PASS` with no findings. Mandatory RED failed only on the
+missing frozen coordinator/error symbols.
+The minimal Candidate passes the complete strict matrix, including the real
+SQLite mixed-discovery then status-only idempotent Event chain. Fresh
+implementation review returned `PASS` with no findings after independently
+rerunning the complete strict matrix. S2-W33 is accepted pending its one scoped
+local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -648,12 +663,12 @@ activated.
 
 ## Next development checkpoint
 
-Run S2-W32's fresh pre-commit strict matrix and exact staged-scope audit, then
-create its one authorized local atomic commit. Discovery writer coordination,
-scheduling, and daemon entry/config remain separate later WorkItems. Bridge,
-real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
-dispatch remain Slice 3 boundaries even when research drafts propose them
-earlier. Push, merge, release, runtime activation, credential changes, and
-FastContext installation remain unauthorized. The
+Create the S2-W33 local atomic commit only after a fresh pre-commit matrix and
+exact staged-scope audit.
+Discovery execution, scheduling, and daemon entry/config remain separate later
+WorkItems. Bridge, real Runtime Adapter execution, AgentGrant, claim generation,
+and WorkItem dispatch remain Slice 3 boundaries even when research drafts
+propose them earlier. Push, merge, release, runtime activation, credential
+changes, and FastContext installation remain unauthorized. The
 optional local FastContext Spike remains separate and was not installed or
 activated.
