@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W18_ACCEPTED_PENDING_COMMIT`
+- Status: `S2-W19_ACCEPTED_PENDING_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -639,10 +639,40 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W18/implementation-review.md`
 - S2-W18 implementation Reviewer: `PASS`; findings: none blocking
 - S2-W18 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W18 local commit: `8c8fb9e`
+- S2-W19 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W19/contract.md`
+- S2-W19 contract SHA256:
+  `fdf5cfad9c8f1c28fe0817d2f3bc98604a7dc78cca3d73688150c9763ac22b12`
+- S2-W19 boundary: configured fixed-name `pi` search and accepted S2-W18/
+  S2-W17 probe construction only; no ambient PATH, process during
+  construction, daemon scheduling, Event persistence, or activation
+- S2-W19 current upstream source confirms executable name `pi`
+- S2-W19 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W19/contract-review.md`
+- S2-W19 contract Reviewer: `PASS`; findings: none blocking
+- S2-W19 mandatory RED: exit `1`; failed only on missing frozen factory,
+  config, request, and typed-error symbols
+- S2-W19 product/test digests:
+  `local_probe.go=d6eec967...6cbb1`,
+  `local_probe_test.go=5c823ed8...b27c1`
+- S2-W19 strict matrix: focused `0`; package `0`; focused race `-count=20`
+  `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  fixed-name/no-PATH/no-process boundary, parent purity, branch/head, and scope
+  checks `PASS`
+- S2-W19 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W19/deliverable.md`
+- S2-W19 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W19/implementation-review.md`
+- S2-W19 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W19 Reviewer transient: one repository non-race run failed while run
+  concurrently with repository-race; isolated rerun and two ten-run
+  reproductions passed, so it was not confirmed as a product blocker
+- S2-W19 Candidate last line: `VERDICT: PASS`
+- Next gate: create the authorized strictly scoped S2-W19 local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used
-- Next gate: create the authorized strictly scoped S2-W18 local atomic commit
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 

@@ -211,6 +211,24 @@ atomic commit. Installed Pi, user Pi state, credentials, network, Agent
 sessions, prompts, model calls, daemon scheduling, and Runtime activation
 remain outside this boundary.
 
+`S2-W18` is locally committed at `8c8fb9e`. `S2-W19` is frozen at
+`.loom-evidence/phase1-slice2/S2-W19/contract.md` for a configured local Pi
+probe factory. It inspects only the fixed upstream `pi` name directly beneath
+caller-supplied trusted search directories, treats absence separately from an
+invalid shadowing candidate, and wires the accepted S2-W18 runner to the
+accepted S2-W17 probe without starting a process. It does not consult ambient
+PATH/HOME/cwd, schedule discovery, write Events, start a daemon, or activate a
+Runtime. Fresh independent contract review returned `PASS` with no blocking
+findings. Mandatory RED failed only on missing frozen S2-W19 symbols. Minimal
+product implementation now passes focused, package, focused-race-20,
+repository, repository-race, vet, format, diff, no-PATH/no-process,
+parent-purity, non-disclosure, and scope checks. Fresh independent
+implementation review returned `PASS` with no blocking findings. One Reviewer
+repository non-race run failed while run concurrently with repository-race;
+isolated rerun and two ten-run reproductions passed, so it is preserved as
+transient evidence rather than a confirmed defect. S2-W19 is accepted and
+ready for its local atomic commit.
+
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
 Team Draft content Candidate. It closes the content dependency that must precede
@@ -342,11 +360,12 @@ activated.
 
 ## Next development checkpoint
 
-Create the authorized strictly scoped S2-W18 local atomic commit, then freeze
-only the next bounded Slice 2 contract. Executable location and daemon
-scheduling still require separately frozen Slice 2 contracts. Bridge, real
-Runtime Adapter execution, AgentGrant, claim generation, and WorkItem dispatch
-remain Slice 3 boundaries even when research drafts propose them earlier.
-Push, merge, release, runtime activation, credential changes, and FastContext
-installation remain unauthorized. The optional local FastContext Spike remains
-separate and was not installed or activated.
+Create the authorized strictly scoped S2-W19 local atomic commit, then freeze
+only the next bounded Slice 2 contract. Daemon scheduling, Event persistence/
+status transitions, and projection remain separately frozen Slice 2
+boundaries. Bridge, real Runtime Adapter execution, AgentGrant, claim
+generation, and WorkItem dispatch remain Slice 3 boundaries even when research
+drafts propose them earlier. Push, merge, release, runtime activation,
+credential changes, and FastContext installation remain unauthorized. The
+optional local FastContext Spike remains separate and was not installed or
+activated.
