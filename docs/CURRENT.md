@@ -880,4 +880,21 @@ and the Reviewer's full test/race/vet/build/fresh-canary checks passed. The
 bounded status-only Repair 1 contract and its fresh Contract Review pass. The
 user explicitly authorized one separate status-only governance commit; this
 checkpoint records the reconciliation without changing product or tests.
-Slice 2 remains open pending a fresh whole-Slice re-review.
+Fresh Whole-Slice Review 2 returned `PASS` after independently rerunning the
+repository/race/vet/build matrix and a bounded discovery/restart/rediscovery
+canary. Slice 2 is accepted at reviewed HEAD `7b1726e`; nothing was activated.
+Slice 3 has entered governance setup only. Its exit contract fixes at most five
+vertical WorkItems before any S3 product contract is frozen. Fresh independent
+Exit Contract Review returned `PASS` with no findings. `S3-W1` is now frozen as
+the complete pure Bridge v1 wire and bound-stream trust boundary. Contract
+Review 1 returned `FAIL` only because the prose said eleven fields plus payload
+instead of exactly twelve top-level fields. Amendment 1 corrects that count and
+adds exact-12 proof without changing scope; fresh Amendment Review 1 returned
+`PASS` with no findings. Both mandatory RED stages were captured before
+product code. The Bridge frame and immutable bound-stream Candidate now passes
+focused, 100-run focused race, repository, repository-race, vet, fuzz, format,
+diff, and export-surface checks. Fresh independent Implementation Review 1
+returned `PASS` with no findings, and the final pre-commit matrix passed. S3-W1
+is accepted; its atomic local commit records the Bridge boundary and the
+reviewed Slice 2-to-3 transition evidence. The next gate is an S3-W2 contract;
+no S3-W2 product work is authorized before fresh Contract Review `PASS`.

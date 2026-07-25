@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `SLICE_REVIEW_1_REPAIR_1_RECORDED_PENDING_REREVIEW`
+- Status: `S3_W1_ACCEPTED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1634,6 +1634,32 @@ Updated: 2026-07-25
   fresh whole-Slice re-review explicitly authorized
 - This checkpoint records the governance reconciliation; next gate is the
   fresh whole-Slice re-review, and S3 remains closed until Reviewer `PASS`
+- Whole-Slice Review 2: `PASS`; findings: none; independent repository/race/
+  vet/format/build and bounded discovery→restart→rediscovery canary passed
+- Slice 2 accepted reviewed HEAD: `7b1726e`; nothing activated
+- Slice 3 entered governance setup only; current gate is fresh review of the
+  maximum-five-WorkItem Slice 3 Exit Contract
+- Slice 3 Exit Contract SHA256: `a681b1cd...b74e0af8`; fresh independent
+  Contract Reviewer: `PASS`; findings/amendments: none
+- S3-W1 frozen boundary: complete pure Bridge v1 JSONL frame and immutable
+  bound-Run stream validation; no process, persistence, Grant, execution, ACK
+  payload semantics, or activation
+- S3-W1 Contract Review 1: `FAIL` only for contradictory eleven-plus-payload
+  versus twelve-total field wording; no other finding
+- S3-W1 Contract Amendment 1: exact twelve top-level fields and exact-12
+  missing/extra proof; no API or authority change
+- S3-W1 Amendment 1 Contract Review: `PASS`; findings: none
+- S3-W1 mandatory RED: marker-only absence failure, followed by complete
+  behavioral compile failure on missing frozen symbols before product code
+- S3-W1 Candidate verification: focused `PASS`; focused race `-count=100`
+  `PASS`; repository/race/vet/fuzz/format/diff/export checks `PASS`
+- S3-W1 Implementation Review 1: `PASS`; findings: none; independent
+  focused/race/full/race-full/vet/fuzz/format/scope/export checks `PASS`
+- S3-W1 final pre-commit matrix and exact staged-scope audit: `PASS`
+- S3-W1 accepted; its atomic local commit records the product, tests,
+  governance, evidence, and reviewed Slice 2-to-3 transition
+- Current gate: freeze S3-W2 contract; no S3-W2 product before fresh Contract
+  Review `PASS`
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used
