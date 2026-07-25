@@ -458,8 +458,39 @@ The minimal Candidate passes focused, package, impact, focused-race-50,
 repository, repository-race, vet, format, diff, zero-value, import, mutation,
 non-disclosure, and real temporary SQLite exact-retry checks. Fresh independent
 implementation review returned `PASS` with no findings after independently
-rerunning the complete matrix. S2-W30 is accepted pending its exact-scope local
-atomic commit.
+rerunning the complete matrix. S2-W30 is accepted and locally committed at
+`47f225b`.
+
+`S2-W31` is frozen at
+`.loom-evidence/phase1-slice2/S2-W31/contract.md` for the copied projection
+Snapshot adapter explicitly deferred by S2-W25. It builds the accepted status
+baseline once, then delegates exact immutable inputs to S2-W29. It does not
+query/rebuild Journal state in product, run or persist discovery, allocate Event
+metadata, combine discovery/status write policy, infer absence, schedule, start
+a daemon, or activate a Runtime. Fresh independent contract review returned
+`PASS` with no findings. Mandatory RED failed only on missing frozen symbols.
+The minimal Candidate passes focused, package, impact, focused-race-50,
+repository, repository-race, vet, format, diff, import, mutation, no-policy,
+and real temporary SQLite projection-to-status exact-retry checks. Fresh
+Implementation Review 1 returned `FAIL` on three test-proof gaps:
+status-bearing provenance, the complete invalid-projection matrix, and S2-W29
+error/zero-output/Candidate mutation coverage. The product boundary itself had
+no finding. Repair 1 is frozen as test-only; fresh independent Repair 1
+contract review returned `PASS` with no blocking findings. Mandatory Repair RED
+proved the missing status-bearing path against the old discovery-only fixture.
+The repaired tests now cover first/consecutive status and rediscovery
+provenance, the full invalid-projection classes, S2-W29 error and zero-output
+propagation, and projection/reconciliation/commit accessor isolation. The
+complete strict matrix passes again with the product byte-for-byte unchanged.
+Fresh Repair 1 Implementation Review 1 returned `FAIL` only because the
+invalid-projection table separated key and Runtime-core defects without a
+projected stable-identity defect. The same frozen Repair 1 contract already
+required that proof. A test-only correction now blanks projected `DeviceID`
+while retaining the valid map key; its focused check and the complete strict
+matrix pass with product unchanged. Fresh Repair 1 implementation re-review is
+now `PASS` with no findings after independently rerunning the complete strict
+matrix. S2-W31 is accepted and ready for its scoped local atomic commit; it is
+not activated.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -592,11 +623,11 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W30 exact-scope local atomic commit, then freeze the next
-smallest Phase 1 Runtime boundary. Discovery scheduling and daemon entry/config
-remain separate later WorkItems. Bridge, real Runtime Adapter execution,
-AgentGrant, claim generation, and WorkItem dispatch remain Slice 3 boundaries
-even when research drafts propose them earlier. Push, merge,
+Run S2-W31's fresh pre-commit strict matrix and exact staged-scope audit, then
+create its one authorized local atomic commit. Discovery scheduling and daemon
+entry/config remain separate later WorkItems. Bridge, real Runtime Adapter
+execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
+boundaries even when research drafts propose them earlier. Push, merge,
 release, runtime activation, credential changes, and FastContext installation
 remain unauthorized. The
 optional local FastContext Spike remains separate and was not installed or

@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W29 accepted and locally committed; latest accepted
-  commit `51d0489`
+- Slice 2: S2-W1 through S2-W30 accepted and locally committed; latest accepted
+  commit `47f225b`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W30_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W31_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1163,7 +1163,67 @@ Updated: 2026-07-25
 - S2-W30 implementation Reviewer: `PASS`; findings: none; complete strict
   matrix independently passed
 - S2-W30 Candidate last line: `VERDICT: PASS`
-- Next gate: exact-scope pre-commit verification and local atomic commit
+- Accepted S2-W30 local commit: `47f225b`
+- S2-W31 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W31/contract.md`
+- S2-W31 contract SHA256:
+  `887d8a75237c7e578e966435f2e9701d2a5c3fec6d1b6729af7dcaf055c4749c`
+- S2-W31 boundary: caller-supplied copied projection Snapshot through accepted
+  S2-W25 baseline construction into accepted S2-W29 status coordination; no
+  product Journal query/rebuild, discovery write, metadata allocation,
+  discovery/status policy composition, scheduling, daemon, activation, or
+  Slice 3
+- S2-W31 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W31/contract-review.md`
+- S2-W31 contract Reviewer: `PASS`; findings: none
+- S2-W31 mandatory RED: exit `1`; failed only on missing frozen symbols
+- S2-W31 product/test digests:
+  `runtime_status_projection.go=bb9b96a6...d6a40f`,
+  `runtime_status_projection_test.go=86d1db54...5b8e3`
+- S2-W31 strict matrix: focused `0`; app package `0`; app/runtime/state/
+  projection/journal impact `0`; focused race `-count=50` `0`; repository `0`;
+  repository race `0`; vet `0`; gofmt, diff, import, mutation, real SQLite
+  projection-to-status exact retry, no-policy, and scope checks `PASS`
+- S2-W31 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W31/deliverable.md`
+- S2-W31 Implementation Review 1: `FAIL`; missing status-bearing provenance,
+  complete invalid-projection matrix, and S2-W29 error/zero-output/Candidate
+  mutation evidence; product boundary itself had no finding
+- S2-W31 Repair 1 contract: test-only closure of all three evidence gaps;
+  product must remain byte-for-byte unchanged
+- S2-W31 Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W31/implementation-repair-1-contract-review.md`
+- S2-W31 Repair 1 contract Reviewer: `PASS`; findings: none; repair remains
+  test-only and product hash is frozen
+- S2-W31 Repair 1 mandatory RED: exit `1`; the old discovery-only fixture
+  returned discovery Event sequence `1` while the new status-bearing assertion
+  required status Event sequence `2`
+- S2-W31 Repair 1 product/test digests:
+  `runtime_status_projection.go=bb9b96a6...d6a40f` unchanged,
+  `runtime_status_projection_test.go=083a3a8c...e3169`
+- S2-W31 Repair 1 proof: first/consecutive status and rediscovery provenance;
+  exact sentinel across oversized/key/core/model/discovery/status/sequence/
+  cross-record Event defects; invalid discovery, identity drift, committer,
+  result mismatch, and deterministic post-baseline context propagation; nested
+  projection and reconciliation/commit accessor mutation isolation
+- S2-W31 Repair 1 strict matrix: focused `0`; app package `0`;
+  app/runtime/state/projection/journal impact `0`; focused race `-count=50` `0`;
+  repository `0`; repository race `0`; vet `0`; gofmt and diff `PASS`
+- S2-W31 Repair 1 Implementation Review 1: `FAIL`; missing projected
+  stable-identity defect while status provenance and S2-W29 propagation/
+  mutation closures passed
+- S2-W31 Repair 1 review evidence:
+  `.loom-evidence/phase1-slice2/S2-W31/implementation-repair-1-review-1.md`
+- S2-W31 Repair 1 bounded test-only correction: added valid-key/empty-DeviceID
+  projection rejection; focused and complete strict matrix pass; product hash
+  remains unchanged
+- S2-W31 fresh Implementation Review 2:
+  `.loom-evidence/phase1-slice2/S2-W31/implementation-review-2.md`
+- S2-W31 Repair 1 implementation Reviewer: `PASS`; findings: none; full strict
+  matrix independently passed
+- S2-W31 Candidate last line: `VERDICT: PASS`
+- Next gate: fresh pre-commit strict matrix, exact staged-scope audit, and one
+  authorized local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used
