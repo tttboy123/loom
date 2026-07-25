@@ -359,10 +359,29 @@ findings. Mandatory Repair RED failed on all nine same-role/cross-role reuse
 combinations. The minimal Event-ID owner-set repair passes the complete strict
 matrix again, preserving the valid same-record first-status alias. Fresh
 independent Repair 1 implementation review returned `PASS` with no findings
-after independently rerunning the complete matrix. S2-W25 is accepted pending
-its local atomic commit. It does not replay/query the Journal, append Events,
-invoke discovery/reconciliation, schedule a scan, start a daemon, run Pi, or
-activate a Runtime.
+after independently rerunning the complete matrix. S2-W25 is accepted and
+locally committed at `38d914b`. It does not replay/query the Journal, append
+Events, invoke discovery/reconciliation, schedule a scan, start a daemon, run
+Pi, or activate a Runtime.
+
+`S2-W26` is frozen at
+`.loom-evidence/phase1-slice2/S2-W26/contract.md` for one bounded,
+caller-triggered scan from configured Runtime probe factories into accepted
+S2-W2 discovery. Fresh independent contract review returned `PASS` with no
+blocking findings. Mandatory RED failed only on the missing frozen symbols. The
+minimal Candidate prevalidates and copies zero through 32 factories, builds each
+once in caller order, filters only canonical explicit absence, collects every
+present probe before observation, and delegates once to accepted
+`runtime.DiscoverRuntime`. Controller focused, package, Pi impact, focused-race
+50, repository, repository-race, vet, format, diff, import, non-disclosure,
+mutation-isolation, and scope checks pass. Fresh Implementation Review 1
+returned `FAIL` only because exact-32 acceptance lacked direct test proof.
+Test-only Repair 1 passed fresh contract review; Repair RED proved that test was
+absent, the exact-32 success/once-per-factory proof is now added, and the full
+strict matrix passes again with product unchanged. Fresh Repair 1 implementation
+review independently passed the full matrix and returned `PASS` with no
+findings. S2-W26 is accepted pending its exact-scope local atomic commit. No scan
+is scheduled or activated, and absence does not infer Runtime status.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -495,8 +514,8 @@ activated.
 
 ## Next development checkpoint
 
-Create the accepted S2-W25 exact-scope local atomic commit, then freeze the next
-smallest Runtime discovery orchestration boundary. Discovery scheduling and
+Create the accepted S2-W26 exact-scope local atomic commit, then freeze the next
+smallest Phase 1 Runtime boundary. Discovery scheduling and
 daemon entry/config remain separate later WorkItems. Bridge, real Runtime
 Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
 Slice 3 boundaries even when research drafts propose them earlier. Push, merge,

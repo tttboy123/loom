@@ -10,9 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 `954416a`, S2-W2 `1170062`, S2-W3 `e196107`, S2-W4
-  `0a98851`, S2-W5 `567967c`; S2-W6 accepted and locally committed in this
-  checkpoint
+- Slice 2: S2-W1 through S2-W25 accepted and locally committed; latest accepted
+  commit `38d914b`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -50,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W25_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W26_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -966,6 +965,58 @@ Updated: 2026-07-25
 - S2-W25 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
   strict matrix independently passed
 - S2-W25 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W25 local commit: `38d914b`
+- S2-W26 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W26/contract.md`
+- S2-W26 contract SHA256:
+  `5593c5de01b91c0937907e863f864e7edb686390274b8492e4fff0e32f2dcdd0`
+- S2-W26 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W26/contract-review.md`
+- S2-W26 contract Reviewer: `PASS`; findings: none blocking
+- S2-W26 boundary: prevalidate and copy zero through 32 configured factories;
+  build each once in caller order; filter only canonical explicit absence;
+  collect every present probe before observation; delegate once to accepted
+  S2-W2; no persistence-order decision, status inference, scheduling, daemon,
+  process, or activation
+- S2-W26 mandatory RED: exit `1`; failed only on missing frozen package symbols;
+  no syntax, existing-package, dependency, or environment failure
+- S2-W26 product/test digests:
+  `scan.go=2e8cbdc...11d4`,
+  `scan_test.go=e8e2f297...2e12`
+- S2-W26 strict matrix: focused `0`; discoveryscan/runtime packages `0`;
+  runtime/Pi/discoveryscan impact `0`; focused race `-count=50` `0`;
+  repository `0`; repository race `0`; vet `0`; gofmt, diff, import,
+  non-disclosure, mutation-isolation, concrete Pi absence, and scope checks
+  `PASS`
+- S2-W26 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W26/deliverable.md`
+- S2-W26 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W26/implementation-review-1.md`
+- S2-W26 Implementation Review 1: `FAIL`; exact-32 inclusive upper-bound
+  acceptance lacked direct test proof; no product defect or other finding
+- S2-W26 Implementation Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W26/implementation-repair-1-contract.md`
+- S2-W26 Repair 1 contract SHA256:
+  `b44e4747f1487470f1d98cad0da62ab8eb70b38e7a9b3c80d78bb4b501a22ee6`
+- S2-W26 fresh Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W26/implementation-repair-1-contract-review.md`
+- S2-W26 Repair 1 contract Reviewer: `PASS`; findings: none blocking; product
+  is read-only
+- S2-W26 mandatory Repair RED: exit `1`; no exact-maximum source assertion
+  existed in the reviewed test
+- S2-W26 Repair 1: added exact-32 canonical-absent success, caller order, valid
+  empty snapshot, and exactly-once call proof; 33 rejection remains unchanged
+- S2-W26 Repair 1 hashes:
+  `scan.go=2e8cbdc...11d4` unchanged,
+  `scan_test.go=5bbfb4f6...9a74`
+- S2-W26 Repair 1 strict matrix: focused `0`; package/impact `0`; focused race
+  `-count=50` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  import, non-disclosure, exact-bound, and scope checks `PASS`
+- S2-W26 fresh Repair 1 implementation review:
+  `.loom-evidence/phase1-slice2/S2-W26/implementation-review-2.md`
+- S2-W26 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix independently passed
+- S2-W26 Candidate last line: `VERDICT: PASS`
 - Next gate: exact-scope pre-commit verification and local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
