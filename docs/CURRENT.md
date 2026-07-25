@@ -490,7 +490,32 @@ while retaining the valid map key; its focused check and the complete strict
 matrix pass with product unchanged. Fresh Repair 1 implementation re-review is
 now `PASS` with no findings after independently rerunning the complete strict
 matrix. S2-W31 is accepted and ready for its scoped local atomic commit; it is
-not activated.
+locally committed at `b00f8d8`, and not activated.
+
+`S2-W32` is frozen at
+`.loom-evidence/phase1-slice2/S2-W32/contract.md` for a pure deterministic
+Runtime observation write-plan Candidate under accepted ADR-0007. Any new or
+changed non-status inventory selects one whole-snapshot `discovery` write;
+only status changes with unchanged inventory select `status`; unchanged or
+absent-only observations select `none`. Discovery has strict precedence in a
+mixed observation, stable identity drift remains an error, and absence never
+fabricates offline or deletion. This WorkItem does not invoke either writer,
+prepare Event metadata, query Journal state, schedule, start a daemon, or
+activate a Runtime. Fresh independent contract review returned `PASS` with no
+findings. Mandatory RED failed only on missing frozen symbols. The minimal
+Candidate passes focused, app, impact, focused-race-50, repository,
+repository-race, vet, format, diff, ADR, inventory/status/precedence,
+absence/identity, context, digest, mutation, and static boundary checks. Fresh
+Implementation Review 1 returned `FAIL` only because the versioned Candidate
+digest omitted exposed `Planned()`. All classification and boundary behavior
+passed. Repair 1 is frozen to add exactly that existing fact and its
+single-field sensitivity RED. Fresh Repair 1 contract review returned `PASS`
+with no findings. Mandatory Repair RED proved that `planned=false` left the
+digest unchanged. The minimal repair binds `planned` into the versioned payload,
+and the focused plus complete strict matrix pass again without classification
+or authority changes. Fresh Repair 1 implementation review returned `PASS`
+with no findings after independently rerunning the complete matrix. S2-W32 is
+accepted and ready for its scoped local atomic commit; nothing is activated.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -623,12 +648,12 @@ activated.
 
 ## Next development checkpoint
 
-Run S2-W31's fresh pre-commit strict matrix and exact staged-scope audit, then
-create its one authorized local atomic commit. Discovery scheduling and daemon
-entry/config remain separate later WorkItems. Bridge, real Runtime Adapter
-execution, AgentGrant, claim generation, and WorkItem dispatch remain Slice 3
-boundaries even when research drafts propose them earlier. Push, merge,
-release, runtime activation, credential changes, and FastContext installation
-remain unauthorized. The
+Run S2-W32's fresh pre-commit strict matrix and exact staged-scope audit, then
+create its one authorized local atomic commit. Discovery writer coordination,
+scheduling, and daemon entry/config remain separate later WorkItems. Bridge,
+real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
+dispatch remain Slice 3 boundaries even when research drafts propose them
+earlier. Push, merge, release, runtime activation, credential changes, and
+FastContext installation remain unauthorized. The
 optional local FastContext Spike remains separate and was not installed or
 activated.

@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W30 accepted and locally committed; latest accepted
-  commit `47f225b`
+- Slice 2: S2-W1 through S2-W31 accepted and locally committed; latest accepted
+  commit `b00f8d8`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W31_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W32_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1222,6 +1222,56 @@ Updated: 2026-07-25
 - S2-W31 Repair 1 implementation Reviewer: `PASS`; findings: none; full strict
   matrix independently passed
 - S2-W31 Candidate last line: `VERDICT: PASS`
+- Accepted S2-W31 local commit: `b00f8d8`
+- User architecture authorization: S2-W32 uses discovery-priority Runtime
+  observation writes
+- Accepted ADR-0007:
+  `docs/adr/0007-runtime-observation-discovery-priority.md`
+- S2-W32 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W32/contract.md`
+- S2-W32 boundary: pure `none`/`discovery`/`status` Candidate; discovery wins
+  mixed inventory/status changes; stable identity drift errors; absence does
+  not create status/deletion; no writer, Event metadata, Journal, scheduler,
+  daemon, activation, or Slice 3 authority
+- S2-W32 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W32/contract-review.md`
+- S2-W32 contract Reviewer: `PASS`; findings: none
+- S2-W32 mandatory RED: exit `1`; failed only on missing frozen error, kind,
+  Candidate, and planner symbols
+- S2-W32 product/test digests:
+  `runtime_write_plan.go=f50a6d5a...e9c97`,
+  `runtime_write_plan_test.go=c60cbd01...018c`
+- S2-W32 proof: none/current-only/every inventory/status-only/mixed precedence,
+  absence, invalid/oversized projection, invalid discovery, identity drift,
+  delayed context, map-order/digest sensitivity, mutation, zero Candidate, and
+  static no-authority boundary
+- S2-W32 strict matrix: focused `0`; app `0`; app/runtime/projection impact `0`;
+  focused race `-count=50` `0`; repository `0`; repository race `0`; vet `0`;
+  gofmt, diff, and ADR index/link `PASS`
+- S2-W32 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W32/deliverable.md`
+- S2-W32 Implementation Review 1: `FAIL`; canonical Candidate digest and
+  sensitivity table omit exposed `Planned()`; all other behavior/boundaries
+  passed
+- S2-W32 Review 1 evidence:
+  `.loom-evidence/phase1-slice2/S2-W32/implementation-review-1.md`
+- S2-W32 Repair 1 contract: add only existing `planned` fact to versioned
+  digest payload and direct single-field RED
+- S2-W32 Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W32/implementation-repair-1-contract-review.md`
+- S2-W32 Repair 1 contract Reviewer: `PASS`; findings: none
+- S2-W32 Repair 1 mandatory RED: exit `1`; mutating `planned` did not change
+  Candidate digest
+- S2-W32 Repair 1 product/test digests:
+  `runtime_write_plan.go=0a7ac256...c721b`,
+  `runtime_write_plan_test.go=57eace71...22f8d`
+- S2-W32 Repair 1: versioned digest payload now contains exact `planned`; its
+  direct sensitivity test and complete strict matrix pass
+- S2-W32 fresh Implementation Review 2:
+  `.loom-evidence/phase1-slice2/S2-W32/implementation-review-2.md`
+- S2-W32 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix independently passed
+- S2-W32 Candidate last line: `VERDICT: PASS`
 - Next gate: fresh pre-commit strict matrix, exact staged-scope audit, and one
   authorized local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
