@@ -898,3 +898,40 @@ returned `PASS` with no findings, and the final pre-commit matrix passed. S3-W1
 is accepted; its atomic local commit records the Bridge boundary and the
 reviewed Slice 2-to-3 transition evidence. The next gate is an S3-W2 contract;
 no S3-W2 product work is authorized before fresh Contract Review `PASS`.
+S3-W2 is now frozen at baseline `c21a8f1` as one Run/WorkItem/Runtime
+multi-stream transaction authority: Journal stream-head CAS, create/assign,
+claim/capacity, lease/reclaim, start/terminal, and rebuildable projection stay
+in one Candidate. Contract Review 1 returned `FAIL` on accepted Runtime stream
+spelling, executor-to-`done` leakage, reclaim of running Runs, and lexical
+cross-stream replay. Amendment 1 replaces those four points without changing
+scope; fresh Amendment Review 1 returned `PASS` with no findings. The current
+gate is the complete mandatory RED across Journal CAS, Run authority, and
+dependency-aware projection. The mandatory RED passed and minimal Journal CAS
+GREEN began. Implementation feasibility then exposed that restart-safe
+`Authority.Snapshot()` cannot enumerate facts through the frozen Store API.
+Amendment 2 adds only a deterministic mutation-isolated `Store.ReadAll`; fresh
+Contract Review passed and its focused RED/GREEN closed. Projection analysis
+then proved that Amendment 1's same-stream capacity facts would break the
+accepted adjacent Runtime-status sequence. Amendment 3 moves capacity facts to
+`runtime_capacity:<id>` while retaining exact CAS of both status and capacity
+heads. Contract Review found that replay could not audit that live ordering
+without persisted status-head evidence. Amendment 4 adds only exact status
+stream/sequence/Event references to S3-W2 Run/capacity payloads. Fresh Contract
+Review returned `PASS` with no findings. The current gate is test-only repair
+and a focused RED on the missing separate-capacity-stream and persisted
+status-head-reference behavior before further product implementation. That RED
+failed only on the frozen missing behavior. The complete Candidate now keeps
+status and capacity streams separate, binds every relevant mutation to an
+exact persisted status-head reference, audits historical status/capacity
+facts during dependency-aware replay, and stops successful execution at
+`ready_for_review`. Focused, 30-run focused race, repository,
+repository-race, vet, fuzz, format, diff, marker, export, and scope checks
+pass. Fresh independent Implementation Review 1 found no S3-W2 product defect
+but returned `FAIL` because unchanged Pi fixtures failed while Reviewer and
+Controller full-suite processes overlapped. No waiver was taken. In an
+evidence-only repair, both exact full-suite commands then passed three
+consecutive isolated attempts with no product change, package exclusion, or
+`-p 1`. Fresh independent Implementation Review 2 returned `PASS` with no
+findings. The fresh final pre-commit matrix and exact Candidate scope checks
+pass. S3-W2 is accepted and ready for its authorized local atomic commit; no
+capability is activated.

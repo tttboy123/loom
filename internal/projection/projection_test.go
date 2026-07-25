@@ -69,6 +69,7 @@ func TestRebuildFromCommittedJournalIsDeterministic(t *testing.T) {
 		WorkItems: map[string]WorkItem{
 			"work-1": {ID: "work-1", Title: "Implement projection", Status: "accepted"},
 		},
+		Runs: map[string]Run{},
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestA},
 		},
@@ -108,6 +109,7 @@ func TestRebuildCanonicalizesOutOfOrderAndDuplicateEvents(t *testing.T) {
 		WorkItems: map[string]WorkItem{
 			"work-1": {ID: "work-1", Title: "Canonical replay", Status: "open"},
 		},
+		Runs: map[string]Run{},
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestB},
 		},

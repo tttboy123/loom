@@ -26,6 +26,7 @@ var (
 	ErrDuplicateBatchIdempotencyKey = errors.New("duplicate batch idempotency key")
 	ErrDuplicateBatchStreamSequence = errors.New("duplicate batch stream sequence")
 	ErrPartialEventBatchConflict    = errors.New("partial event batch conflict")
+	ErrStreamHeadConflict           = errors.New("stream head conflict")
 )
 
 type Event struct {
@@ -43,6 +44,11 @@ type Event struct {
 
 type Store struct {
 	db *sql.DB
+}
+
+type StreamHeadExpectation struct {
+	StreamID string
+	Sequence int64
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -193,6 +199,130 @@ func (s *Store) AppendBatch(ctx context.Context, events []Event) ([]Event, error
 	return cloneJournalEvents(inserted), nil
 }
 
+func (s *Store) AppendBatchIfStreamHeads(
+	ctx context.Context,
+	expectations []StreamHeadExpectation,
+	events []Event,
+) ([]Event, error) {
+	normalizedHeads, err := normalizeStreamHeadExpectations(expectations)
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeEventBatch(events)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET seq = seq WHERE 0`); err != nil {
+		rollback()
+		return nil, err
+	}
+
+	existing := make([]Event, len(normalized))
+	exactCount := 0
+	var idempotencyConflict string
+	var sequenceConflict eventStreamSequence
+	for index, event := range normalized {
+		committed, found, lookupErr := findByIdempotencyKey(ctx, tx, event.IdempotencyKey)
+		if lookupErr != nil {
+			rollback()
+			return nil, lookupErr
+		}
+		if found {
+			if sameImmutableEvent(committed, event) {
+				existing[index] = cloneJournalEvent(committed)
+				exactCount++
+			} else if idempotencyConflict == "" {
+				idempotencyConflict = event.IdempotencyKey
+			}
+			continue
+		}
+		occupied, lookupErr := existsStreamSequence(ctx, tx, event.StreamID, event.Seq)
+		if lookupErr != nil {
+			rollback()
+			return nil, lookupErr
+		}
+		if occupied && sequenceConflict.StreamID == "" {
+			sequenceConflict = eventStreamSequence{
+				StreamID: event.StreamID,
+				Seq:      event.Seq,
+			}
+		}
+	}
+
+	if idempotencyConflict != "" {
+		rollback()
+		return nil, fmt.Errorf("%w: %s", ErrIdempotencyConflict, idempotencyConflict)
+	}
+	if exactCount > 0 && exactCount < len(normalized) {
+		rollback()
+		return nil, ErrPartialEventBatchConflict
+	}
+	if exactCount == len(normalized) {
+		if err := ctx.Err(); err != nil {
+			rollback()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return cloneJournalEvents(existing), nil
+	}
+
+	for _, expectation := range normalizedHeads {
+		var current int64
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream_id = ?`,
+			expectation.StreamID,
+		).Scan(&current); err != nil {
+			rollback()
+			return nil, err
+		}
+		if current != expectation.Sequence {
+			rollback()
+			return nil, ErrStreamHeadConflict
+		}
+	}
+	if sequenceConflict.StreamID != "" {
+		rollback()
+		return nil, fmt.Errorf(
+			"%w: %s/%d",
+			ErrSequenceConflict,
+			sequenceConflict.StreamID,
+			sequenceConflict.Seq,
+		)
+	}
+
+	inserted := make([]Event, len(normalized))
+	for index, event := range normalized {
+		current, insertErr := insertEvent(ctx, tx, event)
+		if insertErr != nil {
+			rollback()
+			return nil, insertErr
+		}
+		inserted[index] = cloneJournalEvent(current)
+	}
+	if err := ctx.Err(); err != nil {
+		rollback()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return cloneJournalEvents(inserted), nil
+}
+
 func (s *Store) ReadStream(ctx context.Context, streamID string) ([]Event, error) {
 	if streamID == "" {
 		return nil, ErrEmptyStreamForReplay
@@ -223,9 +353,62 @@ func (s *Store) ReadStream(ctx context.Context, streamID string) ([]Event, error
 	return events, nil
 }
 
+func (s *Store) ReadAll(ctx context.Context) ([]Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, stream_id, seq, idempotency_key, event_type, schema_version,
+		       emitted_at, correlation_id, causation_id, payload_json
+		FROM events
+		ORDER BY stream_id ASC, seq ASC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]Event, 0)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, cloneJournalEvent(event))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return cloneJournalEvents(events), nil
+}
+
 type eventStreamSequence struct {
 	StreamID string
 	Seq      int64
+}
+
+func normalizeStreamHeadExpectations(
+	expectations []StreamHeadExpectation,
+) ([]StreamHeadExpectation, error) {
+	if len(expectations) == 0 || len(expectations) > 8 {
+		return nil, ErrInvalidEventBatch
+	}
+	normalized := make([]StreamHeadExpectation, len(expectations))
+	seen := make(map[string]struct{}, len(expectations))
+	for index, expectation := range expectations {
+		if expectation.StreamID == "" || expectation.Sequence < 0 {
+			return nil, ErrInvalidEventBatch
+		}
+		if _, exists := seen[expectation.StreamID]; exists {
+			return nil, ErrInvalidEventBatch
+		}
+		seen[expectation.StreamID] = struct{}{}
+		normalized[index] = expectation
+	}
+	return normalized, nil
 }
 
 func normalizeEventBatch(events []Event) ([]Event, error) {

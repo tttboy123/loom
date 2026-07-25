@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S3_W1_ACCEPTED`
+- Status: `S3_W2_ACCEPTED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1658,8 +1658,58 @@ Updated: 2026-07-25
 - S3-W1 final pre-commit matrix and exact staged-scope audit: `PASS`
 - S3-W1 accepted; its atomic local commit records the product, tests,
   governance, evidence, and reviewed Slice 2-to-3 transition
-- Current gate: freeze S3-W2 contract; no S3-W2 product before fresh Contract
-  Review `PASS`
+- S3-W1 accepted local commit: `c21a8f1`
+- S3-W2 frozen boundary: one Journal multi-stream-head CAS plus atomic
+  create/assign, claim/capacity, lease/reclaim, start/terminal, and projection
+  authority; no thin writer/projection/coordinator split
+- S3-W2 Contract Review 1: `FAIL` on accepted Runtime stream spelling,
+  executor-to-`done` leakage, reclaim of running Runs, and lexical
+  cross-stream replay
+- S3-W2 Amendment 1: accepted Runtime stream, successful Run to
+  `ready_for_review`, claimed-only reclaim, and dependency-aware two-pass
+  projection; no API/owned-scope expansion
+- S3-W2 Amendment 1 Contract Review 1: `PASS`; findings: none
+- S3-W2 mandatory RED: `PASS` as RED; all seven markers exactly once and
+  focused compile failure only on missing frozen S3-W2 symbols/behavior
+- S3-W2 minimal GREEN: Journal multi-stream-head CAS focused test `PASS`
+- S3-W2 implementation feasibility finding: restart-safe Authority Snapshot
+  cannot enumerate all facts through existing known-stream-only Store reads
+- S3-W2 Amendment 2: add deterministic mutation-isolated read-only
+  `Store.ReadAll`; no registry Event, DB handle, writer, owned-scope, or
+  authority expansion
+- S3-W2 Amendment 2 Contract Review 1: `PASS`; focused ReadAll RED then Journal
+  package GREEN
+- S3-W2 compatibility finding: capacity facts in `runtime_instance:` would
+  break accepted adjacent Runtime status sequences and require an unauthorized
+  StateWriter change
+- S3-W2 Amendment 3: separate `runtime_capacity:<id>` facts plus exact CAS of
+  both accepted Runtime status head and capacity head; owned scope unchanged
+- S3-W2 Amendment 3 Contract Review 1: `FAIL`; live status-head CAS ordering
+  was not persisted and therefore not auditable by replay
+- S3-W2 Amendment 4: required status stream/sequence/Event reference on
+  S3-W2 Run/capacity facts; no public API/Event envelope/owned-scope expansion
+- S3-W2 Amendment 4 Contract Review 1: `PASS`; offline-before/after,
+  exact observed status head, paired-fact identity, and degraded terminal
+  cleanup are replay-auditable with no public/owned-scope expansion
+- S3-W2 Amendment 4 focused RED: `PASS` as RED; existing behavior polluted the
+  accepted status stream, left the capacity stream empty, and omitted the
+  frozen persisted status-head reference
+- S3-W2 complete Candidate verification: focused `PASS`; focused race
+  `-count=30` `PASS`; repository/race/vet/fuzz/format/diff/marker/export/scope
+  checks `PASS`; real Journal reopen and historical-capacity replay proof pass
+- S3-W2 Implementation Review 1: `FAIL` on evidence only; no owned product,
+  safety, concurrency, projection, trust-boundary, or Slice 4 defect found;
+  unchanged Pi fixtures failed while Reviewer and Controller full suites
+  overlapped
+- S3-W2 Review 1 evidence repair: exact `go test ./... -count=1` and exact
+  repository race command each passed three consecutive isolated attempts;
+  no waiver, product change, package exclusion, or `-p 1`
+- S3-W2 Implementation Review 2: `PASS`; findings: none; independent
+  focused/full/race/vet/format/diff checks `PASS`
+- S3-W2 fresh pre-commit matrix: focused, 30-run focused race, repository,
+  repository-race, vet, fuzz, format, diff, marker, export, and scope checks
+  `PASS`
+- Current gate: exact Candidate staging and authorized local atomic commit
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

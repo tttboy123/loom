@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -489,6 +490,244 @@ func containsSQL(sqlText, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestAppendBatchIfStreamHeadsContract(t *testing.T) { // s3_w2_journal_multi_stream_head_cas
+	t.Parallel()
+
+	t.Run("zero and exact heads commit atomically", func(t *testing.T) {
+		store := newMigratedStore(t)
+		ctx := context.Background()
+		seed := testEvent("evt-cas-seed", "stream-a", 1, "idem-cas-seed")
+		if _, err := store.Append(ctx, seed); err != nil {
+			t.Fatal(err)
+		}
+
+		events := []Event{
+			testEvent("evt-cas-a2", "stream-a", 2, "idem-cas-a2"),
+			testEvent("evt-cas-b1", "stream-b", 1, "idem-cas-b1"),
+		}
+		expectations := []StreamHeadExpectation{
+			{StreamID: "stream-a", Sequence: 1},
+			{StreamID: "stream-b", Sequence: 0},
+		}
+		committed, err := store.AppendBatchIfStreamHeads(ctx, expectations, events)
+		if err != nil {
+			t.Fatalf("AppendBatchIfStreamHeads() error = %v", err)
+		}
+		if !reflect.DeepEqual(committed, events) {
+			t.Fatalf("committed = %#v, want %#v", committed, events)
+		}
+
+		expectations[0].StreamID = "mutated"
+		events[0].PayloadJSON[0] = '['
+		committed[1].PayloadJSON[0] = '['
+		gotA, err := store.ReadStream(ctx, "stream-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotB, err := store.ReadStream(ctx, "stream-b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(gotA) != 2 || len(gotB) != 1 ||
+			string(gotA[1].PayloadJSON) != `{"value":"stable"}` ||
+			string(gotB[0].PayloadJSON) != `{"value":"stable"}` {
+			t.Fatalf("committed facts alias inputs/results: a=%#v b=%#v", gotA, gotB)
+		}
+	})
+
+	t.Run("identical retry precedes stale head rejection", func(t *testing.T) {
+		store := newMigratedStore(t)
+		ctx := context.Background()
+		events := []Event{
+			testEvent("evt-retry-a1", "retry-a", 1, "idem-retry-a1"),
+			testEvent("evt-retry-b1", "retry-b", 1, "idem-retry-b1"),
+		}
+		heads := []StreamHeadExpectation{
+			{StreamID: "retry-a", Sequence: 0},
+			{StreamID: "retry-b", Sequence: 0},
+		}
+		first, err := store.AppendBatchIfStreamHeads(ctx, heads, events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := store.AppendBatchIfStreamHeads(ctx, heads, events)
+		if err != nil {
+			t.Fatalf("exact retry error = %v", err)
+		}
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("retry changed facts: first=%#v second=%#v", first, second)
+		}
+
+		conflicting := append([]Event(nil), events...)
+		conflicting[1] = withEvent(conflicting[1], func(event *Event) {
+			event.PayloadJSON = []byte(`{"value":"different"}`)
+		})
+		if _, err := store.AppendBatchIfStreamHeads(ctx, heads, conflicting); !errors.Is(err, ErrIdempotencyConflict) {
+			t.Fatalf("conflicting retry error = %v, want ErrIdempotencyConflict", err)
+		}
+	})
+
+	t.Run("head mismatch is typed and atomic", func(t *testing.T) {
+		store := newMigratedStore(t)
+		ctx := context.Background()
+		seed := testEvent("evt-head-seed", "head-a", 1, "idem-head-seed")
+		if _, err := store.Append(ctx, seed); err != nil {
+			t.Fatal(err)
+		}
+		events := []Event{
+			testEvent("evt-head-a2", "head-a", 2, "idem-head-a2"),
+			testEvent("evt-head-b1", "head-b", 1, "idem-head-b1"),
+		}
+		for _, heads := range [][]StreamHeadExpectation{
+			{{StreamID: "head-a", Sequence: 0}, {StreamID: "head-b", Sequence: 0}},
+			{{StreamID: "head-a", Sequence: 2}, {StreamID: "head-b", Sequence: 0}},
+			{{StreamID: "head-a", Sequence: 1}, {StreamID: "head-b", Sequence: 1}},
+		} {
+			if _, err := store.AppendBatchIfStreamHeads(ctx, heads, events); !errors.Is(err, ErrStreamHeadConflict) {
+				t.Errorf("heads %#v error = %v, want ErrStreamHeadConflict", heads, err)
+			}
+			gotA, readErr := store.ReadStream(ctx, "head-a")
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			gotB, readErr := store.ReadStream(ctx, "head-b")
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if len(gotA) != 1 || len(gotB) != 0 {
+				t.Fatalf("mismatch partially committed: a=%d b=%d", len(gotA), len(gotB))
+			}
+		}
+	})
+
+	t.Run("expectation validation precedes database work", func(t *testing.T) {
+		store := newMigratedStore(t)
+		event := testEvent("evt-invalid-head", "invalid-head", 1, "idem-invalid-head")
+		cases := [][]StreamHeadExpectation{
+			nil,
+			{},
+			{{StreamID: "", Sequence: 0}},
+			{{StreamID: "x", Sequence: -1}},
+			{{StreamID: "x", Sequence: 0}, {StreamID: "x", Sequence: 0}},
+			{
+				{StreamID: "1"}, {StreamID: "2"}, {StreamID: "3"},
+				{StreamID: "4"}, {StreamID: "5"}, {StreamID: "6"},
+				{StreamID: "7"}, {StreamID: "8"}, {StreamID: "9"},
+			},
+		}
+		for index, heads := range cases {
+			if _, err := store.AppendBatchIfStreamHeads(context.Background(), heads, []Event{event}); !errors.Is(err, ErrInvalidEventBatch) {
+				t.Errorf("case %d error = %v, want ErrInvalidEventBatch", index, err)
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := store.AppendBatchIfStreamHeads(ctx, []StreamHeadExpectation{{StreamID: "invalid-head"}}, []Event{event}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("concurrent contenders linearize on expected head", func(t *testing.T) {
+		store := newMigratedStore(t)
+		ctx := context.Background()
+		seed := testEvent("evt-race-seed", "race-stream", 1, "idem-race-seed")
+		if _, err := store.Append(ctx, seed); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for index := 0; index < 2; index++ {
+			index := index
+			go func() {
+				<-start
+				event := testEvent(
+					fmt.Sprintf("evt-race-%d", index),
+					"race-stream",
+					2,
+					fmt.Sprintf("idem-race-%d", index),
+				)
+				_, err := store.AppendBatchIfStreamHeads(
+					ctx,
+					[]StreamHeadExpectation{{StreamID: "race-stream", Sequence: 1}},
+					[]Event{event},
+				)
+				results <- err
+			}()
+		}
+		close(start)
+		var success, conflicts int
+		for index := 0; index < 2; index++ {
+			err := <-results
+			switch {
+			case err == nil:
+				success++
+			case errors.Is(err, ErrStreamHeadConflict):
+				conflicts++
+			default:
+				t.Fatalf("unexpected contender error = %v", err)
+			}
+		}
+		if success != 1 || conflicts != 1 {
+			t.Fatalf("success=%d conflicts=%d, want 1/1", success, conflicts)
+		}
+		events, err := store.ReadStream(ctx, "race-stream")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 2 {
+			t.Fatalf("event count = %d, want 2", len(events))
+		}
+	})
+}
+
+func TestReadAllDeterministicIsolatedAndCancelable(t *testing.T) {
+	t.Parallel()
+	store := newMigratedStore(t)
+	ctx := context.Background()
+
+	empty, err := store.ReadAll(ctx)
+	if err != nil {
+		t.Fatalf("empty ReadAll() error = %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty ReadAll() = %#v, want non-nil empty", empty)
+	}
+
+	input := []Event{
+		testEvent("evt-z2", "z-stream", 2, "idem-z2"),
+		testEvent("evt-a1", "a-stream", 1, "idem-a1"),
+		testEvent("evt-z1", "z-stream", 1, "idem-z1"),
+	}
+	if _, err := store.AppendBatch(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ReadAll(ctx)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(got) != 3 ||
+		got[0].ID != "evt-a1" ||
+		got[1].ID != "evt-z1" ||
+		got[2].ID != "evt-z2" {
+		t.Fatalf("ReadAll() order = %#v", got)
+	}
+	got[0].PayloadJSON[0] = '['
+	again, err := store.ReadAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again[0].PayloadJSON) != `{"value":"stable"}` {
+		t.Fatal("ReadAll result aliases committed payload")
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if events, err := store.ReadAll(canceled); !errors.Is(err, context.Canceled) || events != nil {
+		t.Fatalf("canceled ReadAll() = %#v, %v", events, err)
+	}
 }
 
 type recordingDriver struct {

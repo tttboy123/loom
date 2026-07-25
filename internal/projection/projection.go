@@ -63,6 +63,7 @@ func (s journalSource) Events(ctx context.Context) ([]journal.Event, error) {
 type Snapshot struct {
 	Modes            map[string]string
 	WorkItems        map[string]WorkItem
+	Runs             map[string]Run
 	Evidence         map[string]Evidence
 	Teams            map[string]TeamInstance
 	AgentInstances   map[string]AgentInstance
@@ -70,9 +71,24 @@ type Snapshot struct {
 }
 
 type WorkItem struct {
-	ID     string
-	Title  string
-	Status string
+	ID              string
+	Title           string
+	Status          string
+	RunID           string
+	AgentInstanceID string
+}
+
+type Run struct {
+	ID                    string
+	WorkItemID            string
+	Phase                 string
+	ClaimID               string
+	ClaimGeneration       int64
+	RuntimeInstanceID     string
+	AgentInstanceID       string
+	PrepareLeaseExpiresAt time.Time
+	TerminalStatus        string
+	TerminalReason        string
 }
 
 type Evidence struct {
@@ -208,6 +224,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	seenByID := make(map[string]journal.Event)
 	seenByStreamSeq := make(map[streamSeq]journal.Event)
 	nextSeq := make(map[string]int64)
+	var runAuthorityEvents []journal.Event
 
 	for _, event := range ordered {
 		if err := ctx.Err(); err != nil {
@@ -239,9 +256,19 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		seenByStreamSeq[key] = event
 		nextSeq[event.StreamID] = event.Seq
 
+		if isRunAuthorityProjectionEvent(event) {
+			runAuthorityEvents = append(runAuthorityEvents, event)
+			continue
+		}
+		if isRunAuthorityRuntimeReferenceEvent(event) {
+			runAuthorityEvents = append(runAuthorityEvents, event)
+		}
 		if err := candidate.apply(event); err != nil {
 			return Snapshot{}, err
 		}
+	}
+	if err := applyRunAuthorityProjection(ctx, &candidate, runAuthorityEvents); err != nil {
+		return Snapshot{}, err
 	}
 	if err := candidate.validateSavedTeamLinks(); err != nil {
 		return Snapshot{}, err
@@ -673,6 +700,7 @@ func emptySnapshot() Snapshot {
 	return Snapshot{
 		Modes:            make(map[string]string),
 		WorkItems:        make(map[string]WorkItem),
+		Runs:             make(map[string]Run),
 		Evidence:         make(map[string]Evidence),
 		Teams:            make(map[string]TeamInstance),
 		AgentInstances:   make(map[string]AgentInstance),
@@ -687,6 +715,9 @@ func (s Snapshot) clone() Snapshot {
 	}
 	for id, workItem := range s.WorkItems {
 		out.WorkItems[id] = workItem
+	}
+	for id, run := range s.Runs {
+		out.Runs[id] = run
 	}
 	for id, evidence := range s.Evidence {
 		out.Evidence[id] = evidence
