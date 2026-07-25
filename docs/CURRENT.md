@@ -165,7 +165,23 @@ frozen Snapshot fields. The implementation passes focused, package, 50-run
 focused race, repository, repository-race, vet, format, diff, and import/scope
 checks. Implementation Review 1 required a bounded payload-presence Repair 1;
 fresh independent Repair 1 review returned `PASS` with no blocking findings.
-S2-W16 is accepted, ready for its local atomic commit, and not activated.
+S2-W16 is accepted, locally committed, and not activated.
+
+`S2-W16` is locally committed at `42fc661`. `S2-W17` is frozen at
+`.loom-evidence/phase1-slice2/S2-W17/contract.md` for a Pi-specific metadata
+probe core over the accepted S2-W2 `RuntimeProbe` port. It freezes only bounded
+version/model command requests, strict output parsing, immutable observation
+mapping, and a narrow injected runner port. Current upstream Pi
+`--list-models` startup may run migrations, so this boundary deliberately
+contains no executable runner and cannot inspect or modify user Pi state.
+Fresh independent contract review returned `PASS` with no blocking findings.
+Mandatory RED failed only on missing frozen S2-W17 symbols. The minimal
+Candidate passes focused, package, focused-race-50, repository,
+repository-race, vet, format, diff, import-boundary, non-disclosure, and scope
+checks. Fresh independent implementation review returned `PASS` with no
+blocking findings. S2-W17 is accepted and ready for its local atomic commit.
+No Pi process, daemon scheduling, credential/config/environment access,
+Runtime execution, model call, or activation is authorized.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -298,12 +314,11 @@ activated.
 
 ## Next development checkpoint
 
-Locally commit accepted S2-W16, then freeze the next bounded Slice 2 boundary.
-WorkItem creation remains a later independent boundary. Concrete local probes
-and daemon
-scheduling still require later frozen Slice 2 contracts. Bridge, real Runtime
-Adapter execution, AgentGrant, claim generation, and WorkItem dispatch remain
-Slice 3 boundaries even when research drafts propose them earlier. Push, merge,
-release, runtime activation, credential changes, and FastContext installation
-remain unauthorized. The optional local FastContext Spike remains separate and
-was not installed or activated.
+Create the strictly scoped local S2-W17 commit, then freeze the concrete
+isolated Pi process-runner boundary. WorkItem creation remains later and
+independent. Daemon scheduling still requires a separately frozen Slice 2
+contract. Bridge, real Runtime Adapter execution, AgentGrant, claim generation,
+and WorkItem dispatch remain Slice 3 boundaries even when research drafts
+propose them earlier. Push, merge, release, runtime activation, credential
+changes, and FastContext installation remain unauthorized. The optional local
+FastContext Spike remains separate and was not installed or activated.

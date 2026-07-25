@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W16_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W17_ACCEPTED_NOT_ACTIVATED`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -559,8 +559,41 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W16/implementation-review-2.md`
 - S2-W16 Repair 1 Reviewer: `PASS`; findings: none blocking
 - S2-W16 Candidate last line: `VERDICT: PASS`
-- Next gate: local atomic S2-W16 commit, then freeze the next bounded Slice 2
-  boundary
+- Accepted S2-W16 local commit: `42fc661`
+- S2-W17 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W17/contract.md`
+- S2-W17 boundary: Pi-specific version/model metadata command semantics,
+  bounded parsing, and S2-W2 `RuntimeProbe` adaptation over an injected narrow
+  runner; no executable runner, PATH/home/config/auth/environment inspection,
+  process, daemon scheduling, Runtime execution, or activation
+- S2-W17 contract SHA256:
+  `5216acc1807c6a65ae3a72d365f8026d79a61a062ccb43a63ab061d0b027e162`
+- Upstream Pi metadata surface verified read-only on 2026-07-25; current
+  `--list-models` startup may run migrations, so the contract explicitly
+  forbids direct invocation against user state
+- S2-W17 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W17/contract-review.md`
+- S2-W17 contract Reviewer: `PASS`; findings: none blocking
+- S2-W17 mandatory RED: exit `1`; failed only on missing frozen S2-W17
+  symbols, with no syntax, dependency, environment, or unrelated failure
+- S2-W17 product:
+  `internal/runtime/pi_probe.go`
+- S2-W17 tests:
+  `internal/runtime/pi_probe_test.go`
+- S2-W17 product SHA256:
+  `42f39f37c2df3b824edf2c145bfcf5ef0c3dab428a2d8f3b954e28036e0a59cf`
+- S2-W17 test SHA256:
+  `2d7f9fdfde5a0a326b55f193c64360efb403a8d0046d415b5f59ac7e749bd2a2`
+- S2-W17 strict matrix: focused, package, focused-race-50, repository,
+  repository-race, vet, gofmt, diff, import boundary, non-disclosure, and scope
+  checks all `PASS`
+- S2-W17 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W17/deliverable.md`
+- S2-W17 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W17/implementation-review.md`
+- S2-W17 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W17 Candidate last line: `VERDICT: PASS`
+- Next gate: strictly scoped local atomic S2-W17 commit
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 
