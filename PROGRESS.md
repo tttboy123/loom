@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W32 accepted and locally committed; latest accepted
-  commit `26bf981`
+- Slice 2: S2-W1 through S2-W33 accepted and locally committed; latest accepted
+  commit `affd2a6`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W33_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `S2-W34_ACCEPTED_PENDING_LOCAL_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1295,6 +1295,49 @@ Updated: 2026-07-25
 - S2-W33 boundary: plan once; none writes nothing; discovery invokes only
   discovery committer; status invokes only S2-W31; zero non-selected outputs;
   no discovery execution, projection query, metadata, retry, scheduler, daemon,
+  activation, or Slice 3 authority
+- Accepted S2-W33 local commit: `affd2a6`
+- S2-W34 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W34/contract.md`
+- S2-W34 fresh contract review:
+  `.loom-evidence/phase1-slice2/S2-W34/contract-review.md`
+- S2-W34 contract Reviewer: `PASS`; findings: none
+- S2-W34 mandatory RED: failed only on missing frozen coordinator/error symbols
+- S2-W34 Candidate product/test SHA256:
+  `runtime_observation_cycle.go=26a1a706...d7ea`,
+  `runtime_observation_cycle_test.go=8759409d...2776`
+- S2-W34 Controller strict matrix: focused, app, impact, focused-race-50,
+  repository, repository-race, vet, format, diff, configured SQLite
+  discovery-priority then status-only chain, idempotent retries, and static
+  boundary all `PASS`
+- S2-W34 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W34/deliverable.md`
+- S2-W34 Implementation Review 1:
+  `.loom-evidence/phase1-slice2/S2-W34/implementation-review-1.md`
+- S2-W34 Review 1: `FAIL`; one test-proof gap; no product defect
+- S2-W34 Repair 1 contract:
+  `.loom-evidence/phase1-slice2/S2-W34/implementation-repair-1-contract.md`
+- S2-W34 Repair 1 contract review:
+  `.loom-evidence/phase1-slice2/S2-W34/implementation-repair-1-contract-review.md`
+- S2-W34 Repair 1 contract Reviewer: `PASS`; findings: none
+- S2-W34 Repair 1 scope: test-only complete S2-W26 error matrix; product hash
+  frozen unchanged
+- S2-W34 Repair 1 mandatory RED: failed on all six missing canonical case
+  markers
+- S2-W34 Repair 1 test SHA256:
+  `runtime_observation_cycle_test.go=4a4b3fb3...79f9e`
+- S2-W34 Repair 1: oversized/typed-nil factories, invalid present/absent probe
+  results, probe source error, and invalid discovered observation now directly
+  prove five-zero/no-committer propagation; complete strict matrix `PASS`;
+  product SHA unchanged
+- S2-W34 fresh Implementation Review 2:
+  `.loom-evidence/phase1-slice2/S2-W34/implementation-review-2.md`
+- S2-W34 Repair 1 implementation Reviewer: `PASS`; findings: none; complete
+  strict matrix independently passed
+- S2-W34 Candidate last line: `VERDICT: PASS`
+- S2-W34 boundary: execute accepted S2-W26 once, delegate its exact snapshot
+  plus caller-supplied projection to S2-W33 once; no S2-W27 unconditional
+  commit, projection query/rebuild, metadata, retry, scheduler, daemon/config,
   activation, or Slice 3 authority
 - Next gate: fresh pre-commit matrix, exact staged-scope audit, local atomic
   commit

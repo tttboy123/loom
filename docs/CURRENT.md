@@ -530,7 +530,32 @@ The minimal Candidate passes the complete strict matrix, including the real
 SQLite mixed-discovery then status-only idempotent Event chain. Fresh
 implementation review returned `PASS` with no findings after independently
 rerunning the complete strict matrix. S2-W33 is accepted pending its one scoped
-local atomic commit.
+local atomic commit. It is locally committed at `affd2a6`, and nothing is
+activated.
+
+`S2-W34` is frozen at
+`.loom-evidence/phase1-slice2/S2-W34/contract.md` for one caller-triggered
+configured Runtime observation cycle. It executes accepted S2-W26 exactly once
+and delegates its immutable snapshot plus a caller-supplied copied projection
+to accepted S2-W33 exactly once. It does not use S2-W27's unconditional
+discovery-commit path, query/rebuild projection, prepare metadata, retry,
+schedule, load configuration, start a daemon, or activate a Runtime. Fresh
+contract review returned `PASS` with no findings. Mandatory RED failed only on
+the missing frozen coordinator/error symbols. The
+minimal Candidate passes the complete strict matrix, including configured
+mixed-discovery then status-only SQLite idempotency. Fresh implementation
+Review 1 returned `FAIL` on one test-proof gap and found no product defect:
+oversized/typed-nil factories, invalid probe result pairs, probe source error,
+and invalid discovered observation were not directly propagated through the
+S2-W34 boundary. Repair 1 is frozen as test-only; fresh repair-contract review
+returned `PASS` with no findings. Mandatory Repair RED failed on all six
+missing coverage markers. The test-only
+repair directly covers the complete S2-W26 error matrix through S2-W34, the
+complete strict matrix passes again, and product remains byte-for-byte
+unchanged. Fresh Repair 1 implementation review returned `PASS` with no
+findings after
+independently rerunning the complete strict matrix. S2-W34 is accepted pending
+its one scoped local atomic commit.
 
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
@@ -663,12 +688,11 @@ activated.
 
 ## Next development checkpoint
 
-Create the S2-W33 local atomic commit only after a fresh pre-commit matrix and
+Create the S2-W34 local atomic commit only after a fresh pre-commit matrix and
 exact staged-scope audit.
-Discovery execution, scheduling, and daemon entry/config remain separate later
-WorkItems. Bridge, real Runtime Adapter execution, AgentGrant, claim generation,
-and WorkItem dispatch remain Slice 3 boundaries even when research drafts
-propose them earlier. Push, merge, release, runtime activation, credential
-changes, and FastContext installation remain unauthorized. The
-optional local FastContext Spike remains separate and was not installed or
-activated.
+Scheduling and daemon entry/config remain separate later WorkItems. Bridge,
+real Runtime Adapter execution, AgentGrant, claim generation, and WorkItem
+dispatch remain Slice 3 boundaries even when research drafts propose them
+earlier. Push, merge, release, runtime activation, credential changes, and
+FastContext installation remain unauthorized. The optional local FastContext
+Spike remains separate and was not installed or activated.
