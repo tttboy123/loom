@@ -50,7 +50,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-W17_ACCEPTED_NOT_ACTIVATED`
+- Status: `S2-W18_ACCEPTED_PENDING_COMMIT`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -593,7 +593,56 @@ Updated: 2026-07-25
   `.loom-evidence/phase1-slice2/S2-W17/implementation-review.md`
 - S2-W17 implementation Reviewer: `PASS`; findings: none blocking
 - S2-W17 Candidate last line: `VERDICT: PASS`
-- Next gate: strictly scoped local atomic S2-W17 commit
+- Accepted S2-W17 local commit: `b73cf8b`
+- S2-W18 frozen contract:
+  `.loom-evidence/phase1-slice2/S2-W18/contract.md`
+- S2-W18 boundary: exact-request local Pi metadata process runner with pinned
+  executable identity/digest, private per-call state, environment allowlist,
+  bounded output, timeout/process-group cleanup, and no installed-Pi execution
+  during verification
+- S2-W18 contract SHA256:
+  `cb268df2a6488ae2c194aa0fe9e104f974624e60183637141e5fac6526d359ed`
+- S2-W18 contract Review 1:
+  `.loom-evidence/phase1-slice2/S2-W18/contract-review-1.md`
+- S2-W18 contract Review 1: `REPAIR`; required combined cleanup-error
+  precedence, honest original-process-group scope, and explicit
+  `/usr/bin/env` interpreter-path residual risk
+- S2-W18 Contract Repair 1:
+  `.loom-evidence/phase1-slice2/S2-W18/contract-repair-1.md`
+- S2-W18 fresh Contract Repair 1 review:
+  `.loom-evidence/phase1-slice2/S2-W18/contract-review-2.md`
+- S2-W18 repaired-contract Reviewer: `PASS`; findings: none blocking
+- S2-W18 initial mandatory RED: failed only on missing frozen runner symbols
+- S2-W18 pre-review focused GREEN: `PASS`
+- S2-W18 strict matrix: `FAIL` at accepted S2-W1 pure-domain import boundary
+  because the initial owned path placed concrete `os/exec` in
+  `internal/runtime`
+- S2-W18 Contract Amendment 2:
+  `.loom-evidence/phase1-slice2/S2-W18/contract-amendment-2.md`
+- Amendment 2 moves only the concrete adapter to
+  `internal/runtime/piadapter`; no behavior or trust boundary expands
+- S2-W18 fresh Amendment 2 review:
+  `.loom-evidence/phase1-slice2/S2-W18/contract-review-3.md`
+- S2-W18 Amendment 2 Reviewer: `PASS`; findings: none blocking
+- S2-W18 amended product/test digests:
+  `process_runner.go=45bd8520...a65f`,
+  `process_unix.go=554e828a...140`,
+  `process_other.go=ea9a2da1...e7a`,
+  `process_runner_test.go=897c4f49...25e5`
+- S2-W18 amended Candidate checks: focused `0`; package `0`; focused race
+  `-count=20` `0`; repository `0`; repository race `0`; vet `0`; gofmt, diff,
+  pure-parent import boundary, direct-exec/environment, branch/head, and
+  owned-scope checks `PASS`
+- S2-W18 Candidate:
+  `.loom-evidence/phase1-slice2/S2-W18/deliverable.md`
+- S2-W18 fresh implementation review:
+  `.loom-evidence/phase1-slice2/S2-W18/implementation-review.md`
+- S2-W18 implementation Reviewer: `PASS`; findings: none blocking
+- S2-W18 Candidate last line: `VERDICT: PASS`
+- Verification used deterministic temporary fixtures only; installed Pi, user
+  Pi state, credentials, network, package manager, daemon, session, prompt,
+  model call, and Runtime activation were not used
+- Next gate: create the authorized strictly scoped S2-W18 local atomic commit
 - No push, merge, release, runtime activation, credential change, paid remote
   work, or FastContext installation is authorized
 

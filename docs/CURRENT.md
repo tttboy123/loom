@@ -183,6 +183,34 @@ blocking findings. S2-W17 is accepted and ready for its local atomic commit.
 No Pi process, daemon scheduling, credential/config/environment access,
 Runtime execution, model call, or activation is authorized.
 
+`S2-W17` is locally committed at `b73cf8b`. `S2-W18` is frozen at
+`.loom-evidence/phase1-slice2/S2-W18/contract.md` for a concrete but isolated
+local Pi metadata process runner. It binds a caller-selected absolute
+executable and private root, accepts only the two exact S2-W17 requests, uses a
+fixed environment allowlist and fresh per-call state, bounds output and
+timeout, cleans process groups and temporary state, and never searches PATH for
+Pi. Contract Review 1 required exact combined cleanup-error semantics, honest
+original-process-group scope, and explicit `/usr/bin/env` interpreter-path
+residual risk. Contract Repair 1 freezes `errors.Join` inspectability,
+same-group-only cleanup proof, and search-directory identity revalidation
+without overclaiming interpreter-byte binding. Fresh repaired-contract review
+returned `PASS` with no blocking findings. Mandatory RED is the current gate.
+Mandatory RED failed only on missing frozen symbols and the initial focused
+Candidate became green, but the strict matrix correctly rejected concrete
+`os/exec` inside the accepted pure-domain `internal/runtime` package. Contract
+Amendment 2 moves only the concrete adapter into
+`internal/runtime/piadapter`, preserving the parent ports and all behavior/
+trust boundaries. Fresh Amendment 2 contract review returned `PASS` with no
+blocking findings. The amended child-package Candidate now passes focused,
+package, focused-race-20, repository, repository-race, vet, format, diff,
+pure-parent import-boundary, non-disclosure, and scope checks. It uses only
+deterministic temporary fixtures and is ready for fresh independent
+implementation review. Fresh independent implementation review returned
+`PASS` with no blocking findings. S2-W18 is accepted and ready for its local
+atomic commit. Installed Pi, user Pi state, credentials, network, Agent
+sessions, prompts, model calls, daemon scheduling, and Runtime activation
+remain outside this boundary.
+
 `S2-W5` is frozen at
 `.loom-evidence/phase1-slice2/S2-W5/contract.md` for a pure immutable structured
 Team Draft content Candidate. It closes the content dependency that must precede
@@ -314,11 +342,11 @@ activated.
 
 ## Next development checkpoint
 
-Create the strictly scoped local S2-W17 commit, then freeze the concrete
-isolated Pi process-runner boundary. WorkItem creation remains later and
-independent. Daemon scheduling still requires a separately frozen Slice 2
-contract. Bridge, real Runtime Adapter execution, AgentGrant, claim generation,
-and WorkItem dispatch remain Slice 3 boundaries even when research drafts
-propose them earlier. Push, merge, release, runtime activation, credential
-changes, and FastContext installation remain unauthorized. The optional local
-FastContext Spike remains separate and was not installed or activated.
+Create the authorized strictly scoped S2-W18 local atomic commit, then freeze
+only the next bounded Slice 2 contract. Executable location and daemon
+scheduling still require separately frozen Slice 2 contracts. Bridge, real
+Runtime Adapter execution, AgentGrant, claim generation, and WorkItem dispatch
+remain Slice 3 boundaries even when research drafts propose them earlier.
+Push, merge, release, runtime activation, credential changes, and FastContext
+installation remain unauthorized. The optional local FastContext Spike remains
+separate and was not installed or activated.
