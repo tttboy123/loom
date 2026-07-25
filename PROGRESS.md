@@ -10,8 +10,8 @@ Updated: 2026-07-25
 - Existing `codex/loom-platform` branch was not moved or overwritten
 - Preserved pre-existing untracked paths: `.codex/installation_id`,
   `.codex/skills/`, `.loom-drafts/`
-- Slice 2: S2-W1 through S2-W38 accepted and locally committed; latest accepted
-  commit `39a9e0a`
+- Slice 2: S2-W1 through S2-W38 plus S2-EXIT-1 accepted and locally committed;
+  latest accepted commit `46eefaf`
 - Push, merge, release, activation, credential changes, paid remote work, and
   FastContext installation: prohibited
 
@@ -49,7 +49,7 @@ Updated: 2026-07-25
 ## Slice 2 transition
 
 - Branch: `codex/loom-platform-slice2`
-- Status: `S2-EXIT-1_ACCEPTED_PENDING_LOCAL_COMMIT`
+- Status: `SLICE_REVIEW_1_REPAIR_1_RECORDED_PENDING_REREVIEW`
 - Accepted S2-W1 local commit: `954416a`
 - Frozen contract:
   `.loom-evidence/phase1-slice2/S2-W1/contract.md`
@@ -1619,8 +1619,21 @@ Updated: 2026-07-25
   `PASS`; ambient user Pi readiness is not claimed
 - S2-EXIT-1 fresh Repair 1 Implementation Reviewer: `PASS`; findings: none
 - S2-EXIT-1 Candidate last line: `VERDICT: PASS`
-- Next gate: fresh pre-commit matrix, exact staged-scope audit, one authorized
-  local atomic commit, then fresh whole-Slice Reviewer
+- S2-EXIT-1 local atomic commit: `46eefaf`; exact staged scope excluded
+  `AGENTS.md`, the user-owned Historical/Rejected Candidate `PROGRESS.md` hunk,
+  `.codex/**`, and `.loom-drafts/**`
+- S2-EXIT-1 post-commit focused, command, and repository checks: `PASS`;
+  nothing activated
+- Whole-Slice Review 1: `FAIL` only because `46eefaf` committed the pre-commit
+  `CURRENT`/`PROGRESS` wording; product/security/concurrency findings: none;
+  independent repository/race/vet/build/fresh-canary checks: `PASS`
+- Whole-Slice Review 1 Repair 1: frozen status-only governance reconciliation;
+  no new WorkItem and no product/test change
+- Whole-Slice Review 1 Repair 1 fresh Contract Reviewer: `PASS`; findings: none
+- User authorization: one separate status-only Slice 2 governance commit and
+  fresh whole-Slice re-review explicitly authorized
+- This checkpoint records the governance reconciliation; next gate is the
+  fresh whole-Slice re-review, and S3 remains closed until Reviewer `PASS`
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

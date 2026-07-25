@@ -870,7 +870,14 @@ lineage; its bounded contract and fresh Contract Review passed, mandatory RED
 was captured, and the repaired Candidate now passes the direct proof, complete
 matrix, focused race, full repository/race, vet, format, diff, and compiled
 canary checks. Fresh independent Repair 1 Implementation Review returned
-`PASS` with no findings. S2-EXIT-1 is accepted pending its fresh pre-commit
-matrix, exact staged-scope audit, and one authorized local atomic commit.
-Slice 2 remains open until a fresh whole-Slice Reviewer returns `PASS` against
-the Exit Contract after that commit.
+`PASS` with no findings. S2-EXIT-1 passed its fresh pre-commit matrix and exact
+staged-scope audit, then was locally committed at `46eefaf`. Post-commit
+focused, command, and repository tests pass; nothing was activated. Slice 2
+Whole-Slice Review 1 returned `FAIL` only because the committed
+`CURRENT`/`PROGRESS` authority in `46eefaf` still described the pre-commit
+state; no product, security, concurrency, or Slice 3 leakage blocker was found,
+and the Reviewer's full test/race/vet/build/fresh-canary checks passed. The
+bounded status-only Repair 1 contract and its fresh Contract Review pass. The
+user explicitly authorized one separate status-only governance commit; this
+checkpoint records the reconciliation without changing product or tests.
+Slice 2 remains open pending a fresh whole-Slice re-review.
