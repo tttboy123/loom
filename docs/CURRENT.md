@@ -1261,3 +1261,108 @@ module, dependency, migration, scope, and trust-boundary gates pass. Excluded
 shared-worktree paths remain unstaged. No S5-W2/S5-W3, daemon, network,
 installed Runtime/Provider traffic, credential, external action, or autonomy
 is activated.
+
+`CURRENT`: S5-W1 is locally committed at `93bdb1f`. The only remaining Slice 5
+product boundary is S5-W2 WorkPackage and Phase 1 Engineering Demo
+Integration; no S5-W3 is permitted. S5-W2 freezes new immutable
+`internal/work` WorkPackage values, one external-package controlled
+SQLite/Supervisor demo suite, and a non-executing live-gate manifest/checklist
+only. It reuses every accepted authority without reopening product files,
+activating an installed Runtime/Provider, or claiming final user acceptance.
+The current gate is fresh independent S5-W2 Contract Review before RED.
+
+`CURRENT`: S5-W2 Contract Review 1 returned `FAIL` on two contract-precision
+gaps only. Contract Repair 1 adds the accepted `internal/mode` routing API to
+the external canary import surface and freezes the exact ordered, bounded
+approval/stop/recovery safety arrays plus the complete non-executing manifest
+JSON. Product ownership, WorkPackage identity, authority boundaries, and live
+exclusions are unchanged. The current gate is fresh independent Contract
+Repair Review 2; no S5-W2 product or test edit has begun.
+
+`CURRENT`: S5-W2 Contract Repair Review 2 returned `PASS` with no findings.
+The frozen contract is now authoritative for the final engineering WorkItem.
+The current gate is mandatory behavioral RED in only
+`internal/work/work_package_test.go` and
+`internal/app/phase1_engineering_demo_test.go`; no S5-W2 product implementation
+or live-gate artifact exists yet.
+
+`CURRENT`: S5-W2 mandatory RED was captured on duplicate/mutable WorkPackage
+acceptance and the absent live-gate manifest. The Candidate is now focused
+GREEN within the frozen ownership: immutable exact-digest Coding and
+knowledge-work packages, a controlled external-package saved-Team/DAG
+engineering canary, and the exact non-executing final live-gate
+manifest/checklist. The canary exercises bounded recovery, independent
+verification, approval restart, cursor reconnect, exact-once authority facts,
+fail-closed stale inputs, and private fixture modes without installed Runtime,
+Provider/model traffic, network, daemon, credential, or external effect. The
+current gate is the complete S5-W2 verification matrix followed by fresh
+independent Implementation Review; this is not final user acceptance.
+
+`CURRENT`: The complete S5-W2 verification matrix is `PASS`: focused and
+adjacent packages, whole-repository tests, repeated and whole-repository race,
+vet, format, diff, Windows compile, and module verification all pass. Scope
+and safety audits show only frozen Candidate files; shared-worktree dirt
+remains excluded. The current gate is fresh independent S5-W2 Implementation
+Review. No commit or Slice/Phase acceptance is authorized until that Reviewer
+returns `PASS`.
+
+`CURRENT`: S5-W2 Implementation Review 1 returned `FAIL` despite a clean
+matrix. The canary lacked a direct two-coordinator CAS race, a canonical stale
+cursor conflict, and a test-only exact-once external-effect marker; two
+Journal assertions also used `work_item/` instead of the accepted
+`work-item/` stream prefix. Repair is confined to the already-owned external
+canary and S5-W2 evidence. No product authority, ownership, manifest,
+WorkPackage identity, or live boundary is reopened. The current gate is
+focused Repair 1 evidence, then the complete matrix and fresh independent
+Implementation Review 2.
+
+`CURRENT`: S5-W2 Implementation Repair 1 closes all four Review 1 findings
+inside the already-owned external canary. Two fully independent callers now
+race the same Journal transition with one executing winner; a canonical
+cursor with a conflicting stored head fails closed; a dedicated test-only
+effect marker remains exactly once across restart/replay; and both WorkItem
+checks use `work-item/`. Focused tests pass 20 iterations and the repaired
+concurrency/fail-closed families pass 10 race iterations. The current gate is
+the complete post-repair matrix followed by fresh independent Implementation
+Review 2; no commit is yet authorized.
+
+`CURRENT`: The complete post-Repair 1 S5-W2 matrix is `PASS`, including the
+repaired dual-caller/stale-cursor/effect-marker families, focused and adjacent
+packages, whole repository, 10-run `work/app/api` race, whole-repository race,
+vet, format, diff, Windows compile, and module verification. Scope remains
+exactly frozen and excluded shared-worktree dirt remains untouched. The
+current gate is fresh independent S5-W2 Implementation Review 2. No commit,
+Slice acceptance, or final user sign-off has occurred.
+
+`CURRENT`: S5-W2 Implementation Review 2 returned `FAIL` on one evidence
+honesty gap only. Review 1's four findings are closed and no production defect
+was found, but the exact-once assertion did not count Grant Journal facts
+despite claiming Grant coverage. Repair 2 remains inside the owned external
+canary and will assert five distinct Grant streams, exactly one issue and
+revocation per stream, three bounded authorized Frame facts per stream, and
+five identity reservations. The current gate is focused Repair 2 evidence,
+the full matrix, and fresh independent Implementation Review 3.
+
+`CURRENT`: S5-W2 Implementation Repair 2 explicitly closes the Review 2 Grant
+evidence gap: five identity reservations and five distinct Grant streams each
+have exactly one issue, three bounded authorizations, and one revocation.
+Focused exact-once tests pass 20 iterations and 10 race iterations. No product
+file or boundary changed. The current gate is the complete post-Repair 2
+matrix followed by fresh independent Implementation Review 3.
+
+`CURRENT`: The complete post-Repair 2 S5-W2 matrix is `PASS`: focused and
+adjacent packages, whole repository, 10-run `work/app/api` race,
+whole-repository race, vet, format, diff, Windows compile, and module
+verification all pass with the explicit Grant lifecycle assertions enabled.
+Scope remains frozen and excluded user-owned dirt remains untouched. The
+current gate is fresh independent S5-W2 Implementation Review 3. No commit or
+acceptance has occurred.
+
+`CURRENT`: S5-W2 Implementation Review 3 returned `PASS` with no findings.
+Both prior review rounds are closed by direct canary evidence, and the final
+post-Repair 2 matrix remains fully green. S5-W2 is accepted for one exact
+local atomic commit containing only the frozen WorkPackage, external
+engineering canary, S5-W2 evidence/live-gate artifacts, and this Controller
+hunk. Excluded user-owned dirt remains unstaged. No live Runtime/Provider,
+network, daemon, credential, external effect, push, merge, or final user
+sign-off is authorized.

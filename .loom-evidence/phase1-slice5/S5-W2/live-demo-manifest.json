@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "status": "non_executing",
+  "selected_saved_team_id": "saved-team.phase1-engineering",
+  "selected_work_package": {
+    "id": "work-package.coding",
+    "version": 1,
+    "digest": "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f"
+  },
+  "required_runtime_capability": {
+    "adapter_type": "pi",
+    "bridge_protocol": "loom.bridge.v1",
+    "streaming": true,
+    "session_resume_required": false,
+    "runtime_instance_id": "HUMAN_SELECTION_REQUIRED"
+  },
+  "bounded_task": {
+    "summary": "bounded_local_coding_fixture",
+    "max_nodes": 3,
+    "max_attempts_per_node": 3,
+    "network_allowed": false,
+    "external_side_effects_allowed": false
+  },
+  "approval_expectations": [
+    "user_confirms_saved_team_and_work_package",
+    "customer_rule_may_require_start_run_approval",
+    "approval_decision_is_journal_authoritative"
+  ],
+  "evidence_location": "PRIVATE_USER_SELECTED_ROOT",
+  "stop_cancel_procedure": [
+    "cancel_client_delivery_without_cancelling_run",
+    "request_authoritative_run_cancel",
+    "verify_terminal_and_grant_revocation",
+    "do_not_kill_or_restart_daemon"
+  ],
+  "rollback_recovery_checks": [
+    "reconnect_from_last_cursor",
+    "rebuild_projection_from_journal",
+    "verify_evidence_digest_and_private_modes",
+    "verify_no_duplicate_run_grant_evidence_done",
+    "stop_human_required_on_indeterminate_state"
+  ],
+  "unresolved_human_inputs": [
+    "installed_runtime_instance_id",
+    "private_source_root",
+    "approval_decision",
+    "live_execution_authorization",
+    "final_review_signoff"
+  ],
+  "execution_authorized": false
+}
