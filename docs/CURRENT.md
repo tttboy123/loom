@@ -1139,3 +1139,16 @@ trust-boundary matrix passes. Slice 4 now has exactly S4-W1 through S4-W3
 accepted; the fresh whole-Slice Review remains required before Slice 4 can be
 closed. No S4-W4, live Runtime/Provider, daemon, API/CLI/Web/TUI, autonomous
 execution, external action, or later-Slice surface is activated.
+
+`CURRENT`: Phase 1 Slice 4 is closed after fresh independent whole-Slice
+Review 1 returned `PASS` with no findings. All six frozen exit capabilities
+are `DONE`: Customer Rule authority, durable approval, output contract,
+bounded recovery policy, verification/completion authority, and the controlled
+integration proof. The committed chain contains exactly S4-W1 `87ea092`,
+S4-W2 `6d3cbf2`, and S4-W3 `f7c931e`; no S4-W4 exists. Final focused,
+repository, repository-race, vet, format, scope, trust-boundary, authority,
+secret, and Evidence audits pass, and `go.mod`/`go.sum` are unchanged. Slice 5
+may now begin only with its bounded exit-contract governance. This status does
+not authorize live Runtime/Provider traffic, daemon activation, network,
+credentials, external actions, autonomous execution, later-Slice scope, push,
+merge, rebase, reset, release, or publication.
