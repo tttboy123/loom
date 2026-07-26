@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -49,6 +50,35 @@ type Store struct {
 type StreamHeadExpectation struct {
 	StreamID string
 	Sequence int64
+}
+
+type StreamHead struct {
+	StreamID string
+	Sequence int64
+	EventID  string
+}
+
+type StreamSetSnapshot struct {
+	events []Event
+	heads  []StreamHead
+}
+
+func (snapshot StreamSetSnapshot) Events() []Event {
+	return cloneJournalEvents(snapshot.events)
+}
+
+func (snapshot StreamSetSnapshot) Heads() []StreamHead {
+	return append([]StreamHead(nil), snapshot.heads...)
+}
+
+func (snapshot StreamSetSnapshot) Head(streamID string) (StreamHead, bool) {
+	index := sort.Search(len(snapshot.heads), func(index int) bool {
+		return snapshot.heads[index].StreamID >= streamID
+	})
+	if index == len(snapshot.heads) || snapshot.heads[index].StreamID != streamID {
+		return StreamHead{}, false
+	}
+	return snapshot.heads[index], true
 }
 
 func NewStore(db *sql.DB) *Store {
@@ -353,6 +383,79 @@ func (s *Store) ReadStream(ctx context.Context, streamID string) ([]Event, error
 	return events, nil
 }
 
+func (s *Store) ReadStreamSet(
+	ctx context.Context,
+	streamIDs []string,
+) (StreamSetSnapshot, error) {
+	normalized, err := normalizeStreamIDs(streamIDs)
+	if err != nil {
+		return StreamSetSnapshot{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return StreamSetSnapshot{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return StreamSetSnapshot{}, err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	events := make([]Event, 0)
+	heads := make([]StreamHead, 0, len(normalized))
+	for _, streamID := range normalized {
+		if err := ctx.Err(); err != nil {
+			rollback()
+			return StreamSetSnapshot{}, err
+		}
+		rows, queryErr := tx.QueryContext(ctx, `
+			SELECT id, stream_id, seq, idempotency_key, event_type, schema_version,
+			       emitted_at, correlation_id, causation_id, payload_json
+			FROM events
+			WHERE stream_id = ?
+			ORDER BY seq ASC, id ASC
+		`, streamID)
+		if queryErr != nil {
+			rollback()
+			return StreamSetSnapshot{}, queryErr
+		}
+		head := StreamHead{StreamID: streamID}
+		for rows.Next() {
+			event, scanErr := scanEvent(rows)
+			if scanErr != nil {
+				_ = rows.Close()
+				rollback()
+				return StreamSetSnapshot{}, scanErr
+			}
+			events = append(events, cloneJournalEvent(event))
+			head.Sequence = event.Seq
+			head.EventID = event.ID
+		}
+		rowsErr := rows.Err()
+		closeErr := rows.Close()
+		if rowsErr != nil {
+			rollback()
+			return StreamSetSnapshot{}, rowsErr
+		}
+		if closeErr != nil {
+			rollback()
+			return StreamSetSnapshot{}, closeErr
+		}
+		heads = append(heads, head)
+	}
+	if err := ctx.Err(); err != nil {
+		rollback()
+		return StreamSetSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return StreamSetSnapshot{}, err
+	}
+	return StreamSetSnapshot{
+		events: cloneJournalEvents(events),
+		heads:  append([]StreamHead(nil), heads...),
+	}, nil
+}
+
 func (s *Store) ReadAll(ctx context.Context) ([]Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -393,7 +496,7 @@ type eventStreamSequence struct {
 func normalizeStreamHeadExpectations(
 	expectations []StreamHeadExpectation,
 ) ([]StreamHeadExpectation, error) {
-	if len(expectations) == 0 || len(expectations) > 8 {
+	if len(expectations) == 0 || len(expectations) > 16 {
 		return nil, ErrInvalidEventBatch
 	}
 	normalized := make([]StreamHeadExpectation, len(expectations))
@@ -407,6 +510,20 @@ func normalizeStreamHeadExpectations(
 		}
 		seen[expectation.StreamID] = struct{}{}
 		normalized[index] = expectation
+	}
+	return normalized, nil
+}
+
+func normalizeStreamIDs(streamIDs []string) ([]string, error) {
+	if len(streamIDs) == 0 || len(streamIDs) > 16 {
+		return nil, ErrInvalidEventBatch
+	}
+	normalized := append([]string(nil), streamIDs...)
+	sort.Strings(normalized)
+	for index, streamID := range normalized {
+		if streamID == "" || index > 0 && streamID == normalized[index-1] {
+			return nil, ErrInvalidEventBatch
+		}
 	}
 	return normalized, nil
 }

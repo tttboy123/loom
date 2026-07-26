@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 ## Product state
 
@@ -1072,3 +1072,18 @@ Repair 2 now writes and closes a same-directory temporary PID file before
 atomic rename, accepts readiness only for a parsed positive PID, and preserves
 bounded cleanup on every failure. The current gate is Repair 2 focused repeated
 race proof; no product or Runtime capability is activated.
+
+`CURRENT`: S3-W5 now closes the single vertical Team DAG execution integration
+boundary. Journal-authoritative related-stream reads and CAS remain the only
+write authority; `GlobalReadView` is immutable and rebuildable; one Main plus
+at most two SubAgents use deterministic ready-set planning, capacity fencing,
+independent Run/Grant/Evidence attempt lineage, authorized tentative Frame
+capture, and exact terminal aggregation. Durable private attempt capture and
+receipts recover terminal/artifact/metadata gaps without duplicate execution.
+Expired never-started claims use one generation-fenced rebound; indeterminate
+running state returns typed human-required instead of replaying. Controlled
+SQLite/Supervisor canaries, full repository tests, uncached repository race,
+vet, format, scope, and fresh independent Repair Review 2 all pass. No daemon,
+installed Runtime, Provider fallback, Web/TUI, or autonomous execution is
+activated. S3-W5 is accepted for its exact local atomic commit; the next gate
+is whole-Slice 3 review, not S3-W6.

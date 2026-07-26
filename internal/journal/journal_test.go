@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -615,6 +616,9 @@ func TestAppendBatchIfStreamHeadsContract(t *testing.T) { // s3_w2_journal_multi
 				{StreamID: "1"}, {StreamID: "2"}, {StreamID: "3"},
 				{StreamID: "4"}, {StreamID: "5"}, {StreamID: "6"},
 				{StreamID: "7"}, {StreamID: "8"}, {StreamID: "9"},
+				{StreamID: "10"}, {StreamID: "11"}, {StreamID: "12"},
+				{StreamID: "13"}, {StreamID: "14"}, {StreamID: "15"},
+				{StreamID: "16"}, {StreamID: "17"},
 			},
 		}
 		for index, heads := range cases {
@@ -727,6 +731,82 @@ func TestReadAllDeterministicIsolatedAndCancelable(t *testing.T) {
 	cancel()
 	if events, err := store.ReadAll(canceled); !errors.Is(err, context.Canceled) || events != nil {
 		t.Fatalf("canceled ReadAll() = %#v, %v", events, err)
+	}
+}
+
+func TestReadStreamSetReturnsCanonicalDeepCopiedEventsAndEveryHead(t *testing.T) {
+	store := newMigratedStore(t)
+	ctx := context.Background()
+	first := testEvent("11111111-1111-4111-8111-111111111111", "stream-b", 1, "idem-set-1")
+	second := testEvent("22222222-2222-4222-8222-222222222222", "stream-a", 1, "idem-set-2")
+	third := testEvent("33333333-3333-4333-8333-333333333333", "stream-a", 2, "idem-set-3")
+	for _, event := range []Event{first, second, third} {
+		if _, err := store.Append(ctx, event); err != nil {
+			t.Fatalf("Append(%s) error = %v", event.ID, err)
+		}
+	}
+
+	snapshot, err := store.ReadStreamSet(ctx, []string{"stream-b", "stream-empty", "stream-a"})
+	if err != nil {
+		t.Fatalf("ReadStreamSet() error = %v", err)
+	}
+	events := snapshot.Events()
+	if got, want := []string{events[0].ID, events[1].ID, events[2].ID},
+		[]string{second.ID, third.ID, first.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("event order = %v, want %v", got, want)
+	}
+	heads := snapshot.Heads()
+	if got, want := heads, []StreamHead{
+		{StreamID: "stream-a", Sequence: 2, EventID: third.ID},
+		{StreamID: "stream-b", Sequence: 1, EventID: first.ID},
+		{StreamID: "stream-empty", Sequence: 0, EventID: ""},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Heads() = %#v, want %#v", got, want)
+	}
+	if head, ok := snapshot.Head("stream-empty"); !ok || head.Sequence != 0 || head.EventID != "" {
+		t.Fatalf("empty stream head = %#v, %v", head, ok)
+	}
+
+	events[0].PayloadJSON[0] = 'x'
+	heads[0].StreamID = "mutated"
+	again, err := store.ReadStreamSet(ctx, []string{"stream-a", "stream-b", "stream-empty"})
+	if err != nil {
+		t.Fatalf("second ReadStreamSet() error = %v", err)
+	}
+	if !json.Valid(again.Events()[0].PayloadJSON) || again.Heads()[0].StreamID != "stream-a" {
+		t.Fatal("caller mutation escaped the stream-set snapshot")
+	}
+}
+
+func TestReadStreamSetValidationCancellationAndSixteenHeadCASLimit(t *testing.T) {
+	store := newMigratedStore(t)
+	if _, err := store.ReadStreamSet(context.Background(), nil); !errors.Is(err, ErrInvalidEventBatch) {
+		t.Fatalf("empty ReadStreamSet() error = %v", err)
+	}
+	if _, err := store.ReadStreamSet(context.Background(), []string{"same", "same"}); !errors.Is(err, ErrInvalidEventBatch) {
+		t.Fatalf("duplicate ReadStreamSet() error = %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.ReadStreamSet(cancelled, []string{"stream-a"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled ReadStreamSet() error = %v", err)
+	}
+
+	expectations := make([]StreamHeadExpectation, 16)
+	for index := range expectations {
+		expectations[index] = StreamHeadExpectation{
+			StreamID: fmt.Sprintf("stream-%02d", index),
+			Sequence: 0,
+		}
+	}
+	event := testEvent("44444444-4444-4444-8444-444444444444", "stream-00", 1, "idem-set-4")
+	if _, err := store.AppendBatchIfStreamHeads(context.Background(), expectations, []Event{event}); err != nil {
+		t.Fatalf("sixteen-head CAS error = %v", err)
+	}
+	expectations = append(expectations, StreamHeadExpectation{StreamID: "stream-16", Sequence: 0})
+	event = testEvent("55555555-5555-4555-8555-555555555555", "stream-16", 1, "idem-set-5")
+	if _, err := store.AppendBatchIfStreamHeads(context.Background(), expectations, []Event{event}); !errors.Is(err, ErrInvalidEventBatch) {
+		t.Fatalf("seventeen-head CAS error = %v", err)
 	}
 }
 

@@ -76,6 +76,41 @@ type fakeRuntimeAdapter struct {
 	release         chan struct{}
 }
 
+type recordingFrameSink struct {
+	frames []bridgev1.Frame
+	err    error
+}
+
+func (sink *recordingFrameSink) AcceptFrame(_ context.Context, frame bridgev1.Frame) error {
+	sink.frames = append(sink.frames, frame)
+	return sink.err
+}
+
+type recordingAuthorizedFrameObserver struct {
+	frames []AuthorizedFrame
+	err    error
+}
+
+func (observer *recordingAuthorizedFrameObserver) ObserveAuthorizedFrame(
+	_ context.Context,
+	frame AuthorizedFrame,
+) error {
+	observer.frames = append(observer.frames, frame)
+	return observer.err
+}
+
+func TestAuthorizedFrameStreamingSurfaceIsBoundedAndTentative(t *testing.T) {
+	sink := &recordingFrameSink{}
+	observer := &recordingAuthorizedFrameObserver{}
+	request := AdapterRequest{FrameSink: sink}
+	input := ExecuteInput{FrameObserver: observer}
+	if request.FrameSink != sink || input.FrameObserver != observer {
+		t.Fatal("streaming dependencies were not retained")
+	}
+	var _ FrameSink = sink
+	var _ AuthorizedFrameObserver = observer
+}
+
 func (adapter *fakeRuntimeAdapter) AdapterType() string {
 	return adapter.adapterType
 }
@@ -117,6 +152,11 @@ func (adapter *fakeRuntimeAdapter) Execute(
 	if hook != nil {
 		if hookErr := hook(request); hookErr != nil {
 			return AdapterResult{}, hookErr
+		}
+	}
+	for _, frame := range result.InboundFrames() {
+		if sinkErr := request.FrameSink.AcceptFrame(ctx, frame); sinkErr != nil {
+			return AdapterResult{}, sinkErr
 		}
 	}
 	return result, err
@@ -165,7 +205,10 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 		t.Fatalf("New() error = %v", err)
 	}
 
-	outcome, err := controller.Execute(context.Background(), fixture.input())
+	observer := &recordingAuthorizedFrameObserver{}
+	input := fixture.input()
+	input.FrameObserver = observer
+	outcome, err := controller.Execute(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -178,6 +221,20 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 			outcome.Run().TerminalStatus(),
 			outcome.Run().TerminalReason(),
 		)
+	}
+	if len(observer.frames) != len(frames) {
+		t.Fatalf(
+			"authorized observer frames=%d want=%d",
+			len(observer.frames),
+			len(frames),
+		)
+	}
+	for index, observed := range observer.frames {
+		if !observed.Tentative() ||
+			observed.Binding() != managedBinding(fixture.generation) ||
+			observed.Frame().MessageID() != frames[index].MessageID() {
+			t.Fatalf("observed Frame[%d] = %#v", index, observed)
+		}
 	}
 	if !outcome.Stream().TerminalResultSeen() ||
 		len(outcome.Stream().Frames()) != len(frames) {
@@ -322,6 +379,54 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 			failedOutcome.Run().TerminalStatus() != "failed" ||
 			failedOutcome.Run().TerminalReason() != "agent_failure" {
 			t.Fatalf("failed terminal = %#v", failedOutcome)
+		}
+		assertManagedGrantRevoked(t, failed, authorization.RevocationTerminal)
+	})
+
+	t.Run("observer failure stops later output and fails terminal", func(t *testing.T) {
+		failed := newManagedExecutionFixture(t, "observer-failed")
+		failedFrames := managedInboundFrames(t, failed, "succeeded", "")
+		failedResult, resultErr := NewAdapterResult(AdapterResultInput{
+			InboundFrames:        failedFrames,
+			ExitCode:             0,
+			DispatchAcknowledged: true,
+			ResultAcknowledged:   true,
+		})
+		if resultErr != nil {
+			t.Fatal(resultErr)
+		}
+		failedController, newErr := New(
+			Config{WorkspaceRoot: failed.workspaceRoot, CleanupTimeout: time.Second},
+			failed.workAuthority,
+			failed.grantAuthority,
+			&fakeRuntimeAdapter{
+				adapterType: failed.instance.AdapterType,
+				instanceID:  failed.instance.ID,
+				result:      failedResult,
+			},
+		)
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		observerErr := errors.New("bounded observer failure")
+		failedObserver := &recordingAuthorizedFrameObserver{err: observerErr}
+		failedInput := failed.input()
+		failedInput.FrameObserver = failedObserver
+		failedOutcome, executeErr := failedController.Execute(
+			context.Background(),
+			failedInput,
+		)
+		if !errors.Is(executeErr, ErrAuthorizedFrameObserver) ||
+			!errors.Is(executeErr, observerErr) ||
+			failedOutcome.Run().TerminalStatus() != "failed" ||
+			len(failedObserver.frames) != 1 ||
+			failedObserver.frames[0].Frame().Type() != bridgev1.MessageAck {
+			t.Fatalf(
+				"observer failure = outcome %#v frames %#v error %v",
+				failedOutcome,
+				failedObserver.frames,
+				executeErr,
+			)
 		}
 		assertManagedGrantRevoked(t, failed, authorization.RevocationTerminal)
 	})
@@ -884,11 +989,16 @@ func TestSupervisorTerminalFailureAlwaysRevokes(t *testing.T) { // s3_w4_termina
 		if err != nil {
 			t.Fatal(err)
 		}
-		outcome, executeErr := controller.Execute(context.Background(), fixture.input())
+		observer := &recordingAuthorizedFrameObserver{}
+		input := fixture.input()
+		input.FrameObserver = observer
+		outcome, executeErr := controller.Execute(context.Background(), input)
 		if !errors.Is(executeErr, ErrBridgeSession) ||
 			outcome.Run().TerminalReason() != "bridge_protocol_failed" ||
 			len(outcome.Changes()) != 0 ||
-			len(outcome.Stderr()) != 0 {
+			len(outcome.Stderr()) != 0 ||
+			len(observer.frames) != 1 ||
+			observer.frames[0].Frame().Type() != bridgev1.MessageAck {
 			t.Fatalf("frame token outcome = %#v, %v", outcome, executeErr)
 		}
 		assertManagedGrantRevoked(t, fixture, authorization.RevocationTerminal)
@@ -1048,12 +1158,15 @@ func TestSupervisorStaleGenerationAndSourceChanged(t *testing.T) { // s3_w4_stal
 			t.Fatal(err)
 		}
 		input := fixture.input()
+		observer := &recordingAuthorizedFrameObserver{}
+		input.FrameObserver = observer
 		input.Generation.ClaimGeneration++
 		outcome, executeErr := controller.Execute(context.Background(), input)
 		if !errors.Is(executeErr, work.ErrStaleClaimGeneration) {
 			t.Fatalf("stale Execute() error = %v", executeErr)
 		}
-		if outcome.Run().ID() != "" || adapter.executionCalled {
+		if outcome.Run().ID() != "" || adapter.executionCalled ||
+			len(observer.frames) != 0 {
 			t.Fatalf("stale execution produced authority: %#v / %#v", outcome, adapter)
 		}
 		assertManagedGrantRevoked(t, fixture, authorization.RevocationOperator)
@@ -1291,6 +1404,9 @@ func newManagedExecutionFixture(t testing.TB, suffix string) *managedExecutionFi
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := workAuthority.InitializeRunIdentityIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	workItem, run, err := workAuthority.CreateAndAssign(
 		context.Background(),
 		work.WorkItemAssignmentInput{
@@ -1325,6 +1441,9 @@ func newManagedExecutionFixture(t testing.TB, suffix string) *managedExecutionFi
 		bytes.NewReader(bytes.Repeat([]byte{0x42}, 96)),
 	)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := grantAuthority.InitializeGrantIdentityIndex(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	operations := []authorization.Operation{

@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -35,6 +36,7 @@ var (
 	ErrGrantAlreadyRevoked        = errors.New("grant already revoked")
 	ErrGrantIDCollision           = errors.New("grant id collision")
 	ErrGrantTokenCollision        = errors.New("grant token collision")
+	ErrGrantIdentityIndexRequired = errors.New("Grant identity index required")
 )
 
 type Operation string
@@ -61,9 +63,10 @@ const (
 )
 
 const (
-	tokenPrefix       = "loom_grant_v1."
-	grantStreamPrefix = "agent-grant/"
-	maxGrantLifetime  = time.Hour
+	tokenPrefix           = "loom_grant_v1."
+	grantStreamPrefix     = "agent-grant/"
+	grantIdentityStreamID = "agent-grant-identity/v1"
+	maxGrantLifetime      = time.Hour
 )
 
 type Token struct {
@@ -165,10 +168,13 @@ type AuthoritySnapshot struct {
 }
 
 type Authority struct {
-	store        *journal.Store
-	runAuthority *work.Authority
-	now          func() time.Time
-	random       io.Reader
+	store         *journal.Store
+	runAuthority  *work.Authority
+	now           func() time.Time
+	random        io.Reader
+	identityMu    sync.RWMutex
+	identityReady bool
+	identityByID  map[string]grantIdentityReservation
 }
 
 func NewAuthority(
@@ -185,7 +191,145 @@ func NewAuthority(
 		runAuthority: runAuthority,
 		now:          now,
 		random:       random,
+		identityByID: make(map[string]grantIdentityReservation),
 	}, nil
+}
+
+func (authority *Authority) InitializeGrantIdentityIndex(ctx context.Context) error {
+	if authority == nil || ctx == nil {
+		return ErrInvalidGrantAuthorityInput
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now, err := authority.operationTime()
+	if err != nil {
+		return err
+	}
+	events, err := authority.store.ReadAll(ctx)
+	if err != nil {
+		return err
+	}
+	state, err := authority.readState(ctx)
+	if err != nil {
+		return err
+	}
+	expected := make([]grantIdentityReservation, 0)
+	for _, event := range events {
+		if event.Type != "AgentGrantIssued" ||
+			!strings.HasPrefix(event.StreamID, grantStreamPrefix) {
+			continue
+		}
+		var payload issuePayload
+		if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
+			!payload.valid() {
+			return ErrInvalidGrantAuthorityInput
+		}
+		expected = append(expected, grantIdentityReservation{
+			grantID: payload.GrantID, tokenHash: payload.TokenHash,
+			runID: payload.RunID, workItemID: payload.WorkItemID,
+			runtimeInstanceID: payload.RuntimeInstanceID,
+			issueEventID:      event.ID,
+			grantStreamID:     event.StreamID, grantSequence: event.Seq,
+		})
+	}
+	sort.Slice(expected, func(i, j int) bool {
+		if expected[i].grantID != expected[j].grantID {
+			return expected[i].grantID < expected[j].grantID
+		}
+		return expected[i].issueEventID < expected[j].issueEventID
+	})
+	seenIDs := make(map[string]grantIdentityReservation, len(expected))
+	seenHashes := make(map[string]grantIdentityReservation, len(expected))
+	issueIDs := make([]string, len(expected))
+	for index, reservation := range expected {
+		if existing, exists := seenIDs[reservation.grantID]; exists &&
+			existing != reservation {
+			return ErrGrantIDCollision
+		}
+		if existing, exists := seenHashes[reservation.tokenHash]; exists &&
+			existing != reservation {
+			return ErrGrantTokenCollision
+		}
+		seenIDs[reservation.grantID] = reservation
+		seenHashes[reservation.tokenHash] = reservation
+		issueIDs[index] = reservation.issueEventID
+	}
+	if state.identityInitialized {
+		if !grantIdentityMatches(state.identityByID, seenIDs) ||
+			!grantIdentityMatches(state.identityByHash, seenHashes) {
+			return ErrGrantAuthorityConflict
+		}
+		authority.setGrantIdentityReady(state.identityByID)
+		return nil
+	}
+	identityHead := state.heads[grantIdentityStreamID]
+	for _, reservation := range expected {
+		existing, exists := state.identityByID[reservation.grantID]
+		if exists {
+			if existing != reservation ||
+				state.identityByHash[reservation.tokenHash] != reservation {
+				return ErrGrantAuthorityConflict
+			}
+			continue
+		}
+		identityHead++
+		reservationEvent := newGrantEvent(
+			deterministicGrantEventID(
+				"AgentGrantIdentityReserved",
+				reservation.grantID,
+				reservation.tokenHash,
+				reservation.issueEventID,
+			),
+			grantIdentityStreamID,
+			identityHead,
+			"AgentGrantIdentityReserved",
+			now,
+			"00000000-0000-4000-8000-000000000002",
+			reservation.issueEventID,
+			grantIdentityPayload(reservation),
+		)
+		if _, err := authority.store.AppendBatchIfStreamHeads(
+			ctx,
+			[]journal.StreamHeadExpectation{
+				{StreamID: grantIdentityStreamID, Sequence: identityHead - 1},
+				{StreamID: reservation.grantStreamID, Sequence: state.heads[reservation.grantStreamID]},
+			},
+			[]journal.Event{reservationEvent},
+		); err != nil {
+			return mapGrantWriteError(err)
+		}
+	}
+	digest := sha256.Sum256([]byte(strings.Join(issueIDs, "\n")))
+	issueDigest := hex.EncodeToString(digest[:])
+	marker := newGrantEvent(
+		deterministicGrantEventID(
+			"AgentGrantIdentityIndexInitialized",
+			issueDigest,
+		),
+		grantIdentityStreamID,
+		identityHead+1,
+		"AgentGrantIdentityIndexInitialized",
+		now,
+		"00000000-0000-4000-8000-000000000002",
+		"",
+		struct {
+			IssueDigest string `json:"issue_digest"`
+			IssueCount  int    `json:"issue_count"`
+		}{issueDigest, len(expected)},
+	)
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		[]journal.StreamHeadExpectation{{
+			StreamID: grantIdentityStreamID,
+			Sequence: identityHead,
+		}},
+		[]journal.Event{marker},
+	); err != nil {
+		return mapGrantWriteError(err)
+	}
+	authority.setGrantIdentityReady(seenIDs)
+	return nil
 }
 
 func (authority *Authority) Issue(
@@ -196,22 +340,32 @@ func (authority *Authority) Issue(
 	if err != nil {
 		return IssuedGrant{}, err
 	}
+	if !authority.grantIdentityReady() {
+		return IssuedGrant{}, ErrGrantIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return IssuedGrant{}, err
 	}
-	runHead, run, err := authority.currentRun(ctx, input.RunID)
+	command, err := authority.readCommandState(
+		ctx,
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	)
 	if err != nil {
 		return IssuedGrant{}, err
 	}
+	runHead := command.runHead
+	run := command.run
 	if !issueBindingMatches(input, run) ||
-		run.Phase() != "claimed" ||
-		!now.Before(run.PrepareLeaseExpiresAt()) {
+		run.phase != "claimed" ||
+		!now.Before(run.prepareLeaseExpiresAt) {
 		return IssuedGrant{}, ErrRunNotGrantable
 	}
-	state, err := authority.readState(ctx)
-	if err != nil {
-		return IssuedGrant{}, err
+	state := command.state
+	if !state.identityInitialized {
+		return IssuedGrant{}, ErrGrantIdentityIndexRequired
 	}
 	streamID := grantStream(input.RunID)
 	streamSequence := state.heads[streamID]
@@ -262,10 +416,10 @@ func (authority *Authority) Issue(
 		base64.RawURLEncoding.EncodeToString(material[16:])}
 	tokenDigest := sha256.Sum256([]byte(token.value))
 	tokenHash := hex.EncodeToString(tokenDigest[:])
-	if _, exists := state.byID[grantID]; exists {
+	if _, exists := state.identityByID[grantID]; exists {
 		return IssuedGrant{}, ErrGrantIDCollision
 	}
-	if _, exists := state.byHash[tokenHash]; exists {
+	if _, exists := state.identityByHash[tokenHash]; exists {
 		return IssuedGrant{}, ErrGrantTokenCollision
 	}
 	expiresAt := now.Add(input.Lifetime)
@@ -281,7 +435,16 @@ func (authority *Authority) Issue(
 		input.CorrelationID,
 	)
 	if previousEventID == "" {
-		previousEventID = runHead.ID
+		for _, previous := range state.byID {
+			if previous.runID == input.RunID &&
+				previous.streamSequence == streamSequence-1 {
+				previousEventID = previous.lastEventID
+				break
+			}
+		}
+		if previousEventID == "" {
+			previousEventID = runHead.ID
+		}
 	}
 	issueEvent := newGrantEvent(
 		issueID,
@@ -309,20 +472,46 @@ func (authority *Authority) Issue(
 		},
 	)
 	events = append(events, issueEvent)
+	identitySequence := state.heads[grantIdentityStreamID] + 1
+	events = append(events, newGrantEvent(
+		deterministicGrantEventID(
+			"AgentGrantIdentityReserved",
+			grantID,
+			tokenHash,
+			issueID,
+		),
+		grantIdentityStreamID,
+		identitySequence,
+		"AgentGrantIdentityReserved",
+		now,
+		input.CorrelationID,
+		issueID,
+		grantIdentityPayload(grantIdentityReservation{
+			grantID: grantID, tokenHash: tokenHash,
+			runID: input.RunID, workItemID: input.WorkItemID,
+			runtimeInstanceID: input.RuntimeInstanceID,
+			issueEventID:      issueID,
+			grantStreamID:     streamID, grantSequence: streamSequence,
+		}),
+	))
 	if err := ctx.Err(); err != nil {
 		return IssuedGrant{}, err
 	}
 	_, err = authority.store.AppendBatchIfStreamHeads(
 		ctx,
-		[]journal.StreamHeadExpectation{
-			{StreamID: runHead.StreamID, Sequence: runHead.Seq},
-			{StreamID: streamID, Sequence: state.heads[streamID]},
-		},
+		grantCommandExpectations(command.heads),
 		events,
 	)
 	if err != nil {
 		return IssuedGrant{}, mapGrantWriteError(err)
 	}
+	authority.cacheGrantIdentity(grantIdentityReservation{
+		grantID: grantID, tokenHash: tokenHash,
+		runID: input.RunID, workItemID: input.WorkItemID,
+		runtimeInstanceID: input.RuntimeInstanceID,
+		issueEventID:      issueID, grantStreamID: streamID,
+		grantSequence: streamSequence,
+	})
 	record := GrantRecord{
 		id:                grantID,
 		workItemID:        input.WorkItemID,
@@ -353,18 +542,25 @@ func (authority *Authority) Authorize(
 	if err := validateAuthorizeInput(ctx, input); err != nil {
 		return GrantRecord{}, err
 	}
+	if !authority.grantIdentityReady() {
+		return GrantRecord{}, ErrGrantIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return GrantRecord{}, err
 	}
-	runHead, run, err := authority.currentRun(ctx, input.RunID)
+	command, err := authority.readCommandState(
+		ctx,
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	)
 	if err != nil {
 		return GrantRecord{}, err
 	}
-	state, err := authority.readState(ctx)
-	if err != nil {
-		return GrantRecord{}, err
-	}
+	runHead := command.runHead
+	run := command.run
+	state := command.state
 	digest := sha256.Sum256([]byte(input.Token.value))
 	tokenHash := hex.EncodeToString(digest[:])
 	record := state.byHash[tokenHash]
@@ -427,10 +623,7 @@ func (authority *Authority) Authorize(
 	}
 	_, err = authority.store.AppendBatchIfStreamHeads(
 		ctx,
-		[]journal.StreamHeadExpectation{
-			{StreamID: runHead.StreamID, Sequence: runHead.Seq},
-			{StreamID: streamID, Sequence: state.heads[streamID]},
-		},
+		grantCommandExpectations(command.heads),
 		[]journal.Event{event},
 	)
 	if err != nil {
@@ -446,14 +639,27 @@ func (authority *Authority) Revoke(
 	if err := validateRevokeInput(ctx, input); err != nil {
 		return GrantRecord{}, err
 	}
+	if !authority.grantIdentityReady() {
+		return GrantRecord{}, ErrGrantIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return GrantRecord{}, err
 	}
-	state, err := authority.readState(ctx)
+	reservation, exists := authority.grantIdentity(input.GrantID)
+	if !exists {
+		return GrantRecord{}, ErrGrantNotFound
+	}
+	command, err := authority.readCommandState(
+		ctx,
+		reservation.workItemID,
+		reservation.runID,
+		reservation.runtimeInstanceID,
+	)
 	if err != nil {
 		return GrantRecord{}, err
 	}
+	state := command.state
 	record := state.byID[input.GrantID]
 	if record == nil {
 		return GrantRecord{}, ErrGrantNotFound
@@ -465,13 +671,11 @@ func (authority *Authority) Revoke(
 		}
 		return GrantRecord{}, ErrGrantAlreadyRevoked
 	}
-	runHead, run, err := authority.currentRun(ctx, record.runID)
-	if err != nil {
-		return GrantRecord{}, err
-	}
-	if run.ID() != record.runID ||
-		run.WorkItemID() != record.workItemID ||
-		run.ClaimGeneration() < record.claimGeneration {
+	runHead := command.runHead
+	run := command.run
+	if run.id != record.runID ||
+		run.workItemID != record.workItemID ||
+		run.claimGeneration < record.claimGeneration {
 		return GrantRecord{}, ErrGrantBindingMismatch
 	}
 	streamID := grantStream(record.runID)
@@ -503,10 +707,7 @@ func (authority *Authority) Revoke(
 	}
 	_, err = authority.store.AppendBatchIfStreamHeads(
 		ctx,
-		[]journal.StreamHeadExpectation{
-			{StreamID: runHead.StreamID, Sequence: runHead.Seq},
-			{StreamID: streamID, Sequence: state.heads[streamID]},
-		},
+		grantCommandExpectations(command.heads),
 		[]journal.Event{event},
 	)
 	if err != nil {
@@ -572,12 +773,26 @@ func (snapshot AuthoritySnapshot) Grants() []GrantRecord {
 }
 
 type grantState struct {
-	byID          map[string]*GrantRecord
-	byHash        map[string]*GrantRecord
-	active        map[string]*GrantRecord
-	requests      map[string]map[string]authorizationDecision
-	heads         map[string]int64
-	runReferences map[string]runReference
+	byID                map[string]*GrantRecord
+	byHash              map[string]*GrantRecord
+	active              map[string]*GrantRecord
+	requests            map[string]map[string]authorizationDecision
+	heads               map[string]int64
+	runReferences       map[string]runReference
+	identityByID        map[string]grantIdentityReservation
+	identityByHash      map[string]grantIdentityReservation
+	identityInitialized bool
+}
+
+type grantIdentityReservation struct {
+	grantID           string
+	tokenHash         string
+	runID             string
+	workItemID        string
+	runtimeInstanceID string
+	issueEventID      string
+	grantStreamID     string
+	grantSequence     int64
 }
 
 func (authority *Authority) readState(ctx context.Context) (*grantState, error) {
@@ -585,22 +800,82 @@ func (authority *Authority) readState(ctx context.Context) (*grantState, error) 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := authority.runAuthority.Snapshot(ctx); err != nil {
+	return replayGrantState(events)
+}
+
+func (authority *Authority) readStateFor(
+	ctx context.Context,
+	streamIDs []string,
+) (*grantState, error) {
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
 		return nil, err
 	}
+	return replayGrantState(snapshot.Events())
+}
+
+type grantCommandState struct {
+	state   *grantState
+	runHead runReference
+	run     currentGrantRun
+	heads   map[string]journal.StreamHead
+}
+
+func (authority *Authority) readCommandState(
+	ctx context.Context,
+	workItemID string,
+	runID string,
+	runtimeInstanceID string,
+) (grantCommandState, error) {
+	streamIDs := grantCommandStreams(
+		workItemID,
+		runID,
+		runtimeInstanceID,
+	)
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return grantCommandState{}, err
+	}
+	events := snapshot.Events()
+	state, err := replayGrantState(events)
+	if err != nil {
+		return grantCommandState{}, err
+	}
+	runHead, run, err := currentRunFromEvents(events, runID)
+	if err != nil {
+		return grantCommandState{}, err
+	}
+	heads := make(map[string]journal.StreamHead, len(streamIDs))
+	for _, head := range snapshot.Heads() {
+		heads[head.StreamID] = head
+	}
+	return grantCommandState{
+		state: state, runHead: runHead, run: run, heads: heads,
+	}, nil
+}
+
+func replayGrantState(events []journal.Event) (*grantState, error) {
 	runReferences, err := indexGrantRunReferences(events)
 	if err != nil {
 		return nil, err
 	}
 	state := &grantState{
-		byID:          make(map[string]*GrantRecord),
-		byHash:        make(map[string]*GrantRecord),
-		active:        make(map[string]*GrantRecord),
-		requests:      make(map[string]map[string]authorizationDecision),
-		heads:         make(map[string]int64),
-		runReferences: runReferences,
+		byID:           make(map[string]*GrantRecord),
+		byHash:         make(map[string]*GrantRecord),
+		active:         make(map[string]*GrantRecord),
+		requests:       make(map[string]map[string]authorizationDecision),
+		heads:          make(map[string]int64),
+		runReferences:  runReferences,
+		identityByID:   make(map[string]grantIdentityReservation),
+		identityByHash: make(map[string]grantIdentityReservation),
 	}
 	for _, event := range events {
+		if event.StreamID == grantIdentityStreamID {
+			if err := applyGrantIdentityEvent(state, event); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if !strings.HasPrefix(event.StreamID, grantStreamPrefix) {
 			continue
 		}
@@ -609,6 +884,75 @@ func (authority *Authority) readState(ctx context.Context) (*grantState, error) 
 		}
 	}
 	return state, nil
+}
+
+func applyGrantIdentityEvent(state *grantState, event journal.Event) error {
+	if event.SchemaVersion != 1 ||
+		event.Seq != state.heads[event.StreamID]+1 ||
+		event.EmittedAt.IsZero() ||
+		event.EmittedAt.Location() != time.UTC ||
+		!validCanonicalUUID(event.CorrelationID) {
+		return ErrInvalidGrantAuthorityInput
+	}
+	switch event.Type {
+	case "AgentGrantIdentityReserved":
+		var payload struct {
+			GrantID           string `json:"grant_id"`
+			TokenHash         string `json:"token_hash"`
+			RunID             string `json:"run_id"`
+			WorkItemID        string `json:"work_item_id"`
+			RuntimeInstanceID string `json:"runtime_instance_id"`
+			IssueEventID      string `json:"issue_event_id"`
+			GrantStreamID     string `json:"grant_stream_id"`
+			GrantSequence     int64  `json:"grant_sequence"`
+		}
+		if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
+			!validCanonicalUUID(payload.GrantID) ||
+			!validTokenHash(payload.TokenHash) ||
+			!validOpaqueID(payload.RunID) ||
+			!validOpaqueID(payload.WorkItemID) ||
+			!validOpaqueID(payload.RuntimeInstanceID) ||
+			payload.IssueEventID == "" ||
+			payload.GrantStreamID != grantStream(payload.RunID) ||
+			payload.GrantSequence <= 0 ||
+			event.CausationID != payload.IssueEventID {
+			return ErrInvalidGrantAuthorityInput
+		}
+		reservation := grantIdentityReservation{
+			grantID: payload.GrantID, tokenHash: payload.TokenHash,
+			runID: payload.RunID, workItemID: payload.WorkItemID,
+			runtimeInstanceID: payload.RuntimeInstanceID,
+			issueEventID:      payload.IssueEventID,
+			grantStreamID:     payload.GrantStreamID,
+			grantSequence:     payload.GrantSequence,
+		}
+		if existing, exists := state.identityByID[payload.GrantID]; exists &&
+			existing != reservation {
+			return ErrGrantIDCollision
+		}
+		if existing, exists := state.identityByHash[payload.TokenHash]; exists &&
+			existing != reservation {
+			return ErrGrantTokenCollision
+		}
+		state.identityByID[payload.GrantID] = reservation
+		state.identityByHash[payload.TokenHash] = reservation
+	case "AgentGrantIdentityIndexInitialized":
+		var payload struct {
+			IssueDigest string `json:"issue_digest"`
+			IssueCount  int    `json:"issue_count"`
+		}
+		if state.identityInitialized ||
+			decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
+			!validTokenHash(payload.IssueDigest) ||
+			payload.IssueCount < 0 {
+			return ErrInvalidGrantAuthorityInput
+		}
+		state.identityInitialized = true
+	default:
+		return ErrInvalidGrantAuthorityInput
+	}
+	state.heads[event.StreamID] = event.Seq
+	return nil
 }
 
 func applyGrantEvent(state *grantState, event journal.Event) error {
@@ -814,33 +1158,160 @@ func validGrantRunReference(
 		!grantTime.Before(reference.EmittedAt)
 }
 
-func (authority *Authority) currentRun(
-	ctx context.Context,
+type currentGrantRun struct {
+	id                    string
+	workItemID            string
+	phase                 string
+	claimID               string
+	claimGeneration       int64
+	runtimeInstanceID     string
+	agentInstanceID       string
+	prepareLeaseExpiresAt time.Time
+	terminalStatus        string
+}
+
+func currentRunFromEvents(
+	events []journal.Event,
 	runID string,
-) (runReference, work.RunRecord, error) {
-	events, err := authority.store.ReadStream(ctx, runStream(runID))
-	if err != nil {
-		return runReference{}, work.RunRecord{}, err
-	}
-	if len(events) == 0 {
-		return runReference{}, work.RunRecord{}, ErrRunNotGrantable
-	}
-	head := events[len(events)-1]
-	snapshot, err := authority.runAuthority.Snapshot(ctx)
-	if err != nil {
-		return runReference{}, work.RunRecord{}, err
-	}
-	for _, run := range snapshot.Runs() {
-		if run.ID() == runID {
-			return runReference{
-				StreamID:  head.StreamID,
-				Seq:       head.Seq,
-				ID:        head.ID,
-				EmittedAt: head.EmittedAt,
-			}, run, nil
+) (runReference, currentGrantRun, error) {
+	streamID := runStream(runID)
+	var current currentGrantRun
+	var head runReference
+	var sequence int64
+	for _, event := range events {
+		if event.StreamID != streamID {
+			continue
+		}
+		if event.Seq != sequence+1 {
+			return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+		}
+		sequence = event.Seq
+		head = runReference{
+			StreamID: event.StreamID, Seq: event.Seq,
+			ID: event.ID, EmittedAt: event.EmittedAt,
+		}
+		switch event.Type {
+		case "RunClaimed":
+			var payload struct {
+				WorkItemID            string `json:"work_item_id"`
+				RunID                 string `json:"run_id"`
+				ClaimID               string `json:"claim_id"`
+				ClaimGeneration       int64  `json:"claim_generation"`
+				RuntimeInstanceID     string `json:"runtime_instance_id"`
+				AgentInstanceID       string `json:"agent_instance_id"`
+				PrepareLeaseExpiresAt string `json:"prepare_lease_expires_at"`
+				RuntimeStatusStreamID string `json:"runtime_status_stream_id"`
+				RuntimeStatusSequence int64  `json:"runtime_status_sequence"`
+				RuntimeStatusEventID  string `json:"runtime_status_event_id"`
+			}
+			if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			expiresAt, err := time.Parse(time.RFC3339Nano, payload.PrepareLeaseExpiresAt)
+			if err != nil || expiresAt.Location() != time.UTC ||
+				payload.RunID != runID ||
+				payload.WorkItemID == "" || payload.ClaimID == "" ||
+				payload.ClaimGeneration <= 0 ||
+				payload.RuntimeInstanceID == "" ||
+				payload.AgentInstanceID == "" {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			current = currentGrantRun{
+				id: runID, workItemID: payload.WorkItemID, phase: "claimed",
+				claimID:               payload.ClaimID,
+				claimGeneration:       payload.ClaimGeneration,
+				runtimeInstanceID:     payload.RuntimeInstanceID,
+				agentInstanceID:       payload.AgentInstanceID,
+				prepareLeaseExpiresAt: expiresAt,
+			}
+		case "RunPrepareLeaseExtended":
+			var payload struct {
+				WorkItemID             string `json:"work_item_id"`
+				RunID                  string `json:"run_id"`
+				ClaimID                string `json:"claim_id"`
+				ClaimGeneration        int64  `json:"claim_generation"`
+				RuntimeInstanceID      string `json:"runtime_instance_id"`
+				AgentInstanceID        string `json:"agent_instance_id"`
+				PreviousLeaseExpiresAt string `json:"previous_lease_expires_at"`
+				PrepareLeaseExpiresAt  string `json:"prepare_lease_expires_at"`
+			}
+			if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
+				!grantRunPayloadMatches(current, payload.WorkItemID, payload.RunID,
+					payload.ClaimID, payload.ClaimGeneration,
+					payload.RuntimeInstanceID, payload.AgentInstanceID) {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			expiresAt, err := time.Parse(time.RFC3339Nano, payload.PrepareLeaseExpiresAt)
+			if err != nil || expiresAt.Location() != time.UTC ||
+				!expiresAt.After(current.prepareLeaseExpiresAt) {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			current.prepareLeaseExpiresAt = expiresAt
+		case "RunStarted":
+			var payload struct {
+				WorkItemID            string `json:"work_item_id"`
+				RunID                 string `json:"run_id"`
+				ClaimID               string `json:"claim_id"`
+				ClaimGeneration       int64  `json:"claim_generation"`
+				RuntimeInstanceID     string `json:"runtime_instance_id"`
+				AgentInstanceID       string `json:"agent_instance_id"`
+				RuntimeStatusStreamID string `json:"runtime_status_stream_id"`
+				RuntimeStatusSequence int64  `json:"runtime_status_sequence"`
+				RuntimeStatusEventID  string `json:"runtime_status_event_id"`
+			}
+			if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
+				!grantRunPayloadMatches(current, payload.WorkItemID, payload.RunID,
+					payload.ClaimID, payload.ClaimGeneration,
+					payload.RuntimeInstanceID, payload.AgentInstanceID) {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			current.phase = "running"
+		case "RunTerminalCommitted":
+			var payload struct {
+				WorkItemID            string `json:"work_item_id"`
+				RunID                 string `json:"run_id"`
+				ClaimID               string `json:"claim_id"`
+				ClaimGeneration       int64  `json:"claim_generation"`
+				RuntimeInstanceID     string `json:"runtime_instance_id"`
+				AgentInstanceID       string `json:"agent_instance_id"`
+				Status                string `json:"status"`
+				Reason                string `json:"reason"`
+				RuntimeStatusStreamID string `json:"runtime_status_stream_id"`
+				RuntimeStatusSequence int64  `json:"runtime_status_sequence"`
+				RuntimeStatusEventID  string `json:"runtime_status_event_id"`
+			}
+			if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
+				!grantRunPayloadMatches(current, payload.WorkItemID, payload.RunID,
+					payload.ClaimID, payload.ClaimGeneration,
+					payload.RuntimeInstanceID, payload.AgentInstanceID) ||
+				payload.Status == "" {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			current.phase = "terminal"
+			current.terminalStatus = payload.Status
+		default:
+			return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
 		}
 	}
-	return runReference{}, work.RunRecord{}, ErrRunNotGrantable
+	if current.id == "" || head.ID == "" {
+		return runReference{}, currentGrantRun{}, ErrRunNotGrantable
+	}
+	return head, current, nil
+}
+
+func grantRunPayloadMatches(
+	run currentGrantRun,
+	workItemID string,
+	runID string,
+	claimID string,
+	generation int64,
+	runtimeInstanceID string,
+	agentInstanceID string,
+) bool {
+	return run.id == runID && run.workItemID == workItemID &&
+		run.claimID == claimID && run.claimGeneration == generation &&
+		run.runtimeInstanceID == runtimeInstanceID &&
+		run.agentInstanceID == agentInstanceID
 }
 
 type issuePayload struct {
@@ -1023,13 +1494,13 @@ func validateRevokeInput(ctx context.Context, input RevokeInput) error {
 	return nil
 }
 
-func issueBindingMatches(input IssueInput, run work.RunRecord) bool {
-	return run.ID() == input.RunID &&
-		run.WorkItemID() == input.WorkItemID &&
-		run.ClaimID() == input.ClaimID &&
-		run.ClaimGeneration() == input.ClaimGeneration &&
-		run.RuntimeInstanceID() == input.RuntimeInstanceID &&
-		run.AgentInstanceID() == input.AgentInstanceID
+func issueBindingMatches(input IssueInput, run currentGrantRun) bool {
+	return run.id == input.RunID &&
+		run.workItemID == input.WorkItemID &&
+		run.claimID == input.ClaimID &&
+		run.claimGeneration == input.ClaimGeneration &&
+		run.runtimeInstanceID == input.RuntimeInstanceID &&
+		run.agentInstanceID == input.AgentInstanceID
 }
 
 func authorizeBindingMatches(input AuthorizeInput, record *GrantRecord) bool {
@@ -1043,21 +1514,21 @@ func authorizeBindingMatches(input AuthorizeInput, record *GrantRecord) bool {
 
 func authorizeRunMatches(
 	input AuthorizeInput,
-	run work.RunRecord,
+	run currentGrantRun,
 	now time.Time,
 ) bool {
-	if run.ID() != input.RunID ||
-		run.WorkItemID() != input.WorkItemID ||
-		run.ClaimID() != input.ClaimID ||
-		run.ClaimGeneration() != input.ClaimGeneration ||
-		run.RuntimeInstanceID() != input.RuntimeInstanceID ||
-		run.AgentInstanceID() != input.AgentInstanceID ||
-		run.TerminalStatus() != "" {
+	if run.id != input.RunID ||
+		run.workItemID != input.WorkItemID ||
+		run.claimID != input.ClaimID ||
+		run.claimGeneration != input.ClaimGeneration ||
+		run.runtimeInstanceID != input.RuntimeInstanceID ||
+		run.agentInstanceID != input.AgentInstanceID ||
+		run.terminalStatus != "" {
 		return false
 	}
-	switch run.Phase() {
+	switch run.phase {
 	case "claimed":
-		return now.Before(run.PrepareLeaseExpiresAt())
+		return now.Before(run.prepareLeaseExpiresAt)
 	case "running":
 		return true
 	default:
@@ -1364,6 +1835,120 @@ func mapGrantWriteError(err error) error {
 
 func grantStream(runID string) string { return grantStreamPrefix + runID }
 func runStream(runID string) string   { return "run/" + runID }
+
+func grantCommandStreams(
+	workItemID string,
+	runID string,
+	runtimeInstanceID string,
+) []string {
+	return []string{
+		"work-item/" + workItemID,
+		runStream(runID),
+		"runtime_instance:" + runtimeInstanceID,
+		"runtime_capacity:" + runtimeInstanceID,
+		grantStream(runID),
+		grantIdentityStreamID,
+	}
+}
+
+func grantCommandExpectations(
+	heads map[string]journal.StreamHead,
+) []journal.StreamHeadExpectation {
+	streamIDs := make([]string, 0, len(heads))
+	for streamID := range heads {
+		streamIDs = append(streamIDs, streamID)
+	}
+	sort.Strings(streamIDs)
+	expectations := make([]journal.StreamHeadExpectation, len(streamIDs))
+	for index, streamID := range streamIDs {
+		expectations[index] = journal.StreamHeadExpectation{
+			StreamID: streamID,
+			Sequence: heads[streamID].Sequence,
+		}
+	}
+	return expectations
+}
+
+func (authority *Authority) grantIdentityReady() bool {
+	authority.identityMu.RLock()
+	defer authority.identityMu.RUnlock()
+	return authority.identityReady
+}
+
+func (authority *Authority) setGrantIdentityReady(
+	reservations map[string]grantIdentityReservation,
+) {
+	authority.identityMu.Lock()
+	defer authority.identityMu.Unlock()
+	authority.identityByID = make(map[string]grantIdentityReservation, len(reservations))
+	for grantID, reservation := range reservations {
+		authority.identityByID[grantID] = reservation
+	}
+	authority.identityReady = true
+}
+
+func (authority *Authority) cacheGrantIdentity(
+	reservation grantIdentityReservation,
+) {
+	authority.identityMu.Lock()
+	defer authority.identityMu.Unlock()
+	authority.identityByID[reservation.grantID] = reservation
+}
+
+func (authority *Authority) grantIdentity(
+	grantID string,
+) (grantIdentityReservation, bool) {
+	authority.identityMu.RLock()
+	defer authority.identityMu.RUnlock()
+	reservation, exists := authority.identityByID[grantID]
+	return reservation, exists
+}
+
+func grantIdentityPayload(reservation grantIdentityReservation) struct {
+	GrantID           string `json:"grant_id"`
+	TokenHash         string `json:"token_hash"`
+	RunID             string `json:"run_id"`
+	WorkItemID        string `json:"work_item_id"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+	IssueEventID      string `json:"issue_event_id"`
+	GrantStreamID     string `json:"grant_stream_id"`
+	GrantSequence     int64  `json:"grant_sequence"`
+} {
+	return struct {
+		GrantID           string `json:"grant_id"`
+		TokenHash         string `json:"token_hash"`
+		RunID             string `json:"run_id"`
+		WorkItemID        string `json:"work_item_id"`
+		RuntimeInstanceID string `json:"runtime_instance_id"`
+		IssueEventID      string `json:"issue_event_id"`
+		GrantStreamID     string `json:"grant_stream_id"`
+		GrantSequence     int64  `json:"grant_sequence"`
+	}{
+		reservation.grantID,
+		reservation.tokenHash,
+		reservation.runID,
+		reservation.workItemID,
+		reservation.runtimeInstanceID,
+		reservation.issueEventID,
+		reservation.grantStreamID,
+		reservation.grantSequence,
+	}
+}
+
+func grantIdentityMatches(
+	indexed map[string]grantIdentityReservation,
+	expected map[string]grantIdentityReservation,
+) bool {
+	if len(indexed) != len(expected) {
+		return false
+	}
+	for key, reservation := range expected {
+		if indexed[key] != reservation {
+			return false
+		}
+	}
+	return true
+}
 
 func isNilReader(reader io.Reader) bool {
 	if reader == nil {

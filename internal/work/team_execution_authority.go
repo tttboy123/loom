@@ -1,0 +1,2044 @@
+package work
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"loom-pi-rebuild/internal/journal"
+	"loom-pi-rebuild/internal/teams"
+)
+
+var (
+	ErrInvalidTeamExecution         = errors.New("invalid Team execution")
+	ErrTeamExecutionConflict        = errors.New("Team execution conflict")
+	ErrStaleGlobalReadView          = errors.New("stale global read view")
+	ErrTeamExecutionAlreadyTerminal = errors.New("Team execution already terminal")
+	ErrInvalidTeamAttempt           = errors.New("invalid Team node attempt")
+	ErrTeamAttemptLimit             = errors.New("Team node attempt limit reached")
+	ErrInvalidTeamRecovery          = errors.New("invalid Team node recovery")
+	ErrTeamAttemptRecoveryRequired  = errors.New("Team node attempt recovery requires human action")
+)
+
+type TeamAttemptSelection struct {
+	LogicalNodeID string
+	AttemptNumber int
+}
+
+type TeamDispatchInput struct {
+	Plan                 teams.ExecutionPlan
+	ReadyAttempts        []TeamAttemptSelection
+	ViewVersion          string
+	ExpectedHeads        []journal.StreamHead
+	AuthoritativeTime    time.Time
+	PrepareLeaseDuration time.Duration
+	CorrelationID        string
+}
+
+type TeamAttemptEvidenceInput struct {
+	TeamInstanceID    string
+	PlanDigest        string
+	LogicalNodeID     string
+	AttemptNumber     int
+	WorkItemID        string
+	RunID             string
+	ClaimID           string
+	ClaimGeneration   int64
+	RuntimeInstanceID string
+	AgentInstanceID   string
+	EvidenceID        string
+	EvidenceDigest    string
+	CorrelationID     string
+}
+
+type TeamAttemptRebindInput struct {
+	TeamInstanceID          string
+	PlanDigest              string
+	LogicalNodeID           string
+	AttemptNumber           int
+	WorkItemID              string
+	RunID                   string
+	PreviousClaimID         string
+	PreviousClaimGeneration int64
+	ClaimID                 string
+	ClaimGeneration         int64
+	RuntimeInstanceID       string
+	AgentInstanceID         string
+	CorrelationID           string
+}
+
+type TeamRecoveryAction string
+
+const (
+	TeamRecoveryRetry         TeamRecoveryAction = "retry"
+	TeamRecoveryFallback      TeamRecoveryAction = "fallback"
+	TeamRecoveryDegraded      TeamRecoveryAction = "degraded"
+	TeamRecoveryBlocked       TeamRecoveryAction = "blocked"
+	TeamRecoveryHumanRequired TeamRecoveryAction = "human_required"
+)
+
+type TeamRecoveryInput struct {
+	TeamInstanceID        string
+	PlanDigest            string
+	LogicalNodeID         string
+	AttemptNumber         int
+	Action                TeamRecoveryAction
+	RetryAt               time.Time
+	NextAgentInstanceID   string
+	NextRuntimeInstanceID string
+	DependencySatisfied   bool
+	CorrelationID         string
+}
+
+type TeamAttemptRecord struct {
+	attemptNumber     int
+	workItemID        string
+	runID             string
+	claimID           string
+	claimGeneration   int64
+	runtimeInstanceID string
+	agentInstanceID   string
+	status            string
+	evidenceID        string
+	evidenceDigest    string
+}
+
+type TeamNodeRecord struct {
+	logicalNodeID       string
+	status              string
+	dependencySatisfied bool
+	currentAttempt      int
+	retryAt             time.Time
+	maxAttempts         int
+	attempts            []TeamAttemptRecord
+}
+
+type TeamExecutionRecord struct {
+	teamInstanceID string
+	planDigest     string
+	status         string
+	nodes          []TeamNodeRecord
+	streamSequence int64
+	lastEventID    string
+}
+
+type TeamDispatchedNode struct {
+	logicalNode teams.ExecutionNode
+	attempt     TeamAttemptRecord
+	workItem    WorkItemRecord
+	run         RunRecord
+}
+
+type TeamDispatchResult struct {
+	teamInstanceID string
+	planDigest     string
+	viewVersion    string
+	nodes          []TeamDispatchedNode
+}
+
+func (result TeamDispatchResult) TeamInstanceID() string { return result.teamInstanceID }
+func (result TeamDispatchResult) PlanDigest() string     { return result.planDigest }
+func (result TeamDispatchResult) ViewVersion() string    { return result.viewVersion }
+func (result TeamDispatchResult) Nodes() []TeamDispatchedNode {
+	return append([]TeamDispatchedNode(nil), result.nodes...)
+}
+func (node TeamDispatchedNode) LogicalNode() teams.ExecutionNode { return node.logicalNode }
+func (node TeamDispatchedNode) Attempt() TeamAttemptRecord       { return node.attempt }
+func (node TeamDispatchedNode) WorkItem() WorkItemRecord         { return node.workItem.public() }
+func (node TeamDispatchedNode) Run() RunRecord                   { return node.run.public() }
+
+func (record TeamExecutionRecord) TeamInstanceID() string { return record.teamInstanceID }
+func (record TeamExecutionRecord) PlanDigest() string     { return record.planDigest }
+func (record TeamExecutionRecord) Status() string         { return record.status }
+func (record TeamExecutionRecord) Nodes() []TeamNodeRecord {
+	return cloneTeamNodeRecords(record.nodes)
+}
+func (record TeamNodeRecord) LogicalNodeID() string     { return record.logicalNodeID }
+func (record TeamNodeRecord) Status() string            { return record.status }
+func (record TeamNodeRecord) DependencySatisfied() bool { return record.dependencySatisfied }
+func (record TeamNodeRecord) CurrentAttempt() int       { return record.currentAttempt }
+func (record TeamNodeRecord) RetryAt() time.Time        { return record.retryAt }
+func (record TeamNodeRecord) Attempts() []TeamAttemptRecord {
+	return append([]TeamAttemptRecord(nil), record.attempts...)
+}
+func (record TeamAttemptRecord) AttemptNumber() int        { return record.attemptNumber }
+func (record TeamAttemptRecord) WorkItemID() string        { return record.workItemID }
+func (record TeamAttemptRecord) RunID() string             { return record.runID }
+func (record TeamAttemptRecord) ClaimID() string           { return record.claimID }
+func (record TeamAttemptRecord) ClaimGeneration() int64    { return record.claimGeneration }
+func (record TeamAttemptRecord) RuntimeInstanceID() string { return record.runtimeInstanceID }
+func (record TeamAttemptRecord) AgentInstanceID() string   { return record.agentInstanceID }
+func (record TeamAttemptRecord) Status() string            { return record.status }
+func (record TeamAttemptRecord) EvidenceID() string        { return record.evidenceID }
+func (record TeamAttemptRecord) EvidenceDigest() string    { return record.evidenceDigest }
+
+func (authority *Authority) DispatchTeamReadySet(
+	ctx context.Context,
+	input TeamDispatchInput,
+) (TeamDispatchResult, error) {
+	if authority == nil || !authority.runIdentityReady() {
+		return TeamDispatchResult{}, ErrRunIdentityIndexRequired
+	}
+	nodes, selections, err := validateTeamDispatchInput(ctx, input)
+	if err != nil {
+		return TeamDispatchResult{}, err
+	}
+	candidateEvents, err := authority.store.ReadStream(
+		ctx,
+		teamExecutionStream(input.Plan.TeamInstanceID()),
+	)
+	if err != nil {
+		return TeamDispatchResult{}, err
+	}
+	candidateTeam, err := replayTeamExecution(
+		input.Plan.TeamInstanceID(),
+		candidateEvents,
+	)
+	if err != nil {
+		return TeamDispatchResult{}, err
+	}
+	streamIDs := teamDispatchStreams(
+		input.Plan,
+		nodes,
+		selections,
+		candidateTeam,
+	)
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return TeamDispatchResult{}, err
+	}
+	if !exactTeamHeads(input.ExpectedHeads, snapshot.Heads()) {
+		return TeamDispatchResult{}, ErrStaleGlobalReadView
+	}
+	state, err := replayTeamDispatchState(ctx, snapshot.Events())
+	if err != nil {
+		return TeamDispatchResult{}, err
+	}
+	if !state.runIdentityInitialized {
+		return TeamDispatchResult{}, ErrRunIdentityIndexRequired
+	}
+	teamStreamID := teamExecutionStream(input.Plan.TeamInstanceID())
+	team, err := replayTeamExecution(
+		input.Plan.TeamInstanceID(),
+		filterTeamEvents(snapshot.Events(), teamStreamID),
+	)
+	if err != nil {
+		return TeamDispatchResult{}, err
+	}
+	if team.status != "" && isTerminalTeamStatus(team.status) {
+		return TeamDispatchResult{}, ErrTeamExecutionAlreadyTerminal
+	}
+	now := input.AuthoritativeTime
+	teamSequence := snapshotHead(snapshot, teamStreamID).Sequence
+	identitySequence := snapshotHead(snapshot, runIdentityStreamID).Sequence
+	capacitySequences := make(map[string]int64)
+	runtimeActive := make(map[string]int)
+	for _, selection := range selections {
+		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		runtimeInstanceID := node.RuntimeInstanceID()
+		if nodeRecord := teamNodeByID(&team, selection.LogicalNodeID); nodeRecord != nil {
+			if attempt := teamAttemptByNumber(
+				nodeRecord,
+				selection.AttemptNumber,
+			); attempt != nil {
+				runtimeInstanceID = attempt.runtimeInstanceID
+			}
+		}
+		if _, exists := capacitySequences[runtimeInstanceID]; exists {
+			continue
+		}
+		runtime := state.runtimes[runtimeInstanceID]
+		capacitySequences[runtimeInstanceID] =
+			state.heads[runtimeCapacityStream(runtimeInstanceID)]
+		runtimeActive[runtimeInstanceID] = len(runtime.active)
+	}
+	events := make([]journal.Event, 0, 24)
+	if team.status == "" {
+		teamSequence++
+		plannedID := deterministicEventID(
+			"TeamExecutionPlanned",
+			input.Plan.TeamInstanceID(),
+			input.Plan.Digest(),
+		)
+		events = append(events, newEvent(
+			plannedID,
+			teamStreamID,
+			teamSequence,
+			"TeamExecutionPlanned",
+			now,
+			input.CorrelationID,
+			"",
+			teamPlanPayload(input.Plan, input.ViewVersion),
+		))
+		team = plannedTeamRecord(input.Plan, teamSequence, plannedID)
+		for _, selection := range selections {
+			node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+			if selection.AttemptNumber != 1 {
+				return TeamDispatchResult{}, ErrInvalidTeamAttempt
+			}
+			teamSequence++
+			scheduled := scheduledTeamAttempt(input.Plan, node, 1)
+			scheduledID := deterministicEventID(
+				"TeamNodeAttemptScheduled",
+				input.Plan.TeamInstanceID(),
+				input.Plan.Digest(),
+				node.LogicalNodeID(),
+				"1",
+			)
+			events = append(events, newEvent(
+				scheduledID,
+				teamStreamID,
+				teamSequence,
+				"TeamNodeAttemptScheduled",
+				now,
+				input.CorrelationID,
+				plannedID,
+				teamAttemptScheduledPayload(node.LogicalNodeID(), scheduled, time.Time{}),
+			))
+			applyScheduledAttempt(&team, node.LogicalNodeID(), scheduled, time.Time{})
+		}
+	} else if team.planDigest != input.Plan.Digest() {
+		return TeamDispatchResult{}, ErrTeamExecutionConflict
+	}
+	if team.status != "" {
+		for _, selection := range selections {
+			node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+			nodeRecord := teamNodeByID(&team, selection.LogicalNodeID)
+			if nodeRecord == nil {
+				return TeamDispatchResult{}, ErrInvalidTeamAttempt
+			}
+			if nodeRecord.currentAttempt == 0 &&
+				nodeRecord.status == "pending" &&
+				selection.AttemptNumber == 1 {
+				teamSequence++
+				scheduled := scheduledTeamAttempt(input.Plan, node, 1)
+				scheduledID := deterministicEventID(
+					"TeamNodeAttemptScheduled",
+					input.Plan.TeamInstanceID(),
+					input.Plan.Digest(),
+					node.LogicalNodeID(),
+					"1",
+				)
+				events = append(events, newEvent(
+					scheduledID,
+					teamStreamID,
+					teamSequence,
+					"TeamNodeAttemptScheduled",
+					now,
+					input.CorrelationID,
+					team.lastEventID,
+					teamAttemptScheduledPayload(
+						node.LogicalNodeID(), scheduled, time.Time{},
+					),
+				))
+				applyScheduledAttempt(
+					&team, node.LogicalNodeID(), scheduled, time.Time{},
+				)
+			}
+		}
+	}
+
+	dispatched := make([]TeamDispatchedNode, 0, len(selections))
+	dispatchPayloads := make([]teamDispatchAttemptPayload, 0, len(selections))
+	for _, selection := range selections {
+		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		nodeRecord := teamNodeByID(&team, selection.LogicalNodeID)
+		if nodeRecord == nil ||
+			nodeRecord.currentAttempt != selection.AttemptNumber {
+			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
+		attemptRecord := teamAttemptByNumber(nodeRecord, selection.AttemptNumber)
+		if attemptRecord == nil || attemptRecord.status != "scheduled" {
+			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
+		for _, dependencyID := range node.DependsOn() {
+			dependency := teamNodeByID(&team, dependencyID)
+			if dependency == nil || !dependency.dependencySatisfied {
+				return TeamDispatchResult{}, ErrInvalidTeamAttempt
+			}
+		}
+		if !nodeRecord.retryAt.IsZero() && now.Before(nodeRecord.retryAt) {
+			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
+		runtime := state.runtimes[attemptRecord.runtimeInstanceID]
+		if runtime.id == "" || runtime.status != "online" ||
+			runtime.capacity <= runtimeActive[attemptRecord.runtimeInstanceID] {
+			return TeamDispatchResult{}, ErrRuntimeCapacityExhausted
+		}
+		if !runtime.currentStatusHead(state.heads) {
+			return TeamDispatchResult{}, ErrTeamExecutionConflict
+		}
+		if state.workItems[attemptRecord.workItemID].id != "" ||
+			state.runs[attemptRecord.runID].id != "" ||
+			state.runIdentities[attemptRecord.runID].runID != "" {
+			return TeamDispatchResult{}, ErrTeamExecutionConflict
+		}
+		claimID, claimErr := authority.newClaimID()
+		if claimErr != nil {
+			return TeamDispatchResult{}, claimErr
+		}
+		expiresAt := now.Add(input.PrepareLeaseDuration)
+		createdID := deterministicEventID(
+			"WorkItemCreated", attemptRecord.workItemID,
+			node.Title(), input.CorrelationID,
+		)
+		assignedID := deterministicEventID(
+			"WorkItemAssigned", attemptRecord.workItemID,
+			attemptRecord.runID, attemptRecord.agentInstanceID,
+			input.CorrelationID,
+		)
+		events = append(events,
+			newEvent(
+				createdID, workItemStream(attemptRecord.workItemID), 1,
+				"WorkItemCreated", now, input.CorrelationID, "",
+				struct {
+					WorkItemID string `json:"work_item_id"`
+					Title      string `json:"title"`
+					Status     string `json:"status"`
+				}{attemptRecord.workItemID, node.Title(), "ready"},
+			),
+			newEvent(
+				assignedID, workItemStream(attemptRecord.workItemID), 2,
+				"WorkItemAssigned", now, input.CorrelationID, createdID,
+				struct {
+					WorkItemID      string `json:"work_item_id"`
+					RunID           string `json:"run_id"`
+					AgentInstanceID string `json:"agent_instance_id"`
+					Status          string `json:"status"`
+				}{
+					attemptRecord.workItemID, attemptRecord.runID,
+					attemptRecord.agentInstanceID, "assigned",
+				},
+			),
+		)
+		identitySequence++
+		identityID := deterministicEventID(
+			"WorkRunIdentityReserved", attemptRecord.runID,
+			attemptRecord.workItemID, assignedID,
+		)
+		events = append(events, newEvent(
+			identityID, runIdentityStreamID, identitySequence,
+			"WorkRunIdentityReserved", now, input.CorrelationID, assignedID,
+			runIdentityPayload(runIdentityReservation{
+				runID:              attemptRecord.runID,
+				workItemID:         attemptRecord.workItemID,
+				agentInstanceID:    attemptRecord.agentInstanceID,
+				assignmentStreamID: workItemStream(attemptRecord.workItemID),
+				assignmentSequence: 2,
+				assignmentEventID:  assignedID,
+			}),
+		))
+		claimEventID := deterministicEventID(
+			"RunClaimed", attemptRecord.runID, claimID,
+			"1", input.CorrelationID,
+		)
+		statusReference := runtime.statusHead.payload()
+		events = append(events, newEvent(
+			claimEventID, runStream(attemptRecord.runID), 1,
+			"RunClaimed", now, input.CorrelationID, assignedID,
+			struct {
+				WorkItemID            string `json:"work_item_id"`
+				RunID                 string `json:"run_id"`
+				ClaimID               string `json:"claim_id"`
+				ClaimGeneration       int64  `json:"claim_generation"`
+				RuntimeInstanceID     string `json:"runtime_instance_id"`
+				AgentInstanceID       string `json:"agent_instance_id"`
+				PrepareLeaseExpiresAt string `json:"prepare_lease_expires_at"`
+				runtimeStatusReferencePayload
+			}{
+				attemptRecord.workItemID, attemptRecord.runID, claimID, 1,
+				attemptRecord.runtimeInstanceID, attemptRecord.agentInstanceID,
+				expiresAt.Format(time.RFC3339Nano), statusReference,
+			},
+		))
+		capacitySequences[attemptRecord.runtimeInstanceID]++
+		reserveID := deterministicEventID(
+			"RuntimeCapacityReserved", attemptRecord.runID, claimID,
+			"1", claimEventID,
+		)
+		events = append(events, newEvent(
+			reserveID,
+			runtimeCapacityStream(attemptRecord.runtimeInstanceID),
+			capacitySequences[attemptRecord.runtimeInstanceID],
+			"RuntimeCapacityReserved",
+			now,
+			input.CorrelationID,
+			claimEventID,
+			capacityEventPayload{
+				WorkItemID:                    attemptRecord.workItemID,
+				RunID:                         attemptRecord.runID,
+				ClaimID:                       claimID,
+				ClaimGeneration:               1,
+				RuntimeInstanceID:             attemptRecord.runtimeInstanceID,
+				AgentInstanceID:               attemptRecord.agentInstanceID,
+				runtimeStatusReferencePayload: statusReference,
+			},
+		))
+		runtimeActive[attemptRecord.runtimeInstanceID]++
+		attemptRecord.claimID = claimID
+		attemptRecord.claimGeneration = 1
+		attemptRecord.status = "dispatched"
+		nodeRecord.status = "running"
+		nodeRecord.retryAt = time.Time{}
+		workItem := WorkItemRecord{
+			id: attemptRecord.workItemID, title: node.Title(), status: "assigned",
+			runID:           attemptRecord.runID,
+			agentInstanceID: attemptRecord.agentInstanceID,
+			lastEventID:     assignedID, streamSequence: 2,
+		}
+		run := RunRecord{
+			id: attemptRecord.runID, workItemID: attemptRecord.workItemID,
+			phase: "claimed", claimID: claimID, claimGeneration: 1,
+			runtimeInstanceID:     attemptRecord.runtimeInstanceID,
+			agentInstanceID:       attemptRecord.agentInstanceID,
+			prepareLeaseExpiresAt: expiresAt,
+			lastEventID:           claimEventID, streamSequence: 1,
+		}
+		dispatched = append(dispatched, TeamDispatchedNode{
+			logicalNode: node, attempt: *attemptRecord,
+			workItem: workItem, run: run,
+		})
+		dispatchPayloads = append(dispatchPayloads, teamDispatchAttemptPayload{
+			LogicalNodeID:     node.LogicalNodeID(),
+			AttemptNumber:     selection.AttemptNumber,
+			WorkItemID:        attemptRecord.workItemID,
+			RunID:             attemptRecord.runID,
+			ClaimID:           claimID,
+			ClaimGeneration:   1,
+			RuntimeInstanceID: attemptRecord.runtimeInstanceID,
+			AgentInstanceID:   attemptRecord.agentInstanceID,
+		})
+	}
+	sort.Slice(dispatchPayloads, func(i, j int) bool {
+		return dispatchPayloads[i].LogicalNodeID < dispatchPayloads[j].LogicalNodeID
+	})
+	teamSequence++
+	dispatchID := deterministicEventID(
+		"TeamReadySetDispatched",
+		input.Plan.TeamInstanceID(),
+		input.Plan.Digest(),
+		input.ViewVersion,
+		fmt.Sprint(teamSequence),
+	)
+	events = append(events, newEvent(
+		dispatchID, teamStreamID, teamSequence,
+		"TeamReadySetDispatched", now, input.CorrelationID,
+		team.lastEventID,
+		struct {
+			TeamInstanceID string                       `json:"team_instance_id"`
+			PlanDigest     string                       `json:"plan_digest"`
+			ViewVersion    string                       `json:"view_version"`
+			Attempts       []teamDispatchAttemptPayload `json:"attempts"`
+		}{
+			input.Plan.TeamInstanceID(), input.Plan.Digest(),
+			input.ViewVersion, dispatchPayloads,
+		},
+	))
+	expectations := make([]journal.StreamHeadExpectation, 0, len(snapshot.Heads()))
+	for _, head := range snapshot.Heads() {
+		expectations = append(expectations, journal.StreamHeadExpectation{
+			StreamID: head.StreamID, Sequence: head.Sequence,
+		})
+	}
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		expectations,
+		events,
+	); err != nil {
+		if errors.Is(err, journal.ErrStreamHeadConflict) ||
+			errors.Is(err, journal.ErrIdempotencyConflict) ||
+			errors.Is(err, journal.ErrSequenceConflict) ||
+			errors.Is(err, journal.ErrPartialEventBatchConflict) {
+			return TeamDispatchResult{}, ErrTeamExecutionConflict
+		}
+		return TeamDispatchResult{}, mapJournalWriteError(err)
+	}
+	sort.Slice(dispatched, func(i, j int) bool {
+		return dispatched[i].logicalNode.LogicalNodeID() <
+			dispatched[j].logicalNode.LogicalNodeID()
+	})
+	return TeamDispatchResult{
+		teamInstanceID: input.Plan.TeamInstanceID(),
+		planDigest:     input.Plan.Digest(),
+		viewVersion:    input.ViewVersion,
+		nodes:          dispatched,
+	}, nil
+}
+
+func (authority *Authority) TeamExecution(
+	ctx context.Context,
+	teamInstanceID string,
+) (TeamExecutionRecord, error) {
+	if authority == nil || ctx == nil || !validOpaqueID(teamInstanceID) {
+		return TeamExecutionRecord{}, ErrInvalidTeamExecution
+	}
+	events, err := authority.store.ReadStream(
+		ctx,
+		teamExecutionStream(teamInstanceID),
+	)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	record, err := replayTeamExecution(teamInstanceID, events)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	if record.status == "" {
+		return TeamExecutionRecord{}, ErrInvalidTeamExecution
+	}
+	return cloneTeamExecutionRecord(record), nil
+}
+
+func (authority *Authority) RebindTeamAttempt(
+	ctx context.Context,
+	input TeamAttemptRebindInput,
+) (TeamExecutionRecord, error) {
+	if err := validateTeamRebindInput(ctx, input); err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	streamIDs := []string{
+		teamExecutionStream(input.TeamInstanceID),
+		workItemStream(input.WorkItemID),
+		runStream(input.RunID),
+		runtimeStatusStream(input.RuntimeInstanceID),
+		runtimeCapacityStream(input.RuntimeInstanceID),
+	}
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	team, err := replayTeamExecution(
+		input.TeamInstanceID,
+		filterTeamEvents(
+			snapshot.Events(),
+			teamExecutionStream(input.TeamInstanceID),
+		),
+	)
+	if err != nil ||
+		team.status == "" ||
+		team.planDigest != input.PlanDigest ||
+		isTerminalTeamStatus(team.status) {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	node := teamNodeByID(&team, input.LogicalNodeID)
+	attempt := teamAttemptByNumber(node, input.AttemptNumber)
+	if node == nil ||
+		attempt == nil ||
+		node.currentAttempt != input.AttemptNumber ||
+		node.status != "running" ||
+		attempt.status != "dispatched" ||
+		attempt.workItemID != input.WorkItemID ||
+		attempt.runID != input.RunID ||
+		attempt.runtimeInstanceID != input.RuntimeInstanceID ||
+		attempt.agentInstanceID != input.AgentInstanceID {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	if attempt.claimID == input.ClaimID &&
+		attempt.claimGeneration == input.ClaimGeneration {
+		if !exactCommittedTeamRebind(snapshot.Events(), input) {
+			return TeamExecutionRecord{}, ErrTeamExecutionConflict
+		}
+		return cloneTeamExecutionRecord(team), nil
+	}
+	if attempt.claimID != input.PreviousClaimID ||
+		attempt.claimGeneration != input.PreviousClaimGeneration {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	runState, err := replayAuthorityEventsSelective(ctx, snapshot.Events())
+	if err != nil {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	run, exists := runState.runs[input.RunID]
+	if !exists ||
+		run.workItemID != input.WorkItemID ||
+		run.phase != "claimed" ||
+		run.claimID != input.ClaimID ||
+		run.claimGeneration != input.ClaimGeneration ||
+		run.runtimeInstanceID != input.RuntimeInstanceID ||
+		run.agentInstanceID != input.AgentInstanceID {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	previousExpiresAt, currentReference, err := teamRebindRunFacts(
+		snapshot.Events(),
+		input,
+	)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	now, err := authority.operationTime()
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	if now.Before(previousExpiresAt) {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	teamHead := snapshotHead(
+		snapshot,
+		teamExecutionStream(input.TeamInstanceID),
+	)
+	eventID := deterministicEventID(
+		"TeamNodeAttemptRebound",
+		input.TeamInstanceID,
+		input.PlanDigest,
+		input.LogicalNodeID,
+		fmt.Sprint(input.AttemptNumber),
+		input.WorkItemID,
+		input.RunID,
+		input.PreviousClaimID,
+		fmt.Sprint(input.PreviousClaimGeneration),
+		input.ClaimID,
+		fmt.Sprint(input.ClaimGeneration),
+		input.RuntimeInstanceID,
+		input.AgentInstanceID,
+		currentReference.eventID,
+	)
+	event := newEvent(
+		eventID,
+		teamExecutionStream(input.TeamInstanceID),
+		teamHead.Sequence+1,
+		"TeamNodeAttemptRebound",
+		now,
+		input.CorrelationID,
+		team.lastEventID,
+		teamAttemptReboundPayload{
+			TeamInstanceID:          input.TeamInstanceID,
+			PlanDigest:              input.PlanDigest,
+			LogicalNodeID:           input.LogicalNodeID,
+			AttemptNumber:           input.AttemptNumber,
+			WorkItemID:              input.WorkItemID,
+			RunID:                   input.RunID,
+			PreviousClaimID:         input.PreviousClaimID,
+			PreviousClaimGeneration: input.PreviousClaimGeneration,
+			ClaimID:                 input.ClaimID,
+			ClaimGeneration:         input.ClaimGeneration,
+			RuntimeInstanceID:       input.RuntimeInstanceID,
+			AgentInstanceID:         input.AgentInstanceID,
+			RunStream:               runStream(input.RunID),
+			RunSequence:             currentReference.sequence,
+			RunEventID:              currentReference.eventID,
+		},
+	)
+	expectations := make([]journal.StreamHeadExpectation, 0, len(snapshot.Heads()))
+	for _, head := range snapshot.Heads() {
+		expectations = append(expectations, journal.StreamHeadExpectation{
+			StreamID: head.StreamID,
+			Sequence: head.Sequence,
+		})
+	}
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		expectations,
+		[]journal.Event{event},
+	); err != nil {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	return authority.TeamExecution(ctx, input.TeamInstanceID)
+}
+
+func exactCommittedTeamRebind(
+	events []journal.Event,
+	input TeamAttemptRebindInput,
+) bool {
+	for _, event := range events {
+		if event.StreamID != teamExecutionStream(input.TeamInstanceID) ||
+			event.Type != "TeamNodeAttemptRebound" {
+			continue
+		}
+		var payload teamAttemptReboundPayload
+		if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+			payload.ClaimID != input.ClaimID ||
+			payload.ClaimGeneration != input.ClaimGeneration {
+			continue
+		}
+		return event.CorrelationID == input.CorrelationID &&
+			payload.TeamInstanceID == input.TeamInstanceID &&
+			payload.PlanDigest == input.PlanDigest &&
+			payload.LogicalNodeID == input.LogicalNodeID &&
+			payload.AttemptNumber == input.AttemptNumber &&
+			payload.WorkItemID == input.WorkItemID &&
+			payload.RunID == input.RunID &&
+			payload.PreviousClaimID == input.PreviousClaimID &&
+			payload.PreviousClaimGeneration ==
+				input.PreviousClaimGeneration &&
+			payload.RuntimeInstanceID == input.RuntimeInstanceID &&
+			payload.AgentInstanceID == input.AgentInstanceID
+	}
+	return false
+}
+
+func (authority *Authority) CommitTeamAttemptEvidence(
+	ctx context.Context,
+	input TeamAttemptEvidenceInput,
+) (TeamExecutionRecord, error) {
+	if err := validateTeamEvidenceInput(ctx, input); err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	streamIDs := []string{
+		teamExecutionStream(input.TeamInstanceID),
+		"evidence/" + input.EvidenceID,
+		workItemStream(input.WorkItemID),
+		runStream(input.RunID),
+		runtimeStatusStream(input.RuntimeInstanceID),
+		runtimeCapacityStream(input.RuntimeInstanceID),
+	}
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	team, err := replayTeamExecution(
+		input.TeamInstanceID,
+		filterTeamEvents(snapshot.Events(), teamExecutionStream(input.TeamInstanceID)),
+	)
+	if err != nil || team.status == "" || team.planDigest != input.PlanDigest {
+		return TeamExecutionRecord{}, ErrInvalidTeamExecution
+	}
+	node := teamNodeByID(&team, input.LogicalNodeID)
+	attempt := teamAttemptByNumber(node, input.AttemptNumber)
+	if node == nil || attempt == nil ||
+		attempt.workItemID != input.WorkItemID ||
+		attempt.runID != input.RunID ||
+		attempt.claimID != input.ClaimID ||
+		attempt.claimGeneration != input.ClaimGeneration ||
+		attempt.runtimeInstanceID != input.RuntimeInstanceID ||
+		attempt.agentInstanceID != input.AgentInstanceID {
+		return TeamExecutionRecord{}, ErrInvalidTeamAttempt
+	}
+	if attempt.evidenceID != "" {
+		if attempt.evidenceID == input.EvidenceID &&
+			attempt.evidenceDigest == input.EvidenceDigest {
+			return cloneTeamExecutionRecord(team), nil
+		}
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	runState, replayErr := replayAuthorityEventsSelective(
+		ctx,
+		snapshot.Events(),
+	)
+	if replayErr != nil {
+		return TeamExecutionRecord{}, ErrInvalidTeamAttempt
+	}
+	run, exists := runState.runs[input.RunID]
+	if !exists ||
+		run.workItemID != input.WorkItemID ||
+		run.claimID != input.ClaimID ||
+		run.claimGeneration != input.ClaimGeneration ||
+		run.runtimeInstanceID != input.RuntimeInstanceID ||
+		run.agentInstanceID != input.AgentInstanceID ||
+		run.phase != "terminal" ||
+		run.terminalStatus != "succeeded" &&
+			run.terminalStatus != "failed" &&
+			run.terminalStatus != "cancelled" {
+		return TeamExecutionRecord{}, ErrInvalidTeamAttempt
+	}
+	terminalStatus := run.terminalStatus
+	now, err := authority.operationTime()
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	evidenceHead := snapshotHead(snapshot, "evidence/"+input.EvidenceID)
+	if evidenceHead.Sequence != 0 {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	evidenceEventID := deterministicEventID(
+		"EvidenceSubmitted", input.EvidenceID, input.EvidenceDigest,
+		input.RunID, fmt.Sprint(input.ClaimGeneration),
+	)
+	evidenceEvent := newEvent(
+		evidenceEventID, "evidence/"+input.EvidenceID, 1,
+		"EvidenceSubmitted", now, input.CorrelationID, "",
+		struct {
+			EvidenceID string `json:"evidence_id"`
+			WorkItemID string `json:"work_item_id"`
+			Digest     string `json:"digest"`
+		}{input.EvidenceID, input.WorkItemID, input.EvidenceDigest},
+	)
+	teamHead := snapshotHead(snapshot, teamExecutionStream(input.TeamInstanceID))
+	terminalEventID := deterministicEventID(
+		"TeamNodeAttemptTerminal", input.TeamInstanceID,
+		input.LogicalNodeID, fmt.Sprint(input.AttemptNumber),
+		input.EvidenceID, input.EvidenceDigest,
+	)
+	terminalEvent := newEvent(
+		terminalEventID,
+		teamExecutionStream(input.TeamInstanceID),
+		teamHead.Sequence+1,
+		"TeamNodeAttemptTerminal",
+		now,
+		input.CorrelationID,
+		team.lastEventID,
+		teamAttemptTerminalPayload{
+			LogicalNodeID:     input.LogicalNodeID,
+			AttemptNumber:     input.AttemptNumber,
+			WorkItemID:        input.WorkItemID,
+			RunID:             input.RunID,
+			ClaimID:           input.ClaimID,
+			ClaimGeneration:   input.ClaimGeneration,
+			RuntimeInstanceID: input.RuntimeInstanceID,
+			AgentInstanceID:   input.AgentInstanceID,
+			Status:            terminalStatus,
+			EvidenceID:        input.EvidenceID,
+			EvidenceDigest:    input.EvidenceDigest,
+		},
+	)
+	events := []journal.Event{evidenceEvent, terminalEvent}
+	applyAttemptTerminal(&team, input.LogicalNodeID, input.AttemptNumber,
+		terminalStatus, input.EvidenceID, input.EvidenceDigest)
+	if teamIsTerminal(team) {
+		status, reason := aggregateTeamTerminal(team)
+		teamTerminalID := deterministicEventID(
+			"TeamExecutionTerminal", input.TeamInstanceID,
+			input.PlanDigest, status, reason,
+		)
+		events = append(events, newEvent(
+			teamTerminalID,
+			teamExecutionStream(input.TeamInstanceID),
+			teamHead.Sequence+2,
+			"TeamExecutionTerminal",
+			now,
+			input.CorrelationID,
+			terminalEventID,
+			struct {
+				TeamInstanceID string `json:"team_instance_id"`
+				PlanDigest     string `json:"plan_digest"`
+				Status         string `json:"status"`
+				Reason         string `json:"reason"`
+			}{input.TeamInstanceID, input.PlanDigest, status, reason},
+		))
+	}
+	expectations := make([]journal.StreamHeadExpectation, 0, len(snapshot.Heads()))
+	for _, head := range snapshot.Heads() {
+		expectations = append(expectations, journal.StreamHeadExpectation{
+			StreamID: head.StreamID, Sequence: head.Sequence,
+		})
+	}
+	if _, err := authority.store.AppendBatchIfStreamHeads(ctx, expectations, events); err != nil {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	return authority.TeamExecution(ctx, input.TeamInstanceID)
+}
+
+func (authority *Authority) ScheduleTeamNodeRecovery(
+	ctx context.Context,
+	input TeamRecoveryInput,
+) (TeamExecutionRecord, error) {
+	if err := validateTeamRecoveryInput(ctx, input); err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	streamID := teamExecutionStream(input.TeamInstanceID)
+	events, err := authority.store.ReadStream(ctx, streamID)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	team, err := replayTeamExecution(input.TeamInstanceID, events)
+	if err != nil || team.status == "" || team.planDigest != input.PlanDigest {
+		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+	}
+	matched, existingConflict, matchErr := matchExistingTeamRecovery(
+		events,
+		input,
+	)
+	if matchErr != nil {
+		return TeamExecutionRecord{}, matchErr
+	}
+	if matched {
+		return cloneTeamExecutionRecord(team), nil
+	}
+	if existingConflict {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	if isTerminalTeamStatus(team.status) {
+		return TeamExecutionRecord{}, ErrTeamExecutionAlreadyTerminal
+	}
+	node := teamNodeByID(&team, input.LogicalNodeID)
+	attempt := teamAttemptByNumber(node, input.AttemptNumber)
+	if node == nil || attempt == nil ||
+		node.currentAttempt != input.AttemptNumber ||
+		node.status != "awaiting_recovery" {
+		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+	}
+	now, err := authority.operationTime()
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	sequence := team.streamSequence + 1
+	recoveryID := deterministicEventID(
+		"TeamNodeRecoveryRecorded", input.TeamInstanceID,
+		input.LogicalNodeID, fmt.Sprint(input.AttemptNumber),
+		string(input.Action), input.RetryAt.Format(time.RFC3339Nano),
+		input.NextAgentInstanceID, input.NextRuntimeInstanceID,
+	)
+	recoveryEvent := newEvent(
+		recoveryID, streamID, sequence,
+		"TeamNodeRecoveryRecorded", now,
+		input.CorrelationID, team.lastEventID,
+		teamRecoveryPayload{
+			LogicalNodeID:         input.LogicalNodeID,
+			AttemptNumber:         input.AttemptNumber,
+			Action:                input.Action,
+			RetryAt:               formatOptionalUTC(input.RetryAt),
+			NextAgentInstanceID:   input.NextAgentInstanceID,
+			NextRuntimeInstanceID: input.NextRuntimeInstanceID,
+			DependencySatisfied:   input.DependencySatisfied,
+		},
+	)
+	toAppend := []journal.Event{recoveryEvent}
+	switch input.Action {
+	case TeamRecoveryRetry, TeamRecoveryFallback:
+		if input.AttemptNumber >= node.maxAttempts {
+			return TeamExecutionRecord{}, ErrTeamAttemptLimit
+		}
+		nextAttempt := input.AttemptNumber + 1
+		sequence++
+		scheduled := TeamAttemptRecord{
+			attemptNumber: nextAttempt,
+			workItemID: teamAttemptIdentityFromValues(
+				"work", input.TeamInstanceID, input.PlanDigest,
+				input.LogicalNodeID, nextAttempt,
+			),
+			runID: teamAttemptIdentityFromValues(
+				"run", input.TeamInstanceID, input.PlanDigest,
+				input.LogicalNodeID, nextAttempt,
+			),
+			runtimeInstanceID: input.NextRuntimeInstanceID,
+			agentInstanceID:   input.NextAgentInstanceID,
+			status:            "scheduled",
+		}
+		scheduledID := deterministicEventID(
+			"TeamNodeAttemptScheduled", input.TeamInstanceID,
+			input.PlanDigest, input.LogicalNodeID,
+			fmt.Sprint(nextAttempt),
+		)
+		toAppend = append(toAppend, newEvent(
+			scheduledID, streamID, sequence,
+			"TeamNodeAttemptScheduled", now, input.CorrelationID,
+			recoveryID,
+			teamAttemptScheduledPayload(
+				input.LogicalNodeID, scheduled, input.RetryAt,
+			),
+		))
+	case TeamRecoveryDegraded, TeamRecoveryBlocked, TeamRecoveryHumanRequired:
+		node.status = string(input.Action)
+		node.dependencySatisfied = input.DependencySatisfied
+		if teamIsTerminal(team) {
+			status, reason := aggregateTeamTerminal(team)
+			sequence++
+			teamTerminalID := deterministicEventID(
+				"TeamExecutionTerminal",
+				input.TeamInstanceID,
+				input.PlanDigest,
+				status,
+				reason,
+			)
+			toAppend = append(toAppend, newEvent(
+				teamTerminalID,
+				streamID,
+				sequence,
+				"TeamExecutionTerminal",
+				now,
+				input.CorrelationID,
+				recoveryID,
+				struct {
+					TeamInstanceID string `json:"team_instance_id"`
+					PlanDigest     string `json:"plan_digest"`
+					Status         string `json:"status"`
+					Reason         string `json:"reason"`
+				}{
+					input.TeamInstanceID,
+					input.PlanDigest,
+					status,
+					reason,
+				},
+			))
+		}
+	default:
+		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+	}
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		[]journal.StreamHeadExpectation{{
+			StreamID: streamID, Sequence: team.streamSequence,
+		}},
+		toAppend,
+	); err != nil {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	return authority.TeamExecution(ctx, input.TeamInstanceID)
+}
+
+type teamPlanNodePayload struct {
+	LogicalNodeID     string              `json:"logical_node_id"`
+	Title             string              `json:"title"`
+	AgentInstanceID   string              `json:"agent_instance_id"`
+	RuntimeInstanceID string              `json:"runtime_instance_id"`
+	Role              teams.ExecutionRole `json:"role"`
+	DependsOn         []string            `json:"depends_on"`
+	MaxAttempts       int                 `json:"max_attempts"`
+}
+
+type teamDispatchAttemptPayload struct {
+	LogicalNodeID     string `json:"logical_node_id"`
+	AttemptNumber     int    `json:"attempt_number"`
+	WorkItemID        string `json:"work_item_id"`
+	RunID             string `json:"run_id"`
+	ClaimID           string `json:"claim_id"`
+	ClaimGeneration   int64  `json:"claim_generation"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+	AgentInstanceID   string `json:"agent_instance_id"`
+}
+
+type teamAttemptTerminalPayload struct {
+	LogicalNodeID     string `json:"logical_node_id"`
+	AttemptNumber     int    `json:"attempt_number"`
+	WorkItemID        string `json:"work_item_id"`
+	RunID             string `json:"run_id"`
+	ClaimID           string `json:"claim_id"`
+	ClaimGeneration   int64  `json:"claim_generation"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+	AgentInstanceID   string `json:"agent_instance_id"`
+	Status            string `json:"status"`
+	EvidenceID        string `json:"evidence_id"`
+	EvidenceDigest    string `json:"evidence_digest"`
+}
+
+type teamAttemptReboundPayload struct {
+	TeamInstanceID          string `json:"team_instance_id"`
+	PlanDigest              string `json:"plan_digest"`
+	LogicalNodeID           string `json:"logical_node_id"`
+	AttemptNumber           int    `json:"attempt_number"`
+	WorkItemID              string `json:"work_item_id"`
+	RunID                   string `json:"run_id"`
+	PreviousClaimID         string `json:"previous_claim_id"`
+	PreviousClaimGeneration int64  `json:"previous_claim_generation"`
+	ClaimID                 string `json:"claim_id"`
+	ClaimGeneration         int64  `json:"claim_generation"`
+	RuntimeInstanceID       string `json:"runtime_instance_id"`
+	AgentInstanceID         string `json:"agent_instance_id"`
+	RunStream               string `json:"run_stream"`
+	RunSequence             int64  `json:"run_sequence"`
+	RunEventID              string `json:"run_event_id"`
+}
+
+type teamRecoveryPayload struct {
+	LogicalNodeID         string             `json:"logical_node_id"`
+	AttemptNumber         int                `json:"attempt_number"`
+	Action                TeamRecoveryAction `json:"action"`
+	RetryAt               string             `json:"retry_at"`
+	NextAgentInstanceID   string             `json:"next_agent_instance_id"`
+	NextRuntimeInstanceID string             `json:"next_runtime_instance_id"`
+	DependencySatisfied   bool               `json:"dependency_satisfied"`
+}
+
+func validateTeamDispatchInput(
+	ctx context.Context,
+	input TeamDispatchInput,
+) ([]teams.ExecutionNode, []TeamAttemptSelection, error) {
+	if ctx == nil {
+		return nil, nil, ErrInvalidTeamExecution
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	nodes := input.Plan.Nodes()
+	if !validOpaqueID(input.Plan.TeamInstanceID()) ||
+		!validSHA256Hex(input.Plan.Digest()) ||
+		!validSHA256Hex(input.ViewVersion) ||
+		len(nodes) == 0 || len(nodes) > 3 ||
+		len(input.ReadyAttempts) == 0 ||
+		len(input.ReadyAttempts) > len(nodes) ||
+		input.AuthoritativeTime.IsZero() ||
+		input.AuthoritativeTime.Location() != time.UTC ||
+		input.PrepareLeaseDuration <= 0 ||
+		input.PrepareLeaseDuration > maxPrepareLease ||
+		!validCanonicalUUID(input.CorrelationID) {
+		return nil, nil, ErrInvalidTeamExecution
+	}
+	rebuiltInputs := make([]teams.ExecutionNodeInput, len(nodes))
+	for index, node := range nodes {
+		rebuiltInputs[index] = teams.ExecutionNodeInput{
+			LogicalNodeID: node.LogicalNodeID(), Title: node.Title(),
+			AgentInstanceID:   node.AgentInstanceID(),
+			RuntimeInstanceID: node.RuntimeInstanceID(),
+			Role:              node.Role(), DependsOn: node.DependsOn(),
+			MaxAttempts: node.MaxAttempts(),
+		}
+	}
+	rebuilt, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: input.Plan.TeamInstanceID(),
+		Nodes:          rebuiltInputs,
+	})
+	if err != nil || rebuilt.Digest() != input.Plan.Digest() {
+		return nil, nil, ErrInvalidTeamExecution
+	}
+	selections := append([]TeamAttemptSelection(nil), input.ReadyAttempts...)
+	sort.Slice(selections, func(i, j int) bool {
+		return selections[i].LogicalNodeID < selections[j].LogicalNodeID
+	})
+	for index, selection := range selections {
+		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		if node.LogicalNodeID() == "" ||
+			selection.AttemptNumber < 1 ||
+			selection.AttemptNumber > node.MaxAttempts() ||
+			index > 0 &&
+				selection.LogicalNodeID == selections[index-1].LogicalNodeID {
+			return nil, nil, ErrInvalidTeamAttempt
+		}
+	}
+	return nodes, selections, nil
+}
+
+func validateTeamEvidenceInput(
+	ctx context.Context,
+	input TeamAttemptEvidenceInput,
+) error {
+	if ctx == nil {
+		return ErrInvalidTeamExecution
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validOpaqueID(input.TeamInstanceID) ||
+		!validSHA256Hex(input.PlanDigest) ||
+		!validOpaqueID(input.LogicalNodeID) ||
+		input.AttemptNumber < 1 || input.AttemptNumber > 3 ||
+		!validOpaqueID(input.WorkItemID) ||
+		!validOpaqueID(input.RunID) ||
+		!validCanonicalUUID(input.ClaimID) ||
+		input.ClaimGeneration <= 0 ||
+		!validOpaqueID(input.RuntimeInstanceID) ||
+		!validOpaqueID(input.AgentInstanceID) ||
+		!validOpaqueID(input.EvidenceID) ||
+		!validSHA256Hex(input.EvidenceDigest) ||
+		!validCanonicalUUID(input.CorrelationID) {
+		return ErrInvalidTeamExecution
+	}
+	return nil
+}
+
+func validateTeamRebindInput(
+	ctx context.Context,
+	input TeamAttemptRebindInput,
+) error {
+	if ctx == nil {
+		return ErrInvalidTeamAttempt
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validOpaqueID(input.TeamInstanceID) ||
+		!validSHA256Hex(input.PlanDigest) ||
+		!validOpaqueID(input.LogicalNodeID) ||
+		input.AttemptNumber < 1 ||
+		input.AttemptNumber > 3 ||
+		!validOpaqueID(input.WorkItemID) ||
+		!validOpaqueID(input.RunID) ||
+		!validCanonicalUUID(input.PreviousClaimID) ||
+		input.PreviousClaimGeneration <= 0 ||
+		!validCanonicalUUID(input.ClaimID) ||
+		input.ClaimID == input.PreviousClaimID ||
+		input.ClaimGeneration != input.PreviousClaimGeneration+1 ||
+		!validOpaqueID(input.RuntimeInstanceID) ||
+		!validOpaqueID(input.AgentInstanceID) ||
+		!validCanonicalUUID(input.CorrelationID) {
+		return ErrInvalidTeamAttempt
+	}
+	return nil
+}
+
+func validateTeamRecoveryInput(ctx context.Context, input TeamRecoveryInput) error {
+	if ctx == nil {
+		return ErrInvalidTeamRecovery
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validOpaqueID(input.TeamInstanceID) ||
+		!validSHA256Hex(input.PlanDigest) ||
+		!validOpaqueID(input.LogicalNodeID) ||
+		input.AttemptNumber < 1 || input.AttemptNumber > 3 ||
+		!validCanonicalUUID(input.CorrelationID) {
+		return ErrInvalidTeamRecovery
+	}
+	switch input.Action {
+	case TeamRecoveryRetry, TeamRecoveryFallback:
+		if input.RetryAt.IsZero() ||
+			input.RetryAt.Location() != time.UTC ||
+			!validOpaqueID(input.NextAgentInstanceID) ||
+			!validOpaqueID(input.NextRuntimeInstanceID) ||
+			input.DependencySatisfied {
+			return ErrInvalidTeamRecovery
+		}
+	case TeamRecoveryDegraded:
+		if !input.RetryAt.IsZero() ||
+			input.NextAgentInstanceID != "" ||
+			input.NextRuntimeInstanceID != "" {
+			return ErrInvalidTeamRecovery
+		}
+	case TeamRecoveryBlocked, TeamRecoveryHumanRequired:
+		if !input.RetryAt.IsZero() ||
+			input.NextAgentInstanceID != "" ||
+			input.NextRuntimeInstanceID != "" ||
+			input.DependencySatisfied {
+			return ErrInvalidTeamRecovery
+		}
+	default:
+		return ErrInvalidTeamRecovery
+	}
+	return nil
+}
+
+func teamExecutionStream(teamInstanceID string) string {
+	return "team-execution/" + teamInstanceID
+}
+
+func teamAttemptIdentity(
+	label string,
+	plan teams.ExecutionPlan,
+	logicalNodeID string,
+	attemptNumber int,
+) string {
+	return teamAttemptIdentityFromValues(
+		label, plan.TeamInstanceID(), plan.Digest(),
+		logicalNodeID, attemptNumber,
+	)
+}
+
+func teamAttemptIdentityFromValues(
+	label string,
+	teamInstanceID string,
+	planDigest string,
+	logicalNodeID string,
+	attemptNumber int,
+) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		label, teamInstanceID, planDigest, logicalNodeID,
+		fmt.Sprint(attemptNumber),
+	}, "\x00")))
+	prefix := "team-" + label + "-"
+	return prefix + hex.EncodeToString(digest[:16])
+}
+
+func scheduledTeamAttempt(
+	plan teams.ExecutionPlan,
+	node teams.ExecutionNode,
+	attemptNumber int,
+) TeamAttemptRecord {
+	return TeamAttemptRecord{
+		attemptNumber:     attemptNumber,
+		workItemID:        teamAttemptIdentity("work", plan, node.LogicalNodeID(), attemptNumber),
+		runID:             teamAttemptIdentity("run", plan, node.LogicalNodeID(), attemptNumber),
+		runtimeInstanceID: node.RuntimeInstanceID(),
+		agentInstanceID:   node.AgentInstanceID(),
+		status:            "scheduled",
+	}
+}
+
+func teamPlanPayload(
+	plan teams.ExecutionPlan,
+	viewVersion string,
+) struct {
+	TeamInstanceID string                `json:"team_instance_id"`
+	PlanDigest     string                `json:"plan_digest"`
+	ViewVersion    string                `json:"view_version"`
+	Nodes          []teamPlanNodePayload `json:"nodes"`
+} {
+	nodes := plan.Nodes()
+	payloadNodes := make([]teamPlanNodePayload, len(nodes))
+	for index, node := range nodes {
+		payloadNodes[index] = teamPlanNodePayload{
+			LogicalNodeID: node.LogicalNodeID(), Title: node.Title(),
+			AgentInstanceID:   node.AgentInstanceID(),
+			RuntimeInstanceID: node.RuntimeInstanceID(),
+			Role:              node.Role(), DependsOn: node.DependsOn(),
+			MaxAttempts: node.MaxAttempts(),
+		}
+	}
+	return struct {
+		TeamInstanceID string                `json:"team_instance_id"`
+		PlanDigest     string                `json:"plan_digest"`
+		ViewVersion    string                `json:"view_version"`
+		Nodes          []teamPlanNodePayload `json:"nodes"`
+	}{plan.TeamInstanceID(), plan.Digest(), viewVersion, payloadNodes}
+}
+
+func teamAttemptScheduledPayload(
+	logicalNodeID string,
+	attempt TeamAttemptRecord,
+	retryAt time.Time,
+) struct {
+	LogicalNodeID     string `json:"logical_node_id"`
+	AttemptNumber     int    `json:"attempt_number"`
+	WorkItemID        string `json:"work_item_id"`
+	RunID             string `json:"run_id"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+	AgentInstanceID   string `json:"agent_instance_id"`
+	RetryAt           string `json:"retry_at"`
+} {
+	return struct {
+		LogicalNodeID     string `json:"logical_node_id"`
+		AttemptNumber     int    `json:"attempt_number"`
+		WorkItemID        string `json:"work_item_id"`
+		RunID             string `json:"run_id"`
+		RuntimeInstanceID string `json:"runtime_instance_id"`
+		AgentInstanceID   string `json:"agent_instance_id"`
+		RetryAt           string `json:"retry_at"`
+	}{
+		logicalNodeID, attempt.attemptNumber, attempt.workItemID,
+		attempt.runID, attempt.runtimeInstanceID, attempt.agentInstanceID,
+		formatOptionalUTC(retryAt),
+	}
+}
+
+func formatOptionalUTC(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339Nano)
+}
+
+func teamDispatchStreams(
+	plan teams.ExecutionPlan,
+	nodes []teams.ExecutionNode,
+	selections []TeamAttemptSelection,
+	team TeamExecutionRecord,
+) []string {
+	streams := map[string]struct{}{
+		teamExecutionStream(plan.TeamInstanceID()): {},
+		runIdentityStreamID:                        {},
+	}
+	for _, selection := range selections {
+		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		runtimeInstanceID := node.RuntimeInstanceID()
+		if teamNode := teamNodeByID(&team, selection.LogicalNodeID); teamNode != nil {
+			if attempt := teamAttemptByNumber(
+				teamNode,
+				selection.AttemptNumber,
+			); attempt != nil {
+				runtimeInstanceID = attempt.runtimeInstanceID
+			}
+		}
+		workItemID := teamAttemptIdentity(
+			"work", plan, selection.LogicalNodeID, selection.AttemptNumber,
+		)
+		runID := teamAttemptIdentity(
+			"run", plan, selection.LogicalNodeID, selection.AttemptNumber,
+		)
+		streams[workItemStream(workItemID)] = struct{}{}
+		streams[runStream(runID)] = struct{}{}
+		streams[runtimeStatusStream(runtimeInstanceID)] = struct{}{}
+		streams[runtimeCapacityStream(runtimeInstanceID)] = struct{}{}
+	}
+	output := make([]string, 0, len(streams))
+	for streamID := range streams {
+		output = append(output, streamID)
+	}
+	sort.Strings(output)
+	return output
+}
+
+func exactTeamHeads(left []journal.StreamHead, right []journal.StreamHead) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftCopy := append([]journal.StreamHead(nil), left...)
+	rightCopy := append([]journal.StreamHead(nil), right...)
+	sort.Slice(leftCopy, func(i, j int) bool { return leftCopy[i].StreamID < leftCopy[j].StreamID })
+	sort.Slice(rightCopy, func(i, j int) bool { return rightCopy[i].StreamID < rightCopy[j].StreamID })
+	for index := range leftCopy {
+		if leftCopy[index] != rightCopy[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotHead(snapshot journal.StreamSetSnapshot, streamID string) journal.StreamHead {
+	head, _ := snapshot.Head(streamID)
+	return head
+}
+
+func nodeByLogicalID(
+	nodes []teams.ExecutionNode,
+	logicalNodeID string,
+) teams.ExecutionNode {
+	for _, node := range nodes {
+		if node.LogicalNodeID() == logicalNodeID {
+			return node
+		}
+	}
+	return teams.ExecutionNode{}
+}
+
+func plannedTeamRecord(
+	plan teams.ExecutionPlan,
+	sequence int64,
+	eventID string,
+) TeamExecutionRecord {
+	nodes := plan.Nodes()
+	records := make([]TeamNodeRecord, len(nodes))
+	for index, node := range nodes {
+		records[index] = TeamNodeRecord{
+			logicalNodeID: node.LogicalNodeID(),
+			status:        "pending", maxAttempts: node.MaxAttempts(),
+			attempts: []TeamAttemptRecord{},
+		}
+	}
+	return TeamExecutionRecord{
+		teamInstanceID: plan.TeamInstanceID(), planDigest: plan.Digest(),
+		status: "pending", nodes: records,
+		streamSequence: sequence, lastEventID: eventID,
+	}
+}
+
+func applyScheduledAttempt(
+	team *TeamExecutionRecord,
+	logicalNodeID string,
+	attempt TeamAttemptRecord,
+	retryAt time.Time,
+) {
+	node := teamNodeByID(team, logicalNodeID)
+	if node == nil {
+		return
+	}
+	node.currentAttempt = attempt.attemptNumber
+	node.retryAt = retryAt
+	if attempt.attemptNumber == 1 {
+		node.status = "pending"
+	} else {
+		node.status = "retry_scheduled"
+	}
+	node.attempts = append(node.attempts, attempt)
+}
+
+func teamNodeByID(
+	team *TeamExecutionRecord,
+	logicalNodeID string,
+) *TeamNodeRecord {
+	if team == nil {
+		return nil
+	}
+	for index := range team.nodes {
+		if team.nodes[index].logicalNodeID == logicalNodeID {
+			return &team.nodes[index]
+		}
+	}
+	return nil
+}
+
+func teamAttemptByNumber(
+	node *TeamNodeRecord,
+	attemptNumber int,
+) *TeamAttemptRecord {
+	if node == nil {
+		return nil
+	}
+	for index := range node.attempts {
+		if node.attempts[index].attemptNumber == attemptNumber {
+			return &node.attempts[index]
+		}
+	}
+	return nil
+}
+
+func filterTeamEvents(events []journal.Event, streamID string) []journal.Event {
+	filtered := make([]journal.Event, 0)
+	for _, event := range events {
+		if event.StreamID == streamID {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
+func replayTeamDispatchState(
+	ctx context.Context,
+	events []journal.Event,
+) (authorityState, error) {
+	state := authorityState{
+		workItems:     make(map[string]WorkItemRecord),
+		runs:          make(map[string]RunRecord),
+		runtimes:      make(map[string]authorityRuntime),
+		heads:         make(map[string]int64),
+		runIdentities: make(map[string]runIdentityReservation),
+	}
+	ordered := append([]journal.Event(nil), events...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].StreamID != ordered[j].StreamID {
+			return ordered[i].StreamID < ordered[j].StreamID
+		}
+		return ordered[i].Seq < ordered[j].Seq
+	})
+	byStream := make(map[string][]journal.Event)
+	for _, event := range ordered {
+		if err := ctx.Err(); err != nil {
+			return authorityState{}, err
+		}
+		if event.Seq != state.heads[event.StreamID]+1 {
+			return authorityState{}, ErrTeamExecutionConflict
+		}
+		state.heads[event.StreamID] = event.Seq
+		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	if identityEvents := byStream[runIdentityStreamID]; len(identityEvents) > 0 {
+		if err := replayRunIdentityStream(&state, identityEvents); err != nil {
+			return authorityState{}, err
+		}
+	}
+	for streamID, streamEvents := range byStream {
+		if strings.HasPrefix(streamID, "runtime_instance:") {
+			if err := replayRuntimeIdentityStream(
+				&state,
+				streamID,
+				streamEvents,
+			); err != nil {
+				return authorityState{}, err
+			}
+		}
+	}
+	for streamID, streamEvents := range byStream {
+		if !strings.HasPrefix(streamID, "runtime_capacity:") {
+			continue
+		}
+		runtimeID := strings.TrimPrefix(streamID, "runtime_capacity:")
+		runtime := state.runtimes[runtimeID]
+		if runtime.id == "" {
+			return authorityState{}, ErrTeamExecutionConflict
+		}
+		for _, event := range streamEvents {
+			var payload capacityEventPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.RuntimeInstanceID != runtimeID ||
+				payload.WorkItemID == "" ||
+				payload.RunID == "" ||
+				!validCanonicalUUID(payload.ClaimID) ||
+				payload.ClaimGeneration <= 0 ||
+				payload.AgentInstanceID == "" {
+				return authorityState{}, ErrTeamExecutionConflict
+			}
+			statusFact, exists := runtime.statusFacts[payload.RuntimeStatusSequence]
+			if !exists ||
+				payload.RuntimeStatusStreamID != statusFact.reference.streamID ||
+				payload.RuntimeStatusEventID != statusFact.reference.eventID {
+				return authorityState{}, ErrTeamExecutionConflict
+			}
+			binding := capacityBinding{
+				workItemID:        payload.WorkItemID,
+				runID:             payload.RunID,
+				claimID:           payload.ClaimID,
+				claimGeneration:   payload.ClaimGeneration,
+				runtimeInstanceID: payload.RuntimeInstanceID,
+				agentInstanceID:   payload.AgentInstanceID,
+			}
+			key := capacityKey(payload.RunID, payload.ClaimGeneration)
+			switch event.Type {
+			case "RuntimeCapacityReserved":
+				if existing, duplicate := runtime.active[key]; duplicate &&
+					existing != binding {
+					return authorityState{}, ErrTeamExecutionConflict
+				}
+				runtime.active[key] = binding
+			case "RuntimeCapacityReleased":
+				if existing, exists := runtime.active[key]; !exists ||
+					existing != binding {
+					return authorityState{}, ErrTeamExecutionConflict
+				}
+				delete(runtime.active, key)
+			default:
+				return authorityState{}, ErrTeamExecutionConflict
+			}
+		}
+		state.runtimes[runtimeID] = runtime
+	}
+	return state, nil
+}
+
+func replayTeamExecution(
+	teamInstanceID string,
+	events []journal.Event,
+) (TeamExecutionRecord, error) {
+	var team TeamExecutionRecord
+	var sequence int64
+	for _, event := range events {
+		if event.StreamID != teamExecutionStream(teamInstanceID) ||
+			event.Seq != sequence+1 ||
+			event.SchemaVersion != 1 {
+			return TeamExecutionRecord{}, ErrTeamExecutionConflict
+		}
+		sequence = event.Seq
+		switch event.Type {
+		case "TeamExecutionPlanned":
+			var payload struct {
+				TeamInstanceID string                `json:"team_instance_id"`
+				PlanDigest     string                `json:"plan_digest"`
+				ViewVersion    string                `json:"view_version"`
+				Nodes          []teamPlanNodePayload `json:"nodes"`
+			}
+			if team.status != "" ||
+				decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.TeamInstanceID != teamInstanceID ||
+				!validSHA256Hex(payload.PlanDigest) ||
+				!validSHA256Hex(payload.ViewVersion) ||
+				len(payload.Nodes) == 0 || len(payload.Nodes) > 3 {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			team = TeamExecutionRecord{
+				teamInstanceID: teamInstanceID,
+				planDigest:     payload.PlanDigest,
+				status:         "pending",
+				nodes:          make([]TeamNodeRecord, len(payload.Nodes)),
+			}
+			for index, node := range payload.Nodes {
+				team.nodes[index] = TeamNodeRecord{
+					logicalNodeID: node.LogicalNodeID,
+					status:        "pending",
+					maxAttempts:   node.MaxAttempts,
+					attempts:      []TeamAttemptRecord{},
+				}
+			}
+			sort.Slice(team.nodes, func(i, j int) bool {
+				return team.nodes[i].logicalNodeID < team.nodes[j].logicalNodeID
+			})
+		case "TeamNodeAttemptScheduled":
+			var payload struct {
+				LogicalNodeID     string `json:"logical_node_id"`
+				AttemptNumber     int    `json:"attempt_number"`
+				WorkItemID        string `json:"work_item_id"`
+				RunID             string `json:"run_id"`
+				RuntimeInstanceID string `json:"runtime_instance_id"`
+				AgentInstanceID   string `json:"agent_instance_id"`
+				RetryAt           string `json:"retry_at"`
+			}
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			retryAt, err := parseOptionalUTC(payload.RetryAt)
+			if err != nil {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			attempt := TeamAttemptRecord{
+				attemptNumber: payload.AttemptNumber,
+				workItemID:    payload.WorkItemID, runID: payload.RunID,
+				runtimeInstanceID: payload.RuntimeInstanceID,
+				agentInstanceID:   payload.AgentInstanceID,
+				status:            "scheduled",
+			}
+			applyScheduledAttempt(&team, payload.LogicalNodeID, attempt, retryAt)
+		case "TeamReadySetDispatched":
+			var payload struct {
+				TeamInstanceID string                       `json:"team_instance_id"`
+				PlanDigest     string                       `json:"plan_digest"`
+				ViewVersion    string                       `json:"view_version"`
+				Attempts       []teamDispatchAttemptPayload `json:"attempts"`
+			}
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.TeamInstanceID != team.teamInstanceID ||
+				payload.PlanDigest != team.planDigest {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			for _, dispatched := range payload.Attempts {
+				node := teamNodeByID(&team, dispatched.LogicalNodeID)
+				attempt := teamAttemptByNumber(node, dispatched.AttemptNumber)
+				if attempt == nil ||
+					attempt.workItemID != dispatched.WorkItemID ||
+					attempt.runID != dispatched.RunID ||
+					attempt.runtimeInstanceID != dispatched.RuntimeInstanceID ||
+					attempt.agentInstanceID != dispatched.AgentInstanceID {
+					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				}
+				attempt.claimID = dispatched.ClaimID
+				attempt.claimGeneration = dispatched.ClaimGeneration
+				attempt.status = "dispatched"
+				node.status = "running"
+				node.retryAt = time.Time{}
+			}
+			team.status = "running"
+		case "TeamNodeAttemptRebound":
+			var payload teamAttemptReboundPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.TeamInstanceID != team.teamInstanceID ||
+				payload.PlanDigest != team.planDigest ||
+				payload.RunStream != runStream(payload.RunID) ||
+				payload.RunSequence <= 0 ||
+				!validOpaqueID(payload.RunEventID) ||
+				!validCanonicalUUID(payload.PreviousClaimID) ||
+				!validCanonicalUUID(payload.ClaimID) ||
+				payload.ClaimID == payload.PreviousClaimID ||
+				payload.ClaimGeneration != payload.PreviousClaimGeneration+1 {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node := teamNodeByID(&team, payload.LogicalNodeID)
+			attempt := teamAttemptByNumber(node, payload.AttemptNumber)
+			if node == nil ||
+				attempt == nil ||
+				node.status != "running" ||
+				node.currentAttempt != payload.AttemptNumber ||
+				attempt.status != "dispatched" ||
+				attempt.workItemID != payload.WorkItemID ||
+				attempt.runID != payload.RunID ||
+				attempt.claimID != payload.PreviousClaimID ||
+				attempt.claimGeneration != payload.PreviousClaimGeneration ||
+				attempt.runtimeInstanceID != payload.RuntimeInstanceID ||
+				attempt.agentInstanceID != payload.AgentInstanceID {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			attempt.claimID = payload.ClaimID
+			attempt.claimGeneration = payload.ClaimGeneration
+		case "TeamNodeAttemptTerminal":
+			var payload teamAttemptTerminalPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node := teamNodeByID(&team, payload.LogicalNodeID)
+			attempt := teamAttemptByNumber(node, payload.AttemptNumber)
+			if node == nil ||
+				attempt == nil ||
+				node.currentAttempt != payload.AttemptNumber ||
+				attempt.status != "dispatched" ||
+				attempt.workItemID != payload.WorkItemID ||
+				attempt.runID != payload.RunID ||
+				attempt.claimID != payload.ClaimID ||
+				attempt.claimGeneration != payload.ClaimGeneration ||
+				attempt.runtimeInstanceID != payload.RuntimeInstanceID ||
+				attempt.agentInstanceID != payload.AgentInstanceID ||
+				payload.Status != "succeeded" &&
+					payload.Status != "failed" &&
+					payload.Status != "cancelled" ||
+				!validOpaqueID(payload.EvidenceID) ||
+				!validSHA256Hex(payload.EvidenceDigest) {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			applyAttemptTerminal(
+				&team, payload.LogicalNodeID, payload.AttemptNumber,
+				payload.Status, payload.EvidenceID, payload.EvidenceDigest,
+			)
+		case "TeamNodeRecoveryRecorded":
+			var payload teamRecoveryPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node := teamNodeByID(&team, payload.LogicalNodeID)
+			if node == nil || node.currentAttempt != payload.AttemptNumber {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node.dependencySatisfied = payload.DependencySatisfied
+			switch payload.Action {
+			case TeamRecoveryRetry:
+				node.status = "retry_scheduled"
+			case TeamRecoveryFallback:
+				node.status = "fallback_scheduled"
+			case TeamRecoveryDegraded:
+				node.status = "degraded"
+			case TeamRecoveryBlocked:
+				node.status = "blocked"
+			case TeamRecoveryHumanRequired:
+				node.status = "human_required"
+			default:
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+		case "TeamExecutionTerminal":
+			var payload struct {
+				TeamInstanceID string `json:"team_instance_id"`
+				PlanDigest     string `json:"plan_digest"`
+				Status         string `json:"status"`
+				Reason         string `json:"reason"`
+			}
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.TeamInstanceID != team.teamInstanceID ||
+				payload.PlanDigest != team.planDigest ||
+				!isTerminalTeamStatus(payload.Status) {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			team.status = payload.Status
+		default:
+			return TeamExecutionRecord{}, ErrTeamExecutionConflict
+		}
+		team.streamSequence = event.Seq
+		team.lastEventID = event.ID
+	}
+	return team, nil
+}
+
+func applyAttemptTerminal(
+	team *TeamExecutionRecord,
+	logicalNodeID string,
+	attemptNumber int,
+	status string,
+	evidenceID string,
+	evidenceDigest string,
+) {
+	node := teamNodeByID(team, logicalNodeID)
+	attempt := teamAttemptByNumber(node, attemptNumber)
+	if attempt == nil {
+		return
+	}
+	attempt.status = status
+	attempt.evidenceID = evidenceID
+	attempt.evidenceDigest = evidenceDigest
+	switch status {
+	case "succeeded":
+		node.status = "succeeded"
+		node.dependencySatisfied = true
+	case "failed", "cancelled":
+		if attemptNumber < node.maxAttempts {
+			node.status = "awaiting_recovery"
+		} else {
+			node.status = status
+		}
+		node.dependencySatisfied = false
+	}
+	if node.status == "awaiting_recovery" {
+		team.status = "awaiting_recovery"
+	}
+}
+
+type teamRunEventReference struct {
+	sequence int64
+	eventID  string
+}
+
+func teamRebindRunFacts(
+	events []journal.Event,
+	input TeamAttemptRebindInput,
+) (time.Time, teamRunEventReference, error) {
+	var previousExpiresAt time.Time
+	var current teamRunEventReference
+	var runHead int64
+	for _, event := range events {
+		if event.StreamID != runStream(input.RunID) {
+			continue
+		}
+		if event.Seq > runHead {
+			runHead = event.Seq
+		}
+		if event.Type != "RunClaimed" {
+			continue
+		}
+		var payload runClaimedPayload
+		if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+			payload.ClaimID == nil ||
+			payload.ClaimGeneration == nil ||
+			payload.PrepareLeaseExpiresAt == nil {
+			return time.Time{}, teamRunEventReference{}, ErrTeamExecutionConflict
+		}
+		switch {
+		case *payload.ClaimID == input.PreviousClaimID &&
+			*payload.ClaimGeneration == input.PreviousClaimGeneration:
+			expiresAt, err := parseUTC(*payload.PrepareLeaseExpiresAt)
+			if err != nil {
+				return time.Time{}, teamRunEventReference{}, ErrTeamExecutionConflict
+			}
+			previousExpiresAt = expiresAt
+		case *payload.ClaimID == input.ClaimID &&
+			*payload.ClaimGeneration == input.ClaimGeneration:
+			current = teamRunEventReference{
+				sequence: event.Seq,
+				eventID:  event.ID,
+			}
+		}
+	}
+	if previousExpiresAt.IsZero() ||
+		current.sequence <= 0 ||
+		current.sequence != runHead ||
+		!validOpaqueID(current.eventID) {
+		return time.Time{}, teamRunEventReference{}, ErrTeamExecutionConflict
+	}
+	return previousExpiresAt, current, nil
+}
+
+func teamIsTerminal(team TeamExecutionRecord) bool {
+	for _, node := range team.nodes {
+		switch node.status {
+		case "succeeded", "failed", "cancelled", "degraded", "blocked", "human_required":
+		default:
+			return false
+		}
+	}
+	return len(team.nodes) > 0
+}
+
+func aggregateTeamTerminal(team TeamExecutionRecord) (string, string) {
+	for _, status := range []string{
+		"human_required",
+		"blocked",
+		"failed",
+		"cancelled",
+		"degraded",
+	} {
+		for _, node := range team.nodes {
+			if node.status == status {
+				return status, "node_" + node.logicalNodeID + "_" + status
+			}
+		}
+	}
+	for _, node := range team.nodes {
+		if node.status != "succeeded" {
+			return "failed", "node_" + node.logicalNodeID + "_" + node.status
+		}
+	}
+	return "succeeded", ""
+}
+
+func matchExistingTeamRecovery(
+	events []journal.Event,
+	input TeamRecoveryInput,
+) (bool, bool, error) {
+	for _, event := range events {
+		if event.Type != "TeamNodeRecoveryRecorded" {
+			continue
+		}
+		var payload teamRecoveryPayload
+		if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil {
+			return false, false, ErrTeamExecutionConflict
+		}
+		if payload.LogicalNodeID != input.LogicalNodeID ||
+			payload.AttemptNumber != input.AttemptNumber {
+			continue
+		}
+		matches := payload.Action == input.Action &&
+			payload.RetryAt == formatOptionalUTC(input.RetryAt) &&
+			payload.NextAgentInstanceID == input.NextAgentInstanceID &&
+			payload.NextRuntimeInstanceID == input.NextRuntimeInstanceID &&
+			payload.DependencySatisfied == input.DependencySatisfied &&
+			event.CorrelationID == input.CorrelationID
+		return matches, !matches, nil
+	}
+	return false, false, nil
+}
+
+func isTerminalTeamStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "degraded", "blocked", "human_required", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseOptionalUTC(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.Location() != time.UTC {
+		return time.Time{}, ErrInvalidTeamExecution
+	}
+	return parsed, nil
+}
+
+func cloneTeamNodeRecords(records []TeamNodeRecord) []TeamNodeRecord {
+	cloned := make([]TeamNodeRecord, len(records))
+	for index, record := range records {
+		cloned[index] = record
+		cloned[index].attempts = append([]TeamAttemptRecord(nil), record.attempts...)
+	}
+	return cloned
+}
+
+func cloneTeamExecutionRecord(record TeamExecutionRecord) TeamExecutionRecord {
+	record.nodes = cloneTeamNodeRecords(record.nodes)
+	return record
+}

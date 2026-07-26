@@ -177,13 +177,16 @@ type Projection struct {
 	mu          sync.RWMutex
 	source      source
 	snapshot    Snapshot
+	view        GlobalReadView
 	rebuildGate chan struct{}
 }
 
 func New(db *sql.DB) *Projection {
+	snapshot := emptySnapshot()
 	return &Projection{
 		source:      newJournalSource(db),
-		snapshot:    emptySnapshot(),
+		snapshot:    snapshot,
+		view:        buildGlobalReadView(snapshot, nil, nil),
 		rebuildGate: make(chan struct{}, 1),
 	}
 }
@@ -207,6 +210,11 @@ func (p *Projection) Rebuild(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	teamExecutions, err := projectTeamExecutions(events)
+	if err != nil {
+		return err
+	}
+	candidateView := buildGlobalReadView(candidate, events, teamExecutions)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -214,6 +222,7 @@ func (p *Projection) Rebuild(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.snapshot = candidate.clone()
+	p.view = candidateView
 	return nil
 }
 
@@ -221,6 +230,12 @@ func (p *Projection) Snapshot() Snapshot {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.snapshot.clone()
+}
+
+func (p *Projection) GlobalReadView() GlobalReadView {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.view
 }
 
 func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
@@ -241,6 +256,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	nextSeq := make(map[string]int64)
 	var runAuthorityEvents []journal.Event
 	var grantAuthorityEvents []journal.Event
+	var evidenceEvents []journal.Event
 
 	for _, event := range ordered {
 		if err := ctx.Err(); err != nil {
@@ -283,6 +299,10 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		if isRunAuthorityRuntimeReferenceEvent(event) {
 			runAuthorityEvents = append(runAuthorityEvents, event)
 		}
+		if event.Type == "EvidenceSubmitted" {
+			evidenceEvents = append(evidenceEvents, event)
+			continue
+		}
 		if err := candidate.apply(event); err != nil {
 			return Snapshot{}, err
 		}
@@ -297,6 +317,11 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		grantAuthorityEvents,
 	); err != nil {
 		return Snapshot{}, err
+	}
+	for _, event := range evidenceEvents {
+		if err := candidate.apply(event); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	if err := candidate.validateSavedTeamLinks(); err != nil {
 		return Snapshot{}, err

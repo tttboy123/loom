@@ -135,6 +135,9 @@ func newGrantFixtureWithIDs(
 	if err != nil {
 		t.Fatalf("work.NewAuthority() error = %v", err)
 	}
+	if err := workAuthority.InitializeRunIdentityIndex(context.Background()); err != nil {
+		t.Fatalf("InitializeRunIdentityIndex() error = %v", err)
+	}
 	seedGrantRuntime(t, store, "runtime-1", "online", 2)
 	workItem, run, err := workAuthority.CreateAndAssign(
 		context.Background(),
@@ -231,7 +234,38 @@ func newGrantTestAuthority(
 	if err != nil {
 		t.Fatalf("NewAuthority() error = %v", err)
 	}
+	if err := authority.InitializeGrantIdentityIndex(context.Background()); err != nil {
+		t.Fatalf("InitializeGrantIdentityIndex() error = %v", err)
+	}
 	return authority
+}
+
+func TestGrantIdentityIndexIsExplicit(t *testing.T) {
+	fixture := newGrantFixture(t, "identity-explicit")
+	authority, err := NewAuthority(
+		fixture.store,
+		fixture.workAuthority,
+		fixture.clock.Now,
+		newCountingGrantReader(0x41),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.Issue(
+		context.Background(),
+		grantIssueInput(fixture, time.Minute),
+	); !errors.Is(err, ErrGrantIdentityIndexRequired) {
+		t.Fatalf("uninitialized Issue() error = %v", err)
+	}
+	if err := authority.InitializeGrantIdentityIndex(context.Background()); err != nil {
+		t.Fatalf("InitializeGrantIdentityIndex() error = %v", err)
+	}
+	if _, err := authority.Issue(
+		context.Background(),
+		grantIssueInput(fixture, time.Minute),
+	); err != nil {
+		t.Fatalf("initialized Issue() error = %v", err)
+	}
 }
 
 func grantIssueInput(fixture *grantFixture, lifetime time.Duration) IssueInput {
@@ -587,6 +621,23 @@ func TestRotateRevokeGeneration(t *testing.T) { // s3_w3_rotate_revoke_generatio
 	)
 	if err != nil || third.Record().ClaimGeneration() != 2 {
 		t.Fatalf("generation rotation = %#v, %v", third, err)
+	}
+	grantEvents, err := fixture.store.ReadStream(
+		context.Background(),
+		"agent-grant/"+fixture.run.ID(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := grantEvents[len(grantEvents)-1]
+	previous := grantEvents[len(grantEvents)-2]
+	if last.Type != "AgentGrantIssued" ||
+		last.CausationID != previous.ID {
+		t.Fatalf(
+			"post-revocation issue causation = %s, want %s",
+			last.CausationID,
+			previous.ID,
+		)
 	}
 
 	t.Run("unrevoked prior generation is replaced atomically", func(t *testing.T) {
@@ -1170,12 +1221,13 @@ func TestTokenRedactionAndSourceFailure(t *testing.T) { // s3_w3_token_redaction
 		}
 	}
 
-	fixture.clock.Set(time.Time{})
+	fixture.clock.Set(grantTestNow)
 	zeroClockAuthority := newGrantTestAuthority(
 		t,
 		fixture,
 		newCountingGrantReader(0xa0),
 	)
+	fixture.clock.Set(time.Time{})
 	zeroClock, zeroClockErr := zeroClockAuthority.Issue(
 		context.Background(),
 		grantIssueInput(fixture, time.Minute),

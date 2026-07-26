@@ -30,11 +30,13 @@ var (
 	ErrRunAlreadyTerminal       = errors.New("run already terminal")
 	ErrRuntimeUnavailable       = errors.New("runtime unavailable")
 	ErrRuntimeCapacityExhausted = errors.New("runtime capacity exhausted")
+	ErrRunIdentityIndexRequired = errors.New("Run identity index required")
 )
 
 const (
 	maxAuthorityIDBytes = 128
 	maxPrepareLease     = 5 * time.Minute
+	runIdentityStreamID = "work-run-identity/v1"
 )
 
 type WorkItemAssignmentInput struct {
@@ -101,17 +103,30 @@ type AuthoritySnapshot struct {
 }
 
 type Authority struct {
-	store    *journal.Store
-	now      func() time.Time
-	random   io.Reader
-	randomMu sync.Mutex
+	store         *journal.Store
+	now           func() time.Time
+	random        io.Reader
+	randomMu      sync.Mutex
+	identityMu    sync.RWMutex
+	identityReady bool
 }
 
 type authorityState struct {
-	workItems map[string]WorkItemRecord
-	runs      map[string]RunRecord
-	runtimes  map[string]authorityRuntime
-	heads     map[string]int64
+	workItems              map[string]WorkItemRecord
+	runs                   map[string]RunRecord
+	runtimes               map[string]authorityRuntime
+	heads                  map[string]int64
+	runIdentities          map[string]runIdentityReservation
+	runIdentityInitialized bool
+}
+
+type runIdentityReservation struct {
+	runID              string
+	workItemID         string
+	agentInstanceID    string
+	assignmentStreamID string
+	assignmentSequence int64
+	assignmentEventID  string
 }
 
 type authorityRuntime struct {
@@ -176,6 +191,154 @@ func NewAuthority(
 	return &Authority{store: store, now: now, random: random}, nil
 }
 
+func (authority *Authority) InitializeRunIdentityIndex(ctx context.Context) error {
+	if authority == nil || ctx == nil {
+		return ErrInvalidRunAuthorityInput
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now, err := authority.operationTime()
+	if err != nil {
+		return err
+	}
+	events, err := authority.store.ReadAll(ctx)
+	if err != nil {
+		return err
+	}
+	state, err := replayAuthorityEvents(ctx, events)
+	if err != nil {
+		return err
+	}
+	assignments := make([]runIdentityReservation, 0, len(state.runs))
+	seenRuns := make(map[string]runIdentityReservation, len(state.runs))
+	for _, event := range events {
+		if event.Type != "WorkItemAssigned" ||
+			!strings.HasPrefix(event.StreamID, "work-item/") {
+			continue
+		}
+		var payload struct {
+			WorkItemID      *string `json:"work_item_id"`
+			RunID           *string `json:"run_id"`
+			AgentInstanceID *string `json:"agent_instance_id"`
+			Status          *string `json:"status"`
+		}
+		if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
+			payload.WorkItemID == nil || payload.RunID == nil ||
+			payload.AgentInstanceID == nil || payload.Status == nil ||
+			*payload.Status != "assigned" {
+			return ErrRunAuthorityConflict
+		}
+		reservation := runIdentityReservation{
+			runID: *payload.RunID, workItemID: *payload.WorkItemID,
+			agentInstanceID:    *payload.AgentInstanceID,
+			assignmentStreamID: event.StreamID,
+			assignmentSequence: event.Seq,
+			assignmentEventID:  event.ID,
+		}
+		if existing, exists := seenRuns[reservation.runID]; exists &&
+			existing != reservation {
+			return ErrRunAuthorityConflict
+		}
+		seenRuns[reservation.runID] = reservation
+	}
+	for _, reservation := range seenRuns {
+		assignments = append(assignments, reservation)
+	}
+	sort.Slice(assignments, func(i, j int) bool {
+		if assignments[i].runID != assignments[j].runID {
+			return assignments[i].runID < assignments[j].runID
+		}
+		return assignments[i].assignmentEventID < assignments[j].assignmentEventID
+	})
+	eventIDs := make([]string, len(assignments))
+	for index, reservation := range assignments {
+		eventIDs[index] = reservation.assignmentEventID
+	}
+	digest := sha256.Sum256([]byte(strings.Join(eventIDs, "\n")))
+	indexDigest := hex.EncodeToString(digest[:])
+	if state.runIdentityInitialized {
+		if !runIdentityMatches(state.runIdentities, seenRuns) {
+			return ErrRunAuthorityConflict
+		}
+		authority.setRunIdentityReady()
+		return nil
+	}
+	pending := make([]runIdentityReservation, 0, len(assignments))
+	for _, reservation := range assignments {
+		existing, exists := state.runIdentities[reservation.runID]
+		if exists {
+			if existing != reservation {
+				return ErrRunAuthorityConflict
+			}
+			continue
+		}
+		pending = append(pending, reservation)
+	}
+	identityHead := state.heads[runIdentityStreamID]
+	for offset := 0; offset < len(pending); offset += 15 {
+		end := offset + 15
+		if end > len(pending) {
+			end = len(pending)
+		}
+		batch := pending[offset:end]
+		expectations := []journal.StreamHeadExpectation{{
+			StreamID: runIdentityStreamID, Sequence: identityHead,
+		}}
+		reservationEvents := make([]journal.Event, 0, len(batch))
+		for _, reservation := range batch {
+			expectations = append(expectations, journal.StreamHeadExpectation{
+				StreamID: reservation.assignmentStreamID,
+				Sequence: reservation.assignmentSequence,
+			})
+			identityHead++
+			eventID := deterministicEventID(
+				"WorkRunIdentityReserved", reservation.runID,
+				reservation.workItemID, reservation.assignmentEventID,
+			)
+			reservationEvents = append(reservationEvents, newEvent(
+				eventID, runIdentityStreamID, identityHead,
+				"WorkRunIdentityReserved", now,
+				"00000000-0000-4000-8000-000000000001",
+				reservation.assignmentEventID,
+				runIdentityPayload(reservation),
+			))
+		}
+		if _, err := authority.store.AppendBatchIfStreamHeads(
+			ctx,
+			expectations,
+			reservationEvents,
+		); err != nil {
+			return mapJournalWriteError(err)
+		}
+	}
+	markerID := deterministicEventID(
+		"WorkRunIdentityIndexInitialized",
+		indexDigest,
+	)
+	marker := newEvent(
+		markerID, runIdentityStreamID, identityHead+1,
+		"WorkRunIdentityIndexInitialized", now,
+		"00000000-0000-4000-8000-000000000001", "",
+		struct {
+			AssignmentDigest string `json:"assignment_digest"`
+			AssignmentCount  int    `json:"assignment_count"`
+		}{indexDigest, len(assignments)},
+	)
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		[]journal.StreamHeadExpectation{{
+			StreamID: runIdentityStreamID,
+			Sequence: identityHead,
+		}},
+		[]journal.Event{marker},
+	); err != nil {
+		return mapJournalWriteError(err)
+	}
+	authority.setRunIdentityReady()
+	return nil
+}
+
 func (authority *Authority) CreateAndAssign(
 	ctx context.Context,
 	input WorkItemAssignmentInput,
@@ -183,13 +346,23 @@ func (authority *Authority) CreateAndAssign(
 	if err := validateContextAndAssignment(ctx, input); err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
+	if !authority.runIdentityReady() {
+		return WorkItemRecord{}, RunRecord{}, ErrRunIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readState(ctx)
+	streamID := workItemStream(input.WorkItemID)
+	state, err := authority.readStateFor(ctx, []string{
+		streamID,
+		runIdentityStreamID,
+	})
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
+	}
+	if !state.runIdentityInitialized {
+		return WorkItemRecord{}, RunRecord{}, ErrRunIdentityIndexRequired
 	}
 	if existing, ok := state.workItems[input.WorkItemID]; ok {
 		run := state.runs[input.RunID]
@@ -206,8 +379,10 @@ func (authority *Authority) CreateAndAssign(
 	if _, exists := state.runs[input.RunID]; exists {
 		return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
 	}
+	if _, exists := state.runIdentities[input.RunID]; exists {
+		return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
+	}
 
-	streamID := workItemStream(input.WorkItemID)
 	createdID := deterministicEventID(
 		"WorkItemCreated", input.WorkItemID, input.Title, input.CorrelationID,
 	)
@@ -236,9 +411,31 @@ func (authority *Authority) CreateAndAssign(
 			}{input.WorkItemID, input.RunID, input.AgentInstanceID, "assigned"},
 		),
 	}
+	identitySequence := state.heads[runIdentityStreamID] + 1
+	events = append(events, newEvent(
+		deterministicEventID(
+			"WorkRunIdentityReserved", input.RunID,
+			input.WorkItemID, assignedID,
+		),
+		runIdentityStreamID,
+		identitySequence,
+		"WorkRunIdentityReserved",
+		now,
+		input.CorrelationID,
+		assignedID,
+		runIdentityPayload(runIdentityReservation{
+			runID: input.RunID, workItemID: input.WorkItemID,
+			agentInstanceID:    input.AgentInstanceID,
+			assignmentStreamID: streamID, assignmentSequence: 2,
+			assignmentEventID: assignedID,
+		}),
+	))
 	if _, err := authority.store.AppendBatchIfStreamHeads(
 		ctx,
-		[]journal.StreamHeadExpectation{{StreamID: streamID, Sequence: 0}},
+		[]journal.StreamHeadExpectation{
+			{StreamID: streamID, Sequence: 0},
+			{StreamID: runIdentityStreamID, Sequence: state.heads[runIdentityStreamID]},
+		},
 		events,
 	); err != nil {
 		return WorkItemRecord{}, RunRecord{}, mapJournalWriteError(err)
@@ -262,11 +459,18 @@ func (authority *Authority) Claim(
 	if err := validateContextAndClaim(ctx, input); err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
+	if !authority.runIdentityReady() {
+		return WorkItemRecord{}, RunRecord{}, ErrRunIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readState(ctx)
+	state, err := authority.readStateFor(ctx, runCommandStreams(
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	))
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -386,11 +590,18 @@ func (authority *Authority) ExtendPrepareLease(
 		duration <= 0 || duration > maxPrepareLease {
 		return RunRecord{}, ErrInvalidRunAuthorityInput
 	}
+	if !authority.runIdentityReady() {
+		return RunRecord{}, ErrRunIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return RunRecord{}, err
 	}
-	state, err := authority.readState(ctx)
+	state, err := authority.readStateFor(ctx, runCommandStreams(
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	))
 	if err != nil {
 		return RunRecord{}, err
 	}
@@ -433,9 +644,7 @@ func (authority *Authority) ExtendPrepareLease(
 	)
 	if _, err := authority.store.AppendBatchIfStreamHeads(
 		ctx,
-		[]journal.StreamHeadExpectation{{
-			StreamID: runStream(input.RunID), Sequence: run.streamSequence,
-		}},
+		runCommandExpectations(state, input),
 		[]journal.Event{event},
 	); err != nil {
 		return RunRecord{}, mapJournalWriteError(err)
@@ -453,11 +662,18 @@ func (authority *Authority) Start(
 	if err := validateContextAndGeneration(ctx, input); err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
+	if !authority.runIdentityReady() {
+		return WorkItemRecord{}, RunRecord{}, ErrRunIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readState(ctx)
+	state, err := authority.readStateFor(ctx, runCommandStreams(
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	))
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -492,6 +708,7 @@ func (authority *Authority) Start(
 		{StreamID: workItemStream(input.WorkItemID), Sequence: state.heads[workItemStream(input.WorkItemID)]},
 		{StreamID: runStream(input.RunID), Sequence: run.streamSequence},
 		{StreamID: runtimeStatusStream(input.RuntimeInstanceID), Sequence: runtime.statusHead.sequence},
+		{StreamID: runtimeCapacityStream(input.RuntimeInstanceID), Sequence: state.heads[runtimeCapacityStream(input.RuntimeInstanceID)]},
 	}
 	if _, err := authority.store.AppendBatchIfStreamHeads(ctx, expectations, []journal.Event{event}); err != nil {
 		return WorkItemRecord{}, RunRecord{}, mapJournalWriteError(err)
@@ -510,11 +727,18 @@ func (authority *Authority) CommitTerminal(
 	if err := validateTerminalInput(ctx, input); err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
+	if !authority.runIdentityReady() {
+		return WorkItemRecord{}, RunRecord{}, ErrRunIdentityIndexRequired
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readState(ctx)
+	state, err := authority.readStateFor(ctx, runCommandStreams(
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	))
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -713,9 +937,35 @@ func (authority *Authority) readState(ctx context.Context) (authorityState, erro
 	return replayAuthorityEvents(ctx, events)
 }
 
+func (authority *Authority) readStateFor(
+	ctx context.Context,
+	streamIDs []string,
+) (authorityState, error) {
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return authorityState{}, err
+	}
+	return replayAuthorityEventsSelective(ctx, snapshot.Events())
+}
+
 func replayAuthorityEvents(
 	ctx context.Context,
 	events []journal.Event,
+) (authorityState, error) {
+	return replayAuthorityEventsMode(ctx, events, false)
+}
+
+func replayAuthorityEventsSelective(
+	ctx context.Context,
+	events []journal.Event,
+) (authorityState, error) {
+	return replayAuthorityEventsMode(ctx, events, true)
+}
+
+func replayAuthorityEventsMode(
+	ctx context.Context,
+	events []journal.Event,
+	allowOrphanCapacity bool,
 ) (authorityState, error) {
 	if ctx == nil {
 		return authorityState{}, ErrInvalidRunAuthorityInput
@@ -731,10 +981,11 @@ func replayAuthorityEvents(
 		return ordered[i].ID < ordered[j].ID
 	})
 	state := authorityState{
-		workItems: make(map[string]WorkItemRecord),
-		runs:      make(map[string]RunRecord),
-		runtimes:  make(map[string]authorityRuntime),
-		heads:     make(map[string]int64),
+		workItems:     make(map[string]WorkItemRecord),
+		runs:          make(map[string]RunRecord),
+		runtimes:      make(map[string]authorityRuntime),
+		heads:         make(map[string]int64),
+		runIdentities: make(map[string]runIdentityReservation),
 	}
 	byStream := make(map[string][]journal.Event)
 	for _, event := range ordered {
@@ -752,6 +1003,11 @@ func replayAuthorityEvents(
 		}
 		state.heads[event.StreamID] = event.Seq
 		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	if streamEvents := byStream[runIdentityStreamID]; len(streamEvents) > 0 {
+		if err := replayRunIdentityStream(&state, streamEvents); err != nil {
+			return authorityState{}, err
+		}
 	}
 
 	outcomes := make(map[string]journal.Event)
@@ -780,7 +1036,14 @@ func replayAuthorityEvents(
 	}
 	for streamID, streamEvents := range byStream {
 		if strings.HasPrefix(streamID, "runtime_capacity:") {
-			if err := replayRuntimeCapacityStream(&state, streamID, streamEvents, claims, terminals); err != nil {
+			if err := replayRuntimeCapacityStream(
+				&state,
+				streamID,
+				streamEvents,
+				claims,
+				terminals,
+				allowOrphanCapacity,
+			); err != nil {
 				return authorityState{}, err
 			}
 		}
@@ -810,6 +1073,68 @@ func replayAuthorityEvents(
 		state.workItems[workItem.id] = workItem
 	}
 	return state, nil
+}
+
+func replayRunIdentityStream(
+	state *authorityState,
+	events []journal.Event,
+) error {
+	for _, event := range events {
+		switch event.Type {
+		case "WorkRunIdentityReserved":
+			var payload struct {
+				RunID              *string `json:"run_id"`
+				WorkItemID         *string `json:"work_item_id"`
+				AgentInstanceID    *string `json:"agent_instance_id"`
+				AssignmentStreamID *string `json:"assignment_stream_id"`
+				AssignmentSequence *int64  `json:"assignment_sequence"`
+				AssignmentEventID  *string `json:"assignment_event_id"`
+			}
+			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
+				payload.RunID == nil || payload.WorkItemID == nil ||
+				payload.AgentInstanceID == nil || payload.AssignmentStreamID == nil ||
+				payload.AssignmentSequence == nil || payload.AssignmentEventID == nil ||
+				*payload.RunID == "" || *payload.WorkItemID == "" ||
+				*payload.AgentInstanceID == "" ||
+				*payload.AssignmentStreamID != workItemStream(*payload.WorkItemID) ||
+				*payload.AssignmentSequence <= 0 ||
+				*payload.AssignmentEventID == "" ||
+				event.CausationID != *payload.AssignmentEventID {
+				return ErrRunAuthorityConflict
+			}
+			reservation := runIdentityReservation{
+				runID: *payload.RunID, workItemID: *payload.WorkItemID,
+				agentInstanceID:    *payload.AgentInstanceID,
+				assignmentStreamID: *payload.AssignmentStreamID,
+				assignmentSequence: *payload.AssignmentSequence,
+				assignmentEventID:  *payload.AssignmentEventID,
+			}
+			if existing, exists := state.runIdentities[reservation.runID]; exists {
+				if existing != reservation {
+					return ErrRunAuthorityConflict
+				}
+			} else {
+				state.runIdentities[reservation.runID] = reservation
+			}
+		case "WorkRunIdentityIndexInitialized":
+			var payload struct {
+				AssignmentDigest *string `json:"assignment_digest"`
+				AssignmentCount  *int    `json:"assignment_count"`
+			}
+			if state.runIdentityInitialized ||
+				decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.AssignmentDigest == nil ||
+				payload.AssignmentCount == nil ||
+				!validSHA256Hex(*payload.AssignmentDigest) ||
+				*payload.AssignmentCount < 0 {
+				return ErrRunAuthorityConflict
+			}
+			state.runIdentityInitialized = true
+		default:
+			return ErrRunAuthorityConflict
+		}
+	}
+	return nil
 }
 
 func replayWorkItemStream(
@@ -1122,6 +1447,7 @@ func replayRuntimeCapacityStream(
 	events []journal.Event,
 	claims map[string]*claimReplay,
 	terminals map[string]*terminalReplay,
+	allowOrphanCapacity bool,
 ) error {
 	runtimeID := strings.TrimPrefix(streamID, "runtime_capacity:")
 	runtime, ok := state.runtimes[runtimeID]
@@ -1146,13 +1472,21 @@ func replayRuntimeCapacityStream(
 		switch event.Type {
 		case "RuntimeCapacityReserved":
 			claim, ok := claims[event.CausationID]
-			if !ok || !equalCapacityBinding(claim.binding, payload.binding()) ||
-				claim.statusReference != payload.statusReference() ||
-				runtime.active[key].runID != "" {
+			if runtime.active[key].runID != "" {
+				return ErrRunAuthorityConflict
+			}
+			if ok &&
+				(!equalCapacityBinding(claim.binding, payload.binding()) ||
+					claim.statusReference != payload.statusReference()) {
+				return ErrRunAuthorityConflict
+			}
+			if !ok && !allowOrphanCapacity {
 				return ErrRunAuthorityConflict
 			}
 			runtime.active[key] = payload.binding()
-			claim.reserved = true
+			if ok {
+				claim.reserved = true
+			}
 			statusFact := runtime.statusFacts[payload.RuntimeStatusSequence]
 			if statusFact.reference != payload.statusReference() ||
 				statusFact.capacity <= 0 ||
@@ -1177,7 +1511,7 @@ func replayRuntimeCapacityStream(
 					return ErrRunAuthorityConflict
 				}
 				claim.oldReleased = true
-			} else {
+			} else if !allowOrphanCapacity {
 				return ErrRunAuthorityConflict
 			}
 		}
@@ -1608,10 +1942,95 @@ func runtimeStatusStream(id string) string   { return "runtime_instance:" + id }
 func runtimeCapacityStream(id string) string { return "runtime_capacity:" + id }
 
 func isRunAuthorityStream(streamID string) bool {
-	return strings.HasPrefix(streamID, "work-item/") ||
+	return streamID == runIdentityStreamID ||
+		strings.HasPrefix(streamID, "work-item/") ||
 		strings.HasPrefix(streamID, "run/") ||
 		strings.HasPrefix(streamID, "runtime_instance:") ||
 		strings.HasPrefix(streamID, "runtime_capacity:")
+}
+
+func (authority *Authority) runIdentityReady() bool {
+	authority.identityMu.RLock()
+	defer authority.identityMu.RUnlock()
+	return authority.identityReady
+}
+
+func (authority *Authority) setRunIdentityReady() {
+	authority.identityMu.Lock()
+	defer authority.identityMu.Unlock()
+	authority.identityReady = true
+}
+
+func runIdentityPayload(reservation runIdentityReservation) struct {
+	RunID              string `json:"run_id"`
+	WorkItemID         string `json:"work_item_id"`
+	AgentInstanceID    string `json:"agent_instance_id"`
+	AssignmentStreamID string `json:"assignment_stream_id"`
+	AssignmentSequence int64  `json:"assignment_sequence"`
+	AssignmentEventID  string `json:"assignment_event_id"`
+} {
+	return struct {
+		RunID              string `json:"run_id"`
+		WorkItemID         string `json:"work_item_id"`
+		AgentInstanceID    string `json:"agent_instance_id"`
+		AssignmentStreamID string `json:"assignment_stream_id"`
+		AssignmentSequence int64  `json:"assignment_sequence"`
+		AssignmentEventID  string `json:"assignment_event_id"`
+	}{
+		reservation.runID,
+		reservation.workItemID,
+		reservation.agentInstanceID,
+		reservation.assignmentStreamID,
+		reservation.assignmentSequence,
+		reservation.assignmentEventID,
+	}
+}
+
+func runIdentityMatches(
+	indexed map[string]runIdentityReservation,
+	expected map[string]runIdentityReservation,
+) bool {
+	if len(indexed) != len(expected) {
+		return false
+	}
+	for runID, reservation := range expected {
+		if indexed[runID] != reservation {
+			return false
+		}
+	}
+	return true
+}
+
+func runCommandStreams(
+	workItemID string,
+	runID string,
+	runtimeInstanceID string,
+) []string {
+	return []string{
+		workItemStream(workItemID),
+		runStream(runID),
+		runtimeStatusStream(runtimeInstanceID),
+		runtimeCapacityStream(runtimeInstanceID),
+	}
+}
+
+func runCommandExpectations(
+	state authorityState,
+	input RunGenerationInput,
+) []journal.StreamHeadExpectation {
+	streams := runCommandStreams(
+		input.WorkItemID,
+		input.RunID,
+		input.RuntimeInstanceID,
+	)
+	expectations := make([]journal.StreamHeadExpectation, len(streams))
+	for index, streamID := range streams {
+		expectations[index] = journal.StreamHeadExpectation{
+			StreamID: streamID,
+			Sequence: state.heads[streamID],
+		}
+	}
+	return expectations
 }
 
 func (reference runtimeStatusReference) payload() runtimeStatusReferencePayload {

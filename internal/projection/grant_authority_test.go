@@ -77,6 +77,9 @@ func newGrantProjectionFixture(t testing.TB) *grantProjectionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := workAuthority.InitializeRunIdentityIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	workItem, run, err := workAuthority.CreateAndAssign(
 		context.Background(),
 		work.WorkItemAssignmentInput{
@@ -115,6 +118,9 @@ func newGrantProjectionFixture(t testing.TB) *grantProjectionFixture {
 		bytes.NewReader(random),
 	)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := grantAuthority.InitializeGrantIdentityIndex(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	issued, err := grantAuthority.Issue(

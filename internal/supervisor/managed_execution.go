@@ -31,6 +31,7 @@ var (
 	ErrRuntimeTimeout          = errors.New("managed execution timeout")
 	ErrRuntimeCancelled        = errors.New("managed execution cancelled")
 	ErrProcessCleanup          = errors.New("managed process cleanup failed")
+	ErrAuthorizedFrameObserver = errors.New("authorized Frame observer failed")
 )
 
 const (
@@ -52,6 +53,33 @@ type RuntimeAdapter interface {
 	Execute(context.Context, AdapterRequest) (AdapterResult, error)
 }
 
+type FrameSink interface {
+	AcceptFrame(context.Context, bridgev1.Frame) error
+}
+
+type AuthorizedFrame struct {
+	frame   bridgev1.Frame
+	binding bridgev1.RunStreamBinding
+}
+
+func (frame AuthorizedFrame) Frame() bridgev1.Frame {
+	cloned, _ := cloneManagedFrames([]bridgev1.Frame{frame.frame})
+	if len(cloned) == 0 {
+		return bridgev1.Frame{}
+	}
+	return cloned[0]
+}
+
+func (frame AuthorizedFrame) Binding() bridgev1.RunStreamBinding {
+	return frame.binding
+}
+
+func (AuthorizedFrame) Tentative() bool { return true }
+
+type AuthorizedFrameObserver interface {
+	ObserveAuthorizedFrame(context.Context, AuthorizedFrame) error
+}
+
 type AdapterRequest struct {
 	WorkspacePath string
 	HomePath      string
@@ -59,6 +87,7 @@ type AdapterRequest struct {
 	Binding       bridgev1.RunStreamBinding
 	Dispatch      bridgev1.Frame
 	Grant         authorization.Token
+	FrameSink     FrameSink
 }
 
 type AdapterResultInput struct {
@@ -86,12 +115,13 @@ type Config struct {
 }
 
 type ExecuteInput struct {
-	SourcePath string
-	Profile    loomruntime.RuntimeProfile
-	Instance   loomruntime.RuntimeInstance
-	Generation work.RunGenerationInput
-	Grant      authorization.IssuedGrant
-	Dispatch   bridgev1.Frame
+	SourcePath    string
+	Profile       loomruntime.RuntimeProfile
+	Instance      loomruntime.RuntimeInstance
+	Generation    work.RunGenerationInput
+	Grant         authorization.IssuedGrant
+	Dispatch      bridgev1.Frame
+	FrameObserver AuthorizedFrameObserver
 }
 
 type WorkspaceChange struct {
@@ -120,6 +150,105 @@ type Supervisor struct {
 	workspaceRootInfo fs.FileInfo
 	activeMu          sync.Mutex
 	activeRuns        map[string]struct{}
+}
+
+type authorizedFrameSink struct {
+	supervisor *Supervisor
+	input      ExecuteInput
+	stream     bridgev1.BoundRunStream
+	frames     []bridgev1.Frame
+	status     string
+	reason     string
+	resultSeen bool
+}
+
+func (sink *authorizedFrameSink) AcceptFrame(
+	ctx context.Context,
+	frame bridgev1.Frame,
+) error {
+	if sink == nil || sink.supervisor == nil || ctx == nil {
+		return ErrBridgeSession
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if bytes.Contains(
+		frame.Payload(),
+		[]byte(sink.input.Grant.Token().Value()),
+	) {
+		return ErrBridgeSession
+	}
+	index := len(sink.frames)
+	operation, valid := managedFrameOperation(frame.Type())
+	if !valid ||
+		frame.Type() == bridgev1.MessageAck && index != 0 ||
+		sink.resultSeen {
+		return ErrBridgeSession
+	}
+	if index == 0 &&
+		(frame.Type() != bridgev1.MessageAck ||
+			!exactManagedMessagePayload(
+				frame.Payload(),
+				sink.input.Dispatch.MessageID(),
+			)) {
+		return ErrBridgeSession
+	}
+	candidate, err := bridgev1.AdvanceBoundRunStream(sink.stream, frame)
+	if err != nil {
+		return errors.Join(ErrBridgeSession, err)
+	}
+	status := ""
+	reason := ""
+	if frame.Type() == bridgev1.MessageResult {
+		status, reason, err = parseManagedResultPayload(frame.Payload())
+		if err != nil {
+			return errors.Join(ErrBridgeSession, err)
+		}
+	}
+	if _, err := sink.supervisor.grantAuthority.Authorize(
+		ctx,
+		authorization.AuthorizeInput{
+			Token:             sink.input.Grant.Token(),
+			WorkItemID:        sink.input.Generation.WorkItemID,
+			RunID:             sink.input.Generation.RunID,
+			ClaimID:           sink.input.Generation.ClaimID,
+			ClaimGeneration:   sink.input.Generation.ClaimGeneration,
+			RuntimeInstanceID: sink.input.Generation.RuntimeInstanceID,
+			AgentInstanceID:   sink.input.Generation.AgentInstanceID,
+			Operation:         operation,
+			RequestID:         frame.MessageID(),
+			CorrelationID:     sink.input.Generation.CorrelationID,
+		},
+	); err != nil {
+		return errors.Join(ErrBridgeSession, err)
+	}
+	cloned, err := cloneManagedFrames([]bridgev1.Frame{frame})
+	if err != nil {
+		return ErrBridgeSession
+	}
+	sink.stream = candidate
+	sink.frames = append(sink.frames, cloned[0])
+	if frame.Type() == bridgev1.MessageResult {
+		sink.status = status
+		sink.reason = reason
+		sink.resultSeen = true
+	}
+	if sink.input.FrameObserver != nil {
+		observed, cloneErr := cloneManagedFrames([]bridgev1.Frame{frame})
+		if cloneErr != nil {
+			return ErrBridgeSession
+		}
+		if err := sink.input.FrameObserver.ObserveAuthorizedFrame(
+			ctx,
+			AuthorizedFrame{
+				frame:   observed[0],
+				binding: managedBinding(sink.input.Generation),
+			},
+		); err != nil {
+			return errors.Join(ErrAuthorizedFrameObserver, err)
+		}
+	}
+	return nil
 }
 
 func NewAdapterResult(input AdapterResultInput) (AdapterResult, error) {
@@ -328,6 +457,23 @@ func (supervisor *Supervisor) Execute(
 	outcome.workItem = workItem
 	outcome.run = run
 
+	initialStream, err := bridgev1.NewBoundRunStream(
+		managedBinding(input.Generation),
+	)
+	if err != nil {
+		return supervisor.finishFailure(
+			input, workspace, bridgev1.BoundRunStream{},
+			workspace.sourceDigest, "", nil, nil,
+			"failed", "bridge_protocol_failed",
+			authorization.RevocationTerminal,
+			errors.Join(ErrBridgeSession, err),
+		)
+	}
+	frameSink := &authorizedFrameSink{
+		supervisor: supervisor,
+		input:      input,
+		stream:     initialStream,
+	}
 	executionContext, cancelExecution := context.WithTimeout(ctx, input.Profile.Timeout)
 	result, adapterErr := supervisor.adapter.Execute(
 		executionContext,
@@ -338,6 +484,7 @@ func (supervisor *Supervisor) Execute(
 			Binding:       managedBinding(input.Generation),
 			Dispatch:      input.Dispatch,
 			Grant:         input.Grant.Token(),
+			FrameSink:     frameSink,
 		},
 	)
 	executionContextErr := executionContext.Err()
@@ -374,12 +521,19 @@ func (supervisor *Supervisor) Execute(
 		)
 	}
 	if adapterErr != nil {
+		failureReason := "runtime_process_failed"
+		primary := errors.Join(ErrRuntimeAdapter, adapterErr)
+		if errors.Is(adapterErr, ErrBridgeSession) ||
+			errors.Is(adapterErr, ErrAuthorizedFrameObserver) {
+			failureReason = "bridge_protocol_failed"
+			primary = adapterErr
+		}
 		return supervisor.finishFailure(
-			input, workspace, bridgev1.BoundRunStream{},
+			input, workspace, frameSink.stream,
 			workspace.sourceDigest, "", nil, nil,
-			"failed", "runtime_process_failed",
+			"failed", failureReason,
 			authorization.RevocationTerminal,
-			errors.Join(ErrRuntimeAdapter, adapterErr),
+			primary,
 		)
 	}
 	if !result.valid {
@@ -391,7 +545,12 @@ func (supervisor *Supervisor) Execute(
 			ErrRuntimeAdapter,
 		)
 	}
-	stream, status, reason, err := supervisor.acceptBridgeResult(ctx, input, result)
+	stream, status, reason, err := supervisor.acceptBridgeResult(
+		ctx,
+		input,
+		result,
+		frameSink,
+	)
 	if err != nil {
 		if ctx.Err() != nil {
 			return supervisor.finishFailure(
@@ -473,6 +632,9 @@ func (supervisor *Supervisor) validateInput(
 	if ctx == nil {
 		return ErrInvalidManagedExecution
 	}
+	if input.FrameObserver != nil && nilManagedInterface(input.FrameObserver) {
+		return ErrInvalidManagedExecution
+	}
 	profile, err := loomruntime.NewRuntimeProfile(input.Profile)
 	if err != nil {
 		return errors.Join(ErrInvalidManagedExecution, err)
@@ -546,72 +708,35 @@ func (supervisor *Supervisor) acceptBridgeResult(
 	ctx context.Context,
 	input ExecuteInput,
 	result AdapterResult,
+	sink *authorizedFrameSink,
 ) (bridgev1.BoundRunStream, string, string, error) {
-	if !result.DispatchAcknowledged() || !result.ResultAcknowledged() {
+	if err := ctx.Err(); err != nil {
+		return bridgev1.BoundRunStream{}, "", "", err
+	}
+	if sink == nil ||
+		!result.DispatchAcknowledged() ||
+		!result.ResultAcknowledged() ||
+		!sink.resultSeen {
 		return bridgev1.BoundRunStream{}, "", "", ErrBridgeSession
 	}
 	frames := result.InboundFrames()
-	if len(frames) < 2 ||
-		frames[0].Type() != bridgev1.MessageAck ||
-		!exactManagedMessagePayload(frames[0].Payload(), input.Dispatch.MessageID()) {
-		return bridgev1.BoundRunStream{}, "", "", ErrBridgeSession
+	if len(frames) != len(sink.frames) || len(frames) < 2 {
+		return sink.stream, "", "", ErrBridgeSession
 	}
-	stream, err := bridgev1.NewBoundRunStream(managedBinding(input.Generation))
-	if err != nil {
-		return bridgev1.BoundRunStream{}, "", "", errors.Join(ErrBridgeSession, err)
-	}
-	resultSeen := false
-	var status string
-	var reason string
-	for index, frame := range frames {
-		if bytes.Contains(
-			frame.Payload(),
-			[]byte(input.Grant.Token().Value()),
-		) {
-			return stream, "", "", ErrBridgeSession
-		}
-		operation, valid := managedFrameOperation(frame.Type())
-		if !valid ||
-			frame.Type() == bridgev1.MessageAck && index != 0 ||
-			resultSeen {
-			return stream, "", "", ErrBridgeSession
-		}
-		if _, err := supervisor.grantAuthority.Authorize(
-			ctx,
-			authorization.AuthorizeInput{
-				Token:             input.Grant.Token(),
-				WorkItemID:        input.Generation.WorkItemID,
-				RunID:             input.Generation.RunID,
-				ClaimID:           input.Generation.ClaimID,
-				ClaimGeneration:   input.Generation.ClaimGeneration,
-				RuntimeInstanceID: input.Generation.RuntimeInstanceID,
-				AgentInstanceID:   input.Generation.AgentInstanceID,
-				Operation:         operation,
-				RequestID:         frame.MessageID(),
-				CorrelationID:     input.Generation.CorrelationID,
-			},
-		); err != nil {
-			return stream, "", "", errors.Join(ErrBridgeSession, err)
-		}
-		stream, err = bridgev1.AdvanceBoundRunStream(stream, frame)
-		if err != nil {
-			return bridgev1.BoundRunStream{}, "", "", errors.Join(ErrBridgeSession, err)
-		}
-		if frame.Type() == bridgev1.MessageResult {
-			status, reason, err = parseManagedResultPayload(frame.Payload())
-			if err != nil {
-				return stream, "", "", errors.Join(ErrBridgeSession, err)
-			}
-			resultSeen = true
-			if index != len(frames)-1 {
-				return stream, "", "", ErrBridgeSession
-			}
+	for index := range frames {
+		if !sameManagedFrame(frames[index], sink.frames[index]) {
+			return sink.stream, "", "", ErrBridgeSession
 		}
 	}
-	if !resultSeen {
-		return stream, "", "", ErrBridgeSession
+	if frames[0].Type() != bridgev1.MessageAck ||
+		!exactManagedMessagePayload(
+			frames[0].Payload(),
+			input.Dispatch.MessageID(),
+		) ||
+		frames[len(frames)-1].Type() != bridgev1.MessageResult {
+		return sink.stream, "", "", ErrBridgeSession
 	}
-	return stream, status, reason, nil
+	return cloneManagedStream(sink.stream), sink.status, sink.reason, nil
 }
 
 func (supervisor *Supervisor) finishFailure(
@@ -884,6 +1009,12 @@ func cloneManagedFrames(frames []bridgev1.Frame) ([]bridgev1.Frame, error) {
 		}
 	}
 	return output, nil
+}
+
+func sameManagedFrame(left bridgev1.Frame, right bridgev1.Frame) bool {
+	leftLine, leftErr := bridgev1.EncodeLine(left)
+	rightLine, rightErr := bridgev1.EncodeLine(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftLine, rightLine)
 }
 
 func cloneManagedStream(stream bridgev1.BoundRunStream) bridgev1.BoundRunStream {

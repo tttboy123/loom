@@ -386,6 +386,12 @@ func (adapter *piExecutionAdapter) Execute(
 					ErrPiExecutionProtocol,
 				)
 			}
+			if sinkErr := request.FrameSink.AcceptFrame(ctx, frame); sinkErr != nil {
+				return supervisor.AdapterResult{}, adapter.failProcess(
+					command, wait, stdin, nil, request, lastSequence, "cancelled",
+					sinkErr,
+				)
+			}
 			inbound = append(inbound, frame)
 		}
 	}
@@ -447,7 +453,8 @@ func (adapter *piExecutionAdapter) validateRequest(
 		request.Dispatch.SenderAgentInstanceID() != request.Binding.SenderAgentInstanceID ||
 		request.Dispatch.Type() != bridgev1.MessageDispatch ||
 		request.Dispatch.Sequence() != 1 ||
-		request.Grant.Value() == "" {
+		request.Grant.Value() == "" ||
+		nilPiInterface(request.FrameSink) {
 		return ErrPiExecutionBindingChanged
 	}
 	for _, path := range []string{

@@ -86,7 +86,44 @@ func newAuthority(t testing.TB, store *journal.Store, clock *mutableClock, seed 
 	if err != nil {
 		t.Fatalf("NewAuthority() error = %v", err)
 	}
+	if err := authority.InitializeRunIdentityIndex(context.Background()); err != nil {
+		t.Fatalf("InitializeRunIdentityIndex() error = %v", err)
+	}
 	return authority
+}
+
+func TestRunIdentityIndexIsExplicitAndRejectsCrossWorkItemCollision(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	uninitialized, err := NewAuthority(
+		store,
+		clock.Now,
+		bytes.NewReader(bytes.Repeat([]byte{0x21}, 64)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := uninitialized.CreateAndAssign(
+		context.Background(),
+		assignment("work-before-index", "run-shared"),
+	); !errors.Is(err, ErrRunIdentityIndexRequired) {
+		t.Fatalf("uninitialized CreateAndAssign() error = %v", err)
+	}
+	if err := uninitialized.InitializeRunIdentityIndex(context.Background()); err != nil {
+		t.Fatalf("InitializeRunIdentityIndex() error = %v", err)
+	}
+	if _, _, err := uninitialized.CreateAndAssign(
+		context.Background(),
+		assignment("work-first", "run-shared"),
+	); err != nil {
+		t.Fatalf("first CreateAndAssign() error = %v", err)
+	}
+	if _, _, err := uninitialized.CreateAndAssign(
+		context.Background(),
+		assignment("work-second", "run-shared"),
+	); !errors.Is(err, ErrRunAuthorityConflict) {
+		t.Fatalf("cross-work collision error = %v", err)
+	}
 }
 
 func seedRuntime(t testing.TB, store *journal.Store, runtimeID, status string, capacity int) {
@@ -852,6 +889,9 @@ func TestRunAuthorityInputSnapshotMutationAndStaticBoundary(t *testing.T) { // s
 		clock := &mutableClock{now: testNow}
 		authority, err := NewAuthority(store, clock.Now, errorReader{err: io.ErrUnexpectedEOF})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := authority.InitializeRunIdentityIndex(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		if workItem, run, err := authority.CreateAndAssign(context.Background(), assignment("work-1", "run-1")); err != nil {

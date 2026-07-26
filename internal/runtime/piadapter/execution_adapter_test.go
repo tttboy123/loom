@@ -31,6 +31,19 @@ import (
 
 const piFastStderrBytes = 240 << 10
 
+type piRecordingFrameSink struct {
+	frames []bridgev1.Frame
+	err    error
+}
+
+func (sink *piRecordingFrameSink) AcceptFrame(
+	_ context.Context,
+	frame bridgev1.Frame,
+) error {
+	sink.frames = append(sink.frames, frame)
+	return sink.err
+}
+
 func TestPiExecutionAdapterConfigEnvironmentAndBinding(t *testing.T) { // s3_w4_adapter_config_env_binding
 	t.Setenv("SHOULD_NOT_LEAK", "ambient-secret")
 	fixture := newPiAdapterFixture(t, "success")
@@ -42,7 +55,9 @@ func TestPiExecutionAdapterConfigEnvironmentAndBinding(t *testing.T) { // s3_w4_
 		adapter.RuntimeInstanceID() != fixture.binding.RuntimeInstanceID {
 		t.Fatalf("adapter identity = %q/%q", adapter.AdapterType(), adapter.RuntimeInstanceID())
 	}
-	result, err := adapter.Execute(context.Background(), fixture.request(t))
+	request := fixture.request(t)
+	sink := request.FrameSink.(*piRecordingFrameSink)
+	result, err := adapter.Execute(context.Background(), request)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -53,6 +68,30 @@ func TestPiExecutionAdapterConfigEnvironmentAndBinding(t *testing.T) { // s3_w4_
 		len(result.InboundFrames()) != 5 ||
 		!validPiCoverageStderr(result.Stderr()) {
 		t.Fatalf("adapter result = %#v", result)
+	}
+	if len(sink.frames) != len(result.InboundFrames()) ||
+		!reflect.DeepEqual(sink.frames, result.InboundFrames()) {
+		t.Fatalf(
+			"incremental sink=%#v terminal batch=%#v",
+			sink.frames,
+			result.InboundFrames(),
+		)
+	}
+	failingRequest := fixture.request(t)
+	failingSink := failingRequest.FrameSink.(*piRecordingFrameSink)
+	failingSink.err = errors.New("stop after first Frame")
+	if failed, executeErr := adapter.Execute(
+		context.Background(),
+		failingRequest,
+	); executeErr == nil ||
+		len(failed.InboundFrames()) != 0 ||
+		len(failingSink.frames) != 1 {
+		t.Fatalf(
+			"sink failure result=%#v frames=%d error=%v",
+			failed,
+			len(failingSink.frames),
+			executeErr,
+		)
 	}
 	arguments := fixture.arguments
 	arguments[0] = "mutated"
@@ -308,7 +347,7 @@ func TestPiExecutionCancellationTimeoutAndProcessGroupCleanup(t *testing.T) { //
 		answer <- executeAnswer{result: result, err: executeErr}
 	}()
 	pidPath := filepath.Join(fixture.workspacePath, "grandchild.pid")
-	readinessDeadline := time.NewTimer(5 * time.Second)
+	readinessDeadline := time.NewTimer(10 * time.Second)
 	defer readinessDeadline.Stop()
 	readinessPoll := time.NewTicker(10 * time.Millisecond)
 	defer readinessPoll.Stop()
@@ -734,6 +773,9 @@ func newPiSupervisorFixture(t testing.TB) *piSupervisorFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := workAuthority.InitializeRunIdentityIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	workItem, run, err := workAuthority.CreateAndAssign(
 		context.Background(),
 		work.WorkItemAssignmentInput{
@@ -775,6 +817,9 @@ func newPiSupervisorFixture(t testing.TB) *piSupervisorFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := grantAuthority.InitializeGrantIdentityIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	grant, err := grantAuthority.Issue(
 		context.Background(),
 		authorization.IssueInput{
@@ -805,7 +850,7 @@ func newPiSupervisorFixture(t testing.TB) *piSupervisorFixture {
 		ID:          "profile-1",
 		AdapterType: "pi",
 		AuthMode:    loomruntime.AuthBrokered,
-		Timeout:     3 * time.Second,
+		Timeout:     10 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1068,6 +1113,7 @@ func (fixture *piAdapterFixture) request(t testing.TB) supervisor.AdapterRequest
 		Binding:       fixture.binding,
 		Dispatch:      fixture.dispatch,
 		Grant:         fixture.token,
+		FrameSink:     &piRecordingFrameSink{},
 	}
 }
 

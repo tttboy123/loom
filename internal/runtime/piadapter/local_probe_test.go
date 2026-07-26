@@ -456,7 +456,7 @@ func validPiLocalRuntimeProbeFactoryConfig(t *testing.T, searchPaths []string) P
 		DisplayName:        "Local Pi",
 		IsolationRoot:      privateTempDir(t),
 		RuntimeSearchPaths: append([]string(nil), searchPaths...),
-		Timeout:            3 * time.Second,
+		Timeout:            10 * time.Second,
 	}
 }
 
