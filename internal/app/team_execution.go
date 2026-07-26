@@ -179,6 +179,9 @@ func (coordinator *TeamCoordinator) Run(
 			return TeamExecutionResult{}, err
 		}
 		if len(recoveryTasks) > 0 {
+			if err := coordinator.refreshTeamObservationView(ctx); err != nil {
+				return TeamExecutionResult{}, err
+			}
 			outcomes := executeTeamTasks(ctx, recoveryTasks)
 			for _, outcome := range outcomes {
 				executed = append(executed, outcome.task.logicalNodeID)
@@ -274,6 +277,9 @@ func (coordinator *TeamCoordinator) Run(
 				err,
 			)
 		}
+		if err := coordinator.refreshTeamObservationView(ctx); err != nil {
+			return TeamExecutionResult{}, err
+		}
 		tasks, err := coordinator.prepareTeamTasks(
 			ctx,
 			request,
@@ -319,6 +325,15 @@ func (coordinator *TeamCoordinator) Run(
 		team:            team,
 		executedNodeIDs: executed,
 	}, ErrTeamExecutionIncomplete
+}
+
+func (coordinator *TeamCoordinator) refreshTeamObservationView(
+	ctx context.Context,
+) error {
+	if err := coordinator.projection.Rebuild(ctx); err != nil {
+		return fmt.Errorf("Team projection rebuild: %w", err)
+	}
+	return nil
 }
 
 func appValidateProjectedSemantics(

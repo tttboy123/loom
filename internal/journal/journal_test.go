@@ -810,6 +810,183 @@ func TestReadStreamSetValidationCancellationAndSixteenHeadCASLimit(t *testing.T)
 	}
 }
 
+func TestReadPageAfterHeadsReturnsDeterministicContiguousCopiedPrefix(t *testing.T) {
+	store := newMigratedStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 7, 26, 8, 0, 0, 0, time.UTC)
+	a1 := withEvent(
+		testEvent("61111111-1111-4111-8111-111111111111", "stream-a", 1, "page-a-1"),
+		func(event *Event) { event.EmittedAt = base },
+	)
+	a2 := withEvent(
+		testEvent("62222222-2222-4222-8222-222222222222", "stream-a", 2, "page-a-2"),
+		func(event *Event) { event.EmittedAt = base.Add(2 * time.Second) },
+	)
+	b1 := withEvent(
+		testEvent("63333333-3333-4333-8333-333333333333", "stream-b", 1, "page-b-1"),
+		func(event *Event) { event.EmittedAt = base.Add(time.Second) },
+	)
+	for _, event := range []Event{a1, a2, b1} {
+		if _, err := store.Append(ctx, event); err != nil {
+			t.Fatalf("Append(%s) error = %v", event.ID, err)
+		}
+	}
+
+	page, err := store.ReadPageAfterHeads(ctx, []StreamHead{
+		{StreamID: "stream-b"},
+		{StreamID: "stream-a"},
+	}, 2)
+	if err != nil {
+		t.Fatalf("ReadPageAfterHeads() error = %v", err)
+	}
+	if got, want := page.Events(), []Event{a1, b1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Events() = %#v, want %#v", got, want)
+	}
+	if !page.HasMore() {
+		t.Fatal("HasMore() = false, want true")
+	}
+	if got, want := page.Heads(), []StreamHead{
+		{StreamID: "stream-a", Sequence: 1, EventID: a1.ID},
+		{StreamID: "stream-b", Sequence: 1, EventID: b1.ID},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Heads() = %#v, want %#v", got, want)
+	}
+
+	mutatedEvents := page.Events()
+	mutatedHeads := page.Heads()
+	mutatedEvents[0].PayloadJSON[0] = '['
+	mutatedHeads[0].StreamID = "mutated"
+	if !json.Valid(page.Events()[0].PayloadJSON) ||
+		page.Heads()[0].StreamID != "stream-a" {
+		t.Fatal("StreamPage accessors alias caller mutation")
+	}
+
+	next, err := store.ReadPageAfterHeads(ctx, page.Heads(), 2)
+	if err != nil {
+		t.Fatalf("second ReadPageAfterHeads() error = %v", err)
+	}
+	if got := next.Events(); len(got) != 1 || got[0].ID != a2.ID ||
+		next.HasMore() {
+		t.Fatalf("second page = %#v hasMore=%v", got, next.HasMore())
+	}
+}
+
+func TestReadPageAfterHeadsRejectsInvalidConflictGapBoundsAndCancellation(t *testing.T) {
+	store := newMigratedStore(t)
+	ctx := context.Background()
+	first := testEvent(
+		"64444444-4444-4444-8444-444444444444",
+		"stream-a",
+		1,
+		"page-invalid-1",
+	)
+	if _, err := store.Append(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := []struct {
+		name  string
+		heads []StreamHead
+		limit int
+		want  error
+	}{
+		{name: "empty", limit: 1, want: ErrInvalidStreamCursor},
+		{name: "duplicate", heads: []StreamHead{{StreamID: "a"}, {StreamID: "a"}}, limit: 1, want: ErrInvalidStreamCursor},
+		{name: "zero with id", heads: []StreamHead{{StreamID: "a", EventID: "event"}}, limit: 1, want: ErrInvalidStreamCursor},
+		{name: "positive without id", heads: []StreamHead{{StreamID: "a", Sequence: 1}}, limit: 1, want: ErrInvalidStreamCursor},
+		{name: "limit zero", heads: []StreamHead{{StreamID: "a"}}, limit: 0, want: ErrStreamPageLimit},
+		{name: "limit high", heads: []StreamHead{{StreamID: "a"}}, limit: MaxReadPageEvents + 1, want: ErrStreamPageLimit},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := store.ReadPageAfterHeads(ctx, test.heads, test.limit); !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want errors.Is(%v)", err, test.want)
+			}
+		})
+	}
+
+	tooMany := make([]StreamHead, MaxCursorStreams+1)
+	for index := range tooMany {
+		tooMany[index].StreamID = fmt.Sprintf("stream-%03d", index)
+	}
+	if _, err := store.ReadPageAfterHeads(ctx, tooMany, 1); !errors.Is(err, ErrInvalidStreamCursor) {
+		t.Fatalf("too-many-stream error = %v", err)
+	}
+	if _, err := store.ReadPageAfterHeads(ctx, []StreamHead{{
+		StreamID: "stream-a", Sequence: 1,
+		EventID: "65555555-5555-4555-8555-555555555555",
+	}}, 1); !errors.Is(err, ErrStreamCursorConflict) {
+		t.Fatalf("head conflict error = %v", err)
+	}
+
+	gapped := testEvent(
+		"66666666-6666-4666-8666-666666666666",
+		"stream-gap",
+		2,
+		"page-gap-2",
+	)
+	if _, err := store.Append(ctx, gapped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadPageAfterHeads(ctx, []StreamHead{{StreamID: "stream-gap"}}, 1); !errors.Is(err, ErrStreamSequenceGap) {
+		t.Fatalf("sequence-gap error = %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.ReadPageAfterHeads(cancelled, []StreamHead{{StreamID: "stream-a"}}, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled error = %v", err)
+	}
+}
+
+func TestReadPageAfterHeadsConcurrentAppendIsVisibleNowOrFromReturnedCursor(t *testing.T) {
+	store := newMigratedStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 50; iteration++ {
+		streamID := fmt.Sprintf("concurrent-page-%03d", iteration)
+		event := testEvent(
+			fmt.Sprintf("70000000-0000-4000-8000-%012d", iteration),
+			streamID,
+			1,
+			fmt.Sprintf("concurrent-page-%03d", iteration),
+		)
+		start := make(chan struct{})
+		appendResult := make(chan error, 1)
+		go func() {
+			<-start
+			_, err := store.Append(ctx, event)
+			appendResult <- err
+		}()
+		close(start)
+		page, err := store.ReadPageAfterHeads(
+			ctx,
+			[]StreamHead{{StreamID: streamID}},
+			1,
+		)
+		if err != nil {
+			t.Fatalf("iteration %d ReadPageAfterHeads() error = %v", iteration, err)
+		}
+		if err := <-appendResult; err != nil {
+			t.Fatalf("iteration %d Append() error = %v", iteration, err)
+		}
+		events := page.Events()
+		switch len(events) {
+		case 0:
+			next, err := store.ReadPageAfterHeads(ctx, page.Heads(), 1)
+			if err != nil {
+				t.Fatalf("iteration %d next page error = %v", iteration, err)
+			}
+			events = next.Events()
+		case 1:
+		default:
+			t.Fatalf("iteration %d page Events() = %#v", iteration, events)
+		}
+		if len(events) != 1 || events[0].ID != event.ID {
+			t.Fatalf("iteration %d delivered Events() = %#v", iteration, events)
+		}
+	}
+}
+
 type recordingDriver struct {
 	mu         sync.Mutex
 	nextID     int

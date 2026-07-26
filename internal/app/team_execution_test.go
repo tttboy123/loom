@@ -1504,6 +1504,7 @@ func TestTeamCoordinatorRecoveryApprovalFailsClosedToHumanRequired(t *testing.T)
 
 type teamRecoveryFixture struct {
 	clock       *teamCanaryClock
+	db          *sql.DB
 	store       *journal.Store
 	work        *work.Authority
 	grants      *authorization.Authority
@@ -1513,6 +1514,125 @@ type teamRecoveryFixture struct {
 	plan        teams.ExecutionPlan
 	request     TeamExecutionRequest
 	calls       atomic.Int32
+}
+
+type teamProjectionFreshnessObserver struct {
+	readModel          *projection.Projection
+	teamInstanceID     string
+	expectedGeneration int64
+	seen               atomic.Int32
+}
+
+func (observer *teamProjectionFreshnessObserver) ObserveNodeOutput(
+	_ context.Context,
+	output NodeOutput,
+) error {
+	execution, ok := observer.readModel.GlobalReadView().TeamExecution(
+		observer.teamInstanceID,
+	)
+	if !ok {
+		return errors.New("fresh Team execution missing")
+	}
+	binding := output.AuthorizedFrame().Binding()
+	for _, node := range execution.Nodes {
+		if node.LogicalNodeID != output.LogicalNodeID() {
+			continue
+		}
+		for _, attempt := range node.Attempts {
+			if attempt.AttemptNumber == output.AttemptNumber() &&
+				attempt.WorkItemID == binding.WorkItemID &&
+				attempt.RunID == binding.RunID &&
+				attempt.ClaimGeneration == observer.expectedGeneration &&
+				attempt.ClaimGeneration == binding.ClaimGeneration &&
+				attempt.RuntimeInstanceID == binding.RuntimeInstanceID &&
+				attempt.AgentInstanceID == binding.SenderAgentInstanceID {
+				if output.AuthorizedFrame().Frame().Type() ==
+					bridgev1.MessageEvent {
+					observer.seen.Add(1)
+				}
+				return nil
+			}
+		}
+	}
+	return errors.New("fresh exact attempt generation missing")
+}
+
+func TestTeamCoordinatorRefreshesProjectionBeforeAuthorizedObservation(t *testing.T) {
+	t.Run("first dispatch", func(t *testing.T) {
+		fixture := newTeamRecoveryFixture(t)
+		observer := &teamProjectionFreshnessObserver{
+			readModel:          fixture.readModel,
+			teamInstanceID:     fixture.plan.TeamInstanceID(),
+			expectedGeneration: 1,
+		}
+		fixture.request.OutputObserver = observer
+		result, err := fixture.coordinator.Run(
+			context.Background(),
+			fixture.request,
+		)
+		if err != nil || result.Team().Status() != "succeeded" {
+			t.Fatalf("Run() = %#v, %v", result, err)
+		}
+		if got := observer.seen.Load(); got != 1 {
+			t.Fatalf("observed authorized event Frames = %d, want 1", got)
+		}
+	})
+
+	t.Run("generation rebound", func(t *testing.T) {
+		fixture := newTeamRecoveryFixture(t)
+		fixture.dispatchAndPrepare(t)
+		observer := &teamProjectionFreshnessObserver{
+			readModel:          fixture.readModel,
+			teamInstanceID:     fixture.plan.TeamInstanceID(),
+			expectedGeneration: 2,
+		}
+		fixture.request.OutputObserver = observer
+		fixture.clock.now = fixture.clock.now.Add(2 * time.Minute)
+		fixture.request.AuthoritativeTime = fixture.clock.now
+		result, err := fixture.coordinator.Run(
+			context.Background(),
+			fixture.request,
+		)
+		if err != nil || result.Team().Status() != "succeeded" {
+			t.Fatalf("rebound Run() = %#v, %v", result, err)
+		}
+		if got := observer.seen.Load(); got != 1 {
+			t.Fatalf("rebound observed event Frames = %d, want 1", got)
+		}
+	})
+
+	t.Run("refresh failure stops execution", func(t *testing.T) {
+		fixture := newTeamRecoveryFixture(t)
+		if _, err := fixture.db.ExecContext(context.Background(), `
+			CREATE TRIGGER corrupt_projection_after_team_dispatch
+			AFTER INSERT ON events
+			WHEN NEW.event_type = 'TeamReadySetDispatched'
+			BEGIN
+				INSERT INTO events (
+					id, stream_id, seq, idempotency_key, event_type,
+					schema_version, emitted_at, correlation_id,
+					causation_id, payload_json
+				)
+				VALUES (
+					'event-corrupt-refresh', 'mode/corrupt-refresh', 1,
+					'corrupt-refresh', 'ModeSelected', 1,
+					NEW.emitted_at, NEW.correlation_id, NEW.id, '{}'
+				);
+			END
+		`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := fixture.coordinator.Run(
+			context.Background(),
+			fixture.request,
+		)
+		if !errors.Is(err, projection.ErrInvalidProjectionEvent) {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if got := fixture.calls.Load(); got != 0 {
+			t.Fatalf("adapter calls = %d, want 0", got)
+		}
+	})
 }
 
 func newTeamRecoveryFixture(t testing.TB) *teamRecoveryFixture {
@@ -1599,6 +1719,7 @@ func newTeamRecoveryFixtureWithMaxAttempts(
 	}
 	fixture := &teamRecoveryFixture{
 		clock:       clock,
+		db:          db,
 		store:       store,
 		work:        workAuthority,
 		grants:      grantAuthority,

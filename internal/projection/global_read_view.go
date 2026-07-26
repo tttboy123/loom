@@ -103,6 +103,22 @@ func (view GlobalReadView) WorkItem(id string) (WorkItem, bool) {
 	return record, ok
 }
 
+func (view GlobalReadView) WorkItemsForTeam(teamID string) []WorkItem {
+	records := make([]WorkItem, 0)
+	if teamID == "" {
+		return records
+	}
+	for _, record := range view.workItems {
+		if record.TeamInstanceID == teamID {
+			records = append(records, record)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].ID < records[j].ID
+	})
+	return records
+}
+
 func (view GlobalReadView) Run(id string) (Run, bool) {
 	record, ok := view.runs[id]
 	return record, ok
@@ -120,6 +136,30 @@ func (view GlobalReadView) LatestAgentGrantForRun(runID string) (AgentGrant, boo
 	return record, ok
 }
 
+func (view GlobalReadView) AgentGrantsForRun(runID string) []AgentGrant {
+	records := make([]AgentGrant, 0)
+	if runID == "" {
+		return records
+	}
+	for _, record := range view.agentGrants {
+		if record.RunID != runID {
+			continue
+		}
+		record.AllowedOperations = append(
+			[]string(nil),
+			record.AllowedOperations...,
+		)
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if !records[i].IssuedAt.Equal(records[j].IssuedAt) {
+			return records[i].IssuedAt.Before(records[j].IssuedAt)
+		}
+		return records[i].ID < records[j].ID
+	})
+	return records
+}
+
 func (view GlobalReadView) Evidence(id string) (Evidence, bool) {
 	record, ok := view.evidence[id]
 	return record, ok
@@ -135,6 +175,24 @@ func (view GlobalReadView) ApprovalRequest(
 ) (ProjectedApprovalRequest, bool) {
 	record, ok := view.approvalRequests[id]
 	return cloneProjectedApprovalRequest(record), ok
+}
+
+func (view GlobalReadView) ApprovalRequestsForTeam(
+	teamID string,
+) []ProjectedApprovalRequest {
+	records := make([]ProjectedApprovalRequest, 0)
+	if teamID == "" {
+		return records
+	}
+	for _, record := range view.approvalRequests {
+		if record.TeamInstanceID == teamID {
+			records = append(records, cloneProjectedApprovalRequest(record))
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].ID < records[j].ID
+	})
+	return records
 }
 
 func (view GlobalReadView) Team(id string) (TeamInstance, bool) {

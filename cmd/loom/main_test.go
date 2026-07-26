@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/mode"
 	"loom-pi-rebuild/internal/projection"
@@ -107,6 +108,229 @@ func TestRunStatusReadsSpecialPathJournalFilenames(t *testing.T) {
 	t.Run("missing special path does not leak", func(t *testing.T) {
 		assertStateUnavailable(t, context.Background(), filepath.Join(t.TempDir(), "missing?journal#%.db"))
 	})
+}
+
+func TestRunTimelineValidatesFlagsAndUsesFiniteInjectedRead(t *testing.T) {
+	tests := [][]string{
+		{"timeline"},
+		{"timeline", "--state", "journal.db"},
+		{"timeline", "--team", "team-1"},
+		{"timeline", "--state", "journal.db", "--team", "team-1", "--limit", "0"},
+		{"timeline", "--state", "journal.db", "--team", "team-1", "--limit", "129"},
+		{"timeline", "--state", "journal.db", "--team", "team-1", "extra"},
+	}
+	for _, args := range tests {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), args, &stdout, &stderr, testDeps().runDeps); code != exitInvalidInput {
+			t.Fatalf("run(%v) exit = %d, want %d", args, code, exitInvalidInput)
+		}
+		if stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "invalid input:") {
+			t.Fatalf("run(%v) stdout=%q stderr=%q", args, stdout.String(), stderr.String())
+		}
+	}
+
+	var got timelineInput
+	calls := 0
+	deps := testDeps().runDeps
+	deps.timeline = func(_ context.Context, input timelineInput) (api.TimelinePage, error) {
+		calls++
+		got = input
+		return api.TimelinePage{}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		[]string{
+			"timeline",
+			"--state", "journal.db",
+			"--team", "team-1",
+			"--cursor", "opaque",
+			"--limit", "7",
+		},
+		&stdout,
+		&stderr,
+		deps,
+	)
+	if code != exitSuccess || calls != 1 {
+		t.Fatalf("timeline exit=%d calls=%d stderr=%q", code, calls, stderr.String())
+	}
+	if got.StatePath != "journal.db" ||
+		got.TeamInstanceID != "team-1" ||
+		got.Cursor != "opaque" ||
+		got.Limit != 7 {
+		t.Fatalf("timeline input = %#v", got)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("timeline stdout is not JSON: %q: %v", stdout.String(), err)
+	}
+	if output["command"] != "timeline" || stderr.Len() != 0 {
+		t.Fatalf("timeline output=%v stderr=%q", output, stderr.String())
+	}
+}
+
+func TestRunTimelineReadsAuthoritativeFactsReconnectsAndReturnsSafeGap(t *testing.T) {
+	ctx := context.Background()
+	dbPath := createJournalDB(t)
+	writeTimelineFacts(t, ctx, dbPath)
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		ctx,
+		[]string{"timeline", "--state", dbPath, "--team", "team-instance.one", "--limit", "1"},
+		&stdout,
+		&stderr,
+		productionDeps(),
+	)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("timeline exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var first struct {
+		Command    string `json:"command"`
+		NextCursor string `json:"next_cursor"`
+		Records    []struct {
+			Kind      string `json:"kind"`
+			Authority string `json:"authority"`
+		} `json:"records"`
+		Gap any `json:"gap"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Command != "timeline" ||
+		first.NextCursor == "" ||
+		len(first.Records) != 1 ||
+		first.Records[0].Kind != "team_planned" ||
+		first.Records[0].Authority != "journal" ||
+		first.Gap != nil {
+		t.Fatalf("first timeline = %#v", first)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		ctx,
+		[]string{
+			"timeline", "--state", dbPath, "--team", "team-instance.one",
+			"--cursor", first.NextCursor, "--limit", "1",
+		},
+		&stdout,
+		&stderr,
+		productionDeps(),
+	)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("reconnect exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var reconnect struct {
+		Records []json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &reconnect); err != nil ||
+		len(reconnect.Records) != 0 {
+		t.Fatalf("reconnect = %q, %v", stdout.String(), err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		ctx,
+		[]string{
+			"timeline", "--state", dbPath, "--team", "team-instance.one",
+			"--cursor", "not-base64!",
+		},
+		&stdout,
+		&stderr,
+		productionDeps(),
+	)
+	if code != exitStreamGap || stderr.Len() != 0 {
+		t.Fatalf("gap exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var gap struct {
+		Gap struct {
+			Reason      string `json:"reason"`
+			Recoverable bool   `json:"recoverable"`
+		} `json:"gap"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &gap); err != nil ||
+		gap.Gap.Reason != "invalid_cursor" ||
+		!gap.Gap.Recoverable {
+		t.Fatalf("gap output = %q, %v", stdout.String(), err)
+	}
+	assertCLIDoesNotQueryJournalSQL(t)
+	assertReadOnlyDBRejectsWrites(t, ctx, dbPath)
+
+	specialPath := createJournalDBNamed(t, "timeline ?#% journal.db")
+	writeTimelineFacts(t, ctx, specialPath)
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		ctx,
+		[]string{
+			"timeline", "--state", specialPath,
+			"--team", "team-instance.one",
+		},
+		&stdout,
+		&stderr,
+		productionDeps(),
+	)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf(
+			"special-path timeline exit=%d stdout=%q stderr=%q",
+			code,
+			stdout.String(),
+			stderr.String(),
+		)
+	}
+
+	secret := filepath.Join(t.TempDir(), "private-state.db")
+	deps := testDeps().runDeps
+	deps.timeline = func(
+		context.Context,
+		timelineInput,
+	) (api.TimelinePage, error) {
+		return api.TimelinePage{}, fmt.Errorf("open %s: denied", secret)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		ctx,
+		[]string{"timeline", "--state", secret, "--team", "team-instance.one"},
+		&stdout,
+		&stderr,
+		deps,
+	)
+	if code != exitStateUnavailable ||
+		stdout.Len() != 0 ||
+		stderr.String() != "state unavailable: unavailable\n" ||
+		strings.Contains(stderr.String(), secret) {
+		t.Fatalf(
+			"sanitized timeline exit=%d stdout=%q stderr=%q",
+			code,
+			stdout.String(),
+			stderr.String(),
+		)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	stdout.Reset()
+	stderr.Reset()
+	code = run(
+		cancelled,
+		[]string{"timeline", "--state", dbPath, "--team", "team-instance.one"},
+		&stdout,
+		&stderr,
+		productionDeps(),
+	)
+	if code != exitStateUnavailable ||
+		stdout.Len() != 0 ||
+		stderr.String() != "state unavailable: unavailable\n" {
+		t.Fatalf(
+			"cancelled timeline exit=%d stdout=%q stderr=%q",
+			code,
+			stdout.String(),
+			stderr.String(),
+		)
+	}
 }
 
 func TestRunRejectsInvalidInput(t *testing.T) {
@@ -277,6 +501,113 @@ func writeProjectionFacts(t *testing.T, ctx context.Context, dbPath string) {
 		journalEvent("evt-mode-a", "mode-a", 1, "idem-mode-a", "ModeSelected", map[string]string{"mode": "conversation"}),
 		journalEvent("evt-evidence-a", "work-stream-a", 2, "idem-evidence-a", "EvidenceSubmitted", map[string]string{"evidence_id": "evidence-a", "work_item_id": "work-a", "digest": strings.Repeat("a", 64)}),
 		journalEvent("evt-terminal-a", "work-stream-a", 3, "idem-terminal-a", "WorkItemTerminal", map[string]string{"work_item_id": "work-a", "status": "accepted"}),
+	}
+	for _, event := range events {
+		if _, err := store.Append(ctx, event); err != nil {
+			t.Fatalf("Append(%s) error = %v", event.ID, err)
+		}
+	}
+}
+
+func writeTimelineFacts(t *testing.T, ctx context.Context, dbPath string) {
+	t.Helper()
+	db := openWritableDB(t, dbPath)
+	defer db.Close()
+	store := journal.NewStore(db)
+	digestA := strings.Repeat("a", 64)
+	digestB := strings.Repeat("b", 64)
+	encode := func(value any) []byte {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	teamPayload := map[string]any{
+		"team": map[string]any{
+			"id":                      "team-instance.one",
+			"work_request_id":         "request.one",
+			"source_kind":             "saved_team",
+			"team_definition_id":      "team.delivery",
+			"team_definition_version": 1,
+			"team_definition_scope":   "project",
+			"scope_identity": map[string]any{
+				"project_id":    "project.one",
+				"generation_id": "",
+			},
+			"team_definition_digest": digestA,
+			"source_plan_digest":     digestB,
+			"state":                  "created",
+			"created_at":             int64(1_721_865_600),
+		},
+		"dormant_sub_agents":       []any{},
+		"source_plan_digest":       digestB,
+		"source_record_set_digest": digestA,
+		"team_instance_count":      1,
+		"agent_instance_count":     1,
+		"active_sub_agent_count":   0,
+		"work_item_count":          0,
+	}
+	agentPayload := map[string]any{
+		"main_agent": map[string]any{
+			"id":                       "agent-instance.main",
+			"team_instance_id":         "team-instance.one",
+			"agent_definition_id":      "agent.main",
+			"agent_definition_version": 1,
+			"agent_definition_scope":   "project",
+			"scope_identity": map[string]any{
+				"project_id":    "project.one",
+				"generation_id": "",
+			},
+			"runtime_profile_id":  "profile.main",
+			"runtime_instance_id": "runtime.shared",
+			"is_main":             true,
+			"state":               "created",
+		},
+		"runtime_binding": map[string]any{
+			"accepted": true, "profile_id": "profile.main",
+			"instance_id": "runtime.shared",
+		},
+		"source_plan_digest":       digestB,
+		"source_record_set_digest": digestA,
+		"team_created_at":          int64(1_721_865_600),
+		"binding_digest":           digestB,
+		"runtime_discovery_digest": digestA,
+	}
+	planPayload := map[string]any{
+		"team_instance_id": "team-instance.one",
+		"plan_digest":      digestA,
+		"view_version":     digestB,
+		"nodes": []map[string]any{{
+			"logical_node_id": "main", "title": "Main",
+			"agent_instance_id":   "agent-instance.main",
+			"runtime_instance_id": "runtime.shared",
+			"role":                "main", "depends_on": []string{}, "max_attempts": 2,
+		}},
+	}
+	events := []journal.Event{
+		{
+			ID: "event.team.created", StreamID: "team_instance:team-instance.one",
+			Seq: 1, IdempotencyKey: "key.team.created",
+			Type: "TeamInstanceCreated", SchemaVersion: 1,
+			EmittedAt:     time.Date(2026, 7, 25, 2, 30, 0, 0, time.UTC),
+			CorrelationID: "request.one", PayloadJSON: encode(teamPayload),
+		},
+		{
+			ID: "event.agent.created", StreamID: "agent_instance:agent-instance.main",
+			Seq: 1, IdempotencyKey: "key.agent.created",
+			Type: "AgentInstanceCreated", SchemaVersion: 1,
+			EmittedAt:     time.Date(2026, 7, 25, 2, 30, 0, 0, time.UTC),
+			CorrelationID: "request.one", CausationID: "event.team.created",
+			PayloadJSON: encode(agentPayload),
+		},
+		{
+			ID: "event.team.planned", StreamID: "team-execution/team-instance.one",
+			Seq: 1, IdempotencyKey: "key.team.planned",
+			Type: "TeamExecutionPlanned", SchemaVersion: 1,
+			EmittedAt:   time.Date(2026, 7, 26, 1, 2, 3, 0, time.UTC),
+			PayloadJSON: encode(planPayload),
+		},
 	}
 	for _, event := range events {
 		if _, err := store.Append(ctx, event); err != nil {

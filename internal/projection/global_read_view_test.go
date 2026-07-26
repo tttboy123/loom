@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +143,99 @@ func TestGlobalReadViewReturnsLatestAgentGrantForRunBySequence(t *testing.T) {
 	again, _ := view.LatestAgentGrantForRun("run-1")
 	if again.AllowedOperations[0] != "bridge.event" {
 		t.Fatal("latest AgentGrant aliases caller mutation")
+	}
+}
+
+func TestGlobalReadViewReturnsOnlyRequestedTeamRecordsAsStableCopies(t *testing.T) {
+	issuedAt := time.Date(2026, 7, 26, 13, 0, 0, 0, time.UTC)
+	snapshot := emptySnapshot()
+	snapshot.WorkItems["work-b"] = WorkItem{
+		ID:             "work-b",
+		TeamInstanceID: "team-1",
+		LogicalNodeID:  "node-b",
+	}
+	snapshot.WorkItems["work-a"] = WorkItem{
+		ID:             "work-a",
+		TeamInstanceID: "team-1",
+		LogicalNodeID:  "node-a",
+	}
+	snapshot.WorkItems["work-other"] = WorkItem{
+		ID:             "work-other",
+		TeamInstanceID: "team-2",
+	}
+	snapshot.ApprovalRequests["approval-b"] = ProjectedApprovalRequest{
+		ID:             "approval-b",
+		TeamInstanceID: "team-1",
+		ApproverRefs:   []string{"operator-b"},
+	}
+	snapshot.ApprovalRequests["approval-a"] = ProjectedApprovalRequest{
+		ID:                "approval-a",
+		TeamInstanceID:    "team-1",
+		WarningMarkers:    []string{"warning-a"},
+		RuleSetReferences: []ProjectedRuleSetReference{{StreamID: "rule-a"}},
+	}
+	snapshot.ApprovalRequests["approval-other"] = ProjectedApprovalRequest{
+		ID:             "approval-other",
+		TeamInstanceID: "team-2",
+	}
+	snapshot.AgentGrants["grant-b"] = AgentGrant{
+		ID:                "grant-b",
+		RunID:             "run-1",
+		IssuedAt:          issuedAt,
+		AllowedOperations: []string{"bridge.result"},
+	}
+	snapshot.AgentGrants["grant-a"] = AgentGrant{
+		ID:                "grant-a",
+		RunID:             "run-1",
+		IssuedAt:          issuedAt,
+		AllowedOperations: []string{"bridge.event"},
+	}
+	snapshot.AgentGrants["grant-other"] = AgentGrant{
+		ID:       "grant-other",
+		RunID:    "run-2",
+		IssuedAt: issuedAt.Add(-time.Second),
+	}
+
+	view := buildGlobalReadView(snapshot, nil, nil)
+	workItems := view.WorkItemsForTeam("team-1")
+	if got, want := []string{workItems[0].ID, workItems[1].ID},
+		[]string{"work-a", "work-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("WorkItemsForTeam() IDs = %v, want %v", got, want)
+	}
+	approvals := view.ApprovalRequestsForTeam("team-1")
+	if got, want := []string{approvals[0].ID, approvals[1].ID},
+		[]string{"approval-a", "approval-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ApprovalRequestsForTeam() IDs = %v, want %v", got, want)
+	}
+	grants := view.AgentGrantsForRun("run-1")
+	if got, want := []string{grants[0].ID, grants[1].ID},
+		[]string{"grant-a", "grant-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("AgentGrantsForRun() IDs = %v, want %v", got, want)
+	}
+
+	workItems[0].Status = "mutated"
+	approvals[0].WarningMarkers[0] = "mutated"
+	approvals[0].RuleSetReferences[0].StreamID = "mutated"
+	grants[0].AllowedOperations[0] = "mutated"
+	if again := view.WorkItemsForTeam("team-1"); again[0].Status == "mutated" {
+		t.Fatal("WorkItemsForTeam aliases caller mutation")
+	}
+	againApprovals := view.ApprovalRequestsForTeam("team-1")
+	if againApprovals[0].WarningMarkers[0] != "warning-a" ||
+		againApprovals[0].RuleSetReferences[0].StreamID != "rule-a" {
+		t.Fatal("ApprovalRequestsForTeam aliases nested caller mutation")
+	}
+	if again := view.AgentGrantsForRun("run-1"); again[0].AllowedOperations[0] != "bridge.event" {
+		t.Fatal("AgentGrantsForRun aliases caller mutation")
+	}
+
+	if got := view.WorkItemsForTeam(""); got == nil || len(got) != 0 {
+		t.Fatalf("empty WorkItemsForTeam = %#v, want non-nil empty", got)
+	}
+	if got := view.ApprovalRequestsForTeam("missing"); got == nil || len(got) != 0 {
+		t.Fatalf("missing ApprovalRequestsForTeam = %#v, want non-nil empty", got)
+	}
+	if got := view.AgentGrantsForRun("missing"); got == nil || len(got) != 0 {
+		t.Fatalf("missing AgentGrantsForRun = %#v, want non-nil empty", got)
 	}
 }

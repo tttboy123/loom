@@ -1152,3 +1152,112 @@ may now begin only with its bounded exit-contract governance. This status does
 not authorize live Runtime/Provider traffic, daemon activation, network,
 credentials, external actions, autonomous execution, later-Slice scope, push,
 merge, rebase, reset, release, or publication.
+
+`CURRENT`: Phase 1 Slice 5 Exit Contract is frozen after independent Repair
+Review 2 `PASS`. Slice 5 permits exactly two vertical product WorkItems:
+S5-W1 local Team-bound observation/timeline/Attention delivery and S5-W2
+immutable Coding/knowledge WorkPackages plus the controlled Phase 1
+engineering Demo. No S5-W3 is permitted. Reconnect uses a bounded complete
+Team-related stream-head vector, not a nonexistent global Journal sequence;
+authoritative milestones remain Journal-backed, while only tentative client
+delivery is bounded memory state after durable private attempt capture. The
+engineering Slice may reach `READY_FOR_FINAL_USER_SIGNOFF`, but a real
+installed-Runtime task and the user's final signature remain an explicit human
+gate. No product code is yet implemented under S5-W1.
+
+`CURRENT`: S5-W1 Local Observation Stream and CLI Timeline Integration is
+frozen after independent Contract Repair Review 3 `PASS`. Repair 2 replaced
+one cycle-prone existing `package app` test ownership entry with a new
+`package app_test` integration file; production remains one-way
+`internal/api -> internal/app`, and product ownership, APIs, bounds, and
+authority are unchanged. The current gate is completion and capture of
+mandatory behavioral RED. Journal, Projection, API, and CLI edits are
+test-only. No S5-W1 product code, migration, second writer/Projection, daemon,
+network, WorkPackage/Demo scope, S5-W3, installed Runtime, Provider/model
+traffic, or autonomous execution is authorized.
+
+`CURRENT`: S5-W1 mandatory behavioral RED is captured with product code still
+absent. The exact five-package command fails on the missing bounded Journal
+page API/errors, selective `GlobalReadView` accessors, complete
+`internal/api` stream/cursor/gap surface, external observer conformance, and
+CLI timeline wiring. All RED edits are within frozen test ownership. The
+current gate is minimal GREEN beginning with the Journal page and immutable
+view prerequisites, followed by the same vertical API/CLI Candidate; no
+separate helper WorkItem is permitted.
+
+`CURRENT`: The bounded Journal page and selective copied `GlobalReadView`
+prerequisites are GREEN. Before API implementation, a scope trace found one
+contract spelling defect: accepted Grant lifecycle streams are keyed as
+`agent-grant/<run_id>`, not `<grant_id>`. Contract Repair 3 changes only that
+existing-authority identity and keeps copied per-Run Grant records as binding
+checks. Fresh independent Contract Repair Review 4 returned `PASS`. The
+API cursor/gap/SQLite timeline and CLI focused paths are GREEN, but the
+coordinator integration trace found that accepted dispatch/rebound writes can
+be followed by task execution before the coordinator refreshes its Projection.
+The frozen observer cannot safely validate the new exact generation from that
+stale view, and observer-side rebuild would violate its non-blocking boundary.
+Slice 5 Exit Contract Amendment 1 requests only two app call-site refreshes
+before execution plus focused tests. Fresh independent Amendment Review 1
+returned `PASS` with no findings. The current gate is mandatory app freshness
+RED followed by the exact two-call-site GREEN; no app production file has been
+edited yet.
+
+`CURRENT`: Amendment 1 lifecycle RED is captured. Both first dispatch and
+generation rebound executed against the stale pre-write Projection, causing
+the exact-binding observer to reject the otherwise authorized output and the
+Team to end blocked. No app production edit preceded RED. The current gate is
+the minimal two-call-site Projection refresh GREEN.
+
+`CURRENT`: S5-W1 is `ready_for_review`. The bounded Journal after-head reader,
+selective immutable view accessors, Team-bound authoritative timeline,
+canonical reconnect cursor, board, Attention, recoverable gaps, bounded
+tentative subscription, read-only CLI, and Amendment 1 dispatch/rebound
+freshness are GREEN. The external app-to-API canary proves durable private
+capture precedes tentative delivery, stale generation publishes nothing,
+closed subscribers cannot fail the Run, tentative text never enters Journal,
+and final Run/Work/Evidence/Team milestones resolve to one exact node/attempt
+lineage. Focused, impact, repeated race, full repository, repository-race,
+vet, format, Windows compilation, scope, dependency, and trust-boundary gates
+pass. Fresh independent S5-W1 Implementation Review remains required before
+acceptance or local atomic commit. No S5-W2/S5-W3, daemon, network,
+installed-Runtime/Provider traffic, credential, external action, or autonomy
+is activated.
+
+`CURRENT`: S5-W1 Implementation Review 1 found no product-behavior defect but
+returned `FAIL` after treating pre-existing user-owned shared-worktree dirt as
+part of the Candidate. Repair 1 adds explicit scope provenance: the exact
+S5-W1 ownership set is reviewed independently, while `AGENTS.md`,
+`PROGRESS.md`, `.codex/**`, `.loom-drafts/**`, and the post-S3 scratch queue
+remain excluded and unstaged. The final high-risk canary now also executes a
+distinct verifier and proves its tentative output cannot enter the source Team
+subscription or Journal while source/verifier authoritative lineage remains
+reconstructable. It exposed and closed two related-scope defects: verifier
+WorkItem lineage now uses the accepted parent relation, and the verifier
+WorkItem stream is included in reconnect cursors. The full focused,
+repeated-race, repository,
+repository-race, vet, format, Windows compile, dependency, and trust-boundary
+matrix passes. The current gate is fresh Implementation Repair 1 Review 2.
+
+`CURRENT`: S5-W1 Implementation Repair 1 Review 2 returned `FAIL` on two
+fail-closed gaps: known delivery `retry_at`/Evidence digest fields accepted
+arbitrary safe strings, and WorkItem Evidence references entered cursor scope
+without an exact Evidence-to-Team-attempt relation check. Repair 2 captured
+both REDs, now accepts only canonical UTC RFC3339Nano/lower-case SHA-256
+payload values, and validates every source/verifier Evidence reference through
+the projected record before scope inclusion. The dangling-verifier-Evidence
+SQLite fixture now fails closed. Focused ten-run tests, the exact repeated-race
+matrix, full repository and repository-race, vet, format, Windows compile,
+module, diff, and scope gates pass. The current gate is fresh Implementation
+Repair 2 Review 3.
+
+`CURRENT`: S5-W1 is accepted for the exact local atomic commit after fresh
+Implementation Repair 2 Review 3 returned `PASS` with no findings. The final
+Candidate provides bounded Journal-authoritative Team timeline/reconnect,
+board and Attention projection, source-only authorized tentative delivery,
+canonical fail-closed payload mapping, complete source/verifier related scope,
+and the finite read-only `loom timeline` CLI. Focused, ten-run canaries, exact
+repeated-race, repository, repository-race, vet, format, Windows compile,
+module, dependency, migration, scope, and trust-boundary gates pass. Excluded
+shared-worktree paths remain unstaged. No S5-W2/S5-W3, daemon, network,
+installed Runtime/Provider traffic, credential, external action, or autonomy
+is activated.

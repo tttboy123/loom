@@ -12,7 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
+	"loom-pi-rebuild/internal/api"
+	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/mode"
 	"loom-pi-rebuild/internal/projection"
 
@@ -23,17 +26,20 @@ const (
 	exitSuccess          = 0
 	exitInvalidInput     = 2
 	exitStateUnavailable = 3
+	exitStreamGap        = 4
 )
 
 type runDeps struct {
-	route  func(mode.Intent) mode.Decision
-	status func(context.Context, string) (projection.Snapshot, error)
+	route    func(mode.Intent) mode.Decision
+	status   func(context.Context, string) (projection.Snapshot, error)
+	timeline func(context.Context, timelineInput) (api.TimelinePage, error)
 }
 
 func productionDeps() runDeps {
 	return runDeps{
-		route:  mode.Route,
-		status: readProductionStatus,
+		route:    mode.Route,
+		status:   readProductionStatus,
+		timeline: readProductionTimeline,
 	}
 }
 
@@ -44,6 +50,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps runD
 	if deps.status == nil {
 		deps.status = readProductionStatus
 	}
+	if deps.timeline == nil {
+		deps.timeline = readProductionTimeline
+	}
 	if len(args) == 0 {
 		return invalidInput(stderr, "missing command")
 	}
@@ -53,9 +62,101 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps runD
 		return runRoute(args[1:], stdout, stderr, deps)
 	case "status":
 		return runStatus(ctx, args[1:], stdout, stderr, deps)
+	case "timeline":
+		return runTimeline(ctx, args[1:], stdout, stderr, deps)
 	default:
 		return invalidInput(stderr, "unknown command")
 	}
+}
+
+type timelineInput struct {
+	StatePath      string
+	TeamInstanceID string
+	Cursor         string
+	Limit          int
+}
+
+func runTimeline(
+	ctx context.Context,
+	args []string,
+	stdout,
+	stderr io.Writer,
+	deps runDeps,
+) int {
+	fs := flag.NewFlagSet("timeline", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	state := fs.String("state", "", "")
+	team := fs.String("team", "", "")
+	cursor := fs.String("cursor", "", "")
+	limit := fs.Int("limit", journal.MaxReadPageEvents, "")
+	if err := fs.Parse(args); err != nil {
+		return invalidInput(stderr, err.Error())
+	}
+	if fs.NArg() != 0 {
+		return invalidInput(stderr, "unexpected positional arguments")
+	}
+	if *state == "" {
+		return invalidInput(stderr, "missing state")
+	}
+	if *team == "" {
+		return invalidInput(stderr, "missing team")
+	}
+	if *limit < 1 || *limit > journal.MaxReadPageEvents {
+		return invalidInput(stderr, "invalid limit")
+	}
+	page, err := deps.timeline(ctx, timelineInput{
+		StatePath:      *state,
+		TeamInstanceID: *team,
+		Cursor:         *cursor,
+		Limit:          *limit,
+	})
+	if err != nil {
+		var gapErr *api.TimelineGapError
+		if errors.As(err, &gapErr) {
+			if writeJSON(stdout, stderr, timelineOutputFromPage(gapErr.Page())) != exitSuccess {
+				return exitStateUnavailable
+			}
+			return exitStreamGap
+		}
+		if errors.Is(err, api.ErrInvalidTimelineRequest) ||
+			errors.Is(err, api.ErrTeamTimelineNotFound) {
+			return invalidInput(stderr, "invalid timeline request")
+		}
+		return stateUnavailable(stderr)
+	}
+	return writeJSON(stdout, stderr, timelineOutputFromPage(page))
+}
+
+func readProductionTimeline(
+	ctx context.Context,
+	input timelineInput,
+) (api.TimelinePage, error) {
+	db, err := openReadOnlyState(ctx, input.StatePath)
+	if err != nil {
+		return api.TimelinePage{}, err
+	}
+	readModel := projection.New(db)
+	stream, err := api.NewTeamExecutionStream(api.TeamExecutionStreamConfig{
+		TeamInstanceID: input.TeamInstanceID,
+		Journal:        journal.NewStore(db),
+		Projection:     readModel,
+		Now: func() time.Time {
+			return time.Now().UTC()
+		},
+	})
+	if err != nil {
+		_ = db.Close()
+		return api.TimelinePage{}, err
+	}
+	page, readErr := stream.ReadPage(ctx, input.Cursor, input.Limit)
+	closeErr := db.Close()
+	if readErr != nil {
+		return page, readErr
+	}
+	if closeErr != nil {
+		return api.TimelinePage{}, closeErr
+	}
+	return page, nil
 }
 
 func runRoute(args []string, stdout, stderr io.Writer, deps runDeps) int {
@@ -187,6 +288,38 @@ type evidenceStatus struct {
 	ID         string `json:"id"`
 	WorkItemID string `json:"work_item_id"`
 	Digest     string `json:"digest"`
+}
+
+type timelineOutput struct {
+	SchemaVersion  int                  `json:"schema_version"`
+	Command        string               `json:"command"`
+	TeamInstanceID string               `json:"team_instance_id"`
+	ViewVersion    string               `json:"view_version"`
+	NextCursor     string               `json:"next_cursor"`
+	HasMore        bool                 `json:"has_more"`
+	Gap            *api.StreamGap       `json:"gap"`
+	Records        []api.DeliveryRecord `json:"records"`
+	Board          api.TeamBoard        `json:"board"`
+	Attention      []api.AttentionItem  `json:"attention"`
+}
+
+func timelineOutputFromPage(page api.TimelinePage) timelineOutput {
+	var gap *api.StreamGap
+	if current, ok := page.Gap(); ok {
+		gap = &current
+	}
+	return timelineOutput{
+		SchemaVersion:  1,
+		Command:        "timeline",
+		TeamInstanceID: page.TeamInstanceID(),
+		ViewVersion:    page.ViewVersion(),
+		NextCursor:     page.NextCursor(),
+		HasMore:        page.HasMore(),
+		Gap:            gap,
+		Records:        page.Records(),
+		Board:          page.Board(),
+		Attention:      page.Attention(),
+	}
 }
 
 func statusOutputFromSnapshot(snapshot projection.Snapshot) statusOutput {

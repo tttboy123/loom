@@ -14,6 +14,8 @@ import (
 const (
 	supportedSchemaVersion = 1
 	maxEventBatchSize      = 32
+	MaxCursorStreams       = 96
+	MaxReadPageEvents      = 128
 )
 
 var (
@@ -28,6 +30,10 @@ var (
 	ErrDuplicateBatchStreamSequence = errors.New("duplicate batch stream sequence")
 	ErrPartialEventBatchConflict    = errors.New("partial event batch conflict")
 	ErrStreamHeadConflict           = errors.New("stream head conflict")
+	ErrInvalidStreamCursor          = errors.New("invalid stream cursor")
+	ErrStreamCursorConflict         = errors.New("stream cursor conflict")
+	ErrStreamSequenceGap            = errors.New("stream sequence gap")
+	ErrStreamPageLimit              = errors.New("stream page limit")
 )
 
 type Event struct {
@@ -61,6 +67,24 @@ type StreamHead struct {
 type StreamSetSnapshot struct {
 	events []Event
 	heads  []StreamHead
+}
+
+type StreamPage struct {
+	events  []Event
+	heads   []StreamHead
+	hasMore bool
+}
+
+func (page StreamPage) Events() []Event {
+	return cloneJournalEvents(page.events)
+}
+
+func (page StreamPage) Heads() []StreamHead {
+	return append([]StreamHead(nil), page.heads...)
+}
+
+func (page StreamPage) HasMore() bool {
+	return page.hasMore
 }
 
 func (snapshot StreamSetSnapshot) Events() []Event {
@@ -456,6 +480,151 @@ func (s *Store) ReadStreamSet(
 	}, nil
 }
 
+func (s *Store) ReadPageAfterHeads(
+	ctx context.Context,
+	heads []StreamHead,
+	limit int,
+) (StreamPage, error) {
+	normalized, err := normalizeCursorHeads(heads)
+	if err != nil {
+		return StreamPage{}, err
+	}
+	if limit < 1 || limit > MaxReadPageEvents {
+		return StreamPage{}, ErrStreamPageLimit
+	}
+	if err := ctx.Err(); err != nil {
+		return StreamPage{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return StreamPage{}, err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	candidates := make([]Event, 0, len(normalized)*(limit+1))
+	for _, head := range normalized {
+		if err := ctx.Err(); err != nil {
+			rollback()
+			return StreamPage{}, err
+		}
+		if head.Sequence > 0 {
+			var eventID string
+			err := tx.QueryRowContext(
+				ctx,
+				`SELECT id FROM events WHERE stream_id = ? AND seq = ?`,
+				head.StreamID,
+				head.Sequence,
+			).Scan(&eventID)
+			if errors.Is(err, sql.ErrNoRows) || err == nil && eventID != head.EventID {
+				rollback()
+				return StreamPage{}, fmt.Errorf(
+					"%w: %s/%d",
+					ErrStreamCursorConflict,
+					head.StreamID,
+					head.Sequence,
+				)
+			}
+			if err != nil {
+				rollback()
+				return StreamPage{}, err
+			}
+		}
+		rows, err := tx.QueryContext(ctx, `
+			SELECT id, stream_id, seq, idempotency_key, event_type, schema_version,
+			       emitted_at, correlation_id, causation_id, payload_json
+			FROM events
+			WHERE stream_id = ? AND seq > ?
+			ORDER BY seq ASC, id ASC
+			LIMIT ?
+		`, head.StreamID, head.Sequence, limit+1)
+		if err != nil {
+			rollback()
+			return StreamPage{}, err
+		}
+		expected := head.Sequence + 1
+		for rows.Next() {
+			event, scanErr := scanEvent(rows)
+			if scanErr != nil {
+				_ = rows.Close()
+				rollback()
+				return StreamPage{}, scanErr
+			}
+			if event.Seq != expected {
+				_ = rows.Close()
+				rollback()
+				return StreamPage{}, fmt.Errorf(
+					"%w: %s/%d",
+					ErrStreamSequenceGap,
+					event.StreamID,
+					event.Seq,
+				)
+			}
+			expected++
+			candidates = append(candidates, cloneJournalEvent(event))
+		}
+		rowsErr := rows.Err()
+		closeErr := rows.Close()
+		if rowsErr != nil {
+			rollback()
+			return StreamPage{}, rowsErr
+		}
+		if closeErr != nil {
+			rollback()
+			return StreamPage{}, closeErr
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if !left.EmittedAt.Equal(right.EmittedAt) {
+			return left.EmittedAt.Before(right.EmittedAt)
+		}
+		if left.StreamID != right.StreamID {
+			return left.StreamID < right.StreamID
+		}
+		if left.Seq != right.Seq {
+			return left.Seq < right.Seq
+		}
+		return left.ID < right.ID
+	})
+	count := len(candidates)
+	if count > limit {
+		count = limit
+	}
+	selected := cloneJournalEvents(candidates[:count])
+	nextHeads := append([]StreamHead(nil), normalized...)
+	headIndex := make(map[string]int, len(nextHeads))
+	for index, head := range nextHeads {
+		headIndex[head.StreamID] = index
+	}
+	for _, event := range selected {
+		index := headIndex[event.StreamID]
+		if event.Seq != nextHeads[index].Sequence+1 {
+			rollback()
+			return StreamPage{}, fmt.Errorf(
+				"%w: non-prefix merge %s/%d",
+				ErrStreamSequenceGap,
+				event.StreamID,
+				event.Seq,
+			)
+		}
+		nextHeads[index].Sequence = event.Seq
+		nextHeads[index].EventID = event.ID
+	}
+	if err := ctx.Err(); err != nil {
+		rollback()
+		return StreamPage{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return StreamPage{}, err
+	}
+	return StreamPage{
+		events:  selected,
+		heads:   nextHeads,
+		hasMore: len(candidates) > count,
+	}, nil
+}
+
 func (s *Store) ReadAll(ctx context.Context) ([]Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -523,6 +692,26 @@ func normalizeStreamIDs(streamIDs []string) ([]string, error) {
 	for index, streamID := range normalized {
 		if streamID == "" || index > 0 && streamID == normalized[index-1] {
 			return nil, ErrInvalidEventBatch
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeCursorHeads(heads []StreamHead) ([]StreamHead, error) {
+	if len(heads) == 0 || len(heads) > MaxCursorStreams {
+		return nil, ErrInvalidStreamCursor
+	}
+	normalized := append([]StreamHead(nil), heads...)
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i].StreamID < normalized[j].StreamID
+	})
+	for index, head := range normalized {
+		if head.StreamID == "" ||
+			head.Sequence < 0 ||
+			head.Sequence == 0 && head.EventID != "" ||
+			head.Sequence > 0 && head.EventID == "" ||
+			index > 0 && head.StreamID == normalized[index-1].StreamID {
+			return nil, ErrInvalidStreamCursor
 		}
 	}
 	return normalized, nil
