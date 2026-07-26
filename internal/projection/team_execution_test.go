@@ -89,7 +89,7 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 			"plan_digest":      digest,
 			"status":           "succeeded",
 			"reason":           "",
-		}),
+		}, "team-attempt-terminal"),
 	}
 	record, err := projectTeamExecutionStream(
 		"team-1",
@@ -99,6 +99,7 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 				eventID: "run-reclaim",
 			},
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("projectTeamExecutionStream() error = %v", err)
@@ -241,9 +242,9 @@ func TestTeamExecutionProjectionReplaysSemanticRecoveryMetadata(t *testing.T) {
 			"plan_digest":      digest,
 			"status":           "blocked",
 			"reason":           "node_main_blocked",
-		}),
+		}, "recovery-v2"),
 	}
-	record, err := projectTeamExecutionStream("team-v2", events, nil)
+	record, err := projectTeamExecutionStream("team-v2", events, nil, nil)
 	if err != nil {
 		t.Fatalf("projectTeamExecutionStream() error = %v", err)
 	}
@@ -376,7 +377,7 @@ func TestTeamExecutionProjectionStopsRecoveryAtMaxAttempts(t *testing.T) {
 			"plan_digest":      digest,
 			"status":           "failed",
 			"reason":           "node_main_failed",
-		}),
+		}, "terminal"),
 	}
 	readModel := newForTestSource(eventSliceSource{events: events})
 	if err := readModel.Rebuild(context.Background()); err != nil {
@@ -397,17 +398,22 @@ func teamProjectionEvent(
 	idempotencyKey string,
 	eventType string,
 	payload any,
+	causation ...string,
 ) journal.Event {
 	t.Helper()
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return journal.Event{
+	event := journal.Event{
 		ID: id, StreamID: streamID, Seq: sequence,
 		IdempotencyKey: idempotencyKey, Type: eventType,
 		SchemaVersion: 1,
 		EmittedAt:     time.Date(2026, 7, 26, 1, 2, 3, 0, time.UTC),
 		PayloadJSON:   encoded,
 	}
+	if len(causation) > 0 {
+		event.CausationID = causation[0]
+	}
+	return event
 }

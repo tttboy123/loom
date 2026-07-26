@@ -73,15 +73,23 @@ type RunTerminalInput struct {
 }
 
 type WorkItemRecord struct {
-	id                    string
-	title                 string
-	status                string
-	runID                 string
-	agentInstanceID       string
-	approvalRequestID     string
-	approvalRequestDigest string
-	lastEventID           string
-	streamSequence        int64
+	id                          string
+	title                       string
+	status                      string
+	runID                       string
+	agentInstanceID             string
+	approvalRequestID           string
+	approvalRequestDigest       string
+	verificationEventID         string
+	verificationClaimGeneration int64
+	acceptanceDecisionDigest    string
+	sourceEvidenceID            string
+	sourceEvidenceDigest        string
+	verifierRequired            bool
+	verifierEvidenceID          string
+	verifierEvidenceDigest      string
+	lastEventID                 string
+	streamSequence              int64
 }
 
 type RunRecord struct {
@@ -888,6 +896,12 @@ func (record WorkItemRecord) Title() string           { return record.title }
 func (record WorkItemRecord) Status() string          { return record.status }
 func (record WorkItemRecord) RunID() string           { return record.runID }
 func (record WorkItemRecord) AgentInstanceID() string { return record.agentInstanceID }
+func (record WorkItemRecord) VerificationEventID() string {
+	return record.verificationEventID
+}
+func (record WorkItemRecord) AcceptanceDecisionDigest() string {
+	return record.acceptanceDecisionDigest
+}
 
 func (record RunRecord) ID() string                       { return record.id }
 func (record RunRecord) WorkItemID() string               { return record.workItemID }
@@ -1250,7 +1264,72 @@ func replayWorkItemStream(
 			if _, duplicate := outcomes[event.CausationID]; duplicate || event.CausationID == "" {
 				return ErrRunAuthorityConflict
 			}
+			var payload struct {
+				WorkItemID      *string `json:"work_item_id"`
+				RunID           *string `json:"run_id"`
+				ClaimGeneration *int64  `json:"claim_generation"`
+				Status          *string `json:"status"`
+			}
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.WorkItemID == nil || payload.RunID == nil ||
+				payload.ClaimGeneration == nil || payload.Status == nil ||
+				*payload.WorkItemID != workItemID ||
+				*payload.RunID != record.runID ||
+				*payload.ClaimGeneration <= 0 ||
+				event.Seq != record.streamSequence+1 {
+				return ErrRunAuthorityConflict
+			}
+			if event.Type == "WorkItemReadyForReview" {
+				if *payload.Status != "ready_for_review" {
+					return ErrRunAuthorityConflict
+				}
+			} else if *payload.Status != "failed" &&
+				*payload.Status != "cancelled" {
+				return ErrRunAuthorityConflict
+			}
 			outcomes[event.CausationID] = event
+			record.status = *payload.Status
+			record.lastEventID = event.ID
+			record.streamSequence = event.Seq
+		case "WorkItemVerificationCommitted":
+			var payload workItemVerificationPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				!payload.valid(record) ||
+				event.ID !=
+					workItemVerificationPayloadEventID(payload) ||
+				record.status != "ready_for_review" ||
+				event.Seq != record.streamSequence+1 ||
+				event.CausationID != record.lastEventID {
+				return ErrRunAuthorityConflict
+			}
+			record.verificationEventID = event.ID
+			record.verificationClaimGeneration =
+				payload.ClaimGeneration
+			record.acceptanceDecisionDigest = payload.AcceptanceDecisionDigest
+			record.sourceEvidenceID = payload.SourceEvidenceID
+			record.sourceEvidenceDigest = payload.SourceEvidenceDigest
+			record.verifierRequired = payload.VerifierRequired
+			record.verifierEvidenceID = payload.VerifierEvidenceID
+			record.verifierEvidenceDigest =
+				payload.VerifierEvidenceDigest
+			record.lastEventID = event.ID
+			record.streamSequence = event.Seq
+		case "WorkItemDone", "WorkItemRejected":
+			var payload workItemAcceptanceOutcomePayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				!payload.valid(record, event.Type) ||
+				event.ID != acceptanceOutcomePayloadEventID(
+					payload,
+					event.Type,
+				) ||
+				record.verificationEventID == "" ||
+				event.CausationID != record.verificationEventID ||
+				event.Seq != record.streamSequence+1 {
+				return ErrRunAuthorityConflict
+			}
+			record.status = payload.Status
+			record.lastEventID = event.ID
+			record.streamSequence = event.Seq
 		default:
 			return ErrRunAuthorityConflict
 		}

@@ -1123,3 +1123,19 @@ independent Implementation Review 1 returned `PASS` with no findings. Slice 4
 remains `PARTIAL`: deterministic acceptance, independent Verifier isolation,
 terminal-once WorkItem Done, and the controlled whole-Slice integration proof
 remain in the single S4-W3 boundary. No S4-W4 is permitted.
+
+`CURRENT`: S4-W3 is accepted after bounded Repair 1 and fresh independent
+Repair Review 2 `PASS`. Source executors now stop at `ready_for_review`; pure
+versioned acceptance verifies exact source Evidence, and medium/high risk uses
+a distinct generation-fenced Verifier WorkItem/Run/Grant/Evidence lineage.
+One exact-head Journal transaction is the only authority that records the
+verification fact, terminal-once WorkItem outcome, Team acceptance, and
+optional Team terminal. Verification rejection hands off to the frozen S4-W2
+RecoveryPolicy for explicit bounded retry/exhaustion, never hidden fallback.
+Projection and `GlobalReadView` expose copied acceptance/verifier/recovery
+state and preserve the old view after malformed replay. The complete focused
+race, impact, repository, repository-race, vet, format, Windows, scope, and
+trust-boundary matrix passes. Slice 4 now has exactly S4-W1 through S4-W3
+accepted; the fresh whole-Slice Review remains required before Slice 4 can be
+closed. No S4-W4, live Runtime/Provider, daemon, API/CLI/Web/TUI, autonomous
+execution, external action, or later-Slice surface is activated.

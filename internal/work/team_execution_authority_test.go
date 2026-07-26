@@ -1110,16 +1110,27 @@ func testTeamSemanticBindings(
 		if err != nil {
 			panic(err)
 		}
+		acceptance, err := verification.NewAcceptanceContract(
+			1,
+			[]string{"controlled output is accepted"},
+			verification.AcceptanceRiskLow,
+		)
+		if err != nil {
+			panic(err)
+		}
 		bindings = append(bindings, TeamNodeSemanticBinding{
-			LogicalNodeID:            node.LogicalNodeID(),
-			OutputContractVersion:    contract.Version(),
-			OutputContractDigest:     contract.Digest(),
-			RecoveryPolicyVersion:    policy.Version(),
-			RecoveryPolicyDigest:     policy.Digest(),
-			AttemptCredits:           credits,
-			PrimaryWorkflowPath:      "primary",
-			WorkflowFallbackKey:      "",
-			RecoveryApprovalRequired: false,
+			LogicalNodeID:             node.LogicalNodeID(),
+			OutputContractVersion:     contract.Version(),
+			OutputContractDigest:      contract.Digest(),
+			RecoveryPolicyVersion:     policy.Version(),
+			RecoveryPolicyDigest:      policy.Digest(),
+			AttemptCredits:            credits,
+			PrimaryWorkflowPath:       "primary",
+			WorkflowFallbackKey:       "",
+			RecoveryApprovalRequired:  false,
+			AcceptanceContractVersion: acceptance.Version(),
+			AcceptanceContractDigest:  acceptance.Digest(),
+			AcceptanceRisk:            string(acceptance.Risk()),
 		})
 	}
 	return bindings

@@ -12,35 +12,47 @@ import (
 )
 
 type TeamExecution struct {
-	TeamInstanceID        string
-	PlanDigest            string
-	Status                string
-	Nodes                 []TeamExecutionNode
-	LegacySemanticUnbound bool
+	TeamInstanceID          string
+	PlanDigest              string
+	Status                  string
+	Nodes                   []TeamExecutionNode
+	LegacySemanticUnbound   bool
+	LegacyAcceptanceUnbound bool
 }
 
 type TeamExecutionNode struct {
-	LogicalNodeID            string
-	Status                   string
-	DependencySatisfied      bool
-	CurrentAttempt           int
-	RetryAt                  time.Time
-	Attempts                 []TeamExecutionAttempt
-	OutputContractVersion    int
-	OutputContractDigest     string
-	RecoveryPolicyVersion    int
-	RecoveryPolicyDigest     string
-	AttemptCredits           int
-	PrimaryWorkflowPath      string
-	WorkflowFallbackKey      string
-	RecoveryApprovalRequired bool
-	RecoveryAction           string
-	RecoveryDecisionDigest   string
-	RecoveryDecisionTime     time.Time
-	CreditsBefore            int
-	CreditsAfter             int
-	FallbackConsumed         bool
-	PriorClassifications     []string
+	LogicalNodeID               string
+	Status                      string
+	DependencySatisfied         bool
+	CurrentAttempt              int
+	RetryAt                     time.Time
+	Attempts                    []TeamExecutionAttempt
+	OutputContractVersion       int
+	OutputContractDigest        string
+	RecoveryPolicyVersion       int
+	RecoveryPolicyDigest        string
+	AttemptCredits              int
+	PrimaryWorkflowPath         string
+	WorkflowFallbackKey         string
+	RecoveryApprovalRequired    bool
+	AcceptanceContractVersion   int
+	AcceptanceContractDigest    string
+	AcceptanceRisk              string
+	IndependentVerifierRequired bool
+	VerifierAgentInstanceID     string
+	VerifierRuntimeInstanceID   string
+	VerifierWorkflowPath        string
+	AcceptanceDecisionKind      string
+	AcceptanceDecisionDigest    string
+	AcceptanceDecisionTime      time.Time
+	RecoveryTrigger             string
+	RecoveryAction              string
+	RecoveryDecisionDigest      string
+	RecoveryDecisionTime        time.Time
+	CreditsBefore               int
+	CreditsAfter                int
+	FallbackConsumed            bool
+	PriorClassifications        []string
 }
 
 type TeamExecutionAttempt struct {

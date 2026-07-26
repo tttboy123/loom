@@ -29,6 +29,13 @@ const (
 	RecoveryHumanRequired RecoveryAction = "human_required"
 )
 
+type RecoveryTrigger string
+
+const (
+	RecoveryTriggerOutput               RecoveryTrigger = "output"
+	RecoveryTriggerVerificationRejected RecoveryTrigger = "verification_rejected"
+)
+
 type ExhaustionAction string
 
 const (
@@ -59,21 +66,23 @@ type RecoveryPolicy struct {
 }
 
 type RecoveryInput struct {
-	TeamInstanceID       string
-	PlanDigest           string
-	LogicalNodeID        string
-	AttemptNumber        int
-	MaxAttempts          int
-	AgentInstanceID      string
-	RuntimeInstanceID    string
-	EvidenceID           string
-	EvidenceDigest       string
-	OutputSummaryDigest  string
-	Classification       verification.Classification
-	PriorClassifications []verification.OutputClassification
-	RemainingCredits     int
-	FallbackConsumed     bool
-	DecisionTime         time.Time
+	TeamInstanceID           string
+	PlanDigest               string
+	LogicalNodeID            string
+	AttemptNumber            int
+	MaxAttempts              int
+	AgentInstanceID          string
+	RuntimeInstanceID        string
+	EvidenceID               string
+	EvidenceDigest           string
+	OutputSummaryDigest      string
+	Classification           verification.Classification
+	PriorClassifications     []verification.OutputClassification
+	RemainingCredits         int
+	FallbackConsumed         bool
+	DecisionTime             time.Time
+	Trigger                  RecoveryTrigger
+	AcceptanceDecisionDigest string
 }
 
 type RecoveryDecision struct {
@@ -104,6 +113,8 @@ type RecoveryDecision struct {
 	policyVersion            int
 	policyDigest             string
 	recoveryApprovalRequired bool
+	trigger                  RecoveryTrigger
+	acceptanceDecisionDigest string
 	digest                   string
 }
 
@@ -148,16 +159,24 @@ func DecideRecovery(
 	if !validRecoveryInput(policy, input) {
 		return RecoveryDecision{}, ErrInvalidRecoveryInput
 	}
+	trigger := input.Trigger
+	if trigger == "" {
+		trigger = RecoveryTriggerOutput
+	}
 	action := RecoveryNone
-	switch input.Classification.Kind() {
-	case verification.OutputValidNonEmpty, verification.OutputValidEmpty:
-		action = RecoveryNone
-	case verification.OutputTransientEmpty:
-		action = recoveryAttemptAction(policy, input, false)
-	case verification.OutputInvalid:
-		action = recoveryAttemptAction(policy, input, true)
-	default:
-		return RecoveryDecision{}, ErrInvalidRecoveryInput
+	if trigger == RecoveryTriggerVerificationRejected {
+		action = recoveryVerificationRejectionAction(policy, input)
+	} else {
+		switch input.Classification.Kind() {
+		case verification.OutputValidNonEmpty, verification.OutputValidEmpty:
+			action = RecoveryNone
+		case verification.OutputTransientEmpty:
+			action = recoveryAttemptAction(policy, input, false)
+		case verification.OutputInvalid:
+			action = recoveryAttemptAction(policy, input, true)
+		default:
+			return RecoveryDecision{}, ErrInvalidRecoveryInput
+		}
 	}
 	decision := RecoveryDecision{
 		teamInstanceID:       input.TeamInstanceID,
@@ -185,6 +204,8 @@ func DecideRecovery(
 		policyVersion:            policy.version,
 		policyDigest:             policy.digest,
 		recoveryApprovalRequired: policy.recoveryApprovalRequired,
+		trigger:                  trigger,
+		acceptanceDecisionDigest: input.AcceptanceDecisionDigest,
 	}
 	if action == RecoveryRetry || action == RecoveryFallback {
 		decision.nextAttemptNumber = input.AttemptNumber + 1
@@ -236,11 +257,27 @@ func recoveryDecisionDigest(decision RecoveryDecision) string {
 		strconv.Itoa(decision.policyVersion),
 		decision.policyDigest,
 		strconv.FormatBool(decision.recoveryApprovalRequired),
+		string(decision.trigger),
+		decision.acceptanceDecisionDigest,
 	)
 	return canonicalRecoveryDigest(
 		"loom.recovery-decision.v1",
 		fields...,
 	)
+}
+
+func recoveryVerificationRejectionAction(
+	policy RecoveryPolicy,
+	input RecoveryInput,
+) RecoveryAction {
+	if policy.recoveryApprovalRequired {
+		return RecoveryHumanRequired
+	}
+	if input.AttemptNumber >= input.MaxAttempts ||
+		input.RemainingCredits == 0 {
+		return recoveryExhaustionAction(policy.exhaustionAction)
+	}
+	return RecoveryRetry
 }
 
 func recoveryAttemptAction(
@@ -373,6 +410,11 @@ func (decision RecoveryDecision) PolicyDigest() string { return decision.policyD
 func (decision RecoveryDecision) RecoveryApprovalRequired() bool {
 	return decision.recoveryApprovalRequired
 }
+func (decision RecoveryDecision) Trigger() RecoveryTrigger { return decision.trigger }
+func (decision RecoveryDecision) TriggerValue() string     { return string(decision.trigger) }
+func (decision RecoveryDecision) AcceptanceDecisionDigest() string {
+	return decision.acceptanceDecisionDigest
+}
 func (decision RecoveryDecision) Digest() string { return decision.digest }
 func (decision RecoveryDecision) Valid() bool {
 	if decision.digest == "" ||
@@ -401,6 +443,21 @@ func (decision RecoveryDecision) Valid() bool {
 		decision.creditsAfter > decision.creditsBefore ||
 		decision.decisionTime.IsZero() ||
 		decision.decisionTime.Location() != time.UTC {
+		return false
+	}
+	if decision.trigger != RecoveryTriggerOutput &&
+		decision.trigger != RecoveryTriggerVerificationRejected {
+		return false
+	}
+	if decision.trigger == RecoveryTriggerOutput {
+		if decision.acceptanceDecisionDigest != "" {
+			return false
+		}
+	} else if !validRecoveryDigest(decision.acceptanceDecisionDigest) ||
+		(decision.classification != verification.OutputValidNonEmpty &&
+			decision.classification != verification.OutputValidEmpty) ||
+		decision.action == RecoveryFallback ||
+		decision.action == RecoveryNone {
 		return false
 	}
 	for _, classification := range decision.priorClassifications {
@@ -460,6 +517,10 @@ func validRecoveryClassification(
 }
 
 func validRecoveryInput(policy RecoveryPolicy, input RecoveryInput) bool {
+	trigger := input.Trigger
+	if trigger == "" {
+		trigger = RecoveryTriggerOutput
+	}
 	if !validRecoveryID(input.TeamInstanceID) ||
 		!validRecoveryDigest(input.PlanDigest) ||
 		!validRecoveryID(input.LogicalNodeID) ||
@@ -480,6 +541,16 @@ func validRecoveryInput(policy RecoveryPolicy, input RecoveryInput) bool {
 		input.RemainingCredits > policy.attemptCredits ||
 		input.DecisionTime.IsZero() ||
 		input.DecisionTime.Location() != time.UTC {
+		return false
+	}
+	if trigger == RecoveryTriggerOutput {
+		if input.AcceptanceDecisionDigest != "" {
+			return false
+		}
+	} else if trigger != RecoveryTriggerVerificationRejected ||
+		!validRecoveryDigest(input.AcceptanceDecisionDigest) ||
+		(input.Classification.Kind() != verification.OutputValidNonEmpty &&
+			input.Classification.Kind() != verification.OutputValidEmpty) {
 		return false
 	}
 	for _, classification := range input.PriorClassifications {

@@ -18,6 +18,11 @@ import (
 	"loom-pi-rebuild/internal/verification"
 )
 
+const (
+	teamRecoveryTriggerOutput               = "output"
+	teamRecoveryTriggerVerificationRejected = "verification_rejected"
+)
+
 var (
 	ErrInvalidTeamExecution         = errors.New("invalid Team execution")
 	ErrTeamExecutionConflict        = errors.New("Team execution conflict")
@@ -27,6 +32,7 @@ var (
 	ErrTeamAttemptLimit             = errors.New("Team node attempt limit reached")
 	ErrInvalidTeamRecovery          = errors.New("invalid Team node recovery")
 	ErrTeamAttemptRecoveryRequired  = errors.New("Team node attempt recovery requires human action")
+	ErrLegacyAcceptanceUnbound      = errors.New("legacy Team acceptance binding is unavailable")
 )
 
 type TeamAttemptSelection struct {
@@ -46,15 +52,22 @@ type TeamDispatchInput struct {
 }
 
 type TeamNodeSemanticBinding struct {
-	LogicalNodeID            string
-	OutputContractVersion    int
-	OutputContractDigest     string
-	RecoveryPolicyVersion    int
-	RecoveryPolicyDigest     string
-	AttemptCredits           int
-	PrimaryWorkflowPath      string
-	WorkflowFallbackKey      string
-	RecoveryApprovalRequired bool
+	LogicalNodeID               string
+	OutputContractVersion       int
+	OutputContractDigest        string
+	RecoveryPolicyVersion       int
+	RecoveryPolicyDigest        string
+	AttemptCredits              int
+	PrimaryWorkflowPath         string
+	WorkflowFallbackKey         string
+	RecoveryApprovalRequired    bool
+	AcceptanceContractVersion   int
+	AcceptanceContractDigest    string
+	AcceptanceRisk              string
+	IndependentVerifierRequired bool
+	VerifierAgentInstanceID     string
+	VerifierRuntimeInstanceID   string
+	VerifierWorkflowPath        string
 }
 
 type TeamAttemptEvidenceInput struct {
@@ -123,6 +136,8 @@ type TeamRecoveryDecision interface {
 	PolicyVersion() int
 	PolicyDigest() string
 	RecoveryApprovalRequired() bool
+	TriggerValue() string
+	AcceptanceDecisionDigest() string
 	Digest() string
 }
 
@@ -146,31 +161,37 @@ type TeamAttemptRecord struct {
 }
 
 type TeamNodeRecord struct {
-	logicalNodeID          string
-	status                 string
-	dependencySatisfied    bool
-	currentAttempt         int
-	retryAt                time.Time
-	maxAttempts            int
-	attempts               []TeamAttemptRecord
-	semanticBinding        TeamNodeSemanticBinding
-	recoveryAction         string
-	recoveryDecisionDigest string
-	recoveryDecisionTime   time.Time
-	creditsBefore          int
-	creditsAfter           int
-	fallbackConsumed       bool
-	priorClassifications   []verification.OutputClassification
+	logicalNodeID            string
+	status                   string
+	dependencySatisfied      bool
+	currentAttempt           int
+	retryAt                  time.Time
+	maxAttempts              int
+	attempts                 []TeamAttemptRecord
+	semanticBinding          TeamNodeSemanticBinding
+	acceptanceDecisionDigest string
+	acceptanceDecisionTime   time.Time
+	recoveryTrigger          string
+	recoveryAction           string
+	recoveryPolicyVersion    int
+	recoveryPolicyDigest     string
+	recoveryDecisionDigest   string
+	recoveryDecisionTime     time.Time
+	creditsBefore            int
+	creditsAfter             int
+	fallbackConsumed         bool
+	priorClassifications     []verification.OutputClassification
 }
 
 type TeamExecutionRecord struct {
-	teamInstanceID        string
-	planDigest            string
-	status                string
-	nodes                 []TeamNodeRecord
-	streamSequence        int64
-	lastEventID           string
-	legacySemanticUnbound bool
+	teamInstanceID          string
+	planDigest              string
+	status                  string
+	nodes                   []TeamNodeRecord
+	streamSequence          int64
+	lastEventID             string
+	legacySemanticUnbound   bool
+	legacyAcceptanceUnbound bool
 }
 
 type TeamDispatchedNode struct {
@@ -201,6 +222,9 @@ func (node TeamDispatchedNode) Run() RunRecord                   { return node.r
 func (record TeamExecutionRecord) TeamInstanceID() string { return record.teamInstanceID }
 func (record TeamExecutionRecord) PlanDigest() string     { return record.planDigest }
 func (record TeamExecutionRecord) Status() string         { return record.status }
+func (record TeamExecutionRecord) LegacyAcceptanceUnbound() bool {
+	return record.legacyAcceptanceUnbound
+}
 func (record TeamExecutionRecord) Nodes() []TeamNodeRecord {
 	return cloneTeamNodeRecords(record.nodes)
 }
@@ -209,6 +233,15 @@ func (record TeamNodeRecord) Status() string            { return record.status }
 func (record TeamNodeRecord) DependencySatisfied() bool { return record.dependencySatisfied }
 func (record TeamNodeRecord) CurrentAttempt() int       { return record.currentAttempt }
 func (record TeamNodeRecord) RetryAt() time.Time        { return record.retryAt }
+func (record TeamNodeRecord) AcceptanceDecisionDigest() string {
+	return record.acceptanceDecisionDigest
+}
+func (record TeamNodeRecord) AcceptanceDecisionTime() time.Time {
+	return record.acceptanceDecisionTime
+}
+func (record TeamNodeRecord) RecoveryTrigger() string      { return record.recoveryTrigger }
+func (record TeamNodeRecord) RecoveryPolicyVersion() int   { return record.recoveryPolicyVersion }
+func (record TeamNodeRecord) RecoveryPolicyDigest() string { return record.recoveryPolicyDigest }
 func (record TeamNodeRecord) Attempts() []TeamAttemptRecord {
 	return append([]TeamAttemptRecord(nil), record.attempts...)
 }
@@ -289,6 +322,9 @@ func (authority *Authority) DispatchTeamReadySet(
 	if team.status != "" {
 		if team.legacySemanticUnbound {
 			return TeamDispatchResult{}, ErrTeamAttemptRecoveryRequired
+		}
+		if team.legacyAcceptanceUnbound {
+			return TeamDispatchResult{}, ErrLegacyAcceptanceUnbound
 		}
 		if !exactTeamSemanticBindings(team, input.SemanticBindings) {
 			return TeamDispatchResult{}, ErrTeamExecutionConflict
@@ -1122,6 +1158,20 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 			node.semanticBinding.RecoveryApprovalRequired {
 		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
 	}
+	expectedTrigger := teamRecoveryTriggerOutput
+	expectedAcceptanceDecisionDigest := ""
+	if node.recoveryTrigger != "" {
+		expectedTrigger = node.recoveryTrigger
+		expectedAcceptanceDecisionDigest = node.acceptanceDecisionDigest
+	}
+	if decision.TriggerValue() != expectedTrigger ||
+		decision.AcceptanceDecisionDigest() !=
+			expectedAcceptanceDecisionDigest ||
+		expectedTrigger ==
+			teamRecoveryTriggerVerificationRejected &&
+			decision.ActionValue() == "fallback" {
+		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return TeamExecutionRecord{}, err
@@ -1183,6 +1233,8 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 				decision.ActionValue() == "fallback",
 			RecoveryApprovalRequired: decision.RecoveryApprovalRequired(),
 			DependencySatisfied:      dependencySatisfied,
+			RecoveryTrigger:          decision.TriggerValue(),
+			AcceptanceDecisionDigest: decision.AcceptanceDecisionDigest(),
 		},
 	)
 	toAppend := []journal.Event{recoveryEvent}
@@ -1306,15 +1358,22 @@ type teamPlanNodePayload struct {
 }
 
 type teamSemanticBindingPayload struct {
-	LogicalNodeID            string `json:"logical_node_id"`
-	OutputContractVersion    int    `json:"output_contract_version"`
-	OutputContractDigest     string `json:"output_contract_digest"`
-	RecoveryPolicyVersion    int    `json:"recovery_policy_version"`
-	RecoveryPolicyDigest     string `json:"recovery_policy_digest"`
-	AttemptCredits           int    `json:"attempt_credits"`
-	PrimaryWorkflowPath      string `json:"primary_workflow_path"`
-	WorkflowFallbackKey      string `json:"workflow_fallback_key"`
-	RecoveryApprovalRequired bool   `json:"recovery_approval_required"`
+	LogicalNodeID               string  `json:"logical_node_id"`
+	OutputContractVersion       int     `json:"output_contract_version"`
+	OutputContractDigest        string  `json:"output_contract_digest"`
+	RecoveryPolicyVersion       int     `json:"recovery_policy_version"`
+	RecoveryPolicyDigest        string  `json:"recovery_policy_digest"`
+	AttemptCredits              int     `json:"attempt_credits"`
+	PrimaryWorkflowPath         string  `json:"primary_workflow_path"`
+	WorkflowFallbackKey         string  `json:"workflow_fallback_key"`
+	RecoveryApprovalRequired    bool    `json:"recovery_approval_required"`
+	AcceptanceContractVersion   *int    `json:"acceptance_contract_version,omitempty"`
+	AcceptanceContractDigest    *string `json:"acceptance_contract_digest,omitempty"`
+	AcceptanceRisk              *string `json:"risk,omitempty"`
+	IndependentVerifierRequired *bool   `json:"independent_verifier_required,omitempty"`
+	VerifierAgentInstanceID     *string `json:"verifier_agent_instance_id,omitempty"`
+	VerifierRuntimeInstanceID   *string `json:"verifier_runtime_instance_id,omitempty"`
+	VerifierWorkflowPath        *string `json:"verifier_workflow_path,omitempty"`
 }
 
 type teamDispatchAttemptPayload struct {
@@ -1385,6 +1444,8 @@ type teamRecoveryPayload struct {
 	FallbackConsumed         bool     `json:"fallback_consumed"`
 	RecoveryApprovalRequired bool     `json:"recovery_approval_required"`
 	DependencySatisfied      bool     `json:"dependency_satisfied"`
+	RecoveryTrigger          string   `json:"recovery_trigger"`
+	AcceptanceDecisionDigest string   `json:"acceptance_decision_digest"`
 }
 
 func validateTeamDispatchInput(
@@ -1448,7 +1509,8 @@ func validateTeamDispatchInput(
 			binding.WorkflowFallbackKey != "" &&
 				(!validOpaqueID(binding.WorkflowFallbackKey) ||
 					binding.WorkflowFallbackKey ==
-						binding.PrimaryWorkflowPath) {
+						binding.PrimaryWorkflowPath) ||
+			!validTeamAcceptanceBinding(binding, node.AgentInstanceID()) {
 			return nil, nil, ErrInvalidTeamExecution
 		}
 	}
@@ -1620,17 +1682,7 @@ func teamPlanPayload(
 	}
 	payloadBindings := make([]teamSemanticBindingPayload, len(bindings))
 	for index, binding := range bindings {
-		payloadBindings[index] = teamSemanticBindingPayload{
-			LogicalNodeID:            binding.LogicalNodeID,
-			OutputContractVersion:    binding.OutputContractVersion,
-			OutputContractDigest:     binding.OutputContractDigest,
-			RecoveryPolicyVersion:    binding.RecoveryPolicyVersion,
-			RecoveryPolicyDigest:     binding.RecoveryPolicyDigest,
-			AttemptCredits:           binding.AttemptCredits,
-			PrimaryWorkflowPath:      binding.PrimaryWorkflowPath,
-			WorkflowFallbackKey:      binding.WorkflowFallbackKey,
-			RecoveryApprovalRequired: binding.RecoveryApprovalRequired,
-		}
+		payloadBindings[index] = teamSemanticBindingPayloadFrom(binding)
 	}
 	return struct {
 		TeamInstanceID   string                       `json:"team_instance_id"`
@@ -1641,6 +1693,36 @@ func teamPlanPayload(
 	}{
 		plan.TeamInstanceID(), plan.Digest(), viewVersion,
 		payloadNodes, payloadBindings,
+	}
+}
+
+func teamSemanticBindingPayloadFrom(
+	binding TeamNodeSemanticBinding,
+) teamSemanticBindingPayload {
+	version := binding.AcceptanceContractVersion
+	digest := binding.AcceptanceContractDigest
+	risk := binding.AcceptanceRisk
+	required := binding.IndependentVerifierRequired
+	verifierAgent := binding.VerifierAgentInstanceID
+	verifierRuntime := binding.VerifierRuntimeInstanceID
+	verifierWorkflow := binding.VerifierWorkflowPath
+	return teamSemanticBindingPayload{
+		LogicalNodeID:               binding.LogicalNodeID,
+		OutputContractVersion:       binding.OutputContractVersion,
+		OutputContractDigest:        binding.OutputContractDigest,
+		RecoveryPolicyVersion:       binding.RecoveryPolicyVersion,
+		RecoveryPolicyDigest:        binding.RecoveryPolicyDigest,
+		AttemptCredits:              binding.AttemptCredits,
+		PrimaryWorkflowPath:         binding.PrimaryWorkflowPath,
+		WorkflowFallbackKey:         binding.WorkflowFallbackKey,
+		RecoveryApprovalRequired:    binding.RecoveryApprovalRequired,
+		AcceptanceContractVersion:   &version,
+		AcceptanceContractDigest:    &digest,
+		AcceptanceRisk:              &risk,
+		IndependentVerifierRequired: &required,
+		VerifierAgentInstanceID:     &verifierAgent,
+		VerifierRuntimeInstanceID:   &verifierRuntime,
+		VerifierWorkflowPath:        &verifierWorkflow,
 	}
 }
 
@@ -1795,7 +1877,8 @@ func exactTeamSemanticBindings(
 	team TeamExecutionRecord,
 	bindings []TeamNodeSemanticBinding,
 ) bool {
-	if team.legacySemanticUnbound || len(team.nodes) != len(bindings) {
+	if team.legacySemanticUnbound || team.legacyAcceptanceUnbound ||
+		len(team.nodes) != len(bindings) {
 		return false
 	}
 	for _, node := range team.nodes {
@@ -1823,6 +1906,13 @@ func canonicalTeamSemanticDigest(
 			binding.PrimaryWorkflowPath,
 			binding.WorkflowFallbackKey,
 			fmt.Sprint(binding.RecoveryApprovalRequired),
+			fmt.Sprint(binding.AcceptanceContractVersion),
+			binding.AcceptanceContractDigest,
+			binding.AcceptanceRisk,
+			fmt.Sprint(binding.IndependentVerifierRequired),
+			binding.VerifierAgentInstanceID,
+			binding.VerifierRuntimeInstanceID,
+			binding.VerifierWorkflowPath,
 		)
 	}
 	for _, field := range fields {
@@ -1832,6 +1922,55 @@ func canonicalTeamSemanticDigest(
 		_, _ = hash.Write([]byte(field))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func completeTeamAcceptancePayload(
+	payload teamSemanticBindingPayload,
+) (bool, bool) {
+	present := 0
+	for _, value := range []any{
+		payload.AcceptanceContractVersion,
+		payload.AcceptanceContractDigest,
+		payload.AcceptanceRisk,
+		payload.IndependentVerifierRequired,
+		payload.VerifierAgentInstanceID,
+		payload.VerifierRuntimeInstanceID,
+		payload.VerifierWorkflowPath,
+	} {
+		if !nilInterface(value) {
+			present++
+		}
+	}
+	return present == 7, present == 0 || present == 7
+}
+
+func validTeamAcceptanceBinding(
+	binding TeamNodeSemanticBinding,
+	sourceAgentInstanceID string,
+) bool {
+	if binding.AcceptanceContractVersion < 1 ||
+		!validSHA256Hex(binding.AcceptanceContractDigest) ||
+		!validAcceptanceRiskString(binding.AcceptanceRisk) {
+		return false
+	}
+	required := binding.AcceptanceRisk == "medium" ||
+		binding.AcceptanceRisk == "high"
+	if binding.IndependentVerifierRequired != required {
+		return false
+	}
+	if !required {
+		return binding.VerifierAgentInstanceID == "" &&
+			binding.VerifierRuntimeInstanceID == "" &&
+			binding.VerifierWorkflowPath == ""
+	}
+	return validOpaqueID(binding.VerifierAgentInstanceID) &&
+		binding.VerifierAgentInstanceID != sourceAgentInstanceID &&
+		validOpaqueID(binding.VerifierRuntimeInstanceID) &&
+		validOpaqueID(binding.VerifierWorkflowPath)
+}
+
+func validAcceptanceRiskString(value string) bool {
+	return value == "low" || value == "medium" || value == "high"
 }
 
 func applyScheduledAttempt(
@@ -2046,6 +2185,15 @@ func replayTeamExecution(
 							binding.LogicalNodeID {
 						return TeamExecutionRecord{}, ErrTeamExecutionConflict
 					}
+					acceptancePresent, complete := completeTeamAcceptancePayload(binding)
+					if !complete ||
+						index > 0 &&
+							team.legacyAcceptanceUnbound == acceptancePresent {
+						return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					}
+					if index == 0 {
+						team.legacyAcceptanceUnbound = !acceptancePresent
+					}
 					public := TeamNodeSemanticBinding{
 						LogicalNodeID:            binding.LogicalNodeID,
 						OutputContractVersion:    binding.OutputContractVersion,
@@ -2056,6 +2204,15 @@ func replayTeamExecution(
 						PrimaryWorkflowPath:      binding.PrimaryWorkflowPath,
 						WorkflowFallbackKey:      binding.WorkflowFallbackKey,
 						RecoveryApprovalRequired: binding.RecoveryApprovalRequired,
+					}
+					if acceptancePresent {
+						public.AcceptanceContractVersion = *binding.AcceptanceContractVersion
+						public.AcceptanceContractDigest = *binding.AcceptanceContractDigest
+						public.AcceptanceRisk = *binding.AcceptanceRisk
+						public.IndependentVerifierRequired = *binding.IndependentVerifierRequired
+						public.VerifierAgentInstanceID = *binding.VerifierAgentInstanceID
+						public.VerifierRuntimeInstanceID = *binding.VerifierRuntimeInstanceID
+						public.VerifierWorkflowPath = *binding.VerifierWorkflowPath
 					}
 					if public.OutputContractVersion < 1 ||
 						!validSHA256Hex(public.OutputContractDigest) ||
@@ -2077,7 +2234,12 @@ func replayTeamExecution(
 				binding := bindings[node.LogicalNodeID]
 				if payload.SemanticBindings != nil &&
 					(binding.LogicalNodeID == "" ||
-						binding.AttemptCredits > node.MaxAttempts-1) {
+						binding.AttemptCredits > node.MaxAttempts-1 ||
+						!team.legacyAcceptanceUnbound &&
+							!validTeamAcceptanceBinding(
+								binding,
+								node.AgentInstanceID,
+							)) {
 					return TeamExecutionRecord{}, ErrTeamExecutionConflict
 				}
 				team.nodes[index] = TeamNodeRecord{
@@ -2270,6 +2432,77 @@ func replayTeamExecution(
 				payload.OutputClassificationDigest,
 				payload.OutputSummaryDigest,
 			)
+		case "TeamNodeAcceptanceCommitted":
+			var payload teamNodeAcceptancePayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				payload.TeamInstanceID != team.teamInstanceID ||
+				payload.PlanDigest != team.planDigest ||
+				event.ID != teamAcceptancePayloadEventID(payload) ||
+				event.CausationID != payload.WorkOutcomeEventID ||
+				!validOpaqueID(payload.WorkOutcomeEventID) ||
+				!validSHA256Hex(payload.AcceptanceDecisionDigest) {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node := teamNodeByID(&team, payload.LogicalNodeID)
+			attempt := teamAttemptByNumber(node, payload.AttemptNumber)
+			if team.legacyAcceptanceUnbound ||
+				node == nil ||
+				attempt == nil ||
+				node.currentAttempt != payload.AttemptNumber ||
+				node.status != "ready_for_review" ||
+				attempt.workItemID != payload.WorkItemID ||
+				payload.AcceptanceContractVersion !=
+					node.semanticBinding.AcceptanceContractVersion ||
+				payload.AcceptanceContractDigest !=
+					node.semanticBinding.AcceptanceContractDigest {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			decidedAt, err := parseOptionalUTC(payload.DecidedAt)
+			if err != nil || decidedAt.IsZero() {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			switch payload.AcceptanceDecisionKind {
+			case "accepted":
+				if payload.NodeStatus != "succeeded" ||
+					!payload.DependencySatisfied ||
+					payload.RecoveryTrigger != "" ||
+					payload.RecoveryPolicyVersion != 0 ||
+					payload.RecoveryPolicyDigest != "" ||
+					payload.CreditsBefore != 0 {
+					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				}
+			case "rejected":
+				expectedCredits := node.semanticBinding.AttemptCredits -
+					(payload.AttemptNumber - 1)
+				if expectedCredits < 0 {
+					expectedCredits = 0
+				}
+				if payload.NodeStatus != "awaiting_recovery" ||
+					payload.DependencySatisfied ||
+					payload.RecoveryTrigger !=
+						teamRecoveryTriggerVerificationRejected ||
+					payload.RecoveryPolicyVersion !=
+						node.semanticBinding.RecoveryPolicyVersion ||
+					payload.RecoveryPolicyDigest !=
+						node.semanticBinding.RecoveryPolicyDigest ||
+					payload.CreditsBefore != expectedCredits {
+					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				}
+			default:
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node.acceptanceDecisionDigest =
+				payload.AcceptanceDecisionDigest
+			node.acceptanceDecisionTime = decidedAt
+			node.status = payload.NodeStatus
+			node.dependencySatisfied = payload.DependencySatisfied
+			node.recoveryTrigger = payload.RecoveryTrigger
+			node.recoveryPolicyVersion = payload.RecoveryPolicyVersion
+			node.recoveryPolicyDigest = payload.RecoveryPolicyDigest
+			node.creditsBefore = payload.CreditsBefore
+			if payload.NodeStatus == "awaiting_recovery" {
+				team.status = "awaiting_recovery"
+			}
 		case "TeamNodeRecoveryRecorded":
 			var payload teamRecoveryPayload
 			if decodeExactPayload(event.PayloadJSON, &payload) != nil {
@@ -2291,6 +2524,15 @@ func replayTeamExecution(
 			}
 			retryAt, retryErr := parseOptionalUTC(payload.RetryAt)
 			fallbackBefore := teamFallbackConsumed(node)
+			expectedTrigger := node.recoveryTrigger
+			if expectedTrigger == "" {
+				expectedTrigger = teamRecoveryTriggerOutput
+			}
+			payloadTrigger := payload.RecoveryTrigger
+			if payloadTrigger == "" &&
+				payload.AcceptanceDecisionDigest == "" {
+				payloadTrigger = teamRecoveryTriggerOutput
+			}
 			if team.legacySemanticUnbound ||
 				attempt == nil ||
 				!validSHA256Hex(payload.RecoveryDecisionDigest) ||
@@ -2307,6 +2549,9 @@ func replayTeamExecution(
 					payload.AttemptNumber-1 ||
 				payload.ClassificationDigest !=
 					attempt.outputClassificationDigest ||
+				payloadTrigger != expectedTrigger ||
+				payload.AcceptanceDecisionDigest !=
+					node.acceptanceDecisionDigest ||
 				retryErr != nil {
 				return TeamExecutionRecord{}, ErrTeamExecutionConflict
 			}
@@ -2372,6 +2617,7 @@ func replayTeamExecution(
 				return TeamExecutionRecord{}, ErrTeamExecutionConflict
 			}
 			node.dependencySatisfied = payload.DependencySatisfied
+			node.recoveryTrigger = payloadTrigger
 			node.recoveryAction = payload.Action
 			node.recoveryDecisionDigest = payload.RecoveryDecisionDigest
 			node.creditsBefore = payload.CreditsBefore
@@ -2415,10 +2661,16 @@ func replayTeamExecution(
 				Status         string `json:"status"`
 				Reason         string `json:"reason"`
 			}
+			expectedStatus, expectedReason :=
+				aggregateTeamTerminal(team)
 			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
 				payload.TeamInstanceID != team.teamInstanceID ||
 				payload.PlanDigest != team.planDigest ||
-				!isTerminalTeamStatus(payload.Status) {
+				!isTerminalTeamStatus(payload.Status) ||
+				!teamIsTerminal(team) ||
+				payload.Status != expectedStatus ||
+				payload.Reason != expectedReason ||
+				event.CausationID != team.lastEventID {
 				return TeamExecutionRecord{}, ErrTeamExecutionConflict
 			}
 			team.status = payload.Status
@@ -2459,11 +2711,13 @@ func applyAttemptTerminal(
 	attempt.outputSummaryDigest = outputSummaryDigest
 	switch outputClassification {
 	case verification.OutputValidNonEmpty, verification.OutputValidEmpty:
-		node.status = "succeeded"
-		node.dependencySatisfied = true
+		node.status = "ready_for_review"
+		node.dependencySatisfied = false
+		node.recoveryTrigger = ""
 	default:
 		node.status = "awaiting_recovery"
 		node.dependencySatisfied = false
+		node.recoveryTrigger = teamRecoveryTriggerOutput
 	}
 	if node.status == "awaiting_recovery" {
 		team.status = "awaiting_recovery"
@@ -2587,6 +2841,12 @@ func matchExistingTeamRecovery(
 			continue
 		}
 		matches := payload.RecoveryDecisionDigest == decision.Digest() &&
+			(payload.RecoveryTrigger == decision.TriggerValue() ||
+				payload.RecoveryTrigger == "" &&
+					decision.TriggerValue() ==
+						teamRecoveryTriggerOutput) &&
+			payload.AcceptanceDecisionDigest ==
+				decision.AcceptanceDecisionDigest() &&
 			event.CorrelationID == input.CorrelationID
 		return matches, !matches, nil
 	}

@@ -174,6 +174,82 @@ func TestRecoveryPolicyRejectsInvalidBudgetTimeAndMutation(t *testing.T) {
 	}
 }
 
+func TestVerificationRejectedRecoveryIsBoundedAndForbidsFallback(t *testing.T) {
+	policy, err := NewRecoveryPolicy(RecoveryPolicyInput{
+		Version:             1,
+		RetryDelay:          2 * time.Minute,
+		AttemptCredits:      1,
+		ExhaustionAction:    ExhaustionBlocked,
+		WorkflowFallbackKey: "workflow-fallback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 26, 18, 30, 0, 0, time.UTC)
+	classification := testRecoveryClassification(
+		t,
+		verification.OutputValidNonEmpty,
+	)
+	input := RecoveryInput{
+		TeamInstanceID:           "team-1",
+		PlanDigest:               strings.Repeat("a", 64),
+		LogicalNodeID:            "main",
+		AttemptNumber:            1,
+		MaxAttempts:              2,
+		AgentInstanceID:          "agent-1",
+		RuntimeInstanceID:        "runtime-1",
+		EvidenceID:               classification.EvidenceID(),
+		EvidenceDigest:           classification.EvidenceDigest(),
+		OutputSummaryDigest:      classification.SummaryDigest(),
+		Classification:           classification,
+		RemainingCredits:         1,
+		DecisionTime:             now,
+		Trigger:                  RecoveryTriggerVerificationRejected,
+		AcceptanceDecisionDigest: strings.Repeat("d", 64),
+	}
+	decision, err := DecideRecovery(policy, input)
+	if err != nil {
+		t.Fatalf("DecideRecovery() error = %v", err)
+	}
+	if decision.Action() != RecoveryRetry ||
+		decision.Trigger() != RecoveryTriggerVerificationRejected ||
+		decision.AcceptanceDecisionDigest() != input.AcceptanceDecisionDigest ||
+		!decision.RetryAt().Equal(now.Add(2*time.Minute)) ||
+		decision.WorkflowFallbackKey() != "" ||
+		decision.CreditsAfter() != 0 ||
+		!decision.Valid() {
+		t.Fatalf("verification rejection decision = %#v", decision)
+	}
+
+	input.AttemptNumber = 2
+	input.MaxAttempts = 2
+	input.PriorClassifications = []verification.OutputClassification{
+		verification.OutputInvalid,
+	}
+	input.RemainingCredits = 0
+	exhausted, err := DecideRecovery(policy, input)
+	if err != nil {
+		t.Fatalf("DecideRecovery(exhausted) error = %v", err)
+	}
+	if exhausted.Action() != RecoveryBlocked ||
+		exhausted.Trigger() != RecoveryTriggerVerificationRejected ||
+		!exhausted.RetryAt().IsZero() {
+		t.Fatalf("exhausted = %#v", exhausted)
+	}
+
+	input.AttemptNumber = 1
+	input.MaxAttempts = 2
+	input.PriorClassifications = nil
+	input.RemainingCredits = 1
+	input.AcceptanceDecisionDigest = ""
+	if _, err := DecideRecovery(
+		policy,
+		input,
+	); !errors.Is(err, ErrInvalidRecoveryInput) {
+		t.Fatalf("missing acceptance digest error = %v", err)
+	}
+}
+
 func testRecoveryPolicyInput() RecoveryPolicyInput {
 	return RecoveryPolicyInput{
 		Version:             2,

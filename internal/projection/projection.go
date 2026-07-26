@@ -73,11 +73,38 @@ type Snapshot struct {
 }
 
 type WorkItem struct {
-	ID              string
-	Title           string
-	Status          string
-	RunID           string
-	AgentInstanceID string
+	ID                        string
+	Title                     string
+	Status                    string
+	RunID                     string
+	AgentInstanceID           string
+	VerificationStatus        string
+	TeamInstanceID            string
+	PlanDigest                string
+	LogicalNodeID             string
+	AttemptNumber             int
+	SourceEvidenceID          string
+	SourceEvidenceDigest      string
+	OutputSummaryDigest       string
+	AcceptanceContractVersion int
+	AcceptanceContractDigest  string
+	AcceptanceRisk            string
+	DeterministicResultDigest string
+	VerifierRequired          bool
+	VerifierWorkItemID        string
+	VerifierRunID             string
+	VerifierAgentInstanceID   string
+	VerifierRuntimeInstanceID string
+	VerifierEvidenceID        string
+	VerifierEvidenceDigest    string
+	VerifierCandidateDigest   string
+	AcceptanceDecisionKind    string
+	AcceptanceDecisionDigest  string
+	AcceptanceDecisionReason  string
+	AcceptanceDecisionTime    time.Time
+	RecoveryTrigger           string
+	RecoveryPolicyVersion     int
+	RecoveryPolicyDigest      string
 }
 
 type Run struct {

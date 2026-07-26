@@ -50,6 +50,7 @@ type teamCanaryAdapter struct {
 	barrier        *teamCanaryBarrier
 	subagent       bool
 	terminalStatus string
+	terminalReason string
 	runtimeID      string
 	calls          *atomic.Int32
 	omitOutput     bool
@@ -92,7 +93,10 @@ func (adapter *teamCanaryAdapter) Execute(
 	}
 	reason := ""
 	if terminalStatus != "succeeded" {
-		reason = "controlled_failure"
+		reason = adapter.terminalReason
+		if reason == "" {
+			reason = "controlled_failure"
+		}
 	}
 	frames := []bridgev1.Frame{
 		teamCanaryInboundFrame(
@@ -134,6 +138,599 @@ func (adapter *teamCanaryAdapter) Execute(
 		DispatchAcknowledged: true,
 		ResultAcknowledged:   true,
 	})
+}
+
+func TestTeamCoordinatorUsesDistinctIndependentVerifierLineage(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	now := fixture.clock.Now()
+	seedTeamCanaryRuntime(
+		t,
+		fixture.store,
+		"runtime-verifier",
+		1,
+		now,
+	)
+	var verifierCalls atomic.Int32
+	verifierExecutor := newTeamCanarySupervisor(
+		t,
+		fixture.work,
+		fixture.grants,
+		&teamCanaryAdapter{
+			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID: "runtime-verifier",
+			calls:     &verifierCalls,
+		},
+	)
+	template := teamCanaryNodeExecution(
+		t,
+		fixture.plan,
+		"main",
+		1,
+		"agent-verifier",
+		"runtime-verifier",
+		now,
+		verifierExecutor,
+	)
+	contract, err := verification.NewAcceptanceContract(
+		1,
+		[]string{"controlled output is accepted"},
+		verification.AcceptanceRiskHigh,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.Semantics[0].AcceptanceContract = contract
+	fixture.request.Semantics[0].VerifierAgentInstanceID =
+		"agent-verifier"
+	fixture.request.Semantics[0].VerifierRuntimeInstanceID =
+		"runtime-verifier"
+	fixture.request.Semantics[0].VerifierWorkflowPath =
+		"independent-verification"
+	fixture.request.Semantics[0].VerifierExecution =
+		&TeamVerifierExecution{
+			SourcePath: template.SourcePath,
+			Profile:    template.Profile,
+			Instance:   template.Instance,
+			Executor:   verifierExecutor,
+		}
+	result, err := fixture.coordinator.Run(
+		context.Background(),
+		fixture.request,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Team().Status() != "succeeded" ||
+		fixture.calls.Load() != 1 ||
+		verifierCalls.Load() != 1 {
+		t.Fatalf(
+			"result=%#v source_calls=%d verifier_calls=%d",
+			result,
+			fixture.calls.Load(),
+			verifierCalls.Load(),
+		)
+	}
+	if err := fixture.readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	view := fixture.readModel.GlobalReadView()
+	var source projection.WorkItem
+	var found bool
+	for _, node := range result.Team().Nodes() {
+		attempts := node.Attempts()
+		if len(attempts) != 1 {
+			t.Fatalf("source attempts = %d", len(attempts))
+		}
+		source, found = view.WorkItem(attempts[0].WorkItemID())
+	}
+	if !found ||
+		source.Status != "done" ||
+		!source.VerifierRequired ||
+		source.VerifierWorkItemID == "" ||
+		source.VerifierRunID == "" ||
+		source.VerifierEvidenceID == "" ||
+		source.VerifierWorkItemID == source.ID ||
+		source.VerifierRunID == source.RunID ||
+		source.VerifierAgentInstanceID == source.AgentInstanceID {
+		t.Fatalf("source acceptance projection = %#v", source)
+	}
+	before, err := fixture.store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := fixture.coordinator.Run(
+		context.Background(),
+		fixture.request,
+	)
+	if err != nil || restarted.Team().Status() != "succeeded" {
+		t.Fatalf("restart = %#v, %v", restarted, err)
+	}
+	after, err := fixture.store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundContractRisk := false
+	for _, event := range after {
+		if event.Type != "TeamExecutionPlanned" {
+			continue
+		}
+		if strings.Contains(
+			string(event.PayloadJSON),
+			`"acceptance_risk"`,
+		) || !strings.Contains(
+			string(event.PayloadJSON),
+			`"risk":"high"`,
+		) {
+			t.Fatalf(
+				"TeamExecutionPlanned acceptance risk schema = %s",
+				event.PayloadJSON,
+			)
+		}
+		foundContractRisk = true
+	}
+	if len(after) != len(before) ||
+		fixture.calls.Load() != 1 ||
+		verifierCalls.Load() != 1 {
+		t.Fatalf(
+			"restart Events=%d source_calls=%d verifier_calls=%d",
+			len(after)-len(before),
+			fixture.calls.Load(),
+			verifierCalls.Load(),
+		)
+	}
+	if !foundContractRisk {
+		t.Fatal("missing TeamExecutionPlanned acceptance risk")
+	}
+}
+
+func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing.T) {
+	fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
+	now := fixture.clock.Now()
+	seedTeamCanaryRuntime(
+		t,
+		fixture.store,
+		"runtime-verifier",
+		1,
+		now,
+	)
+	var verifierCalls atomic.Int32
+	verifierExecutor := newTeamCanarySupervisor(
+		t,
+		fixture.work,
+		fixture.grants,
+		&teamCanaryAdapter{
+			barrier:        &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID:      "runtime-verifier",
+			calls:          &verifierCalls,
+			terminalStatus: "failed",
+			terminalReason: string(
+				verification.VerifierReasonCriteriaNotSatisfied,
+			),
+		},
+	)
+	template := teamCanaryNodeExecution(
+		t,
+		fixture.plan,
+		"main",
+		1,
+		"agent-verifier",
+		"runtime-verifier",
+		now,
+		verifierExecutor,
+	)
+	contract, err := verification.NewAcceptanceContract(
+		1,
+		[]string{"controlled output is accepted"},
+		verification.AcceptanceRiskHigh,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.Semantics[0].AcceptanceContract = contract
+	fixture.request.Semantics[0].VerifierAgentInstanceID =
+		"agent-verifier"
+	fixture.request.Semantics[0].VerifierRuntimeInstanceID =
+		"runtime-verifier"
+	fixture.request.Semantics[0].VerifierWorkflowPath =
+		"independent-verification"
+	fixture.request.Semantics[0].VerifierExecution =
+		&TeamVerifierExecution{
+			SourcePath: template.SourcePath,
+			Profile:    template.Profile,
+			Instance:   template.Instance,
+			Executor:   verifierExecutor,
+		}
+	result, err := fixture.coordinator.Run(
+		context.Background(),
+		fixture.request,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Team().Status() != "blocked" ||
+		fixture.calls.Load() != 2 ||
+		verifierCalls.Load() != 2 {
+		t.Fatalf(
+			"result=%#v source_calls=%d verifier_calls=%d",
+			result,
+			fixture.calls.Load(),
+			verifierCalls.Load(),
+		)
+	}
+	events, err := fixture.store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int)
+	for _, event := range events {
+		counts[event.Type]++
+		if event.Type == "TeamNodeRecoveryRecorded" &&
+			(strings.Contains(
+				string(event.PayloadJSON),
+				`"action":"fallback"`,
+			) ||
+				!strings.Contains(
+					string(event.PayloadJSON),
+					`"recovery_trigger":"verification_rejected"`,
+				)) {
+			t.Fatalf("invalid verification recovery = %s", event.PayloadJSON)
+		}
+	}
+	if counts["WorkItemRejected"] != 2 ||
+		counts["WorkItemDone"] != 0 ||
+		counts["TeamNodeRecoveryRecorded"] != 2 ||
+		counts["TeamExecutionTerminal"] != 1 {
+		t.Fatalf("rejection Event counts = %v", counts)
+	}
+}
+
+func TestIndependentVerifierTerminalReceiptRestartsWithoutReexecution(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	now := fixture.clock.Now()
+	seedTeamCanaryRuntime(
+		t,
+		fixture.store,
+		"runtime-verifier",
+		1,
+		now,
+	)
+	var verifierCalls atomic.Int32
+	verifierExecutor := newTeamCanarySupervisor(
+		t,
+		fixture.work,
+		fixture.grants,
+		&teamCanaryAdapter{
+			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID: "runtime-verifier",
+			calls:     &verifierCalls,
+		},
+	)
+	template := teamCanaryNodeExecution(
+		t,
+		fixture.plan,
+		"main",
+		1,
+		"agent-verifier",
+		"runtime-verifier",
+		now,
+		verifierExecutor,
+	)
+	acceptance, err := verification.NewAcceptanceContract(
+		1,
+		[]string{"controlled output is accepted"},
+		verification.AcceptanceRiskHigh,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semantics := &fixture.request.Semantics[0]
+	semantics.AcceptanceContract = acceptance
+	semantics.VerifierAgentInstanceID = "agent-verifier"
+	semantics.VerifierRuntimeInstanceID = "runtime-verifier"
+	semantics.VerifierWorkflowPath = "independent-verification"
+	semantics.VerifierExecution = &TeamVerifierExecution{
+		SourcePath: template.SourcePath,
+		Profile:    template.Profile,
+		Instance:   template.Instance,
+		Executor:   verifierExecutor,
+	}
+	tasks := fixture.dispatchAndPrepare(t)
+	outcomes := executeTeamTasks(context.Background(), tasks)
+	if len(outcomes) != 1 ||
+		outcomes[0].outcome.Run().TerminalStatus() != "succeeded" {
+		t.Fatalf("source outcome = %#v", outcomes)
+	}
+	sourceTerminal := outcomes[0].outcome.Run()
+	sourceReceipt, err := fixture.artifacts.FinalizeAttemptCapture(
+		context.Background(),
+		tasks[0].evidenceID,
+		evidence.AttemptTerminal{
+			Status: sourceTerminal.TerminalStatus(),
+			Reason: sourceTerminal.TerminalReason(),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := sourceReceipt.OutputSummary()
+	observation, err := verification.NewOutputObservation(
+		sourceReceipt.EvidenceID(),
+		sourceReceipt.Digest(),
+		summary.Digest(),
+		summary.AuthorizedFrameCount(),
+		summary.OutputFrameCount(),
+		summary.OutputPayloadBytes(),
+		summary.ResultObserved(),
+		summary.TerminalStatus(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classification, err := verification.Classify(
+		semantics.OutputContract,
+		observation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := tasks[0].generation
+	if _, err := fixture.work.CommitTeamAttemptEvidence(
+		context.Background(),
+		work.TeamAttemptEvidenceInput{
+			TeamInstanceID:    fixture.plan.TeamInstanceID(),
+			PlanDigest:        fixture.plan.Digest(),
+			LogicalNodeID:     "main",
+			AttemptNumber:     1,
+			WorkItemID:        generation.WorkItemID,
+			RunID:             generation.RunID,
+			ClaimID:           generation.ClaimID,
+			ClaimGeneration:   generation.ClaimGeneration,
+			RuntimeInstanceID: generation.RuntimeInstanceID,
+			AgentInstanceID:   generation.AgentInstanceID,
+			Receipt:           sourceReceipt,
+			Classification:    classification,
+			CorrelationID:     fixture.request.CorrelationID,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	deterministic, err := verification.VerifyDeterministic(
+		semantics.AcceptanceContract,
+		verification.DeterministicVerificationInput{
+			TeamInstanceID:             fixture.plan.TeamInstanceID(),
+			PlanDigest:                 fixture.plan.Digest(),
+			LogicalNodeID:              "main",
+			AttemptNumber:              1,
+			WorkItemID:                 generation.WorkItemID,
+			RunID:                      generation.RunID,
+			ClaimID:                    generation.ClaimID,
+			ClaimGeneration:            generation.ClaimGeneration,
+			SourceEvidenceID:           sourceReceipt.EvidenceID(),
+			SourceEvidenceDigest:       sourceReceipt.Digest(),
+			OutputSummaryDigest:        summary.Digest(),
+			OutputContractVersion:      semantics.OutputContract.Version(),
+			OutputContractDigest:       semantics.OutputContract.Digest(),
+			OutputClassification:       classification.Kind(),
+			OutputClassificationDigest: classification.Digest(),
+			AcceptanceContractDigest:   semantics.AcceptanceContract.Digest(),
+			TerminalStatus:             summary.TerminalStatus(),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBinding := deterministic.Input()
+	verifierWorkItemID := appVerifierIdentity(
+		"verifier-work",
+		sourceBinding.TeamInstanceID,
+		sourceBinding.PlanDigest,
+		sourceBinding.LogicalNodeID,
+		fmt.Sprint(sourceBinding.AttemptNumber),
+		sourceBinding.WorkItemID,
+		sourceBinding.RunID,
+		sourceBinding.SourceEvidenceDigest,
+		semantics.AcceptanceContract.Digest(),
+	)
+	verifierRunID := appVerifierIdentity(
+		"verifier-run",
+		verifierWorkItemID,
+		semantics.VerifierAgentInstanceID,
+		semantics.VerifierRuntimeInstanceID,
+		semantics.VerifierWorkflowPath,
+	)
+	if _, _, err := fixture.work.CreateAndAssign(
+		context.Background(),
+		work.WorkItemAssignmentInput{
+			WorkItemID:      verifierWorkItemID,
+			Title:           "Independent verification",
+			RunID:           verifierRunID,
+			AgentInstanceID: semantics.VerifierAgentInstanceID,
+			CorrelationID:   fixture.request.CorrelationID,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, staleClaim, err := fixture.work.Claim(
+		context.Background(),
+		work.RunClaimInput{
+			WorkItemID:           verifierWorkItemID,
+			RunID:                verifierRunID,
+			RuntimeInstanceID:    semantics.VerifierRuntimeInstanceID,
+			AgentInstanceID:      semantics.VerifierAgentInstanceID,
+			PrepareLeaseDuration: time.Minute,
+			CorrelationID:        fixture.request.CorrelationID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleGrant, err := fixture.coordinator.issueTeamGrant(
+		context.Background(),
+		fixture.request,
+		work.RunGenerationInput{
+			WorkItemID:        verifierWorkItemID,
+			RunID:             verifierRunID,
+			ClaimID:           staleClaim.ClaimID(),
+			ClaimGeneration:   staleClaim.ClaimGeneration(),
+			RuntimeInstanceID: staleClaim.RuntimeInstanceID(),
+			AgentInstanceID:   staleClaim.AgentInstanceID(),
+			CorrelationID:     fixture.request.CorrelationID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.clock.now = now.Add(2 * time.Minute)
+	fixture.request.AuthoritativeTime = fixture.clock.now
+	firstCandidate, firstReceipt, err :=
+		fixture.coordinator.runIndependentVerifier(
+			context.Background(),
+			fixture.request,
+			*semantics,
+			deterministic,
+			sourceReceipt,
+		)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstCandidate.Binding().ClaimGeneration != 2 ||
+		firstCandidate.Binding().GrantID == staleGrant.Record().ID() {
+		t.Fatalf(
+			"recovered verifier generation/grant = %d/%s",
+			firstCandidate.Binding().ClaimGeneration,
+			firstCandidate.Binding().GrantID,
+		)
+	}
+	for name, mutate := range map[string]func(
+		verification.VerifierTerminalInput,
+	) verification.VerifierTerminalInput{
+		"unauthorized grant": func(
+			binding verification.VerifierTerminalInput,
+		) verification.VerifierTerminalInput {
+			binding.GrantID = "forged-grant"
+			return binding
+		},
+		"stale generation": func(
+			binding verification.VerifierTerminalInput,
+		) verification.VerifierTerminalInput {
+			binding.ClaimGeneration++
+			return binding
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged, candidateErr :=
+				verification.VerifierCandidateFromTerminal(
+					mutate(firstCandidate.Binding()),
+				)
+			if candidateErr != nil {
+				t.Fatal(candidateErr)
+			}
+			decision, decisionErr := verification.DecideAcceptance(
+				verification.AcceptanceDecisionInput{
+					Contract:            semantics.AcceptanceContract,
+					DeterministicResult: deterministic,
+					VerifierCandidate:   forged,
+					DecisionTime:        fixture.request.AuthoritativeTime,
+				},
+			)
+			if decisionErr != nil {
+				t.Fatal(decisionErr)
+			}
+			_, acceptErr :=
+				fixture.work.CommitTeamNodeAcceptance(
+					context.Background(),
+					work.TeamNodeAcceptanceInput{
+						TeamInstanceID:      fixture.plan.TeamInstanceID(),
+						PlanDigest:          fixture.plan.Digest(),
+						LogicalNodeID:       "main",
+						AttemptNumber:       1,
+						SourceReceipt:       sourceReceipt,
+						AcceptanceContract:  semantics.AcceptanceContract,
+						DeterministicResult: deterministic,
+						VerifierCandidate:   forged,
+						VerifierReceipt:     firstReceipt,
+						Decision:            decision,
+						RecoveryPolicy:      semantics.RecoveryPolicy,
+						MaxAttempts:         1,
+						CreditsBefore:       0,
+						CorrelationID:       fixture.request.CorrelationID,
+					},
+				)
+			if !errors.Is(acceptErr, work.ErrVerifierLineageMismatch) {
+				t.Fatalf("forged acceptance error = %v", acceptErr)
+			}
+		})
+	}
+	before, err := fixture.store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCandidate, secondReceipt, err :=
+		fixture.coordinator.runIndependentVerifier(
+			context.Background(),
+			fixture.request,
+			*semantics,
+			deterministic,
+			sourceReceipt,
+		)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := fixture.store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstCandidate.Digest() != secondCandidate.Digest() ||
+		firstReceipt.Digest() != secondReceipt.Digest() ||
+		verifierCalls.Load() != 1 ||
+		len(after) != len(before) {
+		t.Fatalf(
+			"restart candidate=%s/%s receipt=%s/%s calls=%d Events=%d",
+			firstCandidate.Digest(),
+			secondCandidate.Digest(),
+			firstReceipt.Digest(),
+			secondReceipt.Digest(),
+			verifierCalls.Load(),
+			len(after)-len(before),
+		)
+	}
+	oldView := fixture.readModel.GlobalReadView()
+	workHead, ok := oldView.Head("work-item/" + generation.WorkItemID)
+	if !ok {
+		t.Fatal("missing accepted WorkItem head")
+	}
+	if _, err := fixture.store.Append(
+		context.Background(),
+		journal.Event{
+			ID:             "malformed-acceptance",
+			StreamID:       "work-item/" + generation.WorkItemID,
+			Seq:            workHead.Sequence + 1,
+			IdempotencyKey: "malformed-acceptance",
+			Type:           "WorkItemDone",
+			SchemaVersion:  1,
+			EmittedAt:      fixture.clock.Now().Add(time.Second),
+			CorrelationID:  fixture.request.CorrelationID,
+			CausationID:    workHead.EventID,
+			PayloadJSON:    []byte(`{}`),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.readModel.Rebuild(context.Background()); !errors.Is(err, projection.ErrInvalidProjectionEvent) {
+		t.Fatalf("malformed rebuild error = %v", err)
+	}
+	preserved := fixture.readModel.GlobalReadView()
+	preservedSource, ok := preserved.WorkItem(generation.WorkItemID)
+	if !ok ||
+		preserved.Version() != oldView.Version() ||
+		preservedSource.Status != "ready_for_review" {
+		t.Fatalf(
+			"preserved view=%s/%s source=%#v",
+			oldView.Version(),
+			preserved.Version(),
+			preservedSource,
+		)
+	}
 }
 
 type teamCanaryOutputObserver struct {
@@ -1229,10 +1826,19 @@ func testTeamNodeSemantics(
 		if err != nil {
 			t.Fatal(err)
 		}
+		acceptance, err := verification.NewAcceptanceContract(
+			1,
+			[]string{"controlled output is accepted"},
+			verification.AcceptanceRiskLow,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		result = append(result, TeamNodeSemantics{
 			LogicalNodeID:       node.LogicalNodeID(),
 			OutputContract:      contract,
 			RecoveryPolicy:      policy,
+			AcceptanceContract:  acceptance,
 			PrimaryWorkflowPath: "primary",
 		})
 	}

@@ -14,6 +14,7 @@ func projectTeamExecutions(
 ) (map[string]TeamExecution, error) {
 	byStream := make(map[string][]journal.Event)
 	runClaimReferences := make(map[string]teamExecutionRunClaimReference)
+	workOutcomeReferences := make(map[string]journal.Event)
 	for _, event := range events {
 		if strings.HasPrefix(event.StreamID, "team-execution/") {
 			byStream[event.StreamID] = append(byStream[event.StreamID], event)
@@ -24,6 +25,11 @@ func projectTeamExecutions(
 				event.StreamID,
 				event.Seq,
 			)] = teamExecutionRunClaimReference{eventID: event.ID}
+		}
+		if strings.HasPrefix(event.StreamID, "work-item/") &&
+			(event.Type == "WorkItemDone" ||
+				event.Type == "WorkItemRejected") {
+			workOutcomeReferences[event.ID] = event
 		}
 	}
 	projected := make(map[string]TeamExecution, len(byStream))
@@ -39,6 +45,7 @@ func projectTeamExecutions(
 			teamInstanceID,
 			streamEvents,
 			runClaimReferences,
+			workOutcomeReferences,
 		)
 		if err != nil {
 			return nil, err
@@ -52,9 +59,11 @@ func projectTeamExecutionStream(
 	teamInstanceID string,
 	events []journal.Event,
 	runClaimReferences map[string]teamExecutionRunClaimReference,
+	workOutcomeReferences map[string]journal.Event,
 ) (TeamExecution, error) {
 	var record TeamExecution
 	var sequence int64
+	var lastEventID string
 	maxAttempts := make(map[string]int)
 	for _, event := range events {
 		if event.Seq != sequence+1 || event.SchemaVersion != 1 {
@@ -77,15 +86,22 @@ func projectTeamExecutionStream(
 					MaxAttempts       int      `json:"max_attempts"`
 				} `json:"nodes"`
 				SemanticBindings *[]struct {
-					LogicalNodeID            string `json:"logical_node_id"`
-					OutputContractVersion    int    `json:"output_contract_version"`
-					OutputContractDigest     string `json:"output_contract_digest"`
-					RecoveryPolicyVersion    int    `json:"recovery_policy_version"`
-					RecoveryPolicyDigest     string `json:"recovery_policy_digest"`
-					AttemptCredits           int    `json:"attempt_credits"`
-					PrimaryWorkflowPath      string `json:"primary_workflow_path"`
-					WorkflowFallbackKey      string `json:"workflow_fallback_key"`
-					RecoveryApprovalRequired bool   `json:"recovery_approval_required"`
+					LogicalNodeID               string  `json:"logical_node_id"`
+					OutputContractVersion       int     `json:"output_contract_version"`
+					OutputContractDigest        string  `json:"output_contract_digest"`
+					RecoveryPolicyVersion       int     `json:"recovery_policy_version"`
+					RecoveryPolicyDigest        string  `json:"recovery_policy_digest"`
+					AttemptCredits              int     `json:"attempt_credits"`
+					PrimaryWorkflowPath         string  `json:"primary_workflow_path"`
+					WorkflowFallbackKey         string  `json:"workflow_fallback_key"`
+					RecoveryApprovalRequired    bool    `json:"recovery_approval_required"`
+					AcceptanceContractVersion   *int    `json:"acceptance_contract_version,omitempty"`
+					AcceptanceContractDigest    *string `json:"acceptance_contract_digest,omitempty"`
+					AcceptanceRisk              *string `json:"risk,omitempty"`
+					IndependentVerifierRequired *bool   `json:"independent_verifier_required,omitempty"`
+					VerifierAgentInstanceID     *string `json:"verifier_agent_instance_id,omitempty"`
+					VerifierRuntimeInstanceID   *string `json:"verifier_runtime_instance_id,omitempty"`
+					VerifierWorkflowPath        *string `json:"verifier_workflow_path,omitempty"`
 				} `json:"semantic_bindings"`
 			}
 			if record.TeamInstanceID != "" ||
@@ -109,6 +125,15 @@ func projectTeamExecutionStream(
 					return TeamExecution{}, ErrInvalidProjectionEvent
 				}
 				for index, binding := range *payload.SemanticBindings {
+					acceptancePresent, complete := completeProjectedAcceptanceBinding(
+						binding.AcceptanceContractVersion,
+						binding.AcceptanceContractDigest,
+						binding.AcceptanceRisk,
+						binding.IndependentVerifierRequired,
+						binding.VerifierAgentInstanceID,
+						binding.VerifierRuntimeInstanceID,
+						binding.VerifierWorkflowPath,
+					)
 					if binding.LogicalNodeID == "" ||
 						index > 0 &&
 							(*payload.SemanticBindings)[index-1].
@@ -123,6 +148,14 @@ func projectTeamExecutionStream(
 						binding.WorkflowFallbackKey ==
 							binding.PrimaryWorkflowPath {
 						return TeamExecution{}, ErrInvalidProjectionEvent
+					}
+					if !complete ||
+						index > 0 &&
+							record.LegacyAcceptanceUnbound == acceptancePresent {
+						return TeamExecution{}, ErrInvalidProjectionEvent
+					}
+					if index == 0 {
+						record.LegacyAcceptanceUnbound = !acceptancePresent
 					}
 					semanticIndexes[binding.LogicalNodeID] = index
 				}
@@ -162,6 +195,28 @@ func projectTeamExecutionStream(
 						binding.WorkflowFallbackKey
 					record.Nodes[index].RecoveryApprovalRequired =
 						binding.RecoveryApprovalRequired
+					if !record.LegacyAcceptanceUnbound {
+						record.Nodes[index].AcceptanceContractVersion =
+							*binding.AcceptanceContractVersion
+						record.Nodes[index].AcceptanceContractDigest =
+							*binding.AcceptanceContractDigest
+						record.Nodes[index].AcceptanceRisk =
+							*binding.AcceptanceRisk
+						record.Nodes[index].IndependentVerifierRequired =
+							*binding.IndependentVerifierRequired
+						record.Nodes[index].VerifierAgentInstanceID =
+							*binding.VerifierAgentInstanceID
+						record.Nodes[index].VerifierRuntimeInstanceID =
+							*binding.VerifierRuntimeInstanceID
+						record.Nodes[index].VerifierWorkflowPath =
+							*binding.VerifierWorkflowPath
+						if !validProjectedAcceptanceBinding(
+							record.Nodes[index],
+							node.AgentInstanceID,
+						) {
+							return TeamExecution{}, ErrInvalidProjectionEvent
+						}
+					}
 				}
 				maxAttempts[node.LogicalNodeID] = node.MaxAttempts
 			}
@@ -407,8 +462,13 @@ func projectTeamExecutionStream(
 			if !record.LegacySemanticUnbound &&
 				(payload.OutputClassification == "valid_nonempty" ||
 					payload.OutputClassification == "valid_empty") {
-				node.Status = "succeeded"
-				node.DependencySatisfied = true
+				if record.LegacyAcceptanceUnbound {
+					node.Status = "succeeded"
+					node.DependencySatisfied = true
+				} else {
+					node.Status = "ready_for_review"
+					node.DependencySatisfied = false
+				}
 			} else if record.LegacySemanticUnbound &&
 				payload.Status == "succeeded" {
 				node.Status = "succeeded"
@@ -420,6 +480,137 @@ func projectTeamExecutionStream(
 			} else {
 				node.Status = "awaiting_recovery"
 				node.DependencySatisfied = false
+				record.Status = "awaiting_recovery"
+			}
+		case "TeamNodeAcceptanceCommitted":
+			var payload struct {
+				TeamInstanceID            string `json:"team_instance_id"`
+				PlanDigest                string `json:"plan_digest"`
+				LogicalNodeID             string `json:"logical_node_id"`
+				AttemptNumber             int    `json:"attempt_number"`
+				WorkItemID                string `json:"work_item_id"`
+				WorkOutcomeEventID        string `json:"work_outcome_event_id"`
+				AcceptanceContractVersion int    `json:"acceptance_contract_version"`
+				AcceptanceContractDigest  string `json:"acceptance_contract_digest"`
+				AcceptanceDecisionKind    string `json:"acceptance_decision_kind"`
+				AcceptanceDecisionDigest  string `json:"acceptance_decision_digest"`
+				DecidedAt                 string `json:"decided_at"`
+				NodeStatus                string `json:"node_status"`
+				DependencySatisfied       bool   `json:"dependency_satisfied"`
+				RecoveryTrigger           string `json:"recovery_trigger"`
+				RecoveryPolicyVersion     int    `json:"recovery_policy_version"`
+				RecoveryPolicyDigest      string `json:"recovery_policy_digest"`
+				CreditsBefore             int    `json:"credits_before"`
+			}
+			if decodeExactProjectionPayload(event, &payload) != nil ||
+				record.LegacyAcceptanceUnbound ||
+				payload.TeamInstanceID != record.TeamInstanceID ||
+				payload.PlanDigest != record.PlanDigest ||
+				event.ID != projectionDeterministicEventID(
+					"TeamNodeAcceptanceCommitted",
+					payload.TeamInstanceID,
+					payload.PlanDigest,
+					payload.LogicalNodeID,
+					fmt.Sprint(payload.AttemptNumber),
+					payload.WorkItemID,
+					payload.WorkOutcomeEventID,
+					fmt.Sprint(payload.AcceptanceContractVersion),
+					payload.AcceptanceContractDigest,
+					payload.AcceptanceDecisionKind,
+					payload.AcceptanceDecisionDigest,
+					payload.DecidedAt,
+					payload.NodeStatus,
+					fmt.Sprint(payload.DependencySatisfied),
+					payload.RecoveryTrigger,
+					fmt.Sprint(payload.RecoveryPolicyVersion),
+					payload.RecoveryPolicyDigest,
+					fmt.Sprint(payload.CreditsBefore),
+				) ||
+				event.CausationID != payload.WorkOutcomeEventID ||
+				!validSHA256Digest(payload.AcceptanceDecisionDigest) {
+				return TeamExecution{}, ErrInvalidProjectionEvent
+			}
+			node := projectedTeamNode(&record, payload.LogicalNodeID)
+			attempt := projectedTeamAttempt(node, payload.AttemptNumber)
+			decidedAt, decidedErr := parseProjectedRetryAt(payload.DecidedAt)
+			outcome, outcomeExists :=
+				workOutcomeReferences[payload.WorkOutcomeEventID]
+			if node == nil ||
+				attempt == nil ||
+				node.Status != "ready_for_review" ||
+				node.CurrentAttempt != payload.AttemptNumber ||
+				attempt.WorkItemID != payload.WorkItemID ||
+				payload.AcceptanceContractVersion !=
+					node.AcceptanceContractVersion ||
+				payload.AcceptanceContractDigest !=
+					node.AcceptanceContractDigest ||
+				decidedErr != nil ||
+				decidedAt.IsZero() ||
+				!outcomeExists ||
+				outcome.StreamID != "work-item/"+payload.WorkItemID {
+				return TeamExecution{}, ErrInvalidProjectionEvent
+			}
+			var outcomePayload runProjectionAcceptanceOutcomePayload
+			if decodeExactProjectionPayload(outcome, &outcomePayload) != nil ||
+				outcomePayload.WorkItemID != payload.WorkItemID ||
+				outcomePayload.RunID != attempt.RunID ||
+				outcomePayload.ClaimGeneration !=
+					attempt.ClaimGeneration ||
+				outcomePayload.AcceptanceDecisionDigest !=
+					payload.AcceptanceDecisionDigest ||
+				outcome.ID != projectionAcceptanceOutcomeEventID(
+					outcome.Type,
+					outcomePayload,
+				) ||
+				outcome.CausationID !=
+					outcomePayload.VerificationEventID ||
+				outcomePayload.VerificationEventID == "" {
+				return TeamExecution{}, ErrInvalidProjectionEvent
+			}
+			switch payload.AcceptanceDecisionKind {
+			case "accepted":
+				if outcome.Type != "WorkItemDone" ||
+					outcomePayload.Status != "done" ||
+					payload.NodeStatus != "succeeded" ||
+					!payload.DependencySatisfied ||
+					payload.RecoveryTrigger != "" ||
+					payload.RecoveryPolicyVersion != 0 ||
+					payload.RecoveryPolicyDigest != "" ||
+					payload.CreditsBefore != 0 {
+					return TeamExecution{}, ErrInvalidProjectionEvent
+				}
+			case "rejected":
+				expectedCredits := node.AttemptCredits -
+					(payload.AttemptNumber - 1)
+				if expectedCredits < 0 {
+					expectedCredits = 0
+				}
+				if outcome.Type != "WorkItemRejected" ||
+					outcomePayload.Status != "rejected" ||
+					payload.NodeStatus != "awaiting_recovery" ||
+					payload.DependencySatisfied ||
+					payload.RecoveryTrigger !=
+						"verification_rejected" ||
+					payload.RecoveryPolicyVersion !=
+						node.RecoveryPolicyVersion ||
+					payload.RecoveryPolicyDigest !=
+						node.RecoveryPolicyDigest ||
+					payload.CreditsBefore != expectedCredits {
+					return TeamExecution{}, ErrInvalidProjectionEvent
+				}
+			default:
+				return TeamExecution{}, ErrInvalidProjectionEvent
+			}
+			node.Status = payload.NodeStatus
+			node.DependencySatisfied = payload.DependencySatisfied
+			node.AcceptanceDecisionKind =
+				payload.AcceptanceDecisionKind
+			node.AcceptanceDecisionDigest =
+				payload.AcceptanceDecisionDigest
+			node.AcceptanceDecisionTime = decidedAt
+			node.RecoveryTrigger = payload.RecoveryTrigger
+			node.CreditsBefore = payload.CreditsBefore
+			if payload.NodeStatus == "awaiting_recovery" {
 				record.Status = "awaiting_recovery"
 			}
 		case "TeamNodeRecoveryRecorded":
@@ -443,6 +634,8 @@ func projectTeamExecutionStream(
 				FallbackConsumed         bool     `json:"fallback_consumed"`
 				RecoveryApprovalRequired bool     `json:"recovery_approval_required"`
 				DependencySatisfied      bool     `json:"dependency_satisfied"`
+				RecoveryTrigger          string   `json:"recovery_trigger"`
+				AcceptanceDecisionDigest string   `json:"acceptance_decision_digest"`
 			}
 			if decodeExactProjectionPayload(event, &payload) != nil {
 				return TeamExecution{}, ErrInvalidProjectionEvent
@@ -488,6 +681,22 @@ func projectTeamExecutionStream(
 					currentAttempt.OutputClassificationDigest ||
 				payload.RecoveryApprovalRequired !=
 					node.RecoveryApprovalRequired {
+				return TeamExecution{}, ErrInvalidProjectionEvent
+			}
+			expectedTrigger := node.RecoveryTrigger
+			if expectedTrigger == "" {
+				expectedTrigger = "output"
+			}
+			payloadTrigger := payload.RecoveryTrigger
+			if payloadTrigger == "" &&
+				payload.AcceptanceDecisionDigest == "" {
+				payloadTrigger = "output"
+			}
+			if payloadTrigger != expectedTrigger ||
+				payload.AcceptanceDecisionDigest !=
+					node.AcceptanceDecisionDigest ||
+				payloadTrigger == "verification_rejected" &&
+					payload.Action == "fallback" {
 				return TeamExecution{}, ErrInvalidProjectionEvent
 			}
 			for _, classification := range payload.PriorClassifications {
@@ -560,6 +769,7 @@ func projectTeamExecutionStream(
 				return TeamExecution{}, ErrInvalidProjectionEvent
 			}
 			node.DependencySatisfied = payload.DependencySatisfied
+			node.RecoveryTrigger = payloadTrigger
 			node.RecoveryAction = payload.Action
 			node.RecoveryDecisionDigest = payload.RecoveryDecisionDigest
 			node.RecoveryDecisionTime = decisionTime
@@ -592,10 +802,16 @@ func projectTeamExecutionStream(
 				Status         string `json:"status"`
 				Reason         string `json:"reason"`
 			}
+			expectedStatus, expectedReason :=
+				projectedTeamTerminal(record)
 			if decodeExactProjectionPayload(event, &payload) != nil ||
 				payload.TeamInstanceID != record.TeamInstanceID ||
 				payload.PlanDigest != record.PlanDigest ||
-				!validProjectedTeamTerminal(payload.Status) {
+				!validProjectedTeamTerminal(payload.Status) ||
+				expectedStatus == "" ||
+				payload.Status != expectedStatus ||
+				payload.Reason != expectedReason ||
+				event.CausationID != lastEventID {
 				return TeamExecution{}, ErrInvalidProjectionEvent
 			}
 			record.Status = payload.Status
@@ -606,8 +822,97 @@ func projectTeamExecutionStream(
 				event.Type,
 			)
 		}
+		lastEventID = event.ID
 	}
 	return cloneGlobalTeamExecution(record), nil
+}
+
+func projectedTeamTerminal(record TeamExecution) (string, string) {
+	if len(record.Nodes) == 0 {
+		return "", ""
+	}
+	for _, node := range record.Nodes {
+		switch node.Status {
+		case "succeeded", "failed", "cancelled", "degraded", "blocked",
+			"human_required":
+		default:
+			return "", ""
+		}
+	}
+	for _, status := range []string{
+		"human_required",
+		"blocked",
+		"failed",
+		"cancelled",
+		"degraded",
+	} {
+		for _, node := range record.Nodes {
+			if node.Status == status {
+				return status,
+					"node_" + node.LogicalNodeID + "_" + status
+			}
+		}
+	}
+	for _, node := range record.Nodes {
+		if node.Status != "succeeded" {
+			return "failed",
+				"node_" + node.LogicalNodeID + "_" + node.Status
+		}
+	}
+	return "succeeded", ""
+}
+
+func completeProjectedAcceptanceBinding(
+	version *int,
+	digest *string,
+	risk *string,
+	required *bool,
+	agentID *string,
+	runtimeID *string,
+	workflowPath *string,
+) (bool, bool) {
+	present := 0
+	for _, exists := range []bool{
+		version != nil,
+		digest != nil,
+		risk != nil,
+		required != nil,
+		agentID != nil,
+		runtimeID != nil,
+		workflowPath != nil,
+	} {
+		if exists {
+			present++
+		}
+	}
+	return present == 7, present == 0 || present == 7
+}
+
+func validProjectedAcceptanceBinding(
+	node TeamExecutionNode,
+	sourceAgentInstanceID string,
+) bool {
+	if node.AcceptanceContractVersion < 1 ||
+		!validSHA256Digest(node.AcceptanceContractDigest) ||
+		(node.AcceptanceRisk != "low" &&
+			node.AcceptanceRisk != "medium" &&
+			node.AcceptanceRisk != "high") {
+		return false
+	}
+	required := node.AcceptanceRisk == "medium" ||
+		node.AcceptanceRisk == "high"
+	if node.IndependentVerifierRequired != required {
+		return false
+	}
+	if !required {
+		return node.VerifierAgentInstanceID == "" &&
+			node.VerifierRuntimeInstanceID == "" &&
+			node.VerifierWorkflowPath == ""
+	}
+	return node.VerifierAgentInstanceID != "" &&
+		node.VerifierAgentInstanceID != sourceAgentInstanceID &&
+		node.VerifierRuntimeInstanceID != "" &&
+		node.VerifierWorkflowPath != ""
 }
 
 type teamExecutionRunClaimReference struct {

@@ -2,6 +2,8 @@ package projection
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,6 +16,42 @@ type runProjectionStatusReference struct {
 	streamID string
 	sequence int64
 	eventID  string
+}
+
+func projectionDeterministicEventID(parts ...string) string {
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "evt-" + hex.EncodeToString(digest[:16])
+}
+
+func projectionAcceptanceOutcomeEventID(
+	eventType string,
+	payload runProjectionAcceptanceOutcomePayload,
+) string {
+	if eventType == "WorkItemDone" {
+		return projectionDeterministicEventID(
+			eventType,
+			payload.WorkItemID,
+			payload.VerificationEventID,
+			payload.AcceptanceDecisionDigest,
+			payload.SourceEvidenceDigest,
+			payload.VerifierEvidenceDigest,
+		)
+	}
+	return projectionDeterministicEventID(
+		eventType,
+		payload.WorkItemID,
+		payload.RunID,
+		fmt.Sprint(payload.ClaimGeneration),
+		payload.Status,
+		payload.VerificationEventID,
+		payload.AcceptanceDecisionDigest,
+		payload.RecoveryTrigger,
+		fmt.Sprint(payload.RecoveryPolicyVersion),
+		payload.RecoveryPolicyDigest,
+		fmt.Sprint(payload.AttemptNumber),
+		fmt.Sprint(payload.MaxAttempts),
+		fmt.Sprint(payload.CreditsBefore),
+	)
 }
 
 type runProjectionStatusFact struct {
@@ -121,6 +159,64 @@ type runProjectionCapacityPayload struct {
 	RuntimeStatusStreamID *string `json:"runtime_status_stream_id"`
 	RuntimeStatusSequence *int64  `json:"runtime_status_sequence"`
 	RuntimeStatusEventID  *string `json:"runtime_status_event_id"`
+}
+
+type runProjectionVerificationPayload struct {
+	TeamInstanceID              string `json:"team_instance_id"`
+	PlanDigest                  string `json:"plan_digest"`
+	LogicalNodeID               string `json:"logical_node_id"`
+	AttemptNumber               int    `json:"attempt_number"`
+	WorkItemID                  string `json:"work_item_id"`
+	RunID                       string `json:"run_id"`
+	ClaimID                     string `json:"claim_id"`
+	ClaimGeneration             int64  `json:"claim_generation"`
+	SourceEvidenceID            string `json:"source_evidence_id"`
+	SourceEvidenceDigest        string `json:"source_evidence_digest"`
+	OutputSummaryDigest         string `json:"output_summary_digest"`
+	OutputContractVersion       int    `json:"output_contract_version"`
+	OutputContractDigest        string `json:"output_contract_digest"`
+	OutputClassification        string `json:"output_classification"`
+	OutputClassificationDigest  string `json:"output_classification_digest"`
+	AcceptanceContractVersion   int    `json:"acceptance_contract_version"`
+	AcceptanceContractDigest    string `json:"acceptance_contract_digest"`
+	Risk                        string `json:"risk"`
+	DeterministicResultDigest   string `json:"deterministic_result_digest"`
+	VerifierRequired            bool   `json:"verifier_required"`
+	VerifierWorkItemID          string `json:"verifier_work_item_id"`
+	VerifierRunID               string `json:"verifier_run_id"`
+	VerifierClaimID             string `json:"verifier_claim_id"`
+	VerifierClaimGeneration     int64  `json:"verifier_claim_generation"`
+	VerifierRuntimeInstanceID   string `json:"verifier_runtime_instance_id"`
+	VerifierAgentInstanceID     string `json:"verifier_agent_instance_id"`
+	VerifierGrantID             string `json:"verifier_grant_id"`
+	VerifierEvidenceID          string `json:"verifier_evidence_id"`
+	VerifierEvidenceDigest      string `json:"verifier_evidence_digest"`
+	VerifierOutputSummaryDigest string `json:"verifier_output_summary_digest"`
+	VerifierCandidateKind       string `json:"verifier_candidate_kind"`
+	VerifierReasonCode          string `json:"verifier_reason_code"`
+	VerifierCandidateDigest     string `json:"verifier_candidate_digest"`
+	AcceptanceDecisionKind      string `json:"acceptance_decision_kind"`
+	AcceptanceDecisionDigest    string `json:"acceptance_decision_digest"`
+	DecidedAt                   string `json:"decided_at"`
+}
+
+type runProjectionAcceptanceOutcomePayload struct {
+	WorkItemID               string `json:"work_item_id"`
+	RunID                    string `json:"run_id"`
+	ClaimGeneration          int64  `json:"claim_generation"`
+	Status                   string `json:"status"`
+	VerificationEventID      string `json:"verification_event_id"`
+	AcceptanceDecisionDigest string `json:"acceptance_decision_digest"`
+	SourceEvidenceID         string `json:"source_evidence_id,omitempty"`
+	SourceEvidenceDigest     string `json:"source_evidence_digest,omitempty"`
+	VerifierEvidenceID       string `json:"verifier_evidence_id,omitempty"`
+	VerifierEvidenceDigest   string `json:"verifier_evidence_digest,omitempty"`
+	RecoveryTrigger          string `json:"recovery_trigger,omitempty"`
+	RecoveryPolicyVersion    int    `json:"recovery_policy_version,omitempty"`
+	RecoveryPolicyDigest     string `json:"recovery_policy_digest,omitempty"`
+	AttemptNumber            int    `json:"attempt_number,omitempty"`
+	MaxAttempts              int    `json:"max_attempts,omitempty"`
+	CreditsBefore            int    `json:"credits_before,omitempty"`
 }
 
 func isRunAuthorityProjectionEvent(event journal.Event) bool {
@@ -360,6 +456,226 @@ func indexRunProjectionWorkItems(
 				outcomes[event.CausationID] = event
 				workItem.sequence = event.Seq
 				workItem.lastEventID = event.ID
+			case "WorkItemVerificationCommitted":
+				var payload runProjectionVerificationPayload
+				decidedAt, timeErr := parseRunProjectionTime(
+					func() string {
+						if decodeRunProjectionPayload(
+							event,
+							&payload,
+						) != nil {
+							return ""
+						}
+						return payload.DecidedAt
+					}(),
+				)
+				if timeErr != nil ||
+					event.Seq != workItem.sequence+1 ||
+					event.CausationID != workItem.lastEventID ||
+					payload.WorkItemID != workItemID ||
+					payload.RunID != workItem.record.RunID ||
+					payload.TeamInstanceID == "" ||
+					!validSHA256Digest(payload.PlanDigest) ||
+					payload.LogicalNodeID == "" ||
+					payload.AttemptNumber < 1 ||
+					payload.ClaimID == "" ||
+					payload.ClaimGeneration < 1 ||
+					payload.SourceEvidenceID == "" ||
+					!validSHA256Digest(payload.SourceEvidenceDigest) ||
+					!validSHA256Digest(payload.OutputSummaryDigest) ||
+					payload.OutputContractVersion < 1 ||
+					!validSHA256Digest(payload.OutputContractDigest) ||
+					!validProjectedOutputClassification(
+						payload.OutputClassification,
+					) ||
+					!validSHA256Digest(
+						payload.OutputClassificationDigest,
+					) ||
+					payload.AcceptanceContractVersion < 1 ||
+					!validSHA256Digest(
+						payload.AcceptanceContractDigest,
+					) ||
+					(payload.Risk != "low" &&
+						payload.Risk != "medium" &&
+						payload.Risk != "high") ||
+					!validSHA256Digest(
+						payload.DeterministicResultDigest,
+					) ||
+					(payload.AcceptanceDecisionKind != "accepted" &&
+						payload.AcceptanceDecisionKind != "rejected") ||
+					!validSHA256Digest(
+						payload.AcceptanceDecisionDigest,
+					) ||
+					event.ID != projectionDeterministicEventID(
+						"WorkItemVerificationCommitted",
+						payload.TeamInstanceID,
+						payload.PlanDigest,
+						payload.LogicalNodeID,
+						fmt.Sprint(payload.AttemptNumber),
+						payload.WorkItemID,
+						payload.RunID,
+						fmt.Sprint(payload.ClaimGeneration),
+						payload.SourceEvidenceID,
+						payload.SourceEvidenceDigest,
+						payload.AcceptanceContractDigest,
+						payload.DeterministicResultDigest,
+						payload.VerifierCandidateDigest,
+						payload.AcceptanceDecisionDigest,
+					) {
+					return nil, nil, nil, ErrInvalidProjectionEvent
+				}
+				if payload.VerifierRequired {
+					if payload.Risk == "low" ||
+						payload.VerifierWorkItemID == "" ||
+						payload.VerifierRunID == "" ||
+						payload.VerifierClaimID == "" ||
+						payload.VerifierClaimGeneration < 1 ||
+						payload.VerifierRuntimeInstanceID == "" ||
+						payload.VerifierAgentInstanceID == "" ||
+						payload.VerifierGrantID == "" ||
+						payload.VerifierEvidenceID == "" ||
+						!validSHA256Digest(
+							payload.VerifierEvidenceDigest,
+						) ||
+						!validSHA256Digest(
+							payload.VerifierOutputSummaryDigest,
+						) ||
+						(payload.VerifierCandidateKind != "accepted" &&
+							payload.VerifierCandidateKind !=
+								"rejected") ||
+						payload.VerifierReasonCode == "" ||
+						!validSHA256Digest(
+							payload.VerifierCandidateDigest,
+						) {
+						return nil, nil, nil, ErrInvalidProjectionEvent
+					}
+				} else if payload.Risk != "low" ||
+					payload.VerifierWorkItemID != "" ||
+					payload.VerifierRunID != "" ||
+					payload.VerifierClaimID != "" ||
+					payload.VerifierClaimGeneration != 0 ||
+					payload.VerifierRuntimeInstanceID != "" ||
+					payload.VerifierAgentInstanceID != "" ||
+					payload.VerifierGrantID != "" ||
+					payload.VerifierEvidenceID != "" ||
+					payload.VerifierEvidenceDigest != "" ||
+					payload.VerifierOutputSummaryDigest != "" ||
+					payload.VerifierCandidateKind != "" ||
+					payload.VerifierReasonCode != "" ||
+					payload.VerifierCandidateDigest != "" {
+					return nil, nil, nil, ErrInvalidProjectionEvent
+				}
+				workItem.record.VerificationStatus = "committed"
+				workItem.record.TeamInstanceID =
+					payload.TeamInstanceID
+				workItem.record.PlanDigest = payload.PlanDigest
+				workItem.record.LogicalNodeID = payload.LogicalNodeID
+				workItem.record.AttemptNumber = payload.AttemptNumber
+				workItem.record.SourceEvidenceID =
+					payload.SourceEvidenceID
+				workItem.record.SourceEvidenceDigest =
+					payload.SourceEvidenceDigest
+				workItem.record.OutputSummaryDigest =
+					payload.OutputSummaryDigest
+				workItem.record.AcceptanceContractVersion =
+					payload.AcceptanceContractVersion
+				workItem.record.AcceptanceContractDigest =
+					payload.AcceptanceContractDigest
+				workItem.record.AcceptanceRisk = payload.Risk
+				workItem.record.DeterministicResultDigest =
+					payload.DeterministicResultDigest
+				workItem.record.VerifierRequired =
+					payload.VerifierRequired
+				workItem.record.VerifierWorkItemID =
+					payload.VerifierWorkItemID
+				workItem.record.VerifierRunID = payload.VerifierRunID
+				workItem.record.VerifierAgentInstanceID =
+					payload.VerifierAgentInstanceID
+				workItem.record.VerifierRuntimeInstanceID =
+					payload.VerifierRuntimeInstanceID
+				workItem.record.VerifierEvidenceID =
+					payload.VerifierEvidenceID
+				workItem.record.VerifierEvidenceDigest =
+					payload.VerifierEvidenceDigest
+				workItem.record.VerifierCandidateDigest =
+					payload.VerifierCandidateDigest
+				workItem.record.AcceptanceDecisionKind =
+					payload.AcceptanceDecisionKind
+				workItem.record.AcceptanceDecisionDigest =
+					payload.AcceptanceDecisionDigest
+				workItem.record.AcceptanceDecisionReason =
+					payload.VerifierReasonCode
+				workItem.record.AcceptanceDecisionTime = decidedAt
+				workItem.lastEventID = event.ID
+				workItem.sequence = event.Seq
+			case "WorkItemDone", "WorkItemRejected":
+				var payload runProjectionAcceptanceOutcomePayload
+				if decodeRunProjectionPayload(event, &payload) != nil ||
+					workItem.record.VerificationStatus != "committed" ||
+					event.Seq != workItem.sequence+1 ||
+					event.CausationID != workItem.lastEventID ||
+					payload.WorkItemID != workItemID ||
+					payload.RunID != workItem.record.RunID ||
+					payload.ClaimGeneration < 1 ||
+					payload.VerificationEventID !=
+						workItem.lastEventID ||
+					payload.AcceptanceDecisionDigest !=
+						workItem.record.AcceptanceDecisionDigest ||
+					event.ID != projectionAcceptanceOutcomeEventID(
+						event.Type,
+						payload,
+					) {
+					return nil, nil, nil, ErrInvalidProjectionEvent
+				}
+				switch event.Type {
+				case "WorkItemDone":
+					if payload.Status != "done" ||
+						workItem.record.AcceptanceDecisionKind !=
+							"accepted" ||
+						payload.SourceEvidenceID !=
+							workItem.record.SourceEvidenceID ||
+						payload.SourceEvidenceDigest !=
+							workItem.record.SourceEvidenceDigest ||
+						payload.VerifierEvidenceID !=
+							workItem.record.VerifierEvidenceID ||
+						payload.VerifierEvidenceDigest !=
+							workItem.record.VerifierEvidenceDigest ||
+						payload.RecoveryTrigger != "" ||
+						payload.RecoveryPolicyVersion != 0 ||
+						payload.RecoveryPolicyDigest != "" {
+						return nil, nil, nil, ErrInvalidProjectionEvent
+					}
+				case "WorkItemRejected":
+					if payload.Status != "rejected" ||
+						workItem.record.AcceptanceDecisionKind !=
+							"rejected" ||
+						payload.SourceEvidenceID != "" ||
+						payload.SourceEvidenceDigest != "" ||
+						payload.VerifierEvidenceID != "" ||
+						payload.VerifierEvidenceDigest != "" ||
+						payload.RecoveryTrigger !=
+							"verification_rejected" ||
+						payload.RecoveryPolicyVersion < 1 ||
+						!validSHA256Digest(
+							payload.RecoveryPolicyDigest,
+						) ||
+						payload.AttemptNumber !=
+							workItem.record.AttemptNumber ||
+						payload.MaxAttempts <
+							payload.AttemptNumber ||
+						payload.CreditsBefore < 0 {
+						return nil, nil, nil, ErrInvalidProjectionEvent
+					}
+					workItem.record.RecoveryTrigger =
+						payload.RecoveryTrigger
+					workItem.record.RecoveryPolicyVersion =
+						payload.RecoveryPolicyVersion
+					workItem.record.RecoveryPolicyDigest =
+						payload.RecoveryPolicyDigest
+				}
+				workItem.record.Status = payload.Status
+				workItem.lastEventID = event.ID
+				workItem.sequence = event.Seq
 			default:
 				return nil, nil, nil, ErrInvalidProjectionEvent
 			}
@@ -486,7 +802,10 @@ func replayRunProjectionRuns(
 				run.lastEventID = event.ID
 				run.sequence = event.Seq
 				workItem := workItems[run.record.WorkItemID]
-				workItem.record.Status = "running"
+				if workItem.record.Status != "done" &&
+					workItem.record.Status != "rejected" {
+					workItem.record.Status = "running"
+				}
 				workItems[workItem.record.ID] = workItem
 			case "RunTerminalCommitted":
 				var payload runProjectionTerminalPayload
@@ -641,7 +960,10 @@ func validateRunProjectionOutcome(
 			*payload.Status != "ready_for_review" {
 			return ErrInvalidProjectionEvent
 		}
-		workItem.record.Status = "ready_for_review"
+		if workItem.record.Status != "done" &&
+			workItem.record.Status != "rejected" {
+			workItem.record.Status = "ready_for_review"
+		}
 	} else {
 		if event.Type != "WorkItemTerminal" || *payload.Status != terminal.status {
 			return ErrInvalidProjectionEvent
