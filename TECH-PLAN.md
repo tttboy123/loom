@@ -218,6 +218,10 @@ Main Agent 只能返回快照中的 ID，或返回显式 `capability_gap`。每�
 | `CredentialGrant` | Broker 模式下的任务级本地临时访问许可 |
 | `Event` | 追加写事实 |
 | `EvolutionCandidate` | Sidecar 生成的 Memory、Skill、Agent 或策略候选 |
+| `SkillDefinition` | 可复用 Skill 的稳定身份、scope、风险与来源边界 |
+| `SkillRevision` | 不可变内容、digest、依赖和 Runtime 兼容能力 |
+| `TemplateRevision` | Agent、Team、WorkPackage 或 RecoveryStrategy 的不可变候选模板 |
+| `ProjectResource` | repo、document、dataset 或 tool 的版本化有界指针 |
 
 ### 4.1 AgentDefinition scope
 
@@ -553,8 +557,16 @@ Source digest、terminal Receipt 和用户选择保留的工作区不受普通�
 - `AgentGrantRevoked`
 - `WorkItemTerminal`
 - `TeamChangeProposed`
+- `NodeOutputClassified`
+- `RecoveryDecisionRecorded`
+- `AttemptRetryScheduled`
+- `WorkflowDegraded`
 - `EvolutionCandidateProposed`
 - `EvolutionCandidateActivated`
+- `EvolutionCandidateRolledBack`
+- `SkillRevisionImported`
+- `SkillRevisionActivated`
+- `SkillRevisionArchived`
 
 ## 7. Bridge 协议
 
@@ -592,6 +604,20 @@ Phase 1 使用 JSON Lines over stdio。每条消息必须包含：
 - 大文件和 Evidence 使用 digest + location，不内联进 JSONL。
 
 AgentGrant 明文通过受限环境或 IPC 交给当前 Agent 进程，但不出现在 Bridge payload、Event 或 Evidence。
+
+实时观察必须保持以下顺序：
+
+```text
+Adapter 解码 Frame
+→ Supervisor 校验 Bridge / binding / sequence
+→ AgentGrant.Authorize
+→ BoundRunStream 接受
+→ AuthorizedFrameObserver 发布 tentative delta
+```
+
+未授权、旧 generation、格式错误或错序 Frame 不发布。Observer、客户端通道、WebSocket 和通知
+都不是状态权威；started、retry、degraded、blocked、human_required 和 terminal 仍由 Journal
+与投影提供。文本 delta 只进入有界内存交付，不逐 token 写入 Journal。
 
 ## 8. Run 认领与工作项生命周期
 
@@ -706,6 +732,24 @@ Agent 提议动作
 
 Verifier 使用独立 AgentInstance，不继承 Executor 的写权限，不能修改交付物。
 
+### 10.1 输出合同与有界恢复
+
+验收层定义纯确定性输出分类：
+
+```text
+valid_nonempty | valid_empty | transient_empty | invalid
+```
+
+规则层基于分类、WorkItem contract、预算、重试上限和客户规则生成：
+
+```text
+retry | fallback | degraded | blocked | human_required
+```
+
+这里的 `fallback` 是工作流数据源或步骤降级，不是 Provider/model 自动 fallback。每次 retry 创建
+独立 Run、claim generation、AgentGrant 和 Evidence lineage，带显式 attempt number 与
+`retry_at`。Scheduler 只执行已持久化的决定，不自行推断成功、空输出或无限重试。
+
 ## 11. AgentGrant、AgentKey 与 Credential Broker
 
 ### 11.1 AgentGrant
@@ -785,6 +829,26 @@ Sidecar 订阅经过许可的 terminal Run 和 Evidence，不阻塞执行主路�
 - 不把完整历史自动注入 Prompt；
 - 同步、发布和团队共享默认关闭。
 
+### 12.1 版本化资产与 Runtime 物化
+
+Phase 3 增加 `SkillDefinition`、不可变 `SkillRevision` 和 versioned Agent/Team/WorkPackage/
+RecoveryStrategy templates。Skill revision 记录 source、digest、scope、依赖、Runtime capability
+约束、风险和 `draft/candidate/active/archived` 状态。第三方导入先进入 Candidate，脚本和附带
+资产必须验证。
+
+Runtime adapter 只能把已激活的 exact revision 物化到 Runtime 原生路径。Run 创建时冻结 revision
+ID 与 digest；物化冲突不覆盖 repo-owned Skill，运行中更新不改变当前 Run。模板实例化只生成
+Team Draft 或 WorkPackage Candidate，不能直接创建 TeamInstance、Run、Grant 或扩大权限。
+
+### 12.2 Promotion、Eval 与 Pattern
+
+只有经过许可的 terminal Run 和 accepted Evidence 可以提议 promotion。候选必须包含 provenance、
+source Run/Evidence digest、脱敏摘要、scope diff、预期收益和风险。历史或合成 Eval 与基线比较
+质量、成本、失败率和适用范围；用户显式激活、拒绝或保留，激活与回滚写入 Journal。
+
+Sidecar 继续通过受限 command/API 提交 Candidate，不能直接写 SQLite/Artifact Store 或修改运行中
+团队。Pattern extraction 不保存 raw Grant、凭据、隐藏推理或完整敏感 prompt。
+
 ## 13. 技术栈
 
 | 组件 | Phase 1 选择 |
@@ -823,6 +887,7 @@ internal/credentials/       CredentialGrant、Provider 引用与 Broker
 internal/journal/           Event append 与幂等
 internal/projection/        Team、Task、Cost、Governance read models
 internal/api/               versioned local API 与 event stream
+internal/assets/            versioned Skill、Template、Resource 与 materialization contracts
 internal/config/            YAML 加载与结构化校验
 protocol/bridge/v1/         JSONL message schema
 migrations/                 SQLite migrations
@@ -876,12 +941,17 @@ Domain module 不导入具体 Agent CLI、Provider SDK、SQLite driver 或 UI pa
 - `require_approval` 持久暂停和恢复；
 - Evidence；
 - 确定性验收；
-- 风险级 Verifier 路由。
+- 风险级 Verifier 路由；
+- `valid_nonempty/valid_empty/transient_empty/invalid` 输出合同；
+- 有界 retry/workflow fallback/degraded/blocked/human_required 策略；
+- 每次 retry 独立 Attempt lineage、`retry_at`、重启恢复和无隐藏无限重试。
 
 ### Slice 5：看板与 Demo
 
 - Team、Task、Observation、Cost、Governance CLI 视图；
 - 对话 + 实时 Draft，以及执行期 timeline/Attention 投影；
+- versioned local event stream、cursor 重连、慢消费者合并与 `stream_gap`；
+- tentative delta 与 Journal-authoritative milestone 分离；
 - 一个 Coding WorkPackage；
 - 一个知识工作 WorkPackage；
 - 真实任务 Demo；
@@ -924,5 +994,11 @@ Domain module 不导入具体 Agent CLI、Provider SDK、SQLite driver 或 UI pa
 - 团队共享市场；
 - 多用户权限系统；
 - 自动持久化临时 Agent。
+- 模型上下文、session ID 或进程镜像 checkpoint；
+- 增量 Projection checkpoint；
+- standing orders / Autopilot；
+- 团队共享资产市场、外部通知和多用户权限；
+- 未审查第三方 Skill 执行；
+- 每 token Journal/Sidecar 记录。
 
 这些能力不影响 Phase 1 合同，但文档和 UI 不得把它们描述为已经存在。

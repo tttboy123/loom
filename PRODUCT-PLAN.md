@@ -211,6 +211,20 @@ Team Draft 阶段展示“对话 + 实时草案”；执行阶段展示轻量时
 Runtime 的“已发现、离线、不兼容、容量已满”和 Run 的“准备中、等待授权、执行中、等待验收”必须
 使用不同状态，避免把设备可用性和任务进度混为一谈。
 
+### 6.1 节点输出、恢复与 Attention
+
+运行中的节点可以向本地时间线发布已鉴权的 tentative 增量，但 started、retry、warning、
+degraded、blocked、human_required 和 terminal 仍以 Journal 与投影事实为准。慢消费者可以合并
+文本增量，不能丢弃需要人行动或改变终态解释的事实；流缺口必须显示 `stream_gap` 和可恢复的
+artifact digest。原始 Grant、凭据、隐藏推理和逐 token 记录不进入时间线或 Journal。
+
+空输出不等于成功或失败。验收层先区分 `valid_nonempty`、`valid_empty`、`transient_empty` 和
+`invalid`，规则层再决定有界 retry、workflow fallback、degraded、blocked 或 human_required。
+调度器只执行已确定的策略，不自行发明验收语义，也不进行隐藏无限重试或 Provider 自动 fallback。
+
+Attention Inbox 只聚合 approval、blocked、human_required、retry exhausted、Runtime offline 和
+verification failed 等需要用户行动的项目。它是执行事实的投影，不是 Agent 触发器或第二状态权威。
+
 执行 Agent 不能直接把工作项标记为 Done：
 
 ```text
@@ -283,6 +297,28 @@ Sidecar 是独立于执行主路径的本地个人服务：
 
 Sidecar 不直接修改运行中的团队、权限或任务。个人记忆和轨迹默认本地、按用户与项目隔离并加密。同步和团队共享默认关闭。
 
+### 10.1 Evolution Asset Library
+
+Phase 3 把 Sidecar 候选扩展为版本化资产库：
+
+- `SkillDefinition` 与不可变 `SkillRevision` 记录来源、digest、scope、依赖、兼容 Runtime
+  能力、风险和 `draft/candidate/active/archived` 生命周期；
+- 支持本地创建、受控导入、搜索、版本差异、archive/restore 和回滚；第三方导入必须先进入
+  Candidate，脚本和附带资产通过边界验证后才能激活；
+- `AgentTemplate`、`TeamTemplate`、`WorkPackageTemplate` 和
+  `RecoveryStrategyTemplate` 只实例化为 Team Draft 或 WorkPackage Candidate，不能直接创建
+  TeamInstance、Run 或扩大权限；
+- Runtime adapter 只物化已激活的 exact Skill revision；每个 Run 固定 revision 与 digest，
+  不覆盖 repo-owned Skill，运行中更新不影响当前 Run。
+
+只有经过许可的 terminal Run 和 accepted Evidence 可以生成 Skill、Agent、Team 或 Strategy
+Candidate。候选必须带来源 Run/Evidence digest、脱敏摘要、scope 差异、预期收益和风险，并通过
+历史或合成 Eval 与基线比较质量、成本、失败率和适用范围。用户显式激活、拒绝或保留；激活与回滚
+产生 Journal fact。Sidecar 不能直接写 SQLite 或 Artifact Store，也不能修改运行中的团队。
+
+多次成功与失败可以提取 Run Recipe/Pattern，但不能保存 raw Grant、凭据、隐藏推理或完整敏感
+prompt。
+
 ## 11. 产品边界
 
 ### Loom 负责
@@ -333,7 +369,9 @@ Sidecar 不直接修改运行中的团队、权限或任务。个人记忆和轨
 - 任务看板和确定性验收；
 - 客户规则触发 `require_approval`；
 - 一个真实 Agent Runtime；
-- SQLite 持久化和 CLI 视图。
+- SQLite 持久化和 CLI 视图；
+- 明确的节点输出合同、有界恢复策略和独立 Attempt lineage；
+- 本地事件接口、可重连 CLI timeline 和 Attention 投影；不宣称 TUI/Web 已交付。
 
 ### Phase 2：凭证与运行时
 
@@ -341,13 +379,21 @@ Sidecar 不直接修改运行中的团队、权限或任务。个人记忆和轨
 - Broker、Provider 原生短期凭证和 CLI 原生认证三种模式；
 - 第二种 Agent Runtime；
 - 成本与 fallback 数据；
-- TUI。
+- TUI；
+- Run History 与 Compare，包括 Attempt、授权输出、Evidence、终态、失败、usage/cost、
+  Runtime/模型和 exact Skill revision；
+- Attention Inbox 与 Runtime Capability Matrix；
+- 有界 Project Resources Catalog；
+- 从空白、模板或历史 Candidate 开始的对话式 Agent/Team Builder；
+- exact Skill revision 的 attach/detach、权限与 Runtime 兼容性预览。
 
 ### Phase 3：复用与共进化
 
 - 项目 Agent 和个人复用 Agent 库；
-- Sidecar 记忆、Skill 和 Agent 候选；
-- 离线评测、版本、激活和回滚；
+- Versioned Skill Library、Template Library 和 Runtime materialization；
+- Sidecar 记忆、Skill、Agent、Team 和 Strategy 候选；
+- accepted Run/Evidence promotion、Run Recipe/Pattern extraction；
+- 离线评测、基线比较、版本、显式激活和回滚；
 - 多 WorkPackage。
 
 ### Phase 4：互通
@@ -356,6 +402,12 @@ Sidecar 不直接修改运行中的团队、权限或任务。个人记忆和轨
 - Multica 等协作平台适配；
 - 可选 Web UI；
 - 明确的导入、导出和共享合同。
+
+Phase 1 后的 later opt-in 能力包括 standing orders/Autopilot、团队共享资产目录、外部通知和
+多用户权限。它们默认关闭，必须分别定义持久授权、触发器、预算、并发、scope、stop/revoke 和
+审计。普通 chat/comment 不隐式创建自动化；通知、WebSocket 和远程 callback 不成为状态权威。
+Provider/session resume 只作为 Runtime capability 与恢复提示，session/context ID 不是
+checkpoint，poisoned context 必须创建新 Attempt。
 
 ## 14. 关键决策
 
@@ -373,3 +425,9 @@ Sidecar 不直接修改运行中的团队、权限或任务。个人记忆和轨
 12. 客户定义执行规则，`require_approval` 会真实暂停工作。
 13. AgentGrant 只授权 Loom 本地能力；CredentialGrant 只授权 Broker，二者都不冒充 Provider 凭证。
 14. Sidecar 后台学习、生成候选，用户显式激活。
+15. Skill 与模板是 versioned assets；第三方导入先进入 Candidate，运行固定 exact revision 与 digest。
+16. Template 实例化只生成 Draft/Candidate，不能绕过用户确认创建 TeamInstance 或 Run。
+17. Run history、Attention、Runtime matrix、timeline、通知和客户端 cursor 都是投影或交付面，不是状态权威。
+18. 自动 retry、session resume 和 Autopilot 不得绕过 generation、Grant、Evidence、approval、预算或 terminal。
+19. raw Grant、长期明文凭据、隐藏推理和逐 token 输出不进入 Journal、Evidence、Sidecar 或导出历史。
+20. 模型上下文、session ID 和进程镜像不是 checkpoint；checkpoint hardening 必须由指标触发并独立治理。
