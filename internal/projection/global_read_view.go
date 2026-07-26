@@ -12,32 +12,54 @@ import (
 )
 
 type TeamExecution struct {
-	TeamInstanceID string
-	PlanDigest     string
-	Status         string
-	Nodes          []TeamExecutionNode
+	TeamInstanceID        string
+	PlanDigest            string
+	Status                string
+	Nodes                 []TeamExecutionNode
+	LegacySemanticUnbound bool
 }
 
 type TeamExecutionNode struct {
-	LogicalNodeID       string
-	Status              string
-	DependencySatisfied bool
-	CurrentAttempt      int
-	RetryAt             time.Time
-	Attempts            []TeamExecutionAttempt
+	LogicalNodeID            string
+	Status                   string
+	DependencySatisfied      bool
+	CurrentAttempt           int
+	RetryAt                  time.Time
+	Attempts                 []TeamExecutionAttempt
+	OutputContractVersion    int
+	OutputContractDigest     string
+	RecoveryPolicyVersion    int
+	RecoveryPolicyDigest     string
+	AttemptCredits           int
+	PrimaryWorkflowPath      string
+	WorkflowFallbackKey      string
+	RecoveryApprovalRequired bool
+	RecoveryAction           string
+	RecoveryDecisionDigest   string
+	RecoveryDecisionTime     time.Time
+	CreditsBefore            int
+	CreditsAfter             int
+	FallbackConsumed         bool
+	PriorClassifications     []string
 }
 
 type TeamExecutionAttempt struct {
-	AttemptNumber     int
-	WorkItemID        string
-	RunID             string
-	ClaimID           string
-	ClaimGeneration   int64
-	RuntimeInstanceID string
-	AgentInstanceID   string
-	Status            string
-	EvidenceID        string
-	EvidenceDigest    string
+	AttemptNumber              int
+	WorkItemID                 string
+	RunID                      string
+	ClaimID                    string
+	ClaimGeneration            int64
+	RuntimeInstanceID          string
+	AgentInstanceID            string
+	Status                     string
+	EvidenceID                 string
+	EvidenceDigest             string
+	WorkflowPath               string
+	OutputContractVersion      int
+	OutputContractDigest       string
+	OutputClassification       string
+	OutputClassificationDigest string
+	OutputSummaryDigest        string
 }
 
 type GlobalReadView struct {
@@ -221,6 +243,10 @@ func buildGlobalReadView(
 func cloneGlobalTeamExecution(record TeamExecution) TeamExecution {
 	record.Nodes = append([]TeamExecutionNode(nil), record.Nodes...)
 	for index := range record.Nodes {
+		record.Nodes[index].PriorClassifications = append(
+			[]string(nil),
+			record.Nodes[index].PriorClassifications...,
+		)
 		record.Nodes[index].Attempts = append(
 			[]TeamExecutionAttempt(nil),
 			record.Nodes[index].Attempts...,

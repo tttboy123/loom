@@ -7,11 +7,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -54,6 +56,18 @@ type AttemptTerminal struct {
 type AttemptReceipt struct {
 	evidenceID string
 	digest     string
+	summary    AttemptOutputSummary
+}
+
+type AttemptOutputSummary struct {
+	evidenceID           string
+	evidenceDigest       string
+	authorizedFrameCount int
+	outputFrameCount     int
+	outputPayloadBytes   int
+	resultObserved       bool
+	terminalStatus       string
+	digest               string
 }
 
 type AttemptCaptureState struct {
@@ -70,8 +84,14 @@ type attemptCaptureDisk struct {
 }
 
 type attemptReceiptDisk struct {
-	EvidenceID string `json:"evidence_id"`
-	Digest     string `json:"digest"`
+	EvidenceID           string `json:"evidence_id"`
+	Digest               string `json:"digest"`
+	AuthorizedFrameCount int    `json:"authorized_frame_count"`
+	OutputFrameCount     int    `json:"output_frame_count"`
+	OutputPayloadBytes   int    `json:"output_payload_bytes"`
+	ResultObserved       bool   `json:"result_observed"`
+	TerminalStatus       string `json:"terminal_status"`
+	SummaryDigest        string `json:"summary_digest"`
 }
 
 type attemptArtifact struct {
@@ -101,6 +121,31 @@ type attemptStateDirs struct {
 
 func (receipt AttemptReceipt) EvidenceID() string { return receipt.evidenceID }
 func (receipt AttemptReceipt) Digest() string     { return receipt.digest }
+func (receipt AttemptReceipt) OutputSummary() AttemptOutputSummary {
+	return receipt.summary
+}
+func (summary AttemptOutputSummary) EvidenceID() string {
+	return summary.evidenceID
+}
+func (summary AttemptOutputSummary) EvidenceDigest() string {
+	return summary.evidenceDigest
+}
+func (summary AttemptOutputSummary) AuthorizedFrameCount() int {
+	return summary.authorizedFrameCount
+}
+func (summary AttemptOutputSummary) OutputFrameCount() int {
+	return summary.outputFrameCount
+}
+func (summary AttemptOutputSummary) OutputPayloadBytes() int {
+	return summary.outputPayloadBytes
+}
+func (summary AttemptOutputSummary) ResultObserved() bool {
+	return summary.resultObserved
+}
+func (summary AttemptOutputSummary) TerminalStatus() string {
+	return summary.terminalStatus
+}
+func (summary AttemptOutputSummary) Digest() string { return summary.digest }
 func (state AttemptCaptureState) Binding() AttemptCaptureInput {
 	return state.binding
 }
@@ -280,6 +325,7 @@ func (store *Store) FinalizeAttemptCapture(
 	var pending attemptCaptureDisk
 	var artifactBytes []byte
 	var digest string
+	var summary AttemptOutputSummary
 	var result AttemptReceipt
 	completed := false
 	err := store.withAttemptLock(evidenceID, func() error {
@@ -309,15 +355,24 @@ func (store *Store) FinalizeAttemptCapture(
 			if found && receipt.Digest != state.FinalizedDigest {
 				return ErrAttemptCaptureConflict
 			}
+			summary, err = buildAttemptOutputSummary(
+				state,
+				state.FinalizedDigest,
+				*state.Terminal,
+			)
+			if err != nil {
+				return err
+			}
+			expectedReceipt := attemptReceiptDiskFromSummary(summary)
+			if found && receipt != expectedReceipt {
+				return ErrAttemptCaptureConflict
+			}
 			if !found {
 				if err := store.writeAttemptJSON(
 					dirs,
 					dirs.receipts,
 					evidenceID,
-					attemptReceiptDisk{
-						EvidenceID: evidenceID,
-						Digest:     state.FinalizedDigest,
-					},
+					expectedReceipt,
 				); err != nil {
 					return err
 				}
@@ -325,6 +380,7 @@ func (store *Store) FinalizeAttemptCapture(
 			result = AttemptReceipt{
 				evidenceID: evidenceID,
 				digest:     state.FinalizedDigest,
+				summary:    summary,
 			}
 			completed = true
 			return nil
@@ -341,6 +397,10 @@ func (store *Store) FinalizeAttemptCapture(
 			terminal,
 			childResultObserved,
 		)
+		if err != nil {
+			return err
+		}
+		summary, err = buildAttemptOutputSummary(state, digest, terminal)
 		if err != nil {
 			return err
 		}
@@ -403,7 +463,8 @@ func (store *Store) FinalizeAttemptCapture(
 		if err != nil {
 			return err
 		}
-		if found && receipt.Digest != digest {
+		expectedReceipt := attemptReceiptDiskFromSummary(summary)
+		if found && receipt != expectedReceipt {
 			return ErrAttemptCaptureConflict
 		}
 		if !found {
@@ -411,15 +472,16 @@ func (store *Store) FinalizeAttemptCapture(
 				dirs,
 				dirs.receipts,
 				evidenceID,
-				attemptReceiptDisk{
-					EvidenceID: evidenceID,
-					Digest:     digest,
-				},
+				expectedReceipt,
 			); err != nil {
 				return err
 			}
 		}
-		result = AttemptReceipt{evidenceID: evidenceID, digest: digest}
+		result = AttemptReceipt{
+			evidenceID: evidenceID,
+			digest:     digest,
+			summary:    summary,
+		}
 		return nil
 	})
 	return result, err
@@ -453,9 +515,30 @@ func (store *Store) AttemptReceipt(
 		if !exists {
 			return nil
 		}
+		state, captureExists, err := readAttemptCaptureAt(
+			dirs.captures,
+			evidenceID,
+		)
+		if err != nil {
+			return err
+		}
+		if !captureExists || state.Terminal == nil ||
+			state.FinalizedDigest != receipt.Digest {
+			return ErrAttemptCaptureConflict
+		}
+		summary, err := buildAttemptOutputSummary(
+			state,
+			receipt.Digest,
+			*state.Terminal,
+		)
+		if err != nil ||
+			attemptReceiptDiskFromSummary(summary) != receipt {
+			return ErrAttemptCaptureConflict
+		}
 		result = AttemptReceipt{
 			evidenceID: receipt.EvidenceID,
 			digest:     receipt.Digest,
+			summary:    summary,
 		}
 		found = true
 		return nil
@@ -677,7 +760,17 @@ func readAttemptReceiptAt(
 		return attemptReceiptDisk{}, found, err
 	}
 	if receipt.EvidenceID != evidenceID ||
-		validateDigest(receipt.Digest) != nil {
+		validateDigest(receipt.Digest) != nil ||
+		receipt.AuthorizedFrameCount < 0 ||
+		receipt.AuthorizedFrameCount > bridgev1.MaxBufferedFrames ||
+		receipt.OutputFrameCount < 0 ||
+		receipt.OutputFrameCount > receipt.AuthorizedFrameCount ||
+		receipt.OutputPayloadBytes < 0 ||
+		receipt.OutputPayloadBytes > maxAttemptCaptureBytes ||
+		(receipt.OutputFrameCount == 0) !=
+			(receipt.OutputPayloadBytes == 0) ||
+		!validAttemptTerminalStatus(receipt.TerminalStatus) ||
+		validateDigest(receipt.SummaryDigest) != nil {
 		return attemptReceiptDisk{}, false, ErrAttemptCaptureConflict
 	}
 	return receipt, true, nil
@@ -878,6 +971,102 @@ func capturedFrameBytes(frames []string) int {
 		total += len(line)
 	}
 	return total
+}
+
+func buildAttemptOutputSummary(
+	state attemptCaptureDisk,
+	evidenceDigest string,
+	terminal AttemptTerminal,
+) (AttemptOutputSummary, error) {
+	if !validAttemptCaptureInput(state.Binding) ||
+		validateDigest(evidenceDigest) != nil ||
+		!validAttemptTerminal(terminal) ||
+		len(state.Frames) > bridgev1.MaxBufferedFrames {
+		return AttemptOutputSummary{}, ErrAttemptCaptureConflict
+	}
+	outputFrameCount := 0
+	outputPayloadBytes := 0
+	for _, line := range state.Frames {
+		frame, err := bridgev1.DecodeLine([]byte(line))
+		if err != nil || !frameMatchesAttempt(frame, state.Binding) {
+			return AttemptOutputSummary{}, ErrAttemptCaptureConflict
+		}
+		if frame.Type() != bridgev1.MessageEvent &&
+			frame.Type() != bridgev1.MessageEvidence {
+			continue
+		}
+		outputFrameCount++
+		outputPayloadBytes += len(frame.Payload())
+	}
+	summary := AttemptOutputSummary{
+		evidenceID:           state.Binding.EvidenceID,
+		evidenceDigest:       evidenceDigest,
+		authorizedFrameCount: len(state.Frames),
+		outputFrameCount:     outputFrameCount,
+		outputPayloadBytes:   outputPayloadBytes,
+		resultObserved:       attemptResultObserved(state),
+		terminalStatus:       terminal.Status,
+	}
+	summary.digest = canonicalAttemptSummaryDigest(state.Binding, summary)
+	return summary, nil
+}
+
+func attemptReceiptDiskFromSummary(
+	summary AttemptOutputSummary,
+) attemptReceiptDisk {
+	return attemptReceiptDisk{
+		EvidenceID:           summary.evidenceID,
+		Digest:               summary.evidenceDigest,
+		AuthorizedFrameCount: summary.authorizedFrameCount,
+		OutputFrameCount:     summary.outputFrameCount,
+		OutputPayloadBytes:   summary.outputPayloadBytes,
+		ResultObserved:       summary.resultObserved,
+		TerminalStatus:       summary.terminalStatus,
+		SummaryDigest:        summary.digest,
+	}
+}
+
+func canonicalAttemptSummaryDigest(
+	binding AttemptCaptureInput,
+	summary AttemptOutputSummary,
+) string {
+	hash := sha256.New()
+	fields := []string{
+		"loom.attempt-output-summary.v1",
+		binding.EvidenceID,
+		binding.TeamInstanceID,
+		binding.PlanDigest,
+		binding.LogicalNodeID,
+		strconv.Itoa(binding.AttemptNumber),
+		binding.WorkItemID,
+		binding.RunID,
+		binding.ClaimID,
+		strconv.FormatInt(binding.ClaimGeneration, 10),
+		binding.RuntimeInstanceID,
+		binding.AgentInstanceID,
+		summary.evidenceDigest,
+		strconv.Itoa(summary.authorizedFrameCount),
+		strconv.Itoa(summary.outputFrameCount),
+		strconv.Itoa(summary.outputPayloadBytes),
+		strconv.FormatBool(summary.resultObserved),
+		summary.terminalStatus,
+	}
+	for _, field := range fields {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(field))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func validAttemptTerminalStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func attemptResultObserved(state attemptCaptureDisk) bool {

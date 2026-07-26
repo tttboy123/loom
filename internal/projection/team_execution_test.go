@@ -3,6 +3,7 @@ package projection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -112,6 +113,9 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 		len(record.Nodes[0].Attempts) != 1 {
 		t.Fatalf("TeamExecution() = %#v, %v", record, ok)
 	}
+	if !record.LegacySemanticUnbound {
+		t.Fatal("accepted schema-v1 Team must remain explicitly semantic-unbound")
+	}
 	want := TeamExecutionAttempt{
 		AttemptNumber:     1,
 		WorkItemID:        "team-work-1",
@@ -131,6 +135,184 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 	again, _ := view.TeamExecution("team-1")
 	if again.Nodes[0].Attempts[0].EvidenceDigest != digest {
 		t.Fatal("Team execution view aliases caller mutation")
+	}
+}
+
+func TestTeamExecutionProjectionReplaysSemanticRecoveryMetadata(t *testing.T) {
+	digest := strings.Repeat("1", 64)
+	contractDigest := strings.Repeat("2", 64)
+	policyDigest := strings.Repeat("3", 64)
+	classificationDigest := strings.Repeat("4", 64)
+	summaryDigest := strings.Repeat("5", 64)
+	decisionDigest := strings.Repeat("6", 64)
+	viewVersion := strings.Repeat("7", 64)
+	events := []journal.Event{
+		teamProjectionEvent(t, "plan-v2", "team-execution/team-v2", 1, "plan-v2", "TeamExecutionPlanned", map[string]any{
+			"team_instance_id": "team-v2",
+			"plan_digest":      digest,
+			"view_version":     viewVersion,
+			"nodes": []map[string]any{{
+				"logical_node_id":     "main",
+				"title":               "Main",
+				"agent_instance_id":   "agent-main",
+				"runtime_instance_id": "runtime-main",
+				"role":                "main",
+				"depends_on":          []string{},
+				"max_attempts":        2,
+			}},
+			"semantic_bindings": []map[string]any{{
+				"logical_node_id":            "main",
+				"output_contract_version":    1,
+				"output_contract_digest":     contractDigest,
+				"recovery_policy_version":    2,
+				"recovery_policy_digest":     policyDigest,
+				"attempt_credits":            0,
+				"primary_workflow_path":      "primary",
+				"workflow_fallback_key":      "cached-source",
+				"recovery_approval_required": false,
+			}},
+		}),
+		teamProjectionEvent(t, "scheduled-v2", "team-execution/team-v2", 2, "scheduled-v2", "TeamNodeAttemptScheduled", map[string]any{
+			"logical_node_id":     "main",
+			"attempt_number":      1,
+			"work_item_id":        "team-work-v2",
+			"run_id":              "team-run-v2",
+			"runtime_instance_id": "runtime-main",
+			"agent_instance_id":   "agent-main",
+			"workflow_path":       "primary",
+			"retry_at":            "",
+		}),
+		teamProjectionEvent(t, "dispatch-v2", "team-execution/team-v2", 3, "dispatch-v2", "TeamReadySetDispatched", map[string]any{
+			"team_instance_id": "team-v2",
+			"plan_digest":      digest,
+			"view_version":     viewVersion,
+			"attempts": []map[string]any{{
+				"logical_node_id":     "main",
+				"attempt_number":      1,
+				"work_item_id":        "team-work-v2",
+				"run_id":              "team-run-v2",
+				"claim_id":            "11111111-1111-4111-8111-111111111111",
+				"claim_generation":    1,
+				"runtime_instance_id": "runtime-main",
+				"agent_instance_id":   "agent-main",
+			}},
+		}),
+		teamProjectionEvent(t, "terminal-v2", "team-execution/team-v2", 4, "terminal-v2", "TeamNodeAttemptTerminal", map[string]any{
+			"logical_node_id":              "main",
+			"attempt_number":               1,
+			"work_item_id":                 "team-work-v2",
+			"run_id":                       "team-run-v2",
+			"claim_id":                     "11111111-1111-4111-8111-111111111111",
+			"claim_generation":             1,
+			"runtime_instance_id":          "runtime-main",
+			"agent_instance_id":            "agent-main",
+			"status":                       "succeeded",
+			"evidence_id":                  "team-evidence-v2",
+			"evidence_digest":              digest,
+			"output_contract_version":      1,
+			"output_contract_digest":       contractDigest,
+			"output_classification":        "transient_empty",
+			"output_classification_digest": classificationDigest,
+			"output_summary_digest":        summaryDigest,
+		}),
+		teamProjectionEvent(t, "recovery-v2", "team-execution/team-v2", 5, "recovery-v2", "TeamNodeRecoveryRecorded", map[string]any{
+			"logical_node_id":            "main",
+			"attempt_number":             1,
+			"action":                     "blocked",
+			"decision_time":              "2026-07-26T01:02:03Z",
+			"retry_at":                   "",
+			"next_attempt_number":        0,
+			"next_agent_instance_id":     "",
+			"next_runtime_instance_id":   "",
+			"workflow_fallback_key":      "",
+			"recovery_policy_version":    2,
+			"recovery_policy_digest":     policyDigest,
+			"recovery_decision_digest":   decisionDigest,
+			"classification_digest":      classificationDigest,
+			"prior_classifications":      []string{},
+			"credits_before":             0,
+			"credits_after":              0,
+			"fallback_consumed":          false,
+			"recovery_approval_required": false,
+			"dependency_satisfied":       false,
+		}),
+		teamProjectionEvent(t, "team-terminal-v2", "team-execution/team-v2", 6, "team-terminal-v2", "TeamExecutionTerminal", map[string]any{
+			"team_instance_id": "team-v2",
+			"plan_digest":      digest,
+			"status":           "blocked",
+			"reason":           "node_main_blocked",
+		}),
+	}
+	record, err := projectTeamExecutionStream("team-v2", events, nil)
+	if err != nil {
+		t.Fatalf("projectTeamExecutionStream() error = %v", err)
+	}
+	if record.LegacySemanticUnbound || len(record.Nodes) != 1 {
+		t.Fatalf("semantic binding = %#v", record)
+	}
+	node := record.Nodes[0]
+	if node.OutputContractVersion != 1 ||
+		node.OutputContractDigest != contractDigest ||
+		node.RecoveryPolicyVersion != 2 ||
+		node.RecoveryPolicyDigest != policyDigest ||
+		node.AttemptCredits != 0 ||
+		node.PrimaryWorkflowPath != "primary" ||
+		node.WorkflowFallbackKey != "cached-source" ||
+		node.RecoveryAction != "blocked" ||
+		node.RecoveryDecisionDigest != decisionDigest ||
+		node.CreditsBefore != 0 ||
+		node.CreditsAfter != 0 ||
+		len(node.PriorClassifications) != 0 {
+		t.Fatalf("projected node metadata = %#v", node)
+	}
+	attempt := node.Attempts[0]
+	if attempt.WorkflowPath != "primary" ||
+		attempt.OutputContractVersion != 1 ||
+		attempt.OutputContractDigest != contractDigest ||
+		attempt.OutputClassification != "transient_empty" ||
+		attempt.OutputClassificationDigest != classificationDigest ||
+		attempt.OutputSummaryDigest != summaryDigest {
+		t.Fatalf("projected attempt metadata = %#v", attempt)
+	}
+	view := buildGlobalReadView(
+		emptySnapshot(),
+		events,
+		map[string]TeamExecution{"team-v2": record},
+	)
+	copied, _ := view.TeamExecution("team-v2")
+	copied.Nodes[0].Attempts[0].OutputClassification = "mutated"
+	again, _ := view.TeamExecution("team-v2")
+	if again.Nodes[0].Attempts[0].OutputClassification != "transient_empty" {
+		t.Fatal("Team recovery attempt aliases caller mutation")
+	}
+	malformed := append([]journal.Event(nil), events...)
+	var recoveryPayload map[string]any
+	if err := json.Unmarshal(
+		malformed[4].PayloadJSON,
+		&recoveryPayload,
+	); err != nil {
+		t.Fatal(err)
+	}
+	recoveryPayload["credits_after"] = float64(1)
+	malformed[4].PayloadJSON, err = json.Marshal(recoveryPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := newForTestSource(eventSliceSource{events: malformed})
+	failing.snapshot = emptySnapshot()
+	failing.view = view
+	if err := failing.Rebuild(context.Background()); !errors.Is(
+		err,
+		ErrInvalidProjectionEvent,
+	) {
+		t.Fatalf("malformed recovery Rebuild() error = %v", err)
+	}
+	if got := failing.GlobalReadView(); got.Version() != view.Version() {
+		t.Fatalf(
+			"malformed recovery replaced old view: %q != %q",
+			got.Version(),
+			view.Version(),
+		)
 	}
 }
 

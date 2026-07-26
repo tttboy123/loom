@@ -251,6 +251,75 @@ func TestAttemptCaptureRejectsSymlinkStateDirectory(t *testing.T) {
 	}
 }
 
+func TestAttemptReceiptOutputSummaryIsExactAcrossRetryAndReopen(t *testing.T) {
+	root := testAttemptEvidenceRoot(t)
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := testAttemptCaptureInput()
+	if err := store.BeginAttemptCapture(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	lines := testAttemptCaptureLines(t, input, "succeeded", "")
+	for _, line := range lines {
+		if err := store.AppendAttemptFrame(
+			context.Background(),
+			input.EvidenceID,
+			line,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt, err := store.FinalizeAttemptCapture(
+		context.Background(),
+		input.EvidenceID,
+		AttemptTerminal{Status: "succeeded"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := receipt.OutputSummary()
+	if summary.EvidenceID() != receipt.EvidenceID() ||
+		summary.EvidenceDigest() != receipt.Digest() ||
+		summary.AuthorizedFrameCount() != 3 ||
+		summary.OutputFrameCount() != 1 ||
+		summary.OutputPayloadBytes() <= 0 ||
+		!summary.ResultObserved() ||
+		summary.TerminalStatus() != "succeeded" ||
+		summary.Digest() == "" {
+		t.Fatalf("summary = %#v", summary)
+	}
+	exact, err := store.FinalizeAttemptCapture(
+		context.Background(),
+		input.EvidenceID,
+		AttemptTerminal{Status: "succeeded"},
+	)
+	if err != nil || exact.OutputSummary() != summary {
+		t.Fatalf("exact summary = %#v, %v", exact.OutputSummary(), err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	reopenedReceipt, found, err := reopened.AttemptReceipt(
+		context.Background(),
+		input.EvidenceID,
+	)
+	if err != nil || !found || reopenedReceipt.OutputSummary() != summary {
+		t.Fatalf(
+			"reopened summary = %#v, %v, %v",
+			reopenedReceipt.OutputSummary(),
+			found,
+			err,
+		)
+	}
+}
+
 func testAttemptCaptureInput() AttemptCaptureInput {
 	return AttemptCaptureInput{
 		EvidenceID:        "team-evidence-1234567890abcdef1234567890abcdef",

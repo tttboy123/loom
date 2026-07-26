@@ -33,10 +33,22 @@ type AttemptTerminal struct {
 }
 
 type AttemptReceipt struct{}
+type AttemptOutputSummary struct{}
 type AttemptCaptureState struct{}
 
-func (AttemptReceipt) EvidenceID() string                { return "" }
-func (AttemptReceipt) Digest() string                    { return "" }
+func (AttemptReceipt) EvidenceID() string { return "" }
+func (AttemptReceipt) Digest() string     { return "" }
+func (AttemptReceipt) OutputSummary() AttemptOutputSummary {
+	return AttemptOutputSummary{}
+}
+func (AttemptOutputSummary) EvidenceID() string          { return "" }
+func (AttemptOutputSummary) EvidenceDigest() string      { return "" }
+func (AttemptOutputSummary) AuthorizedFrameCount() int   { return 0 }
+func (AttemptOutputSummary) OutputFrameCount() int       { return 0 }
+func (AttemptOutputSummary) OutputPayloadBytes() int     { return 0 }
+func (AttemptOutputSummary) ResultObserved() bool        { return false }
+func (AttemptOutputSummary) TerminalStatus() string      { return "" }
+func (AttemptOutputSummary) Digest() string              { return "" }
 func (AttemptCaptureState) Binding() AttemptCaptureInput { return AttemptCaptureInput{} }
 func (AttemptCaptureState) FrameCount() int              { return 0 }
 func (AttemptCaptureState) ResultObserved() bool         { return false }

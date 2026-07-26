@@ -21,9 +21,11 @@ import (
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/rules"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	"loom-pi-rebuild/internal/teams"
+	"loom-pi-rebuild/internal/verification"
 	"loom-pi-rebuild/internal/work"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 
@@ -50,6 +52,7 @@ type teamCanaryAdapter struct {
 	terminalStatus string
 	runtimeID      string
 	calls          *atomic.Int32
+	omitOutput     bool
 }
 
 func (adapter *teamCanaryAdapter) AdapterType() string { return "pi" }
@@ -100,24 +103,26 @@ func (adapter *teamCanaryAdapter) Execute(
 				"message_id": request.Dispatch.MessageID(),
 			}),
 		),
-		teamCanaryInboundFrame(
+	}
+	if !adapter.omitOutput {
+		frames = append(frames, teamCanaryInboundFrame(
 			request,
 			3,
 			bridgev1.MessageEvent,
 			mustTeamCanaryJSON(map[string]string{
 				"delta": "authorized-" + request.Binding.RunID,
 			}),
-		),
-		teamCanaryInboundFrame(
-			request,
-			4,
-			bridgev1.MessageResult,
-			mustTeamCanaryJSON(map[string]string{
-				"status": terminalStatus,
-				"reason": reason,
-			}),
-		),
+		))
 	}
+	frames = append(frames, teamCanaryInboundFrame(
+		request,
+		4,
+		bridgev1.MessageResult,
+		mustTeamCanaryJSON(map[string]string{
+			"status": terminalStatus,
+			"reason": reason,
+		}),
+	))
 	for _, frame := range frames {
 		if err := request.FrameSink.AcceptFrame(ctx, frame); err != nil {
 			return supervisor.AdapterResult{}, err
@@ -241,6 +246,7 @@ func TestTeamDAGExecutionControlledCanary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	semantics := testTeamNodeSemantics(t, plan, time.Minute, "cached-source")
 	barrier := &teamCanaryBarrier{release: make(chan struct{})}
 	requestNodes := make([]TeamNodeExecution, 0, 3)
 	for _, node := range plan.Nodes() {
@@ -282,7 +288,8 @@ func TestTeamDAGExecutionControlledCanary(t *testing.T) {
 		}
 		requestNodes = append(requestNodes, TeamNodeExecution{
 			LogicalNodeID: node.LogicalNodeID(), AttemptNumber: 1,
-			SourcePath: t.TempDir(), Profile: profile, Instance: instance,
+			WorkflowPath: "primary",
+			SourcePath:   t.TempDir(), Profile: profile, Instance: instance,
 			Dispatch: dispatch,
 			Executor: newTeamCanarySupervisor(
 				t,
@@ -302,6 +309,27 @@ func TestTeamDAGExecutionControlledCanary(t *testing.T) {
 			),
 		})
 	}
+	mainAttemptTwo := teamCanaryNodeExecution(
+		t,
+		plan,
+		"main",
+		2,
+		"agent-main",
+		"runtime-a",
+		now,
+		newTeamCanarySupervisor(
+			t,
+			workAuthority,
+			grantAuthority,
+			&teamCanaryAdapter{
+				barrier:        barrier,
+				runtimeID:      "runtime-a",
+				terminalStatus: "succeeded",
+			},
+		),
+	)
+	mainAttemptTwo.WorkflowPath = "cached-source"
+	requestNodes = append(requestNodes, mainAttemptTwo)
 	outputObserver := &teamCanaryOutputObserver{
 		barrier: barrier,
 		counts:  make(map[string]int),
@@ -309,6 +337,7 @@ func TestTeamDAGExecutionControlledCanary(t *testing.T) {
 	request := TeamExecutionRequest{
 		Plan:                 plan,
 		Nodes:                requestNodes,
+		Semantics:            semantics,
 		AuthoritativeTime:    now,
 		PrepareLeaseDuration: time.Minute,
 		GrantLifetime:        time.Minute,
@@ -317,47 +346,60 @@ func TestTeamDAGExecutionControlledCanary(t *testing.T) {
 	}
 	firstResult, err := coordinator.Run(ctx, request)
 	if !errors.Is(err, ErrTeamExecutionIncomplete) ||
-		firstResult.Team().Status() != "awaiting_recovery" ||
+		firstResult.Team().Status() != "awaiting_recovery" &&
+			firstResult.Team().Status() != "running" ||
 		len(firstResult.ExecutedNodeIDs()) != 3 {
 		t.Fatalf("first Run() = %#v, %v", firstResult, err)
 	}
-	retryAt := now.Add(time.Minute)
-	if _, err := workAuthority.ScheduleTeamNodeRecovery(
+	changedRequest := request
+	changedRequest.Semantics = append(
+		[]TeamNodeSemantics(nil),
+		request.Semantics...,
+	)
+	for index := range changedRequest.Semantics {
+		if changedRequest.Semantics[index].LogicalNodeID != "main" {
+			continue
+		}
+		changedPolicy, policyErr := rules.NewRecoveryPolicy(
+			rules.RecoveryPolicyInput{
+				Version:             2,
+				RetryDelay:          time.Minute,
+				AttemptCredits:      1,
+				ExhaustionAction:    rules.ExhaustionBlocked,
+				WorkflowFallbackKey: "cached-source",
+			},
+		)
+		if policyErr != nil {
+			t.Fatal(policyErr)
+		}
+		changedRequest.Semantics[index].RecoveryPolicy = changedPolicy
+	}
+	beforeSwap, err := store.ReadStream(
 		ctx,
-		work.TeamRecoveryInput{
-			TeamInstanceID:        plan.TeamInstanceID(),
-			PlanDigest:            plan.Digest(),
-			LogicalNodeID:         "main",
-			AttemptNumber:         1,
-			Action:                work.TeamRecoveryFallback,
-			RetryAt:               retryAt,
-			NextAgentInstanceID:   "agent-main-fallback",
-			NextRuntimeInstanceID: "runtime-b",
-			CorrelationID:         request.CorrelationID,
-		},
-	); err != nil {
+		"team-execution/"+plan.TeamInstanceID(),
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	mainAttemptTwo := teamCanaryNodeExecution(
-		t,
-		plan,
-		"main",
-		2,
-		"agent-main-fallback",
-		"runtime-b",
-		now,
-		newTeamCanarySupervisor(
-			t,
-			workAuthority,
-			grantAuthority,
-			&teamCanaryAdapter{
-				barrier:        barrier,
-				runtimeID:      "runtime-b",
-				terminalStatus: "succeeded",
-			},
-		),
+	if _, err := coordinator.Run(
+		ctx,
+		changedRequest,
+	); !errors.Is(err, work.ErrTeamExecutionConflict) {
+		t.Fatalf("policy-swap restart error = %v", err)
+	}
+	afterSwap, err := store.ReadStream(
+		ctx,
+		"team-execution/"+plan.TeamInstanceID(),
 	)
-	request.Nodes = append(request.Nodes, mainAttemptTwo)
+	if err != nil || len(afterSwap) != len(beforeSwap) {
+		t.Fatalf(
+			"policy-swap Team Events = %d -> %d, %v",
+			len(beforeSwap),
+			len(afterSwap),
+			err,
+		)
+	}
+	retryAt := now.Add(time.Minute)
 	request.AuthoritativeTime = retryAt
 	clock.now = retryAt
 	result, err := coordinator.Run(ctx, request)
@@ -729,6 +771,140 @@ func TestTeamCoordinatorRecoversDurableAttemptWindows(t *testing.T) {
 	}
 }
 
+func TestTeamCoordinatorClassifiesAllowedAndTransientEmptyOutput(t *testing.T) {
+	t.Run("contract-valid empty succeeds", func(t *testing.T) {
+		fixture := newTeamRecoveryFixture(t)
+		fixture.request.Nodes[0].Executor = newTeamCanarySupervisor(
+			t,
+			fixture.work,
+			fixture.grants,
+			&teamCanaryAdapter{
+				barrier:    &teamCanaryBarrier{release: make(chan struct{})},
+				runtimeID:  "runtime-recovery",
+				calls:      &fixture.calls,
+				omitOutput: true,
+			},
+		)
+		contract, err := verification.NewOutputContract(
+			1,
+			verification.EmptyOutputValid,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.request.Semantics[0].OutputContract = contract
+		result, err := fixture.coordinator.Run(
+			context.Background(),
+			fixture.request,
+		)
+		if err != nil || result.Team().Status() != "succeeded" ||
+			fixture.calls.Load() != 1 {
+			t.Fatalf("allowed-empty Run() = %#v, %v", result, err)
+		}
+		attempt := result.Team().Nodes()[0].Attempts()[0]
+		if attempt.OutputClassification() != verification.OutputValidEmpty {
+			t.Fatalf("allowed-empty classification = %#v", attempt)
+		}
+	})
+
+	t.Run("transient empty retries only when due", func(t *testing.T) {
+		fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
+		for index := range fixture.request.Nodes {
+			fixture.request.Nodes[index].Executor = newTeamCanarySupervisor(
+				t,
+				fixture.work,
+				fixture.grants,
+				&teamCanaryAdapter{
+					barrier:    &teamCanaryBarrier{release: make(chan struct{})},
+					runtimeID:  "runtime-recovery",
+					calls:      &fixture.calls,
+					omitOutput: index == 0,
+				},
+			)
+		}
+		contract, err := verification.NewOutputContract(
+			1,
+			verification.EmptyOutputTransient,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
+			Version:          1,
+			RetryDelay:       time.Minute,
+			AttemptCredits:   1,
+			ExhaustionAction: rules.ExhaustionBlocked,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.request.Semantics[0].OutputContract = contract
+		fixture.request.Semantics[0].RecoveryPolicy = policy
+		first, err := fixture.coordinator.Run(
+			context.Background(),
+			fixture.request,
+		)
+		if !errors.Is(err, ErrTeamExecutionIncomplete) ||
+			fixture.calls.Load() != 1 ||
+			len(first.ExecutedNodeIDs()) != 1 {
+			t.Fatalf("transient first Run() = %#v, %v", first, err)
+		}
+		retryAt := fixture.clock.now.Add(time.Minute)
+		fixture.clock.now = retryAt
+		fixture.request.AuthoritativeTime = retryAt
+		second, err := fixture.coordinator.Run(
+			context.Background(),
+			fixture.request,
+		)
+		if err != nil || second.Team().Status() != "succeeded" ||
+			fixture.calls.Load() != 2 {
+			t.Fatalf("transient retry Run() = %#v, %v", second, err)
+		}
+		attempts := second.Team().Nodes()[0].Attempts()
+		if len(attempts) != 2 ||
+			attempts[0].OutputClassification() !=
+				verification.OutputTransientEmpty ||
+			attempts[1].OutputClassification() !=
+				verification.OutputValidNonEmpty {
+			t.Fatalf("transient attempts = %#v", attempts)
+		}
+	})
+}
+
+func TestTeamCoordinatorRecoveryApprovalFailsClosedToHumanRequired(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	fixture.request.Nodes[0].Executor = newTeamCanarySupervisor(
+		t,
+		fixture.work,
+		fixture.grants,
+		&teamCanaryAdapter{
+			barrier:        &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID:      "runtime-recovery",
+			calls:          &fixture.calls,
+			terminalStatus: "failed",
+		},
+	)
+	policy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
+		Version:                  1,
+		AttemptCredits:           0,
+		ExhaustionAction:         rules.ExhaustionBlocked,
+		RecoveryApprovalRequired: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.Semantics[0].RecoveryPolicy = policy
+	result, err := fixture.coordinator.Run(
+		context.Background(),
+		fixture.request,
+	)
+	if err != nil || result.Team().Status() != "human_required" ||
+		result.Team().Nodes()[0].Status() != "human_required" ||
+		fixture.calls.Load() != 1 {
+		t.Fatalf("approval-required Run() = %#v, %v", result, err)
+	}
+}
+
 type teamRecoveryFixture struct {
 	clock       *teamCanaryClock
 	store       *journal.Store
@@ -743,6 +919,13 @@ type teamRecoveryFixture struct {
 }
 
 func newTeamRecoveryFixture(t testing.TB) *teamRecoveryFixture {
+	return newTeamRecoveryFixtureWithMaxAttempts(t, 1)
+}
+
+func newTeamRecoveryFixtureWithMaxAttempts(
+	t testing.TB,
+	maxAttempts int,
+) *teamRecoveryFixture {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 7, 26, 15, 0, 0, 0, time.UTC)
@@ -811,7 +994,7 @@ func newTeamRecoveryFixture(t testing.TB) *teamRecoveryFixture {
 			AgentInstanceID:   "agent-recovery",
 			RuntimeInstanceID: "runtime-recovery",
 			Role:              teams.ExecutionRoleMain,
-			MaxAttempts:       1,
+			MaxAttempts:       maxAttempts,
 		}},
 	})
 	if err != nil {
@@ -837,18 +1020,23 @@ func newTeamRecoveryFixture(t testing.TB) *teamRecoveryFixture {
 			calls:     &fixture.calls,
 		},
 	)
-	fixture.request = TeamExecutionRequest{
-		Plan: plan,
-		Nodes: []TeamNodeExecution{teamCanaryNodeExecution(
+	executions := make([]TeamNodeExecution, 0, maxAttempts)
+	for attemptNumber := 1; attemptNumber <= maxAttempts; attemptNumber++ {
+		executions = append(executions, teamCanaryNodeExecution(
 			t,
 			plan,
 			"main",
-			1,
+			attemptNumber,
 			"agent-recovery",
 			"runtime-recovery",
 			now,
 			executor,
-		)},
+		))
+	}
+	fixture.request = TeamExecutionRequest{
+		Plan:                 plan,
+		Nodes:                executions,
+		Semantics:            testTeamNodeSemantics(t, plan, 0, ""),
 		AuthoritativeTime:    now,
 		PrepareLeaseDuration: time.Minute,
 		GrantLifetime:        time.Minute,
@@ -919,7 +1107,10 @@ func (fixture *teamRecoveryFixture) dispatch(
 		work.TeamDispatchInput{
 			Plan:          fixture.plan,
 			ReadyAttempts: selections,
-			ViewVersion:   view.Version(),
+			SemanticBindings: appSemanticBindings(
+				fixture.request,
+			),
+			ViewVersion: view.Version(),
 			ExpectedHeads: appDispatchHeads(
 				view,
 				fixture.plan,
@@ -997,12 +1188,55 @@ func teamCanaryNodeExecution(
 	return TeamNodeExecution{
 		LogicalNodeID: logicalNodeID,
 		AttemptNumber: attemptNumber,
+		WorkflowPath:  "primary",
 		SourcePath:    t.TempDir(),
 		Profile:       profile,
 		Instance:      instance,
 		Dispatch:      dispatch,
 		Executor:      executor,
 	}
+}
+
+func testTeamNodeSemantics(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	retryDelay time.Duration,
+	mainFallback string,
+) []TeamNodeSemantics {
+	t.Helper()
+	nodes := plan.Nodes()
+	result := make([]TeamNodeSemantics, 0, len(nodes))
+	for _, node := range nodes {
+		contract, err := verification.NewOutputContract(
+			1,
+			verification.EmptyOutputInvalid,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credits := node.MaxAttempts() - 1
+		fallback := ""
+		if node.Role() == teams.ExecutionRoleMain {
+			fallback = mainFallback
+		}
+		policy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
+			Version:             1,
+			RetryDelay:          retryDelay,
+			AttemptCredits:      credits,
+			ExhaustionAction:    rules.ExhaustionBlocked,
+			WorkflowFallbackKey: fallback,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, TeamNodeSemantics{
+			LogicalNodeID:       node.LogicalNodeID(),
+			OutputContract:      contract,
+			RecoveryPolicy:      policy,
+			PrimaryWorkflowPath: "primary",
+		})
+	}
+	return result
 }
 
 func newTeamCanarySupervisor(

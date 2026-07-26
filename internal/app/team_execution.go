@@ -15,9 +15,11 @@ import (
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/rules"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	"loom-pi-rebuild/internal/teams"
+	"loom-pi-rebuild/internal/verification"
 	"loom-pi-rebuild/internal/work"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
@@ -51,6 +53,7 @@ type NodeOutputObserver interface {
 type TeamNodeExecution struct {
 	LogicalNodeID string
 	AttemptNumber int
+	WorkflowPath  string
 	SourcePath    string
 	Profile       loomruntime.RuntimeProfile
 	Instance      loomruntime.RuntimeInstance
@@ -58,9 +61,17 @@ type TeamNodeExecution struct {
 	Executor      ManagedNodeExecutor
 }
 
+type TeamNodeSemantics struct {
+	LogicalNodeID       string
+	OutputContract      verification.OutputContract
+	RecoveryPolicy      rules.RecoveryPolicy
+	PrimaryWorkflowPath string
+}
+
 type TeamExecutionRequest struct {
 	Plan                 teams.ExecutionPlan
 	Nodes                []TeamNodeExecution
+	Semantics            []TeamNodeSemantics
 	AuthoritativeTime    time.Time
 	PrepareLeaseDuration time.Duration
 	GrantLifetime        time.Duration
@@ -112,7 +123,7 @@ func (coordinator *TeamCoordinator) Run(
 		return TeamExecutionResult{}, err
 	}
 	executed := make([]string, 0, len(request.Nodes))
-	for wave := 0; wave < 3; wave++ {
+	for wave := 0; wave < 9; wave++ {
 		if err := coordinator.projection.Rebuild(ctx); err != nil {
 			return TeamExecutionResult{}, fmt.Errorf(
 				"Team projection rebuild: %w",
@@ -122,19 +133,27 @@ func (coordinator *TeamCoordinator) Run(
 		view := coordinator.projection.GlobalReadView()
 		if projected, ok := view.TeamExecution(
 			request.Plan.TeamInstanceID(),
-		); ok && appTerminalTeamStatus(projected.Status) {
-			team, err := coordinator.workAuthority.TeamExecution(
-				ctx,
-				request.Plan.TeamInstanceID(),
-			)
-			if err != nil {
+		); ok {
+			if err := appValidateProjectedSemantics(
+				request,
+				projected,
+			); err != nil {
 				return TeamExecutionResult{}, err
 			}
-			sort.Strings(executed)
-			return TeamExecutionResult{
-				team:            team,
-				executedNodeIDs: executed,
-			}, nil
+			if appTerminalTeamStatus(projected.Status) {
+				team, err := coordinator.workAuthority.TeamExecution(
+					ctx,
+					request.Plan.TeamInstanceID(),
+				)
+				if err != nil {
+					return TeamExecutionResult{}, err
+				}
+				sort.Strings(executed)
+				return TeamExecutionResult{
+					team:            team,
+					executedNodeIDs: executed,
+				}, nil
+			}
 		}
 		recoveryTasks, recoveryChanged, err := coordinator.recoverTeamAttempts(
 			ctx,
@@ -197,6 +216,19 @@ func (coordinator *TeamCoordinator) Run(
 			if !exists {
 				return TeamExecutionResult{}, ErrTeamExecutionIncomplete
 			}
+			expectedWorkflowPath, err := appExpectedWorkflowPath(
+				request,
+				view,
+				node.LogicalNodeID(),
+				attemptNumber,
+			)
+			if err != nil ||
+				execution.WorkflowPath != expectedWorkflowPath {
+				return TeamExecutionResult{}, errors.Join(
+					ErrInvalidTeamCoordinator,
+					err,
+				)
+			}
 			selections = append(selections, work.TeamAttemptSelection{
 				LogicalNodeID: node.LogicalNodeID(),
 				AttemptNumber: attemptNumber,
@@ -214,6 +246,7 @@ func (coordinator *TeamCoordinator) Run(
 			work.TeamDispatchInput{
 				Plan:                 request.Plan,
 				ReadyAttempts:        selections,
+				SemanticBindings:     appSemanticBindings(request),
 				ViewVersion:          view.Version(),
 				ExpectedHeads:        expectedHeads,
 				AuthoritativeTime:    request.AuthoritativeTime,
@@ -274,6 +307,49 @@ func (coordinator *TeamCoordinator) Run(
 	}, ErrTeamExecutionIncomplete
 }
 
+func appValidateProjectedSemantics(
+	request TeamExecutionRequest,
+	projected projection.TeamExecution,
+) error {
+	if projected.LegacySemanticUnbound {
+		return work.ErrTeamAttemptRecoveryRequired
+	}
+	if projected.PlanDigest != request.Plan.Digest() ||
+		len(projected.Nodes) != len(request.Semantics) {
+		return work.ErrTeamExecutionConflict
+	}
+	for _, semantics := range request.Semantics {
+		var node *projection.TeamExecutionNode
+		for index := range projected.Nodes {
+			if projected.Nodes[index].LogicalNodeID ==
+				semantics.LogicalNodeID {
+				node = &projected.Nodes[index]
+				break
+			}
+		}
+		if node == nil ||
+			node.OutputContractVersion !=
+				semantics.OutputContract.Version() ||
+			node.OutputContractDigest !=
+				semantics.OutputContract.Digest() ||
+			node.RecoveryPolicyVersion !=
+				semantics.RecoveryPolicy.Version() ||
+			node.RecoveryPolicyDigest !=
+				semantics.RecoveryPolicy.Digest() ||
+			node.AttemptCredits !=
+				semantics.RecoveryPolicy.AttemptCredits() ||
+			node.PrimaryWorkflowPath !=
+				semantics.PrimaryWorkflowPath ||
+			node.WorkflowFallbackKey !=
+				semantics.RecoveryPolicy.WorkflowFallbackKey() ||
+			node.RecoveryApprovalRequired !=
+				semantics.RecoveryPolicy.RecoveryApprovalRequired() {
+			return work.ErrTeamExecutionConflict
+		}
+	}
+	return nil
+}
+
 func (coordinator *TeamCoordinator) commitTeamTaskOutcomes(
 	ctx context.Context,
 	request TeamExecutionRequest,
@@ -327,7 +403,32 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 	generation work.RunGenerationInput,
 	receipt evidence.AttemptReceipt,
 ) error {
-	_, err := coordinator.workAuthority.CommitTeamAttemptEvidence(
+	semantics, ok := appNodeSemantics(request, logicalNodeID)
+	if !ok {
+		return ErrInvalidTeamCoordinator
+	}
+	summary := receipt.OutputSummary()
+	observation, err := verification.NewOutputObservation(
+		receipt.EvidenceID(),
+		receipt.Digest(),
+		summary.Digest(),
+		summary.AuthorizedFrameCount(),
+		summary.OutputFrameCount(),
+		summary.OutputPayloadBytes(),
+		summary.ResultObserved(),
+		summary.TerminalStatus(),
+	)
+	if err != nil {
+		return err
+	}
+	classification, err := verification.Classify(
+		semantics.OutputContract,
+		observation,
+	)
+	if err != nil {
+		return err
+	}
+	team, err := coordinator.workAuthority.CommitTeamAttemptEvidence(
 		ctx,
 		work.TeamAttemptEvidenceInput{
 			TeamInstanceID:    request.Plan.TeamInstanceID(),
@@ -340,9 +441,78 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 			ClaimGeneration:   generation.ClaimGeneration,
 			RuntimeInstanceID: generation.RuntimeInstanceID,
 			AgentInstanceID:   generation.AgentInstanceID,
-			EvidenceID:        receipt.EvidenceID(),
-			EvidenceDigest:    receipt.Digest(),
+			Receipt:           receipt,
+			Classification:    classification,
 			CorrelationID:     request.CorrelationID,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	var current work.TeamNodeRecord
+	found := false
+	for _, node := range team.Nodes() {
+		if node.LogicalNodeID() == logicalNodeID {
+			current = node
+			found = true
+			break
+		}
+	}
+	if !found || current.Status() != "awaiting_recovery" {
+		return nil
+	}
+	planNode := appPlanNode(request.Plan, logicalNodeID)
+	if planNode.LogicalNodeID() == "" {
+		return ErrInvalidTeamCoordinator
+	}
+	prior := make([]verification.OutputClassification, 0, attemptNumber-1)
+	fallbackConsumed := false
+	for _, attempt := range current.Attempts() {
+		if attempt.AttemptNumber() < attemptNumber {
+			prior = append(prior, attempt.OutputClassification())
+		}
+		if semantics.RecoveryPolicy.WorkflowFallbackKey() != "" &&
+			attempt.WorkflowPath() ==
+				semantics.RecoveryPolicy.WorkflowFallbackKey() {
+			fallbackConsumed = true
+		}
+	}
+	remainingCredits := semantics.RecoveryPolicy.AttemptCredits() -
+		(attemptNumber - 1)
+	if remainingCredits < 0 {
+		remainingCredits = 0
+	}
+	decision, err := rules.DecideRecovery(
+		semantics.RecoveryPolicy,
+		rules.RecoveryInput{
+			TeamInstanceID:       request.Plan.TeamInstanceID(),
+			PlanDigest:           request.Plan.Digest(),
+			LogicalNodeID:        logicalNodeID,
+			AttemptNumber:        attemptNumber,
+			MaxAttempts:          planNode.MaxAttempts(),
+			AgentInstanceID:      generation.AgentInstanceID,
+			RuntimeInstanceID:    generation.RuntimeInstanceID,
+			EvidenceID:           receipt.EvidenceID(),
+			EvidenceDigest:       receipt.Digest(),
+			OutputSummaryDigest:  summary.Digest(),
+			Classification:       classification,
+			PriorClassifications: prior,
+			RemainingCredits:     remainingCredits,
+			FallbackConsumed:     fallbackConsumed,
+			DecisionTime:         request.AuthoritativeTime,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if decision.Action() == rules.RecoveryNone {
+		return ErrTeamExecutionIncomplete
+	}
+	_, err = coordinator.workAuthority.ScheduleTeamNodeRecovery(
+		ctx,
+		work.TeamRecoveryInput{
+			Decision:      decision,
+			CorrelationID: request.CorrelationID,
 		},
 	)
 	return err
@@ -361,6 +531,38 @@ func (coordinator *TeamCoordinator) recoverTeamAttempts(
 	var tasks []teamExecutionTask
 	changed := false
 	for _, node := range projected.Nodes {
+		if node.Status == "awaiting_recovery" {
+			attempt, ok := appProjectedCurrentAttempt(node)
+			if !ok || attempt.EvidenceID == "" {
+				return nil, changed, work.ErrTeamAttemptRecoveryRequired
+			}
+			receipt, found, err := coordinator.evidenceStore.AttemptReceipt(
+				ctx,
+				attempt.EvidenceID,
+			)
+			if err != nil || !found {
+				return nil, changed, errors.Join(
+					work.ErrTeamAttemptRecoveryRequired,
+					err,
+				)
+			}
+			run, ok := view.Run(attempt.RunID)
+			if !ok {
+				return nil, changed, work.ErrTeamAttemptRecoveryRequired
+			}
+			if err := coordinator.commitTeamAttemptReceipt(
+				ctx,
+				request,
+				node.LogicalNodeID,
+				attempt.AttemptNumber,
+				appProjectionRunGeneration(run, request.CorrelationID),
+				receipt,
+			); err != nil {
+				return nil, changed, err
+			}
+			changed = true
+			continue
+		}
 		if node.Status != "running" {
 			continue
 		}
@@ -934,6 +1136,7 @@ func validateTeamExecutionRequest(
 	nodes := request.Plan.Nodes()
 	if len(nodes) == 0 || len(nodes) > 3 ||
 		len(request.Nodes) == 0 || len(request.Nodes) > 9 ||
+		len(request.Semantics) != len(nodes) ||
 		request.AuthoritativeTime.IsZero() ||
 		request.AuthoritativeTime.Location() != time.UTC ||
 		request.PrepareLeaseDuration <= 0 ||
@@ -949,14 +1152,45 @@ func validateTeamExecutionRequest(
 	for _, node := range nodes {
 		planNodes[node.LogicalNodeID()] = node
 	}
+	semanticNodes := make(map[string]TeamNodeSemantics, len(request.Semantics))
+	for index, semantics := range request.Semantics {
+		node, exists := planNodes[semantics.LogicalNodeID]
+		if !exists ||
+			index > 0 &&
+				request.Semantics[index-1].LogicalNodeID >=
+					semantics.LogicalNodeID ||
+			!semantics.OutputContract.Valid() ||
+			!semantics.RecoveryPolicy.Valid() ||
+			semantics.RecoveryPolicy.AttemptCredits() >
+				node.MaxAttempts()-1 ||
+			!validAppWorkflowPath(semantics.PrimaryWorkflowPath) ||
+			semantics.RecoveryPolicy.WorkflowFallbackKey() != "" &&
+				(!validAppWorkflowPath(
+					semantics.RecoveryPolicy.WorkflowFallbackKey(),
+				) ||
+					semantics.RecoveryPolicy.WorkflowFallbackKey() ==
+						semantics.PrimaryWorkflowPath) {
+			return nil, ErrInvalidTeamCoordinator
+		}
+		semanticNodes[semantics.LogicalNodeID] = semantics
+	}
 	executions := make(map[string]TeamNodeExecution, len(request.Nodes))
 	for _, execution := range request.Nodes {
 		node, exists := planNodes[execution.LogicalNodeID]
 		if !exists ||
 			execution.AttemptNumber < 1 ||
 			execution.AttemptNumber > node.MaxAttempts() ||
+			!validAppWorkflowPath(execution.WorkflowPath) ||
 			execution.SourcePath == "" ||
 			nilAppInterface(execution.Executor) {
+			return nil, ErrInvalidTeamCoordinator
+		}
+		semantics := semanticNodes[execution.LogicalNodeID]
+		if execution.AttemptNumber == 1 &&
+			execution.WorkflowPath != semantics.PrimaryWorkflowPath ||
+			execution.WorkflowPath != semantics.PrimaryWorkflowPath &&
+				execution.WorkflowPath !=
+					semantics.RecoveryPolicy.WorkflowFallbackKey() {
 			return nil, ErrInvalidTeamCoordinator
 		}
 		key := appExecutionKey(
@@ -968,7 +1202,77 @@ func validateTeamExecutionRequest(
 		}
 		executions[key] = execution
 	}
+	for _, node := range nodes {
+		for attemptNumber := 1; attemptNumber <= node.MaxAttempts(); attemptNumber++ {
+			if _, ok := executions[appExecutionKey(
+				node.LogicalNodeID(),
+				attemptNumber,
+			)]; !ok {
+				return nil, ErrTeamExecutionIncomplete
+			}
+		}
+	}
 	return executions, nil
+}
+
+func appNodeSemantics(
+	request TeamExecutionRequest,
+	logicalNodeID string,
+) (TeamNodeSemantics, bool) {
+	for _, semantics := range request.Semantics {
+		if semantics.LogicalNodeID == logicalNodeID {
+			return semantics, true
+		}
+	}
+	return TeamNodeSemantics{}, false
+}
+
+func appPlanNode(
+	plan teams.ExecutionPlan,
+	logicalNodeID string,
+) teams.ExecutionNode {
+	for _, node := range plan.Nodes() {
+		if node.LogicalNodeID() == logicalNodeID {
+			return node
+		}
+	}
+	return teams.ExecutionNode{}
+}
+
+func appSemanticBindings(
+	request TeamExecutionRequest,
+) []work.TeamNodeSemanticBinding {
+	result := make(
+		[]work.TeamNodeSemanticBinding,
+		0,
+		len(request.Semantics),
+	)
+	for _, semantics := range request.Semantics {
+		result = append(result, work.TeamNodeSemanticBinding{
+			LogicalNodeID:            semantics.LogicalNodeID,
+			OutputContractVersion:    semantics.OutputContract.Version(),
+			OutputContractDigest:     semantics.OutputContract.Digest(),
+			RecoveryPolicyVersion:    semantics.RecoveryPolicy.Version(),
+			RecoveryPolicyDigest:     semantics.RecoveryPolicy.Digest(),
+			AttemptCredits:           semantics.RecoveryPolicy.AttemptCredits(),
+			PrimaryWorkflowPath:      semantics.PrimaryWorkflowPath,
+			WorkflowFallbackKey:      semantics.RecoveryPolicy.WorkflowFallbackKey(),
+			RecoveryApprovalRequired: semantics.RecoveryPolicy.RecoveryApprovalRequired(),
+		})
+	}
+	return result
+}
+
+func validAppWorkflowPath(value string) bool {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, current := range value {
+		if current < 0x21 || current == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func appExecutionStates(
@@ -1082,6 +1386,34 @@ func appReadyAttemptNumber(
 		return state.CurrentAttempt
 	}
 	return 1
+}
+
+func appExpectedWorkflowPath(
+	request TeamExecutionRequest,
+	view projection.GlobalReadView,
+	logicalNodeID string,
+	attemptNumber int,
+) (string, error) {
+	if projected, ok := view.TeamExecution(
+		request.Plan.TeamInstanceID(),
+	); ok {
+		for _, node := range projected.Nodes {
+			if node.LogicalNodeID != logicalNodeID {
+				continue
+			}
+			for _, attempt := range node.Attempts {
+				if attempt.AttemptNumber == attemptNumber &&
+					attempt.WorkflowPath != "" {
+					return attempt.WorkflowPath, nil
+				}
+			}
+		}
+	}
+	semantics, ok := appNodeSemantics(request, logicalNodeID)
+	if !ok || attemptNumber != 1 {
+		return "", ErrInvalidTeamCoordinator
+	}
+	return semantics.PrimaryWorkflowPath, nil
 }
 
 func appDispatchHeads(

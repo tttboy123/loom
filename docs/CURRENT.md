@@ -1106,5 +1106,20 @@ repository and repository-race tests, vet, format, scope, and trust-boundary
 audits, and fresh independent Repair Review 2 returned `PASS` with no findings.
 No real authentication surface, external approval action, approved execution,
 API/CLI, daemon, Runtime/Provider, output/retry/Verifier/Done authority, or
-autonomy is activated. The next permitted product boundary is the single
-vertical S4-W2 Output Contract and Bounded Recovery Integration contract.
+autonomy is activated.
+
+`CURRENT`: S4-W2 now delivers exact authorized-output summaries, pure
+versioned output classification, pure bounded recovery decisions, and
+Journal-authoritative Team recovery. The first Team dispatch freezes complete
+per-node semantic and workflow bindings; terminal attempts bind Store-returned
+Evidence receipts and exact classification; retry/fallback uses distinct
+Run/generation/Grant/Evidence lineage, explicit `retry_at`, bounded credits,
+and one Team-stream CAS. Legacy Slice 3 Team streams remain readable but cannot
+silently gain S4-W2 authority. Projection and `GlobalReadView` expose copied
+semantic/classification/recovery metadata while preserving the prior view on
+malformed replay. Focused repeated race, full repository and repository-race,
+vet, format, Windows compilation, scope, and trust-boundary gates pass; fresh
+independent Implementation Review 1 returned `PASS` with no findings. Slice 4
+remains `PARTIAL`: deterministic acceptance, independent Verifier isolation,
+terminal-once WorkItem Done, and the controlled whole-Slice integration proof
+remain in the single S4-W3 boundary. No S4-W4 is permitted.
