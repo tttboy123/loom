@@ -48,6 +48,8 @@ type GlobalReadView struct {
 	agentGrants      map[string]AgentGrant
 	latestGrantByRun map[string]AgentGrant
 	evidence         map[string]Evidence
+	ruleSets         map[string]ProjectedRuleSet
+	approvalRequests map[string]ProjectedApprovalRequest
 	teams            map[string]TeamInstance
 	agentInstances   map[string]AgentInstance
 	runtimeInstances map[string]RuntimeInstance
@@ -87,6 +89,18 @@ func (view GlobalReadView) LatestAgentGrantForRun(runID string) (AgentGrant, boo
 func (view GlobalReadView) Evidence(id string) (Evidence, bool) {
 	record, ok := view.evidence[id]
 	return record, ok
+}
+
+func (view GlobalReadView) RuleSet(streamID string) (ProjectedRuleSet, bool) {
+	record, ok := view.ruleSets[streamID]
+	return cloneProjectedRuleSet(record), ok
+}
+
+func (view GlobalReadView) ApprovalRequest(
+	id string,
+) (ProjectedApprovalRequest, bool) {
+	record, ok := view.approvalRequests[id]
+	return cloneProjectedApprovalRequest(record), ok
 }
 
 func (view GlobalReadView) Team(id string) (TeamInstance, bool) {
@@ -190,6 +204,8 @@ func buildGlobalReadView(
 		agentGrants:      cloned.AgentGrants,
 		latestGrantByRun: latestGrantByRun,
 		evidence:         cloned.Evidence,
+		ruleSets:         cloned.RuleSets,
+		approvalRequests: cloned.ApprovalRequests,
 		teams:            cloned.Teams,
 		agentInstances:   cloned.AgentInstances,
 		runtimeInstances: cloned.RuntimeInstances,

@@ -1023,6 +1023,121 @@ func TestRunAuthorityInputSnapshotMutationAndStaticBoundary(t *testing.T) { // s
 	})
 }
 
+func TestApprovalPauseAndResolutionFenceClaimAndReplayStrictly(t *testing.T) {
+	t.Run("pending approval fences claim and approval restores assignment", func(t *testing.T) {
+		store := openAuthorityStore(t)
+		clock := &mutableClock{now: testNow}
+		authority := newAuthority(t, store, clock, 17)
+		if _, _, err := authority.CreateAndAssign(
+			context.Background(),
+			assignment("work-approval", "run-approval"),
+		); err != nil {
+			t.Fatal(err)
+		}
+		workEvents, err := store.ReadStream(
+			context.Background(),
+			workItemStream("work-approval"),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approvalID := "approval-request-1"
+		approvalDigest := testDigest
+		pause := journal.Event{
+			ID:             "approval-pause-event",
+			StreamID:       workItemStream("work-approval"),
+			Seq:            3,
+			IdempotencyKey: "approval-pause-event",
+			Type:           "WorkItemApprovalPaused",
+			SchemaVersion:  1,
+			EmittedAt:      testNow,
+			CorrelationID:  testCorrelation,
+			CausationID:    "approval-request-event",
+			PayloadJSON: mustJSON(t, map[string]any{
+				"work_item_id":            "work-approval",
+				"approval_request_id":     approvalID,
+				"approval_request_digest": approvalDigest,
+				"previous_status":         "assigned",
+				"status":                  "waiting_approval",
+			}),
+		}
+		if _, err := store.Append(context.Background(), pause); err != nil {
+			t.Fatal(err)
+		}
+		seedRuntime(t, store, "runtime-approval", "online", 1)
+		if workItem, run, err := authority.Claim(
+			context.Background(),
+			claim("work-approval", "run-approval", "runtime-approval"),
+		); !errors.Is(err, ErrRunNotClaimable) {
+			t.Fatalf("paused Claim() = work=%#v run=%#v error=%v", workItem, run, err)
+		}
+
+		resolved := journal.Event{
+			ID:             "approval-resolved-event",
+			StreamID:       workItemStream("work-approval"),
+			Seq:            4,
+			IdempotencyKey: "approval-resolved-event",
+			Type:           "WorkItemApprovalResolved",
+			SchemaVersion:  1,
+			EmittedAt:      testNow.Add(time.Second),
+			CorrelationID:  testCorrelation,
+			CausationID:    "approval-decision-event",
+			PayloadJSON: mustJSON(t, map[string]any{
+				"work_item_id":            "work-approval",
+				"approval_request_id":     approvalID,
+				"approval_request_digest": approvalDigest,
+				"previous_status":         "waiting_approval",
+				"status":                  "assigned",
+			}),
+		}
+		if _, err := store.Append(context.Background(), resolved); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := authority.Claim(
+			context.Background(),
+			claim("work-approval", "run-approval", "runtime-approval"),
+		); err != nil {
+			t.Fatalf("approved Claim() error = %v", err)
+		}
+		if len(workEvents) != 2 {
+			t.Fatalf("assignment Event count = %d, want 2", len(workEvents))
+		}
+	})
+
+	t.Run("malformed approval event fails closed", func(t *testing.T) {
+		store := openAuthorityStore(t)
+		clock := &mutableClock{now: testNow}
+		authority := newAuthority(t, store, clock, 18)
+		if _, _, err := authority.CreateAndAssign(
+			context.Background(),
+			assignment("work-corrupt-approval", "run-corrupt-approval"),
+		); err != nil {
+			t.Fatal(err)
+		}
+		corrupt := journal.Event{
+			ID:             "approval-corrupt-event",
+			StreamID:       workItemStream("work-corrupt-approval"),
+			Seq:            3,
+			IdempotencyKey: "approval-corrupt-event",
+			Type:           "WorkItemApprovalPaused",
+			SchemaVersion:  1,
+			EmittedAt:      testNow,
+			CorrelationID:  testCorrelation,
+			CausationID:    "approval-request-event",
+			PayloadJSON:    []byte(`{"work_item_id":"work-corrupt-approval"}`),
+		}
+		if _, err := store.Append(context.Background(), corrupt); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot, err := authority.Snapshot(context.Background()); !errors.Is(
+			err,
+			ErrRunAuthorityConflict,
+		) || len(snapshot.WorkItems()) != 0 || len(snapshot.Runs()) != 0 {
+			t.Fatalf("corrupt approval snapshot = %#v error=%v", snapshot, err)
+		}
+	})
+}
+
 func assertZeroRunClaim(t testing.TB, run RunRecord) {
 	t.Helper()
 	if run.ID() == "" || run.Phase() != "unclaimed" || run.ClaimID() != "" ||
@@ -1045,6 +1160,15 @@ func assertExactJSON(t testing.TB, payload []byte, want map[string]any) {
 			t.Fatalf("payload[%q] = %#v, want %#v", key, got[key], wantValue)
 		}
 	}
+}
+
+func mustJSON(t testing.TB, value any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }
 
 func FuzzRunAuthorityReplayNeverPanics(f *testing.F) {

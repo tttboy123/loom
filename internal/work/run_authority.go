@@ -73,13 +73,15 @@ type RunTerminalInput struct {
 }
 
 type WorkItemRecord struct {
-	id              string
-	title           string
-	status          string
-	runID           string
-	agentInstanceID string
-	lastEventID     string
-	streamSequence  int64
+	id                    string
+	title                 string
+	status                string
+	runID                 string
+	agentInstanceID       string
+	approvalRequestID     string
+	approvalRequestDigest string
+	lastEventID           string
+	streamSequence        int64
 }
 
 type RunRecord struct {
@@ -1187,6 +1189,63 @@ func replayWorkItemStream(
 				agentInstanceID: *payload.AgentInstanceID,
 				lastEventID:     event.ID,
 			}
+		case "WorkItemApprovalPaused":
+			var payload struct {
+				WorkItemID            *string `json:"work_item_id"`
+				ApprovalRequestID     *string `json:"approval_request_id"`
+				ApprovalRequestDigest *string `json:"approval_request_digest"`
+				PreviousStatus        *string `json:"previous_status"`
+				Status                *string `json:"status"`
+			}
+			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
+				payload.WorkItemID == nil ||
+				payload.ApprovalRequestID == nil ||
+				payload.ApprovalRequestDigest == nil ||
+				payload.PreviousStatus == nil ||
+				payload.Status == nil ||
+				*payload.WorkItemID != workItemID ||
+				!validOpaqueID(*payload.ApprovalRequestID) ||
+				!validSHA256Hex(*payload.ApprovalRequestDigest) ||
+				*payload.PreviousStatus != "assigned" ||
+				*payload.Status != "waiting_approval" ||
+				record.status != "assigned" ||
+				record.approvalRequestID != "" ||
+				event.CausationID == "" {
+				return ErrRunAuthorityConflict
+			}
+			record.status = "waiting_approval"
+			record.approvalRequestID = *payload.ApprovalRequestID
+			record.approvalRequestDigest = *payload.ApprovalRequestDigest
+			record.lastEventID = event.ID
+			record.streamSequence = event.Seq
+		case "WorkItemApprovalResolved":
+			var payload struct {
+				WorkItemID            *string `json:"work_item_id"`
+				ApprovalRequestID     *string `json:"approval_request_id"`
+				ApprovalRequestDigest *string `json:"approval_request_digest"`
+				PreviousStatus        *string `json:"previous_status"`
+				Status                *string `json:"status"`
+			}
+			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
+				payload.WorkItemID == nil ||
+				payload.ApprovalRequestID == nil ||
+				payload.ApprovalRequestDigest == nil ||
+				payload.PreviousStatus == nil ||
+				payload.Status == nil ||
+				*payload.WorkItemID != workItemID ||
+				*payload.ApprovalRequestID != record.approvalRequestID ||
+				*payload.ApprovalRequestDigest != record.approvalRequestDigest ||
+				*payload.PreviousStatus != "waiting_approval" ||
+				!validApprovalResolutionStatus(*payload.Status) ||
+				record.status != "waiting_approval" ||
+				event.CausationID == "" {
+				return ErrRunAuthorityConflict
+			}
+			record.status = *payload.Status
+			record.approvalRequestID = ""
+			record.approvalRequestDigest = ""
+			record.lastEventID = event.ID
+			record.streamSequence = event.Seq
 		case "WorkItemReadyForReview", "WorkItemTerminal":
 			if _, duplicate := outcomes[event.CausationID]; duplicate || event.CausationID == "" {
 				return ErrRunAuthorityConflict
@@ -1869,7 +1928,8 @@ func claimableRecords(
 ) (WorkItemRecord, RunRecord, error) {
 	workItem, ok := state.workItems[input.WorkItemID]
 	if !ok || workItem.runID != input.RunID ||
-		workItem.agentInstanceID != input.AgentInstanceID {
+		workItem.agentInstanceID != input.AgentInstanceID ||
+		workItem.status != "assigned" {
 		return WorkItemRecord{}, RunRecord{}, ErrRunNotClaimable
 	}
 	run, ok := state.runs[input.RunID]
@@ -1889,6 +1949,15 @@ func claimableRecords(
 		return WorkItemRecord{}, RunRecord{}, ErrRunAlreadyTerminal
 	default:
 		return WorkItemRecord{}, RunRecord{}, ErrRunNotClaimable
+	}
+}
+
+func validApprovalResolutionStatus(status string) bool {
+	switch status {
+	case "assigned", "blocked", "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 

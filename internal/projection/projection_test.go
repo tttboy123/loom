@@ -74,6 +74,8 @@ func TestRebuildFromCommittedJournalIsDeterministic(t *testing.T) {
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestA},
 		},
+		RuleSets:         map[string]ProjectedRuleSet{},
+		ApprovalRequests: map[string]ProjectedApprovalRequest{},
 		Teams:            map[string]TeamInstance{},
 		AgentInstances:   map[string]AgentInstance{},
 		RuntimeInstances: map[string]RuntimeInstance{},
@@ -115,6 +117,8 @@ func TestRebuildCanonicalizesOutOfOrderAndDuplicateEvents(t *testing.T) {
 		Evidence: map[string]Evidence{
 			"evidence-1": {ID: "evidence-1", WorkItemID: "work-1", Digest: digestB},
 		},
+		RuleSets:         map[string]ProjectedRuleSet{},
+		ApprovalRequests: map[string]ProjectedApprovalRequest{},
 		Teams:            map[string]TeamInstance{},
 		AgentInstances:   map[string]AgentInstance{},
 		RuntimeInstances: map[string]RuntimeInstance{},

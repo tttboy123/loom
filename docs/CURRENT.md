@@ -1094,3 +1094,17 @@ S3-W6 exists. The next permitted step is Slice 4 contract/plan governance.
 This status does not authorize an installed Runtime, Provider/model traffic,
 credentials, daemon/resident service, autonomous execution, push, merge,
 release, or publication.
+
+`CURRENT`: Slice 4 governance freezes exactly three vertical WorkItems and no
+S4-W4. S4-W1 now delivers deterministic versioned customer Rule evaluation,
+injected customer authorization, restart-safe durable ApprovalRequest
+pause/resolution, exact seven-stream resume Candidates, Claim fencing, and
+rebuildable RuleSet/approval projection and GlobalReadView records. Fresh
+Implementation Review 1 found four authority/retry/restart/port defects;
+bounded Repair 1 closed all four, passed focused race repetition, full
+repository and repository-race tests, vet, format, scope, and trust-boundary
+audits, and fresh independent Repair Review 2 returned `PASS` with no findings.
+No real authentication surface, external approval action, approved execution,
+API/CLI, daemon, Runtime/Provider, output/retry/Verifier/Done authority, or
+autonomy is activated. The next permitted product boundary is the single
+vertical S4-W2 Output Contract and Bounded Recovery Integration contract.

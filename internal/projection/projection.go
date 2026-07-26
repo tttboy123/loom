@@ -65,6 +65,8 @@ type Snapshot struct {
 	Runs             map[string]Run
 	AgentGrants      map[string]AgentGrant
 	Evidence         map[string]Evidence
+	RuleSets         map[string]ProjectedRuleSet
+	ApprovalRequests map[string]ProjectedApprovalRequest
 	Teams            map[string]TeamInstance
 	AgentInstances   map[string]AgentInstance
 	RuntimeInstances map[string]RuntimeInstance
@@ -257,6 +259,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	var runAuthorityEvents []journal.Event
 	var grantAuthorityEvents []journal.Event
 	var evidenceEvents []journal.Event
+	var approvalEvents []journal.Event
 
 	for _, event := range ordered {
 		if err := ctx.Err(); err != nil {
@@ -288,6 +291,10 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		seenByStreamSeq[key] = event
 		nextSeq[event.StreamID] = event.Seq
 
+		if isApprovalProjectionEvent(event) {
+			approvalEvents = append(approvalEvents, event)
+			continue
+		}
 		if isRunAuthorityProjectionEvent(event) {
 			runAuthorityEvents = append(runAuthorityEvents, event)
 			continue
@@ -307,14 +314,29 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 	}
-	if err := applyRunAuthorityProjection(ctx, &candidate, runAuthorityEvents); err != nil {
+	normalizedRunEvents := runAuthorityEventsWithoutApprovalFacts(
+		runAuthorityEvents,
+	)
+	if err := applyRunAuthorityProjection(
+		ctx,
+		&candidate,
+		normalizedRunEvents,
+	); err != nil {
 		return Snapshot{}, err
 	}
 	if err := applyGrantAuthorityProjection(
 		ctx,
 		&candidate,
-		runAuthorityEvents,
+		normalizedRunEvents,
 		grantAuthorityEvents,
+	); err != nil {
+		return Snapshot{}, err
+	}
+	if err := applyApprovalProjection(
+		ctx,
+		&candidate,
+		approvalEvents,
+		ordered,
 	); err != nil {
 		return Snapshot{}, err
 	}
@@ -807,6 +829,8 @@ func emptySnapshot() Snapshot {
 		Runs:             make(map[string]Run),
 		AgentGrants:      make(map[string]AgentGrant),
 		Evidence:         make(map[string]Evidence),
+		RuleSets:         make(map[string]ProjectedRuleSet),
+		ApprovalRequests: make(map[string]ProjectedApprovalRequest),
 		Teams:            make(map[string]TeamInstance),
 		AgentInstances:   make(map[string]AgentInstance),
 		RuntimeInstances: make(map[string]RuntimeInstance),
@@ -830,6 +854,12 @@ func (s Snapshot) clone() Snapshot {
 	}
 	for id, evidence := range s.Evidence {
 		out.Evidence[id] = evidence
+	}
+	for id, ruleSet := range s.RuleSets {
+		out.RuleSets[id] = cloneProjectedRuleSet(ruleSet)
+	}
+	for id, approval := range s.ApprovalRequests {
+		out.ApprovalRequests[id] = cloneProjectedApprovalRequest(approval)
 	}
 	for id, team := range s.Teams {
 		out.Teams[id] = cloneProjectedTeamInstance(team)
