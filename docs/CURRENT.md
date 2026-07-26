@@ -1366,3 +1366,19 @@ engineering canary, S5-W2 evidence/live-gate artifacts, and this Controller
 hunk. Excluded user-owned dirt remains unstaged. No live Runtime/Provider,
 network, daemon, credential, external effect, push, merge, or final user
 sign-off is authorized.
+
+`CURRENT`: S5-W2 is locally committed at `30b74ff`. Fresh independent
+whole-Slice Review returned `PASS` with no findings. Exactly S5-W1
+`93bdb1f` and S5-W2 `30b74ff` close Slice 5; no S5-W3 exists. All seven Slice
+5 engineering exit capabilities and all 22 TECH-PLAN Phase 1 engineering
+acceptance items are `DONE`. Full repository, repository-race, focused
+repeated-race, vet, format, diff, module, Windows, scope, authority, secret,
+Evidence, cursor, and private-mode gates pass. Phase 1 is
+`READY_FOR_FINAL_USER_SIGNOFF`, not `COMPLETE`.
+
+`CURRENT`: The final live gate remains non-executing and requires exactly:
+`installed_runtime_instance_id`, `private_source_root`, `approval_decision`,
+`live_execution_authorization`, and `final_review_signoff`. No installed
+Runtime/Provider/model call, credential action, network, daemon activation,
+external effect, user-file mutation, push, merge, release, or user signature
+has been performed or inferred.
