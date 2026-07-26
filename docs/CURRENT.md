@@ -1085,5 +1085,12 @@ running state returns typed human-required instead of replaying. Controlled
 SQLite/Supervisor canaries, full repository tests, uncached repository race,
 vet, format, scope, and fresh independent Repair Review 2 all pass. No daemon,
 installed Runtime, Provider fallback, Web/TUI, or autonomous execution is
-activated. S3-W5 is accepted for its exact local atomic commit; the next gate
-is whole-Slice 3 review, not S3-W6.
+activated. S3-W5 is locally committed at `f7534b4`.
+
+`CURRENT`: Phase 1 Slice 3 is closed after a fresh independent whole-Slice
+Review returned `PASS` with no blocking findings. The committed chain contains
+exactly S3-W1 through S3-W5 and every frozen exit capability is `DONE`; no
+S3-W6 exists. The next permitted step is Slice 4 contract/plan governance.
+This status does not authorize an installed Runtime, Provider/model traffic,
+credentials, daemon/resident service, autonomous execution, push, merge,
+release, or publication.
