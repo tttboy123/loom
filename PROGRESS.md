@@ -1755,6 +1755,133 @@ Updated: 2026-07-25
 - S3-W3 accepted for exact atomic local commit
 - Current gate: S3-W4 contract governance; no S3-W4 product work before fresh
   Contract Review `PASS`
+- S3-W3 accepted local commit: `47b4b50`; post-commit focused and repository
+  tests `PASS`
+- S3-W4 frozen boundary: private managed workspace/source invariance,
+  configured Pi stdio adapter, bounded Bridge session, per-frame Grant
+  authorization, process-group cancel/timeout cleanup, change capture, and
+  supervisor terminal/revocation in one vertical Candidate
+- S3-W4 Contract Review 1: `FAIL`; hardlink/path-race proof was incomplete and
+  child `failed` result conflicted with later prose
+- S3-W4 Amendment 1: Unix single-link/no-follow/identity proof, non-Unix
+  fail-closed behavior, and exact child succeeded/failed terminal semantics;
+  no API/Event schema/owned-scope/capability expansion
+- S3-W4 Amendment 1 Contract Review 1: `PASS`; findings: none
+- S3-W4 mandatory RED: `PASS`; focused command exited `1` only on the frozen
+  missing Workspace, Supervisor, and Pi execution-adapter symbols; all eight
+  markers occur exactly once and no product file existed
+- S3-W4 preliminary Candidate: focused/full/race/vet/fuzz/cross-compile
+  development checks reached GREEN, including the exact combined 30-run race
+  command; pre-review security self-audit found one remaining
+  intermediate-directory replacement proof gap
+- S3-W4 Amendment 2: add only Unix descriptor-rooted `openat/fstatat` traversal
+  plus a non-Unix fail-closed stub; no API/dependency/Event/capability change
+- S3-W4 Amendment 2 Contract Review 1: `PASS`; findings: none
+- S3-W4 Amendment 2 behavioral RED: `PASS` as RED; the focused command exited
+  `1` because the old lexical traversal accepted the controlled
+  intermediate-directory symlink replacement
+- Current gate: minimal descriptor-rooted Amendment 2 implementation in the
+  two reviewed platform files; no Runtime capability is activated
+- S3-W4 exact 30-run race verification Repair 1 RED: Supervisor passed, while
+  Pi adapter exposed a test readiness race in which the fixed 750ms
+  cancellation deadline could fire before the helper wrote its grandchild PID
+  proof
+- S3-W4 Verification Repair 1 scope: test-only explicit PID readiness before
+  cancellation; product behavior/API/authority/capability unchanged
+- S3-W4 exact 30-run race Verification Repair 2 RED: Supervisor passed, while
+  Pi adapter exposed the prohibited concurrent `Cmd.Wait` versus
+  `StdoutPipe`/`StderrPipe` drain race as `read |0: file already closed`
+- S3-W4 Verification Repair 2 scope: adapter-owned output pipe readers so
+  `Wait` cannot close them before drain; public API/protocol/authority/
+  capability unchanged
+- S3-W4 independent Problem Analysis: confirmed product-level `Wait` versus
+  managed-pipe defect and caller-owned `os.Pipe` as the minimal safe repair;
+  treating closed pipes as EOF or delaying the fixture would be unsafe
+- S3-W4 Verification Repair 2 focused GREEN: fast-exit/config and
+  cancel/grandchild cases passed `-race -count=30` in 124.202s; static
+  no-managed-pipe and near-limit fast-stderr regressions added
+- S3-W4 exact post-repair 30-run race: `PASS`; Supervisor 123.221s, Pi adapter
+  555.437s
+- S3-W4 post-repair matrix: focused, coverage (Supervisor 81.3%, Pi 83.9%),
+  repository, repository-race, vet, fuzz (8,207 executions), format, diff,
+  eight-marker, static boundary, Linux compile, Windows compile, dependency,
+  and scope checks `PASS`
+- Current gate: fresh independent S3-W4 Implementation Review; no Runtime
+  capability is activated
+- S3-W4 Implementation Review 1: `FAIL`; P1 raw Grant path-text gap and P2
+  Darwin fuzz fixture filename-rejection misclassification
+- S3-W4 Implementation Repair 1: existing owned files only; no API/Event/
+  authority/dependency/scope/capability expansion
+- S3-W4 Repair 1 RED: source-token filename reached the adapter and
+  workspace-token filename returned a successful change; independent fuzz RED
+  failed during platform fixture creation before product invocation
+- Current gate: Repair 1 focused GREEN and full verification matrix; no
+  Runtime capability is activated
+- S3-W4 Repair 1 focused GREEN: exact token-path cases `PASS`; 10s fuzz
+  `PASS` with 19,245 executions
+- S3-W4 Repair 1 impact race: Supervisor `PASS` for 30 runs in 103.366s; Pi
+  package failed after 528.388s only in accepted S2-W18 metadata fixture whose
+  shared 3s timeout expired before its first diagnostic
+- Impacted S2-W18 subtest focused `-race -count=100`: `PASS` in 47.699s
+- S3-W4 Amendment 3: test-only ownership of
+  `internal/runtime/piadapter/process_runner_test.go` to raise only the shared
+  non-timeout fixture bound to at most 10s; explicit 100ms timeout proof and
+  all product boundaries unchanged
+- Current gate: fresh independent Amendment 3 Contract Review before changing
+  the accepted-prerequisite test file; no Runtime capability is activated
+- S3-W4 Amendment 3 Contract Review 1: `PASS`; findings: none
+- S3-W4 Amendment 3 implementation: shared non-timeout accepted fixture bound
+  3s -> 10s only; explicit 100ms timeout proof and product code unchanged
+- Current gate: focused Amendment 3 proof then exact combined race matrix; no
+  Runtime capability is activated
+- S3-W4 Amendment 3 focused proof: impacted subtest `-race -count=100` `PASS`
+  in 50.131s; metadata timeout/cancellation/process-group
+  `-race -count=30` `PASS` in 49.754s
+- S3-W4 Repair 1 exact combined race: `PASS`; Supervisor 101.281s, Pi adapter
+  552.160s
+- S3-W4 Repair 1 final matrix: focused, coverage (Supervisor 81.3%, Pi 82.7%),
+  repository, repository-race, vet, 10s fuzz (20,185 executions), format,
+  diff, marker, static boundary, Linux/Windows compile, dependency, and scope
+  checks `PASS`
+- Current gate: fresh independent S3-W4 Implementation Repair 1 Review; no
+  Runtime capability is activated
+- S3-W4 Implementation Repair 1 Review 1: `FAIL`; repeated race exposed empty
+  `grandchild.pid` readiness window from helper `os.WriteFile`
+- Same-type readiness failure threshold reached; fresh read-only Problem
+  Analyst invoked before Repair 2
+- S3-W4 Implementation Repair 2 frozen test-only: same-directory temporary PID
+  file + atomic rename, reader accepts only a valid positive PID; no product/
+  API/protocol/authority/dependency/scope/capability change
+- Current gate: fresh Problem Analysis then Repair 2 RED/GREEN; no Runtime
+  capability is activated
+- S3-W4 Repair 2 Problem Analysis: confirmed test-only PID publication/
+  consumption race; existing frozen Repair 2 scope sufficient
+- S3-W4 Repair 2 implementation: helper temporary-file write+close+atomic
+  rename; reader accepts only parsed positive PID and bounded-cleans on every
+  readiness failure
+- Current gate: Repair 2 focused repeated race proof; no product or Runtime
+  capability is activated
+- S3-W4 Repair 2 focused cancellation/grandchild `-race -count=100`: `PASS`
+  in 130.480s
+- S3-W4 Repair 2 exact combined race: `PASS`; Supervisor 99.335s, Pi
+  546.046s
+- S3-W4 Repair 2 latest matrix: repository, repository-race, vet, 10s fuzz
+  (20,862 executions), format, diff, marker, static boundary, Linux/Windows
+  compile, dependency, and scope checks `PASS`
+- Current gate: fresh independent S3-W4 Implementation Repair 2 Review; no
+  product or Runtime capability is activated
+- S3-W4 Implementation Repair 2 Review 1: `PASS`; findings: none; independent
+  cancellation 30-run race, token paths, fuzz, related ordinary/race,
+  repository, vet, format, diff, dependency, marker, and static checks `PASS`
+- S3-W4 implementation deliverable: `VERDICT: PASS`
+- Current gate: fresh final pre-commit matrix and exact Candidate staging; no
+  product or Runtime capability is activated
+- S3-W4 fresh final pre-commit matrix: exact 30-run race `PASS` (Supervisor
+  103.432s, Pi 541.156s), repository, repository-race, vet, fuzz (12,013
+  executions), format, diff, marker, static boundary, Linux/Windows compile,
+  dependency, and scope checks `PASS`
+- S3-W4 accepted for exact authorized local atomic commit; no Runtime
+  capability is activated
 - Verification used deterministic temporary fixtures only; installed Pi, user
   Pi state, credentials, network, package manager, daemon, session, prompt,
   model call, and Runtime activation were not used

@@ -471,7 +471,7 @@ func validPiMetadataProcessRunnerConfig(t *testing.T, executable string) PiMetad
 		ExecutablePath:     executable,
 		IsolationRoot:      privateTempDir(t),
 		RuntimeSearchPaths: search,
-		Timeout:            3 * time.Second,
+		Timeout:            10 * time.Second,
 	}
 }
 

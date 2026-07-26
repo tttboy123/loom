@@ -978,3 +978,97 @@ focused race and whole-repository race. S3-W3 is accepted for its exact atomic
 local commit. The next gate is S3-W4 managed workspace/Runtime adapter/
 supervisor contract governance; no S3-W4 product work is authorized before
 fresh Contract Review `PASS`, and no capability is activated.
+S3-W4 is now frozen at baseline `47b4b50` as the single permitted managed
+filesystem/process boundary: private workspace and source digests, one
+configured Pi stdio adapter, bounded Bridge session, per-frame Grant
+authorization, process-group cancel/timeout cleanup, workspace change capture,
+and supervisor-generated terminal/revocation stay in one Candidate. The
+current gate is fresh independent S3-W4 Contract Review; no S3-W4 product work
+or Runtime activation is authorized.
+Contract Review 1 returned `FAIL` on two contract defects only: missing
+fail-closed hardlink/path-race proof and contradictory child-reported failure
+semantics. Amendment 1 adds Unix single-link/no-follow/identity proof with
+non-Unix fail-closed behavior and clarifies that child `succeeded` maps only to
+`ready_for_review` while child `failed` is also a legal Run terminal. API,
+Event schema, owned scope, and capability are unchanged. The current gate is
+fresh independent Amendment 1 Contract Review. That review returned `PASS`
+with no findings. Complete mandatory S3-W4 RED then failed only on the frozen
+missing Workspace, Supervisor, and Pi execution-adapter symbols, with all eight
+markers exactly once and no product file present. The current gate is the
+minimal complete S3-W4 implementation inside the reviewed owned scope. A
+pre-implementation-review security self-audit then proved that lexical
+`WalkDir` plus final-component no-follow cannot close Amendment 1's
+intermediate-directory replacement race. Amendment 2 adds only Unix rooted
+`openat/fstatat` traversal and one non-Unix fail-closed stub file. The current
+gate was fresh independent Amendment 2 Contract Review before those two files
+were added. That review returned `PASS` with no findings. The current gate is
+the focused Amendment 2 behavioral RED for controlled intermediate-directory
+replacement. That RED exited `1` because the old lexical traversal accepted
+the replaced intermediate directory, proving the frozen gap. The current gate
+is the minimal descriptor-rooted Amendment 2 implementation; no Runtime
+capability is activated.
+The Amendment 2 Candidate and two bounded verification repairs are now GREEN.
+Descriptor-rooted traversal rejects both controlled final-component and
+intermediate-directory replacements. A repeated-race readiness gap was fixed
+test-only by cancelling after explicit grandchild PID readiness. A second
+repeated-race failure exposed and fixed a product-level Go `Cmd.Wait` versus
+managed stdout/stderr pipe race using caller-owned output pipes; independent
+Problem Analysis confirmed the diagnosis and repair. The exact dual-package
+30-run race passed (Supervisor 123.221s, Pi adapter 555.437s), as did focused
+coverage, repository, repository-race, vet, fuzz, format, marker, static
+boundary, Linux, Windows, diff, and scope checks. The current gate is fresh
+independent S3-W4 Implementation Review; no Runtime capability is activated.
+Implementation Review 1 returned `FAIL` with two bounded findings: raw Grant
+substrings were not rejected in source/change path text, and the fuzz harness
+treated Darwin filename-creation rejection as a product failure. Repair 1 stays
+inside existing owned files, adds exact source/workspace path RED, rejects
+token substrings in manifest/change paths, and returns from fuzz cases rejected
+during fixture setup. The current gate is Repair 1 focused GREEN and the full
+verification matrix; no Runtime capability is activated.
+Repair 1 focused GREEN and 10s fuzz passed. Its exact 30-run impact race passed
+Supervisor but exposed a 3s fixed deadline in an accepted S2-W18 metadata
+runner fixture under repeated package race load; the same impacted subtest
+passed focused `-race -count=100` in 47.699s. Amendment 3 proposes only one
+test-file ownership exception to raise the non-timeout fixture bound to at most
+10s while preserving the explicit 100ms timeout proof. The current gate is
+fresh independent Amendment 3 Contract Review before that file changes; no
+Runtime capability is activated.
+Amendment 3 Contract Review returned `PASS` with no findings. The only accepted
+prerequisite test edit raises the shared non-timeout fixture bound from 3s to
+10s; the dedicated 100ms timeout proof and all product behavior remain
+unchanged. The current gate is focused Amendment 3 proof followed by the exact
+combined race matrix; no Runtime capability is activated.
+Amendment 3 focused proof passed: impacted metadata subtest
+`-race -count=100` in 50.131s and timeout/cancellation/process-group
+`-race -count=30` in 49.754s. The exact combined race then passed Supervisor
+101.281s and Pi 552.160s. Repair 1 full repository, repository-race, vet, 10s
+fuzz, format, marker, static boundary, Linux/Windows compile, diff, dependency,
+and scope checks also pass. The current gate is fresh independent S3-W4
+Implementation Repair 1 Review; no Runtime capability is activated.
+Implementation Repair 1 Review 1 returned `FAIL` on one test-readiness race:
+the helper's `os.WriteFile(grandchild.pid)` could expose an empty file, while
+the reader treated any successful read as ready. This is the second same-type
+readiness failure, so Repair 2 is test-only and gated on fresh read-only Problem
+Analysis before atomic PID publication plus valid-positive-PID polling. No
+product or Runtime capability is activated.
+Fresh independent S3-W4 Implementation Repair 2 Review returned `PASS` with no
+findings after independently rerunning cancellation race, token paths, fuzz,
+related packages, repository, vet, format, diff, dependency, marker, and static
+boundary checks. The current gate is the fresh final pre-commit matrix and
+exact S3-W4 Candidate staging; no product or Runtime capability is activated.
+The fresh final pre-commit matrix passed, including the exact 30-run race
+(Supervisor 103.432s, Pi 541.156s), repository, repository-race, vet, fuzz,
+format, marker, static boundary, Linux/Windows compile, diff, dependency, and
+scope checks. S3-W4 is accepted for exact local atomic commit; no Runtime
+capability is activated.
+Repair 2 focused `-race -count=100` passed in 130.480s. The exact combined
+30-run race then passed Supervisor 99.335s and Pi 546.046s. Repository,
+repository-race, vet, 10s fuzz, format, marker, static boundary, Linux/Windows
+compile, diff, dependency, and scope checks all pass on the latest Candidate.
+The current gate is fresh independent S3-W4 Implementation Repair 2 Review; no
+product or Runtime capability is activated.
+Fresh Problem Analysis confirmed the test-only publication/consumption race.
+Repair 2 now writes and closes a same-directory temporary PID file before
+atomic rename, accepts readiness only for a parsed positive PID, and preserves
+bounded cleanup on every failure. The current gate is Repair 2 focused repeated
+race proof; no product or Runtime capability is activated.
