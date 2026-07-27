@@ -9,5 +9,8 @@
 | [0005](0005-local-evolution-sidecar.md) | Local evolution Sidecar with candidate activation | accepted | 2026-07-24 |
 | [0006](0006-fastcontext-compatible-code-analysis-sidecar.md) | FastContext-compatible local code analysis support | accepted | 2026-07-24 |
 | [0007](0007-runtime-observation-discovery-priority.md) | Discovery-priority Runtime observation writes | accepted | 2026-07-25 |
+| [0008](0008-stream-set-views-and-team-dispatch-cas.md) | Stream-set views and Team dispatch CAS | accepted | 2026-07-25 |
+| [0009](0009-authorized-node-output-and-attempt-recovery.md) | Authorized node output and explicit attempt recovery | accepted | 2026-07-26 |
+| [0010](0010-pi-rpc-bridge-and-controlled-offline-model.md) | Pi RPC translation behind the Loom bridge | accepted | 2026-07-27 |
 
 New decisions use [template.md](template.md). Superseded decisions remain in this index and link to their replacement.

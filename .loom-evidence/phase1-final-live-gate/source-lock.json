@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "status": "implementation_review_5_pass_compatibility_commit_pending_not_materialized",
+  "pi": {
+    "repository": "https://github.com/earendil-works/pi",
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.82.1",
+    "git_head": "b4f293684bba718d59cc1157679bcf6157b3a7f5",
+    "npm_integrity": "sha512-zbkAhoIuDPMF3pKuja0ajZabrMWU29FUMV9A/XMXT/XC1yXs5xt6t6t13GogQFsDrDqbFP4DkZQO1w8rWRAzYA==",
+    "installed_cli_sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca",
+    "installed_rpc_types_sha256": "122dec2245c472e15b71b6114c760eaf67937266482548e3bbafe2f13936aacc",
+    "installed_assistant_event_types_sha256": "95fddce61009f9ed0e97eb402e5438dfc980b76fc155edd4d6fc0ed3b71a0496",
+    "installed_openai_completions_sha256": "0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a",
+    "installed_agent_core_types_sha256": "849dfc75410c3651425b773db68ecb55da98e9fb15a8c6dc8fe17a845c966b07",
+    "installed_agent_loop_sha256": "d3d20bc773ccc8d5f7cfe0eabf8b421ff3da8685617445b142d89a44457741bc",
+    "installed_agent_session_types_sha256": "4ab4df46f07f2a13dc3e289c1926432acae7e6df8acfa2b13699c799d6876b47",
+    "installed_rpc_mode_sha256": "c87945c1b3e81db3d7672735e9846a64b892e7184bc3d796d1affcd187b76ec2"
+  },
+  "llama_cpp": {
+    "repository": "https://github.com/ggml-org/llama.cpp",
+    "release": "b10107",
+    "commit": "c0bc8591e8815c63cb01dd3f051a8b0df02501c9",
+    "asset": "llama-b10107-bin-macos-arm64.tar.gz",
+    "asset_bytes": 10804162,
+    "asset_sha256": "b9554ab4c9f6e91199f48387cb4ab27466fb1d724881f81463ef03f6370cfa32",
+    "server_cli_reference": {
+      "url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/b10107/tools/server/README.md",
+      "sha256": "5032018d3c81b226378bce313c0050dfea4fde8407a436cfeb57f036622cca22",
+      "mode": "single_model_openai_compatible"
+    }
+  },
+  "model": {
+    "repository": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+    "revision": "2ab9f8f42af02fc212effaef7c4850c885e965f4",
+    "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
+    "license": "apache-2.0"
+  }
+}

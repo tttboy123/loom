@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -15,6 +17,10 @@ const (
 	maxPiMetadataVersionBytes = 128
 	maxPiMetadataTokenBytes   = 256
 	maxPiMetadataModelRows    = 1024
+	maxPiMetadataPathBytes    = 4096
+
+	piLegacyNoModelsDiagnostic = "No models available."
+	pi0821NoModelsDiagnostic   = "No models available. Use /login to log into a provider via OAuth or API key. See:"
 )
 
 var (
@@ -231,12 +237,19 @@ func isASCIIAlphaNumeric(value byte) bool {
 }
 
 func parsePiModels(stdout string) ([]string, error) {
+	if strings.ContainsRune(stdout, '\r') {
+		return nil, ErrInvalidPiMetadataOutput
+	}
+	if stdout == piLegacyNoModelsDiagnostic ||
+		stdout == piLegacyNoModelsDiagnostic+"\n" {
+		return nil, nil
+	}
+	if validPi0821NoModelsDiagnostic(stdout) {
+		return nil, nil
+	}
 	lines := nonEmptyPiMetadataLines(stdout)
 	if len(lines) == 0 {
 		return nil, ErrInvalidPiMetadataOutput
-	}
-	if lines[0] == "No models available." {
-		return nil, nil
 	}
 	if !reflect.DeepEqual(
 		strings.Fields(lines[0]),
@@ -273,13 +286,74 @@ func parsePiModels(stdout string) ([]string, error) {
 	return models, nil
 }
 
-func nonEmptyPiMetadataLines(stdout string) []string {
+func validPi0821NoModelsDiagnostic(stdout string) bool {
+	if strings.HasSuffix(stdout, "\n") {
+		stdout = strings.TrimSuffix(stdout, "\n")
+	}
 	rawLines := strings.Split(stdout, "\n")
+	if len(rawLines) != 3 ||
+		rawLines[0] != pi0821NoModelsDiagnostic {
+		return false
+	}
+	for _, rawLine := range rawLines {
+		if rawLine == "" || strings.TrimSpace(rawLine) != rawLine {
+			return false
+		}
+	}
+	for _, rawPath := range rawLines[1:] {
+		for _, character := range rawPath {
+			if unicode.IsControl(character) {
+				return false
+			}
+		}
+	}
+	providersPath := rawLines[1]
+	modelsPath := rawLines[2]
+	if !validPiMetadataDocPath(providersPath, "providers.md") ||
+		!validPiMetadataDocPath(modelsPath, "models.md") {
+		return false
+	}
+	providersParent := filepath.Dir(providersPath)
+	modelsParent := filepath.Dir(modelsPath)
+	return providersParent != "" &&
+		providersParent != "." &&
+		providersParent == modelsParent
+}
+
+func validPiMetadataDocPath(value string, basename string) bool {
+	if value == "" ||
+		len(value) > maxPiMetadataPathBytes ||
+		!utf8.ValidString(value) ||
+		!filepath.IsAbs(value) ||
+		filepath.Clean(value) != value ||
+		filepath.Base(value) != basename ||
+		filepath.Base(filepath.Dir(value)) != "docs" {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func nonEmptyPiMetadataLines(stdout string) []string {
+	rawLines := nonEmptyPiMetadataRawLines(stdout)
 	lines := make([]string, 0, len(rawLines))
 	for _, rawLine := range rawLines {
 		line := strings.TrimSpace(rawLine)
-		if line != "" {
-			lines = append(lines, line)
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func nonEmptyPiMetadataRawLines(stdout string) []string {
+	rawLines := strings.Split(stdout, "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, rawLine := range rawLines {
+		if strings.TrimSpace(rawLine) != "" {
+			lines = append(lines, rawLine)
 		}
 	}
 	return lines

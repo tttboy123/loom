@@ -102,11 +102,11 @@ func TestPiRuntimeProbeNoModelsAndMutationIsolation(t *testing.T) {
 
 	runner := &recordingPiMetadataRunner{
 		results: map[PiMetadataCommand]PiMetadataResult{
-			PiMetadataVersion: {Stdout: "0.73.1"},
+			PiMetadataVersion: {Stdout: "0.82.1"},
 			PiMetadataListModels: {Stdout: strings.Join([]string{
-				"No models available.",
-				"Use /login to log into a provider via OAuth or API key. See:",
-				" /private/path/providers.md",
+				"No models available. Use /login to log into a provider via OAuth or API key. See:",
+				"/private/pi/docs/providers.md",
+				"/private/pi/docs/models.md",
 			}, "\n")},
 		},
 		mutateArgs: true,
@@ -140,6 +140,59 @@ func TestPiRuntimeProbeNoModelsAndMutationIsolation(t *testing.T) {
 	}
 	if second[0].ModelIDs != nil {
 		t.Fatalf("second models = %#v, want nil", second[0].ModelIDs)
+	}
+}
+
+func TestPi0821NoModelsDiagnosticCompatibility(t *testing.T) {
+	t.Parallel()
+
+	valid := strings.Join([]string{
+		"No models available. Use /login to log into a provider via OAuth or API key. See:",
+		"/private/pi/docs/providers.md",
+		"/private/pi/docs/models.md",
+	}, "\n")
+	if models, err := parsePiModels(valid); err != nil || models != nil {
+		t.Fatalf("parsePiModels(valid) = (%#v, %v), want (nil, nil)", models, err)
+	}
+	if models, err := parsePiModels(valid + "\n"); err != nil || models != nil {
+		t.Fatalf("parsePiModels(valid final LF) = (%#v, %v), want (nil, nil)", models, err)
+	}
+	for _, legacy := range []string{
+		"No models available.",
+		"No models available.\n",
+	} {
+		if models, err := parsePiModels(legacy); err != nil || models != nil {
+			t.Fatalf("parsePiModels(legacy) = (%#v, %v), want (nil, nil)", models, err)
+		}
+	}
+
+	invalid := []string{
+		"No models available.\n/private/pi/docs/providers.md\n/private/pi/docs/models.md",
+		" No models available.",
+		"No models available. ",
+		"No models available.\n\n",
+		"\n" + valid,
+		" " + valid,
+		strings.Replace(valid, "\n/private/pi/docs/providers.md", "\n\n/private/pi/docs/providers.md", 1),
+		strings.Replace(valid, "\n/private/pi/docs/providers.md", "\n \n/private/pi/docs/providers.md", 1),
+		strings.Replace(valid, "/private/pi/docs/providers.md", " /private/pi/docs/providers.md", 1),
+		strings.Replace(valid, "/private/pi/docs/models.md", "/private/pi/docs/models.md ", 1),
+		valid + "\n\n",
+		valid + "\n \n",
+		valid + "\n/private/pi/docs/extra.md",
+		strings.Replace(valid, "/private/pi/docs/models.md", "relative/docs/models.md", 1),
+		strings.Replace(valid, "/private/pi/docs/models.md", "/other/pi/docs/models.md", 1),
+		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/docs/models.md", 1),
+		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/../pi/docs/providers.md", 1),
+		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/docs/provid\x1fers.md", 1),
+		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/docs/providers.md\t", 1),
+		strings.Replace(valid, "/private/pi/docs/models.md", "/private/pi/docs/models.md\v", 1),
+		valid + "\r\n",
+	}
+	for index, output := range invalid {
+		if models, err := parsePiModels(output); !errors.Is(err, ErrInvalidPiMetadataOutput) || models != nil {
+			t.Fatalf("parsePiModels(invalid[%d]) = (%#v, %v), want ErrInvalidPiMetadataOutput", index, models, err)
+		}
 	}
 }
 
