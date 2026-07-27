@@ -107,6 +107,83 @@ type piRPCAssistantIdentitySnapshot struct {
 	reasoning       bool
 }
 
+type piRPCDiagnosticPhase string
+
+const (
+	piRPCPhaseAssistantUpdate     piRPCDiagnosticPhase = "assistant_update"
+	piRPCPhaseAssistantMessageEnd piRPCDiagnosticPhase = "assistant_message_end"
+	piRPCPhaseTurnEnd             piRPCDiagnosticPhase = "turn_end"
+	piRPCPhaseAgentEnd            piRPCDiagnosticPhase = "agent_end"
+	piRPCPhaseAgentSettled        piRPCDiagnosticPhase = "agent_settled"
+)
+
+type piRPCDiagnosticEvent string
+
+const (
+	piRPCEventTextStart     piRPCDiagnosticEvent = "text_start"
+	piRPCEventTextDelta     piRPCDiagnosticEvent = "text_delta"
+	piRPCEventTextEnd       piRPCDiagnosticEvent = "text_end"
+	piRPCEventThinkingStart piRPCDiagnosticEvent = "thinking_start"
+	piRPCEventThinkingDelta piRPCDiagnosticEvent = "thinking_delta"
+	piRPCEventThinkingEnd   piRPCDiagnosticEvent = "thinking_end"
+	piRPCEventToolCallStart piRPCDiagnosticEvent = "toolcall_start"
+	piRPCEventToolCallDelta piRPCDiagnosticEvent = "toolcall_delta"
+	piRPCEventToolCallEnd   piRPCDiagnosticEvent = "toolcall_end"
+	piRPCEventMessageEnd    piRPCDiagnosticEvent = "message_end"
+	piRPCEventTurnEnd       piRPCDiagnosticEvent = "turn_end"
+	piRPCEventAgentEnd      piRPCDiagnosticEvent = "agent_end"
+	piRPCEventAgentSettled  piRPCDiagnosticEvent = "agent_settled"
+	piRPCEventUnknown       piRPCDiagnosticEvent = "unknown"
+)
+
+type piRPCDiagnosticReason string
+
+const (
+	piRPCReasonEventShape             piRPCDiagnosticReason = "event_shape"
+	piRPCReasonEventKindUnsupported   piRPCDiagnosticReason = "event_kind_unsupported"
+	piRPCReasonContentIndex           piRPCDiagnosticReason = "content_index"
+	piRPCReasonMessagePartialMismatch piRPCDiagnosticReason = "message_partial_mismatch"
+	piRPCReasonAssistantMessageSchema piRPCDiagnosticReason = "assistant_message_schema"
+	piRPCReasonResponseIDTransition   piRPCDiagnosticReason = "response_id_transition"
+	piRPCReasonResponseModelPresent   piRPCDiagnosticReason = "response_model_present"
+	piRPCReasonTimestampIdentity      piRPCDiagnosticReason = "timestamp_identity"
+	piRPCReasonUsageSchema            piRPCDiagnosticReason = "usage_schema"
+	piRPCReasonUsageProgression       piRPCDiagnosticReason = "usage_progression"
+	piRPCReasonTextContentProgression piRPCDiagnosticReason = "text_content_progression"
+	piRPCReasonDeltaPolicy            piRPCDiagnosticReason = "delta_policy"
+	piRPCReasonTerminalStopReason     piRPCDiagnosticReason = "terminal_stop_reason"
+	piRPCReasonTerminalIdentity       piRPCDiagnosticReason = "terminal_identity"
+	piRPCReasonFrameSink              piRPCDiagnosticReason = "frame_sink"
+)
+
+type piRPCRejection struct {
+	phase  piRPCDiagnosticPhase
+	event  piRPCDiagnosticEvent
+	reason piRPCDiagnosticReason
+}
+
+func (rejection piRPCRejection) Error() string {
+	return fmt.Sprintf(
+		"%s: phase=%s event=%s reason=%s",
+		ErrPiRPCProtocol,
+		rejection.phase,
+		rejection.event,
+		rejection.reason,
+	)
+}
+
+func (piRPCRejection) Unwrap() error {
+	return ErrPiRPCProtocol
+}
+
+func rejectPiRPC(
+	phase piRPCDiagnosticPhase,
+	event piRPCDiagnosticEvent,
+	reason piRPCDiagnosticReason,
+) error {
+	return piRPCRejection{phase: phase, event: event, reason: reason}
+}
+
 func NewPiRPCBridgeAdapter(
 	config PiRPCBridgeAdapterConfig,
 ) (supervisor.RuntimeAdapter, error) {
@@ -618,7 +695,11 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 		if !state.messageOpen || state.messageRole != "assistant" ||
 			!piRPCExactKeys(fields, "type", "message", "assistantMessageEvent") ||
 			state.doneSeen {
-			return ErrPiRPCProtocol
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				piRPCEventUnknown,
+				piRPCReasonEventShape,
+			)
 		}
 		if err := adapter.acceptAssistantEvent(
 			ctx,
@@ -634,11 +715,29 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 			string(state.assistant),
 			state.textStarted,
 		) {
-			return ErrPiRPCProtocol
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				piRPCDiagnosticEventFromRaw(fields["assistantMessageEvent"]),
+				piRPCAssistantRejectionReason(
+					fields["message"],
+					string(state.assistant),
+					state.textStarted,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
 		}
 	case "message_end":
 		if !state.messageOpen ||
 			!piRPCExactKeys(fields, "type", "message") {
+			if state.assistantSeen {
+				return rejectPiRPC(
+					piRPCPhaseAssistantMessageEnd,
+					piRPCEventMessageEnd,
+					piRPCReasonEventShape,
+				)
+			}
 			return ErrPiRPCProtocol
 		}
 		switch state.messageRole {
@@ -655,9 +754,33 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 					fields["message"],
 					string(state.assistant),
 					true,
-				) ||
-				!state.assistantIdentity.acceptTerminal(fields["message"]) {
-				return ErrPiRPCProtocol
+				) {
+				return rejectPiRPC(
+					piRPCPhaseAssistantMessageEnd,
+					piRPCEventMessageEnd,
+					piRPCAssistantRejectionReason(
+						fields["message"],
+						string(state.assistant),
+						true,
+						state.assistantIdentity,
+						false,
+						true,
+					),
+				)
+			}
+			if !state.assistantIdentity.acceptTerminal(fields["message"]) {
+				return rejectPiRPC(
+					piRPCPhaseAssistantMessageEnd,
+					piRPCEventMessageEnd,
+					piRPCAssistantRejectionReason(
+						fields["message"],
+						string(state.assistant),
+						true,
+						state.assistantIdentity,
+						false,
+						true,
+					),
+				)
 			}
 			state.doneSeen = true
 			state.finalAssistant = bytes.Clone(fields["message"])
@@ -668,39 +791,98 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 		state.messageRole = ""
 	case "turn_end":
 		if !state.turnOpen || state.messageOpen || !state.userSeen ||
-			!state.assistantSeen || !state.doneSeen ||
-			!piRPCExactKeys(fields, "type", "message", "toolResults") ||
-			!piRPCAssistantTextMessage(
-				fields["message"],
-				string(state.assistant),
-				true,
-			) ||
-			!piRPCSemanticEqual(fields["message"], state.finalAssistant) ||
+			!state.assistantSeen || !state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseTurnEnd,
+				piRPCEventTurnEnd,
+				piRPCReasonTerminalIdentity,
+			)
+		}
+		if !piRPCExactKeys(fields, "type", "message", "toolResults") {
+			return rejectPiRPC(
+				piRPCPhaseTurnEnd,
+				piRPCEventTurnEnd,
+				piRPCReasonEventShape,
+			)
+		}
+		if !piRPCAssistantTextMessage(
+			fields["message"],
+			string(state.assistant),
+			true,
+		) {
+			return rejectPiRPC(
+				piRPCPhaseTurnEnd,
+				piRPCEventTurnEnd,
+				piRPCAssistantRejectionReason(
+					fields["message"],
+					string(state.assistant),
+					true,
+					state.assistantIdentity,
+					false,
+					true,
+				),
+			)
+		}
+		if !piRPCSemanticEqual(fields["message"], state.finalAssistant) ||
 			!piRPCEmptyArray(fields["toolResults"]) {
-			return ErrPiRPCProtocol
+			return rejectPiRPC(
+				piRPCPhaseTurnEnd,
+				piRPCEventTurnEnd,
+				piRPCReasonTerminalIdentity,
+			)
 		}
 		state.turnOpen = false
 	case "agent_end":
 		if !state.agentStarted || state.turnOpen || state.messageOpen ||
-			!state.doneSeen || state.agentEnded ||
-			!piRPCExactKeys(fields, "type", "messages", "willRetry") ||
-			!piRPCAgentMessages(
-				fields["messages"],
-				state.prompt,
-				state.finalAssistant,
-			) {
-			return ErrPiRPCProtocol
+			!state.doneSeen || state.agentEnded {
+			return rejectPiRPC(
+				piRPCPhaseAgentEnd,
+				piRPCEventAgentEnd,
+				piRPCReasonTerminalIdentity,
+			)
+		}
+		if !piRPCExactKeys(fields, "type", "messages", "willRetry") {
+			return rejectPiRPC(
+				piRPCPhaseAgentEnd,
+				piRPCEventAgentEnd,
+				piRPCReasonEventShape,
+			)
+		}
+		if !piRPCAgentMessages(
+			fields["messages"],
+			state.prompt,
+			state.finalAssistant,
+		) {
+			return rejectPiRPC(
+				piRPCPhaseAgentEnd,
+				piRPCEventAgentEnd,
+				piRPCReasonTerminalIdentity,
+			)
 		}
 		willRetry, ok := piRPCBool(fields, "willRetry")
 		if !ok || willRetry {
-			return ErrPiRPCProtocol
+			return rejectPiRPC(
+				piRPCPhaseAgentEnd,
+				piRPCEventAgentEnd,
+				piRPCReasonTerminalIdentity,
+			)
 		}
 		state.agentEnded = true
 	case "agent_settled":
+		if !piRPCExactKeys(fields, "type") {
+			return rejectPiRPC(
+				piRPCPhaseAgentSettled,
+				piRPCEventAgentSettled,
+				piRPCReasonEventShape,
+			)
+		}
 		if !state.agentEnded || state.settled || state.turnCount == 0 ||
-			!state.textEnded || len(state.assistant) == 0 ||
-			!piRPCExactKeys(fields, "type") {
-			return ErrPiRPCProtocol
+			!state.textEnded || len(state.assistant) == 0 {
+			return rejectPiRPC(
+				piRPCPhaseAgentSettled,
+				piRPCEventAgentSettled,
+				piRPCReasonTerminalIdentity,
+			)
 		}
 		state.settled = true
 	default:
@@ -718,60 +900,157 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 ) error {
 	fields, err := piRPCObject(raw)
 	if err != nil {
-		return err
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			piRPCEventUnknown,
+			piRPCReasonEventShape,
+		)
 	}
 	eventType, ok := piRPCString(fields, "type")
 	if !ok {
-		return ErrPiRPCProtocol
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			piRPCEventUnknown,
+			piRPCReasonEventShape,
+		)
 	}
-	switch eventType {
-	case "text_start":
-		if state.textStarted ||
-			!piRPCExactKeys(fields, "type", "contentIndex", "partial") ||
-			!piRPCZero(fields["contentIndex"]) ||
-			!piRPCSemanticEqual(message, fields["partial"]) ||
-			!piRPCAssistantTextMessage(fields["partial"], "", true) ||
-			!state.assistantIdentity.acceptUpdate(
-				fields["partial"],
-				true,
-			) {
-			return ErrPiRPCProtocol
+	event := piRPCDiagnosticEventOf(eventType)
+	if !piRPCAssistantEventShape(fields, event) {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonEventShape,
+		)
+	}
+	switch event {
+	case piRPCEventTextStart:
+		if state.textStarted || state.textEnded || state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonTextContentProgression,
+			)
+		}
+		if !piRPCZero(fields["contentIndex"]) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonContentIndex,
+			)
+		}
+		if !piRPCSemanticEqual(message, fields["partial"]) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonMessagePartialMismatch,
+			)
+		}
+		if !piRPCAssistantTextMessage(fields["partial"], "", true) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					"",
+					true,
+					state.assistantIdentity,
+					true,
+					false,
+				),
+			)
+		}
+		if !state.assistantIdentity.acceptUpdate(fields["partial"], true) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					"",
+					true,
+					state.assistantIdentity,
+					true,
+					false,
+				),
+			)
 		}
 		state.textStarted = true
-	case "text_delta":
-		if !state.textStarted || state.textEnded || state.doneSeen ||
-			!piRPCExactKeys(fields, "type", "contentIndex", "delta", "partial") ||
-			!piRPCZero(fields["contentIndex"]) {
-			return ErrPiRPCProtocol
+	case piRPCEventTextDelta:
+		if !state.textStarted || state.textEnded || state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonTextContentProgression,
+			)
+		}
+		if !piRPCZero(fields["contentIndex"]) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonContentIndex,
+			)
+		}
+		if !piRPCSemanticEqual(message, fields["partial"]) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonMessagePartialMismatch,
+			)
 		}
 		delta, ok := piRPCString(fields, "delta")
 		if !ok || delta == "" || !utf8.ValidString(delta) ||
-			bytes.Contains([]byte(delta), []byte(request.Grant.Value())) ||
-			len(state.assistant)+len(delta) > adapter.maxAssistantBytes {
-			if len(state.assistant)+len(delta) > adapter.maxAssistantBytes {
-				return ErrPiRPCOutputTooLarge
-			}
-			return ErrPiRPCProtocol
+			bytes.Contains([]byte(delta), []byte(request.Grant.Value())) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonDeltaPolicy,
+			)
+		}
+		if len(state.assistant)+len(delta) > adapter.maxAssistantBytes {
+			return ErrPiRPCOutputTooLarge
 		}
 		state.assistant = append(state.assistant, delta...)
-		if !piRPCSemanticEqual(message, fields["partial"]) ||
-			!piRPCAssistantTextMessage(
-				fields["partial"],
-				string(state.assistant),
-				true,
-			) ||
-			!state.assistantIdentity.acceptUpdate(
-				fields["partial"],
-				false,
-			) {
-			return ErrPiRPCProtocol
+		if !piRPCAssistantTextMessage(
+			fields["partial"],
+			string(state.assistant),
+			true,
+		) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					string(state.assistant),
+					true,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
+		}
+		if !state.assistantIdentity.acceptUpdate(fields["partial"], false) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					string(state.assistant),
+					true,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
 		}
 		for _, chunk := range splitPiRPCDelta([]byte(delta)) {
 			payload, err := json.Marshal(struct {
 				Delta string `json:"delta"`
 			}{Delta: string(chunk)})
 			if err != nil {
-				return ErrPiRPCProtocol
+				return rejectPiRPC(
+					piRPCPhaseAssistantUpdate,
+					event,
+					piRPCReasonDeltaPolicy,
+				)
 			}
 			frame, err := adapter.execution.outboundFrame(
 				request,
@@ -780,37 +1059,90 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 				payload,
 			)
 			if err != nil {
-				return errors.Join(ErrPiRPCProtocol, err)
+				return rejectPiRPC(
+					piRPCPhaseAssistantUpdate,
+					event,
+					piRPCReasonFrameSink,
+				)
 			}
 			if len(state.frames) >= piRPCMaxBridgeFrames {
 				return ErrPiRPCOutputTooLarge
 			}
 			if err := request.FrameSink.AcceptFrame(ctx, frame); err != nil {
-				return errors.Join(ErrPiRPCProtocol, err)
+				return rejectPiRPC(
+					piRPCPhaseAssistantUpdate,
+					event,
+					piRPCReasonFrameSink,
+				)
 			}
 			state.frames = append(state.frames, frame)
 			state.nextSequence++
 		}
-	case "text_end":
-		if !state.textStarted || state.textEnded || state.doneSeen ||
-			!piRPCExactKeys(fields, "type", "contentIndex", "content", "partial") ||
-			!piRPCZero(fields["contentIndex"]) {
-			return ErrPiRPCProtocol
+	case piRPCEventTextEnd:
+		if !state.textStarted || state.textEnded || state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonTextContentProgression,
+			)
+		}
+		if !piRPCZero(fields["contentIndex"]) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonContentIndex,
+			)
+		}
+		if !piRPCSemanticEqual(message, fields["partial"]) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonMessagePartialMismatch,
+			)
 		}
 		content, ok := piRPCString(fields, "content")
-		if !ok ||
-			content != string(state.assistant) ||
-			!piRPCSemanticEqual(message, fields["partial"]) ||
-			!piRPCAssistantTextMessage(fields["partial"], content, true) ||
-			!state.assistantIdentity.acceptUpdate(
-				fields["partial"],
-				false,
-			) {
-			return ErrPiRPCProtocol
+		if !ok || content != string(state.assistant) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonTextContentProgression,
+			)
+		}
+		if !piRPCAssistantTextMessage(fields["partial"], content, true) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					content,
+					true,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
+		}
+		if !state.assistantIdentity.acceptUpdate(fields["partial"], false) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					content,
+					true,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
 		}
 		state.textEnded = true
 	default:
-		return ErrPiRPCProtocol
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonEventKindUnsupported,
+		)
 	}
 	return nil
 }
@@ -1248,6 +1580,83 @@ func piRPCAllowedKeys(
 	return true
 }
 
+func piRPCDiagnosticEventOf(value string) piRPCDiagnosticEvent {
+	switch value {
+	case string(piRPCEventTextStart):
+		return piRPCEventTextStart
+	case string(piRPCEventTextDelta):
+		return piRPCEventTextDelta
+	case string(piRPCEventTextEnd):
+		return piRPCEventTextEnd
+	case string(piRPCEventThinkingStart):
+		return piRPCEventThinkingStart
+	case string(piRPCEventThinkingDelta):
+		return piRPCEventThinkingDelta
+	case string(piRPCEventThinkingEnd):
+		return piRPCEventThinkingEnd
+	case string(piRPCEventToolCallStart):
+		return piRPCEventToolCallStart
+	case string(piRPCEventToolCallDelta):
+		return piRPCEventToolCallDelta
+	case string(piRPCEventToolCallEnd):
+		return piRPCEventToolCallEnd
+	default:
+		return piRPCEventUnknown
+	}
+}
+
+func piRPCDiagnosticEventFromRaw(raw json.RawMessage) piRPCDiagnosticEvent {
+	fields, err := piRPCObject(raw)
+	if err != nil {
+		return piRPCEventUnknown
+	}
+	value, ok := piRPCString(fields, "type")
+	if !ok {
+		return piRPCEventUnknown
+	}
+	return piRPCDiagnosticEventOf(value)
+}
+
+func piRPCAssistantEventShape(
+	fields map[string]json.RawMessage,
+	event piRPCDiagnosticEvent,
+) bool {
+	switch event {
+	case piRPCEventTextStart, piRPCEventThinkingStart,
+		piRPCEventToolCallStart:
+		return piRPCExactKeys(fields, "type", "contentIndex", "partial")
+	case piRPCEventTextDelta, piRPCEventThinkingDelta,
+		piRPCEventToolCallDelta:
+		return piRPCExactKeys(
+			fields,
+			"type",
+			"contentIndex",
+			"delta",
+			"partial",
+		)
+	case piRPCEventTextEnd, piRPCEventThinkingEnd:
+		return piRPCExactKeys(
+			fields,
+			"type",
+			"contentIndex",
+			"content",
+			"partial",
+		)
+	case piRPCEventToolCallEnd:
+		return piRPCExactKeys(
+			fields,
+			"type",
+			"contentIndex",
+			"toolCall",
+			"partial",
+		)
+	case piRPCEventUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 func piRPCNonNegativeNumber(raw json.RawMessage) bool {
 	if bytes.Equal(raw, []byte("null")) {
 		return false
@@ -1274,6 +1683,121 @@ func piRPCBoundedString(
 		}
 	}
 	return true
+}
+
+func piRPCAssistantRejectionReason(
+	raw json.RawMessage,
+	expectedText string,
+	requireContent bool,
+	identity piRPCAssistantIdentityState,
+	bindResponseID bool,
+	terminal bool,
+) piRPCDiagnosticReason {
+	fields, err := piRPCObject(raw)
+	if err != nil ||
+		!piRPCAllowedKeys(
+			fields,
+			[]string{
+				"role",
+				"content",
+				"api",
+				"provider",
+				"model",
+				"usage",
+				"stopReason",
+				"timestamp",
+			},
+			"responseId",
+			"responseModel",
+		) {
+		return piRPCReasonAssistantMessageSchema
+	}
+	role, roleOK := piRPCString(fields, "role")
+	api, apiOK := piRPCString(fields, "api")
+	provider, providerOK := piRPCString(fields, "provider")
+	model, modelOK := piRPCString(fields, "model")
+	stopReason, stopOK := piRPCString(fields, "stopReason")
+	if !roleOK || !apiOK || !providerOK || !modelOK || !stopOK ||
+		role != "assistant" ||
+		api != "openai-completions" ||
+		provider != piRPCProviderID ||
+		model != piRPCModelID {
+		return piRPCReasonAssistantMessageSchema
+	}
+	if stopReason != "stop" {
+		return piRPCReasonTerminalStopReason
+	}
+	if _, present := fields["responseModel"]; present {
+		return piRPCReasonResponseModelPresent
+	}
+	responseID, responsePresent := piRPCString(fields, "responseId")
+	if responsePresent &&
+		(responseID == "" || len(responseID) > 512) {
+		return piRPCReasonResponseIDTransition
+	}
+	switch {
+	case bindResponseID &&
+		(identity.responseBound || !responsePresent):
+		return piRPCReasonResponseIDTransition
+	case !bindResponseID &&
+		(!identity.responseBound ||
+			!responsePresent ||
+			responseID != identity.responseID):
+		return piRPCReasonResponseIDTransition
+	}
+	if !piRPCNonNegativeNumber(fields["timestamp"]) ||
+		string(fields["timestamp"]) != identity.timestamp {
+		return piRPCReasonTimestampIdentity
+	}
+	if !piRPCUsage(fields["usage"]) {
+		return piRPCReasonUsageSchema
+	}
+	usage, err := piRPCObject(fields["usage"])
+	if err != nil {
+		return piRPCReasonUsageSchema
+	}
+	_, cacheWrite1h := usage["cacheWrite1h"]
+	_, reasoning := usage["reasoning"]
+	if cacheWrite1h ||
+		(identity.reasoningSeen && !reasoning) ||
+		(terminal && reasoning != identity.reasoningSeen) {
+		return piRPCReasonUsageProgression
+	}
+	contentRaw, present := fields["content"]
+	var content []json.RawMessage
+	if !present ||
+		json.Unmarshal(contentRaw, &content) != nil ||
+		len(content) > 1 {
+		return piRPCReasonAssistantMessageSchema
+	}
+	var text strings.Builder
+	for _, blockRaw := range content {
+		block, err := piRPCObject(blockRaw)
+		if err != nil ||
+			!piRPCAllowedKeys(
+				block,
+				[]string{"type", "text"},
+				"textSignature",
+			) {
+			return piRPCReasonAssistantMessageSchema
+		}
+		blockType, typeOK := piRPCString(block, "type")
+		blockText, textOK := piRPCString(block, "text")
+		if !typeOK || !textOK || blockType != "text" {
+			return piRPCReasonAssistantMessageSchema
+		}
+		if _, present := block["textSignature"]; present &&
+			!piRPCBoundedString(block, "textSignature", 8192) {
+			return piRPCReasonAssistantMessageSchema
+		}
+		text.WriteString(blockText)
+	}
+	if text.String() != expectedText ||
+		(requireContent && len(content) != 1) ||
+		(!requireContent && len(content) != 0) {
+		return piRPCReasonTextContentProgression
+	}
+	return piRPCReasonAssistantMessageSchema
 }
 
 func piRPCUserMessage(raw json.RawMessage, expectedPrompt string) bool {

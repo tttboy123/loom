@@ -23,6 +23,22 @@ const piRPCFixturePrompt = "Correct: func add(a, b int) int { return a - b }"
 
 const piRPCFixtureSettings = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
 
+type piRPCEventRejectingFrameSink struct {
+	frames []bridgev1.Frame
+	err    error
+}
+
+func (sink *piRPCEventRejectingFrameSink) AcceptFrame(
+	_ context.Context,
+	frame bridgev1.Frame,
+) error {
+	sink.frames = append(sink.frames, frame)
+	if frame.Type() == bridgev1.MessageEvent {
+		return sink.err
+	}
+	return nil
+}
+
 func TestPiRPCPi0821UserMessageCompatibility(t *testing.T) {
 	prompt := "bounded prompt"
 	for name, raw := range map[string][]byte{
@@ -275,6 +291,210 @@ func TestPiRPCProgressiveAssistantIdentityRejections(t *testing.T) {
 				t.Fatalf("Execute() leaked partial AdapterResult = %#v", result)
 			}
 		})
+	}
+}
+
+func TestPiRPCRejectionReasonCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want string
+	}{
+		{
+			name: "response model on first update",
+			mode: "progressive-response-model",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=response_model_present",
+		},
+		{
+			name: "response ID missing on first update",
+			mode: "progressive-response-id-missing-at-start",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=response_id_transition",
+		},
+		{
+			name: "timestamp drift",
+			mode: "progressive-timestamp-drift",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=timestamp_identity",
+		},
+		{
+			name: "malformed usage",
+			mode: "diagnostic-usage-schema",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=usage_schema",
+		},
+		{
+			name: "usage progression",
+			mode: "progressive-cache-write-1h",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=usage_progression",
+		},
+		{
+			name: "partial mismatch",
+			mode: "progressive-partial-mismatch",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=message_partial_mismatch",
+		},
+		{
+			name: "assistant message schema",
+			mode: "diagnostic-assistant-schema",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=assistant_message_schema",
+		},
+		{
+			name: "assistant update event shape",
+			mode: "diagnostic-update-event-shape",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=event_shape",
+		},
+		{
+			name: "unsupported thinking event",
+			mode: "diagnostic-thinking-first",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=thinking_start reason=event_kind_unsupported",
+		},
+		{
+			name: "unsupported tool event",
+			mode: "diagnostic-tool-first",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=toolcall_start reason=event_kind_unsupported",
+		},
+		{
+			name: "content index",
+			mode: "diagnostic-content-index",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_start reason=content_index",
+		},
+		{
+			name: "delta policy",
+			mode: "diagnostic-delta-policy",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_delta reason=delta_policy",
+		},
+		{
+			name: "text progression",
+			mode: "mismatch",
+			want: "Pi RPC protocol failed: phase=assistant_update " +
+				"event=text_end reason=text_content_progression",
+		},
+		{
+			name: "assistant message end",
+			mode: "length",
+			want: "Pi RPC protocol failed: phase=assistant_message_end " +
+				"event=message_end reason=terminal_stop_reason",
+		},
+		{
+			name: "turn end",
+			mode: "diagnostic-turn-end",
+			want: "Pi RPC protocol failed: phase=turn_end " +
+				"event=turn_end reason=terminal_identity",
+		},
+		{
+			name: "agent end",
+			mode: "retry",
+			want: "Pi RPC protocol failed: phase=agent_end " +
+				"event=agent_end reason=terminal_identity",
+		},
+		{
+			name: "agent settled",
+			mode: "diagnostic-agent-settled",
+			want: "Pi RPC protocol failed: phase=agent_settled " +
+				"event=agent_settled reason=event_shape",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPiRPCBridgeFixture(t, test.mode)
+			adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.Execute(context.Background(), fixture.request(t))
+			if !errors.Is(err, ErrPiRPCProtocol) {
+				t.Fatalf("Execute() error = %v, want ErrPiRPCProtocol", err)
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Execute() error = %q, want bounded reason %q", err, test.want)
+			}
+			if strings.Count(err.Error(), "phase=") != 1 ||
+				strings.Count(err.Error(), "event=") != 1 ||
+				strings.Count(err.Error(), "reason=") != 1 {
+				t.Fatalf("Execute() error contains a non-single diagnostic = %q", err)
+			}
+		})
+	}
+
+	t.Run("frame sink", func(t *testing.T) {
+		fixture := newPiRPCBridgeFixture(t, "progressive")
+		adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := fixture.request(t)
+		sink := &piRPCEventRejectingFrameSink{
+			err: errors.New("private sink detail"),
+		}
+		request.FrameSink = sink
+		_, err = adapter.Execute(context.Background(), request)
+		if !errors.Is(err, ErrPiRPCProtocol) {
+			t.Fatalf("Execute() error = %v, want ErrPiRPCProtocol", err)
+		}
+		want := "Pi RPC protocol failed: phase=assistant_update " +
+			"event=text_delta reason=frame_sink"
+		if !strings.Contains(err.Error(), want) ||
+			strings.Contains(err.Error(), "private sink detail") {
+			t.Fatalf("Execute() error = %q, want bounded frame-sink reason", err)
+		}
+	})
+}
+
+func TestPiRPCRejectionReasonCodeNonDisclosure(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "progressive-response-model")
+	adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Execute(context.Background(), fixture.request(t))
+	if !errors.Is(err, ErrPiRPCProtocol) {
+		t.Fatalf("Execute() error = %v, want ErrPiRPCProtocol", err)
+	}
+	got := err.Error()
+	for _, forbidden := range []string{
+		piRPCFixturePrompt,
+		piRPCSystemPrompt,
+		piTestTokenValue,
+		"other-model",
+		"10000000-0000-4000-8000-000000000001",
+		piRPCProviderID,
+		piRPCModelID,
+		fixture.homePath,
+		fixture.workspacePath,
+		fixture.tempPath,
+		`{"`,
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("bounded reason error disclosed forbidden material")
+		}
+	}
+}
+
+func TestPiRPCRejectionReasonCodePrecedence(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "diagnostic-precedence")
+	adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Execute(context.Background(), fixture.request(t))
+	if !errors.Is(err, ErrPiRPCProtocol) {
+		t.Fatalf("Execute() error = %v, want ErrPiRPCProtocol", err)
+	}
+	want := "Pi RPC protocol failed: phase=assistant_update " +
+		"event=text_start reason=message_partial_mismatch"
+	if !strings.Contains(err.Error(), want) ||
+		strings.Contains(err.Error(), "reason=response_model_present") ||
+		strings.Contains(err.Error(), "reason=response_id_transition") {
+		t.Fatalf("Execute() error = %q, want first-rejection precedence", err)
 	}
 }
 
@@ -755,6 +975,71 @@ func piRPCFixtureScript(mode string) string {
 		lines[7] = `{"type":"message_update","message":` + withReasoning + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello ","partial":` + withReasoning + `}}`
 	case "progressive-reasoning-terminal-first":
 		lines[9] = `{"type":"message_update","message":` + finalAssistant + `,"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world","partial":` + finalAssistant + `}}`
+	case "diagnostic-usage-schema":
+		invalidUsage := strings.Replace(
+			emptyTextAssistant,
+			`"input":0`,
+			`"input":"invalid"`,
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + invalidUsage + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + invalidUsage + `}}`
+	case "diagnostic-assistant-schema":
+		invalidAssistant := strings.Replace(
+			emptyTextAssistant,
+			`,"timestamp":1`,
+			`,"timestamp":1,"private":"value"`,
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + invalidAssistant + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + invalidAssistant + `}}`
+	case "diagnostic-update-event-shape":
+		lines[6] = strings.Replace(
+			lines[6],
+			`"contentIndex":0`,
+			`"contentIndex":0,"private":true`,
+			1,
+		)
+	case "diagnostic-thinking-first":
+		thinkingAssistant := strings.Replace(
+			emptyTextAssistant,
+			`{"type":"text","text":""}`,
+			`{"type":"thinking","thinking":"private"}`,
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + thinkingAssistant + `,"assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":` + thinkingAssistant + `}}`
+	case "diagnostic-tool-first":
+		toolAssistant := strings.Replace(
+			emptyTextAssistant,
+			`{"type":"text","text":""}`,
+			`{"type":"toolCall","id":"private","name":"bash","arguments":{}}`,
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + toolAssistant + `,"assistantMessageEvent":{"type":"toolcall_start","contentIndex":0,"partial":` + toolAssistant + `}}`
+	case "diagnostic-content-index":
+		lines[6] = strings.Replace(lines[6], `"contentIndex":0`, `"contentIndex":1`, 1)
+	case "diagnostic-delta-policy":
+		lines[7] = `{"type":"message_update","message":` + firstAssistant + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"","partial":` + firstAssistant + `}}`
+	case "diagnostic-turn-end":
+		terminal := piRPCFixtureWithUsageField(
+			finalAssistant,
+			`"reasoning":0`,
+		)
+		lines[11] = `{"type":"turn_end","message":` + terminal + `,"toolResults":[{}]}`
+	case "diagnostic-agent-settled":
+		lines[13] = `{"type":"agent_settled","extra":true}`
+	case "diagnostic-precedence":
+		top := strings.Replace(
+			emptyTextAssistant,
+			`,"timestamp":1`,
+			`,"responseModel":"private-model","timestamp":1`,
+			1,
+		)
+		partial := strings.Replace(
+			top,
+			responseID,
+			"20000000-0000-4000-8000-000000000002",
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + top + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + partial + `}}`
 	}
 	var quoted []string
 	for _, line := range lines {

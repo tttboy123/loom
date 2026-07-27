@@ -36,7 +36,7 @@ const (
 	finalLiveInstalledPiSHA256   = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
 	finalLiveModelSHA256         = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
 	finalLivePrompt              = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
-	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
+	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
 )
 
 type finalLiveResolvedManifestInput struct {
@@ -104,27 +104,29 @@ func TestFinalLiveFreshAttemptIsolationAndPrivateSQLite(t *testing.T) {
 func TestFinalLiveManifestDoesNotAliasPriorEvidence(t *testing.T) {
 	prior := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest.json"
 	additional := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
-	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
+	progressive := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
+	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
 	if finalLiveResolvedManifestRel == prior ||
-		finalLiveResolvedManifestRel == additional {
-		t.Fatal("progressive identity manifest aliases prior evidence")
+		finalLiveResolvedManifestRel == additional ||
+		finalLiveResolvedManifestRel == progressive {
+		t.Fatal("rejection diagnostic manifest aliases prior evidence")
 	}
 	if finalLiveResolvedManifestRel != want ||
 		filepath.Base(finalLiveResolvedManifestRel) !=
-			"resolved-live-manifest-progressive-identity-canary.json" {
-		t.Fatal("progressive identity manifest name is not frozen")
+			"resolved-live-manifest-rejection-diagnostic-canary.json" {
+		t.Fatal("rejection diagnostic manifest name is not frozen")
 	}
 	if filepath.Dir(finalLiveResolvedManifestRel) !=
 		filepath.Dir(prior) {
-		t.Fatal("progressive identity manifest escaped final-live evidence")
+		t.Fatal("rejection diagnostic manifest escaped final-live evidence")
 	}
 }
 
-func TestFinalLiveProgressiveIdentityCanaryIsolation(t *testing.T) {
+func TestFinalLiveRejectionDiagnosticCanaryIsolation(t *testing.T) {
 	t.Run("independent manifest", func(t *testing.T) {
-		want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
+		want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
 		if finalLiveResolvedManifestRel != want {
-			t.Fatalf("progressive identity manifest = %q", finalLiveResolvedManifestRel)
+			t.Fatalf("rejection diagnostic manifest = %q", finalLiveResolvedManifestRel)
 		}
 	})
 
@@ -139,9 +141,9 @@ func TestFinalLiveProgressiveIdentityCanaryIsolation(t *testing.T) {
 		}
 		if !strings.HasPrefix(
 			filepath.Base(attemptRoot),
-			"controlled-canary-progressive-identity-",
+			"controlled-canary-rejection-diagnostic-",
 		) {
-			t.Fatalf("progressive identity attempt root = %q", filepath.Base(attemptRoot))
+			t.Fatalf("rejection diagnostic attempt root = %q", filepath.Base(attemptRoot))
 		}
 	})
 }
@@ -875,7 +877,7 @@ func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
 	}
 	attemptRoot, err := os.MkdirTemp(
 		privateRoot,
-		"controlled-canary-progressive-identity-",
+		"controlled-canary-rejection-diagnostic-",
 	)
 	if err != nil {
 		return "", errors.New("cannot create final live attempt root")
