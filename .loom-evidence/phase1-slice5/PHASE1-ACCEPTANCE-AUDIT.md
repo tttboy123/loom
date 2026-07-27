@@ -1,10 +1,11 @@
 # Phase 1 Engineering Acceptance Audit
 
-Status: `READY_FOR_FINAL_USER_SIGNOFF`
+Status: `COMPLETE — FINAL USER SIGN-OFF RECEIVED`
 
-This audit covers engineering evidence only. It does not claim a real
-installed Runtime task, Provider/model response, credential readiness, live
-external effect, customer satisfaction, or user signature.
+The engineering audit below is closed by the reviewed controlled local Final
+Live Gate and the user's explicit final review/sign-off. It does not claim
+credential readiness, resident daemon or production activation, external
+effect, push, merge, release, or Phase 2 delivery.
 
 ## TECH-PLAN section 15
 
@@ -63,19 +64,28 @@ The following remain unimplemented and unauthorized as required:
 - unreviewed third-party Skill execution;
 - per-token Journal or Sidecar recording.
 
-## Remaining final human gate
+## Completed final human gate
 
-The exact unresolved inputs are:
+All five required inputs were supplied and bound:
 
 ```text
-installed_runtime_instance_id
-private_source_root
-approval_decision
-live_execution_authorization
-final_review_signoff
+installed_runtime_instance_id = reviewed Pi 0.82.1 Runtime
+private_source_root = reviewed current-user-only private root
+approval_decision = approved
+live_execution_authorization = controlled local
+final_review_signoff = APPROVED
 ```
 
-Until the user supplies those inputs and explicitly authorizes the bounded
-live task, Phase 1 is not `COMPLETE`.
+The unique controlled Repair-2 live canary passed exactly once. Fresh
+independent result-evidence Review returned `PASS` with no findings. The user
+then supplied the exact final sign-off:
+
+```text
+Final Live Gate review/sign-off: APPROVED
+```
+
+Phase 1 is therefore `COMPLETE`. Completion does not authorize an additional
+live invocation, retry, fallback, resident daemon, production activation,
+credentials, push, merge, release, publication, or Phase 2.
 
 VERDICT: PASS

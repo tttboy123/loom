@@ -1,6 +1,6 @@
 # Final Live Gate Pi 0.82.1 Transcript Closure Reopen 1 Repair 2 Live Canary
 
-Status: RESULT REVIEW PASS — READY_FOR_FINAL_USER_SIGNOFF
+Status: RESULT REVIEW PASS — FINAL USER SIGN-OFF RECEIVED
 
 - Contract: `PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1`
 - Reopen: `1`
@@ -253,5 +253,21 @@ The Reviewer independently verified:
   or Phase 2.
 
 The result evidence is complete and internally consistent.
+
+VERDICT: PASS
+
+## Final user review/sign-off
+
+On `2026-07-28`, after the complete live evidence and independent
+result-evidence Review were presented, the user supplied:
+
+```text
+Final Live Gate review/sign-off: APPROVED
+```
+
+The unique Closure Contract is closed `PASS` and Phase 1 is `COMPLETE`.
+No additional live invocation, retry, fallback, daemon or production
+activation, credentials, push, merge, release, publication, or Phase 2 is
+authorized by this sign-off.
 
 VERDICT: PASS

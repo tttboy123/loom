@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-07-26
+Updated: 2026-07-28
 
 ## Product state
 
@@ -1376,9 +1376,15 @@ repeated-race, vet, format, diff, module, Windows, scope, authority, secret,
 Evidence, cursor, and private-mode gates pass. Phase 1 is
 `READY_FOR_FINAL_USER_SIGNOFF`, not `COMPLETE`.
 
-`CURRENT`: The final live gate remains non-executing and requires exactly:
-`installed_runtime_instance_id`, `private_source_root`, `approval_decision`,
-`live_execution_authorization`, and `final_review_signoff`. No installed
-Runtime/Provider/model call, credential action, network, daemon activation,
-external effect, user-file mutation, push, merge, release, or user signature
-has been performed or inferred.
+`CURRENT`: Phase 1 is `COMPLETE` after the unique Pi `0.82.1` Transcript
+Compatibility Closure Contract passed its single Repair-2 controlled local
+live canary, fresh independent result-evidence Review returned `PASS` with no
+findings, and the user explicitly supplied final review/sign-off on
+`2026-07-28`. The live path closed installed Runtime discovery, local model
+execution, strict Pi RPC transcript compatibility, Supervisor/Grant/Frame/
+Evidence authority, WorkItem verification and `done`, Team acceptance and
+terminal success, and Projection rebuild. The final implementation and result
+evidence commits are `c6f9ce7` and `7794b79`. All invocation allowances are
+consumed; no rerun, retry, fallback, compaction, alternate model, Provider
+switch, parser widening, resident daemon, production activation, credential
+change, push, merge, release, or publication is authorized by completion.
