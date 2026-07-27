@@ -1,6 +1,6 @@
 # Final Live Gate Pi 0.82.1 Transcript Compatibility Closure Contract
 
-Status: FROZEN — IMPLEMENTATION REVIEW 3 PASS — ATOMIC COMMIT GATE
+Status: FROZEN — REOPEN 1 IMPLEMENTATION REVIEW PASS — COMMIT AUTHORIZED
 
 - Contract: `PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1`
 - Risk: `HIGH`
@@ -1101,5 +1101,347 @@ HUMAN_REQUIRED — NO RETRY
 
 No outcome authorizes production activation, resident daemon activation,
 autonomous execution, Phase 2, push, merge, release, or publication.
+
+VERDICT: PASS
+
+## Reopen 1 — bounded terminal-budget closure
+
+### Authorization and lineage
+
+On `2026-07-28`, after the first transcript-closure live canary failed closed,
+the user authorized all subsequent actions needed to continue without another
+per-step confirmation. The Controller interprets that authorization only
+inside the existing Phase 1 goal and this unique contract lineage.
+
+This section reopens:
+
+```text
+PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1
+```
+
+It does not create a new Amendment, WorkItem, parser exception, Runtime,
+Provider, model, authority, queue, scheduler, or product surface. The
+historical implementation and live-evidence commits remain immutable:
+
+```text
+625a79a1bb04513d1a82565461d146fa34996fe5
+143163c4f61481cd9359e44ee52c5347923ff9f4
+```
+
+The first canary's authorization remains consumed. Reopen 1 grants one new
+isolated canary only after its own Implementation Reviewer `PASS`. A failed
+Reopen-1 canary cannot be rerun unchanged. It may start another bounded product
+repair in this same contract only after deterministic analysis, new RED,
+complete verification, and a fresh Implementation Reviewer `PASS`. The goal's
+three-repair ceiling applies to this reopened lineage.
+
+### Observed failure and safety decision
+
+The reviewed first canary failed closed at:
+
+```text
+phase=assistant_update event=text_end reason=terminal_stop_reason
+```
+
+The bounded diagnostic intentionally did not persist the Runtime's raw
+stop-reason value. Reopen 1 therefore does not claim that value as direct
+evidence.
+
+Locked Pi `0.82.1` source proves:
+
+- an OpenAI-compatible stream initializes `stopReason` to `stop`;
+- the provider's final `finish_reason` updates that field before `text_end`;
+- `stop` and `end` map to successful `stop`;
+- `length` maps to `length`;
+- tool finishes map to `toolUse`; and
+- content-filter, network, unknown, aborted, and other error paths do not
+  become successful `stop`.
+
+The first genuine locked-Pi RED made the previously bounded hypothesis exact.
+Against the unchanged product, Pi sent an output-token field with value `1`;
+the deterministic endpoint returned `finish_reason: length`, and Loom rejected
+the transcript with the same `terminal_stop_reason`.
+
+Locked Pi `simple-options.js`, SHA-256
+`74dfde37adbd00a6af1fd707c1c5c876577793b078da9fbbd6d40bb75bfb4749`,
+defines:
+
+```text
+CONTEXT_SAFETY_TOKENS = 4096
+MIN_MAX_TOKENS = 1
+available = model.contextWindow - estimatedContextTokens - 4096
+effective = min(model.maxTokens, max(1, available))
+```
+
+The current declaration sets `contextWindow: 4096`, so the safety reserve
+alone guarantees an effective output budget of `1`, independent of the
+prompt's exact token estimate.
+
+An independent read-only GGUF v3 metadata parse of the exact frozen model
+proved:
+
+```text
+general.architecture = qwen2
+qwen2.context_length = 32768
+```
+
+Fresh Contract Review 2 found that changing only the Pi declaration would
+leave the controlled local llama-server at `--ctx-size 4096`. That mismatch is
+not accepted. The correction therefore binds both Pi's declared context window
+and the controlled local llama-server context to the exact installed model
+metadata. It does not speculate about or enlarge the model's real capability.
+
+The safety decision is fixed:
+
+- `stop` remains the only accepted successful terminal reason;
+- `length`, `toolUse`, `error`, `aborted`, missing, empty, or unknown reasons
+  remain rejected;
+- no stop reason becomes an output Frame, Evidence byte, authority fact, or
+  diagnostic value;
+- the parser, complete lifecycle, forward-partial rules, usage progression,
+  response identity, Grant, Frame, Evidence, Journal, Projection, and
+  terminal aggregation remain unchanged; and
+- Reopen 1 changes one shared, named local-model context constant from the
+  incorrect `4096` to the exact GGUF value `32768`;
+- Pi's model declaration and llama-server's `--ctx-size` must both use that
+  same constant, so advertised and executed context cannot drift;
+- the declared maximum output remains `256`;
+- llama-server's `--n-predict` remains `256`;
+- Pi's existing `4096` safety reserve remains intact; and
+- the existing `16384` assistant-byte cap remains intact.
+
+### Risk, dependencies, and trust boundary
+
+- Risk: `HIGH`
+- Baseline:
+  `143163c4f61481cd9359e44ee52c5347923ff9f4`
+- Depends on:
+  - the unique Closure Contract and its Contract/Implementation Reviews
+    `PASS`;
+  - the first transcript-closure live evidence and result-evidence Review
+    `PASS`;
+  - exact installed Pi `0.82.1`, llama.cpp, model, and source-lock bindings;
+    and
+  - user authorization on `2026-07-28` to continue necessary actions without
+    another per-step confirmation.
+
+Trust boundary:
+
+- Loom remains the only controller and state authority.
+- Pi, llama.cpp, model output, forward partials, stop reasons, and loopback SSE
+  remain untrusted observations.
+- `AppendBatchIfStreamHeads` and the existing authorities remain the only
+  authoritative writers.
+- Only Bridge-validated and Grant-authorized Frames may enter private
+  attempt Evidence.
+- A token budget changes execution bounds only; it grants no permission,
+  acceptance, terminal authority, retry, fallback, or completion claim.
+
+### Exact owned files
+
+Reopen 1 may modify only:
+
+1. `internal/runtime/piadapter/rpc_bridge_adapter.go`
+2. `internal/runtime/piadapter/rpc_bridge_adapter_test.go`
+3. `internal/runtime/piadapter/local_model_server.go`
+4. `internal/runtime/piadapter/local_model_server_test.go`
+5. `internal/app/final_live_gate_pi0821_component_test.go`
+6. `internal/app/final_live_gate_live_test.go`
+7. this unique contract
+8. `pi-0821-transcript-compatibility-closure-contract-review.md`
+9. `pi-0821-transcript-compatibility-closure-red.md`
+10. `pi-0821-transcript-compatibility-closure-verification.md`
+11. `pi-0821-transcript-compatibility-closure-implementation-review.md`
+
+Only after an authorized invocation may it add:
+
+12. `resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json`
+13. `pi-0821-transcript-closure-reopen1-live-canary.md`
+
+The private materialization status may receive bounded result synchronization
+only. All other repository and private files remain read-only.
+
+### Reopen-time quarantine
+
+The following now-historical closure evidence is read-only:
+
+| Path | SHA-256 |
+|---|---|
+| `pi-0821-transcript-closure-live-canary.md` | `b09c365dcd761715425a98614da76aef3d707310c7bcbe6e9d2ca3dd4b91a61a` |
+| `resolved-live-manifest-pi-0821-transcript-closure-canary.json` | `4dfb081363b910b2fdf041c2636ba2be7b9876ab92d103eb30a76362087e6e35` |
+
+The retained private attempt
+`controlled-canary-pi-0821-transcript-closure-2044445093` is read-only, with:
+
+```text
+canary.sqlite
+204f4f6c23e093b8aa8bc5bfc18be4ac4fcfeeff3199a83899b9b4575df92e68
+
+bounded source
+bfc5aca5df67c1244e4d28031f973404e5a118d5587288609a625906d3d1a54f
+
+failure artifact
+5fd50fba14bf17ff8bafc55c10e5883b778e09b4f7f907e51fb92303f1bbefe8
+
+Evidence capture
+a4c26a54fdbe29374cc94e952da8412a7bf2fa872dda4fb64df06c12908d51d2
+
+Evidence receipt
+aab9365dab94fcd413500ae9a197d3eac3c92cb310dd84f9341baf44dbfc0e25
+```
+
+The original dirty-worktree quarantine, all earlier manifests/evidence, four
+earlier private attempts, installed Runtime/model/source bindings, and
+user-owned untracked files retain their frozen status and hashes.
+
+Before commit and before any live invocation, the Controller and Reviewer must
+revalidate both the original quarantine and this Reopen-time quarantine.
+
+### Mandatory TDD acceptance
+
+RED must precede product modification and prove all of:
+
+1. The Pi model declaration exposes exactly `contextWindow: 32768` and
+   `maxTokens: 256`; current `4096/256` fails.
+2. The controlled local llama-server argument vector exposes exactly
+   `--ctx-size 32768` and `--n-predict 256`; current `4096/256` fails.
+3. Both values derive from the same named package constants. A future drift
+   between Pi's declaration and llama-server execution must fail a focused
+   test.
+4. The locked real Pi component binds all three causal source files before
+   process start:
+   - `event-stream.js` SHA-256
+     `44a2498660ca61efa952ad6a3f10cc0491883411bd2b4572c9a392ec4e9553ec`;
+   - `openai-completions.js` SHA-256
+     `0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a`;
+   - `simple-options.js` SHA-256
+     `74dfde37adbd00a6af1fd707c1c5c876577793b078da9fbbd6d40bb75bfb4749`.
+5. The opt-in pre-live path repeats those same three file, digest, mode, and
+   current-user ownership bindings before creating its manifest or starting
+   Pi/llama/model execution. The quarantined `source-lock.json` remains
+   untouched; this unique contract and the executable tests are the binding
+   authority for Reopen 1.
+6. The locked real Pi component sends the declared output budget to the
+   deterministic loopback OpenAI-compatible endpoint.
+7. The loopback returns a successful text lifecycle with `finish_reason:
+   length` when the request budget is below `256`, and `finish_reason: stop`
+   only when it is exactly the bounded `256`.
+8. Against the current product, the locked-Pi component fails closed with the
+   same bounded `terminal_stop_reason`; after the minimal budget change it
+   completes the full Pi RPC lifecycle.
+9. Existing rejection coverage still proves `length`, `toolUse`, errors,
+   missing/unknown stop reasons, terminal skew, and duplicate/out-of-order
+   lifecycle events cannot produce a successful `AdapterResult`.
+10. Success still closes Supervisor → Grant → Ack/Event/Evidence/Result →
+   Journal → Projection; observer failure still records only the authorized
+   prefix and failed terminal lineage.
+11. The opt-in live harness uses a new independent manifest and fresh attempt
+   prefix and cannot alias any historical canary.
+
+The deterministic loopback may inspect only the bounded request schema needed
+to prove model ID, one user turn, streaming mode, no tools, and the numeric
+output-token field. It must not persist prompt/model output, contact DNS or
+the Internet, or run llama.cpp/the model.
+
+### Minimal GREEN
+
+The only intended product change is one named GGUF-bound context constant and
+one named output constant, shared by `modelsJSON` and
+`piLocalModelArguments`:
+
+```text
+Pi declared context window: 4096 → 32768 tokens
+llama-server --ctx-size: 4096 → 32768 tokens
+Pi declared maximum output: unchanged at 256 tokens
+llama-server --n-predict: unchanged at 256 tokens
+```
+
+No parser acceptance predicate may change. Any need to modify
+`piRPCAssistantRejectionReason`, `piRPCAssistantText`,
+`acceptAssistantEvent`, lifecycle state, Frame publication, Evidence,
+Supervisor, Grant, Journal, Projection, output verification, or authority is
+outside Reopen 1 and must stop for contract review inside this same unique
+lineage.
+
+### Required verification
+
+At minimum:
+
+```text
+go test ./internal/runtime/piadapter \
+  -run '^(TestPiRPC(ModelOutputBudget|TranscriptClosure|TranscriptClosureRejections|TranscriptLifecycleClosure)|TestPiLocalModelContextAlignment)$' \
+  -count=1
+
+test -n "$LOOM_PI_0821_EXECUTABLE" &&
+test -n "$LOOM_PI_0821_RUNTIME_SEARCH_PATH" &&
+test -n "$LOOM_PI_0821_RUNTIME_INSTANCE_ID" &&
+LOOM_PI_0821_COMPONENT=1 \
+go test -v ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=1
+
+go test ./internal/runtime/piadapter ./internal/supervisor \
+  ./internal/authorization ./internal/evidence ./internal/app -count=1
+
+go test -race ./internal/runtime/piadapter \
+  -run '^(TestPiRPC(ModelOutputBudget|TranscriptClosure|TranscriptClosureRejections|TranscriptLifecycleClosure)|TestPiLocalModelContextAlignment)$' \
+  -count=30
+
+LOOM_PI_0821_COMPONENT=1 \
+go test -v -race ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=10
+
+go test -race ./internal/app \
+  -run '^TestFinalLivePi0821TranscriptClosureCanaryIsolation$' \
+  -count=30
+
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go mod verify
+gofmt -d \
+  internal/runtime/piadapter/rpc_bridge_adapter.go \
+  internal/runtime/piadapter/rpc_bridge_adapter_test.go \
+  internal/runtime/piadapter/local_model_server.go \
+  internal/runtime/piadapter/local_model_server_test.go \
+  internal/app/final_live_gate_pi0821_component_test.go \
+  internal/app/final_live_gate_live_test.go
+git diff --check
+GOOS=windows GOARCH=amd64 go test -exec=true \
+  ./internal/runtime/piadapter ./internal/app
+```
+
+The component commands must bind the already reviewed installed Pi executable,
+search path, and Runtime instance ID; must execute rather than skip; and must
+print the exact success sentinel once per successful run. No llama/model live
+execution occurs before Implementation Reviewer `PASS`.
+
+### Review, commit, and live accounting
+
+1. A fresh Contract Reviewer must return `PASS` before RED.
+2. A fresh Implementation Reviewer must verify genuine RED against both
+   Pi-declared and llama-executed `contextWindow/maxTokens: 4096/256`, minimal
+   GREEN with both context surfaces aligned at `32768` and both output
+   surfaces unchanged at `256`, exact GGUF and three-file locked-source proof,
+   unchanged parser/rejection set, locked-Pi deterministic component closure,
+   complete verification, scope, quarantine, and non-disclosure.
+3. Only after Reviewer `PASS` may the exact owned Candidate be committed
+   locally.
+4. Immediately before live, all installed/historical bindings, modes, owners,
+   hashes, port/process cleanup, authorization environment, and absence of the
+   Reopen-1 manifest/attempt must revalidate.
+5. One Reopen-1 canary is then authorized. It consumes its allowance on any
+   result. There is no unchanged rerun.
+6. A fresh read-only result-evidence Reviewer must audit the result before any
+   next action.
+
+If the canary passes, the Final Live Gate reaches
+`READY_FOR_FINAL_USER_SIGNOFF`. If it fails, the Controller may continue only
+through a new bounded repair inside this same unique contract, subject to the
+three-repair ceiling and all RED/Review gates. No point Amendment is allowed.
+
+No outcome authorizes push, merge, release, publication, production or
+resident daemon activation, credentials, Phase 2, or user sign-off.
 
 VERDICT: PASS

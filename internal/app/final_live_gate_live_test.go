@@ -35,11 +35,14 @@ import (
 )
 
 const (
-	finalLiveRuntimeID           = "runtime.pi.earendil-works.0.82.1"
-	finalLiveInstalledPiSHA256   = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
-	finalLiveModelSHA256         = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
-	finalLivePrompt              = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
-	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-canary.json"
+	finalLiveRuntimeID                 = "runtime.pi.earendil-works.0.82.1"
+	finalLiveInstalledPiSHA256         = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
+	finalLiveModelSHA256               = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
+	finalLivePi0821EventStreamSHA256   = "44a2498660ca61efa952ad6a3f10cc0491883411bd2b4572c9a392ec4e9553ec"
+	finalLivePi0821OpenAISHA256        = "0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a"
+	finalLivePi0821SimpleOptionsSHA256 = "74dfde37adbd00a6af1fd707c1c5c876577793b078da9fbbd6d40bb75bfb4749"
+	finalLivePrompt                    = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
+	finalLiveResolvedManifestRel       = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
 )
 
 type finalLiveResolvedManifestInput struct {
@@ -109,16 +112,18 @@ func TestFinalLiveManifestDoesNotAliasPriorEvidence(t *testing.T) {
 	additional := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
 	progressive := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
 	diagnostic := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
-	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-canary.json"
+	closure := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-canary.json"
+	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
 	if finalLiveResolvedManifestRel == prior ||
 		finalLiveResolvedManifestRel == additional ||
 		finalLiveResolvedManifestRel == progressive ||
-		finalLiveResolvedManifestRel == diagnostic {
+		finalLiveResolvedManifestRel == diagnostic ||
+		finalLiveResolvedManifestRel == closure {
 		t.Fatal("transcript closure manifest aliases prior evidence")
 	}
 	if finalLiveResolvedManifestRel != want ||
 		filepath.Base(finalLiveResolvedManifestRel) !=
-			"resolved-live-manifest-pi-0821-transcript-closure-canary.json" {
+			"resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json" {
 		t.Fatal("transcript closure manifest name is not frozen")
 	}
 	if filepath.Dir(finalLiveResolvedManifestRel) !=
@@ -139,7 +144,7 @@ func TestFinalLiveRejectionDiagnosticCanaryRemainsHistorical(t *testing.T) {
 func TestFinalLivePi0821TranscriptClosureCanaryIsolation(t *testing.T) {
 	t.Run("independent manifest", func(t *testing.T) {
 		want := ".loom-evidence/phase1-final-live-gate/" +
-			"resolved-live-manifest-pi-0821-transcript-closure-canary.json"
+			"resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
 		if finalLiveResolvedManifestRel != want {
 			t.Fatalf("transcript closure manifest = %q", finalLiveResolvedManifestRel)
 		}
@@ -156,7 +161,7 @@ func TestFinalLivePi0821TranscriptClosureCanaryIsolation(t *testing.T) {
 		}
 		if !strings.HasPrefix(
 			filepath.Base(attemptRoot),
-			"controlled-canary-pi-0821-transcript-closure-",
+			"controlled-canary-pi-0821-transcript-closure-reopen1-",
 		) {
 			t.Fatalf("transcript closure attempt root = %q", filepath.Base(attemptRoot))
 		}
@@ -188,6 +193,9 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 		filepath.Clean(piExecutable) != piExecutable ||
 		len(searchPaths) == 0 {
 		t.Fatal("invalid installed Pi Runtime binding")
+	}
+	if err := bindFinalLivePi0821Sources(piExecutable); err != nil {
+		t.Fatal("locked Pi 0.82.1 source binding failed")
 	}
 	llamaExecutableSHA256 := os.Getenv("LOOM_FINAL_LLAMA_EXECUTABLE_SHA256")
 	if err := writeFinalLiveResolvedManifest(finalLiveResolvedManifestInput{
@@ -837,6 +845,48 @@ func finalLiveBoundFileDigest(path string, expected string) (string, error) {
 	return digest, nil
 }
 
+func bindFinalLivePi0821Sources(piExecutable string) error {
+	if piExecutable == "" ||
+		!filepath.IsAbs(piExecutable) ||
+		filepath.Clean(piExecutable) != piExecutable {
+		return errors.New("invalid Pi source binding")
+	}
+	resolvedPi, err := filepath.EvalSymlinks(piExecutable)
+	if err != nil {
+		return errors.New("invalid Pi source binding")
+	}
+	packageRoot := filepath.Dir(filepath.Dir(resolvedPi))
+	piAI := filepath.Join(
+		packageRoot,
+		"node_modules",
+		"@earendil-works",
+		"pi-ai",
+		"dist",
+	)
+	for _, binding := range []struct {
+		path   string
+		digest string
+	}{
+		{
+			path:   filepath.Join(piAI, "utils", "event-stream.js"),
+			digest: finalLivePi0821EventStreamSHA256,
+		},
+		{
+			path:   filepath.Join(piAI, "api", "openai-completions.js"),
+			digest: finalLivePi0821OpenAISHA256,
+		},
+		{
+			path:   filepath.Join(piAI, "api", "simple-options.js"),
+			digest: finalLivePi0821SimpleOptionsSHA256,
+		},
+	} {
+		if _, err := finalLiveBoundFileDigest(binding.path, binding.digest); err != nil {
+			return errors.New("invalid Pi source binding")
+		}
+	}
+	return nil
+}
+
 func finalLiveResolvedManifestPath(t testing.TB) string {
 	t.Helper()
 	_, sourceFile, _, ok := runtime.Caller(0)
@@ -952,7 +1002,7 @@ func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
 	}
 	attemptRoot, err := os.MkdirTemp(
 		privateRoot,
-		"controlled-canary-pi-0821-transcript-closure-",
+		"controlled-canary-pi-0821-transcript-closure-reopen1-",
 	)
 	if err != nil {
 		return "", errors.New("cannot create final live attempt root")

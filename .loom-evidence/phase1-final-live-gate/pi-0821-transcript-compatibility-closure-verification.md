@@ -1,6 +1,6 @@
 # Final Live Gate Pi 0.82.1 Transcript Compatibility Closure Verification
 
-Status: IMPLEMENTATION REVIEW 3 PASS — READY FOR ATOMIC COMMIT
+Status: REOPEN 1 IMPLEMENTATION REVIEW PASS — READY FOR ATOMIC COMMIT
 
 - Contract: `PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1`
 - Baseline: `c7cabee40682f6e670d67b2553d85d6f8544b5c8`
@@ -228,5 +228,159 @@ Candidate after fresh contract-only `PASS`. Fresh Implementation Review 3
 returned `PASS` with no findings. The exact Candidate allowlist may now be
 committed atomically. Live execution remains prohibited until the post-commit
 pre-live revalidation and independent manifest are complete.
+
+VERDICT: PASS
+
+## Reopen 1 context-alignment verification
+
+Date: `2026-07-28`
+
+Fresh Contract Review 3 and the genuine Reopen-1 RED preceded product
+implementation. The minimal product diff is limited to:
+
+- one named context constant: `32768`;
+- one named output constant: `256`;
+- Pi `modelsJSON` consuming both constants; and
+- llama-server `--ctx-size` / `--n-predict` consuming the same constants.
+
+No parser, transcript predicate, response identity, retry/compaction, Bridge,
+Supervisor, Grant, Frame, Evidence, Journal, Projection, StateWriter,
+terminal aggregation, Provider, model, or permission behavior changed.
+
+The component and pre-live paths now bind the installed Pi executable plus
+all three causal source files through exact digest, regular-file, safe-mode,
+and current-user ownership checks. Verified source SHA-256 values:
+
+```text
+event-stream.js
+44a2498660ca61efa952ad6a3f10cc0491883411bd2b4572c9a392ec4e9553ec
+
+openai-completions.js
+0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a
+
+simple-options.js
+74dfde37adbd00a6af1fd707c1c5c876577793b078da9fbbd6d40bb75bfb4749
+```
+
+### Focused, component, and impact
+
+```text
+go test ./internal/runtime/piadapter \
+  -run '^(TestPiRPC(ModelOutputBudget|TranscriptClosure|TranscriptClosureRejections|TranscriptLifecycleClosure)|TestPiLocalModelContextAlignment)$' \
+  -count=1
+PASS: internal/runtime/piadapter, 20.106s
+
+LOOM_PI_0821_COMPONENT=1 \
+LOOM_PI_0821_EXECUTABLE=<reviewed-installed-pi> \
+LOOM_PI_0821_RUNTIME_SEARCH_PATH=<reviewed-node-search-path> \
+LOOM_PI_0821_RUNTIME_INSTANCE_ID=runtime.pi.earendil-works.0.82.1 \
+go test -v ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=1
+PASS: success and observer-failure closure, 3.502s
+exact success sentinel: 1
+
+go test ./internal/runtime/piadapter ./internal/supervisor \
+  ./internal/authorization ./internal/evidence ./internal/app -count=1
+PASS: all five packages; piadapter 48.663s, supervisor 2.854s,
+authorization 0.436s, evidence 1.065s, app 13.597s
+```
+
+The locked-Pi success component observed one valid loopback request at the
+exact bounded output budget `256` and closed the full
+Supervisor/Grant/Frame/Evidence/Journal/Projection path. The separate
+observer-failure path remained failed, revoked, capacity-released, and
+non-retried.
+
+### Race, repository, and portability
+
+```text
+go test -race ./internal/runtime/piadapter \
+  -run '^(TestPiRPC(ModelOutputBudget|TranscriptClosure|TranscriptClosureRejections|TranscriptLifecycleClosure)|TestPiLocalModelContextAlignment)$' \
+  -count=30
+PASS: internal/runtime/piadapter, 144.521s
+
+LOOM_PI_0821_COMPONENT=1 \
+LOOM_PI_0821_EXECUTABLE=<reviewed-installed-pi> \
+LOOM_PI_0821_RUNTIME_SEARCH_PATH=<reviewed-node-search-path> \
+LOOM_PI_0821_RUNTIME_INSTANCE_ID=runtime.pi.earendil-works.0.82.1 \
+go test -v -race ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=10
+PASS: 10/10 success and 10/10 observer-failure closures, 30.174s
+exact success sentinel: 10
+
+go test -race ./internal/app \
+  -run '^TestFinalLivePi0821TranscriptClosureCanaryIsolation$' \
+  -count=30
+PASS: internal/app, 2.364s
+
+go test ./... -count=1
+PASS: every package
+
+go test -race ./... -count=1
+PASS: every package
+
+go vet ./...
+PASS
+
+go mod verify
+PASS: all modules verified
+
+gofmt -d \
+  internal/runtime/piadapter/rpc_bridge_adapter.go \
+  internal/runtime/piadapter/rpc_bridge_adapter_test.go \
+  internal/runtime/piadapter/local_model_server.go \
+  internal/runtime/piadapter/local_model_server_test.go \
+  internal/app/final_live_gate_pi0821_component_test.go \
+  internal/app/final_live_gate_live_test.go
+PASS: empty output
+
+git diff --check
+PASS: empty output
+
+GOOS=windows GOARCH=amd64 go test -exec=true \
+  ./internal/runtime/piadapter ./internal/app
+PASS: both packages
+```
+
+### Candidate digests
+
+| Path | SHA-256 |
+|---|---|
+| `internal/runtime/piadapter/rpc_bridge_adapter.go` | `da124a30998724845ec36280b7aaeace3b490e39a6d5a7fa3e6454b2bc59f11f` |
+| `internal/runtime/piadapter/local_model_server.go` | `7a76c34305a76cfd7a39677a7a22f59727eb87a648ed29df8a7ed74e8d810b27` |
+| `internal/runtime/piadapter/rpc_bridge_adapter_test.go` | `cdf9154c1573788288cdf36168ab0d357e682d926771fb78e546b502764605f5` |
+| `internal/runtime/piadapter/local_model_server_test.go` | `b82a2286adb119a37d6471e486481bdb0348a3cff799f1241dad81f52392824a` |
+| `internal/app/final_live_gate_pi0821_component_test.go` | `271d0e9d441481b69ea2f7de786dac218636200b65c383e44495dd452fc9ec5b` |
+| `internal/app/final_live_gate_live_test.go` | `f4bb348da3068fe61e2dcbbead94f90c6428c74ae28cd83709098ffd661178f5` |
+| unique contract | `6f6d42b24868e8bceb69ea37bba9d4576f8ed7c5b42d21455ef340eb3099c1a3` |
+| contract-review ledger | `d14bdb86657f4d5dc56a94e6fb4460015e12b17e44c19c11275c0a7ea51c0cb5` |
+| RED evidence | `4b50ffaaa1ad16e8a3aa8a9136e83674228a79f5a2f78b85f2d42788e2e8bc31` |
+| implementation-review ledger | `790b1792b434511ed423cd448e8c02eca4c7d87917fb8810e12ebd121ffe4c9a` |
+
+### Scope and quarantine
+
+`git diff --cached --name-status` was empty. The exact Reopen-1 manifest and
+attempt prefix were absent. No llama/model/live process or controlled live
+invocation ran during implementation or verification.
+
+Every original dirty-worktree and historical-evidence hash matched its frozen
+value. The historical closure manifest/evidence remained:
+
+```text
+resolved-live-manifest-pi-0821-transcript-closure-canary.json
+4dfb081363b910b2fdf041c2636ba2be7b9876ab92d103eb30a76362087e6e35
+
+pi-0821-transcript-closure-live-canary.md
+b09c365dcd761715425a98614da76aef3d707310c7bcbe6e9d2ca3dd4b91a61a
+```
+
+The retained historical attempt still matched all five frozen hashes:
+SQLite `204f4f6c...`, bounded source `bfc5aca5...`, artifact `5fd50fba...`,
+capture `a4c26a54...`, and receipt `aab9365d...`.
+
+Fresh Implementation Review is required before staging, commit, manifest
+creation, llama/model execution, or the one authorized Reopen-1 canary.
 
 VERDICT: PASS

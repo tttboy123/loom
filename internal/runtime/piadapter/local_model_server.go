@@ -36,6 +36,8 @@ const (
 	maxPiLocalHealthBody            = 4096
 	piLocalStableHealthObservations = 3
 	piLocalExitClassificationGrace  = 25 * time.Millisecond
+	piLocalModelContextTokens       = 32768
+	piLocalModelMaxOutputTokens     = 256
 )
 
 type PiLocalModelServerConfig struct {
@@ -280,10 +282,10 @@ func piLocalModelArguments(modelPath string, host string, port int) []string {
 		"--alias", piRPCModelID,
 		"--host", host,
 		"--port", strconv.Itoa(port),
-		"--ctx-size", "4096",
+		"--ctx-size", strconv.Itoa(piLocalModelContextTokens),
 		"--parallel", "1",
 		"--threads", "4",
-		"--n-predict", "256",
+		"--n-predict", strconv.Itoa(piLocalModelMaxOutputTokens),
 		"--gpu-layers", "all",
 		"--offline",
 		"--no-webui",

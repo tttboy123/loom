@@ -28,6 +28,45 @@ type piRPCEventRejectingFrameSink struct {
 	err    error
 }
 
+func TestPiRPCModelOutputBudget(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "success")
+	runtimeAdapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := runtimeAdapter.(*piRPCBridgeAdapter)
+	if !ok {
+		t.Fatal("Pi RPC adapter concrete type changed")
+	}
+	content, err := adapter.modelsJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Providers map[string]struct {
+			Models []struct {
+				ContextWindow int `json:"contextWindow"`
+				MaxTokens     int `json:"maxTokens"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(content, &document); err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := document.Providers[piRPCProviderID]
+	if !ok || len(document.Providers) != 1 || len(provider.Models) != 1 {
+		t.Fatal("Pi RPC model declaration is not exact")
+	}
+	model := provider.Models[0]
+	if model.ContextWindow != 32768 || model.MaxTokens != 256 {
+		t.Fatalf(
+			"Pi RPC model budget = context:%d output:%d, want 32768/256",
+			model.ContextWindow,
+			model.MaxTokens,
+		)
+	}
+}
+
 func (sink *piRPCEventRejectingFrameSink) AcceptFrame(
 	_ context.Context,
 	frame bridgev1.Frame,

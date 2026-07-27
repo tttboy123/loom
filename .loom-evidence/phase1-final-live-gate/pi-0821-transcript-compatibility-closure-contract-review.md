@@ -266,3 +266,155 @@ status/terminal verdict. The bounded test-first repair is authorized; commit
 and live execution remain locked.
 
 VERDICT: PASS
+
+## Reopen 1 RED discovery
+
+The first locked-Pi RED invalidated the reviewed `maxTokens: 1024` proposal
+before any product modification:
+
+```text
+observed request output budget = 1
+phase=assistant_update event=text_start reason=terminal_stop_reason
+```
+
+Locked `simple-options.js` proves Pi reserves `4096` context tokens and clamps
+the effective output budget to at least `1`. With the current declared
+`contextWindow: 4096`, that reserve guarantees the observed one-token request.
+
+An independent read-only parse of the exact installed GGUF v3 metadata proved
+`qwen2.context_length=32768`. The in-place contract now proposes only:
+
+```text
+contextWindow: 4096 → 32768
+maxTokens: unchanged at 256
+```
+
+This materially replaces the previously reviewed proposal. Contract Review 1
+remains historical evidence for the earlier hypothesis but does not authorize
+the corrected GREEN. Fresh Contract Review 2 is required before product
+implementation.
+
+This was a deterministic component RED. It is distinct from the first
+controlled live canary, which failed at:
+
+```text
+phase=assistant_update event=text_end reason=terminal_stop_reason
+```
+
+VERDICT: PENDING
+
+## Reopen 1 Contract Review 1 — historical, superseded
+
+Date: `2026-07-28`
+
+The fresh read-only Reviewer inspected only the in-place Reopen 1 diff against
+baseline:
+
+```text
+143163c4f61481cd9359e44ee52c5347923ff9f4
+```
+
+It edited, staged, and committed nothing and ran no test, Pi, llama.cpp,
+model, or live canary.
+
+Critical findings: none.
+
+Important findings: none.
+
+The Reviewer confirmed:
+
+- Reopen 1 remains inside the existing unique
+  `PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1` lineage and is not a new
+  point Amendment;
+- the consumed first canary remains historical and immutable;
+- exactly one new isolated canary is gated behind Implementation Reviewer
+  `PASS`, with no unchanged rerun and the three-repair ceiling retained;
+- owned files, live-only additions, dependencies, acceptance, checks, trust
+  boundary, quarantine, and authorization accounting are explicit;
+- only terminal `stop` remains successful while `length`, `toolUse`, errors,
+  missing, empty, and unknown reasons remain rejected;
+- current product code still declares `MaxTokens: 256`, giving RED an exact
+  pre-change target;
+- locked Pi source sends `options.maxTokens` as the provider output-token
+  field and maps `stop/end`, `length`, tool, content/network, and unknown
+  finish reasons as stated by the contract; and
+- `256 → 1024` is bounded below the declared `4096` context window and within
+  the existing `16384` assistant-byte cap, changing execution budget without
+  changing parser or authority.
+
+No Critical or Important issue blocked the proposal as it then stood.
+This `PASS` became historical when the first genuine RED disproved the
+`maxTokens: 1024` hypothesis. It does not authorize the corrected contract.
+
+VERDICT: PASS
+
+## Reopen 1 Contract Review 2
+
+Date: `2026-07-28`
+
+The fresh read-only Reviewer edited, staged, and committed nothing and ran no
+test, Pi, llama.cpp, model, or live canary.
+
+Verdict: `FAIL`
+
+Important findings:
+
+1. changing only Pi's declared `contextWindow` to `32768` would leave the
+   controlled local llama-server at `--ctx-size 4096`, creating an
+   advertised/executed capability mismatch;
+2. the root-cause proof depended on locked `simple-options.js`, but the
+   mandatory component and pre-live bindings covered only `event-stream.js`
+   and `openai-completions.js`; and
+3. the prior Review-1 ledger still described the disproved `256 → 1024`
+   proposal and therefore could not authorize the corrected contract.
+
+The unique contract was repaired in place without a new Amendment, WorkItem,
+Candidate, live authorization, parser exception, dependency, or authority:
+
+- one shared context constant must align Pi's declaration and
+  llama-server's `--ctx-size` at the exact GGUF `32768`;
+- both output surfaces remain exactly `256`;
+- `simple-options.js` joins the exact component and pre-live file/digest/mode/
+  current-user ownership lock;
+- `local_model_server.go` and its test are added to exact ownership; and
+- Review 1 remains immutable historical evidence, explicitly superseded.
+
+Fresh Contract Review 3 is required before RED. Product code remains
+unchanged and live execution remains locked.
+
+VERDICT: PENDING
+
+## Reopen 1 Contract Review 3
+
+Date: `2026-07-28`
+
+The fresh independent read-only Reviewer inspected the repaired contract,
+review ledger, and only the relevant current source facts. It edited, staged,
+and committed nothing and ran no test, Pi, llama.cpp, model, or live canary.
+
+Critical findings: none.
+
+Important findings: none.
+
+The Reviewer confirmed:
+
+- one shared context constant must align Pi `modelsJSON` and llama-server
+  `--ctx-size` at `32768`, while both output surfaces remain `256`;
+- `local_model_server.go` and its test are explicitly owned;
+- all three causal Pi source files, including exact `simple-options.js`, are
+  mandatory component and pre-live bindings without changing quarantined
+  `source-lock.json`;
+- Review 1 is historical and superseded;
+- the live `text_end` failure and deterministic component-RED `text_start`
+  failure are explicitly distinct;
+- exact ownership, TDD sequence, verification, trust/authority,
+  no-parser-widening, one-live accounting, no unchanged rerun, and the
+  three-repair ceiling are complete; and
+- current `4096` Pi declaration/server argument and absent
+  `simple-options.js` executable-test binding are expected pre-RED state.
+
+Status-only finalization changed only the unique contract status and terminal
+verdict. RED is authorized. Product implementation and live execution remain
+locked behind their respective gates.
+
+VERDICT: PASS

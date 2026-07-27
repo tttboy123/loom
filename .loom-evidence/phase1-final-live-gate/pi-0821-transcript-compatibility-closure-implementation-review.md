@@ -86,3 +86,43 @@ The exact Candidate allowlist may now be committed atomically. Live remains
 locked until post-commit pre-live revalidation.
 
 VERDICT: PASS
+
+## Reopen 1 Implementation Review
+
+Date: `2026-07-28`
+
+Verdict: `PASS`
+
+Critical findings: none.
+
+Important findings: none.
+
+The fresh independent read-only Reviewer confirmed:
+
+- genuine test-first RED against both unchanged `4096/256` context surfaces
+  and a locked-Pi deterministic request clamped to `output_budget=1`;
+- one shared `32768` context constant and one unchanged `256` output constant
+  now drive both Pi `modelsJSON` and llama-server arguments;
+- the product diff does not widen parser, lifecycle, Frame, Evidence,
+  Supervisor, Grant, Journal, Projection, retry/compaction, or authority;
+- focused tests cover both budget surfaces;
+- the component/live gate binds all three causal Pi source files through
+  exact digest, safe mode, and current-user ownership;
+- stop-vs-length behavior, output-budget observation, complete success
+  closure, observer-failure closure, Evidence artifact binding, Journal
+  non-disclosure, and Projection terminal behavior are covered;
+- Candidate hashes match the verification ledger;
+- original and Reopen-time quarantine remain unchanged;
+- staging is empty and the Reopen-1 manifest/attempt do not exist; and
+- exactly one new isolated canary remains gated behind the post-commit
+  pre-live proof, with no unchanged rerun.
+
+The Reviewer independently reran only deterministic non-live focused adapter
+tests, live-harness isolation, and `git diff --check`; all passed. It edited,
+staged, and committed nothing and ran no Pi component, llama.cpp, model,
+network, or live canary.
+
+The exact Reopen-1 Candidate allowlist may now be committed atomically. Live
+remains locked until post-commit pre-live revalidation.
+
+VERDICT: PASS

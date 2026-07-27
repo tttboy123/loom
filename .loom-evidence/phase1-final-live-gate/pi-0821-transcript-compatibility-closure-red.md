@@ -282,3 +282,81 @@ canary ran. Live-canary invocations consumed by this repair: `0`.
 The bounded owned-file repair is authorized.
 
 VERDICT: PASS
+
+## Reopen 1 context-alignment RED
+
+Date: `2026-07-28`
+
+Fresh Contract Review 3 passed before this test-first checkpoint. Product
+behavior remained unchanged:
+
+| Product path | SHA-256 |
+|---|---|
+| `internal/runtime/piadapter/rpc_bridge_adapter.go` | `c5f5fd70787105c8ca80b355d55f980085fdb5a350c74cc692d0a3502e7a7343` |
+| `internal/runtime/piadapter/local_model_server.go` | `ffe0886a5e5100280b3c1093541bdb2e37a1018996b33bcf1cd2357097344d45` |
+
+The frozen Reopen-1 test checkpoint is:
+
+| Test path | SHA-256 |
+|---|---|
+| `internal/runtime/piadapter/rpc_bridge_adapter_test.go` | `cdf9154c1573788288cdf36168ab0d357e682d926771fb78e546b502764605f5` |
+| `internal/runtime/piadapter/local_model_server_test.go` | `b82a2286adb119a37d6471e486481bdb0348a3cff799f1241dad81f52392824a` |
+| `internal/app/final_live_gate_pi0821_component_test.go` | `271d0e9d441481b69ea2f7de786dac218636200b65c383e44495dd452fc9ec5b` |
+| `internal/app/final_live_gate_live_test.go` | `f4bb348da3068fe61e2dcbbead94f90c6428c74ae28cd83709098ffd661178f5` |
+
+Focused RED:
+
+```text
+go test ./internal/runtime/piadapter \
+  -run '^(TestPiRPCModelOutputBudget|TestPiLocalModelContextAlignment)$' \
+  -count=1
+```
+
+Result: `FAIL`, exit `1`, only because both current context surfaces remain
+the pre-repair `4096` while both output surfaces are already the required
+`256`:
+
+```text
+Pi RPC model budget = context:4096 output:256, want 32768/256
+local model budget = context:[4096] output:[256], want 32768/256
+```
+
+Locked-Pi deterministic component RED:
+
+```text
+LOOM_PI_0821_COMPONENT=1 \
+LOOM_PI_0821_EXECUTABLE=<reviewed-installed-pi> \
+LOOM_PI_0821_RUNTIME_SEARCH_PATH=<reviewed-node-search-path> \
+LOOM_PI_0821_RUNTIME_INSTANCE_ID=runtime.pi.earendil-works.0.82.1 \
+go test -v ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecutionClosure$' \
+  -count=1
+```
+
+Before process start, the component validated current-user ownership, safe
+mode, and exact hashes for the installed Pi executable and all three causal
+source files. The source hashes matched the frozen contract.
+
+Result: `FAIL`, exit `1`, after exactly one valid bounded loopback request:
+
+```text
+status="blocked"
+node="blocked"
+attempt="failed"
+classification="invalid"
+terminal_reason="runtime_process_failed"
+phase=assistant_update event=text_start reason=terminal_stop_reason
+requests=1 valid=true output_budget=1
+```
+
+This proves the unchanged `4096` declaration is clamped by locked Pi to one
+output token and fails closed on `finish_reason: length`. No llama.cpp/model
+process, Internet/DNS request, live manifest, live canary, raw transcript,
+prompt, output, Grant, credential, hidden reasoning, private path, or
+runtime-derived stop value was printed or persisted.
+
+Reopen-1 live-canary invocations consumed: `0`.
+
+The bounded shared-context Production Repair 1 is authorized.
+
+VERDICT: PASS

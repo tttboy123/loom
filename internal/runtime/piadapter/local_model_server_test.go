@@ -28,6 +28,32 @@ func TestPiLocalModelConfigRequiresExplicitPrivateRoot(t *testing.T) {
 	}
 }
 
+func TestPiLocalModelContextAlignment(t *testing.T) {
+	t.Parallel()
+
+	arguments := piLocalModelArguments("/private/model.gguf", "127.0.0.1", 18427)
+	values := make(map[string][]string)
+	for index := 0; index < len(arguments); index++ {
+		if !strings.HasPrefix(arguments[index], "--") {
+			continue
+		}
+		if index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "--") {
+			values[arguments[index]] = append(values[arguments[index]], arguments[index+1])
+			index++
+			continue
+		}
+		values[arguments[index]] = append(values[arguments[index]], "")
+	}
+	if !reflect.DeepEqual(values["--ctx-size"], []string{"32768"}) ||
+		!reflect.DeepEqual(values["--n-predict"], []string{"256"}) {
+		t.Fatalf(
+			"local model budget = context:%v output:%v, want 32768/256",
+			values["--ctx-size"],
+			values["--n-predict"],
+		)
+	}
+}
+
 func TestPiLocalModelOwnerCheckRejectsForeignUID(t *testing.T) {
 	t.Parallel()
 
@@ -767,7 +793,7 @@ shift 2
 [ "$1" = "--port" ] || exit 48
 port="$2"
 shift 2
-[ "$1" = "--ctx-size" ] && [ "$2" = "4096" ] || exit 49
+[ "$1" = "--ctx-size" ] && [ "$2" = "32768" ] || exit 49
 shift 2
 [ "$1" = "--parallel" ] && [ "$2" = "1" ] || exit 50
 shift 2

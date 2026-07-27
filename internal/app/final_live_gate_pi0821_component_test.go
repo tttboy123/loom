@@ -35,15 +35,15 @@ import (
 )
 
 const (
-	pi0821EventStreamSHA256 = "44a2498660ca61efa952ad6a3f10cc0491883411bd2b4572c9a392ec4e9553ec"
-	pi0821OpenAISHA256      = "0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a"
+	pi0821OutputBudget = 256
 )
 
 type pi0821LoopbackObservation struct {
-	mu       sync.Mutex
-	requests int
-	valid    bool
-	reason   string
+	mu           sync.Mutex
+	requests     int
+	valid        bool
+	reason       string
+	outputBudget int
 }
 
 type pi0821RecordingAdapter struct {
@@ -125,20 +125,33 @@ func (observer *pi0821RejectingObserver) counts() (int, int) {
 	return observer.rejectedEvents, observer.acceptedOutput
 }
 
-func (observation *pi0821LoopbackObservation) record(valid bool, reason string) {
+func (observation *pi0821LoopbackObservation) record(
+	valid bool,
+	reason string,
+	outputBudget int,
+) {
 	observation.mu.Lock()
 	defer observation.mu.Unlock()
 	observation.requests++
 	observation.valid = observation.valid || valid
+	observation.outputBudget = outputBudget
 	if !valid && observation.reason == "" {
 		observation.reason = reason
 	}
 }
 
-func (observation *pi0821LoopbackObservation) snapshot() (int, bool, string) {
+func (observation *pi0821LoopbackObservation) snapshot() (
+	int,
+	bool,
+	string,
+	int,
+) {
 	observation.mu.Lock()
 	defer observation.mu.Unlock()
-	return observation.requests, observation.valid, observation.reason
+	return observation.requests,
+		observation.valid,
+		observation.reason,
+		observation.outputBudget
 }
 
 func TestPi0821DeterministicSSETeamExecutionClosure(t *testing.T) {
@@ -171,29 +184,8 @@ func runPi0821DeterministicSSETeamExecution(
 	); err != nil {
 		t.Fatal("locked Pi executable binding failed")
 	}
-	resolvedPi, err := filepath.EvalSymlinks(piExecutable)
-	if err != nil {
-		t.Fatal("locked Pi executable resolution failed")
-	}
-	packageRoot := filepath.Dir(filepath.Dir(resolvedPi))
-	piAI := filepath.Join(
-		packageRoot,
-		"node_modules",
-		"@earendil-works",
-		"pi-ai",
-		"dist",
-	)
-	if _, err := finalLiveBoundFileDigest(
-		filepath.Join(piAI, "utils", "event-stream.js"),
-		pi0821EventStreamSHA256,
-	); err != nil {
-		t.Fatal("locked Pi event stream binding failed")
-	}
-	if _, err := finalLiveBoundFileDigest(
-		filepath.Join(piAI, "api", "openai-completions.js"),
-		pi0821OpenAISHA256,
-	); err != nil {
-		t.Fatal("locked Pi OpenAI adapter binding failed")
+	if err := bindFinalLivePi0821Sources(piExecutable); err != nil {
+		t.Fatal("locked Pi source binding failed")
 	}
 
 	firstDelta := string([]byte{0x61, 0x62, 0x63})
@@ -441,10 +433,11 @@ func runPi0821DeterministicSSETeamExecution(
 				err,
 			)
 		}
-		requests, validRequest, _ := observation.snapshot()
+		requests, validRequest, _, outputBudget := observation.snapshot()
 		rejectedEvents, acceptedOutput := failureObserver.counts()
 		if requests != 1 ||
 			!validRequest ||
+			outputBudget != pi0821OutputBudget ||
 			recordingAdapter.callCount() != 1 ||
 			rejectedEvents != 1 ||
 			acceptedOutput != 0 {
@@ -487,7 +480,7 @@ func runPi0821DeterministicSSETeamExecution(
 		result.Team().Status() != "succeeded" ||
 		len(result.ExecutedNodeIDs()) != 1 ||
 		result.ExecutedNodeIDs()[0] != "main" {
-		requests, validRequest, reason := observation.snapshot()
+		requests, validRequest, reason, outputBudget := observation.snapshot()
 		nodeStatus := ""
 		attemptStatus := ""
 		classification := ""
@@ -517,7 +510,7 @@ func runPi0821DeterministicSSETeamExecution(
 			}
 		}
 		t.Fatalf(
-			"component Team execution failed: status=%q node=%q attempt=%q classification=%q recovery=%q terminal_reason=%q adapter=%q audit=%t requests=%d valid=%t reason=%s err=%v",
+			"component Team execution failed: status=%q node=%q attempt=%q classification=%q recovery=%q terminal_reason=%q adapter=%q audit=%t requests=%d valid=%t reason=%s output_budget=%d err=%v",
 			result.Team().Status(),
 			nodeStatus,
 			attemptStatus,
@@ -529,11 +522,14 @@ func runPi0821DeterministicSSETeamExecution(
 			requests,
 			validRequest,
 			reason,
+			outputBudget,
 			err,
 		)
 	}
-	requests, validRequest, _ := observation.snapshot()
-	if requests != 1 || !validRequest {
+	requests, validRequest, _, outputBudget := observation.snapshot()
+	if requests != 1 ||
+		!validRequest ||
+		outputBudget != pi0821OutputBudget {
 		t.Fatal("loopback SSE request accounting failed")
 	}
 	successFrames := assertPi0821ComponentFrames(
@@ -590,8 +586,8 @@ func newPi0821LoopbackServer(
 ) *httptest.Server {
 	t.Helper()
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		valid, reason := validPi0821LoopbackRequest(request)
-		observation.record(valid, reason)
+		valid, reason, outputBudget := validPi0821LoopbackRequest(request)
+		observation.record(valid, reason, outputBudget)
 		if !valid {
 			http.Error(writer, "invalid", http.StatusBadRequest)
 			return
@@ -604,11 +600,15 @@ func newPi0821LoopbackServer(
 			t.Error("loopback response is not flushable")
 			return
 		}
+		finishReason := "length"
+		if outputBudget == pi0821OutputBudget {
+			finishReason = "stop"
+		}
 		chunks := []any{
 			pi0821SSERoleChunk(),
 			pi0821SSEContentChunk(firstDelta),
 			pi0821SSEContentChunk(secondDelta),
-			pi0821SSEFinishChunk(),
+			pi0821SSEFinishChunk(finishReason),
 			pi0821SSEUsageChunk(),
 		}
 		for _, chunk := range chunks {
@@ -634,62 +634,80 @@ func newPi0821LoopbackServer(
 	return server
 }
 
-func validPi0821LoopbackRequest(request *http.Request) (bool, string) {
+func validPi0821LoopbackRequest(request *http.Request) (
+	bool,
+	string,
+	int,
+) {
 	if request.RemoteAddr == "" {
-		return false, "remote"
+		return false, "remote", 0
 	}
 	host, _, err := net.SplitHostPort(request.RemoteAddr)
 	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		return false, "remote"
+		return false, "remote", 0
 	}
 	if request.Method != http.MethodPost {
-		return false, "method"
+		return false, "method", 0
 	}
 	if request.URL.Path != "/v1/chat/completions" {
-		return false, "path"
+		return false, "path", 0
 	}
 	if request.Header.Get("Content-Type") != "application/json" {
-		return false, "content_type"
+		return false, "content_type", 0
 	}
 	if request.Header.Get("Authorization") != "Bearer loom-local-offline" {
-		return false, "auth"
+		return false, "auth", 0
 	}
 	body, err := io.ReadAll(io.LimitReader(request.Body, 64<<10))
 	if err != nil || len(body) == 0 || len(body) >= 64<<10 {
-		return false, "body"
+		return false, "body", 0
 	}
 	var value struct {
-		Model    string `json:"model"`
-		Stream   bool   `json:"stream"`
-		Messages []struct {
+		Model               string `json:"model"`
+		Stream              bool   `json:"stream"`
+		MaxTokens           *int   `json:"max_tokens"`
+		MaxCompletionTokens *int   `json:"max_completion_tokens"`
+		Messages            []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 		Tools json.RawMessage `json:"tools"`
 	}
 	if err := json.Unmarshal(body, &value); err != nil {
-		return false, "json"
+		return false, "json", 0
 	}
 	if value.Model != "qwen2.5-coder-1.5b-instruct-q4-k-m" {
-		return false, "model"
+		return false, "model", 0
 	}
 	if !value.Stream {
-		return false, "stream"
+		return false, "stream", 0
 	}
 	if len(value.Messages) != 2 {
-		return false, "messages"
+		return false, "messages", 0
 	}
 	if value.Messages[0].Role != "system" || value.Messages[1].Role != "user" {
-		return false, "roles"
+		return false, "roles", 0
 	}
 	userText, ok := pi0821RequestText(value.Messages[1].Content)
 	if !ok || userText != finalLivePrompt {
-		return false, "prompt"
+		return false, "prompt", 0
 	}
 	if !pi0821NoTools(value.Tools) {
-		return false, "tools"
+		return false, "tools", 0
 	}
-	return true, ""
+	outputBudget := 0
+	switch {
+	case value.MaxTokens != nil && value.MaxCompletionTokens == nil:
+		outputBudget = *value.MaxTokens
+	case value.MaxTokens == nil && value.MaxCompletionTokens != nil:
+		outputBudget = *value.MaxCompletionTokens
+	default:
+		return false, "output_budget_field", 0
+	}
+	if outputBudget < 1 || outputBudget > 4096 {
+		return false, "output_budget", outputBudget
+	}
+	return true, "", outputBudget
 }
 
 func pi0821RequestText(raw json.RawMessage) (string, bool) {
@@ -761,7 +779,7 @@ func pi0821SSEContentChunk(delta string) any {
 	}
 }
 
-func pi0821SSEFinishChunk() any {
+func pi0821SSEFinishChunk(reason string) any {
 	return map[string]any{
 		"id":      "loopback-response",
 		"object":  "chat.completion.chunk",
@@ -770,7 +788,7 @@ func pi0821SSEFinishChunk() any {
 		"choices": []any{map[string]any{
 			"index":         0,
 			"delta":         map[string]any{},
-			"finish_reason": "stop",
+			"finish_reason": reason,
 		}},
 	}
 }
