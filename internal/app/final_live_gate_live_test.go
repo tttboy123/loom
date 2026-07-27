@@ -11,8 +11,11 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,7 +39,7 @@ const (
 	finalLiveInstalledPiSHA256   = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
 	finalLiveModelSHA256         = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
 	finalLivePrompt              = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
-	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
+	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-canary.json"
 )
 
 type finalLiveResolvedManifestInput struct {
@@ -105,28 +108,40 @@ func TestFinalLiveManifestDoesNotAliasPriorEvidence(t *testing.T) {
 	prior := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest.json"
 	additional := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
 	progressive := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
-	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
+	diagnostic := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
+	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-canary.json"
 	if finalLiveResolvedManifestRel == prior ||
 		finalLiveResolvedManifestRel == additional ||
-		finalLiveResolvedManifestRel == progressive {
-		t.Fatal("rejection diagnostic manifest aliases prior evidence")
+		finalLiveResolvedManifestRel == progressive ||
+		finalLiveResolvedManifestRel == diagnostic {
+		t.Fatal("transcript closure manifest aliases prior evidence")
 	}
 	if finalLiveResolvedManifestRel != want ||
 		filepath.Base(finalLiveResolvedManifestRel) !=
-			"resolved-live-manifest-rejection-diagnostic-canary.json" {
-		t.Fatal("rejection diagnostic manifest name is not frozen")
+			"resolved-live-manifest-pi-0821-transcript-closure-canary.json" {
+		t.Fatal("transcript closure manifest name is not frozen")
 	}
 	if filepath.Dir(finalLiveResolvedManifestRel) !=
 		filepath.Dir(prior) {
-		t.Fatal("rejection diagnostic manifest escaped final-live evidence")
+		t.Fatal("transcript closure manifest escaped final-live evidence")
 	}
 }
 
-func TestFinalLiveRejectionDiagnosticCanaryIsolation(t *testing.T) {
+func TestFinalLiveRejectionDiagnosticCanaryRemainsHistorical(t *testing.T) {
+	diagnostic := ".loom-evidence/phase1-final-live-gate/" +
+		"resolved-live-manifest-rejection-diagnostic-canary.json"
+	if diagnostic == finalLiveResolvedManifestRel ||
+		filepath.Dir(diagnostic) != filepath.Dir(finalLiveResolvedManifestRel) {
+		t.Fatal("historical rejection diagnostic evidence was aliased")
+	}
+}
+
+func TestFinalLivePi0821TranscriptClosureCanaryIsolation(t *testing.T) {
 	t.Run("independent manifest", func(t *testing.T) {
-		want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
+		want := ".loom-evidence/phase1-final-live-gate/" +
+			"resolved-live-manifest-pi-0821-transcript-closure-canary.json"
 		if finalLiveResolvedManifestRel != want {
-			t.Fatalf("rejection diagnostic manifest = %q", finalLiveResolvedManifestRel)
+			t.Fatalf("transcript closure manifest = %q", finalLiveResolvedManifestRel)
 		}
 	})
 
@@ -141,9 +156,9 @@ func TestFinalLiveRejectionDiagnosticCanaryIsolation(t *testing.T) {
 		}
 		if !strings.HasPrefix(
 			filepath.Base(attemptRoot),
-			"controlled-canary-rejection-diagnostic-",
+			"controlled-canary-pi-0821-transcript-closure-",
 		) {
-			t.Fatalf("rejection diagnostic attempt root = %q", filepath.Base(attemptRoot))
+			t.Fatalf("transcript closure attempt root = %q", filepath.Base(attemptRoot))
 		}
 	})
 }
@@ -724,6 +739,61 @@ func validFinalLiveDigest(value string) bool {
 	return err == nil
 }
 
+func TestFinalLiveBoundFilesRequireCurrentUserOwnership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owned")
+	if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := user.Current()
+	if err != nil || current.Uid == "" {
+		t.Fatal("current user UID is unavailable")
+	}
+	if !finalLiveUIDMatchesCurrent(info, current.Uid) {
+		t.Fatal("current-user-owned file was rejected")
+	}
+	if finalLiveUIDMatchesCurrent(info, current.Uid+"0") {
+		t.Fatal("wrong-owner file was accepted")
+	}
+}
+
+func finalLiveUIDMatchesCurrent(info os.FileInfo, expectedUID string) bool {
+	if info == nil || expectedUID == "" {
+		return false
+	}
+	expected, err := strconv.ParseUint(expectedUID, 10, 64)
+	if err != nil {
+		return false
+	}
+	stat := reflect.ValueOf(info.Sys())
+	if !stat.IsValid() {
+		return false
+	}
+	if stat.Kind() == reflect.Pointer {
+		if stat.IsNil() {
+			return false
+		}
+		stat = stat.Elem()
+	}
+	if stat.Kind() != reflect.Struct {
+		return false
+	}
+	uid := stat.FieldByName("Uid")
+	if !uid.IsValid() {
+		return false
+	}
+	switch uid.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16,
+		reflect.Uint32, reflect.Uint64:
+		return uid.Uint() == expected
+	default:
+		return false
+	}
+}
+
 func finalLiveBoundFileDigest(path string, expected string) (string, error) {
 	if path == "" ||
 		!filepath.IsAbs(path) ||
@@ -744,6 +814,11 @@ func finalLiveBoundFileDigest(path string, expected string) (string, error) {
 		info.Size() <= 0 ||
 		info.Mode().Perm()&0o022 != 0 {
 		return "", errors.New("unsafe final live file binding")
+	}
+	current, err := user.Current()
+	if err != nil ||
+		!finalLiveUIDMatchesCurrent(info, current.Uid) {
+		return "", errors.New("unsafe final live file ownership")
 	}
 	file, err := os.Open(resolved)
 	if err != nil {
@@ -877,7 +952,7 @@ func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
 	}
 	attemptRoot, err := os.MkdirTemp(
 		privateRoot,
-		"controlled-canary-rejection-diagnostic-",
+		"controlled-canary-pi-0821-transcript-closure-",
 	)
 	if err != nil {
 		return "", errors.New("cannot create final live attempt root")

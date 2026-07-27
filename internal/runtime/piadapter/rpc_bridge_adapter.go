@@ -53,6 +53,17 @@ type PiRPCBridgeAdapterConfig struct {
 	ModelID           string
 	BaseURL           string
 	MaxAssistantBytes int
+	TranscriptAudit   chan<- PiRPCTranscriptAudit
+}
+
+type PiRPCTranscriptAudit struct {
+	ForwardPartialObserved   bool
+	TextStartSnapshotBytes   int
+	AcceptedBytesAtTextStart int
+	AcceptedDeltaCount       int
+	FinalSnapshotBytes       int
+	FinalAcceptedDeltaBytes  int
+	DeltaClosure             bool
 }
 
 type piRPCBridgeAdapter struct {
@@ -61,6 +72,7 @@ type piRPCBridgeAdapter struct {
 	modelID           string
 	baseURL           string
 	maxAssistantBytes int
+	transcriptAudit   chan<- PiRPCTranscriptAudit
 }
 
 type piRPCLineResult struct {
@@ -85,6 +97,11 @@ type piRPCState struct {
 	agentEnded        bool
 	settled           bool
 	assistant         []byte
+	lastPartial       []byte
+	forwardPartial    bool
+	textStartBytes    int
+	acceptedAtStart   int
+	deltaCount        int
 	frames            []bridgev1.Frame
 	nextSequence      int64
 	recordCount       int
@@ -210,6 +227,7 @@ func NewPiRPCBridgeAdapter(
 		modelID:           config.ModelID,
 		baseURL:           config.BaseURL,
 		maxAssistantBytes: config.MaxAssistantBytes,
+		transcriptAudit:   config.TranscriptAudit,
 	}, nil
 }
 
@@ -429,7 +447,29 @@ stdoutDrained:
 	if err != nil {
 		return supervisor.AdapterResult{}, errors.Join(ErrPiRPCProtocol, err)
 	}
+	publishPiRPCTranscriptAudit(adapter.transcriptAudit, PiRPCTranscriptAudit{
+		ForwardPartialObserved:   state.forwardPartial,
+		TextStartSnapshotBytes:   state.textStartBytes,
+		AcceptedBytesAtTextStart: state.acceptedAtStart,
+		AcceptedDeltaCount:       state.deltaCount,
+		FinalSnapshotBytes:       len(state.lastPartial),
+		FinalAcceptedDeltaBytes:  len(state.assistant),
+		DeltaClosure:             bytes.Equal(state.lastPartial, state.assistant),
+	})
 	return result, nil
+}
+
+func publishPiRPCTranscriptAudit(
+	sink chan<- PiRPCTranscriptAudit,
+	audit PiRPCTranscriptAudit,
+) {
+	defer func() {
+		_ = recover()
+	}()
+	select {
+	case sink <- audit:
+	default:
+	}
 }
 
 func (adapter *piRPCBridgeAdapter) arguments() []string {
@@ -710,24 +750,6 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 		); err != nil {
 			return err
 		}
-		if !piRPCAssistantTextMessage(
-			fields["message"],
-			string(state.assistant),
-			state.textStarted,
-		) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				piRPCDiagnosticEventFromRaw(fields["assistantMessageEvent"]),
-				piRPCAssistantRejectionReason(
-					fields["message"],
-					string(state.assistant),
-					state.textStarted,
-					state.assistantIdentity,
-					false,
-					false,
-				),
-			)
-		}
 	case "message_end":
 		if !state.messageOpen ||
 			!piRPCExactKeys(fields, "type", "message") {
@@ -877,7 +899,8 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 			)
 		}
 		if !state.agentEnded || state.settled || state.turnCount == 0 ||
-			!state.textEnded || len(state.assistant) == 0 {
+			!state.textEnded || len(state.assistant) == 0 ||
+			!bytes.Equal(state.lastPartial, state.assistant) {
 			return rejectPiRPC(
 				piRPCPhaseAgentSettled,
 				piRPCEventAgentSettled,
@@ -931,49 +954,6 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 				piRPCReasonTextContentProgression,
 			)
 		}
-		if !piRPCZero(fields["contentIndex"]) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCReasonContentIndex,
-			)
-		}
-		if !piRPCSemanticEqual(message, fields["partial"]) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCReasonMessagePartialMismatch,
-			)
-		}
-		if !piRPCAssistantTextMessage(fields["partial"], "", true) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCAssistantRejectionReason(
-					fields["partial"],
-					"",
-					true,
-					state.assistantIdentity,
-					true,
-					false,
-				),
-			)
-		}
-		if !state.assistantIdentity.acceptUpdate(fields["partial"], true) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCAssistantRejectionReason(
-					fields["partial"],
-					"",
-					true,
-					state.assistantIdentity,
-					true,
-					false,
-				),
-			)
-		}
-		state.textStarted = true
 	case piRPCEventTextDelta:
 		if !state.textStarted || state.textEnded || state.doneSeen {
 			return rejectPiRPC(
@@ -982,23 +962,133 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 				piRPCReasonTextContentProgression,
 			)
 		}
-		if !piRPCZero(fields["contentIndex"]) {
+	case piRPCEventTextEnd:
+		if !state.textStarted || state.textEnded || state.doneSeen {
 			return rejectPiRPC(
 				piRPCPhaseAssistantUpdate,
 				event,
-				piRPCReasonContentIndex,
+				piRPCReasonTextContentProgression,
 			)
 		}
-		if !piRPCSemanticEqual(message, fields["partial"]) {
+	default:
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonEventKindUnsupported,
+		)
+	}
+
+	if !piRPCZero(fields["contentIndex"]) {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonContentIndex,
+		)
+	}
+	partialText, ok := piRPCAssistantText(fields["partial"], true)
+	if !ok {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCAssistantRejectionReason(
+				fields["partial"],
+				"",
+				true,
+				state.assistantIdentity,
+				event == piRPCEventTextStart,
+				false,
+			),
+		)
+	}
+	messageText, ok := piRPCAssistantText(message, true)
+	if !ok {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCAssistantRejectionReason(
+				message,
+				"",
+				true,
+				state.assistantIdentity,
+				event == piRPCEventTextStart,
+				false,
+			),
+		)
+	}
+	witnessText, ok := piRPCAssistantTextWitness(
+		message,
+		messageText,
+		fields["partial"],
+		partialText,
+		event != piRPCEventTextEnd,
+	)
+	if !ok {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonMessagePartialMismatch,
+		)
+	}
+	messageSnapshot := []byte(messageText)
+	partial := []byte(partialText)
+	witness := []byte(witnessText)
+	grant := []byte(request.Grant.Value())
+	if len(messageSnapshot) > adapter.maxAssistantBytes ||
+		len(partial) > adapter.maxAssistantBytes {
+		return ErrPiRPCOutputTooLarge
+	}
+	if len(grant) > 0 &&
+		(bytes.Contains(messageSnapshot, grant) ||
+			bytes.Contains(partial, grant)) ||
+		!bytes.HasPrefix(witness, state.lastPartial) {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonTextContentProgression,
+		)
+	}
+	identity := state.assistantIdentity
+	if !identity.acceptUpdate(
+		fields["partial"],
+		event == piRPCEventTextStart,
+	) {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCAssistantRejectionReason(
+				fields["partial"],
+				partialText,
+				true,
+				state.assistantIdentity,
+				event == piRPCEventTextStart,
+				false,
+			),
+		)
+	}
+
+	switch event {
+	case piRPCEventTextStart:
+		if !bytes.HasPrefix(messageSnapshot, state.assistant) ||
+			!bytes.HasPrefix(partial, state.assistant) {
 			return rejectPiRPC(
 				piRPCPhaseAssistantUpdate,
 				event,
-				piRPCReasonMessagePartialMismatch,
+				piRPCReasonTextContentProgression,
 			)
 		}
+		state.assistantIdentity = identity
+		state.lastPartial = bytes.Clone(witness)
+		state.forwardPartial = len(witness) > len(state.assistant)
+		state.textStartBytes = len(witness)
+		state.acceptedAtStart = len(state.assistant)
+		state.textStarted = true
+	case piRPCEventTextDelta:
 		delta, ok := piRPCString(fields, "delta")
-		if !ok || delta == "" || !utf8.ValidString(delta) ||
-			bytes.Contains([]byte(delta), []byte(request.Grant.Value())) {
+		if !ok ||
+			!utf8.Valid(fields["delta"]) ||
+			delta == "" ||
+			!utf8.ValidString(delta) ||
+			(len(grant) > 0 && bytes.Contains([]byte(delta), grant)) {
 			return rejectPiRPC(
 				piRPCPhaseAssistantUpdate,
 				event,
@@ -1008,40 +1098,23 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 		if len(state.assistant)+len(delta) > adapter.maxAssistantBytes {
 			return ErrPiRPCOutputTooLarge
 		}
-		state.assistant = append(state.assistant, delta...)
-		if !piRPCAssistantTextMessage(
-			fields["partial"],
-			string(state.assistant),
-			true,
-		) {
+		candidate := make([]byte, 0, len(state.assistant)+len(delta))
+		candidate = append(candidate, state.assistant...)
+		candidate = append(candidate, delta...)
+		if !bytes.HasPrefix(messageSnapshot, candidate) ||
+			!bytes.HasPrefix(partial, candidate) {
 			return rejectPiRPC(
 				piRPCPhaseAssistantUpdate,
 				event,
-				piRPCAssistantRejectionReason(
-					fields["partial"],
-					string(state.assistant),
-					true,
-					state.assistantIdentity,
-					false,
-					false,
-				),
+				piRPCReasonTextContentProgression,
 			)
 		}
-		if !state.assistantIdentity.acceptUpdate(fields["partial"], false) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCAssistantRejectionReason(
-					fields["partial"],
-					string(state.assistant),
-					true,
-					state.assistantIdentity,
-					false,
-					false,
-				),
-			)
+		chunks := splitPiRPCDelta([]byte(delta))
+		if len(state.frames)+len(chunks) > piRPCMaxBridgeFrames {
+			return ErrPiRPCOutputTooLarge
 		}
-		for _, chunk := range splitPiRPCDelta([]byte(delta)) {
+		frames := make([]bridgev1.Frame, 0, len(chunks))
+		for offset, chunk := range chunks {
 			payload, err := json.Marshal(struct {
 				Delta string `json:"delta"`
 			}{Delta: string(chunk)})
@@ -1054,7 +1127,7 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 			}
 			frame, err := adapter.execution.outboundFrame(
 				request,
-				state.nextSequence,
+				state.nextSequence+int64(offset),
 				bridgev1.MessageEvent,
 				payload,
 			)
@@ -1065,9 +1138,9 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 					piRPCReasonFrameSink,
 				)
 			}
-			if len(state.frames) >= piRPCMaxBridgeFrames {
-				return ErrPiRPCOutputTooLarge
-			}
+			frames = append(frames, frame)
+		}
+		for _, frame := range frames {
 			if err := request.FrameSink.AcceptFrame(ctx, frame); err != nil {
 				return rejectPiRPC(
 					piRPCPhaseAssistantUpdate,
@@ -1075,74 +1148,33 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 					piRPCReasonFrameSink,
 				)
 			}
-			state.frames = append(state.frames, frame)
-			state.nextSequence++
 		}
+		state.assistantIdentity = identity
+		state.assistant = candidate
+		state.lastPartial = bytes.Clone(witness)
+		state.forwardPartial = state.forwardPartial ||
+			len(witness) > len(candidate)
+		state.deltaCount++
+		state.frames = append(state.frames, frames...)
+		state.nextSequence += int64(len(frames))
 	case piRPCEventTextEnd:
-		if !state.textStarted || state.textEnded || state.doneSeen {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCReasonTextContentProgression,
-			)
-		}
-		if !piRPCZero(fields["contentIndex"]) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCReasonContentIndex,
-			)
-		}
-		if !piRPCSemanticEqual(message, fields["partial"]) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCReasonMessagePartialMismatch,
-			)
-		}
 		content, ok := piRPCString(fields, "content")
-		if !ok || content != string(state.assistant) {
+		if !ok ||
+			!utf8.Valid(fields["content"]) ||
+			!utf8.ValidString(content) ||
+			content != messageText ||
+			content != partialText ||
+			!bytes.Equal(witness, state.lastPartial) ||
+			!bytes.Equal(witness, state.assistant) {
 			return rejectPiRPC(
 				piRPCPhaseAssistantUpdate,
 				event,
 				piRPCReasonTextContentProgression,
 			)
 		}
-		if !piRPCAssistantTextMessage(fields["partial"], content, true) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCAssistantRejectionReason(
-					fields["partial"],
-					content,
-					true,
-					state.assistantIdentity,
-					false,
-					false,
-				),
-			)
-		}
-		if !state.assistantIdentity.acceptUpdate(fields["partial"], false) {
-			return rejectPiRPC(
-				piRPCPhaseAssistantUpdate,
-				event,
-				piRPCAssistantRejectionReason(
-					fields["partial"],
-					content,
-					true,
-					state.assistantIdentity,
-					false,
-					false,
-				),
-			)
-		}
+		state.assistantIdentity = identity
+		state.lastPartial = bytes.Clone(witness)
 		state.textEnded = true
-	default:
-		return rejectPiRPC(
-			piRPCPhaseAssistantUpdate,
-			event,
-			piRPCReasonEventKindUnsupported,
-		)
 	}
 	return nil
 }
@@ -1858,6 +1890,135 @@ func piRPCSemanticEqual(first json.RawMessage, second json.RawMessage) bool {
 	return reflect.DeepEqual(firstValue, secondValue)
 }
 
+func piRPCAssistantTextWitness(
+	message json.RawMessage,
+	messageText string,
+	partial json.RawMessage,
+	partialText string,
+	allowUsageProjection bool,
+) (string, bool) {
+	var messageValue map[string]any
+	var partialValue map[string]any
+	if json.Unmarshal(message, &messageValue) != nil ||
+		json.Unmarshal(partial, &partialValue) != nil ||
+		!piRPCClearAssistantText(messageValue) ||
+		!piRPCClearAssistantText(partialValue) {
+		return "", false
+	}
+	if !reflect.DeepEqual(messageValue, partialValue) &&
+		(!allowUsageProjection ||
+			!piRPCAssistantUsageProjectsForward(
+				messageValue,
+				partialValue,
+			)) {
+		return "", false
+	}
+	switch {
+	case bytes.HasPrefix([]byte(messageText), []byte(partialText)):
+		return messageText, true
+	case bytes.HasPrefix([]byte(partialText), []byte(messageText)):
+		return partialText, true
+	default:
+		return "", false
+	}
+}
+
+func piRPCClearAssistantText(value map[string]any) bool {
+	content, ok := value["content"].([]any)
+	if !ok || len(content) != 1 {
+		return false
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, ok := block["text"].(string); !ok {
+		return false
+	}
+	block["text"] = ""
+	return true
+}
+
+func piRPCAssistantUsageProjectsForward(
+	message map[string]any,
+	partial map[string]any,
+) bool {
+	messageUsage, messageOK := message["usage"].(map[string]any)
+	partialUsage, partialOK := partial["usage"].(map[string]any)
+	if !messageOK ||
+		!partialOK ||
+		!piRPCUsageMapProjectsForward(messageUsage, partialUsage) {
+		return false
+	}
+	delete(message, "usage")
+	delete(partial, "usage")
+	return reflect.DeepEqual(message, partial)
+}
+
+func piRPCUsageMapProjectsForward(
+	message map[string]any,
+	partial map[string]any,
+) bool {
+	if _, present := message["cacheWrite1h"]; present {
+		return false
+	}
+	if _, present := partial["cacheWrite1h"]; present {
+		return false
+	}
+	for _, key := range []string{
+		"input",
+		"output",
+		"cacheRead",
+		"cacheWrite",
+		"totalTokens",
+	} {
+		if !piRPCNumericFieldProjectsForward(message, partial, key) {
+			return false
+		}
+	}
+	messageCost, messageOK := message["cost"].(map[string]any)
+	partialCost, partialOK := partial["cost"].(map[string]any)
+	if !messageOK || !partialOK {
+		return false
+	}
+	for _, key := range []string{
+		"input",
+		"output",
+		"cacheRead",
+		"cacheWrite",
+		"total",
+	} {
+		if !piRPCNumericFieldProjectsForward(
+			messageCost,
+			partialCost,
+			key,
+		) {
+			return false
+		}
+	}
+	messageReasoning, messageReasoningPresent := message["reasoning"]
+	partialReasoning, partialReasoningPresent := partial["reasoning"]
+	if messageReasoningPresent && !partialReasoningPresent {
+		return false
+	}
+	if !messageReasoningPresent {
+		return true
+	}
+	messageNumber, messageOK := messageReasoning.(float64)
+	partialNumber, partialOK := partialReasoning.(float64)
+	return messageOK && partialOK && messageNumber <= partialNumber
+}
+
+func piRPCNumericFieldProjectsForward(
+	message map[string]any,
+	partial map[string]any,
+	key string,
+) bool {
+	messageNumber, messageOK := message[key].(float64)
+	partialNumber, partialOK := partial[key].(float64)
+	return messageOK && partialOK && messageNumber <= partialNumber
+}
+
 func piRPCAssistantIdentitySnapshotOf(
 	raw json.RawMessage,
 ) (piRPCAssistantIdentitySnapshot, bool) {
@@ -1969,6 +2130,17 @@ func piRPCAssistantTextMessage(
 	expectedText string,
 	requireContent bool,
 ) bool {
+	text, ok := piRPCAssistantText(raw, requireContent)
+	return ok && text == expectedText
+}
+
+func piRPCAssistantText(
+	raw json.RawMessage,
+	requireContent bool,
+) (string, bool) {
+	if !utf8.Valid(raw) {
+		return "", false
+	}
 	fields, err := piRPCObject(raw)
 	if err != nil ||
 		!piRPCAllowedKeys(
@@ -1986,7 +2158,7 @@ func piRPCAssistantTextMessage(
 			"responseId",
 			"responseModel",
 		) {
-		return false
+		return "", false
 	}
 	role, ok := piRPCString(fields, "role")
 	api, apiOK := piRPCString(fields, "api")
@@ -2005,12 +2177,12 @@ func piRPCAssistantTextMessage(
 		stopReason != "stop" ||
 		!piRPCUsage(fields["usage"]) ||
 		!piRPCNonNegativeNumber(fields["timestamp"]) {
-		return false
+		return "", false
 	}
 	for _, optional := range []string{"responseId", "responseModel"} {
 		if _, present := fields[optional]; present &&
 			!piRPCBoundedString(fields, optional, 512) {
-			return false
+			return "", false
 		}
 	}
 	contentRaw, ok := fields["content"]
@@ -2018,7 +2190,7 @@ func piRPCAssistantTextMessage(
 	if !ok ||
 		json.Unmarshal(contentRaw, &content) != nil ||
 		len(content) > 1 {
-		return false
+		return "", false
 	}
 	var text strings.Builder
 	for _, blockRaw := range content {
@@ -2029,29 +2201,30 @@ func piRPCAssistantTextMessage(
 				[]string{"type", "text"},
 				"textSignature",
 			) {
-			return false
+			return "", false
 		}
 		blockType, typeOK := piRPCString(block, "type")
 		blockText, textOK := piRPCString(block, "text")
-		if !typeOK || !textOK || blockType != "text" {
-			return false
+		if !typeOK ||
+			!textOK ||
+			blockType != "text" ||
+			!utf8.Valid(block["text"]) ||
+			!utf8.ValidString(blockText) {
+			return "", false
 		}
 		if _, present := block["textSignature"]; present &&
 			!piRPCBoundedString(block, "textSignature", 8192) {
-			return false
+			return "", false
 		}
 		text.WriteString(blockText)
 	}
-	if text.String() != expectedText {
-		return false
-	}
 	if requireContent && len(content) != 1 {
-		return false
+		return "", false
 	}
 	if !requireContent && len(content) != 0 {
-		return false
+		return "", false
 	}
-	return true
+	return text.String(), true
 }
 
 func piRPCUsage(raw json.RawMessage) bool {
