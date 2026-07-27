@@ -266,7 +266,6 @@ status/terminal verdict. The bounded test-first repair is authorized; commit
 and live execution remain locked.
 
 VERDICT: PASS
-
 ## Reopen 1 RED discovery
 
 The first locked-Pi RED invalidated the reviewed `maxTokens: 1024` proposal
@@ -416,5 +415,93 @@ The Reviewer confirmed:
 Status-only finalization changed only the unique contract status and terminal
 verdict. RED is authorized. Product implementation and live execution remain
 locked behind their respective gates.
+
+VERDICT: PASS
+
+## Reopen 1 Repair 2 Contract Review
+
+Date: `2026-07-28`
+
+Baseline:
+
+```text
+67b251cae0e3a2086163998b309b4ebb5beadca5
+```
+
+The same unique Closure Contract proposes a harness-only authoritative-clock
+binding repair after reviewed Reopen-1 result evidence.
+
+Review must verify:
+
+- no new point Amendment or WorkItem;
+- Repair count `2 of 3`;
+- exact harness-only ownership;
+- preservation of `CommitTeamNodeAcceptance` and its exact-time authority
+  predicate;
+- one captured UTC snapshot shared by every authoritative time consumer;
+- real context/deadline/process cleanup remains wall-clock-driven;
+- genuine test-first RED and deterministic locked-Pi component closure;
+- new manifest/attempt isolation from the consumed Reopen-1 invocation;
+- complete checks, quarantine, and no-parser/no-authority expansion; and
+- one new invocation only after Implementation Reviewer `PASS`, with no
+  unchanged rerun.
+
+Product/test implementation and live execution remain locked.
+
+VERDICT: PENDING
+
+### Repair 2 Contract Review Attempt 1
+
+Verdict: `FAIL`
+
+The fresh Reviewer found one Important lineage defect: the frozen
+`67b251cd...` baseline/result SHA was not a Git object. The exact committed
+result-evidence baseline is:
+
+```text
+67b251cae0e3a2086163998b309b4ebb5beadca5
+```
+
+The Reviewer also conditionally noted the repository's five pre-existing
+modified quarantine files. They are not Candidate scope; the contract now
+repeats their exact frozen hashes and requires them to remain unstaged and
+uncommitted.
+
+No test, Pi, llama.cpp, model, network, or live canary ran. Product/test
+implementation remains unchanged and locked.
+
+Fresh Repair-2 Contract Review 2 is required before RED.
+
+VERDICT: PENDING
+
+### Repair 2 Contract Review 2
+
+Verdict: `PASS`
+
+Critical findings: none.
+
+Important findings: none.
+
+The fresh independent Reviewer verified:
+
+- exact baseline/result evidence Git commit
+  `67b251cae0e3a2086163998b309b4ebb5beadca5`;
+- same unique Closure Contract and Repair count `2 of 3`;
+- harness-only ownership with product/parser/authority read-only;
+- all five dirty-worktree quarantine hashes and empty staging;
+- the unchanged exact-time predicate in `CommitTeamNodeAcceptance`;
+- the current pre-RED dynamic-clock mismatch and consumed Reopen-1
+  manifest/prefix;
+- test-first fixed authoritative fact time while context/deadline/process
+  cleanup remains wall-clock;
+- complete component/full/race/vet/format/Windows checks; and
+- fresh Implementation Review before exactly one isolated Repair-2 canary,
+  with no unchanged rerun.
+
+No test, Pi, llama.cpp, model, network, staging, commit, or file edit occurred
+during review.
+
+Status-only finalization changed only the unique contract status and terminal
+verdict. RED is authorized. Implementation and live remain locked.
 
 VERDICT: PASS

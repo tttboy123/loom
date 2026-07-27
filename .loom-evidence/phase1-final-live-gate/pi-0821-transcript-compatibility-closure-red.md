@@ -283,6 +283,66 @@ The bounded owned-file repair is authorized.
 
 VERDICT: PASS
 
+## Reopen 1 Repair 2 — authoritative clock binding RED
+
+Baseline:
+
+```text
+67b251cae0e3a2086163998b309b4ebb5beadca5
+```
+
+Fresh Contract Review 2 returned `PASS` before this checkpoint. The only
+implementation/test file changed before RED was the owned controlled harness:
+
+```text
+internal/app/final_live_gate_live_test.go
+e88ba7e782b9c4658640741f46733465a7be8f74b6b5229fe0f871cea369c5e1
+```
+
+The test-first change requires:
+
+- one exact UTC snapshot and a non-drifting source;
+- one clock closure returning that byte-identical snapshot on every call;
+- rejection of zero, non-UTC, and drifting construction; and
+- a new Repair-2 manifest and attempt prefix that cannot select the consumed
+  Reopen-1 evidence lineage.
+
+Production authority files remained unchanged:
+
+```text
+internal/work/verification_authority.go
+efce682c5ef4f6c1068c625441386b0be5abad6120bf9290eaab757949b561be
+
+internal/app/team_execution.go
+47f4810201d46f013f093562f1c792190dea419489721377ca14900952b13354
+```
+
+Mandatory focused command:
+
+```text
+go test ./internal/app \
+  -run '^(TestFinalLiveAuthoritativeClockBinding|TestFinalLivePi0821TranscriptClosureCanaryIsolation)$' \
+  -count=1
+```
+
+Result: `FAIL`, exit `1`, because the required harness-local binding does not
+exist:
+
+```text
+undefined: newFinalLiveAuthoritativeClock
+```
+
+The failure occurs at all four new construction assertions. It is not a skip,
+fixture failure, network failure, Pi/model invocation, or production
+authority failure. No live manifest or attempt was created. Repair-2
+live-canary invocations consumed: `0`.
+
+The minimal controlled-harness GREEN is authorized. All product, parser,
+authority, Journal, Evidence, Projection, Supervisor, and Bridge files remain
+read-only.
+
+VERDICT: PASS
+
 ## Reopen 1 context-alignment RED
 
 Date: `2026-07-28`

@@ -231,6 +231,151 @@ pre-live revalidation and independent manifest are complete.
 
 VERDICT: PASS
 
+## Reopen 1 Repair 2 verification
+
+Date: `2026-07-28`
+
+Baseline:
+
+```text
+67b251cae0e3a2086163998b309b4ebb5beadca5
+```
+
+### Test-first evidence
+
+The focused harness test was added before the helper existed. Its first run
+failed to compile at all four construction assertions only with:
+
+```text
+undefined: newFinalLiveAuthoritativeClock
+```
+
+The frozen RED test hash was:
+
+```text
+e88ba7e782b9c4658640741f46733465a7be8f74b6b5229fe0f871cea369c5e1
+```
+
+No Pi, llama.cpp, model, network, manifest, attempt, or live canary ran during
+that RED.
+
+### Minimal implementation
+
+Only `internal/app/final_live_gate_live_test.go` changed. It now:
+
+- captures one explicit UTC authoritative snapshot;
+- validates a nonzero UTC, non-drifting construction source;
+- returns a closure that retains only the exact snapshot;
+- binds Runtime seed, Work Authority, Grant Authority, Pi execution, dispatch
+  time, and `TeamExecutionRequest.AuthoritativeTime` to that one closure;
+- retains real context deadlines, startup timeouts, cancellation grace, and
+  process cleanup timers; and
+- selects the new independent Repair-2 manifest and attempt prefix while
+  rejecting the consumed Reopen-1 identity.
+
+No product, parser, lifecycle, authority, Journal, Evidence, Projection,
+Supervisor, Bridge, retry, compaction, permission, or model behavior changed.
+
+### Fresh verification results
+
+```text
+go test ./internal/app \
+  -run '^(TestFinalLiveAuthoritativeClockBinding|TestFinalLivePi0821TranscriptClosureCanaryIsolation)$' \
+  -count=1
+PASS
+
+LOOM_PI_0821_COMPONENT=1 go test -v ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=1
+PASS: locked Pi success and observer-failure paths
+
+go test ./internal/app ./internal/work ./internal/authorization \
+  ./internal/evidence ./internal/projection -count=1
+PASS
+
+go test -race ./internal/app \
+  -run '^(TestFinalLiveAuthoritativeClockBinding|TestFinalLivePi0821TranscriptClosureCanaryIsolation)$' \
+  -count=30
+PASS
+
+LOOM_PI_0821_COMPONENT=1 go test -v -race ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=10
+PASS
+
+go test ./... -count=1
+PASS
+
+go test -race ./... -count=1
+PASS
+
+go vet ./...
+PASS
+
+go mod verify
+PASS: all modules verified
+
+gofmt -d internal/app/final_live_gate_live_test.go
+PASS: empty output
+
+git diff --check
+PASS: empty output
+
+GOOS=windows GOARCH=amd64 go test -exec=true ./internal/app
+PASS
+```
+
+The locked-Pi component used only the reviewed installed Pi executable and
+deterministic loopback SSE. It did not start llama.cpp or load the model.
+
+### Scope, hashes, and isolation
+
+Current controlled harness hash:
+
+```text
+internal/app/final_live_gate_live_test.go
+7da6082d500a7d93182b38917d2d8ee0d98244a59419568173673d6af8fb45b2
+```
+
+Read-only authority files remained unchanged:
+
+```text
+internal/work/verification_authority.go
+efce682c5ef4f6c1068c625441386b0be5abad6120bf9290eaab757949b561be
+
+internal/app/team_execution.go
+47f4810201d46f013f093562f1c792190dea419489721377ca14900952b13354
+```
+
+All five pre-existing quarantine hashes still match the contract:
+
+```text
+contract.md
+9c5e71767f9983bc53089a8c22a03fcf430bd784d5e2fc602b618a9fca9e1dff
+
+contract-review.md
+7cbbeb13b4699fee65e0454329306f967bcc16a32e87aca5fe790c43454b22a1
+
+source-lock.json
+e542aa319219f486cb45538df53ff49fb03fb180b748b9661bfb2497d58658f5
+
+AGENTS.md
+9196bf1a9cda6448688b073a2217ff5e806b1bcb288506d3be7ed6e204c4691f
+
+PROGRESS.md
+49b78621fa83b26967ac3ceda305bf14ffecba779bc5c3446595557bbdbf355c
+```
+
+Staging is empty. The Repair-2 manifest and attempt prefix are absent. Port
+`18427` has no listener, and no Pi/llama-server/loomd live process is
+running. Repair-2 live-canary invocations consumed: `0`.
+
+Fresh independent Implementation Review is required before staging, commit,
+manifest creation, llama/model execution, or the one authorized Repair-2
+canary.
+
+VERDICT: PASS
+
 ## Reopen 1 context-alignment verification
 
 Date: `2026-07-28`

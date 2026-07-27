@@ -1,6 +1,6 @@
 # Final Live Gate Pi 0.82.1 Transcript Compatibility Closure Contract
 
-Status: FROZEN — REOPEN 1 RESULT REVIEW PASS — REPAIR 2 CONTRACT PENDING
+Status: FROZEN — REOPEN 1 REPAIR 2 IMPLEMENTATION REVIEW PASS — COMMIT AUTHORIZED
 
 - Contract: `PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1`
 - Risk: `HIGH`
@@ -1103,7 +1103,6 @@ No outcome authorizes production activation, resident daemon activation,
 autonomous execution, Phase 2, push, merge, release, or publication.
 
 VERDICT: PASS
-
 ## Reopen 1 — bounded terminal-budget closure
 
 ### Authorization and lineage
@@ -1443,5 +1442,219 @@ three-repair ceiling and all RED/Review gates. No point Amendment is allowed.
 
 No outcome authorizes push, merge, release, publication, production or
 resident daemon activation, credentials, Phase 2, or user sign-off.
+
+VERDICT: PASS
+
+## Reopen 1 Repair 2 — authoritative clock binding closure
+
+### Lineage and evidence
+
+This is Repair 2 inside the same unique
+`PHASE1-FINAL-LIVE-PI-0821-TRANSCRIPT-CLOSURE-1` lineage. It is not a new
+Amendment, WorkItem, Candidate family, product feature, scheduler, authority,
+or parser exception.
+
+Repair 1 and its reviewed live evidence are immutable historical inputs:
+
+```text
+context-alignment implementation
+b28e5dbbcd3276062a8cd799f57c07d25e217a39
+
+Reopen-1 result evidence
+67b251cae0e3a2086163998b309b4ebb5beadca5
+
+Reopen-1 manifest
+21395f2c6b97f73cd28836a7883a3f7607cb1c54eebd6984791436a209016b22
+
+Reopen-1 live evidence
+f7fa26959ec275fed949579ae45cd5bc88e6ab24aa4a074fc8a8104411331192
+```
+
+The single Reopen-1 invocation is consumed. It cannot be rerun or reused.
+
+The fresh result-evidence Reviewer returned `PASS` and independently proved:
+
+- Pi/model/transcript/terminal compatibility succeeded;
+- the Adapter and private Evidence completed successfully;
+- Run, WorkItem `ready_for_review`, node-attempt `valid_nonempty`, Grant
+  revocation, and capacity release facts are authoritative;
+- WorkItem verification/done/rejected and Team acceptance/terminal facts are
+  absent;
+- cleanup and historical preservation passed; and
+- the exact failure is a controlled harness clock seam.
+
+### Exact defect
+
+The controlled live harness currently creates three incompatible time
+surfaces:
+
+```text
+seed/request AuthoritativeTime = one captured UTC snapshot
+work.Authority clock           = dynamic time.Now().UTC()
+grant.Authority clock          = dynamic time.Now().UTC()
+Pi execution clock             = dynamic time.Now().UTC()
+```
+
+`commitTeamAttemptReceipt` uses the request `AuthoritativeTime` as the
+Acceptance decision time. `CommitTeamNodeAcceptance` then obtains its
+Authority operation time and requires exact equality:
+
+```text
+operationTime == Decision.DecisionTime
+```
+
+The dynamic clock cannot equal the earlier captured snapshot
+byte-for-byte. The Authority correctly returns
+`ErrInvalidWorkItemAcceptance`. The existing locked-Pi deterministic
+component succeeds because it already binds all authoritative surfaces to
+one fixed snapshot.
+
+### Risk and ownership
+
+- Risk: `HIGH`
+- Baseline:
+  `67b251cae0e3a2086163998b309b4ebb5beadca5`
+- Repair count: `2 of 3`
+
+Writable implementation/test ownership is limited to:
+
+1. `internal/app/final_live_gate_live_test.go`
+2. this unique contract
+3. `pi-0821-transcript-compatibility-closure-contract-review.md`
+4. `pi-0821-transcript-compatibility-closure-red.md`
+5. `pi-0821-transcript-compatibility-closure-verification.md`
+6. `pi-0821-transcript-compatibility-closure-implementation-review.md`
+
+Only after an authorized Repair-2 invocation may it add:
+
+7. `resolved-live-manifest-pi-0821-transcript-closure-reopen1-repair2-canary.json`
+8. `pi-0821-transcript-closure-reopen1-repair2-live-canary.md`
+
+The private materialization status may receive bounded result synchronization
+only. All product files, parser/lifecycle code, `internal/work`,
+`internal/authorization`, Evidence, Journal, Projection, Supervisor, Bridge,
+installed Runtime/model/source bindings, historical attempts/evidence, and
+user-owned dirty files remain read-only.
+
+The current modified `contract.md`, `contract-review.md`, `source-lock.json`,
+`AGENTS.md`, and `PROGRESS.md` are the same pre-existing quarantine frozen
+earlier in this unique contract. Their exact hashes remain respectively:
+
+```text
+9c5e71767f9983bc53089a8c22a03fcf430bd784d5e2fc602b618a9fca9e1dff
+7cbbeb13b4699fee65e0454329306f967bcc16a32e87aca5fe790c43454b22a1
+e542aa319219f486cb45538df53ff49fb03fb180b748b9661bfb2497d58658f5
+9196bf1a9cda6448688b073a2217ff5e806b1bcb288506d3be7ed6e204c4691f
+49b78621fa83b26967ac3ceda305bf14ffecba779bc5c3446595557bbdbf355c
+```
+
+They are not Repair-2 Candidate files and must remain unstaged and
+uncommitted. Candidate scope is the exact allowlist above, not every
+`git diff HEAD` entry.
+
+Repair 2 must not change `CommitTeamNodeAcceptance` or weaken its exact-time
+predicate. It must correct the controlled caller.
+
+### Mandatory TDD acceptance
+
+After fresh Contract Reviewer `PASS`, RED must precede implementation and
+prove all of:
+
+1. A new focused harness test requires one explicit UTC snapshot plus one
+   clock function that returns that exact snapshot on every call. Current
+   harness code has no such binding and fails before implementation.
+2. The test rejects zero, non-UTC, or drifting clock construction.
+3. The live harness uses that same clock for:
+   - Runtime seed time;
+   - `work.Authority`;
+   - `authorization.Authority`;
+   - Pi execution adapter time;
+   - `TeamExecutionRequest.AuthoritativeTime`.
+4. Wall-clock cancellation/deadline and process cleanup remain real
+   `context`/timer behavior; only authoritative fact time is fixed.
+5. The existing locked-Pi deterministic success/failure component remains
+   GREEN and proves the same time-binding pattern closes WorkItem acceptance
+   and Team terminal state.
+6. The current Reopen-1 manifest and attempt prefix become historical and can
+   never be selected again.
+7. Repair 2 uses a new independent manifest and fresh attempt prefix and
+   cannot alias any earlier canary.
+
+The intended helper is test-harness-local and unexported. It returns no
+ambient time after construction and creates no second clock/state authority.
+
+### Minimal GREEN
+
+The only behavior change is in the controlled live test harness:
+
+```text
+captured UTC snapshot
+→ one fixed clock closure
+→ all authoritative time consumers
+```
+
+No production Go file may change. No model, prompt, Provider, output
+acceptance, parser, retry, compaction, Evidence, Journal, Projection, Grant,
+StateWriter, permission, or process-lifecycle behavior may change.
+
+### Required checks
+
+At minimum:
+
+```text
+go test ./internal/app \
+  -run '^(TestFinalLiveAuthoritativeClockBinding|TestFinalLivePi0821TranscriptClosureCanaryIsolation)$' \
+  -count=1
+
+LOOM_PI_0821_COMPONENT=1 \
+go test -v ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=1
+
+go test ./internal/app ./internal/work ./internal/authorization \
+  ./internal/evidence ./internal/projection -count=1
+
+go test -race ./internal/app \
+  -run '^(TestFinalLiveAuthoritativeClockBinding|TestFinalLivePi0821TranscriptClosureCanaryIsolation)$' \
+  -count=30
+
+LOOM_PI_0821_COMPONENT=1 \
+go test -v -race ./internal/app \
+  -run '^TestPi0821DeterministicSSETeamExecution(Closure|FailureClosure)$' \
+  -count=10
+
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go mod verify
+gofmt -d internal/app/final_live_gate_live_test.go
+git diff --check
+GOOS=windows GOARCH=amd64 go test -exec=true ./internal/app
+```
+
+The component commands bind the already reviewed installed Pi executable,
+Runtime search path, and Runtime instance ID. They run deterministic
+loopback SSE only; no llama/model live execution occurs before Implementation
+Reviewer `PASS`.
+
+### Review, commit, and live accounting
+
+1. Fresh Contract Reviewer `PASS` is required before RED.
+2. Fresh Implementation Reviewer `PASS` is required before commit or live.
+3. The exact owned Candidate may then be committed locally.
+4. Post-commit pre-live must revalidate the exact commit, all installed and
+   historical bindings, cleanup, empty staging, and absence of the new
+   Repair-2 manifest/attempt.
+5. Exactly one Repair-2 controlled local canary is authorized after all gates
+   pass. Any result consumes it. There is no unchanged rerun.
+6. Fresh result-evidence Review is required after invocation.
+
+If Repair 2 passes, the Final Live Gate reaches
+`READY_FOR_FINAL_USER_SIGNOFF`. If it fails, only one bounded repair remains
+inside this same unique contract. A third failed bounded repair stops at
+`HUMAN_REQUIRED`.
+
+No outcome authorizes push, merge, release, publication, resident daemon,
+production activation, credentials, Phase 2, or user sign-off.
 
 VERDICT: PASS

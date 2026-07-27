@@ -42,7 +42,7 @@ const (
 	finalLivePi0821OpenAISHA256        = "0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a"
 	finalLivePi0821SimpleOptionsSHA256 = "74dfde37adbd00a6af1fd707c1c5c876577793b078da9fbbd6d40bb75bfb4749"
 	finalLivePrompt                    = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
-	finalLiveResolvedManifestRel       = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
+	finalLiveResolvedManifestRel       = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-repair2-canary.json"
 )
 
 type finalLiveResolvedManifestInput struct {
@@ -113,17 +113,19 @@ func TestFinalLiveManifestDoesNotAliasPriorEvidence(t *testing.T) {
 	progressive := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
 	diagnostic := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-rejection-diagnostic-canary.json"
 	closure := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-canary.json"
-	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
+	reopen1 := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
+	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-pi-0821-transcript-closure-reopen1-repair2-canary.json"
 	if finalLiveResolvedManifestRel == prior ||
 		finalLiveResolvedManifestRel == additional ||
 		finalLiveResolvedManifestRel == progressive ||
 		finalLiveResolvedManifestRel == diagnostic ||
-		finalLiveResolvedManifestRel == closure {
+		finalLiveResolvedManifestRel == closure ||
+		finalLiveResolvedManifestRel == reopen1 {
 		t.Fatal("transcript closure manifest aliases prior evidence")
 	}
 	if finalLiveResolvedManifestRel != want ||
 		filepath.Base(finalLiveResolvedManifestRel) !=
-			"resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json" {
+			"resolved-live-manifest-pi-0821-transcript-closure-reopen1-repair2-canary.json" {
 		t.Fatal("transcript closure manifest name is not frozen")
 	}
 	if filepath.Dir(finalLiveResolvedManifestRel) !=
@@ -144,7 +146,7 @@ func TestFinalLiveRejectionDiagnosticCanaryRemainsHistorical(t *testing.T) {
 func TestFinalLivePi0821TranscriptClosureCanaryIsolation(t *testing.T) {
 	t.Run("independent manifest", func(t *testing.T) {
 		want := ".loom-evidence/phase1-final-live-gate/" +
-			"resolved-live-manifest-pi-0821-transcript-closure-reopen1-canary.json"
+			"resolved-live-manifest-pi-0821-transcript-closure-reopen1-repair2-canary.json"
 		if finalLiveResolvedManifestRel != want {
 			t.Fatalf("transcript closure manifest = %q", finalLiveResolvedManifestRel)
 		}
@@ -161,9 +163,63 @@ func TestFinalLivePi0821TranscriptClosureCanaryIsolation(t *testing.T) {
 		}
 		if !strings.HasPrefix(
 			filepath.Base(attemptRoot),
-			"controlled-canary-pi-0821-transcript-closure-reopen1-",
+			"controlled-canary-pi-0821-transcript-closure-reopen1-repair2-",
 		) {
 			t.Fatalf("transcript closure attempt root = %q", filepath.Base(attemptRoot))
+		}
+	})
+}
+
+func TestFinalLiveAuthoritativeClockBinding(t *testing.T) {
+	snapshot := time.Date(2026, time.July, 28, 12, 34, 56, 789, time.UTC)
+
+	t.Run("fixed UTC snapshot", func(t *testing.T) {
+		clock, err := newFinalLiveAuthoritativeClock(snapshot, func() time.Time {
+			return snapshot
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			if got := clock(); got != snapshot {
+				t.Fatalf("authoritative clock = %v, want exact snapshot", got)
+			}
+		}
+	})
+
+	t.Run("zero snapshot", func(t *testing.T) {
+		if _, err := newFinalLiveAuthoritativeClock(time.Time{}, func() time.Time {
+			return time.Time{}
+		}); err == nil {
+			t.Fatal("zero authoritative snapshot was accepted")
+		}
+	})
+
+	t.Run("non UTC snapshot", func(t *testing.T) {
+		nonUTC := time.Date(
+			2026,
+			time.July,
+			28,
+			12,
+			34,
+			56,
+			789,
+			time.FixedZone("not-UTC", 0),
+		)
+		if _, err := newFinalLiveAuthoritativeClock(nonUTC, func() time.Time {
+			return nonUTC
+		}); err == nil {
+			t.Fatal("non-UTC authoritative snapshot was accepted")
+		}
+	})
+
+	t.Run("drifting source", func(t *testing.T) {
+		call := 0
+		if _, err := newFinalLiveAuthoritativeClock(snapshot, func() time.Time {
+			call++
+			return snapshot.Add(time.Duration(call-1) * time.Nanosecond)
+		}); err == nil {
+			t.Fatal("drifting authoritative clock source was accepted")
 		}
 	})
 }
@@ -196,6 +252,14 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 	}
 	if err := bindFinalLivePi0821Sources(piExecutable); err != nil {
 		t.Fatal("locked Pi 0.82.1 source binding failed")
+	}
+	authoritativeSnapshot := time.Now().UTC()
+	authoritativeClock, err := newFinalLiveAuthoritativeClock(
+		authoritativeSnapshot,
+		func() time.Time { return authoritativeSnapshot },
+	)
+	if err != nil {
+		t.Fatal("final live authoritative clock binding failed")
 	}
 	llamaExecutableSHA256 := os.Getenv("LOOM_FINAL_LLAMA_EXECUTABLE_SHA256")
 	if err := writeFinalLiveResolvedManifest(finalLiveResolvedManifestInput{
@@ -279,7 +343,7 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 				RuntimeInstanceID:  finalLiveRuntimeID,
 				RuntimeSearchPaths: searchPaths,
 				CancelGrace:        3 * time.Second,
-				Now:                func() time.Time { return time.Now().UTC() },
+				Now:                authoritativeClock,
 				Random:             rand.Reader,
 			},
 			ProviderID:        "loom-local",
@@ -305,11 +369,8 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := journal.NewStore(db)
-	now := time.Now().UTC()
-	seedFinalLiveRuntime(t, store, now)
-	workAuthority, err := work.NewAuthority(store, func() time.Time {
-		return time.Now().UTC()
-	}, rand.Reader)
+	seedFinalLiveRuntime(t, store, authoritativeClock())
+	workAuthority, err := work.NewAuthority(store, authoritativeClock, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +380,7 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 	grantAuthority, err := authorization.NewAuthority(
 		store,
 		workAuthority,
-		func() time.Time { return time.Now().UTC() },
+		authoritativeClock,
 		rand.Reader,
 	)
 	if err != nil {
@@ -384,7 +445,7 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 		SenderAgentInstanceID: "agent-main-final-live",
 		Sequence:              1,
 		Type:                  bridgev1.MessageDispatch,
-		EmittedAt:             now,
+		EmittedAt:             authoritativeClock(),
 		Payload:               promptPayload,
 	})
 	if err != nil {
@@ -438,7 +499,7 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 			),
 		}},
 		Semantics:            testTeamNodeSemantics(t, plan, time.Second, ""),
-		AuthoritativeTime:    now,
+		AuthoritativeTime:    authoritativeClock(),
 		PrepareLeaseDuration: time.Minute,
 		GrantLifetime:        2 * time.Minute,
 		CorrelationID:        dispatch.CorrelationID(),
@@ -987,6 +1048,21 @@ func finalLivePrivateDirectory(t testing.TB, root string, name string) string {
 	return path
 }
 
+func newFinalLiveAuthoritativeClock(
+	snapshot time.Time,
+	source func() time.Time,
+) (func() time.Time, error) {
+	if snapshot.IsZero() || snapshot.Location() != time.UTC || source == nil {
+		return nil, errors.New("invalid final live authoritative clock")
+	}
+	if source() != snapshot || source() != snapshot {
+		return nil, errors.New("invalid final live authoritative clock")
+	}
+	return func() time.Time {
+		return snapshot
+	}, nil
+}
+
 func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
 	if privateRoot == "" ||
 		!filepath.IsAbs(privateRoot) ||
@@ -1002,7 +1078,7 @@ func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
 	}
 	attemptRoot, err := os.MkdirTemp(
 		privateRoot,
-		"controlled-canary-pi-0821-transcript-closure-reopen1-",
+		"controlled-canary-pi-0821-transcript-closure-reopen1-repair2-",
 	)
 	if err != nil {
 		return "", errors.New("cannot create final live attempt root")
