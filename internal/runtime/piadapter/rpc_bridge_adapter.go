@@ -44,6 +44,7 @@ const (
 	piRPCMaxBridgeFrames = 1024
 	piRPCMaxDeltaBytes   = 2048
 	piRPCSystemPrompt    = "Answer only the supplied bounded task. Use no tools. Do not expose hidden reasoning, credentials, or filesystem paths. Return concise plain text."
+	piRPCSettingsJSON    = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
 )
 
 type PiRPCBridgeAdapterConfig struct {
@@ -407,7 +408,53 @@ func (adapter *piRPCBridgeAdapter) preparePrivatePiHome(
 		info.Mode().Perm() != 0o600 {
 		return "", "", ErrPiRPCProtocol
 	}
+	if err := materializePiRPCSettings(agentPath); err != nil {
+		return "", "", err
+	}
 	return agentPath, sessionPath, nil
+}
+
+func materializePiRPCSettings(agentPath string) error {
+	settingsPath := filepath.Join(agentPath, "settings.json")
+	file, err := os.OpenFile(
+		settingsPath,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		return ErrPiRPCProtocol
+	}
+	created := true
+	defer func() {
+		if created {
+			_ = os.Remove(settingsPath)
+		}
+	}()
+	if written, err := file.Write([]byte(piRPCSettingsJSON)); err != nil ||
+		written != len(piRPCSettingsJSON) {
+		_ = file.Close()
+		return ErrPiRPCProtocol
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return ErrPiRPCProtocol
+	}
+	if err := file.Close(); err != nil {
+		return ErrPiRPCProtocol
+	}
+	info, err := os.Lstat(settingsPath)
+	if err != nil ||
+		!info.Mode().IsRegular() ||
+		info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o600 {
+		return ErrPiRPCProtocol
+	}
+	content, err := os.ReadFile(settingsPath)
+	if err != nil || !bytes.Equal(content, []byte(piRPCSettingsJSON)) {
+		return ErrPiRPCProtocol
+	}
+	created = false
+	return nil
 }
 
 func (adapter *piRPCBridgeAdapter) modelsJSON() ([]byte, error) {
@@ -1189,6 +1236,9 @@ func piRPCAllowedKeys(
 }
 
 func piRPCNonNegativeNumber(raw json.RawMessage) bool {
+	if bytes.Equal(raw, []byte("null")) {
+		return false
+	}
 	var value float64
 	return json.Unmarshal(raw, &value) == nil &&
 		value >= 0 &&
@@ -1219,12 +1269,25 @@ func piRPCUserMessage(raw json.RawMessage, expectedPrompt string) bool {
 		return false
 	}
 	role, ok := piRPCString(fields, "role")
-	content, contentOK := piRPCString(fields, "content")
-	return ok &&
-		contentOK &&
-		role == "user" &&
-		content == expectedPrompt &&
-		piRPCNonNegativeNumber(fields["timestamp"])
+	if !ok || role != "user" ||
+		!piRPCNonNegativeNumber(fields["timestamp"]) {
+		return false
+	}
+	var content []json.RawMessage
+	if json.Unmarshal(fields["content"], &content) != nil ||
+		len(content) != 1 {
+		return false
+	}
+	block, err := piRPCObject(content[0])
+	if err != nil || !piRPCExactKeys(block, "type", "text") {
+		return false
+	}
+	blockType, typeOK := piRPCString(block, "type")
+	text, textOK := piRPCString(block, "text")
+	return typeOK &&
+		textOK &&
+		blockType == "text" &&
+		text == expectedPrompt
 }
 
 func piRPCAgentMessages(

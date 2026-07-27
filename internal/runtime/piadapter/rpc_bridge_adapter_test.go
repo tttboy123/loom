@@ -21,6 +21,153 @@ import (
 
 const piRPCFixturePrompt = "Correct: func add(a, b int) int { return a - b }"
 
+const piRPCFixtureSettings = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
+
+func TestPiRPCPi0821UserMessageCompatibility(t *testing.T) {
+	prompt := "bounded prompt"
+	for name, raw := range map[string][]byte{
+		"integer timestamp": []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":1}`),
+		"zero timestamp":    []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":0}`),
+		"fractional timestamp": []byte(
+			`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":1.5}`,
+		),
+	} {
+		t.Run("accept/"+name, func(t *testing.T) {
+			if !piRPCUserMessage(raw, prompt) {
+				t.Fatal("exact Pi 0.82.1 user message was rejected")
+			}
+		})
+	}
+
+	rejections := map[string][]byte{
+		"legacy string":        []byte(`{"role":"user","content":"bounded prompt","timestamp":1}`),
+		"null content":         []byte(`{"role":"user","content":null,"timestamp":1}`),
+		"scalar content":       []byte(`{"role":"user","content":1,"timestamp":1}`),
+		"object content":       []byte(`{"role":"user","content":{"type":"text","text":"bounded prompt"},"timestamp":1}`),
+		"empty array":          []byte(`{"role":"user","content":[],"timestamp":1}`),
+		"multiple blocks":      []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"},{"type":"text","text":"bounded prompt"}],"timestamp":1}`),
+		"image block":          []byte(`{"role":"user","content":[{"type":"image","data":"x"}],"timestamp":1}`),
+		"tool block":           []byte(`{"role":"user","content":[{"type":"tool","text":"bounded prompt"}],"timestamp":1}`),
+		"thinking block":       []byte(`{"role":"user","content":[{"type":"thinking","text":"bounded prompt"}],"timestamp":1}`),
+		"missing outer role":   []byte(`{"content":[{"type":"text","text":"bounded prompt"}],"timestamp":1}`),
+		"extra outer field":    []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":1,"extra":true}`),
+		"duplicate outer role": []byte(`{"role":"user","role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":1}`),
+		"missing block type":   []byte(`{"role":"user","content":[{"text":"bounded prompt"}],"timestamp":1}`),
+		"missing block text":   []byte(`{"role":"user","content":[{"type":"text"}],"timestamp":1}`),
+		"extra block field":    []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt","textSignature":"x"}],"timestamp":1}`),
+		"duplicate block type": []byte(`{"role":"user","content":[{"type":"text","type":"text","text":"bounded prompt"}],"timestamp":1}`),
+		"changed prompt":       []byte(`{"role":"user","content":[{"type":"text","text":"other"}],"timestamp":1}`),
+		"prefixed prompt":      []byte(`{"role":"user","content":[{"type":"text","text":" bounded prompt"}],"timestamp":1}`),
+		"suffixed prompt":      []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt "}],"timestamp":1}`),
+		"negative timestamp":   []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":-1}`),
+		"string timestamp":     []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":"1"}`),
+		"null timestamp":       []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}],"timestamp":null}`),
+		"missing timestamp":    []byte(`{"role":"user","content":[{"type":"text","text":"bounded prompt"}]}`),
+		"malformed JSON":       []byte(`{"role":"user"`),
+		"invalid UTF-8":        append([]byte(`{"role":"user","content":[{"type":"text","text":"`), 0xff),
+	}
+	for name, raw := range rejections {
+		t.Run("reject/"+name, func(t *testing.T) {
+			if piRPCUserMessage(raw, prompt) {
+				t.Fatal("invalid Pi user message was accepted")
+			}
+		})
+	}
+}
+
+func TestPiRPCBridgeCreatesExactNoRetrySettingsBeforePrompt(t *testing.T) {
+	t.Run("exact settings exist before prompt", func(t *testing.T) {
+		fixture := newPiRPCBridgeFixture(t, "require-settings")
+		adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := fixture.request(t)
+		if _, err := adapter.Execute(context.Background(), request); err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		settingsPath := filepath.Join(fixture.homePath, ".pi", "agent", "settings.json")
+		content, err := os.ReadFile(settingsPath)
+		if err != nil {
+			t.Fatal("private settings were not materialized")
+		}
+		if string(content) != piRPCFixtureSettings {
+			t.Fatal("private settings bytes are not exact")
+		}
+		info, err := os.Lstat(settingsPath)
+		if err != nil ||
+			!info.Mode().IsRegular() ||
+			info.Mode()&os.ModeSymlink != 0 ||
+			info.Mode().Perm() != 0o600 {
+			t.Fatal("private settings binding is invalid")
+		}
+	})
+
+	for _, existing := range []string{"regular", "symlink", "directory"} {
+		t.Run("pre-existing "+existing+" is not replaced", func(t *testing.T) {
+			fixture := newPiRPCBridgeFixture(t, "settings-start-marker")
+			agentPath := filepath.Join(fixture.homePath, ".pi", "agent")
+			for _, path := range []string{
+				filepath.Join(fixture.homePath, ".pi"),
+				agentPath,
+			} {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			settingsPath := filepath.Join(agentPath, "settings.json")
+			switch existing {
+			case "regular":
+				if err := os.WriteFile(settingsPath, []byte("preserve"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				target := filepath.Join(agentPath, "target")
+				if err := os.WriteFile(target, []byte("preserve"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, settingsPath); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				if err := os.Mkdir(settingsPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := fixture.request(t)
+			if _, err := adapter.Execute(context.Background(), request); !errors.Is(err, ErrPiRPCProtocol) {
+				t.Fatalf("Execute() error = %v, want ErrPiRPCProtocol", err)
+			}
+			if _, err := os.Lstat(filepath.Join(fixture.homePath, "process-started")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("Pi process started despite a pre-existing settings object")
+			}
+			info, err := os.Lstat(settingsPath)
+			if err != nil {
+				t.Fatal("pre-existing settings object was removed")
+			}
+			switch existing {
+			case "regular":
+				content, readErr := os.ReadFile(settingsPath)
+				if readErr != nil || string(content) != "preserve" {
+					t.Fatal("pre-existing regular settings were changed")
+				}
+			case "symlink":
+				if info.Mode()&os.ModeSymlink == 0 {
+					t.Fatal("pre-existing settings symlink was replaced")
+				}
+			case "directory":
+				if !info.IsDir() {
+					t.Fatal("pre-existing settings directory was replaced")
+				}
+			}
+		})
+	}
+}
+
 func TestPiRPCBridgeTranslatesCorrelatedTranscript(t *testing.T) {
 	t.Setenv("SHOULD_NOT_LEAK", "ambient-secret")
 	fixture := newPiRPCBridgeFixture(t, "success")
@@ -317,6 +464,16 @@ func piRPCFixtureScript(mode string) string {
 	for _, argument := range expectedArguments {
 		header += "[ \"$1\" = " + piRPCShellQuote(argument) + " ] || exit 47\nshift\n"
 	}
+	if mode == "settings-start-marker" {
+		header += ": > \"$HOME/process-started\"\n"
+	}
+	if mode == "require-settings" || mode == "settings-start-marker" {
+		header += "exec 3<\"$PI_CODING_AGENT_DIR/settings.json\" || exit 50\n" +
+			"IFS= read -r settings <&3 || exit 51\n" +
+			"[ \"$settings\" = " + piRPCShellQuote(strings.TrimSuffix(piRPCFixtureSettings, "\n")) + " ] || exit 52\n" +
+			"if IFS= read -r extra <&3; then exit 53; fi\n" +
+			"exec 3<&-\n"
+	}
 	if mode == "wait-cancel" {
 		return header +
 			"read request || exit 48\n" +
@@ -426,13 +583,17 @@ func piRPCFixtureScript(mode string) string {
 }
 
 func piRPCFixtureUserMessage(prompt string) string {
+	type content struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
 	value, err := json.Marshal(struct {
-		Role      string `json:"role"`
-		Content   string `json:"content"`
-		Timestamp int64  `json:"timestamp"`
+		Role      string    `json:"role"`
+		Content   []content `json:"content"`
+		Timestamp int64     `json:"timestamp"`
 	}{
 		Role:      "user",
-		Content:   prompt,
+		Content:   []content{{Type: "text", Text: prompt}},
 		Timestamp: 1,
 	})
 	if err != nil {

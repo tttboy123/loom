@@ -36,7 +36,7 @@ const (
 	finalLiveInstalledPiSHA256   = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
 	finalLiveModelSHA256         = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
 	finalLivePrompt              = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
-	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest.json"
+	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
 )
 
 type finalLiveResolvedManifestInput struct {
@@ -49,6 +49,73 @@ type finalLiveResolvedManifestInput struct {
 	ExpectedLlamaSHA256 string
 	ExpectedModelSHA256 string
 	CreatedAt           time.Time
+}
+
+func TestFinalLiveFreshAttemptIsolationAndPrivateSQLite(t *testing.T) {
+	privateRoot := t.TempDir()
+	if err := os.Chmod(privateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := createFinalLiveFreshAttemptRoot(privateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := createFinalLiveFreshAttemptRoot(privateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second ||
+		filepath.Dir(first) != privateRoot ||
+		filepath.Dir(second) != privateRoot {
+		t.Fatal("fresh attempt roots are not distinct direct children")
+	}
+	for _, root := range []string{first, second} {
+		info, err := os.Lstat(root)
+		if err != nil ||
+			!info.IsDir() ||
+			info.Mode()&os.ModeSymlink != 0 ||
+			info.Mode().Perm() != 0o700 {
+			t.Fatal("fresh attempt root is not an exact private directory")
+		}
+	}
+
+	databasePath, err := createFinalLivePrivateSQLite(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(databasePath)
+	if err != nil ||
+		!info.Mode().IsRegular() ||
+		info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o600 {
+		t.Fatal("fresh SQLite leaf is not an exact private regular file")
+	}
+	if _, err := createFinalLivePrivateSQLite(first); err == nil {
+		t.Fatal("fresh SQLite helper reused an existing leaf")
+	}
+	infoAfter, err := os.Lstat(databasePath)
+	if err != nil ||
+		!infoAfter.Mode().IsRegular() ||
+		infoAfter.Mode().Perm() != 0o600 {
+		t.Fatal("SQLite collision changed the existing leaf")
+	}
+}
+
+func TestFinalLiveAdditionalManifestDoesNotAliasPriorEvidence(t *testing.T) {
+	prior := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest.json"
+	wantAdditional := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
+	if finalLiveResolvedManifestRel == prior {
+		t.Fatal("additional manifest aliases prior evidence")
+	}
+	if finalLiveResolvedManifestRel != wantAdditional ||
+		filepath.Base(finalLiveResolvedManifestRel) !=
+			"resolved-live-manifest-additional-canary.json" {
+		t.Fatal("additional manifest name is not frozen")
+	}
+	if filepath.Dir(finalLiveResolvedManifestRel) !=
+		filepath.Dir(prior) {
+		t.Fatal("additional manifest escaped the final-live evidence directory")
+	}
 }
 
 func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
@@ -94,12 +161,9 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
-	runRoot := filepath.Join(privateRoot, "controlled-canary")
-	if err := os.Mkdir(runRoot, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		t.Fatal("cannot create private canary root")
-	}
-	if err := os.Chmod(runRoot, 0o700); err != nil {
-		t.Fatal("cannot bind private canary root")
+	runRoot, err := createFinalLiveFreshAttemptRoot(privateRoot)
+	if err != nil {
+		t.Fatal("cannot create fresh private canary root")
 	}
 	isolationRoot := finalLivePrivateDirectory(t, runRoot, "metadata")
 	metadataRunner, err := piadapter.NewPiMetadataProcessRunner(
@@ -175,7 +239,10 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 		t.Fatal("Pi RPC Bridge adapter construction failed")
 	}
 
-	databasePath := filepath.Join(runRoot, "canary.sqlite")
+	databasePath, err := createFinalLivePrivateSQLite(runRoot)
+	if err != nil {
+		t.Fatal("cannot create fresh private canary database")
+	}
 	db, err := sql.Open("sqlite", "file:"+databasePath)
 	if err != nil {
 		t.Fatal(err)
@@ -763,6 +830,96 @@ func finalLivePrivateDirectory(t testing.TB, root string, name string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
+	if privateRoot == "" ||
+		!filepath.IsAbs(privateRoot) ||
+		filepath.Clean(privateRoot) != privateRoot {
+		return "", errors.New("invalid final live private root")
+	}
+	rootInfo, err := os.Lstat(privateRoot)
+	if err != nil ||
+		!rootInfo.IsDir() ||
+		rootInfo.Mode()&os.ModeSymlink != 0 ||
+		rootInfo.Mode().Perm() != 0o700 {
+		return "", errors.New("invalid final live private root")
+	}
+	attemptRoot, err := os.MkdirTemp(
+		privateRoot,
+		"controlled-canary-additional-",
+	)
+	if err != nil {
+		return "", errors.New("cannot create final live attempt root")
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(attemptRoot)
+		}
+	}()
+	relative, err := filepath.Rel(privateRoot, attemptRoot)
+	if err != nil ||
+		relative == "." ||
+		filepath.IsAbs(relative) ||
+		filepath.Dir(relative) != "." {
+		return "", errors.New("final live attempt root escaped private root")
+	}
+	info, err := os.Lstat(attemptRoot)
+	if err != nil ||
+		!info.IsDir() ||
+		info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o700 {
+		return "", errors.New("invalid final live attempt root")
+	}
+	cleanup = false
+	return attemptRoot, nil
+}
+
+func createFinalLivePrivateSQLite(attemptRoot string) (string, error) {
+	if attemptRoot == "" ||
+		!filepath.IsAbs(attemptRoot) ||
+		filepath.Clean(attemptRoot) != attemptRoot {
+		return "", errors.New("invalid final live attempt root")
+	}
+	rootInfo, err := os.Lstat(attemptRoot)
+	if err != nil ||
+		!rootInfo.IsDir() ||
+		rootInfo.Mode()&os.ModeSymlink != 0 ||
+		rootInfo.Mode().Perm() != 0o700 {
+		return "", errors.New("invalid final live attempt root")
+	}
+	databasePath := filepath.Join(attemptRoot, "canary.sqlite")
+	file, err := os.OpenFile(
+		databasePath,
+		os.O_RDWR|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		return "", errors.New("cannot create final live database")
+	}
+	created := true
+	defer func() {
+		if created {
+			_ = os.Remove(databasePath)
+		}
+	}()
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return "", errors.New("cannot sync final live database")
+	}
+	if err := file.Close(); err != nil {
+		return "", errors.New("cannot close final live database")
+	}
+	info, err := os.Lstat(databasePath)
+	if err != nil ||
+		!info.Mode().IsRegular() ||
+		info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o600 {
+		return "", errors.New("invalid final live database")
+	}
+	created = false
+	return databasePath, nil
 }
 
 func seedFinalLiveRuntime(t testing.TB, store *journal.Store, now time.Time) {
