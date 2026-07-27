@@ -69,26 +69,42 @@ type piRPCLineResult struct {
 }
 
 type piRPCState struct {
-	responseSeen   bool
-	agentStarted   bool
-	turnOpen       bool
-	turnCount      int
-	messageOpen    bool
-	messageRole    string
-	userSeen       bool
-	assistantSeen  bool
-	assistantID    string
-	finalAssistant json.RawMessage
-	textStarted    bool
-	textEnded      bool
-	doneSeen       bool
-	agentEnded     bool
-	settled        bool
-	assistant      []byte
-	frames         []bridgev1.Frame
-	nextSequence   int64
-	recordCount    int
-	prompt         string
+	responseSeen      bool
+	agentStarted      bool
+	turnOpen          bool
+	turnCount         int
+	messageOpen       bool
+	messageRole       string
+	userSeen          bool
+	assistantSeen     bool
+	assistantIdentity piRPCAssistantIdentityState
+	finalAssistant    json.RawMessage
+	textStarted       bool
+	textEnded         bool
+	doneSeen          bool
+	agentEnded        bool
+	settled           bool
+	assistant         []byte
+	frames            []bridgev1.Frame
+	nextSequence      int64
+	recordCount       int
+	prompt            string
+}
+
+type piRPCAssistantIdentityState struct {
+	timestamp     string
+	responseID    string
+	responseBound bool
+	reasoningSeen bool
+}
+
+type piRPCAssistantIdentitySnapshot struct {
+	timestamp       string
+	responseID      string
+	responsePresent bool
+	responseModel   bool
+	cacheWrite1h    bool
+	reasoning       bool
 }
 
 func NewPiRPCBridgeAdapter(
@@ -587,11 +603,11 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 			if !piRPCAssistantTextMessage(fields["message"], "", false) {
 				return ErrPiRPCProtocol
 			}
-			identity, ok := piRPCAssistantIdentity(fields["message"])
+			identity, ok := piRPCInitialAssistantIdentity(fields["message"])
 			if !ok {
 				return ErrPiRPCProtocol
 			}
-			state.assistantID = identity
+			state.assistantIdentity = identity
 			state.messageRole = "assistant"
 			state.assistantSeen = true
 		default:
@@ -640,10 +656,7 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 					string(state.assistant),
 					true,
 				) ||
-				!piRPCAssistantIdentityMatches(
-					state.assistantID,
-					fields["message"],
-				) {
+				!state.assistantIdentity.acceptTerminal(fields["message"]) {
 				return ErrPiRPCProtocol
 			}
 			state.doneSeen = true
@@ -718,9 +731,9 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 			!piRPCZero(fields["contentIndex"]) ||
 			!piRPCSemanticEqual(message, fields["partial"]) ||
 			!piRPCAssistantTextMessage(fields["partial"], "", true) ||
-			!piRPCAssistantIdentityMatches(
-				state.assistantID,
+			!state.assistantIdentity.acceptUpdate(
 				fields["partial"],
+				true,
 			) {
 			return ErrPiRPCProtocol
 		}
@@ -747,9 +760,9 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 				string(state.assistant),
 				true,
 			) ||
-			!piRPCAssistantIdentityMatches(
-				state.assistantID,
+			!state.assistantIdentity.acceptUpdate(
 				fields["partial"],
+				false,
 			) {
 			return ErrPiRPCProtocol
 		}
@@ -789,9 +802,9 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 			content != string(state.assistant) ||
 			!piRPCSemanticEqual(message, fields["partial"]) ||
 			!piRPCAssistantTextMessage(fields["partial"], content, true) ||
-			!piRPCAssistantIdentityMatches(
-				state.assistantID,
+			!state.assistantIdentity.acceptUpdate(
 				fields["partial"],
+				false,
 			) {
 			return ErrPiRPCProtocol
 		}
@@ -1321,10 +1334,13 @@ func piRPCSemanticEqual(first json.RawMessage, second json.RawMessage) bool {
 	return reflect.DeepEqual(firstValue, secondValue)
 }
 
-func piRPCAssistantIdentity(raw json.RawMessage) (string, bool) {
+func piRPCAssistantIdentitySnapshotOf(
+	raw json.RawMessage,
+) (piRPCAssistantIdentitySnapshot, bool) {
+	var result piRPCAssistantIdentitySnapshot
 	fields, err := piRPCObject(raw)
 	if err != nil {
-		return "", false
+		return result, false
 	}
 	api, apiOK := piRPCString(fields, "api")
 	provider, providerOK := piRPCString(fields, "provider")
@@ -1334,56 +1350,94 @@ func piRPCAssistantIdentity(raw json.RawMessage) (string, bool) {
 		provider != piRPCProviderID ||
 		model != piRPCModelID ||
 		!piRPCUsage(fields["usage"]) {
-		return "", false
+		return result, false
 	}
-	var timestamp float64
-	if json.Unmarshal(fields["timestamp"], &timestamp) != nil ||
-		timestamp < 0 ||
-		math.IsInf(timestamp, 0) ||
-		math.IsNaN(timestamp) {
-		return "", false
+	if !piRPCNonNegativeNumber(fields["timestamp"]) {
+		return result, false
 	}
-	responseID := ""
+	result.timestamp = string(fields["timestamp"])
 	if _, present := fields["responseId"]; present {
 		value, ok := piRPCString(fields, "responseId")
 		if !ok || value == "" || len(value) > 512 {
-			return "", false
+			return result, false
 		}
-		responseID = value
+		result.responseID = value
+		result.responsePresent = true
 	}
-	responseModel := ""
 	if _, present := fields["responseModel"]; present {
-		value, ok := piRPCString(fields, "responseModel")
-		if !ok || value != piRPCModelID {
-			return "", false
+		if !piRPCBoundedString(fields, "responseModel", 512) {
+			return result, false
 		}
-		responseModel = value
+		result.responseModel = true
 	}
 	usage, err := piRPCObject(fields["usage"])
 	if err != nil {
-		return "", false
+		return result, false
 	}
-	_, hasCacheWrite1h := usage["cacheWrite1h"]
-	_, hasReasoning := usage["reasoning"]
-	return fmt.Sprintf(
-		"%s\x00%s\x00%s\x00%g\x00%s\x00%s\x00%t\x00%t",
-		api,
-		provider,
-		model,
-		timestamp,
-		responseID,
-		responseModel,
-		hasCacheWrite1h,
-		hasReasoning,
-	), true
+	_, result.cacheWrite1h = usage["cacheWrite1h"]
+	_, result.reasoning = usage["reasoning"]
+	return result, true
 }
 
-func piRPCAssistantIdentityMatches(
-	expected string,
+func piRPCInitialAssistantIdentity(
+	raw json.RawMessage,
+) (piRPCAssistantIdentityState, bool) {
+	var result piRPCAssistantIdentityState
+	snapshot, ok := piRPCAssistantIdentitySnapshotOf(raw)
+	if !ok ||
+		snapshot.responsePresent ||
+		snapshot.responseModel ||
+		snapshot.cacheWrite1h ||
+		snapshot.reasoning {
+		return result, false
+	}
+	result.timestamp = snapshot.timestamp
+	return result, true
+}
+
+func (state *piRPCAssistantIdentityState) acceptUpdate(
+	raw json.RawMessage,
+	bindResponseID bool,
+) bool {
+	snapshot, ok := piRPCAssistantIdentitySnapshotOf(raw)
+	if !ok ||
+		snapshot.timestamp != state.timestamp ||
+		snapshot.responseModel ||
+		snapshot.cacheWrite1h {
+		return false
+	}
+	if !state.responseBound {
+		if !bindResponseID || !snapshot.responsePresent {
+			return false
+		}
+		state.responseID = snapshot.responseID
+		state.responseBound = true
+	} else if bindResponseID ||
+		!snapshot.responsePresent ||
+		snapshot.responseID != state.responseID {
+		return false
+	}
+	if state.reasoningSeen && !snapshot.reasoning {
+		return false
+	}
+	if snapshot.reasoning {
+		state.reasoningSeen = true
+	}
+	return true
+}
+
+func (state *piRPCAssistantIdentityState) acceptTerminal(
 	raw json.RawMessage,
 ) bool {
-	current, ok := piRPCAssistantIdentity(raw)
-	return ok && current == expected
+	snapshot, ok := piRPCAssistantIdentitySnapshotOf(raw)
+	return ok &&
+		state.responseBound &&
+		snapshot.timestamp == state.timestamp &&
+		snapshot.responsePresent &&
+		snapshot.responseID == state.responseID &&
+		!snapshot.responseModel &&
+		!snapshot.cacheWrite1h &&
+		snapshot.reasoning == state.reasoningSeen
 }
 
 func piRPCAssistantTextMessage(

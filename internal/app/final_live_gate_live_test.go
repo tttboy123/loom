@@ -36,7 +36,7 @@ const (
 	finalLiveInstalledPiSHA256   = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
 	finalLiveModelSHA256         = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
 	finalLivePrompt              = "Return only the corrected one-line Go function: func add(a, b int) int { return a - b }"
-	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
+	finalLiveResolvedManifestRel = ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
 )
 
 type finalLiveResolvedManifestInput struct {
@@ -101,21 +101,49 @@ func TestFinalLiveFreshAttemptIsolationAndPrivateSQLite(t *testing.T) {
 	}
 }
 
-func TestFinalLiveAdditionalManifestDoesNotAliasPriorEvidence(t *testing.T) {
+func TestFinalLiveManifestDoesNotAliasPriorEvidence(t *testing.T) {
 	prior := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest.json"
-	wantAdditional := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
-	if finalLiveResolvedManifestRel == prior {
-		t.Fatal("additional manifest aliases prior evidence")
+	additional := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-additional-canary.json"
+	want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
+	if finalLiveResolvedManifestRel == prior ||
+		finalLiveResolvedManifestRel == additional {
+		t.Fatal("progressive identity manifest aliases prior evidence")
 	}
-	if finalLiveResolvedManifestRel != wantAdditional ||
+	if finalLiveResolvedManifestRel != want ||
 		filepath.Base(finalLiveResolvedManifestRel) !=
-			"resolved-live-manifest-additional-canary.json" {
-		t.Fatal("additional manifest name is not frozen")
+			"resolved-live-manifest-progressive-identity-canary.json" {
+		t.Fatal("progressive identity manifest name is not frozen")
 	}
 	if filepath.Dir(finalLiveResolvedManifestRel) !=
 		filepath.Dir(prior) {
-		t.Fatal("additional manifest escaped the final-live evidence directory")
+		t.Fatal("progressive identity manifest escaped final-live evidence")
 	}
+}
+
+func TestFinalLiveProgressiveIdentityCanaryIsolation(t *testing.T) {
+	t.Run("independent manifest", func(t *testing.T) {
+		want := ".loom-evidence/phase1-final-live-gate/resolved-live-manifest-progressive-identity-canary.json"
+		if finalLiveResolvedManifestRel != want {
+			t.Fatalf("progressive identity manifest = %q", finalLiveResolvedManifestRel)
+		}
+	})
+
+	t.Run("independent attempt prefix", func(t *testing.T) {
+		privateRoot := t.TempDir()
+		if err := os.Chmod(privateRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		attemptRoot, err := createFinalLiveFreshAttemptRoot(privateRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(
+			filepath.Base(attemptRoot),
+			"controlled-canary-progressive-identity-",
+		) {
+			t.Fatalf("progressive identity attempt root = %q", filepath.Base(attemptRoot))
+		}
+	})
 }
 
 func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
@@ -847,7 +875,7 @@ func createFinalLiveFreshAttemptRoot(privateRoot string) (string, error) {
 	}
 	attemptRoot, err := os.MkdirTemp(
 		privateRoot,
-		"controlled-canary-additional-",
+		"controlled-canary-progressive-identity-",
 	)
 	if err != nil {
 		return "", errors.New("cannot create final live attempt root")

@@ -224,6 +224,60 @@ func TestPiRPCBridgeTranslatesCorrelatedTranscript(t *testing.T) {
 	}
 }
 
+func TestPiRPCPi0821ProgressiveAssistantIdentity(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "progressive")
+	adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.request(t)
+	result, err := adapter.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.DispatchAcknowledged() ||
+		!result.ResultAcknowledged() ||
+		len(result.InboundFrames()) != 5 {
+		t.Fatalf("progressive Pi transcript result = %#v", result)
+	}
+}
+
+func TestPiRPCProgressiveAssistantIdentityRejections(t *testing.T) {
+	modes := []string{
+		"progressive-response-id-prepopulated",
+		"progressive-response-id-missing-at-start",
+		"progressive-response-id-removed",
+		"progressive-response-id-terminal-removed",
+		"progressive-response-id-mutated",
+		"progressive-response-id-empty",
+		"progressive-response-id-oversized",
+		"progressive-response-id-late",
+		"progressive-response-model",
+		"progressive-timestamp-drift",
+		"progressive-partial-mismatch",
+		"progressive-cache-write-1h",
+		"progressive-reasoning-removed",
+		"progressive-reasoning-terminal-first",
+	}
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newPiRPCBridgeFixture(t, mode)
+			adapter, err := NewPiRPCBridgeAdapter(fixture.config())
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := fixture.request(t)
+			result, err := adapter.Execute(context.Background(), request)
+			if !errors.Is(err, ErrPiRPCProtocol) {
+				t.Fatalf("Execute() error = %v, want ErrPiRPCProtocol", err)
+			}
+			if len(result.InboundFrames()) != 0 {
+				t.Fatalf("Execute() leaked partial AdapterResult = %#v", result)
+			}
+		})
+	}
+}
+
 func TestPiRPCBridgeFailsClosed(t *testing.T) {
 	tests := []struct {
 		name string
@@ -507,6 +561,34 @@ func piRPCFixtureScript(mode string) string {
 		`{"type":"agent_end","messages":[` + userMessage + `,` + finalAssistant + `],"willRetry":false}`,
 		`{"type":"agent_settled"}`,
 	}
+	if mode != "wait-cancel" {
+		emptyTextAssistant = piRPCFixtureWithResponseID(
+			emptyTextAssistant,
+			responseID,
+		)
+		firstAssistant = piRPCFixtureWithResponseID(firstAssistant, responseID)
+		finalAssistant = piRPCFixtureWithResponseID(finalAssistant, responseID)
+		finalWithReasoning := piRPCFixtureWithUsageField(
+			finalAssistant,
+			`"reasoning":0`,
+		)
+		lines = []string{
+			`{"id":"` + responseID + `","type":"response","command":"prompt","success":true}`,
+			`{"type":"agent_start"}`,
+			`{"type":"turn_start"}`,
+			`{"type":"message_start","message":` + userMessage + `}`,
+			`{"type":"message_end","message":` + userMessage + `}`,
+			`{"type":"message_start","message":` + emptyAssistant + `}`,
+			`{"type":"message_update","message":` + emptyTextAssistant + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + emptyTextAssistant + `}}`,
+			`{"type":"message_update","message":` + firstAssistant + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello ","partial":` + firstAssistant + `}}`,
+			`{"type":"message_update","message":` + finalAssistant + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"world","partial":` + finalAssistant + `}}`,
+			`{"type":"message_update","message":` + finalWithReasoning + `,"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world","partial":` + finalWithReasoning + `}}`,
+			`{"type":"message_end","message":` + finalWithReasoning + `}`,
+			`{"type":"turn_end","message":` + finalWithReasoning + `,"toolResults":[]}`,
+			`{"type":"agent_end","messages":[` + userMessage + `,` + finalWithReasoning + `],"willRetry":false}`,
+			`{"type":"agent_settled"}`,
+		}
+	}
 	switch mode {
 	case "unknown":
 		lines[3] = `{"type":"extension_error"}`
@@ -536,7 +618,12 @@ func piRPCFixtureScript(mode string) string {
 	case "nested-error-event":
 		lines[9] = `{"type":"message_update","message":` + finalAssistant + `,"assistantMessageEvent":{"type":"error","reason":"error","error":` + finalAssistant + `}}`
 	case "partial-identity-mismatch":
-		differentPartial := strings.Replace(firstAssistant, `"timestamp":1`, `"responseId":"different","timestamp":1`, 1)
+		differentPartial := strings.Replace(
+			firstAssistant,
+			responseID,
+			"different",
+			1,
+		)
 		lines[7] = `{"type":"message_update","message":` + firstAssistant + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello ","partial":` + differentPartial + `}}`
 	case "response-model-substitution":
 		substituted := strings.Replace(finalAssistant, `"timestamp":1`, `"responseModel":"other-model","timestamp":1`, 1)
@@ -572,6 +659,102 @@ func piRPCFixtureScript(mode string) string {
 	case "grant":
 		grantAssistant := piRPCFixtureAssistantMessage(piTestTokenValue)
 		lines[7] = `{"type":"message_update","message":` + grantAssistant + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + piTestTokenValue + `","partial":` + grantAssistant + `}}`
+	case "progressive-response-id-prepopulated":
+		prepopulated := piRPCFixtureWithResponseID(emptyAssistant, responseID)
+		lines[5] = `{"type":"message_start","message":` + prepopulated + `}`
+	case "progressive-response-id-missing-at-start":
+		missing := strings.Replace(
+			emptyTextAssistant,
+			`,"responseId":"`+responseID+`"`,
+			"",
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + missing + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + missing + `}}`
+	case "progressive-response-id-removed":
+		removed := strings.Replace(
+			finalAssistant,
+			`,"responseId":"`+responseID+`"`,
+			"",
+			1,
+		)
+		lines[8] = `{"type":"message_update","message":` + removed + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"world","partial":` + removed + `}}`
+	case "progressive-response-id-terminal-removed":
+		removed := strings.Replace(
+			lines[10],
+			`,"responseId":"`+responseID+`"`,
+			"",
+			1,
+		)
+		lines[10] = removed
+	case "progressive-response-id-mutated":
+		mutated := strings.ReplaceAll(
+			finalAssistant,
+			responseID,
+			"20000000-0000-4000-8000-000000000002",
+		)
+		lines[8] = `{"type":"message_update","message":` + mutated + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"world","partial":` + mutated + `}}`
+	case "progressive-response-id-empty":
+		empty := strings.Replace(
+			emptyTextAssistant,
+			responseID,
+			"",
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + empty + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + empty + `}}`
+	case "progressive-response-id-oversized":
+		oversized := strings.Replace(
+			emptyTextAssistant,
+			responseID,
+			strings.Repeat("x", 513),
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + oversized + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + oversized + `}}`
+	case "progressive-response-id-late":
+		missing := strings.Replace(
+			emptyTextAssistant,
+			`,"responseId":"`+responseID+`"`,
+			"",
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + missing + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + missing + `}}`
+	case "progressive-response-model":
+		substituted := strings.Replace(
+			emptyTextAssistant,
+			`,"timestamp":1`,
+			`,"responseModel":"other-model","timestamp":1`,
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + substituted + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + substituted + `}}`
+	case "progressive-timestamp-drift":
+		drifted := strings.Replace(
+			emptyTextAssistant,
+			`"timestamp":1`,
+			`"timestamp":2`,
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + drifted + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + drifted + `}}`
+	case "progressive-partial-mismatch":
+		different := strings.Replace(
+			emptyTextAssistant,
+			responseID,
+			"20000000-0000-4000-8000-000000000002",
+			1,
+		)
+		lines[6] = `{"type":"message_update","message":` + emptyTextAssistant + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + different + `}}`
+	case "progressive-cache-write-1h":
+		withCacheWrite1h := piRPCFixtureWithUsageField(
+			emptyTextAssistant,
+			`"cacheWrite1h":0`,
+		)
+		lines[6] = `{"type":"message_update","message":` + withCacheWrite1h + `,"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":` + withCacheWrite1h + `}}`
+	case "progressive-reasoning-removed":
+		withReasoning := piRPCFixtureWithUsageField(
+			firstAssistant,
+			`"reasoning":0`,
+		)
+		lines[7] = `{"type":"message_update","message":` + withReasoning + `,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello ","partial":` + withReasoning + `}}`
+	case "progressive-reasoning-terminal-first":
+		lines[9] = `{"type":"message_update","message":` + finalAssistant + `,"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world","partial":` + finalAssistant + `}}`
 	}
 	var quoted []string
 	for _, line := range lines {
@@ -649,6 +832,24 @@ func piRPCFixtureAssistantMessage(text string) string {
 		panic(err)
 	}
 	return string(value)
+}
+
+func piRPCFixtureWithResponseID(message string, responseID string) string {
+	return strings.Replace(
+		message,
+		`,"timestamp":1`,
+		`,"responseId":"`+responseID+`","timestamp":1`,
+		1,
+	)
+}
+
+func piRPCFixtureWithUsageField(message string, field string) string {
+	return strings.Replace(
+		message,
+		`"cacheWrite":0,"totalTokens":0`,
+		`"cacheWrite":0,`+field+`,"totalTokens":0`,
+		1,
+	)
 }
 
 func piRPCShellQuote(value string) string {
