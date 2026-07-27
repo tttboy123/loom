@@ -105,8 +105,8 @@ func TestPiRuntimeProbeNoModelsAndMutationIsolation(t *testing.T) {
 			PiMetadataVersion: {Stdout: "0.82.1"},
 			PiMetadataListModels: {Stdout: strings.Join([]string{
 				"No models available. Use /login to log into a provider via OAuth or API key. See:",
-				"/private/pi/docs/providers.md",
-				"/private/pi/docs/models.md",
+				"  /private/pi/docs/providers.md",
+				"  /private/pi/docs/models.md",
 			}, "\n")},
 		},
 		mutateArgs: true,
@@ -146,10 +146,13 @@ func TestPiRuntimeProbeNoModelsAndMutationIsolation(t *testing.T) {
 func TestPi0821NoModelsDiagnosticCompatibility(t *testing.T) {
 	t.Parallel()
 
+	headline := "No models available. Use /login to log into a provider via OAuth or API key. See:"
+	providersPath := "/private/pi/docs/providers.md"
+	modelsPath := "/private/pi/docs/models.md"
 	valid := strings.Join([]string{
-		"No models available. Use /login to log into a provider via OAuth or API key. See:",
-		"/private/pi/docs/providers.md",
-		"/private/pi/docs/models.md",
+		headline,
+		"  " + providersPath,
+		"  " + modelsPath,
 	}, "\n")
 	if models, err := parsePiModels(valid); err != nil || models != nil {
 		t.Fatalf("parsePiModels(valid) = (%#v, %v), want (nil, nil)", models, err)
@@ -166,33 +169,53 @@ func TestPi0821NoModelsDiagnosticCompatibility(t *testing.T) {
 		}
 	}
 
-	invalid := []string{
-		"No models available.\n/private/pi/docs/providers.md\n/private/pi/docs/models.md",
-		" No models available.",
-		"No models available. ",
-		"No models available.\n\n",
-		"\n" + valid,
-		" " + valid,
-		strings.Replace(valid, "\n/private/pi/docs/providers.md", "\n\n/private/pi/docs/providers.md", 1),
-		strings.Replace(valid, "\n/private/pi/docs/providers.md", "\n \n/private/pi/docs/providers.md", 1),
-		strings.Replace(valid, "/private/pi/docs/providers.md", " /private/pi/docs/providers.md", 1),
-		strings.Replace(valid, "/private/pi/docs/models.md", "/private/pi/docs/models.md ", 1),
-		valid + "\n\n",
-		valid + "\n \n",
-		valid + "\n/private/pi/docs/extra.md",
-		strings.Replace(valid, "/private/pi/docs/models.md", "relative/docs/models.md", 1),
-		strings.Replace(valid, "/private/pi/docs/models.md", "/other/pi/docs/models.md", 1),
-		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/docs/models.md", 1),
-		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/../pi/docs/providers.md", 1),
-		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/docs/provid\x1fers.md", 1),
-		strings.Replace(valid, "/private/pi/docs/providers.md", "/private/pi/docs/providers.md\t", 1),
-		strings.Replace(valid, "/private/pi/docs/models.md", "/private/pi/docs/models.md\v", 1),
-		valid + "\r\n",
+	invalid := []struct {
+		name   string
+		output string
+	}{
+		{name: "legacy headline with paths", output: "No models available.\n  " + providersPath + "\n  " + modelsPath},
+		{name: "headline leading space", output: " " + headline + "\n  " + providersPath + "\n  " + modelsPath},
+		{name: "headline trailing space", output: headline + " \n  " + providersPath + "\n  " + modelsPath},
+		{name: "legacy diagnostic extra lines", output: "No models available.\n\n"},
+		{name: "leading blank line", output: "\n" + valid},
+		{name: "whole output leading space", output: " " + valid},
+		{name: "providers zero indentation", output: strings.Replace(valid, "\n  "+providersPath, "\n"+providersPath, 1)},
+		{name: "models zero indentation", output: strings.Replace(valid, "\n  "+modelsPath, "\n"+modelsPath, 1)},
+		{name: "providers one space", output: strings.Replace(valid, "\n  "+providersPath, "\n "+providersPath, 1)},
+		{name: "models one space", output: strings.Replace(valid, "\n  "+modelsPath, "\n "+modelsPath, 1)},
+		{name: "providers three spaces", output: strings.Replace(valid, "\n  "+providersPath, "\n   "+providersPath, 1)},
+		{name: "models three spaces", output: strings.Replace(valid, "\n  "+modelsPath, "\n   "+modelsPath, 1)},
+		{name: "mixed one and two spaces", output: strings.Replace(valid, "\n  "+modelsPath, "\n "+modelsPath, 1)},
+		{name: "mixed two and three spaces", output: strings.Replace(valid, "\n  "+modelsPath, "\n   "+modelsPath, 1)},
+		{name: "tab indentation", output: strings.Replace(valid, "\n  "+providersPath, "\n\t"+providersPath, 1)},
+		{name: "vertical tab indentation", output: strings.Replace(valid, "\n  "+providersPath, "\n\v"+providersPath, 1)},
+		{name: "non ascii indentation", output: strings.Replace(valid, "\n  "+providersPath, "\n\u00a0"+providersPath, 1)},
+		{name: "two spaces then tab", output: strings.Replace(valid, "\n  "+providersPath, "\n  \t"+providersPath, 1)},
+		{name: "blank line before providers", output: strings.Replace(valid, "\n  "+providersPath, "\n\n  "+providersPath, 1)},
+		{name: "whitespace line before providers", output: strings.Replace(valid, "\n  "+providersPath, "\n \n  "+providersPath, 1)},
+		{name: "providers trailing space", output: strings.Replace(valid, providersPath, providersPath+" ", 1)},
+		{name: "models trailing space", output: strings.Replace(valid, modelsPath, modelsPath+" ", 1)},
+		{name: "extra final LF", output: valid + "\n\n"},
+		{name: "extra whitespace line", output: valid + "\n \n"},
+		{name: "extra path", output: valid + "\n  /private/pi/docs/extra.md"},
+		{name: "relative models path", output: strings.Replace(valid, modelsPath, "relative/docs/models.md", 1)},
+		{name: "different parent", output: strings.Replace(valid, modelsPath, "/other/pi/docs/models.md", 1)},
+		{name: "non docs parents", output: strings.ReplaceAll(valid, "/private/pi/docs/", "/private/pi/not-docs/")},
+		{name: "providers basename swapped", output: strings.Replace(valid, providersPath, modelsPath, 1)},
+		{name: "unclean providers path", output: strings.Replace(valid, providersPath, "/private/pi/../pi/docs/providers.md", 1)},
+		{name: "providers embedded control", output: strings.Replace(valid, providersPath, "/private/pi/docs/provid\x1fers.md", 1)},
+		{name: "providers trailing tab", output: strings.Replace(valid, providersPath, providersPath+"\t", 1)},
+		{name: "models trailing vertical tab", output: strings.Replace(valid, modelsPath, modelsPath+"\v", 1)},
+		{name: "carriage return", output: valid + "\r\n"},
 	}
-	for index, output := range invalid {
-		if models, err := parsePiModels(output); !errors.Is(err, ErrInvalidPiMetadataOutput) || models != nil {
-			t.Fatalf("parsePiModels(invalid[%d]) = (%#v, %v), want ErrInvalidPiMetadataOutput", index, models, err)
-		}
+	for _, test := range invalid {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if models, err := parsePiModels(test.output); !errors.Is(err, ErrInvalidPiMetadataOutput) || models != nil {
+				t.Fatalf("parsePiModels() = (%#v, %v), want ErrInvalidPiMetadataOutput", models, err)
+			}
+		})
 	}
 }
 

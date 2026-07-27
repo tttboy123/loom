@@ -21,6 +21,7 @@ const (
 
 	piLegacyNoModelsDiagnostic = "No models available."
 	pi0821NoModelsDiagnostic   = "No models available. Use /login to log into a provider via OAuth or API key. See:"
+	pi0821NoModelsPathIndent   = "  "
 )
 
 var (
@@ -295,20 +296,22 @@ func validPi0821NoModelsDiagnostic(stdout string) bool {
 		rawLines[0] != pi0821NoModelsDiagnostic {
 		return false
 	}
-	for _, rawLine := range rawLines {
-		if rawLine == "" || strings.TrimSpace(rawLine) != rawLine {
+	for _, rawLine := range rawLines[1:] {
+		if !strings.HasPrefix(rawLine, pi0821NoModelsPathIndent) {
 			return false
 		}
-	}
-	for _, rawPath := range rawLines[1:] {
+		rawPath := rawLine[len(pi0821NoModelsPathIndent):]
+		if rawPath == "" || strings.HasPrefix(rawPath, " ") {
+			return false
+		}
 		for _, character := range rawPath {
 			if unicode.IsControl(character) {
 				return false
 			}
 		}
 	}
-	providersPath := rawLines[1]
-	modelsPath := rawLines[2]
+	providersPath := rawLines[1][len(pi0821NoModelsPathIndent):]
+	modelsPath := rawLines[2][len(pi0821NoModelsPathIndent):]
 	if !validPiMetadataDocPath(providersPath, "providers.md") ||
 		!validPiMetadataDocPath(modelsPath, "models.md") {
 		return false
