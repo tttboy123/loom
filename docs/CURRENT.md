@@ -1388,3 +1388,25 @@ evidence commits are `c6f9ce7` and `7794b79`. All invocation allowances are
 consumed; no rerun, retry, fallback, compaction, alternate model, Provider
 switch, parser widening, resident daemon, production activation, credential
 change, push, merge, release, or publication is authorized by completion.
+
+`CURRENT`: Phase 2A `Local Product Experience` governance is `PARTIAL`. The
+Product Owner authorized a TUI-first local product while retaining the CLI for
+headless automation, diagnosis, and recovery. Proposed ADR-0011 and the draft
+Phase 2A Exit Contract freeze one shared application/authority path, private
+versioned daemon IPC, ordinary no-terminal user journeys, and exactly three
+vertical WorkItems: P2A-W1 Local App Shell and Read Experience, P2A-W2 Team
+Builder and Provider Onboarding, and P2A-W3 Controlled Execution Experience.
+No P2A-W4 or wrapper-only WorkItem is permitted. The current gate is fresh
+independent ADR/Exit Contract Review; no Phase 2A product code, Provider
+traffic, credential mutation, daemon replacement, migration, or live canary is
+authorized before that Review returns `PASS`.
+
+`CURRENT`: Phase 2A governance is frozen after fresh independent ADR/Exit
+Contract Review returned `PASS` with no blocking findings. ADR-0011 is
+`accepted`, and the Phase 2A Exit Contract is `FROZEN`. Reviewer advisories bind
+P2A-W1 to an exact owned-file/protocol/UDS-security freeze and P2A-W2 to an
+exact Credential Broker/OS Secret Store/redaction freeze before their RED
+gates. The current gate is the P2A-W1 Local App Shell and Read Experience child
+contract and its fresh independent Contract Review. No Phase 2A product code,
+Provider traffic, credential mutation, daemon replacement, migration, or live
+canary is yet authorized.
