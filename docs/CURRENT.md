@@ -3301,3 +3301,48 @@ deterministic GREEN plus this Review unlock exactly one controlled native-window
 lineage `p2a-w2-live-20260730-005` using exact post-Review Candidate binaries.
 No retry or second canary is authorized. P2A-W2 remains unaccepted until fresh
 Result-Evidence Review `PASS`; P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: the only `p2a-w2-live-20260730-005` canary is consumed with verdict
+`FAIL — PROVIDER_FACT_MISSING_AND_SHUTDOWN_STALLED`. The post-Review Candidate
+appended one model-capable Runtime discovery, exposed compatible Main/SubAgent
+roles, saved exactly one TeamDefinition through the ordinary bounded Builder,
+and reconstructed Codex `Available`, MiniMax `Verified`, the Runtime and saved
+team after app restart. The single MiniMax `Test` appended no new terminal
+verification fact. The attempt daemon then remained alive after one normal
+interrupt plus a 35-second wait and one exact-PID termination plus a ten-second
+wait; cleanup required exact-PID forced termination. Final SQLite integrity is
+`ok`; the seven Events are the inherited five plus only one Runtime discovery
+and one TeamDefinition save, with no TeamInstance, AgentInstance, WorkItem, Run,
+Grant, Evidence, dispatch or execution fact. App/attempt/Pi/llama processes are
+absent, isolation is empty, the unowned product socket is removed, and the
+immediate post-cleanup observation still found the separate resident daemon at
+preflight PID `66336` with the same executable hash and arguments. Every
+Controller cleanup signal named only attempt PID `80523`.
+P2A-W2 remains unaccepted, P2A-W3 remains locked, no P2A-W4 exists and no retry
+or second canary is authorized. Fresh independent read-only Result-Evidence
+Review is the current gate.
+
+`CURRENT`: the first attempt-005 Result-Evidence Review returned
+`FAIL — REPAIR REQUIRED` with one P1 evidence-precision finding. During that
+later read-only check, preflight/immediate-post PID `66336` was absent and the
+same launchd-managed resident lineage was running under another PID with the
+same executable hash and configured arguments. A subsequent Controller
+read-only snapshot showed repeated service-manager restarts and last exit code
+`4`. The cause is not established here, so the result no longer claims
+resident PID continuity beyond the immediate post-cleanup observation. The
+review independently reproduced every attempt/source hash, exact five-to-seven
+Event delta, missing Provider fact, zero execution facts and cleanup condition;
+the product verdict remains FAIL. Fresh independent read-only Result-Evidence
+Re-review is the current gate; P2A-W2 is unaccepted, P2A-W3 locked, no P2A-W4
+exists and no retry is authorized.
+
+`CURRENT`: fresh independent read-only attempt-005 Result-Evidence Re-review
+returned `PASS` with no P0, P1 or P2 finding. It reproduced the exact private
+source/final hashes and integrity, one Runtime plus one TeamDefinition delta,
+unchanged Provider verification count, zero execution facts, exact Candidate
+binaries and complete attempt cleanup. It confirmed that the repaired evidence
+separates the immediate PID `66336` observation from later launchd-managed
+resident process churn and makes no unsupported continuity claim. The consumed
+canary remains `FAIL — PROVIDER_FACT_MISSING_AND_SHUTDOWN_STALLED`; P2A-W2 is
+unaccepted, P2A-W3 remains locked, no P2A-W4 exists and no retry or second
+canary is authorized.
