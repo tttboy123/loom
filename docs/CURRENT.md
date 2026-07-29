@@ -2953,3 +2953,35 @@ Support; no attempt process remains. The resident accepted Runtime observer
 and its state remain untouched. This cleanup changes no acceptance state:
 P2A-W2 is still `HUMAN_REQUIRED` with allowance unconsumed, P2A-W3 is locked,
 and P2A-W4 does not exist.
+
+`CURRENT`: Product Owner request `帮我打开对应的窗口` froze and received fresh
+independent Contract Review `PASS` for one new
+`p2a-w2-live-20260730-002` resumption lineage. Exact W2 binaries, Pi, Node,
+Codex native target, addressable arm64 bundle, permissions, signature,
+no-symlink, source identity, fresh paths and zero-Event preflight passed. The
+isolated daemon wrote only the expected Runtime discovery and Computer Use
+opened Team Builder at the MiniMax SecureField without the Controller reading
+or entering a credential.
+
+`CURRENT`: the user personally configured a credential after explicitly
+stating an intent to reuse the value already pasted into chat. The reviewed
+resumption contract prohibits every chat-pasted credential, so the result is
+invalid for W2 acceptance. The isolated Journal contains one
+`ProviderCredentialConfigured` and two `ProviderCredentialVerified` facts; the
+Controller did not activate `Test`, and the external request count is not
+asserted from Event facts alone. The user refused the requested product-level
+`Revoke` action. The Controller performed no further Provider or Team Builder
+action, stopped the app and daemon, and left the exact attempt SQLite for fresh
+Result-Evidence Review. No Team or execution authority exists. Allowance is
+consumed, P2A-W2 is `INVALID / HUMAN_REQUIRED` and not accepted, P2A-W3 remains
+locked, and P2A-W4 does not exist.
+
+`CURRENT`: fresh independent Result-Evidence Review of invalid W2 attempt 002
+returned `PASS` with no P0, P1, or P2 findings. The Reviewer reproduced exactly
+four Events, the absent revocation/Team/execution Event set, `0700` attempt
+root, regular `0600` SQLite, absent socket and attempt processes, and preserved
+resident observer. It confirmed the chat-pasted-credential contract violation,
+consumed allowance, invalid `HUMAN_REQUIRED` result, W3 lock and no-W4 state.
+It inspected no payload, Keychain, environment or chat secret and performed no
+mutation. Cleanup remains blocked by the user's explicit refusal to revoke the
+configured credential.
