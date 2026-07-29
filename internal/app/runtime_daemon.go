@@ -68,6 +68,7 @@ type LocalRuntimeObservationDaemonConfig struct {
 	ObservationInterval time.Duration
 	ProcessTimeout      time.Duration
 	MaxCycles           int
+	LocalModelCatalog   *piadapter.PiLocalModelCatalogConfig
 }
 
 type RuntimeObservationDaemonClock interface {
@@ -184,6 +185,7 @@ func NewLocalRuntimeObservationDaemon(
 			IsolationRoot:      config.IsolationRoot,
 			RuntimeSearchPaths: config.RuntimeSearchPaths,
 			Timeout:            config.ProcessTimeout,
+			LocalModelCatalog:  config.LocalModelCatalog,
 		},
 	)
 	if err != nil {
@@ -632,6 +634,10 @@ func validateLocalRuntimeObservationDaemonConfig(
 		searchPaths = append(searchPaths, resolved)
 	}
 	input.RuntimeSearchPaths = searchPaths
+	if input.LocalModelCatalog != nil {
+		copied := *input.LocalModelCatalog
+		input.LocalModelCatalog = &copied
+	}
 	return input, nil
 }
 

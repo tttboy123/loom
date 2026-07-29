@@ -180,6 +180,37 @@ func TestPiMetadataProcessRunnerSuccessIsolationAndCleanup(t *testing.T) {
 	assertDirectoryEmpty(t, config.IsolationRoot)
 }
 
+func TestPiMetadataProcessRunnerMaterializesBoundLocalCatalog(t *testing.T) {
+	root := piLocalModelPrivateRoot(t, "metadata-runner-catalog")
+	serverConfig, digest := piLocalModelInspectorFixture(t, root)
+	fixture := makePiMetadataFixture(t, "catalog-success")
+	config := validPiMetadataProcessRunnerConfig(t, fixture)
+	config.LocalModelCatalog = &PiLocalModelCatalogConfig{
+		PrivateRoot:    serverConfig.PrivateRoot,
+		ExecutablePath: serverConfig.ExecutablePath,
+		ModelPath:      serverConfig.ModelPath,
+	}
+	expected, err := piLocalModelCatalogJSON(piLocalModelCatalogBaseURL)
+	if err != nil {
+		t.Fatalf("piLocalModelCatalogJSON() error = %v", err)
+	}
+	writeFixtureControl(t, fixture, "expected-models-json", string(expected))
+	runner, err := newPiMetadataProcessRunner(config, digest)
+	if err != nil {
+		t.Fatalf("newPiMetadataProcessRunner() error = %v", err)
+	}
+
+	result, err := runner.RunPiMetadata(context.Background(), piModelRequest())
+	if err != nil {
+		t.Fatalf("RunPiMetadata() error = %v; fixture diagnostic = %s", err, readFixtureDiagnostic(fixture))
+	}
+	want := "provider model context max-out thinking images\nloom-local qwen2.5-coder-1.5b-instruct-q4-k-m 32K 256 no no\n"
+	if result != (loomruntime.PiMetadataResult{Stdout: want}) {
+		t.Fatalf("result = %#v, want stdout %q", result, want)
+	}
+	assertDirectoryEmpty(t, config.IsolationRoot)
+}
+
 func TestPiMetadataProcessRunnerBindingAndSymlinkBehavior(t *testing.T) {
 	t.Run("executable symlink retarget cannot redirect", func(t *testing.T) {
 		dir := t.TempDir()
@@ -545,6 +576,14 @@ validate_environment() {
 	done
 }
 
+validate_catalog() {
+	models_path="$PI_CODING_AGENT_DIR/models.json"
+	[ -f "$models_path" ] || return 1
+	mode_value=$(/usr/bin/stat -f '%%Lp' "$models_path" 2>/dev/null || /usr/bin/stat -c '%%a' "$models_path" 2>/dev/null)
+	[ "$mode_value" = 600 ] || return 1
+	/usr/bin/cmp -s "$models_path" "$fixture_dir/expected-models-json"
+}
+
 emit_metadata() {
 	if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
 		printf '0.73.1\n'
@@ -586,6 +625,19 @@ case "$mode" in
 			exit 81
 		}
 		emit_metadata "$@"
+		;;
+	catalog-success)
+		validate_environment && validate_catalog || {
+			{ printf 'catalog='; /bin/ls -la "$PI_CODING_AGENT_DIR" 2>&1; } > "$fixture_dir/diagnostic"
+			exit 82
+		}
+		if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+			printf '0.82.1\n'
+		elif [ "$#" -eq 8 ] && [ "$8" = "--list-models" ]; then
+			printf 'provider model context max-out thinking images\nloom-local qwen2.5-coder-1.5b-instruct-q4-k-m 32K 256 no no\n'
+		else
+			exit 83
+		fi
 		;;
 	fail)
 		printf 'secret-child-stdout'

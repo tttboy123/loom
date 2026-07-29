@@ -28,6 +28,7 @@ type PiLocalRuntimeProbeFactoryConfig struct {
 	IsolationRoot      string
 	RuntimeSearchPaths []string
 	Timeout            time.Duration
+	LocalModelCatalog  *PiLocalModelCatalogConfig
 }
 
 type PiLocalRuntimeProbeFactory struct {
@@ -38,10 +39,18 @@ type PiLocalRuntimeProbeFactory struct {
 	isolationRoot piMetadataDirectoryBinding
 	searchPaths   []piMetadataDirectoryBinding
 	timeout       time.Duration
+	catalog       *piLocalModelCatalog
 }
 
 func NewPiLocalRuntimeProbeFactory(
 	config PiLocalRuntimeProbeFactoryConfig,
+) (*PiLocalRuntimeProbeFactory, error) {
+	return newPiLocalRuntimeProbeFactory(config, piLocalModelSHA256)
+}
+
+func newPiLocalRuntimeProbeFactory(
+	config PiLocalRuntimeProbeFactoryConfig,
+	expectedModelDigest string,
 ) (*PiLocalRuntimeProbeFactory, error) {
 	if config.ProbeID == "" ||
 		config.InstanceID == "" ||
@@ -61,6 +70,16 @@ func NewPiLocalRuntimeProbeFactory(
 	if err != nil {
 		return nil, ErrInvalidPiLocalRuntimeProbeFactory
 	}
+	var catalog *piLocalModelCatalog
+	if config.LocalModelCatalog != nil {
+		catalog, err = bindPiLocalModelCatalog(
+			*config.LocalModelCatalog,
+			expectedModelDigest,
+		)
+		if err != nil {
+			return nil, ErrInvalidPiLocalRuntimeProbeFactory
+		}
+	}
 
 	return &PiLocalRuntimeProbeFactory{
 		probeID:       config.ProbeID,
@@ -70,6 +89,7 @@ func NewPiLocalRuntimeProbeFactory(
 		isolationRoot: root,
 		searchPaths:   append([]piMetadataDirectoryBinding(nil), searchPaths...),
 		timeout:       config.Timeout,
+		catalog:       catalog,
 	}, nil
 }
 
@@ -106,12 +126,12 @@ func (f *PiLocalRuntimeProbeFactory) BuildProbe(
 			return nil, false, err
 		}
 
-		runner, err := NewPiMetadataProcessRunner(PiMetadataProcessRunnerConfig{
+		runner, err := newPiMetadataProcessRunnerWithBoundCatalog(PiMetadataProcessRunnerConfig{
 			ExecutablePath:     candidatePath,
 			IsolationRoot:      f.isolationRoot.path,
 			RuntimeSearchPaths: searchPaths,
 			Timeout:            f.timeout,
-		})
+		}, f.catalog)
 		if err != nil {
 			return nil, false, ErrPiLocalRuntimeProbeConstructionFailed
 		}

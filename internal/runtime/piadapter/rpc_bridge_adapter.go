@@ -591,54 +591,7 @@ func materializePiRPCSettings(agentPath string) error {
 }
 
 func (adapter *piRPCBridgeAdapter) modelsJSON() ([]byte, error) {
-	type cost struct {
-		Input      int `json:"input"`
-		Output     int `json:"output"`
-		CacheRead  int `json:"cacheRead"`
-		CacheWrite int `json:"cacheWrite"`
-	}
-	type model struct {
-		ID            string   `json:"id"`
-		Name          string   `json:"name"`
-		Reasoning     bool     `json:"reasoning"`
-		Input         []string `json:"input"`
-		ContextWindow int      `json:"contextWindow"`
-		MaxTokens     int      `json:"maxTokens"`
-		Cost          cost     `json:"cost"`
-	}
-	type compatibility struct {
-		SupportsDeveloperRole   bool `json:"supportsDeveloperRole"`
-		SupportsReasoningEffort bool `json:"supportsReasoningEffort"`
-	}
-	type provider struct {
-		BaseURL string        `json:"baseUrl"`
-		API     string        `json:"api"`
-		APIKey  string        `json:"apiKey"`
-		Compat  compatibility `json:"compat"`
-		Models  []model       `json:"models"`
-	}
-	value := struct {
-		Providers map[string]provider `json:"providers"`
-	}{
-		Providers: map[string]provider{
-			adapter.providerID: {
-				BaseURL: adapter.baseURL,
-				API:     "openai-completions",
-				APIKey:  "loom-local-offline",
-				Compat:  compatibility{},
-				Models: []model{{
-					ID:            adapter.modelID,
-					Name:          "Loom Local Qwen 2.5 Coder 1.5B",
-					Reasoning:     false,
-					Input:         []string{"text"},
-					ContextWindow: piLocalModelContextTokens,
-					MaxTokens:     piLocalModelMaxOutputTokens,
-					Cost:          cost{},
-				}},
-			},
-		},
-	}
-	return json.Marshal(value)
+	return piModelCatalogJSON(adapter.providerID, adapter.modelID, adapter.baseURL)
 }
 
 func (adapter *piRPCBridgeAdapter) acceptRPCLine(

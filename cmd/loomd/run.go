@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/runtime/piadapter"
 )
 
 const (
@@ -102,6 +103,9 @@ func run(
 	maxCycles := fs.Int("max-cycles", 0, "")
 	socketPath := fs.String("socket", "", "")
 	codexExecutable := fs.String("codex-executable", "", "")
+	localModelPrivateRoot := fs.String("local-model-private-root", "", "")
+	localModelExecutable := fs.String("local-model-executable", "", "")
+	localModelPath := fs.String("local-model-path", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
 	}
@@ -116,6 +120,27 @@ func run(
 		*processTimeout <= 0 {
 		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
 	}
+	localModelValues := 0
+	for _, value := range []string{
+		*localModelPrivateRoot,
+		*localModelExecutable,
+		*localModelPath,
+	} {
+		if value != "" {
+			localModelValues++
+		}
+	}
+	if localModelValues != 0 && localModelValues != 3 {
+		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
+	}
+	var localModelCatalog *piadapter.PiLocalModelCatalogConfig
+	if localModelValues == 3 {
+		localModelCatalog = &piadapter.PiLocalModelCatalogConfig{
+			PrivateRoot:    *localModelPrivateRoot,
+			ExecutablePath: *localModelExecutable,
+			ModelPath:      *localModelPath,
+		}
+	}
 
 	config := daemonBuildConfig{
 		Observer: app.LocalRuntimeObservationDaemonConfig{
@@ -129,6 +154,7 @@ func run(
 			ObservationInterval: *interval,
 			ProcessTimeout:      *processTimeout,
 			MaxCycles:           *maxCycles,
+			LocalModelCatalog:   localModelCatalog,
 		},
 		SocketPath:      *socketPath,
 		CodexExecutable: *codexExecutable,

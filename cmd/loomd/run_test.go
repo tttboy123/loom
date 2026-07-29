@@ -96,6 +96,61 @@ func TestRunAcceptsOptionalPrivateProductSocket(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsLocalModelCatalogOnlyAsCompleteTuple(t *testing.T) {
+	args := append(completeDaemonArgs(),
+		"--local-model-private-root", "/private/phase1-live",
+		"--local-model-executable", "/private/phase1-live/bin/llama-server",
+		"--local-model-path", "/private/phase1-live/models/model.gguf",
+	)
+	var captured app.LocalRuntimeObservationDaemonConfig
+	var stdout, stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		args,
+		&stdout,
+		&stderr,
+		func(config daemonBuildConfig) (daemonRunner, error) {
+			captured = config.Observer
+			return &fakeDaemonRunner{}, nil
+		},
+	)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf("complete catalog code=%d stderr=%q", code, stderr.String())
+	}
+	if captured.LocalModelCatalog == nil ||
+		captured.LocalModelCatalog.PrivateRoot != "/private/phase1-live" ||
+		captured.LocalModelCatalog.ExecutablePath != "/private/phase1-live/bin/llama-server" ||
+		captured.LocalModelCatalog.ModelPath != "/private/phase1-live/models/model.gguf" {
+		t.Fatalf("captured local model catalog = %#v", captured.LocalModelCatalog)
+	}
+
+	for _, partial := range [][]string{
+		{"--local-model-private-root", "/private/phase1-live"},
+		{"--local-model-executable", "/private/phase1-live/bin/llama-server"},
+		{"--local-model-path", "/private/phase1-live/models/model.gguf"},
+		{
+			"--local-model-private-root", "/private/phase1-live",
+			"--local-model-executable", "/private/phase1-live/bin/llama-server",
+		},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		code = run(
+			context.Background(),
+			append(completeDaemonArgs(), partial...),
+			&stdout,
+			&stderr,
+			func(daemonBuildConfig) (daemonRunner, error) {
+				t.Fatal("builder called for partial local model tuple")
+				return nil, nil
+			},
+		)
+		if code != exitInvalidInput || stderr.String() != "invalid input\n" {
+			t.Fatalf("partial %v code=%d stderr=%q", partial, code, stderr.String())
+		}
+	}
+}
+
 func TestRunRejectsMissingAndMapsBuilderAndRuntimeFailures(t *testing.T) {
 	for _, test := range []struct {
 		name    string

@@ -37,6 +37,7 @@ type PiMetadataProcessRunnerConfig struct {
 	IsolationRoot      string
 	RuntimeSearchPaths []string
 	Timeout            time.Duration
+	LocalModelCatalog  *PiLocalModelCatalogConfig
 }
 
 type piMetadataProcessRunner struct {
@@ -44,6 +45,7 @@ type piMetadataProcessRunner struct {
 	isolationRoot piMetadataDirectoryBinding
 	searchPaths   []piMetadataDirectoryBinding
 	timeout       time.Duration
+	catalog       *piLocalModelCatalog
 }
 
 type piMetadataExecutableBinding struct {
@@ -58,6 +60,49 @@ type piMetadataDirectoryBinding struct {
 }
 
 func NewPiMetadataProcessRunner(config PiMetadataProcessRunnerConfig) (loomruntime.PiMetadataRunner, error) {
+	return newPiMetadataProcessRunner(config, piLocalModelSHA256)
+}
+
+func newPiMetadataProcessRunner(
+	config PiMetadataProcessRunnerConfig,
+	expectedModelDigest string,
+) (loomruntime.PiMetadataRunner, error) {
+	runner, err := bindPiMetadataProcessRunnerCore(config)
+	if err != nil {
+		return nil, err
+	}
+	if config.LocalModelCatalog != nil {
+		runner.catalog, err = bindPiLocalModelCatalog(
+			*config.LocalModelCatalog,
+			expectedModelDigest,
+		)
+		if err != nil {
+			return nil, ErrInvalidPiMetadataProcessRunner
+		}
+	}
+	return runner, nil
+}
+
+func newPiMetadataProcessRunnerWithBoundCatalog(
+	config PiMetadataProcessRunnerConfig,
+	catalog *piLocalModelCatalog,
+) (loomruntime.PiMetadataRunner, error) {
+	runner, err := bindPiMetadataProcessRunnerCore(config)
+	if err != nil {
+		return nil, err
+	}
+	if catalog != nil {
+		if err := catalog.validate(); err != nil {
+			return nil, ErrInvalidPiMetadataProcessRunner
+		}
+		runner.catalog = catalog
+	}
+	return runner, nil
+}
+
+func bindPiMetadataProcessRunnerCore(
+	config PiMetadataProcessRunnerConfig,
+) (*piMetadataProcessRunner, error) {
 	if config.Timeout <= 0 ||
 		config.Timeout > maxPiMetadataProcessTimeout ||
 		len(config.RuntimeSearchPaths) == 0 {
@@ -110,6 +155,14 @@ func (r *piMetadataProcessRunner) RunPiMetadata(
 	directories, err := createPiMetadataInvocationDirectories(invocationDirectory)
 	if err != nil {
 		return loomruntime.PiMetadataResult{}, ErrPiMetadataProcessFailed
+	}
+	if r.catalog != nil {
+		if err := r.catalog.materialize(directories.agent); err != nil {
+			if errors.Is(err, ErrPiLocalModelBindingChanged) {
+				return loomruntime.PiMetadataResult{}, ErrPiMetadataBindingChanged
+			}
+			return loomruntime.PiMetadataResult{}, ErrPiMetadataProcessFailed
+		}
 	}
 
 	childContext, cancel := context.WithTimeout(ctx, r.timeout)
@@ -248,6 +301,11 @@ func (r *piMetadataProcessRunner) validateBindings() error {
 	}
 	for _, binding := range r.searchPaths {
 		if !validPiMetadataDirectoryBinding(binding, false) {
+			return ErrPiMetadataBindingChanged
+		}
+	}
+	if r.catalog != nil {
+		if err := r.catalog.validate(); err != nil {
 			return ErrPiMetadataBindingChanged
 		}
 	}

@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-07-29
+Updated: 2026-07-30
 
 ## Product state
 
@@ -3033,3 +3033,70 @@ were preserved. No real OAuth/browser, Provider network, Keychain, resident
 daemon, Team, Run, or live-canary action occurred. This amendment does not
 reinterpret the historical invalid/HUMAN_REQUIRED W2 live result, accept W2,
 unlock P2A-W3, or create P2A-W4.
+
+`CURRENT`: the same-W2 `Isolated Pi Catalog and Live Closure Amendment` froze
+after fresh independent Contract Re-review `PASS`. Its deterministic Candidate
+now binds the exact accepted local llama-server/GGUF identity, writes the
+byte-identical accepted `loom-local` catalog as a private `0600` file inside
+each disposable Pi metadata agent directory, and carries the all-or-none
+service-manager tuple through Runner, probe factory, Runtime daemon and CLI.
+The real parser fixture observes
+`loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m`; Team Builder continues to use
+only authoritative Runtime discovery and does not invent models.
+
+`CURRENT`: mandatory RED and the complete deterministic matrix pass: focused
+and five-run focused-race tests, complete Go and repository-race tests, vet,
+module tidy/verify, format/diff, Swift debug tests, release build and
+thread-sanitizer tests. Catalog binding drift fails before process launch and
+the existing no-catalog behavior remains compatible. No installed Pi,
+llama-server, Codex, Keychain, MiniMax/network, native app, product daemon,
+resident observer, Journal clone or live action occurred. Fresh independent
+Implementation Review is the current gate; the one reviewed attempt-003 live
+allowance remains unused, P2A-W3 remains locked, and no P2A-W4 exists.
+
+`CURRENT`: a pre-review Controller audit added Repair 1 after proving that the
+initial probe factory retained catalog paths rather than the construction-time
+file identities. A same-digest file replacement RED was accepted by
+`BuildProbe`; the repaired factory now retains the exact bound catalog and each
+Runner revalidates that identity at construction and before every metadata
+process. The focused regression is green. The interrupted review produced no
+verdict. Five-run focused race, serial complete Go and repository-race, vet,
+module, format/diff, and fresh Swift debug/release/thread-sanitizer matrices now
+pass. One package-parallel Go run under abnormal process-fixture latency
+produced three unrelated daemon/local-model timing failures; each failed test
+then passed ten serial repetitions and the complete `-p 1` matrices passed.
+Fresh independent Implementation Review is again the current gate.
+
+`CURRENT`: fresh independent read-only Implementation Review after Repair 1
+returned `PASS` with no P0, P1 or P2 findings. The Reviewer reproduced the
+frozen contract SHA and baseline HEAD, confirmed retained file identity,
+shared serialization, private atomic materialization, all-or-none CLI input,
+authoritative Runtime model flow and truthful transient-test accounting, and
+performed no mutation or live action. Only the single frozen
+`p2a-w2-live-20260730-003` closure lineage is now unlocked. P2A-W2 is not yet
+accepted, P2A-W3 remains locked, and no P2A-W4 exists.
+
+`CURRENT`: the single reviewed `p2a-w2-live-20260730-003` daemon start exited
+fail-closed with code `4` and sanitized result `daemon failed: observer` before
+creating the product socket. The native app was materialized but never
+launched, so no GUI, Provider request, Team Builder action or restart journey
+occurred. Post-failure inspection reproduced the cloned database's exact
+`b0312739...75e22` SHA, `integrity_check=ok`, five inherited Events, zero new
+attempt-003 Events, absent WAL/SHM/socket/attempt processes, an unchanged
+attempt-002 source database, and the untouched resident observer PID `44887`.
+No replacement start or alternate path was attempted. The frozen allowance is
+consumed, the deterministic Candidate remains Implementation-Review `PASS`,
+but the live closure is `FAIL — OBSERVER_PRE_SOCKET`. P2A-W2 remains
+unaccepted, P2A-W3 remains locked, no P2A-W4 exists, and fresh independent
+Result-Evidence Review is the current gate.
+
+`CURRENT`: fresh independent read-only Result-Evidence Review of the failed
+attempt-003 lineage returned `PASS` with no P0, P1 or P2 findings. The Reviewer
+reproduced both database hashes and integrity, the exact inherited five-Event
+metadata set, zero new Events, private modes, exact Candidate/evidence hashes,
+empty isolation directory, absent socket and attempt processes, and the
+separate untouched resident PID `44887`, without reading credential payloads
+or references or executing any live surface. This PASS accepts only the
+truthful `FAIL — OBSERVER_PRE_SOCKET` record. It does not accept P2A-W2:
+the single live allowance is consumed, P2A-W2 remains unaccepted, P2A-W3 stays
+locked, and no P2A-W4 exists.

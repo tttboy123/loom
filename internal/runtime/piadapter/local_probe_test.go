@@ -170,6 +170,101 @@ func TestPiLocalRuntimeProbeFactoryContextAndAbsentInstallation(t *testing.T) {
 	assertDirectoryEmpty(t, config.IsolationRoot)
 }
 
+func TestPiLocalRuntimeProbeFactoryCarriesCatalogThroughRealParser(t *testing.T) {
+	root := piLocalModelPrivateRoot(t, "probe-catalog")
+	serverConfig, digest := piLocalModelInspectorFixture(t, root)
+	fixture := makePiMetadataFixture(t, "catalog-success")
+	search := filepath.Dir(fixture)
+	executable := filepath.Join(search, piLocalRuntimeExecutableName)
+	if err := os.Rename(fixture, executable); err != nil {
+		t.Fatal(err)
+	}
+	config := validPiLocalRuntimeProbeFactoryConfig(t, []string{search})
+	config.LocalModelCatalog = &PiLocalModelCatalogConfig{
+		PrivateRoot:    serverConfig.PrivateRoot,
+		ExecutablePath: serverConfig.ExecutablePath,
+		ModelPath:      serverConfig.ModelPath,
+	}
+	expected, err := piLocalModelCatalogJSON(piLocalModelCatalogBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureControl(
+		t,
+		executable,
+		"expected-path",
+		canonicalSearchPath(t, config.RuntimeSearchPaths),
+	)
+	writeFixtureControl(t, executable, "expected-models-json", string(expected))
+	factory, err := newPiLocalRuntimeProbeFactory(config, digest)
+	if err != nil {
+		t.Fatalf("newPiLocalRuntimeProbeFactory() error = %v", err)
+	}
+	probe, found, err := factory.BuildProbe(context.Background())
+	if err != nil || !found || probe == nil {
+		t.Fatalf("BuildProbe() = (%#v, %v, %v)", probe, found, err)
+	}
+	snapshot, err := loomruntime.DiscoverRuntime(
+		context.Background(),
+		[]loomruntime.RuntimeProbe{probe},
+	)
+	if err != nil {
+		t.Fatalf("DiscoverRuntime() error = %v", err)
+	}
+	observations := snapshot.Observations()
+	wantModel := piRPCProviderID + "/" + piRPCModelID
+	if len(observations) != 1 ||
+		!reflect.DeepEqual(observations[0].ModelIDs, []string{wantModel}) ||
+		observations[0].Instance.ExecutableVersion != "0.82.1" {
+		t.Fatalf("observations = %#v", observations)
+	}
+	assertDirectoryEmpty(t, config.IsolationRoot)
+}
+
+func TestPiLocalRuntimeProbeFactoryRejectsSameDigestCatalogIdentityReplacement(
+	t *testing.T,
+) {
+	root := piLocalModelPrivateRoot(t, "probe-catalog-replacement")
+	serverConfig, digest := piLocalModelInspectorFixture(t, root)
+	fixture := makePiMetadataFixture(t, "catalog-success")
+	search := filepath.Dir(fixture)
+	executable := filepath.Join(search, piLocalRuntimeExecutableName)
+	if err := os.Rename(fixture, executable); err != nil {
+		t.Fatal(err)
+	}
+	config := validPiLocalRuntimeProbeFactoryConfig(t, []string{search})
+	config.LocalModelCatalog = &PiLocalModelCatalogConfig{
+		PrivateRoot:    serverConfig.PrivateRoot,
+		ExecutablePath: serverConfig.ExecutablePath,
+		ModelPath:      serverConfig.ModelPath,
+	}
+	factory, err := newPiLocalRuntimeProbeFactory(config, digest)
+	if err != nil {
+		t.Fatalf("newPiLocalRuntimeProbeFactory() error = %v", err)
+	}
+	content, err := os.ReadFile(serverConfig.ModelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := serverConfig.ModelPath + ".replaced"
+	if err := os.Rename(serverConfig.ModelPath, replaced); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(serverConfig.ModelPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	probe, found, err := factory.BuildProbe(context.Background())
+	assertNoPiLocalProbe(t, probe, found)
+	if !errors.Is(err, ErrPiLocalRuntimeProbeConstructionFailed) {
+		t.Fatalf(
+			"BuildProbe() error = %v, want ErrPiLocalRuntimeProbeConstructionFailed",
+			err,
+		)
+	}
+	assertDirectoryEmpty(t, config.IsolationRoot)
+}
+
 func TestPiLocalRuntimeProbeFactoryUsesOnlyFixedOrderedConfiguredCandidates(t *testing.T) {
 	t.Setenv("LOOM_PI_LOCAL_FACTORY_SECRET", "secret-parent-value")
 	ambient := privateTempDir(t)
