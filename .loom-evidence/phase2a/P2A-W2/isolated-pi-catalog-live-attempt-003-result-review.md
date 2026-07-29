@@ -2,26 +2,25 @@
 
 **Date**: 2026-07-30
 **Review type**: fresh independent read-only Result-Evidence Review
-**Result reviewed**: `FAIL — OBSERVER_PRE_SOCKET`
-**Verdict**: `PASS`
+**Result reviewed**: superseded `FAIL — OBSERVER_PRE_SOCKET`
+**Verdict**: `REPAIR 1 REQUIRED`
 
 ```text
 P0 = none
-P1 = none
+P1 = socket lifecycle chronology is contradicted by product code
 P2 = none
-VERDICT = PASS
+VERDICT = REPAIR 1 REQUIRED
 ```
 
 ## Evidence verdict
 
-The Reviewer confirmed that the evidence truthfully supports the recorded
-result:
+The initial read-only review confirmed the post-exit filesystem and Journal
+facts but missed a lifecycle contradiction:
 
 - the frozen contract permitted exactly one
   `p2a-w2-live-20260730-003` lineage after Implementation Review `PASS`;
 - the single daemon start exited code `4` with sanitized
-  `daemon failed: observer` before product-socket creation and native-app
-  launch;
+  `daemon failed: observer`, and the native app was not launched;
 - the deterministic Implementation Review remains `PASS` and is not
   contradicted by the live failure;
 - the failed live result does not accept P2A-W2, unlock P2A-W3, or create
@@ -58,10 +57,10 @@ runtime_instance:runtime.p2a-w2-live.pi.0.82.1        seq 1..1, count 1
 ```
 
 Byte identity with the inherited baseline proves that attempt 003 appended zero
-new Events. The Reviewer also reproduced:
+new Events. The Reviewer also reproduced these post-exit facts:
 
 ```text
-product socket candidates = absent
+product socket candidates after exit = absent
 attempt processes          = absent
 isolation directory        = empty
 native executable SHA-256  = 8b12670b30aeef25959f4acd024967655b3bf688ccb456d21004ca31d4eddbc7
@@ -74,16 +73,42 @@ Resident observer PID `44887` remained a separate
 `demo-resident/bin/loomd` process using its original demo-resident state and
 isolation paths, not an attempt-003 process.
 
-## Conclusion
+## Repair 1
 
-The evidence supports the unique pre-socket observer failure, zero new Events,
-no retry in the reviewed lineage, live closure `FAIL`, P2A-W2 unaccepted,
-P2A-W3 locked, no P2A-W4, and continued validity of deterministic
-Implementation Review `PASS`.
+Fresh Controller source-path inspection established that
+`productDaemonRunner.Run` starts the local IPC server, waits for
+`runner.server.Ready()`, and only then starts `runner.observer.Run`. An
+`observer` failure classification therefore proves that IPC reached the ready
+boundary before the observer failed. The later absent socket proves cleanup;
+it cannot prove that the socket was never created.
 
-This Result-Evidence Review `PASS` accepts only the accuracy and completeness
-of the failed-result record. It does not turn the failed canary into product
-acceptance.
+The original `PASS` verdict is withdrawn. The result record is repaired to
+`FAIL — OBSERVER_AFTER_IPC_READY`, retaining the independently reproduced
+zero-new-Event, no-app-launch, no-retry, cleanup and resident-preservation
+facts. A fresh independent Repair 1 Result-Evidence Review is required.
+
+## Fresh independent Repair 1 review
+
+**Verdict**: `PASS`
+
+```text
+P0 = none
+P1 = none
+P2 = none
+VERDICT = PASS
+```
+
+The fresh Reviewer directly inspected `productDaemonRunner.Run` and confirmed
+the exact chronology: `Serve`, internal `Ready`, observer start, observer
+failure, cancellation, server close and sanitized `observer` classification.
+It independently reproduced both database hashes and integrity, the inherited
+five-Event metadata set, zero new Events, empty isolation directory, absent
+post-exit socket/processes, and the separate resident PID `44887`.
+
+The Reviewer read no `payload_json` or credential reference and ran no product,
+Pi, llama-server, Codex, native app, Keychain or network action. It modified
+nothing. Repair 1 Result-Evidence Review therefore accepts the corrected
+failure record, not the live closure.
 
 ## Independence and non-actions
 

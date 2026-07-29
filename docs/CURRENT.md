@@ -3077,26 +3077,39 @@ performed no mutation or live action. Only the single frozen
 accepted, P2A-W3 remains locked, and no P2A-W4 exists.
 
 `CURRENT`: the single reviewed `p2a-w2-live-20260730-003` daemon start exited
-fail-closed with code `4` and sanitized result `daemon failed: observer` before
-creating the product socket. The native app was materialized but never
-launched, so no GUI, Provider request, Team Builder action or restart journey
-occurred. Post-failure inspection reproduced the cloned database's exact
+fail-closed with code `4` and sanitized result `daemon failed: observer`. The
+native app was materialized but never launched, so no GUI, Provider request,
+Team Builder action or restart journey occurred. Post-failure inspection
+reproduced the cloned database's exact
 `b0312739...75e22` SHA, `integrity_check=ok`, five inherited Events, zero new
-attempt-003 Events, absent WAL/SHM/socket/attempt processes, an unchanged
+attempt-003 Events, absent post-exit WAL/SHM/socket/attempt processes, an unchanged
 attempt-002 source database, and the untouched resident observer PID `44887`.
 No replacement start or alternate path was attempted. The frozen allowance is
 consumed, the deterministic Candidate remains Implementation-Review `PASS`,
-but the live closure is `FAIL — OBSERVER_PRE_SOCKET`. P2A-W2 remains
+but the live closure is `FAIL — OBSERVER_AFTER_IPC_READY`. P2A-W2 remains
 unaccepted, P2A-W3 remains locked, no P2A-W4 exists, and fresh independent
 Result-Evidence Review is the current gate.
 
-`CURRENT`: fresh independent read-only Result-Evidence Review of the failed
-attempt-003 lineage returned `PASS` with no P0, P1 or P2 findings. The Reviewer
+`CURRENT`: the initial read-only Result-Evidence Review of the failed
+attempt-003 lineage reproduced the database/Event/process cleanup facts but its
+`PASS` is withdrawn by Repair 1. Product code starts the IPC server, waits for
+its `Ready()` boundary and only then starts the observer; an `observer` failure
+therefore occurred after IPC readiness. The absent socket observed after exit
+proves cleanup, not that the socket was never created. The Reviewer had
 reproduced both database hashes and integrity, the exact inherited five-Event
 metadata set, zero new Events, private modes, exact Candidate/evidence hashes,
 empty isolation directory, absent socket and attempt processes, and the
 separate untouched resident PID `44887`, without reading credential payloads
-or references or executing any live surface. This PASS accepts only the
-truthful `FAIL — OBSERVER_PRE_SOCKET` record. It does not accept P2A-W2:
-the single live allowance is consumed, P2A-W2 remains unaccepted, P2A-W3 stays
-locked, and no P2A-W4 exists.
+or references or executing any live surface. The result is repaired to
+`FAIL — OBSERVER_AFTER_IPC_READY`; fresh independent Repair 1 Result-Evidence
+Review is the current gate. The single live allowance remains consumed,
+P2A-W2 remains unaccepted, P2A-W3 stays locked, and no P2A-W4 exists.
+
+`CURRENT`: fresh independent read-only Repair 1 Result-Evidence Review returned
+`PASS` with no P0, P1 or P2 findings. It directly verified the
+Serve→Ready→observer→cleanup chronology and independently reproduced the exact
+post-exit hashes, Event metadata, zero-new-Event state, empty isolation,
+absent socket/processes and separate resident observer without inspecting
+credential payloads/references or executing any live surface. This accepts only
+the corrected `FAIL — OBSERVER_AFTER_IPC_READY` evidence. P2A-W2 remains
+unaccepted, P2A-W3 stays locked, and no P2A-W4 exists.

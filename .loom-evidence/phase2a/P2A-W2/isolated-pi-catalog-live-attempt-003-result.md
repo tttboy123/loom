@@ -2,7 +2,7 @@
 
 **Date**: 2026-07-30
 **Lineage**: `p2a-w2-live-20260730-003`
-**Status**: `FAIL — OBSERVER_PRE_SOCKET — NO RETRY UNDER FROZEN LINEAGE`
+**Status**: `FAIL — OBSERVER_AFTER_IPC_READY — NO RETRY UNDER FROZEN LINEAGE`
 
 ## Verdict
 
@@ -13,9 +13,15 @@ Closure Amendment exited with code `4` and the sanitized terminal result:
 daemon failed: observer
 ```
 
-The failure occurred before creation of the product socket and before the
-native app was launched. The native Team Builder journey therefore did not
-start, and none of its live acceptance claims were earned.
+Production lifecycle inspection proves that the product IPC server reached its
+internal `Ready()` boundary before the observer was started. The observer then
+failed, the daemon closed the IPC server, and the product socket was absent by
+the time the Controller observed the failed exit. The polling evidence did not
+capture the transient ready socket and must not be represented as proof that
+the socket was never created.
+
+The native app was not launched. The native Team Builder journey therefore did
+not start, and none of its live acceptance claims were earned.
 
 No replacement start or alternate executable/configuration path was attempted.
 The frozen attempt-003 live allowance is consumed by this failed start.
@@ -85,7 +91,7 @@ SQLite integrity_check      = ok
 total Events                = 5
 new attempt-003 Events       = 0
 WAL/SHM                     = absent
-product socket              = absent
+product socket after exit   = absent
 attempt processes           = absent
 Pi/llama child processes    = absent
 native app process          = absent
@@ -95,6 +101,7 @@ The five Events remain only the inherited invalid/diagnostic attempt-002
 baseline. Attempt 003 appended no Runtime, Provider, Team, Agent, WorkItem, Run,
 Grant, Evidence, dispatch, or execution fact.
 
+The post-exit socket absence proves successful cleanup, not pre-socket failure.
 The separate accepted resident Runtime observer remained PID `44887` with its
 original state and arguments and no product socket. It was not stopped,
 reconfigured, signaled, or otherwise touched.
@@ -125,7 +132,7 @@ lineage; it is not silently inferred and no second canary is consumed here.
 - The deterministic isolated Pi catalog Candidate and its independent
   Implementation Review remain `PASS`.
 - The required W2 native journey and live Result-Evidence acceptance proof are
-  `FAIL`.
+  `FAIL — OBSERVER_AFTER_IPC_READY`.
 - P2A-W2 remains unaccepted.
 - P2A-W3 remains locked.
 - No P2A-W4 exists.
