@@ -3346,3 +3346,44 @@ resident process churn and makes no unsupported continuity claim. The consumed
 canary remains `FAIL — PROVIDER_FACT_MISSING_AND_SHUTDOWN_STALLED`; P2A-W2 is
 unaccepted, P2A-W3 remains locked, no P2A-W4 exists and no retry or second
 canary is authorized.
+
+`CURRENT`: read-only post-result diagnosis identifies a proven unbounded owner
+consistent with both attempt-005 failures. `credential_verify` synchronously
+enters Keychain `SecItemCopyMatching` after only a pre-call context check;
+Provider observation is bounded to five seconds and terminal commit to one
+second, while local IPC correctly cancels then joins every handler. Attempt-005
+did not retain a goroutine dump, so the exact stalled live frame is not claimed.
+The owner defect independently prevents proof of bounded verification and
+shutdown. Increasing IPC timeouts would not close it.
+
+`CURRENT`: one same-W2 `Credential Transaction and Joined Shutdown Closure`
+amendment is frozen for Contract Review. It requires short-lived process-owned
+cancellable Keychain Put/Read/Delete through strict anonymous pipes, no secret
+in argv/environment/log/evidence, exactly-one terminal Provider fact after an
+observation, and bounded joined IPC/daemon shutdown. It creates no W4, changes
+no Journal/StateWriter/Projection/Team/Runtime/execution authority and keeps
+P2A-W3 locked. No implementation, real Keychain, Provider network, installed
+Runtime, native app, daemon signal or replacement canary is authorized before
+fresh independent Contract Review `PASS`.
+
+`CURRENT`: Contract Review 1 returned `FAIL` with two P1 and two P2 findings:
+helper activation did not authenticate the exact daemon parent, lost-response
+retry lacked a stable pre-Provider dedupe identity, helper deadlines were not
+exact, and diagnosis wording overstated live causality. Contract Repair 1 now
+requires exact normal product-daemon parent executable/start/argv identity,
+kernel product-socket peer PID and private inherited descriptors; freezes a
+two-second total Keychain helper budget; and adds an exact `expected+1`
+terminal Projection precheck that returns an already committed result with zero
+Keychain, Provider or append work. It also records only a proven unbounded
+owner consistent with the failure. Fresh independent Contract Repair 1
+Re-review is the current gate; implementation and live remain locked.
+
+`CURRENT`: fresh independent Contract Repair 1 Re-review returned `PASS` with
+no P0, P1 or P2 finding. It confirmed exact normal product-daemon parent
+authentication before Keychain access, the product-daemon-only
+`expected+1` terminal recovery, the two/five/one/ten/five-second deadline
+hierarchy, causal precision and unchanged authority boundaries. Mandatory RED
+and deterministic implementation are unlocked. Real Keychain, Provider
+network, installed Runtime, native app, daemon signal and replacement lineage
+`p2a-w2-live-20260730-006` remain locked until complete GREEN and fresh
+Implementation Review `PASS`.
