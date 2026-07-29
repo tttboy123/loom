@@ -3387,3 +3387,56 @@ and deterministic implementation are unlocked. Real Keychain, Provider
 network, installed Runtime, native app, daemon signal and replacement lineage
 `p2a-w2-live-20260730-006` remain locked until complete GREEN and fresh
 Implementation Review `PASS`.
+
+`CURRENT`: the same-W2 Credential Transaction and Joined Shutdown Closure
+Candidate is deterministic GREEN. Production Keychain Put, Read and Delete now
+run as one-operation short-lived copies of the exact daemon executable with an
+empty environment, strict bounded inherited-pipe protocol and an exact
+two-second total parent budget. Before parsing an operation, the helper proves
+fixed anonymous descriptor numbers, the live parent start identity, matching
+executable device/inode/owner/mode/SHA-256, normal daemon arguments, and the
+private product socket's kernel peer PID. Cancellation kills and waits for the
+exact child. Production verify now rebuilds the authoritative Provider view:
+the exact current revision performs one Broker observation, exact same-
+reference `expected+1` terminal verified/rejected returns the committed result
+without Keychain/Provider/append work, and every other stale shape fails before
+those boundaries. Existing Security.framework item attributes,
+Journal/StateWriter authority, external IPC/Swift schemas and five/ten/five/one
+second surrounding budgets are unchanged.
+
+`CURRENT`: focused deterministic and repeated race tests, serial complete Go
+and repository-race tests, vet, module tidy/verify, format/diff,
+secret-negative checks, Swift debug tests, release build and thread-sanitizer
+tests pass. Swift debug and thread-sanitizer each executed 33 XCTest cases with
+zero failures and one intentional preview-export skip; the strict Swift
+Testing wire suite passed four cases. Tests used only fake stores and local
+fixture processes; no real Keychain, Provider, network, installed Runtime,
+native app, resident daemon or live canary ran. Fresh independent
+Implementation Review is the current gate. Replacement lineage
+`p2a-w2-live-20260730-006` remains locked, P2A-W2 remains unaccepted, P2A-W3
+remains locked and no P2A-W4 exists.
+
+`CURRENT`: fresh independent Implementation Review 1 returned
+`FAIL — REPAIR REQUIRED` with one P1 and one evidence-hygiene P2. The P1 found
+that a production process-Keychain construction error still returned `nil,
+nil`, allowing the daemon to run with setup disabled. Repair 1 first reproduced
+that exact branch as RED, then made setup construction return a closed
+credential-boundary error; ten-run focused and race repetitions pass. The P2
+identified a stale historical status header, now corrected to record the
+already completed Contract Repair 1 Re-review PASS without changing any
+behavioral clause. Fresh independent Implementation Repair 1 Re-review is the
+current gate. Replacement lineage `p2a-w2-live-20260730-006` remains locked,
+P2A-W2 remains unaccepted, P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: fresh independent read-only Implementation Repair 1 Re-review
+returned `PASS` with no P0, P1 or P2 finding. It reproduced the targeted
+credential/helper/product-daemon suite, confirmed the production construction
+failure is closed, verified two concurrent same-revision requests reach the
+Provider delegate only once, and rechecked empty environment, fixed anonymous
+FD 3/4, parent/start/executable/socket-peer attestation and exact-child
+kill-and-wait. It confirmed the amendment change is status-header only and made
+no edit, stage, commit, live, Keychain, Provider, network or daemon action.
+Complete deterministic GREEN plus this Review unlock the atomic Candidate
+commit. Replacement lineage `p2a-w2-live-20260730-006` remains locked until
+that commit and exact preflight; P2A-W2 remains unaccepted, P2A-W3 remains
+locked and no P2A-W4 exists.

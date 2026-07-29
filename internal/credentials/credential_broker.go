@@ -87,6 +87,32 @@ type SecretStore interface {
 	Delete(context.Context, string) error
 }
 
+var (
+	newProductKeychainStore = func(string, string) (SecretStore, error) {
+		return nil, ErrCredentialStoreUnavailable
+	}
+	runProductKeychainHelper = func() error {
+		return ErrCredentialStoreUnavailable
+	}
+)
+
+// NewProductKeychainStore returns the production process-owned Keychain
+// boundary. Platform implementations must fail closed when the exact
+// executable or private product socket cannot be authenticated.
+func NewProductKeychainStore(
+	executablePath,
+	socketPath string,
+) (SecretStore, error) {
+	return newProductKeychainStore(executablePath, socketPath)
+}
+
+// RunProductKeychainHelper runs the internal one-operation helper mode. It is
+// intentionally not a user-facing command and authenticates its parent before
+// reading an operation.
+func RunProductKeychainHelper() error {
+	return runProductKeychainHelper()
+}
+
 type CredentialVerifier interface {
 	Verify(context.Context, string, []byte) (VerificationResult, error)
 }

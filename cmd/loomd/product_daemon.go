@@ -36,6 +36,8 @@ const localProductBuildID = "loom-phase2a-w1"
 
 type productSetupRuntimeConfig struct {
 	CodexExecutable string
+	SocketPath      string
+	CredentialStore credentials.SecretStore
 }
 
 type productDaemonFailure struct {
@@ -270,6 +272,7 @@ func newProductDaemonRunner(
 	if len(setupConfigs) == 1 {
 		setupConfig = setupConfigs[0]
 	}
+	setupConfig.SocketPath = socketPath
 	setupService, err = buildProductSetupService(
 		database,
 		store,
@@ -431,6 +434,86 @@ func (source productCredentialStatusSource) CredentialStatus(
 	}, nil
 }
 
+type productCredentialMutator struct {
+	mu       sync.Mutex
+	status   app.CredentialStatusSource
+	delegate app.CredentialMutator
+}
+
+func (mutator *productCredentialMutator) Configure(
+	ctx context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	if mutator == nil || mutator.delegate == nil || ctx == nil {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialMetadataConflict
+	}
+	mutator.mu.Lock()
+	defer mutator.mu.Unlock()
+	return mutator.delegate.Configure(ctx, command)
+}
+
+func (mutator *productCredentialMutator) Verify(
+	ctx context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	if mutator == nil ||
+		mutator.status == nil ||
+		mutator.delegate == nil ||
+		ctx == nil {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialMetadataConflict
+	}
+	mutator.mu.Lock()
+	defer mutator.mu.Unlock()
+	current, err := mutator.status.CredentialStatus(
+		ctx,
+		command.ProviderID,
+	)
+	if err != nil ||
+		current.ProviderID != command.ProviderID ||
+		current.CredentialReference != command.CredentialReference {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialMetadataConflict
+	}
+	if current.Revision == command.ExpectedRevision {
+		return mutator.delegate.Verify(ctx, command)
+	}
+	if current.Revision == command.ExpectedRevision+1 &&
+		(current.Status == credentials.CredentialVerified ||
+			current.Status == credentials.CredentialRejected) {
+		return current, nil
+	}
+	return credentials.MetadataResult{},
+		credentials.ErrCredentialMetadataConflict
+}
+
+func (mutator *productCredentialMutator) Replace(
+	ctx context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	if mutator == nil || mutator.delegate == nil || ctx == nil {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialMetadataConflict
+	}
+	mutator.mu.Lock()
+	defer mutator.mu.Unlock()
+	return mutator.delegate.Replace(ctx, command)
+}
+
+func (mutator *productCredentialMutator) Revoke(
+	ctx context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	if mutator == nil || mutator.delegate == nil || ctx == nil {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialMetadataConflict
+	}
+	mutator.mu.Lock()
+	defer mutator.mu.Unlock()
+	return mutator.delegate.Revoke(ctx, command)
+}
+
 func buildProductSetupService(
 	database *sql.DB,
 	store *journal.Store,
@@ -451,11 +534,19 @@ func buildProductSetupService(
 	if err != nil {
 		return nil, errors.New("setup state unavailable")
 	}
-	keychain, err := credentials.NewKeychainStore(
-		credentials.KeychainStoreConfig{},
-	)
+	keychain := config.CredentialStore
+	if keychain == nil {
+		executablePath, executableErr := os.Executable()
+		if executableErr != nil || config.SocketPath == "" {
+			return nil, errors.New("setup credential boundary unavailable")
+		}
+		keychain, err = credentials.NewProductKeychainStore(
+			executablePath,
+			config.SocketPath,
+		)
+	}
 	if err != nil {
-		return nil, nil
+		return nil, errors.New("setup credential boundary unavailable")
 	}
 	verifier, err := provider.NewSystemMiniMaxCredentialVerifier(
 		5*time.Second,
@@ -503,6 +594,9 @@ func buildProductSetupService(
 			controller: controller,
 		}
 	}
+	credentialStatus := productCredentialStatusSource{
+		projection: readModel,
+	}
 	setup, err := app.NewLocalProductSetupService(
 		app.LocalProductSetupConfig{
 			Journal:             store,
@@ -514,8 +608,11 @@ func buildProductSetupService(
 			Now:                 func() time.Time { return time.Now().UTC() },
 			NativeAuth:          productNativeAuthObserver{observer: native},
 			NativeAuthConnector: nativeConnector,
-			Credentials:         productCredentialStatusSource{projection: readModel},
-			CredentialMutator:   broker,
+			Credentials:         credentialStatus,
+			CredentialMutator: &productCredentialMutator{
+				status:   credentialStatus,
+				delegate: broker,
+			},
 		},
 	)
 	if err != nil {

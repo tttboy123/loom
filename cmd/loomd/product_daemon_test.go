@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -718,7 +719,9 @@ func TestProductSetupRemainsAvailableWhenNoRuntimeCanBuildATeam(t *testing.T) {
 		database,
 		journal.NewStore(database),
 		readModel,
-		productSetupRuntimeConfig{},
+		productSetupRuntimeConfig{
+			CredentialStore: &productCredentialTestStore{},
+		},
 	)
 	if err != nil || setup == nil {
 		t.Fatalf("buildProductSetupService() = %#v, %v", setup, err)
@@ -738,6 +741,441 @@ func TestProductSetupRemainsAvailableWhenNoRuntimeCanBuildATeam(t *testing.T) {
 		app.BuilderStartCommand{Source: app.BuilderSourceBlank},
 	); !errors.Is(err, app.ErrBuilderIncompatible) {
 		t.Fatalf("StartBuilder() without a Runtime error = %v", err)
+	}
+}
+
+func TestProductSetupFailsClosedWhenProcessKeychainCannotBeConstructed(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := buildProductSetupService(
+		database,
+		journal.NewStore(database),
+		readModel,
+		productSetupRuntimeConfig{
+			SocketPath: filepath.Join(
+				filepath.Base(root),
+				"relative.sock",
+			),
+		},
+	)
+	if err == nil || setup != nil {
+		t.Fatalf(
+			"buildProductSetupService() = %#v, %v; want fail closed",
+			setup,
+			err,
+		)
+	}
+}
+
+type productCredentialTestSource struct {
+	result credentials.MetadataResult
+	err    error
+	calls  int
+}
+
+type productCredentialTestStore struct{}
+
+func (*productCredentialTestStore) Put(
+	context.Context,
+	string,
+	[]byte,
+) error {
+	return credentials.ErrCredentialStoreUnavailable
+}
+
+func (*productCredentialTestStore) Read(
+	context.Context,
+	string,
+) ([]byte, error) {
+	return nil, credentials.ErrCredentialNotFound
+}
+
+func (*productCredentialTestStore) Delete(
+	context.Context,
+	string,
+) error {
+	return credentials.ErrCredentialNotFound
+}
+
+func (source *productCredentialTestSource) CredentialStatus(
+	_ context.Context,
+	_ string,
+) (credentials.MetadataResult, error) {
+	source.calls++
+	return source.result, source.err
+}
+
+type productCredentialTestMutator struct {
+	verifyResult credentials.MetadataResult
+	verifyErr    error
+	verifyCalls  int
+}
+
+func (mutator *productCredentialTestMutator) Configure(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, nil
+}
+
+func (mutator *productCredentialTestMutator) Verify(
+	_ context.Context,
+	_ credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	mutator.verifyCalls++
+	return mutator.verifyResult, mutator.verifyErr
+}
+
+func (mutator *productCredentialTestMutator) Replace(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, nil
+}
+
+func (mutator *productCredentialTestMutator) Revoke(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, nil
+}
+
+func TestProductCredentialVerifyRecoversLostTerminalResponseWithoutRetry(
+	t *testing.T,
+) {
+	terminal := credentials.MetadataResult{
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-recovery",
+		Revision:            8,
+		Status:              credentials.CredentialVerified,
+	}
+	source := &productCredentialTestSource{result: terminal}
+	delegate := &productCredentialTestMutator{}
+	mutator := productCredentialMutator{
+		status:   source,
+		delegate: delegate,
+	}
+
+	result, err := mutator.Verify(
+		context.Background(),
+		credentials.CredentialCommand{
+			ProviderID:          "minimax",
+			CredentialReference: "credential-ref-recovery",
+			ExpectedRevision:    7,
+			OccurredAt:          time.Unix(700, 0).UTC(),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != terminal ||
+		source.calls != 1 ||
+		delegate.verifyCalls != 0 {
+		t.Fatalf(
+			"result=%#v source_calls=%d delegate_calls=%d",
+			result,
+			source.calls,
+			delegate.verifyCalls,
+		)
+	}
+}
+
+func TestProductCredentialVerifyAllowsOnlyExactCurrentRevisionToBroker(
+	t *testing.T,
+) {
+	current := credentials.MetadataResult{
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-current",
+		Revision:            4,
+		Status:              credentials.CredentialConfigured,
+	}
+	delegated := credentials.MetadataResult{
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-current",
+		Revision:            5,
+		Status:              credentials.CredentialVerified,
+	}
+	source := &productCredentialTestSource{result: current}
+	delegate := &productCredentialTestMutator{verifyResult: delegated}
+	mutator := productCredentialMutator{
+		status:   source,
+		delegate: delegate,
+	}
+
+	result, err := mutator.Verify(
+		context.Background(),
+		credentials.CredentialCommand{
+			ProviderID:          "minimax",
+			CredentialReference: "credential-ref-current",
+			ExpectedRevision:    4,
+			OccurredAt:          time.Unix(701, 0).UTC(),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != delegated ||
+		source.calls != 1 ||
+		delegate.verifyCalls != 1 {
+		t.Fatalf(
+			"result=%#v source_calls=%d delegate_calls=%d",
+			result,
+			source.calls,
+			delegate.verifyCalls,
+		)
+	}
+}
+
+func TestProductCredentialVerifyRejectsEveryOtherStaleShapeBeforeBroker(
+	t *testing.T,
+) {
+	tests := []struct {
+		name    string
+		current credentials.MetadataResult
+	}{
+		{
+			name: "reference drift",
+			current: credentials.MetadataResult{
+				ProviderID:          "minimax",
+				CredentialReference: "credential-ref-other",
+				Revision:            4,
+				Status:              credentials.CredentialConfigured,
+			},
+		},
+		{
+			name: "revision gap",
+			current: credentials.MetadataResult{
+				ProviderID:          "minimax",
+				CredentialReference: "credential-ref-current",
+				Revision:            6,
+				Status:              credentials.CredentialVerified,
+			},
+		},
+		{
+			name: "next revision nonterminal",
+			current: credentials.MetadataResult{
+				ProviderID:          "minimax",
+				CredentialReference: "credential-ref-current",
+				Revision:            5,
+				Status:              credentials.CredentialConfigured,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := &productCredentialTestSource{result: test.current}
+			delegate := &productCredentialTestMutator{}
+			mutator := productCredentialMutator{
+				status:   source,
+				delegate: delegate,
+			}
+			_, err := mutator.Verify(
+				context.Background(),
+				credentials.CredentialCommand{
+					ProviderID:          "minimax",
+					CredentialReference: "credential-ref-current",
+					ExpectedRevision:    4,
+					OccurredAt:          time.Unix(702, 0).UTC(),
+				},
+			)
+			if !errors.Is(
+				err,
+				credentials.ErrCredentialMetadataConflict,
+			) {
+				t.Fatalf("Verify() error = %v", err)
+			}
+			if source.calls != 1 || delegate.verifyCalls != 0 {
+				t.Fatalf(
+					"source_calls=%d delegate_calls=%d",
+					source.calls,
+					delegate.verifyCalls,
+				)
+			}
+		})
+	}
+}
+
+type productConcurrentCredentialFixture struct {
+	mu          sync.Mutex
+	current     credentials.MetadataResult
+	verifyCalls int
+}
+
+func (fixture *productConcurrentCredentialFixture) CredentialStatus(
+	context.Context,
+	string,
+) (credentials.MetadataResult, error) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	return fixture.current, nil
+}
+
+func (fixture *productConcurrentCredentialFixture) Configure(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected configure")
+}
+
+func (fixture *productConcurrentCredentialFixture) Verify(
+	_ context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	fixture.verifyCalls++
+	fixture.current = credentials.MetadataResult{
+		ProviderID:          command.ProviderID,
+		CredentialReference: command.CredentialReference,
+		Revision:            command.ExpectedRevision + 1,
+		Status:              credentials.CredentialVerified,
+	}
+	return fixture.current, nil
+}
+
+func (fixture *productConcurrentCredentialFixture) Replace(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected replace")
+}
+
+func (fixture *productConcurrentCredentialFixture) Revoke(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected revoke")
+}
+
+func TestProductCredentialConcurrentLostResponseRecoveryObservesProviderOnce(
+	t *testing.T,
+) {
+	fixture := &productConcurrentCredentialFixture{
+		current: credentials.MetadataResult{
+			ProviderID:          "minimax",
+			CredentialReference: "credential-ref-concurrent",
+			Revision:            9,
+			Status:              credentials.CredentialConfigured,
+		},
+	}
+	mutator := &productCredentialMutator{
+		status:   fixture,
+		delegate: fixture,
+	}
+	command := credentials.CredentialCommand{
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-concurrent",
+		ExpectedRevision:    9,
+		OccurredAt:          time.Unix(703, 0).UTC(),
+	}
+	results := make(chan credentials.MetadataResult, 2)
+	failures := make(chan error, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			result, err := mutator.Verify(context.Background(), command)
+			if err != nil {
+				failures <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	wait.Wait()
+	close(results)
+	close(failures)
+	for err := range failures {
+		t.Fatalf("concurrent Verify() error = %v", err)
+	}
+	count := 0
+	for result := range results {
+		count++
+		if result.Revision != 10 ||
+			result.Status != credentials.CredentialVerified {
+			t.Fatalf("concurrent result = %#v", result)
+		}
+	}
+	fixture.mu.Lock()
+	verifyCalls := fixture.verifyCalls
+	fixture.mu.Unlock()
+	if count != 2 || verifyCalls != 1 {
+		t.Fatalf("results=%d Provider observations=%d", count, verifyCalls)
+	}
+}
+
+func TestLoomdCredentialHelperDirectAndPipeOnlyActivationFailClosed(
+	t *testing.T,
+) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate loomd source")
+	}
+	repositoryRoot := filepath.Dir(filepath.Dir(filepath.Dir(sourceFile)))
+	binaryPath := filepath.Join(t.TempDir(), "loomd-helper-fixture")
+	build := exec.Command(
+		"go",
+		"build",
+		"-o",
+		binaryPath,
+		"./cmd/loomd",
+	)
+	build.Dir = repositoryRoot
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build loomd helper fixture: %v output=%q", err, output)
+	}
+
+	direct := exec.Command(binaryPath, "--credential-helper")
+	direct.Env = []string{}
+	if output, err := direct.CombinedOutput(); err == nil ||
+		len(output) != 0 {
+		t.Fatalf(
+			"direct helper activation error=%v output=%q",
+			err,
+			output,
+		)
+	}
+
+	requestRead, requestWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer requestRead.Close()
+	defer requestWrite.Close()
+	responseRead, responseWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer responseRead.Close()
+	defer responseWrite.Close()
+	pipeOnly := exec.Command(binaryPath, "--credential-helper")
+	pipeOnly.Env = []string{}
+	pipeOnly.ExtraFiles = []*os.File{requestRead, responseWrite}
+	var stdout, stderr bytes.Buffer
+	pipeOnly.Stdout = &stdout
+	pipeOnly.Stderr = &stderr
+	if err := pipeOnly.Run(); err == nil {
+		t.Fatal("pipe-only helper activation unexpectedly succeeded")
+	}
+	_ = requestRead.Close()
+	_ = responseWrite.Close()
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf(
+			"pipe-only helper disclosed output stdout=%q stderr=%q",
+			stdout.Bytes(),
+			stderr.Bytes(),
+		)
 	}
 }
 
@@ -2107,7 +2545,9 @@ func TestProductSetupRefreshesRuntimeCatalogAfterServiceConstruction(
 		database,
 		store,
 		readModel,
-		productSetupRuntimeConfig{},
+		productSetupRuntimeConfig{
+			CredentialStore: &productCredentialTestStore{},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
