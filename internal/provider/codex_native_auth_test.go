@@ -108,6 +108,28 @@ func TestCodexNativeAuthObserverAcceptsExactStatusFromOneOutputChannel(
 			status: CodexNativeAuthUnsupported,
 			reason: CodexNativeAuthReasonUnknownOutput,
 		},
+		{
+			name: "stdout multiline is ambiguous",
+			result: CodexStatusProcessResult{
+				Stdout: []byte(
+					"Logged in using ChatGPT\nunreviewed diagnostic\n",
+				),
+				ExitCode: 0,
+			},
+			status: CodexNativeAuthUnsupported,
+			reason: CodexNativeAuthReasonUnknownOutput,
+		},
+		{
+			name: "stderr multiline is ambiguous",
+			result: CodexStatusProcessResult{
+				Stderr: []byte(
+					"Logged in using ChatGPT\nunreviewed diagnostic\n",
+				),
+				ExitCode: 0,
+			},
+			status: CodexNativeAuthUnsupported,
+			reason: CodexNativeAuthReasonUnknownOutput,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -165,7 +187,7 @@ func TestCodexNativeAuthObserverRejectsUnknownOutputAndTimeout(t *testing.T) {
 			reason: CodexNativeAuthReasonUnknownOutput,
 		},
 		{
-			name: "stderr is never treated as status",
+			name: "stdout plus stderr diagnostic is ambiguous",
 			runner: &codexStatusFixtureRunner{result: CodexStatusProcessResult{
 				Stdout:   []byte("Logged in using ChatGPT\n"),
 				Stderr:   []byte("unreviewed diagnostic\n"),
