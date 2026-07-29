@@ -45,6 +45,33 @@ func (service *LocalProductSetupAPI) SetupSnapshot(
 	return canonicalSetupSnapshot(snapshot), nil
 }
 
+func (service *LocalProductSetupAPI) ConnectCodex(
+	ctx context.Context,
+) (app.ProviderConnectResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.ProviderConnectResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ConnectCodex(context.Context) (app.ProviderConnectResult, error)
+	})
+	if !ok {
+		return app.ProviderConnectResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ConnectCodex(ctx)
+}
+
+func (service *LocalProductSetupAPI) Close() error {
+	if service == nil || service.backend == nil {
+		return ErrInvalidLocalProductSetupAPI
+	}
+	if closer, ok := service.backend.(interface {
+		Close() error
+	}); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 func (service *LocalProductSetupAPI) StartBuilder(
 	ctx context.Context,
 	command app.BuilderStartCommand,

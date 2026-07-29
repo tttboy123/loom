@@ -454,6 +454,14 @@ public final class LocalIPCClient:
         return try LocalProductSetupWire.decodeSnapshot(result)
     }
 
+    public func connectCodex() async throws -> LocalProductProviderConnectResult {
+        let result = try await call(
+            method: "codex_connect",
+            params: EmptyParams()
+        )
+        return try LocalProductSetupWire.decodeProviderConnectResult(result)
+    }
+
     public func startBuilder(
         source: String = "blank",
         sourceID: String = "",
@@ -660,6 +668,7 @@ public final class LocalIPCClient:
         let id = requestID()
         let methods = Set([
             "ping", "snapshot", "timeline_page", "setup_snapshot",
+            "codex_connect",
             "builder_start", "builder_answer", "builder_edit",
             "builder_validate", "builder_confirm", "team_archive",
             "team_restore", "credential_configure", "credential_verify",

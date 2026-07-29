@@ -51,6 +51,24 @@ func (observer setupFixtureNativeAuth) ObserveNativeAuth(
 	return observer.result, nil
 }
 
+type setupFixtureNativeAuthConnector struct {
+	starts int
+	closed bool
+	err    error
+}
+
+func (connector *setupFixtureNativeAuthConnector) StartNativeAuth(
+	context.Context,
+) error {
+	connector.starts++
+	return connector.err
+}
+
+func (connector *setupFixtureNativeAuthConnector) Close() error {
+	connector.closed = true
+	return connector.err
+}
+
 type setupFixtureBroker struct {
 	status credentials.MetadataResult
 }
@@ -242,6 +260,61 @@ func TestLocalProductSetupBuilderBlankFlowRequiresExplicitConfirmation(
 		},
 	); !errors.Is(err, ErrBuilderConflict) {
 		t.Fatalf("duplicate TeamDefinition confirmation error = %v", err)
+	}
+}
+
+func TestLocalProductSetupConnectCodexDelegatesOnlyWhenDisconnected(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	connector := &setupFixtureNativeAuthConnector{}
+	service.nativeAuthConnector = connector
+
+	connected, err := service.ConnectCodex(context.Background())
+	if err != nil {
+		t.Fatalf("ConnectCodex() connected error = %v", err)
+	}
+	if connected.ProviderID != "codex" ||
+		connected.AuthMode != "native_auth" ||
+		connected.Status != "already_connected" ||
+		connector.starts != 0 {
+		t.Fatalf("connected result = %#v, starts = %d", connected, connector.starts)
+	}
+
+	service.nativeAuth = setupFixtureNativeAuth{result: NativeAuthObservation{
+		Status:   "not_logged_in",
+		AuthMode: "native_auth",
+		Reason:   "not_logged_in",
+	}}
+	started, err := service.ConnectCodex(context.Background())
+	if err != nil {
+		t.Fatalf("ConnectCodex() disconnected error = %v", err)
+	}
+	if started.ProviderID != "codex" ||
+		started.AuthMode != "native_auth" ||
+		started.Status != "started" ||
+		connector.starts != 1 {
+		t.Fatalf("started result = %#v, starts = %d", started, connector.starts)
+	}
+	service.nativeAuth = setupFixtureNativeAuth{result: NativeAuthObservation{
+		Status:   "unsupported",
+		AuthMode: "native_auth",
+		Reason:   "unknown_output",
+	}}
+	if _, err := service.ConnectCodex(context.Background()); !errors.Is(
+		err,
+		ErrNativeAuthConnectUnavailable,
+	) {
+		t.Fatalf("ConnectCodex() unsupported error = %v", err)
+	}
+	if connector.starts != 1 {
+		t.Fatalf("unsupported status launched login; starts = %d", connector.starts)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !connector.closed {
+		t.Fatal("Close() did not join the native auth connector")
 	}
 }
 

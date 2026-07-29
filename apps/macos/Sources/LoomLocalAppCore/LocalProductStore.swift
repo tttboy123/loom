@@ -47,6 +47,7 @@ public protocol LocalProductClientProtocol {
 
 public protocol LocalProductSetupClientProtocol {
     func setupSnapshot() async throws -> LocalProductSetupSnapshot
+    func connectCodex() async throws -> LocalProductProviderConnectResult
     func startBuilder(
         source: String,
         sourceID: String,
@@ -106,6 +107,8 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var setupState: LocalProductSetupState = .idle
     @Published public private(set) var lastConfirmation: LocalProductBuilderConfirmation?
     @Published public private(set) var credentialStatus: LocalProductCredentialSetupResult?
+    @Published public private(set) var providerConnectionStatus:
+        LocalProductProviderConnectResult?
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
@@ -221,6 +224,35 @@ public final class LocalProductStore: ObservableObject {
                 : .fatal(reason: remote.code.rawValue)
         } catch {
             setupState = .unavailable(reason: closedClientReason(error))
+        }
+    }
+
+    public func connectCodex() async {
+        guard let setupClient else {
+            setupState = .unavailable(reason: "setup_unavailable")
+            return
+        }
+        setupState = .loading
+        do {
+            providerConnectionStatus = try await setupClient.connectCodex()
+            for attempt in 0..<120 {
+                let next = try await setupClient.setupSnapshot()
+                setupSnapshot = next
+                if next.codex.status == "available" {
+                    setupState = .ready
+                    return
+                }
+                if attempt < 119 {
+                    try await Task<Never, Never>.sleep(
+                        nanoseconds: 1_000_000_000
+                    )
+                }
+            }
+            setupState = .unavailable(reason: "timeout")
+        } catch is CancellationError {
+            setupState = .ready
+        } catch {
+            handleSetupError(error)
         }
     }
 

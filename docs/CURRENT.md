@@ -3010,3 +3010,26 @@ product socket is absent, and the separate resident observer remains running.
 The owner waiver completes testing but does not reinterpret the historical
 secret-negative result or claim that the incompatible live Team Builder journey
 passed. P2A-W2 remains unaccepted, P2A-W3 remains locked, and no P2A-W4 exists.
+
+`CURRENT`: the user-directed same-W2 Provider Connection and Delegated OAuth
+Amendment now has deterministic implementation and fresh independent Repair
+Review `PASS`. The native Team Builder uses an App-style Provider connection
+directory: Codex `Connect` delegates only to the identity-bound official
+`codex login` process and observes its closed status; MiniMax `Connect` or
+`Manage` opens the existing Keychain-backed credential sheet. Exact
+`codex_connect` Go IPC to strict Swift decoding, bounded cancellation/polling,
+light/dark/accessibility rendering, and a native visual fixture are covered.
+Complete sequential Go, race, vet, module, format/diff, Swift debug, release
+and thread-sanitizer matrices passed.
+
+`CURRENT`: the initial independent implementation review reported one P1 based
+on an incorrect assumption that closing a nil setup API would panic. The API's
+nil-receiver guard and a new deterministic daemon-shutdown regression proved
+fail-closed behavior and continued observer cleanup; fresh read-only Repair
+Review returned `PASS` with no P0, P1, or P2. A separate reviewer invocation
+that created an over-broad local commit was rejected as review evidence and its
+unrelated paths were removed from the commit while their working-tree changes
+were preserved. No real OAuth/browser, Provider network, Keychain, resident
+daemon, Team, Run, or live-canary action occurred. This amendment does not
+reinterpret the historical invalid/HUMAN_REQUIRED W2 live result, accept W2,
+unlock P2A-W3, or create P2A-W4.

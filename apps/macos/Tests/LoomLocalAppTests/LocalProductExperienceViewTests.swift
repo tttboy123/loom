@@ -7,6 +7,99 @@ import XCTest
 
 @MainActor
 final class LocalProductExperienceViewTests: XCTestCase {
+    func testProviderDirectoryUsesConnectThenCapabilitySpecificManagement() {
+        XCTAssertEqual(
+            providerConnectionPrimaryAction(
+                provider: .codex,
+                connected: false
+            ),
+            .connect
+        )
+        XCTAssertEqual(
+            providerConnectionPrimaryAction(
+                provider: .codex,
+                connected: true
+            ),
+            .manage
+        )
+        XCTAssertEqual(
+            providerConnectionPrimaryAction(
+                provider: .miniMax,
+                connected: false
+            ),
+            .connect
+        )
+        XCTAssertEqual(
+            providerConnectionPrimaryAction(
+                provider: .miniMax,
+                connected: true
+            ),
+            .manage
+        )
+    }
+
+    func testProviderConnectionDirectoryRendersNativeConnectionCards()
+        async throws
+    {
+        let store = LocalProductStore(client: try ProviderSetupStubClient())
+        await store.refreshSetup()
+        let rendered = try XCTUnwrap(
+            render(
+                ProviderConnectionDirectory(store: store)
+                    .padding(28)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity),
+                colorScheme: .light,
+                dynamicTypeSize: .large,
+                width: 820,
+                height: 320
+            )
+        )
+        XCTAssertEqual(rendered.pixelWidth, 820)
+        XCTAssertEqual(rendered.pixelHeight, 320)
+        XCTAssertGreaterThan(rendered.png.count, 12_000)
+        XCTAssertGreaterThan(rendered.colorBucketCount, 10)
+
+        let dark = try XCTUnwrap(
+            render(
+                ProviderConnectionDirectory(store: store)
+                    .padding(28)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity),
+                colorScheme: .dark,
+                dynamicTypeSize: .large,
+                width: 820,
+                height: 320
+            )
+        )
+        XCTAssertNotEqual(rendered.digest, dark.digest)
+
+        let accessible = try XCTUnwrap(
+            render(
+                ProviderConnectionDirectory(store: store)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity),
+                colorScheme: .light,
+                dynamicTypeSize: .accessibility3,
+                width: 560,
+                height: 460
+            )
+        )
+        XCTAssertEqual(accessible.pixelWidth, 560)
+        XCTAssertEqual(accessible.pixelHeight, 460)
+        XCTAssertGreaterThan(accessible.png.count, 12_000)
+
+        if let requestedPath = ProcessInfo.processInfo.environment[
+            "LOOM_PROVIDER_UI_PREVIEW_PATH"
+        ] {
+            let requestedURL = try validatedPreviewURL(
+                requestedPath: requestedPath,
+                expectedURL: expectedProviderPreviewURL(
+                    currentDirectory: FileManager.default.currentDirectoryPath
+                )
+            )
+            try rendered.png.write(to: requestedURL, options: .atomic)
+        }
+    }
+
     func testExplicitRecoveryTargetMeetsNativeAccessibilityMinimum() {
         XCTAssertGreaterThanOrEqual(
             LoomDesign.minimumActionTarget,
@@ -132,8 +225,8 @@ final class LocalProductExperienceViewTests: XCTestCase {
         XCTAssertGreaterThan(rendered.png.count, 20_000)
     }
 
-    private func render(
-        _ view: ContentView,
+    private func render<Root: View>(
+        _ view: Root,
         colorScheme: ColorScheme,
         dynamicTypeSize: DynamicTypeSize,
         width: Int = 1_100,
@@ -256,6 +349,17 @@ final class LocalProductExperienceViewTests: XCTestCase {
             .appendingPathComponent(
                 "../../.loom-evidence/phase2a/P2A-W1/" +
                     "native-product-experience-preview.png"
+            )
+            .standardizedFileURL
+    }
+
+    private func expectedProviderPreviewURL(
+        currentDirectory: String
+    ) -> URL {
+        URL(fileURLWithPath: currentDirectory)
+            .appendingPathComponent(
+                "../../.loom-evidence/phase2a/P2A-W2/" +
+                    "provider-connection-directory.png"
             )
             .standardizedFileURL
     }

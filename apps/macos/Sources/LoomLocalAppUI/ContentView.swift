@@ -7,13 +7,34 @@ public enum LoomDesign {
     public static let contentWidth: CGFloat = 920
 }
 
+enum ProviderConnectionKind {
+    case codex
+    case miniMax
+}
+
+enum ProviderConnectionPrimaryAction: Equatable {
+    case connect
+    case manage
+}
+
+func providerConnectionPrimaryAction(
+    provider: ProviderConnectionKind,
+    connected: Bool
+) -> ProviderConnectionPrimaryAction {
+    switch (provider, connected) {
+    case (.codex, false), (.miniMax, false):
+        return .connect
+    case (.codex, true), (.miniMax, true):
+        return .manage
+    }
+}
+
 public struct ContentView: View {
     @ObservedObject private var store: LocalProductStore
     private let refreshOnAppear: Bool
     @State private var builderAnswer = ""
     @State private var builderEditField = ""
     @State private var builderEditValue = ""
-    @State private var miniMaxSecret = ""
     @State private var showTeamBuilder = false
 
     public init(
@@ -196,81 +217,7 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var setupProviderPanel: some View {
-        if let setup = store.setupSnapshot {
-            let hasMiniMaxCredential =
-                !setup.miniMax.credentialReference.isEmpty &&
-                setup.miniMax.revision > 0 &&
-                setup.miniMax.status != "revoked"
-            SectionHeading(
-                title: "Providers",
-                detail: "Authentication stays outside Team and Run authority"
-            )
-            LoomPanel {
-                VStack(alignment: .leading, spacing: 14) {
-                    Label(
-                        "Codex · \(humanized(setup.codex.status)) · " +
-                            setup.codex.authMode,
-                        systemImage: "person.crop.circle.badge.checkmark"
-                    )
-                    Divider()
-                    HStack(alignment: .center, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("MiniMax")
-                                .font(.headline)
-                            Text(
-                                "\(humanized(setup.miniMax.status)) · " +
-                                    setup.miniMax.authMode
-                            )
-                            .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        SecureField("API key", text: $miniMaxSecret)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 280)
-                            .privacySensitive()
-                            .accessibilityLabel("MiniMax API key")
-                        if hasMiniMaxCredential {
-                            Button("Test") {
-                                Task { await store.verifyMiniMax() }
-                            }
-                            .frame(minHeight: LoomDesign.minimumActionTarget)
-                            Button("Replace") {
-                                let secret = miniMaxSecret
-                                miniMaxSecret = ""
-                                Task {
-                                    await store.replaceMiniMax(secret: secret)
-                                }
-                            }
-                            .disabled(miniMaxSecret.isEmpty)
-                            .frame(minHeight: LoomDesign.minimumActionTarget)
-                            Button("Revoke", role: .destructive) {
-                                miniMaxSecret = ""
-                                Task { await store.revokeMiniMax() }
-                            }
-                            .frame(minHeight: LoomDesign.minimumActionTarget)
-                        } else {
-                            Button("Store securely") {
-                                let secret = miniMaxSecret
-                                miniMaxSecret = ""
-                                Task {
-                                    await store.configureMiniMax(secret: secret)
-                                }
-                            }
-                            .disabled(miniMaxSecret.isEmpty)
-                            .frame(minHeight: LoomDesign.minimumActionTarget)
-                        }
-                    }
-                    if let status = store.credentialStatus {
-                        Text(
-                            "MiniMax credential · " +
-                                humanized(status.status)
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
+        ProviderConnectionDirectory(store: store)
     }
 
     @ViewBuilder
@@ -954,6 +901,251 @@ private struct LoomPanel<Content: View>: View {
                 )
                 .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
             }
+    }
+}
+
+struct ProviderConnectionDirectory: View {
+    @ObservedObject var store: LocalProductStore
+    @State private var miniMaxSecret = ""
+    @State private var showCodexConnection = false
+    @State private var showMiniMaxConnection = false
+    @State private var codexConnectionTask: Task<Void, Never>?
+
+    var body: some View {
+        if let setup = store.setupSnapshot {
+            let hasMiniMaxCredential =
+                !setup.miniMax.credentialReference.isEmpty &&
+                setup.miniMax.revision > 0 &&
+                setup.miniMax.status != "revoked"
+            let codexConnected = setup.codex.status == "available"
+            SectionHeading(
+                title: "Providers",
+                detail: "Connect accounts once, then choose them in a team"
+            )
+            LoomPanel {
+                VStack(spacing: 0) {
+                    ProviderConnectionRow(
+                        name: "Codex",
+                        detail: "ChatGPT OAuth · managed by Codex",
+                        status: humanized(setup.codex.status),
+                        systemImage: "terminal.fill",
+                        connected: codexConnected,
+                        busy: setupIsLoading,
+                        primaryAction: providerConnectionPrimaryAction(
+                            provider: .codex,
+                            connected: codexConnected
+                        )
+                    ) {
+                        if codexConnected {
+                            showCodexConnection = true
+                        } else {
+                            codexConnectionTask = Task {
+                                await store.connectCodex()
+                            }
+                        }
+                    }
+                    Divider()
+                    ProviderConnectionRow(
+                        name: "MiniMax",
+                        detail: "API key · stored in macOS Keychain",
+                        status: humanized(setup.miniMax.status),
+                        systemImage: "sparkles",
+                        connected: hasMiniMaxCredential,
+                        busy: setupIsLoading,
+                        primaryAction: providerConnectionPrimaryAction(
+                            provider: .miniMax,
+                            connected: hasMiniMaxCredential
+                        )
+                    ) {
+                        showMiniMaxConnection = true
+                    }
+                }
+            }
+            .sheet(isPresented: $showCodexConnection) {
+                codexConnectionSheet(setup: setup)
+            }
+            .sheet(isPresented: $showMiniMaxConnection) {
+                miniMaxConnectionSheet(
+                    setup: setup,
+                    hasCredential: hasMiniMaxCredential
+                )
+            }
+            .onDisappear {
+                codexConnectionTask?.cancel()
+                codexConnectionTask = nil
+            }
+        }
+    }
+
+    private var setupIsLoading: Bool {
+        if case .loading = store.setupState {
+            return true
+        }
+        return false
+    }
+
+    private func codexConnectionSheet(
+        setup: LocalProductSetupSnapshot
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Label("Codex connection", systemImage: "terminal.fill")
+                .font(.title2.weight(.semibold))
+            Text(
+                "Authentication is managed by the official Codex app. " +
+                    "Loom checks connection status but never reads or stores " +
+                    "your OAuth token."
+            )
+            .foregroundStyle(.secondary)
+            LabeledContent("Status") {
+                Text(humanized(setup.codex.status))
+            }
+            Divider()
+            HStack {
+                Button("Done") {
+                    showCodexConnection = false
+                }
+                Spacer()
+                Button("Refresh status") {
+                    Task { await store.refreshSetup() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func miniMaxConnectionSheet(
+        setup: LocalProductSetupSnapshot,
+        hasCredential: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("MiniMax connection", systemImage: "sparkles")
+                .font(.title2.weight(.semibold))
+            Text(
+                "The API key is stored in macOS Keychain. It is never added " +
+                    "to teams, prompts, logs, or Loom state."
+            )
+            .foregroundStyle(.secondary)
+            LabeledContent("Status") {
+                Text(humanized(setup.miniMax.status))
+            }
+            SecureField("API key", text: $miniMaxSecret)
+                .textFieldStyle(.roundedBorder)
+                .privacySensitive()
+                .accessibilityLabel("MiniMax API key")
+            if let status = store.credentialStatus {
+                Text("Last action · \(humanized(status.status))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
+            HStack(spacing: 10) {
+                Button("Done") {
+                    miniMaxSecret = ""
+                    showMiniMaxConnection = false
+                }
+                Spacer()
+                if hasCredential {
+                    Button("Test") {
+                        Task { await store.verifyMiniMax() }
+                    }
+                    Button("Revoke", role: .destructive) {
+                        miniMaxSecret = ""
+                        Task { await store.revokeMiniMax() }
+                    }
+                    Button("Replace") {
+                        let secret = miniMaxSecret
+                        miniMaxSecret = ""
+                        Task {
+                            await store.replaceMiniMax(secret: secret)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(miniMaxSecret.isEmpty)
+                } else {
+                    Button("Connect") {
+                        let secret = miniMaxSecret
+                        miniMaxSecret = ""
+                        Task {
+                            await store.configureMiniMax(secret: secret)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(miniMaxSecret.isEmpty)
+                }
+            }
+            .frame(minHeight: LoomDesign.minimumActionTarget)
+        }
+        .padding(24)
+        .frame(width: 520)
+        .onDisappear {
+            miniMaxSecret = ""
+        }
+    }
+}
+
+private struct ProviderConnectionRow: View {
+    let name: String
+    let detail: String
+    let status: String
+    let systemImage: String
+    let connected: Bool
+    let busy: Bool
+    let primaryAction: ProviderConnectionPrimaryAction
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 42, height: 42)
+                .background(
+                    Color.accentColor.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                )
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name)
+                    .font(.headline)
+                Text(detail)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Label(
+                    status,
+                    systemImage: connected
+                        ? "checkmark.circle.fill"
+                        : "circle.dashed"
+                )
+                .font(.caption)
+                .foregroundStyle(connected ? Color.green : Color.secondary)
+            }
+            Spacer(minLength: 16)
+            if busy {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Connecting \(name)")
+            }
+            switch primaryAction {
+            case .connect:
+                Button("Connect", action: action)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy)
+                    .accessibilityHint("Starts the reviewed \(name) connection")
+            case .manage:
+                Button("Manage", action: action)
+                    .disabled(busy)
+                    .accessibilityHint("Opens \(name) connection management")
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: LoomDesign.minimumActionTarget,
+            alignment: .leading
+        )
     }
 }
 

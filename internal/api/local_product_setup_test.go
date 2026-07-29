@@ -12,6 +12,8 @@ import (
 type setupAPIFixtureBackend struct {
 	snapshot app.SetupSnapshot
 	session  app.BuilderSessionView
+	connect  app.ProviderConnectResult
+	closed   bool
 }
 
 func TestLocalProductSetupAPINilReceiverFailsClosed(t *testing.T) {
@@ -41,6 +43,42 @@ func (backend *setupAPIFixtureBackend) StartBuilder(
 	_ app.BuilderStartCommand,
 ) (app.BuilderSessionView, error) {
 	return backend.session, nil
+}
+
+func (backend *setupAPIFixtureBackend) ConnectCodex(
+	context.Context,
+) (app.ProviderConnectResult, error) {
+	return backend.connect, nil
+}
+
+func (backend *setupAPIFixtureBackend) Close() error {
+	backend.closed = true
+	return nil
+}
+
+func TestLocalProductSetupAPIExposesStrictCodexConnectResult(t *testing.T) {
+	backend := &setupAPIFixtureBackend{connect: app.ProviderConnectResult{
+		ProviderID: "codex",
+		AuthMode:   "native_auth",
+		Status:     "started",
+	}}
+	service, err := NewLocalProductSetupAPI(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.ConnectCodex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != backend.connect {
+		t.Fatalf("ConnectCodex() = %#v", got)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.closed {
+		t.Fatal("Close() did not propagate to the setup backend")
+	}
 }
 
 func TestLocalProductSetupAPICanonicalizesCollectionsAndCopiesResults(

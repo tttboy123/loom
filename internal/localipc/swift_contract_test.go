@@ -115,6 +115,12 @@ const swiftBuilderFixture = `{
   "can_confirm":false
 }`
 
+const swiftCodexConnectFixture = `{
+  "provider_id":"codex",
+  "auth_mode":"native_auth",
+  "status":"already_connected"
+}`
+
 type swiftFixtureHandler struct {
 	mu        sync.Mutex
 	errorCode string
@@ -143,6 +149,11 @@ func (handler *swiftFixtureHandler) Handle(
 		return Response{OK: true, Result: json.RawMessage(swiftTimelineFixture)}
 	case "setup_snapshot":
 		return Response{OK: true, Result: json.RawMessage(swiftSetupFixture)}
+	case "codex_connect":
+		return Response{
+			OK:     true,
+			Result: json.RawMessage(swiftCodexConnectFixture),
+		}
 	case "builder_start":
 		return Response{OK: true, Result: json.RawMessage(swiftBuilderFixture)}
 	default:
@@ -297,6 +308,7 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 		CodexAuthMode string `json:"codex_auth_mode"`
 		MiniMaxMode   string `json:"minimax_auth_mode"`
 		RuntimeCount  int    `json:"runtime_count"`
+		ConnectStatus string `json:"connect_status"`
 		DraftID       string `json:"draft_id"`
 		QuestionID    string `json:"question_id"`
 		CanConfirm    bool   `json:"can_confirm"`
@@ -308,6 +320,7 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 		actual.CodexAuthMode != "native_auth" ||
 		actual.MiniMaxMode != "brokered" ||
 		actual.RuntimeCount != 0 ||
+		actual.ConnectStatus != "already_connected" ||
 		actual.DraftID != "draft-swift-1" ||
 		actual.QuestionID != "team_name" ||
 		actual.CanConfirm {
@@ -580,12 +593,14 @@ struct SetupContractProbe {
             }
             let client = try LocalIPCClient(socketPath: arguments[2])
             let setup = try await client.setupSnapshot()
+            let connection = try await client.connectCodex()
             let candidate = try await client.startBuilder()
             let result: [String: Any] = [
                 "schema_version": setup.schemaVersion,
                 "codex_auth_mode": setup.codex.authMode,
                 "minimax_auth_mode": setup.miniMax.authMode,
                 "runtime_count": setup.runtimes.count,
+                "connect_status": connection.status,
                 "draft_id": candidate.draftID,
                 "question_id": candidate.question.id,
                 "can_confirm": candidate.canConfirm,

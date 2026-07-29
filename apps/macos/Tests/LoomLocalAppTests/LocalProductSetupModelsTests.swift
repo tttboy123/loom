@@ -64,6 +64,37 @@ func setupSnapshotDecodesStrictCanonicalCollections() throws {
 }
 
 @Test
+func providerConnectResultDecodesExactClosedShape() throws {
+    let payload = Data(
+        """
+        {
+          "provider_id": "codex",
+          "auth_mode": "native_auth",
+          "status": "started"
+        }
+        """.utf8
+    )
+    let result = try LocalProductSetupWire.decodeProviderConnectResult(payload)
+    #expect(result.providerID == "codex")
+    #expect(result.authMode == "native_auth")
+    #expect(result.status == "started")
+
+    let unknown = Data(
+        """
+        {
+          "provider_id": "codex",
+          "auth_mode": "native_auth",
+          "status": "started",
+          "token": "must-not-be-accepted"
+        }
+        """.utf8
+    )
+    #expect(throws: LocalProductWireError.unknownField) {
+        _ = try LocalProductSetupWire.decodeProviderConnectResult(unknown)
+    }
+}
+
+@Test
 func builderSessionDecodesOneQuestionAndExactPreview() throws {
     let payload = Data(
         """

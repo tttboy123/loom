@@ -25,6 +25,7 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
 	loomtui "loom-pi-rebuild/internal/tui"
 
 	_ "modernc.org/sqlite"
@@ -1432,7 +1433,23 @@ func productDaemonHeadsDigest(t *testing.T, database *sql.DB) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-type productSetupFixtureBackend struct{}
+type productSetupFixtureBackend struct {
+	closed     *bool
+	connectErr error
+}
+
+func (backend productSetupFixtureBackend) ConnectCodex(
+	context.Context,
+) (app.ProviderConnectResult, error) {
+	if backend.connectErr != nil {
+		return app.ProviderConnectResult{}, backend.connectErr
+	}
+	return app.ProviderConnectResult{
+		ProviderID: "codex",
+		AuthMode:   "native_auth",
+		Status:     "started",
+	}, nil
+}
 
 func (productSetupFixtureBackend) SetupSnapshot(
 	context.Context,
@@ -1465,6 +1482,163 @@ func (productSetupFixtureBackend) StartBuilder(
 	app.BuilderStartCommand,
 ) (app.BuilderSessionView, error) {
 	return app.BuilderSessionView{}, errors.New("unexpected builder start")
+}
+
+func (backend productSetupFixtureBackend) Close() error {
+	if backend.closed != nil {
+		*backend.closed = true
+	}
+	return nil
+}
+
+type productCodexLoginFixture struct {
+	status provider.CodexLoginStatus
+	err    error
+	closed bool
+}
+
+func (fixture *productCodexLoginFixture) Start(
+	context.Context,
+) (provider.CodexLoginStartResult, error) {
+	return provider.CodexLoginStartResult{
+		Status: fixture.status,
+	}, fixture.err
+}
+
+func (fixture *productCodexLoginFixture) Close() error {
+	fixture.closed = true
+	return nil
+}
+
+func TestProductNativeAuthConnectorMapsOnlyClosedErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status provider.CodexLoginStatus
+		err    error
+		want   error
+	}{
+		{
+			name:   "busy",
+			status: provider.CodexLoginStarted,
+			err:    provider.ErrCodexLoginBusy,
+			want:   app.ErrNativeAuthConnectBusy,
+		},
+		{
+			name:   "unavailable",
+			status: provider.CodexLoginStarted,
+			err:    provider.ErrCodexLoginUnavailable,
+			want:   app.ErrNativeAuthConnectUnavailable,
+		},
+		{
+			name:   "identity_changed",
+			status: provider.CodexLoginStarted,
+			err:    provider.ErrCodexExecutableIdentityChanged,
+			want:   app.ErrNativeAuthConnectUnavailable,
+		},
+		{
+			name: "invalid_success_status",
+			want: app.ErrNativeAuthConnectUnavailable,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := &productCodexLoginFixture{
+				status: test.status,
+				err:    test.err,
+			}
+			connector := productNativeAuthConnector{
+				controller: fixture,
+			}
+			if err := connector.StartNativeAuth(
+				context.Background(),
+			); !errors.Is(err, test.want) {
+				t.Fatalf("StartNativeAuth() error = %v", err)
+			}
+			if err := connector.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !fixture.closed {
+				t.Fatal("Close() did not reach controller")
+			}
+		})
+	}
+}
+
+func TestProductDaemonClosePropagatesToSetupProcessOwner(t *testing.T) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	setup, err := api.NewLocalProductSetupAPI(productSetupFixtureBackend{
+		closed: &closed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath:   filepath.Join(root, "loomd.sock"),
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "close-fixture",
+		Handler: localipc.HandlerFunc(
+			localProductHandler(nil, setup),
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &blockingObserverRunner{}
+	runner := &productDaemonRunner{
+		observer: observer,
+		server:   server,
+		database: database,
+		setup:    setup,
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !closed || !observer.closed {
+		t.Fatalf(
+			"Close() setup=%t observer=%t",
+			closed,
+			observer.closed,
+		)
+	}
+}
+
+func TestProductDaemonCloseFailsClosedWhenSetupOwnerIsMissing(t *testing.T) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath:   filepath.Join(root, "loomd.sock"),
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "missing-setup-fixture",
+		Handler: localipc.HandlerFunc(
+			localProductHandler(nil),
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &blockingObserverRunner{}
+	runner := &productDaemonRunner{
+		observer: observer,
+		server:   server,
+		database: database,
+	}
+	if err := runner.Close(); !errors.Is(
+		err,
+		api.ErrInvalidLocalProductSetupAPI,
+	) {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !observer.closed {
+		t.Fatal("Close() did not continue closing the observer")
+	}
 }
 
 func TestProductDaemonServesStrictSetupSnapshotWithoutCLIOrSQLiteClient(
@@ -1508,6 +1682,51 @@ func TestProductDaemonServesStrictSetupSnapshotWithoutCLIOrSQLiteClient(
 		snapshot.SavedTeams == nil ||
 		snapshot.Templates == nil {
 		t.Fatalf("setup snapshot = %#v", snapshot)
+	}
+
+	connect := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "setup-connect-1",
+		Method:    "codex_connect",
+		Params:    json.RawMessage(`{}`),
+	})
+	if !connect.OK || connect.Error != nil ||
+		string(connect.Result) !=
+			`{"provider_id":"codex","auth_mode":"native_auth","status":"started"}` {
+		t.Fatalf("codex connect response = %#v", connect)
+	}
+	rejectedConnect := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "setup-connect-2",
+		Method:    "codex_connect",
+		Params:    json.RawMessage(`{"provider_id":"codex"}`),
+	})
+	if rejectedConnect.OK ||
+		rejectedConnect.Error == nil ||
+		rejectedConnect.Error.Code != "invalid_request" {
+		t.Fatalf("unknown codex connect field response = %#v", rejectedConnect)
+	}
+	busySetup, err := api.NewLocalProductSetupAPI(
+		productSetupFixtureBackend{
+			connectErr: app.ErrNativeAuthConnectBusy,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy := localProductHandler(nil, busySetup)(
+		context.Background(),
+		localipc.Request{
+			Version:   1,
+			RequestID: "setup-connect-busy",
+			Method:    "codex_connect",
+			Params:    json.RawMessage(`{}`),
+		},
+	)
+	if busy.OK || busy.Error == nil ||
+		busy.Error.Code != "busy" ||
+		!busy.Error.Recoverable {
+		t.Fatalf("busy codex connect response = %#v", busy)
 	}
 
 	rejected := handler(context.Background(), localipc.Request{

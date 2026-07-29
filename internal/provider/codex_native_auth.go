@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -16,6 +18,9 @@ import (
 var (
 	ErrInvalidCodexNativeAuthConfig   = errors.New("invalid Codex native auth configuration")
 	ErrCodexExecutableIdentityChanged = errors.New("Codex executable identity changed")
+	ErrInvalidCodexLoginController    = errors.New("invalid Codex login controller")
+	ErrCodexLoginBusy                 = errors.New("Codex login already running")
+	ErrCodexLoginUnavailable          = errors.New("Codex login unavailable")
 	errCodexStatusOutputLimit         = errors.New("Codex status output limit")
 )
 
@@ -71,6 +76,35 @@ type CodexNativeAuthObservation struct {
 	AuthMode  string
 	Reason    CodexNativeAuthReason
 	RawOutput []byte
+}
+
+type CodexLoginStatus string
+
+const CodexLoginStarted CodexLoginStatus = "started"
+
+type CodexLoginStartResult struct {
+	Status CodexLoginStatus `json:"status"`
+}
+
+type CodexLoginController interface {
+	Start(context.Context) (CodexLoginStartResult, error)
+	Close() error
+}
+
+type CodexLoginControllerConfig struct {
+	ExecutablePath string
+	Timeout        time.Duration
+}
+
+type SystemCodexLoginController struct {
+	executable codexFileIdentity
+	timeout    time.Duration
+
+	mu      sync.Mutex
+	running bool
+	closed  bool
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 type CodexNativeAuthObserver struct {
@@ -137,10 +171,7 @@ func (observer *CodexNativeAuthObserver) Observe(
 			CodexNativeAuthReasonUnavailable,
 		), nil
 	}
-	output, completeLine := codexStatusLine(result.Stdout)
-	if len(result.Stderr) != 0 {
-		completeLine = false
-	}
+	output, completeLine := codexStatusOutput(result.Stdout, result.Stderr)
 	switch {
 	case completeLine &&
 		result.ExitCode == 0 &&
@@ -159,6 +190,17 @@ func (observer *CodexNativeAuthObserver) Observe(
 			CodexNativeAuthUnsupported,
 			CodexNativeAuthReasonUnknownOutput,
 		), nil
+	}
+}
+
+func codexStatusOutput(stdout, stderr []byte) (string, bool) {
+	switch {
+	case len(stdout) != 0 && len(stderr) == 0:
+		return codexStatusLine(stdout)
+	case len(stderr) != 0 && len(stdout) == 0:
+		return codexStatusLine(stderr)
+	default:
+		return "", false
 	}
 }
 
@@ -188,6 +230,133 @@ func codexObservation(
 		Reason:    reason,
 		RawOutput: []byte{},
 	}
+}
+
+func NewSystemCodexLoginController(
+	config CodexLoginControllerConfig,
+) (*SystemCodexLoginController, error) {
+	if config.Timeout <= 0 || config.Timeout > 15*time.Minute {
+		return nil, ErrInvalidCodexLoginController
+	}
+	executable, err := codexExecutableIdentity(config.ExecutablePath)
+	if err != nil {
+		return nil, ErrInvalidCodexLoginController
+	}
+	return &SystemCodexLoginController{
+		executable: executable,
+		timeout:    config.Timeout,
+	}, nil
+}
+
+func (controller *SystemCodexLoginController) Start(
+	ctx context.Context,
+) (CodexLoginStartResult, error) {
+	if controller == nil || ctx == nil {
+		return CodexLoginStartResult{}, ErrInvalidCodexLoginController
+	}
+	if err := ctx.Err(); err != nil {
+		return CodexLoginStartResult{}, err
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.closed {
+		return CodexLoginStartResult{}, ErrCodexLoginUnavailable
+	}
+	if controller.running {
+		return CodexLoginStartResult{}, ErrCodexLoginBusy
+	}
+	current, err := codexExecutableIdentity(controller.executable.path)
+	if err != nil || !sameCodexExecutableIdentity(
+		controller.executable,
+		current,
+	) {
+		return CodexLoginStartResult{},
+			ErrCodexExecutableIdentityChanged
+	}
+	runContext, cancel := context.WithTimeout(
+		context.Background(),
+		controller.timeout,
+	)
+	command := exec.CommandContext(
+		runContext,
+		controller.executable.path,
+		"login",
+	)
+	command.Env = []string{}
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return nil
+		}
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	command.WaitDelay = 2 * time.Second
+	launchIdentity, identityErr := codexExecutableIdentity(
+		controller.executable.path,
+	)
+	if identityErr != nil || !sameCodexExecutableIdentity(
+		controller.executable,
+		launchIdentity,
+	) {
+		cancel()
+		return CodexLoginStartResult{},
+			ErrCodexExecutableIdentityChanged
+	}
+	if err := command.Start(); err != nil {
+		cancel()
+		return CodexLoginStartResult{}, ErrCodexLoginUnavailable
+	}
+	controller.running = true
+	controller.cancel = cancel
+	controller.done = make(chan struct{})
+	done := controller.done
+	go controller.wait(command, cancel, done)
+	return CodexLoginStartResult{Status: CodexLoginStarted}, nil
+}
+
+func (controller *SystemCodexLoginController) wait(
+	command *exec.Cmd,
+	cancel context.CancelFunc,
+	done chan struct{},
+) {
+	_ = command.Wait()
+	cancel()
+	controller.mu.Lock()
+	controller.running = false
+	controller.cancel = nil
+	if controller.done == done {
+		controller.done = nil
+	}
+	close(done)
+	controller.mu.Unlock()
+}
+
+func (controller *SystemCodexLoginController) Close() error {
+	if controller == nil {
+		return ErrInvalidCodexLoginController
+	}
+	controller.mu.Lock()
+	if controller.closed {
+		controller.mu.Unlock()
+		return nil
+	}
+	controller.closed = true
+	cancel := controller.cancel
+	done := controller.done
+	controller.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+	return nil
 }
 
 type SystemCodexStatusRunner struct{}

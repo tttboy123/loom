@@ -107,6 +107,11 @@ func TestProtocolErrorIsClosedAndNeverIncludesCause(t *testing.T) {
 
 func TestProtocolRejectsNestedDuplicatesAndInvalidResponses(t *testing.T) {
 	if _, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"request-connect","method":"codex_connect","params":{}}`,
+	)); err != nil {
+		t.Fatalf("valid codex_connect request error = %v", err)
+	}
+	if _, err := decodeRequest([]byte(
 		`{"version":1,"request_id":"request-1","method":"snapshot","params":{"items":[1,{"key":2}]}}`,
 	)); err != nil {
 		t.Fatalf("valid nested request error = %v", err)

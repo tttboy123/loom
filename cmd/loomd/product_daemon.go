@@ -64,6 +64,7 @@ type productDaemonRunner struct {
 	observer daemonRunner
 	server   *localipc.Server
 	database *sql.DB
+	setup    *api.LocalProductSetupAPI
 
 	mu      sync.Mutex
 	running bool
@@ -84,8 +85,12 @@ func newProductDaemonRunner(
 		_ = observer.Close()
 		return nil, err
 	}
+	var setupService *api.LocalProductSetupAPI
 	defer func() {
 		if resultErr != nil {
+			if setupService != nil {
+				_ = setupService.Close()
+			}
 			_ = database.Close()
 			_ = observer.Close()
 		}
@@ -105,7 +110,6 @@ func newProductDaemonRunner(
 	if err != nil {
 		return nil, err
 	}
-	var setupService *api.LocalProductSetupAPI
 	setupConfig := productSetupRuntimeConfig{}
 	if len(setupConfigs) == 1 {
 		setupConfig = setupConfigs[0]
@@ -134,6 +138,7 @@ func newProductDaemonRunner(
 		observer: observer,
 		server:   server,
 		database: database,
+		setup:    setupService,
 	}, nil
 }
 
@@ -204,6 +209,38 @@ func (observer productNativeAuthObserver) ObserveNativeAuth(
 		AuthMode: observation.AuthMode,
 		Reason:   string(observation.Reason),
 	}, nil
+}
+
+type productNativeAuthConnector struct {
+	controller provider.CodexLoginController
+}
+
+func (connector productNativeAuthConnector) StartNativeAuth(
+	ctx context.Context,
+) error {
+	if connector.controller == nil {
+		return app.ErrNativeAuthConnectUnavailable
+	}
+	result, err := connector.controller.Start(ctx)
+	switch {
+	case errors.Is(err, provider.ErrCodexLoginBusy):
+		return app.ErrNativeAuthConnectBusy
+	case errors.Is(err, provider.ErrCodexLoginUnavailable),
+		errors.Is(err, provider.ErrCodexExecutableIdentityChanged),
+		errors.Is(err, provider.ErrInvalidCodexLoginController):
+		return app.ErrNativeAuthConnectUnavailable
+	case err == nil && result.Status != provider.CodexLoginStarted:
+		return app.ErrNativeAuthConnectUnavailable
+	default:
+		return err
+	}
+}
+
+func (connector productNativeAuthConnector) Close() error {
+	if connector.controller == nil {
+		return nil
+	}
+	return connector.controller.Close()
 }
 
 type productCredentialStatusSource struct {
@@ -395,7 +432,10 @@ func buildProductSetupService(
 	if err != nil {
 		return nil, errors.New("setup credential boundary unavailable")
 	}
-	var native *provider.CodexNativeAuthObserver
+	var (
+		native          *provider.CodexNativeAuthObserver
+		nativeConnector app.NativeAuthConnector
+	)
 	if config.CodexExecutable != "" {
 		native, err = provider.NewCodexNativeAuthObserver(
 			provider.CodexNativeAuthConfig{
@@ -408,24 +448,45 @@ func buildProductSetupService(
 		if err != nil {
 			return nil, errors.New("setup native auth unavailable")
 		}
+		controller, controllerErr := provider.NewSystemCodexLoginController(
+			provider.CodexLoginControllerConfig{
+				ExecutablePath: config.CodexExecutable,
+				Timeout:        10 * time.Minute,
+			},
+		)
+		if controllerErr != nil {
+			return nil, errors.New("setup native auth unavailable")
+		}
+		nativeConnector = productNativeAuthConnector{
+			controller: controller,
+		}
 	}
 	setup, err := app.NewLocalProductSetupService(
 		app.LocalProductSetupConfig{
-			Journal:           store,
-			Projection:        readModel,
-			Writer:            writer,
-			Catalog:           catalog,
-			Identity:          productSetupIdentity{},
-			Now:               func() time.Time { return time.Now().UTC() },
-			NativeAuth:        productNativeAuthObserver{observer: native},
-			Credentials:       productCredentialStatusSource{projection: readModel},
-			CredentialMutator: broker,
+			Journal:             store,
+			Projection:          readModel,
+			Writer:              writer,
+			Catalog:             catalog,
+			Identity:            productSetupIdentity{},
+			Now:                 func() time.Time { return time.Now().UTC() },
+			NativeAuth:          productNativeAuthObserver{observer: native},
+			NativeAuthConnector: nativeConnector,
+			Credentials:         productCredentialStatusSource{projection: readModel},
+			CredentialMutator:   broker,
 		},
 	)
 	if err != nil {
+		if nativeConnector != nil {
+			_ = nativeConnector.Close()
+		}
 		return nil, errors.New("setup service unavailable")
 	}
-	return api.NewLocalProductSetupAPI(setup)
+	setupAPI, err := api.NewLocalProductSetupAPI(setup)
+	if err != nil {
+		_ = setup.Close()
+		return nil, errors.New("setup API unavailable")
+	}
+	return setupAPI, nil
 }
 
 func (runner *productDaemonRunner) Run(
@@ -550,6 +611,7 @@ func (runner *productDaemonRunner) Close() error {
 	runner.mu.Unlock()
 	return errors.Join(
 		runner.server.Close(),
+		runner.setup.Close(),
 		runner.database.Close(),
 		runner.observer.Close(),
 	)
@@ -626,6 +688,21 @@ func localProductHandler(
 				)
 			}
 			result, err := setup.SetupSnapshot(ctx)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "codex_connect":
+			if decodeExactProductParams(
+				request.Params,
+				&struct{}{},
+			) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.ConnectCodex(ctx)
 			if err != nil {
 				return productServiceError(err)
 			}
@@ -765,6 +842,7 @@ func localProductHandler(
 func productSetupMethod(method string) bool {
 	switch method {
 	case "setup_snapshot",
+		"codex_connect",
 		"builder_start",
 		"builder_answer",
 		"builder_edit",
@@ -831,6 +909,10 @@ func productServiceError(err error) localipc.Response {
 		return productErrorResponse("incompatible", err)
 	case errors.Is(err, app.ErrBuilderConfirmationRequired):
 		return productErrorResponse("denied", err)
+	case errors.Is(err, app.ErrNativeAuthConnectBusy):
+		return productErrorResponse("busy", err)
+	case errors.Is(err, app.ErrNativeAuthConnectUnavailable):
+		return productErrorResponse("state_unavailable", err)
 	case errors.Is(err, credentials.ErrCredentialStoreDenied):
 		return productErrorResponse("denied", err)
 	case errors.Is(err, credentials.ErrCredentialStoreUnavailable),
@@ -867,6 +949,7 @@ func localipcSafeError(code string, _ error) *localipc.ProtocolError {
 		"unknown_method":  {"unknown method", false},
 		"not_found":       {"not found", false},
 		"conflict":        {"conflict", true},
+		"busy":            {"busy", true},
 		"incompatible":    {"incompatible", false},
 		"denied":          {"denied", false},
 		"credential_unavailable": {

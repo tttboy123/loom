@@ -23,12 +23,14 @@ import (
 const localProductSetupSchemaVersion = 1
 
 var (
-	ErrInvalidLocalProductSetup    = errors.New("invalid local product setup")
-	ErrBuilderNotFound             = errors.New("builder session not found")
-	ErrBuilderConflict             = errors.New("builder session conflict")
-	ErrBuilderIncompatible         = errors.New("builder configuration incompatible")
-	ErrBuilderConfirmationRequired = errors.New("builder confirmation required")
-	ErrCredentialSetupUnavailable  = errors.New("credential setup unavailable")
+	ErrInvalidLocalProductSetup     = errors.New("invalid local product setup")
+	ErrBuilderNotFound              = errors.New("builder session not found")
+	ErrBuilderConflict              = errors.New("builder session conflict")
+	ErrBuilderIncompatible          = errors.New("builder configuration incompatible")
+	ErrBuilderConfirmationRequired  = errors.New("builder confirmation required")
+	ErrCredentialSetupUnavailable   = errors.New("credential setup unavailable")
+	ErrNativeAuthConnectUnavailable = errors.New("native auth connection unavailable")
+	ErrNativeAuthConnectBusy        = errors.New("native auth connection busy")
 )
 
 type BuilderSource string
@@ -51,6 +53,11 @@ type NativeAuthObservation struct {
 
 type NativeAuthObserver interface {
 	ObserveNativeAuth(context.Context) (NativeAuthObservation, error)
+}
+
+type NativeAuthConnector interface {
+	StartNativeAuth(context.Context) error
+	Close() error
 }
 
 type CredentialStatusSource interface {
@@ -137,13 +144,14 @@ type LocalProductSetupConfig struct {
 		Rebuild(context.Context) error
 		GlobalReadView() projection.GlobalReadView
 	}
-	Writer            *state.LocalProductSetupWriter
-	Catalog           LocalProductSetupCatalog
-	Identity          SetupIdentitySource
-	Now               func() time.Time
-	NativeAuth        NativeAuthObserver
-	Credentials       CredentialStatusSource
-	CredentialMutator CredentialMutator
+	Writer              *state.LocalProductSetupWriter
+	Catalog             LocalProductSetupCatalog
+	Identity            SetupIdentitySource
+	Now                 func() time.Time
+	NativeAuth          NativeAuthObserver
+	NativeAuthConnector NativeAuthConnector
+	Credentials         CredentialStatusSource
+	CredentialMutator   CredentialMutator
 }
 
 type ProviderSetupStatus struct {
@@ -321,6 +329,12 @@ type CredentialSetupResult struct {
 	Reason     string `json:"reason"`
 }
 
+type ProviderConnectResult struct {
+	ProviderID string `json:"provider_id"`
+	AuthMode   string `json:"auth_mode"`
+	Status     string `json:"status"`
+}
+
 type localProductBuilderSession struct {
 	view          BuilderSessionView
 	name          string
@@ -340,14 +354,15 @@ type LocalProductSetupService struct {
 		Rebuild(context.Context) error
 		GlobalReadView() projection.GlobalReadView
 	}
-	writer            *state.LocalProductSetupWriter
-	catalog           LocalProductSetupCatalog
-	domainCatalog     teams.TeamDraftCatalogSnapshot
-	identity          SetupIdentitySource
-	now               func() time.Time
-	nativeAuth        NativeAuthObserver
-	credentials       CredentialStatusSource
-	credentialMutator CredentialMutator
+	writer              *state.LocalProductSetupWriter
+	catalog             LocalProductSetupCatalog
+	domainCatalog       teams.TeamDraftCatalogSnapshot
+	identity            SetupIdentitySource
+	now                 func() time.Time
+	nativeAuth          NativeAuthObserver
+	nativeAuthConnector NativeAuthConnector
+	credentials         CredentialStatusSource
+	credentialMutator   CredentialMutator
 
 	mu       sync.Mutex
 	sessions map[string]*localProductBuilderSession
@@ -374,18 +389,62 @@ func NewLocalProductSetupService(
 		return nil, err
 	}
 	return &LocalProductSetupService{
-		journal:           config.Journal,
-		projection:        config.Projection,
-		writer:            config.Writer,
-		catalog:           cloneSetupCatalog(config.Catalog),
-		domainCatalog:     domainCatalog,
-		identity:          config.Identity,
-		now:               config.Now,
-		nativeAuth:        config.NativeAuth,
-		credentials:       config.Credentials,
-		credentialMutator: config.CredentialMutator,
-		sessions:          make(map[string]*localProductBuilderSession),
+		journal:             config.Journal,
+		projection:          config.Projection,
+		writer:              config.Writer,
+		catalog:             cloneSetupCatalog(config.Catalog),
+		domainCatalog:       domainCatalog,
+		identity:            config.Identity,
+		now:                 config.Now,
+		nativeAuth:          config.NativeAuth,
+		nativeAuthConnector: config.NativeAuthConnector,
+		credentials:         config.Credentials,
+		credentialMutator:   config.CredentialMutator,
+		sessions:            make(map[string]*localProductBuilderSession),
 	}, nil
+}
+
+func (service *LocalProductSetupService) ConnectCodex(
+	ctx context.Context,
+) (ProviderConnectResult, error) {
+	if service == nil || ctx == nil {
+		return ProviderConnectResult{}, ErrInvalidLocalProductSetup
+	}
+	observation, err := service.nativeAuth.ObserveNativeAuth(ctx)
+	if err != nil || observation.AuthMode != "native_auth" {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	if observation.Status == "available" {
+		return ProviderConnectResult{
+			ProviderID: "codex",
+			AuthMode:   "native_auth",
+			Status:     "already_connected",
+		}, nil
+	}
+	if observation.Status != "not_logged_in" {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	if service.nativeAuthConnector == nil {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	if err := service.nativeAuthConnector.StartNativeAuth(ctx); err != nil {
+		return ProviderConnectResult{}, err
+	}
+	return ProviderConnectResult{
+		ProviderID: "codex",
+		AuthMode:   "native_auth",
+		Status:     "started",
+	}, nil
+}
+
+func (service *LocalProductSetupService) Close() error {
+	if service == nil {
+		return ErrInvalidLocalProductSetup
+	}
+	if service.nativeAuthConnector != nil {
+		return service.nativeAuthConnector.Close()
+	}
+	return nil
 }
 
 func (service *LocalProductSetupService) SetupSnapshot(

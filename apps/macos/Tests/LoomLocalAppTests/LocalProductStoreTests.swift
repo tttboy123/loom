@@ -119,6 +119,40 @@ final class LocalProductStoreTests: XCTestCase {
         XCTAssertEqual(store.timelineState, .unavailable)
         XCTAssertNil(store.timeline)
     }
+
+    func testConnectCodexDelegatesThenRefreshesToAvailable() async throws {
+        let client = try ProviderSetupStubClient()
+        let store = LocalProductStore(client: client)
+
+        await store.refreshSetup()
+        XCTAssertEqual(store.setupSnapshot?.codex.status, "not_logged_in")
+
+        await store.connectCodex()
+
+        XCTAssertEqual(client.connectRequestCount, 1)
+        XCTAssertEqual(client.setupRequestCount, 2)
+        XCTAssertEqual(
+            store.providerConnectionStatus,
+            LocalProductProviderConnectResult.fixture(status: "started")
+        )
+        XCTAssertEqual(store.setupSnapshot?.codex.status, "available")
+        XCTAssertEqual(store.setupState, .ready)
+    }
+
+    func testConnectCodexPollingCancelsWithoutInventingFailure() async throws {
+        let client = try ProviderSetupStubClient(connectsAfterStart: false)
+        let store = LocalProductStore(client: client)
+        await store.refreshSetup()
+
+        let connection = Task { await store.connectCodex() }
+        await Task.yield()
+        connection.cancel()
+        await connection.value
+
+        XCTAssertEqual(client.connectRequestCount, 1)
+        XCTAssertEqual(store.setupSnapshot?.codex.status, "not_logged_in")
+        XCTAssertEqual(store.setupState, .ready)
+    }
 }
 
 private final class StubLocalProductClient: LocalProductClientProtocol {
@@ -147,5 +181,179 @@ private final class StubLocalProductClient: LocalProductClientProtocol {
         lastTimelineLimit = limit
         lastTimelineTeamID = teamInstanceID
         throw LocalProductClientError.notFound
+    }
+}
+
+final class ProviderSetupStubClient:
+    LocalProductClientProtocol,
+    LocalProductSetupClientProtocol
+{
+    private let disconnected: LocalProductSetupSnapshot
+    private let connected: LocalProductSetupSnapshot
+    private let connectsAfterStart: Bool
+    private(set) var setupRequestCount = 0
+    private(set) var connectRequestCount = 0
+
+    init(connectsAfterStart: Bool = true) throws {
+        disconnected = try Self.snapshot(codexStatus: "not_logged_in")
+        connected = try Self.snapshot(codexStatus: "available")
+        self.connectsAfterStart = connectsAfterStart
+    }
+
+    func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+        .empty(viewVersion: "view-1")
+    }
+
+    func timeline(
+        teamInstanceID: String,
+        cursor: String,
+        limit: Int
+    ) async throws -> LocalProductTimelinePage {
+        throw LocalProductClientError.notFound
+    }
+
+    func setupSnapshot() async throws -> LocalProductSetupSnapshot {
+        setupRequestCount += 1
+        return setupRequestCount == 1 || !connectsAfterStart
+            ? disconnected
+            : connected
+    }
+
+    func connectCodex() async throws -> LocalProductProviderConnectResult {
+        connectRequestCount += 1
+        return .fixture(status: "started")
+    }
+
+    func startBuilder(
+        source: String,
+        sourceID: String,
+        sourceVersion: Int,
+        sourceDigest: String
+    ) async throws -> LocalProductBuilderSession {
+        throw LocalProductClientError.unavailable
+    }
+
+    func answerBuilder(
+        session: LocalProductBuilderSession,
+        answer: String
+    ) async throws -> LocalProductBuilderSession {
+        throw LocalProductClientError.unavailable
+    }
+
+    func editBuilder(
+        session: LocalProductBuilderSession,
+        field: String,
+        value: String
+    ) async throws -> LocalProductBuilderSession {
+        throw LocalProductClientError.unavailable
+    }
+
+    func validateBuilder(
+        session: LocalProductBuilderSession
+    ) async throws -> LocalProductBuilderSession {
+        throw LocalProductClientError.unavailable
+    }
+
+    func confirmBuilder(
+        session: LocalProductBuilderSession,
+        definitionID: String
+    ) async throws -> LocalProductBuilderConfirmation {
+        throw LocalProductClientError.unavailable
+    }
+
+    func archiveTeam(
+        definitionID: String,
+        expectedHead: Int64
+    ) async throws -> LocalProductSetupSavedTeam {
+        throw LocalProductClientError.unavailable
+    }
+
+    func restoreTeam(
+        definitionID: String,
+        expectedHead: Int64
+    ) async throws -> LocalProductSetupSavedTeam {
+        throw LocalProductClientError.unavailable
+    }
+
+    func configureMiniMax(
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        throw LocalProductClientError.unavailable
+    }
+
+    func verifyMiniMax(
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
+        throw LocalProductClientError.unavailable
+    }
+
+    func replaceMiniMax(
+        reference: String,
+        revision: Int64,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        throw LocalProductClientError.unavailable
+    }
+
+    func revokeMiniMax(
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
+        throw LocalProductClientError.unavailable
+    }
+
+    private static func snapshot(
+        codexStatus: String
+    ) throws -> LocalProductSetupSnapshot {
+        try LocalProductSetupWire.decodeSnapshot(
+            Data(
+                """
+                {
+                  "schema_version": 1,
+                  "view_version": "\(String(repeating: "a", count: 64))",
+                  "codex": {
+                    "provider_id": "codex",
+                    "auth_mode": "native_auth",
+                    "credential_reference": "",
+                    "revision": 0,
+                    "status": "\(codexStatus)",
+                    "reason": "\(codexStatus == "available" ? "" : "not_logged_in")"
+                  },
+                  "minimax": {
+                    "provider_id": "minimax",
+                    "auth_mode": "brokered",
+                    "credential_reference": "",
+                    "revision": 0,
+                    "status": "unconfigured",
+                    "reason": ""
+                  },
+                  "runtimes": [],
+                  "saved_teams": [],
+                  "templates": [],
+                  "role_options": [],
+                  "skills": [],
+                  "permissions": [],
+                  "resources": []
+                }
+                """.utf8
+            )
+        )
+    }
+}
+
+private extension LocalProductProviderConnectResult {
+    static func fixture(status: String) -> Self {
+        try! LocalProductSetupWire.decodeProviderConnectResult(
+            Data(
+                """
+                {
+                  "provider_id": "codex",
+                  "auth_mode": "native_auth",
+                  "status": "\(status)"
+                }
+                """.utf8
+            )
+        )
     }
 }

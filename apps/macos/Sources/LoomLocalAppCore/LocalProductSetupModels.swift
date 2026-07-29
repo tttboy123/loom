@@ -61,6 +61,36 @@ public struct LocalProductProviderSetupStatus:
     }
 }
 
+public struct LocalProductProviderConnectResult:
+    Codable, Equatable, Sendable
+{
+    public let providerID: String
+    public let authMode: String
+    public let status: String
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case authMode = "auth_mode"
+        case status
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownSetupKeys(
+            decoder,
+            allowed: ["provider_id", "auth_mode", "status"]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        authMode = try values.decode(String.self, forKey: .authMode)
+        status = try values.decode(String.self, forKey: .status)
+        guard providerID == "codex",
+              authMode == "native_auth",
+              ["started", "already_connected"].contains(status) else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+}
+
 public struct LocalProductSetupRuntime:
     Codable, Equatable, Sendable, Identifiable
 {
@@ -658,6 +688,12 @@ public enum LocalProductSetupWire {
         _ data: Data
     ) throws -> LocalProductBuilderSession {
         try decode(LocalProductBuilderSession.self, data)
+    }
+
+    public static func decodeProviderConnectResult(
+        _ data: Data
+    ) throws -> LocalProductProviderConnectResult {
+        try decode(LocalProductProviderConnectResult.self, data)
     }
 
     public static func decodeBuilderConfirmation(

@@ -66,6 +66,74 @@ func TestCodexNativeAuthObserverUsesExactStatusCommandAndClosedMapping(
 	}
 }
 
+func TestCodexNativeAuthObserverAcceptsExactStatusFromOneOutputChannel(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		result CodexStatusProcessResult
+		status CodexNativeAuthStatus
+		reason CodexNativeAuthReason
+	}{
+		{
+			name: "codex 0.144.1 stderr success",
+			result: CodexStatusProcessResult{
+				Stderr:   []byte("Logged in using ChatGPT\n"),
+				ExitCode: 0,
+			},
+			status: CodexNativeAuthAvailable,
+			reason: CodexNativeAuthReasonNone,
+		},
+		{
+			name: "stderr not logged in",
+			result: CodexStatusProcessResult{
+				Stderr:   []byte("Not logged in\n"),
+				ExitCode: 1,
+			},
+			status: CodexNativeAuthNotLoggedIn,
+			reason: CodexNativeAuthReasonNotLoggedIn,
+		},
+		{
+			name: "both channels are ambiguous",
+			result: CodexStatusProcessResult{
+				Stdout:   []byte("Logged in using ChatGPT\n"),
+				Stderr:   []byte("Logged in using ChatGPT\n"),
+				ExitCode: 0,
+			},
+			status: CodexNativeAuthUnsupported,
+			reason: CodexNativeAuthReasonUnknownOutput,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observer, err := NewCodexNativeAuthObserver(CodexNativeAuthConfig{
+				ExecutablePath: executable,
+				Timeout:        5 * time.Second,
+				MaxOutputBytes: 1024,
+				Runner: &codexStatusFixtureRunner{
+					result: test.result,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := observer.Observe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != test.status || got.Reason != test.reason ||
+				len(got.RawOutput) != 0 {
+				t.Fatalf("Observe() = %#v", got)
+			}
+		})
+	}
+}
+
 func TestCodexNativeAuthObserverRejectsUnknownOutputAndTimeout(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "codex")
@@ -137,6 +205,116 @@ func TestCodexNativeAuthObserverRejectsUnknownOutputAndTimeout(t *testing.T) {
 				t.Fatalf("raw output escaped = %q", result.RawOutput)
 			}
 		})
+	}
+}
+
+func TestSystemCodexLoginControllerStartsExactSingletonAndJoinsOnClose(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	argumentsPath := filepath.Join(root, "arguments")
+	pidPath := filepath.Join(root, "pid")
+	script := fmt.Sprintf(
+		"#!/bin/sh\nprintf '%%s' \"$*\" > %q\nprintf '%%s' \"$$\" > %q\n/bin/sleep 30\n",
+		argumentsPath,
+		pidPath,
+	)
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := NewSystemCodexLoginController(
+		CodexLoginControllerConfig{
+			ExecutablePath: executable,
+			Timeout:        time.Minute,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewSystemCodexLoginController() error = %v", err)
+	}
+	result, err := controller.Start(context.Background())
+	if err != nil || result.Status != CodexLoginStarted {
+		t.Fatalf("Start() = %#v, %v", result, err)
+	}
+	if _, err := controller.Start(context.Background()); !errors.Is(
+		err,
+		ErrCodexLoginBusy,
+	) {
+		t.Fatalf("concurrent Start() error = %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(pidPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("login fixture did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(arguments) != "login" {
+		t.Fatalf("arguments = %q", arguments)
+	}
+	if err := controller.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(pidBytes), "%d", &pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("login process %d survived Close(): %v", pid, err)
+	}
+}
+
+func TestSystemCodexLoginControllerRejectsChangedExecutableIdentity(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	if err := os.WriteFile(
+		executable,
+		[]byte("#!/bin/sh\nexit 0\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := NewSystemCodexLoginController(
+		CodexLoginControllerConfig{
+			ExecutablePath: executable,
+			Timeout:        time.Minute,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement")
+	if err := os.WriteFile(
+		replacement,
+		[]byte("#!/bin/sh\nexit 1\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, executable); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Start(context.Background()); !errors.Is(
+		err,
+		ErrCodexExecutableIdentityChanged,
+	) {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := controller.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
