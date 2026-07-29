@@ -199,13 +199,32 @@ func joinProductDaemonErrors(values ...error) error {
 
 type productDaemonRunner struct {
 	observer daemonRunner
-	server   *localipc.Server
-	database *sql.DB
-	setup    *api.LocalProductSetupAPI
+	server   productIPCServer
+	database io.Closer
+	setup    io.Closer
 
 	mu      sync.Mutex
 	running bool
 	closed  bool
+}
+
+type productIPCServer interface {
+	Serve(context.Context) error
+	Ready() <-chan struct{}
+	Close() error
+}
+
+type productShutdownError struct {
+	stage string
+	err   error
+}
+
+func (failure *productShutdownError) Error() string {
+	return "product daemon shutdown failed: " + failure.stage
+}
+
+func (failure *productShutdownError) Unwrap() error {
+	return failure.err
 }
 
 func newProductDaemonRunner(
@@ -421,7 +440,119 @@ func buildProductSetupService(
 	if database == nil || store == nil || readModel == nil {
 		return nil, errors.New("setup state unavailable")
 	}
-	runtimes, _ := readModel.GlobalReadView().RuntimeInstances("", 64)
+	catalog, err := productSetupCatalogForView(
+		context.Background(),
+		readModel.GlobalReadView(),
+	)
+	if err != nil {
+		return nil, errors.New("setup runtime unavailable")
+	}
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		return nil, errors.New("setup state unavailable")
+	}
+	keychain, err := credentials.NewKeychainStore(
+		credentials.KeychainStoreConfig{},
+	)
+	if err != nil {
+		return nil, nil
+	}
+	verifier, err := provider.NewSystemMiniMaxCredentialVerifier(
+		5*time.Second,
+		64*1024,
+	)
+	if err != nil {
+		return nil, errors.New("setup Provider unavailable")
+	}
+	broker, err := credentials.NewCredentialBroker(
+		credentials.CredentialBrokerConfig{
+			Store:     keychain,
+			Verifier:  verifier,
+			Committer: writer,
+		},
+	)
+	if err != nil {
+		return nil, errors.New("setup credential boundary unavailable")
+	}
+	var (
+		native          *provider.CodexNativeAuthObserver
+		nativeConnector app.NativeAuthConnector
+	)
+	if config.CodexExecutable != "" {
+		native, err = provider.NewCodexNativeAuthObserver(
+			provider.CodexNativeAuthConfig{
+				ExecutablePath: config.CodexExecutable,
+				Timeout:        5 * time.Second,
+				MaxOutputBytes: 4096,
+				Runner:         provider.NewSystemCodexStatusRunner(),
+			},
+		)
+		if err != nil {
+			return nil, errors.New("setup native auth unavailable")
+		}
+		controller, controllerErr := provider.NewSystemCodexLoginController(
+			provider.CodexLoginControllerConfig{
+				ExecutablePath: config.CodexExecutable,
+				Timeout:        10 * time.Minute,
+			},
+		)
+		if controllerErr != nil {
+			return nil, errors.New("setup native auth unavailable")
+		}
+		nativeConnector = productNativeAuthConnector{
+			controller: controller,
+		}
+	}
+	setup, err := app.NewLocalProductSetupService(
+		app.LocalProductSetupConfig{
+			Journal:             store,
+			Projection:          readModel,
+			Writer:              writer,
+			Catalog:             catalog,
+			CatalogSource:       productSetupCatalogSource{},
+			Identity:            productSetupIdentity{},
+			Now:                 func() time.Time { return time.Now().UTC() },
+			NativeAuth:          productNativeAuthObserver{observer: native},
+			NativeAuthConnector: nativeConnector,
+			Credentials:         productCredentialStatusSource{projection: readModel},
+			CredentialMutator:   broker,
+		},
+	)
+	if err != nil {
+		if nativeConnector != nil {
+			_ = nativeConnector.Close()
+		}
+		return nil, errors.New("setup service unavailable")
+	}
+	setupAPI, err := api.NewLocalProductSetupAPI(setup)
+	if err != nil {
+		_ = setup.Close()
+		return nil, errors.New("setup API unavailable")
+	}
+	return setupAPI, nil
+}
+
+type productSetupCatalogSource struct{}
+
+func (productSetupCatalogSource) CatalogForView(
+	ctx context.Context,
+	view projection.GlobalReadView,
+) (app.LocalProductSetupCatalog, error) {
+	return productSetupCatalogForView(ctx, view)
+}
+
+func productSetupCatalogForView(
+	ctx context.Context,
+	view projection.GlobalReadView,
+) (app.LocalProductSetupCatalog, error) {
+	if ctx == nil {
+		return app.LocalProductSetupCatalog{},
+			errors.New("setup runtime unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return app.LocalProductSetupCatalog{}, err
+	}
+	runtimes, _ := view.RuntimeInstances("", 64)
 	observations := make([]loomruntime.RuntimeObservation, 0, len(runtimes))
 	for _, runtime := range runtimes {
 		status, ok := productSetupRuntimeStatus(runtime.Status)
@@ -446,13 +577,14 @@ func buildProductSetupService(
 		})
 	}
 	discovery, err := loomruntime.DiscoverRuntime(
-		context.Background(),
+		ctx,
 		[]loomruntime.RuntimeProbe{
 			productSetupProjectionProbe{observations: observations},
 		},
 	)
 	if err != nil {
-		return nil, errors.New("setup runtime unavailable")
+		return app.LocalProductSetupCatalog{},
+			errors.New("setup runtime unavailable")
 	}
 	definitions := []agents.AgentDefinition{}
 	profiles := []loomruntime.RuntimeProfile{}
@@ -529,7 +661,7 @@ func buildProductSetupService(
 	sum := sha256.Sum256([]byte(
 		"loom-product-setup-v1\x00" + discovery.Digest(),
 	))
-	catalog := app.LocalProductSetupCatalog{
+	return app.LocalProductSetupCatalog{
 		CatalogDigest:      hex.EncodeToString(sum[:]),
 		AgentDefinitions:   definitions,
 		RuntimeProfiles:    profiles,
@@ -541,89 +673,7 @@ func buildProductSetupService(
 		Templates:          []app.SetupTeamTemplate{},
 		BudgetCeiling:      100,
 		ConcurrencyCeiling: concurrencyCeiling,
-	}
-	writer, err := state.NewLocalProductSetupWriter(store)
-	if err != nil {
-		return nil, errors.New("setup state unavailable")
-	}
-	keychain, err := credentials.NewKeychainStore(
-		credentials.KeychainStoreConfig{},
-	)
-	if err != nil {
-		return nil, nil
-	}
-	verifier, err := provider.NewSystemMiniMaxCredentialVerifier(
-		5*time.Second,
-		64*1024,
-	)
-	if err != nil {
-		return nil, errors.New("setup Provider unavailable")
-	}
-	broker, err := credentials.NewCredentialBroker(
-		credentials.CredentialBrokerConfig{
-			Store:     keychain,
-			Verifier:  verifier,
-			Committer: writer,
-		},
-	)
-	if err != nil {
-		return nil, errors.New("setup credential boundary unavailable")
-	}
-	var (
-		native          *provider.CodexNativeAuthObserver
-		nativeConnector app.NativeAuthConnector
-	)
-	if config.CodexExecutable != "" {
-		native, err = provider.NewCodexNativeAuthObserver(
-			provider.CodexNativeAuthConfig{
-				ExecutablePath: config.CodexExecutable,
-				Timeout:        5 * time.Second,
-				MaxOutputBytes: 4096,
-				Runner:         provider.NewSystemCodexStatusRunner(),
-			},
-		)
-		if err != nil {
-			return nil, errors.New("setup native auth unavailable")
-		}
-		controller, controllerErr := provider.NewSystemCodexLoginController(
-			provider.CodexLoginControllerConfig{
-				ExecutablePath: config.CodexExecutable,
-				Timeout:        10 * time.Minute,
-			},
-		)
-		if controllerErr != nil {
-			return nil, errors.New("setup native auth unavailable")
-		}
-		nativeConnector = productNativeAuthConnector{
-			controller: controller,
-		}
-	}
-	setup, err := app.NewLocalProductSetupService(
-		app.LocalProductSetupConfig{
-			Journal:             store,
-			Projection:          readModel,
-			Writer:              writer,
-			Catalog:             catalog,
-			Identity:            productSetupIdentity{},
-			Now:                 func() time.Time { return time.Now().UTC() },
-			NativeAuth:          productNativeAuthObserver{observer: native},
-			NativeAuthConnector: nativeConnector,
-			Credentials:         productCredentialStatusSource{projection: readModel},
-			CredentialMutator:   broker,
-		},
-	)
-	if err != nil {
-		if nativeConnector != nil {
-			_ = nativeConnector.Close()
-		}
-		return nil, errors.New("setup service unavailable")
-	}
-	setupAPI, err := api.NewLocalProductSetupAPI(setup)
-	if err != nil {
-		_ = setup.Close()
-		return nil, errors.New("setup API unavailable")
-	}
-	return setupAPI, nil
+	}, nil
 }
 
 func (runner *productDaemonRunner) Run(
@@ -754,12 +804,37 @@ func (runner *productDaemonRunner) Close() error {
 	}
 	runner.closed = true
 	runner.mu.Unlock()
-	return errors.Join(
-		runner.server.Close(),
-		runner.setup.Close(),
-		runner.database.Close(),
-		runner.observer.Close(),
+	var closeErr error
+	closeErr = errors.Join(
+		closeErr,
+		closeProductDaemonStage("local_ipc", runner.server),
 	)
+	closeErr = errors.Join(
+		closeErr,
+		closeProductDaemonStage("observer", runner.observer),
+	)
+	closeErr = errors.Join(
+		closeErr,
+		closeProductDaemonStage("setup", runner.setup),
+	)
+	closeErr = errors.Join(
+		closeErr,
+		closeProductDaemonStage("database", runner.database),
+	)
+	return closeErr
+}
+
+func closeProductDaemonStage(stage string, closer io.Closer) error {
+	if closer == nil {
+		return &productShutdownError{
+			stage: stage,
+			err:   errors.New("missing shutdown owner"),
+		}
+	}
+	if err := closer.Close(); err != nil {
+		return &productShutdownError{stage: stage, err: err}
+	}
+	return nil
 }
 
 func localProductHandler(

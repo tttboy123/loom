@@ -2,7 +2,11 @@
 
 package credentials
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestKeychainStoreConfigurationIsFixedAndBounded(t *testing.T) {
 	store, err := NewKeychainStore(KeychainStoreConfig{})
@@ -24,5 +28,18 @@ func TestKeychainStoreConfigurationIsFixedAndBounded(t *testing.T) {
 		}); err == nil {
 			t.Fatalf("accepted service name %q", invalid)
 		}
+	}
+}
+
+func TestKeychainReadExplicitlyDisablesAuthenticationUI(t *testing.T) {
+	source, err := os.ReadFile("keychain_darwin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(
+		string(source),
+		"kSecUseAuthenticationUIFail",
+	) {
+		t.Fatal("Keychain query does not explicitly fail closed on auth UI")
 	}
 }

@@ -210,8 +210,13 @@ func (broker *CredentialBroker) Verify(
 	if !validVerification(verification) {
 		return MetadataResult{}, ErrCredentialRejected
 	}
+	commitCtx, cancelCommit := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		time.Second,
+	)
+	defer cancelCommit()
 	return broker.committer.CommitCredentialMetadata(
-		ctx,
+		commitCtx,
 		metadataFor(command, status, verification.Reason),
 	)
 }

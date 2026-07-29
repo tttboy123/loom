@@ -691,7 +691,8 @@ public final class LocalIPCClient:
         let response = try await Task.detached {
             try Self.exchange(
                 path: self.socketPath,
-                request: framed
+                request: framed,
+                timeoutSeconds: Self.requestTimeoutSeconds(for: method)
             )
         }.value
         return try LocalIPCWire.decodeResponse(
@@ -700,9 +701,20 @@ public final class LocalIPCClient:
         )
     }
 
-    private static func exchange(path: String, request: Data) throws -> Data {
+    static func requestTimeoutSeconds(for method: String) -> Int {
+        method == "credential_verify" ? 10 : 5
+    }
+
+    private static func exchange(
+        path: String,
+        request: Data,
+        timeoutSeconds: Int
+    ) throws -> Data {
         guard validateSocketPath(path) else {
             throw LocalProductClientError.invalidSocket
+        }
+        guard (1...10).contains(timeoutSeconds) else {
+            throw LocalProductClientError.invalidRequest
         }
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
@@ -710,7 +722,7 @@ public final class LocalIPCClient:
         }
         defer { Darwin.close(descriptor) }
 
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        var timeout = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
         guard setsockopt(
             descriptor,
             SOL_SOCKET,

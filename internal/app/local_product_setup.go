@@ -86,6 +86,13 @@ type CredentialMutator interface {
 	) (credentials.MetadataResult, error)
 }
 
+type SetupCatalogSource interface {
+	CatalogForView(
+		context.Context,
+		projection.GlobalReadView,
+	) (LocalProductSetupCatalog, error)
+}
+
 type SetupSkillRevision struct {
 	ID                 string   `json:"id"`
 	Revision           int      `json:"revision"`
@@ -146,6 +153,7 @@ type LocalProductSetupConfig struct {
 	}
 	Writer              *state.LocalProductSetupWriter
 	Catalog             LocalProductSetupCatalog
+	CatalogSource       SetupCatalogSource
 	Identity            SetupIdentitySource
 	Now                 func() time.Time
 	NativeAuth          NativeAuthObserver
@@ -337,6 +345,8 @@ type ProviderConnectResult struct {
 
 type localProductBuilderSession struct {
 	view          BuilderSessionView
+	catalog       LocalProductSetupCatalog
+	domainCatalog teams.TeamDraftCatalogSnapshot
 	name          string
 	purpose       string
 	mainRoleID    string
@@ -357,6 +367,7 @@ type LocalProductSetupService struct {
 	writer              *state.LocalProductSetupWriter
 	catalog             LocalProductSetupCatalog
 	domainCatalog       teams.TeamDraftCatalogSnapshot
+	catalogSource       SetupCatalogSource
 	identity            SetupIdentitySource
 	now                 func() time.Time
 	nativeAuth          NativeAuthObserver
@@ -394,6 +405,7 @@ func NewLocalProductSetupService(
 		writer:              config.Writer,
 		catalog:             cloneSetupCatalog(config.Catalog),
 		domainCatalog:       domainCatalog,
+		catalogSource:       config.CatalogSource,
 		identity:            config.Identity,
 		now:                 config.Now,
 		nativeAuth:          config.NativeAuth,
@@ -447,13 +459,56 @@ func (service *LocalProductSetupService) Close() error {
 	return nil
 }
 
+func (service *LocalProductSetupService) currentCatalog(
+	ctx context.Context,
+) (
+	LocalProductSetupCatalog,
+	teams.TeamDraftCatalogSnapshot,
+	projection.GlobalReadView,
+	error,
+) {
+	if err := service.projection.Rebuild(ctx); err != nil {
+		return LocalProductSetupCatalog{},
+			teams.TeamDraftCatalogSnapshot{},
+			projection.GlobalReadView{},
+			ErrInvalidLocalProductSetup
+	}
+	view := service.projection.GlobalReadView()
+	catalog := cloneSetupCatalog(service.catalog)
+	if service.catalogSource != nil {
+		refreshed, err := service.catalogSource.CatalogForView(ctx, view)
+		if err != nil {
+			return LocalProductSetupCatalog{},
+				teams.TeamDraftCatalogSnapshot{},
+				projection.GlobalReadView{},
+				ErrInvalidLocalProductSetup
+		}
+		catalog = cloneSetupCatalog(refreshed)
+	}
+	if err := validateSetupCatalog(catalog); err != nil {
+		return LocalProductSetupCatalog{},
+			teams.TeamDraftCatalogSnapshot{},
+			projection.GlobalReadView{},
+			err
+	}
+	domainCatalog, err := buildSetupDomainCatalog(catalog)
+	if err != nil {
+		return LocalProductSetupCatalog{},
+			teams.TeamDraftCatalogSnapshot{},
+			projection.GlobalReadView{},
+			ErrInvalidLocalProductSetup
+	}
+	return catalog, domainCatalog, view, nil
+}
+
 func (service *LocalProductSetupService) SetupSnapshot(
 	ctx context.Context,
 ) (SetupSnapshot, error) {
 	if service == nil || ctx == nil {
 		return SetupSnapshot{}, ErrInvalidLocalProductSetup
 	}
-	if err := service.projection.Rebuild(ctx); err != nil {
+	catalog, _, view, err := service.currentCatalog(ctx)
+	if err != nil {
 		return SetupSnapshot{}, fmt.Errorf(
 			"%w: projection unavailable",
 			ErrInvalidLocalProductSetup,
@@ -491,7 +546,6 @@ func (service *LocalProductSetupService) SetupSnapshot(
 		miniMax.CredentialReference = status.CredentialReference
 		miniMax.Revision = status.Revision
 	}
-	view := service.projection.GlobalReadView()
 	savedRecords, _ := view.TeamDefinitions("", 64)
 	saved := make([]SetupSavedTeamPreview, 0, len(savedRecords))
 	for _, record := range savedRecords {
@@ -518,13 +572,13 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			Reason:     auth.Reason,
 		},
 		MiniMax:     miniMax,
-		Runtimes:    setupRuntimePreviews(service.catalog),
+		Runtimes:    setupRuntimePreviews(catalog),
 		SavedTeams:  saved,
-		Templates:   append([]SetupTeamTemplate{}, service.catalog.Templates...),
-		RoleOptions: append([]SetupRoleOption{}, service.catalog.RoleOptions...),
-		Skills:      append([]SetupSkillRevision{}, service.catalog.SkillRevisions...),
-		Permissions: append([]string{}, service.catalog.Permissions...),
-		Resources:   append([]SetupResourcePointer{}, service.catalog.Resources...),
+		Templates:   append([]SetupTeamTemplate{}, catalog.Templates...),
+		RoleOptions: append([]SetupRoleOption{}, catalog.RoleOptions...),
+		Skills:      append([]SetupSkillRevision{}, catalog.SkillRevisions...),
+		Permissions: append([]string{}, catalog.Permissions...),
+		Resources:   append([]SetupResourcePointer{}, catalog.Resources...),
 	}), nil
 }
 
@@ -535,10 +589,11 @@ func (service *LocalProductSetupService) StartBuilder(
 	if service == nil || ctx == nil {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
-	if err := service.projection.Rebuild(ctx); err != nil {
+	catalog, domainCatalog, view, err := service.currentCatalog(ctx)
+	if err != nil {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
-	if len(service.catalog.RoleOptions) < 2 {
+	if len(catalog.RoleOptions) < 2 {
 		return BuilderSessionView{}, ErrBuilderIncompatible
 	}
 	draftID, err := service.identity.NextSetupID("draft")
@@ -551,25 +606,28 @@ func (service *LocalProductSetupService) StartBuilder(
 			DraftID:       draftID,
 			Revision:      1,
 			Source:        command.Source,
-			CatalogDigest: service.catalog.CatalogDigest,
-			ViewVersion:   service.projection.GlobalReadView().Version(),
+			CatalogDigest: catalog.CatalogDigest,
+			ViewVersion:   view.Version(),
 			Question:      emptyBuilderQuestion(),
 			Preview:       emptyBuilderPreview(),
 		},
+		catalog:       catalog,
+		domainCatalog: domainCatalog,
 	}
+	scoped := service.withSessionCatalog(session)
 	switch command.Source {
 	case BuilderSourceBlank:
 		session.mainRoleID, session.subRoleIDs, err =
-			service.defaultSetupRoles()
+			scoped.defaultSetupRoles()
 		if err != nil {
 			return BuilderSessionView{}, err
 		}
-		session.view.Question = service.builderQuestion("team_name")
-		if err := service.initializeStructuredSession(session); err != nil {
+		session.view.Question = scoped.builderQuestion("team_name")
+		if err := scoped.initializeStructuredSession(session); err != nil {
 			return BuilderSessionView{}, err
 		}
 	case BuilderSourceTemplate:
-		template, ok := service.setupTemplate(
+		template, ok := scoped.setupTemplate(
 			command.SourceID,
 			command.SourceVersion,
 			command.SourceDigest,
@@ -584,26 +642,26 @@ func (service *LocalProductSetupService) StartBuilder(
 		session.sourceID = template.ID
 		session.sourceVersion = template.Version
 		session.sourceDigest = template.Digest
-		if err := service.initializeStructuredSession(session); err != nil {
+		if err := scoped.initializeStructuredSession(session); err != nil {
 			return BuilderSessionView{}, err
 		}
-		if err := service.makeSessionProposed(session); err != nil {
+		if err := scoped.makeSessionProposed(session); err != nil {
 			return BuilderSessionView{}, err
 		}
 	case BuilderSourceSavedTeam:
-		if err := service.loadSavedTeamSession(session, command); err != nil {
+		if err := scoped.loadSavedTeamSession(session, command); err != nil {
 			return BuilderSessionView{}, err
 		}
-		if err := service.initializeStructuredSession(session); err != nil {
+		if err := scoped.initializeStructuredSession(session); err != nil {
 			return BuilderSessionView{}, err
 		}
-		if err := service.makeSessionProposed(session); err != nil {
+		if err := scoped.makeSessionProposed(session); err != nil {
 			return BuilderSessionView{}, err
 		}
 	default:
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
-	service.refreshBuilderView(session)
+	scoped.refreshBuilderView(session)
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	if _, exists := service.sessions[draftID]; exists {
@@ -623,7 +681,8 @@ func (service *LocalProductSetupService) AnswerBuilder(
 	if err := ctx.Err(); err != nil {
 		return BuilderSessionView{}, err
 	}
-	if err := service.projection.Rebuild(ctx); err != nil {
+	currentCatalog, _, currentView, err := service.currentCatalog(ctx)
+	if err != nil {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
 	service.mu.Lock()
@@ -633,16 +692,19 @@ func (service *LocalProductSetupService) AnswerBuilder(
 		command.ExpectedRevision,
 		command.CatalogDigest,
 		command.ViewVersion,
+		currentCatalog.CatalogDigest,
+		currentView.Version(),
 	)
 	if err != nil {
 		return BuilderSessionView{}, err
 	}
+	scoped := service.withSessionCatalog(session)
 	if session.view.Question.ID == "" ||
 		command.QuestionID != session.view.Question.ID ||
 		!validSetupText(command.Answer, 2048) {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
-	nextQuestionID, err := service.applyBuilderAnswer(
+	nextQuestionID, err := scoped.applyBuilderAnswer(
 		session,
 		command.QuestionID,
 		command.Answer,
@@ -650,19 +712,19 @@ func (service *LocalProductSetupService) AnswerBuilder(
 	if err != nil {
 		return BuilderSessionView{}, err
 	}
-	content, err := service.buildSessionContent(session)
+	content, err := scoped.buildSessionContent(session)
 	if err != nil {
 		return BuilderSessionView{}, err
 	}
 	var nextQuestion *teams.DraftQuestion
 	if nextQuestionID != "" {
-		question := service.domainQuestion(nextQuestionID)
+		question := scoped.domainQuestion(nextQuestionID)
 		nextQuestion = &question
 	}
 	structured, err := teams.AnswerStructuredTeamDraft(
 		session.structured,
 		session.structured.Revision(),
-		service.domainCatalog,
+		session.domainCatalog,
 		command.QuestionID,
 		command.Answer,
 		content,
@@ -673,8 +735,8 @@ func (service *LocalProductSetupService) AnswerBuilder(
 	}
 	session.structured = structured
 	session.view.Revision++
-	session.view.Question = service.builderQuestion(nextQuestionID)
-	service.refreshBuilderView(session)
+	session.view.Question = scoped.builderQuestion(nextQuestionID)
+	scoped.refreshBuilderView(session)
 	return cloneBuilderSessionView(session.view), nil
 }
 
@@ -688,7 +750,8 @@ func (service *LocalProductSetupService) EditBuilder(
 	if err := ctx.Err(); err != nil {
 		return BuilderSessionView{}, err
 	}
-	if err := service.projection.Rebuild(ctx); err != nil {
+	currentCatalog, _, currentView, err := service.currentCatalog(ctx)
+	if err != nil {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
 	service.mu.Lock()
@@ -698,10 +761,13 @@ func (service *LocalProductSetupService) EditBuilder(
 		command.ExpectedRevision,
 		command.CatalogDigest,
 		command.ViewVersion,
+		currentCatalog.CatalogDigest,
+		currentView.Version(),
 	)
 	if err != nil {
 		return BuilderSessionView{}, err
 	}
+	scoped := service.withSessionCatalog(session)
 	if !validSetupText(command.Value, 2048) {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
@@ -711,26 +777,26 @@ func (service *LocalProductSetupService) EditBuilder(
 	case "purpose":
 		session.purpose = command.Value
 	case "main_role":
-		if !service.validRoleChoice(command.Value, "main") {
+		if !scoped.validRoleChoice(command.Value, "main") {
 			return BuilderSessionView{}, ErrInvalidLocalProductSetup
 		}
 		session.mainRoleID = command.Value
 	case "subagent_role":
-		if !service.validRoleChoice(command.Value, "subagent") {
+		if !scoped.validRoleChoice(command.Value, "subagent") {
 			return BuilderSessionView{}, ErrInvalidLocalProductSetup
 		}
 		session.subRoleIDs = []string{command.Value}
 	default:
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
-	content, err := service.buildSessionContent(session)
+	content, err := scoped.buildSessionContent(session)
 	if err != nil {
 		return BuilderSessionView{}, ErrBuilderIncompatible
 	}
 	structured, err := teams.EditStructuredTeamDraft(
 		session.structured,
 		session.structured.Revision(),
-		service.domainCatalog,
+		session.domainCatalog,
 		content,
 		nil,
 	)
@@ -740,7 +806,7 @@ func (service *LocalProductSetupService) EditBuilder(
 	session.structured = structured
 	session.view.Revision++
 	session.view.Question = emptyBuilderQuestion()
-	service.refreshBuilderView(session)
+	scoped.refreshBuilderView(session)
 	return cloneBuilderSessionView(session.view), nil
 }
 
@@ -754,7 +820,8 @@ func (service *LocalProductSetupService) ValidateBuilder(
 	if err := ctx.Err(); err != nil {
 		return BuilderSessionView{}, err
 	}
-	if err := service.projection.Rebuild(ctx); err != nil {
+	currentCatalog, _, currentView, err := service.currentCatalog(ctx)
+	if err != nil {
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
 	service.mu.Lock()
@@ -764,21 +831,24 @@ func (service *LocalProductSetupService) ValidateBuilder(
 		command.ExpectedRevision,
 		command.CatalogDigest,
 		command.ViewVersion,
+		currentCatalog.CatalogDigest,
+		currentView.Version(),
 	)
 	if err != nil {
 		return BuilderSessionView{}, err
 	}
+	scoped := service.withSessionCatalog(session)
 	if session.view.Question.ID != "" {
 		return cloneBuilderSessionView(session.view), nil
 	}
 	if _, err := teams.CheckStructuredTeamDraftAcceptable(
 		session.structured,
 		session.structured.Revision(),
-		service.domainCatalog,
+		session.domainCatalog,
 	); err != nil {
 		return BuilderSessionView{}, ErrBuilderIncompatible
 	}
-	service.refreshBuilderView(session)
+	scoped.refreshBuilderView(session)
 	return cloneBuilderSessionView(session.view), nil
 }
 
@@ -795,7 +865,8 @@ func (service *LocalProductSetupService) ConfirmBuilder(
 	if err := ctx.Err(); err != nil {
 		return BuilderConfirmation{}, err
 	}
-	if err := service.projection.Rebuild(ctx); err != nil {
+	currentCatalog, _, currentView, err := service.currentCatalog(ctx)
+	if err != nil {
 		return BuilderConfirmation{}, ErrInvalidLocalProductSetup
 	}
 	service.mu.Lock()
@@ -805,10 +876,13 @@ func (service *LocalProductSetupService) ConfirmBuilder(
 		command.ExpectedRevision,
 		command.CatalogDigest,
 		command.ViewVersion,
+		currentCatalog.CatalogDigest,
+		currentView.Version(),
 	)
 	if err != nil {
 		return BuilderConfirmation{}, err
 	}
+	scoped := service.withSessionCatalog(session)
 	if !session.view.CanConfirm ||
 		command.BindingDigest != session.view.BindingDigest ||
 		!validSetupText(command.DefinitionID, 128) {
@@ -817,7 +891,7 @@ func (service *LocalProductSetupService) ConfirmBuilder(
 	if _, err := teams.CheckStructuredTeamDraftAcceptable(
 		session.structured,
 		session.structured.Revision(),
-		service.domainCatalog,
+		session.domainCatalog,
 	); err != nil {
 		return BuilderConfirmation{}, ErrBuilderIncompatible
 	}
@@ -829,7 +903,7 @@ func (service *LocalProductSetupService) ConfirmBuilder(
 		}
 		scopeIdentity.ProjectID = command.ProjectID
 	}
-	roles, configuration, err := service.definitionInputs(session)
+	roles, configuration, err := scoped.definitionInputs(session)
 	if err != nil {
 		return BuilderConfirmation{}, ErrBuilderIncompatible
 	}
@@ -843,8 +917,8 @@ func (service *LocalProductSetupService) ConfirmBuilder(
 			Status:        teams.TeamDefinitionActive,
 			Roles:         roles,
 		},
-		service.catalog.AgentDefinitions,
-		service.catalog.RuntimeProfiles,
+		session.catalog.AgentDefinitions,
+		session.catalog.RuntimeProfiles,
 	)
 	if err != nil {
 		return BuilderConfirmation{}, ErrBuilderIncompatible
@@ -866,8 +940,8 @@ func (service *LocalProductSetupService) ConfirmBuilder(
 			ExpectedHead:    0,
 			OccurredAt:      service.now().UTC(),
 			Definition:      definition,
-			Definitions:     service.catalog.AgentDefinitions,
-			RuntimeProfiles: service.catalog.RuntimeProfiles,
+			Definitions:     session.catalog.AgentDefinitions,
+			RuntimeProfiles: session.catalog.RuntimeProfiles,
 			DraftID:         session.view.DraftID,
 			DraftRevision:   session.view.Revision,
 			CatalogDigest:   session.view.CatalogDigest,
@@ -1665,6 +1739,8 @@ func (service *LocalProductSetupService) currentSession(
 	expectedRevision int,
 	catalogDigest string,
 	viewVersion string,
+	currentCatalogDigest string,
+	currentViewVersion string,
 ) (*localProductBuilderSession, error) {
 	session, ok := service.sessions[draftID]
 	if !ok {
@@ -1673,10 +1749,29 @@ func (service *LocalProductSetupService) currentSession(
 	if expectedRevision != session.view.Revision ||
 		catalogDigest != session.view.CatalogDigest ||
 		viewVersion != session.view.ViewVersion ||
-		viewVersion != service.projection.GlobalReadView().Version() {
+		currentCatalogDigest != session.view.CatalogDigest ||
+		currentViewVersion != session.view.ViewVersion {
 		return nil, ErrBuilderConflict
 	}
 	return session, nil
+}
+
+func (service *LocalProductSetupService) withSessionCatalog(
+	session *localProductBuilderSession,
+) *LocalProductSetupService {
+	return &LocalProductSetupService{
+		journal:             service.journal,
+		projection:          service.projection,
+		writer:              service.writer,
+		catalog:             cloneSetupCatalog(session.catalog),
+		domainCatalog:       session.domainCatalog,
+		identity:            service.identity,
+		now:                 service.now,
+		nativeAuth:          service.nativeAuth,
+		nativeAuthConnector: service.nativeAuthConnector,
+		credentials:         service.credentials,
+		credentialMutator:   service.credentialMutator,
+	}
 }
 
 func (service *LocalProductSetupService) applyBuilderAnswer(

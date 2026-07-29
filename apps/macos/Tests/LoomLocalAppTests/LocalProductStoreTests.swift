@@ -153,6 +153,24 @@ final class LocalProductStoreTests: XCTestCase {
         XCTAssertEqual(store.setupSnapshot?.codex.status, "not_logged_in")
         XCTAssertEqual(store.setupState, .ready)
     }
+
+    func testVerifyMiniMaxPresentsReturnedTerminalRevisionAndRefreshes() async throws {
+        let client = try ProviderSetupStubClient(miniMaxConfigured: true)
+        let store = LocalProductStore(client: client)
+        await store.refreshSetup()
+
+        XCTAssertEqual(store.setupSnapshot?.miniMax.revision, 1)
+        XCTAssertEqual(store.setupSnapshot?.miniMax.status, "configured")
+
+        await store.verifyMiniMax()
+
+        XCTAssertEqual(client.verifyRequestCount, 1)
+        XCTAssertEqual(store.credentialStatus?.revision, 2)
+        XCTAssertEqual(store.credentialStatus?.status, "verified")
+        XCTAssertEqual(store.setupSnapshot?.miniMax.revision, 2)
+        XCTAssertEqual(store.setupSnapshot?.miniMax.status, "verified")
+        XCTAssertEqual(store.setupState, .ready)
+    }
 }
 
 private final class StubLocalProductClient: LocalProductClientProtocol {
@@ -191,13 +209,27 @@ final class ProviderSetupStubClient:
     private let disconnected: LocalProductSetupSnapshot
     private let connected: LocalProductSetupSnapshot
     private let connectsAfterStart: Bool
+    private let miniMaxConfigured: Bool
     private(set) var setupRequestCount = 0
     private(set) var connectRequestCount = 0
+    private(set) var verifyRequestCount = 0
 
-    init(connectsAfterStart: Bool = true) throws {
-        disconnected = try Self.snapshot(codexStatus: "not_logged_in")
-        connected = try Self.snapshot(codexStatus: "available")
+    init(
+        connectsAfterStart: Bool = true,
+        miniMaxConfigured: Bool = false
+    ) throws {
+        disconnected = try Self.snapshot(
+            codexStatus: "not_logged_in",
+            miniMaxStatus: miniMaxConfigured ? "configured" : "unconfigured",
+            miniMaxRevision: miniMaxConfigured ? 1 : 0
+        )
+        connected = try Self.snapshot(
+            codexStatus: "available",
+            miniMaxStatus: miniMaxConfigured ? "configured" : "unconfigured",
+            miniMaxRevision: miniMaxConfigured ? 1 : 0
+        )
         self.connectsAfterStart = connectsAfterStart
+        self.miniMaxConfigured = miniMaxConfigured
     }
 
     func snapshot(limit: Int) async throws -> LocalProductSnapshot {
@@ -214,6 +246,13 @@ final class ProviderSetupStubClient:
 
     func setupSnapshot() async throws -> LocalProductSetupSnapshot {
         setupRequestCount += 1
+        if miniMaxConfigured {
+            return try Self.snapshot(
+                codexStatus: "not_logged_in",
+                miniMaxStatus: verifyRequestCount == 0 ? "configured" : "verified",
+                miniMaxRevision: verifyRequestCount == 0 ? 1 : 2
+            )
+        }
         return setupRequestCount == 1 || !connectsAfterStart
             ? disconnected
             : connected
@@ -285,7 +324,24 @@ final class ProviderSetupStubClient:
         reference: String,
         revision: Int64
     ) async throws -> LocalProductCredentialSetupResult {
-        throw LocalProductClientError.unavailable
+        guard miniMaxConfigured,
+              reference == "credential-ref-1",
+              revision == 1 else {
+            throw LocalProductClientError.invalidRequest
+        }
+        verifyRequestCount += 1
+        return try LocalProductSetupWire.decodeCredentialResult(
+            Data(
+                """
+                {
+                  "provider_id": "minimax",
+                  "revision": 2,
+                  "status": "verified",
+                  "reason": ""
+                }
+                """.utf8
+            )
+        )
     }
 
     func replaceMiniMax(
@@ -304,7 +360,9 @@ final class ProviderSetupStubClient:
     }
 
     private static func snapshot(
-        codexStatus: String
+        codexStatus: String,
+        miniMaxStatus: String = "unconfigured",
+        miniMaxRevision: Int64 = 0
     ) throws -> LocalProductSetupSnapshot {
         try LocalProductSetupWire.decodeSnapshot(
             Data(
@@ -323,9 +381,9 @@ final class ProviderSetupStubClient:
                   "minimax": {
                     "provider_id": "minimax",
                     "auth_mode": "brokered",
-                    "credential_reference": "",
-                    "revision": 0,
-                    "status": "unconfigured",
+                    "credential_reference": "\(miniMaxRevision > 0 ? "credential-ref-1" : "")",
+                    "revision": \(miniMaxRevision),
+                    "status": "\(miniMaxStatus)",
                     "reason": ""
                   },
                   "runtimes": [],

@@ -3259,3 +3259,45 @@ integrity-valid attempt-002 five-Event source hash. It confirmed that the
 repair remains one W2 vertical boundary with no W4, authority expansion,
 detached lifecycle work or premature live action. Mandatory deterministic RED
 is now the gate; attempt-005 remains locked.
+
+`CURRENT`: the same-W2 Vertical Native Journey Closure mandatory RED reproduced
+all four connected product gaps without live action: construction-time Runtime
+catalog staleness against the exact six-Event attempt-004 shape, caller
+cancellation erasing an already observed Provider result, the equal five-second
+Go IPC deadline, and Keychain queries lacking an explicit non-interactive
+policy. Secret Store failure before Provider observation continued to append
+zero facts.
+
+`CURRENT`: the repaired deterministic Candidate is complete and GREEN.
+`SetupSnapshot` and `StartBuilder` now derive a canonical Runtime catalog after
+Projection rebuild from the current immutable `GlobalReadView`; each Builder
+session freezes its exact catalog/domain catalog/view/binding and rejects later
+catalog or view drift without rebinding. A real MiniMax observation gets exactly
+one cancellation-independent terminal metadata append bounded to one second,
+while only `credential_verify` receives ten-second Go and Swift request
+deadlines and all other IPC remains five seconds. Keychain access fails closed
+without authentication UI. Product shutdown now joins local IPC handlers,
+Runtime observer, setup/native-auth owner and database in order, retains
+internal stage identity, removes the socket, and closes each owner exactly
+once.
+
+`CURRENT`: focused tests, twenty-run focused race, serial complete Go and
+repository-race tests, vet, module tidy/verify, format/diff, secret-negative
+scan, Swift debug tests, release build and thread-sanitizer tests all pass.
+Swift debug and thread-sanitizer each executed 33 XCTest cases with zero
+failures and one intentional visual-export skip; the strict Swift Testing wire
+suite passed four tests. No installed Pi, Codex, Provider network, real
+Keychain item, native app, resident daemon, LaunchAgent or live canary ran.
+Fresh independent Implementation Review is the current gate. Attempt-005
+remains locked, P2A-W2 remains unaccepted, P2A-W3 remains locked and no P2A-W4
+exists.
+
+`CURRENT`: fresh independent read-only Implementation Review returned `PASS`
+with no P0, P1 or P2 finding. The Reviewer reproduced the focused catalog,
+credential, Keychain, IPC, native presentation and joined-shutdown proofs,
+verified exact staged ownership and secret-negative surfaces, and made no edit,
+stage, commit, live, Keychain, Provider, Pi, Codex or daemon action. Complete
+deterministic GREEN plus this Review unlock exactly one controlled native-window
+lineage `p2a-w2-live-20260730-005` using exact post-Review Candidate binaries.
+No retry or second canary is authorized. P2A-W2 remains unaccepted until fresh
+Result-Evidence Review `PASS`; P2A-W3 remains locked and no P2A-W4 exists.

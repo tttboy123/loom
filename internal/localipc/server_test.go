@@ -488,6 +488,81 @@ func TestServerCloseCancelsAndJoinsTrackedHandler(t *testing.T) {
 	}
 }
 
+func TestServerUsesExtendedDeadlineOnlyForCredentialVerify(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	type observation struct {
+		method    string
+		remaining time.Duration
+	}
+	observations := make(chan observation, 2)
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "deadline-fixture",
+		Handler: HandlerFunc(func(
+			ctx context.Context,
+			request Request,
+		) Response {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Errorf("%s handler has no deadline", request.Method)
+			}
+			observations <- observation{
+				method:    request.Method,
+				remaining: time.Until(deadline),
+			}
+			return Response{OK: true, Result: json.RawMessage(`{}`)}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForServerReady(t, server)
+	client, err := NewClient(ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"snapshot", "credential_verify"} {
+		var result map[string]any
+		if err := client.Call(
+			context.Background(),
+			method,
+			struct{}{},
+			&result,
+		); err != nil {
+			t.Fatalf("Call(%s) error = %v", method, err)
+		}
+	}
+	first := <-observations
+	second := <-observations
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	byMethod := map[string]time.Duration{
+		first.method:  first.remaining,
+		second.method: second.remaining,
+	}
+	if got := byMethod["snapshot"]; got <= 4*time.Second ||
+		got > 5*time.Second {
+		t.Fatalf("snapshot deadline remaining = %s, want (4s, 5s]", got)
+	}
+	if got := byMethod["credential_verify"]; got <= 9*time.Second ||
+		got > 10*time.Second {
+		t.Fatalf(
+			"credential_verify deadline remaining = %s, want (9s, 10s]",
+			got,
+		)
+	}
+}
+
 func waitForServerReady(t *testing.T, server *Server) {
 	t.Helper()
 	select {

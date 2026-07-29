@@ -22,6 +22,7 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/projection"
@@ -29,6 +30,7 @@ import (
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/piadapter"
+	"loom-pi-rebuild/internal/state"
 	loomtui "loom-pi-rebuild/internal/tui"
 
 	_ "modernc.org/sqlite"
@@ -1804,6 +1806,217 @@ func TestProductDaemonClosePropagatesToSetupProcessOwner(t *testing.T) {
 	}
 }
 
+type productLifecycleCloser struct {
+	name    string
+	order   *[]string
+	entered chan struct{}
+	release <-chan struct{}
+	err     error
+}
+
+func (closer *productLifecycleCloser) Close() error {
+	if closer.order != nil {
+		*closer.order = append(*closer.order, closer.name)
+	}
+	if closer.entered != nil {
+		close(closer.entered)
+	}
+	if closer.release != nil {
+		<-closer.release
+	}
+	return closer.err
+}
+
+type productLifecycleServer struct {
+	*productLifecycleCloser
+	ready chan struct{}
+}
+
+func (server *productLifecycleServer) Serve(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (server *productLifecycleServer) Ready() <-chan struct{} {
+	return server.ready
+}
+
+type productLifecycleObserver struct {
+	*productLifecycleCloser
+	canceled chan struct{}
+}
+
+func (observer *productLifecycleObserver) Run(
+	ctx context.Context,
+) (app.LocalRuntimeObservationDaemonResult, error) {
+	<-ctx.Done()
+	if observer.canceled != nil {
+		close(observer.canceled)
+	}
+	return app.LocalRuntimeObservationDaemonResult{}, ctx.Err()
+}
+
+func TestProductDaemonCloseIsOrderedJoinedAndExactlyOnce(t *testing.T) {
+	order := []string{}
+	setupEntered := make(chan struct{})
+	setupRelease := make(chan struct{})
+	runner := &productDaemonRunner{
+		server: &productLifecycleServer{
+			productLifecycleCloser: &productLifecycleCloser{
+				name:  "local_ipc",
+				order: &order,
+			},
+			ready: make(chan struct{}),
+		},
+		observer: &productLifecycleObserver{
+			productLifecycleCloser: &productLifecycleCloser{
+				name:  "observer",
+				order: &order,
+			},
+		},
+		setup: &productLifecycleCloser{
+			name:    "setup",
+			order:   &order,
+			entered: setupEntered,
+			release: setupRelease,
+		},
+		database: &productLifecycleCloser{
+			name:  "database",
+			order: &order,
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runner.Close() }()
+	select {
+	case <-setupEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not reach setup stage")
+	}
+	if !reflect.DeepEqual(order, []string{
+		"local_ipc",
+		"observer",
+		"setup",
+	}) {
+		t.Fatalf("order before setup release = %v", order)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Close() detached blocked setup: %v", err)
+	default:
+	}
+	close(setupRelease)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(order, []string{
+		"local_ipc",
+		"observer",
+		"setup",
+		"database",
+	}) {
+		t.Fatalf("close order = %v", order)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if len(order) != 4 {
+		t.Fatalf("shutdown owners closed more than once: %v", order)
+	}
+}
+
+func TestProductDaemonCancellationJoinsHandlerAndObserver(t *testing.T) {
+	root, _ := productDaemonFailureState(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	handlerEntered := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "product-lifecycle-fixture",
+		Handler: localipc.HandlerFunc(func(
+			ctx context.Context,
+			_ localipc.Request,
+		) localipc.Response {
+			close(handlerEntered)
+			<-ctx.Done()
+			close(handlerCanceled)
+			return localipc.Response{OK: false}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerCanceled := make(chan struct{})
+	runner := &productDaemonRunner{
+		server: server,
+		observer: &productLifecycleObserver{
+			productLifecycleCloser: &productLifecycleCloser{},
+			canceled:               observerCanceled,
+		},
+		setup:    &productLifecycleCloser{},
+		database: &productLifecycleCloser{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		runDone <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callDone := make(chan error, 1)
+	go func() {
+		var result map[string]any
+		callDone <- client.Call(
+			context.Background(),
+			"snapshot",
+			struct{}{},
+			&result,
+		)
+	}()
+	select {
+	case <-handlerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	cancel()
+	for name, signal := range map[string]<-chan struct{}{
+		"handler":  handlerCanceled,
+		"observer": observerCanceled,
+	} {
+		select {
+		case <-signal:
+		case <-time.After(time.Second):
+			t.Fatalf("%s was not canceled", name)
+		}
+	}
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not join handler and observer")
+	}
+	select {
+	case <-callDone:
+	case <-time.After(time.Second):
+		t.Fatal("client remained blocked after cancellation")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket remains after cancellation: %v", err)
+	}
+}
+
 func TestProductDaemonCloseFailsClosedWhenSetupOwnerIsMissing(t *testing.T) {
 	root, statePath := productDaemonFailureState(t)
 	database, err := sql.Open("sqlite", statePath)
@@ -1827,14 +2040,162 @@ func TestProductDaemonCloseFailsClosedWhenSetupOwnerIsMissing(t *testing.T) {
 		server:   server,
 		database: database,
 	}
-	if err := runner.Close(); !errors.Is(
-		err,
-		api.ErrInvalidLocalProductSetupAPI,
-	) {
+	var shutdownErr *productShutdownError
+	if err := runner.Close(); !errors.As(err, &shutdownErr) ||
+		shutdownErr.stage != "setup" {
 		t.Fatalf("Close() error = %v", err)
 	}
 	if !observer.closed {
 		t.Fatal("Close() did not continue closing the observer")
+	}
+}
+
+func TestProductSetupRefreshesRuntimeCatalogAfterServiceConstruction(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for revision := int64(0); revision < 4; revision++ {
+		status := credentials.CredentialVerified
+		if revision == 0 {
+			status = credentials.CredentialConfigured
+		}
+		_, err := writer.CommitCredentialMetadata(
+			context.Background(),
+			credentials.MetadataCommand{
+				CommandID: fmt.Sprintf(
+					"attempt-004-credential-%d",
+					revision+1,
+				),
+				ProviderID:          "minimax",
+				CredentialReference: "credential-ref-attempt-004",
+				ExpectedRevision:    revision,
+				OccurredAt:          time.Unix(100+revision, 0).UTC(),
+				Status:              status,
+				Reason:              credentials.VerificationReasonNone,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendProductSetupRuntimeEvent(
+		t,
+		store,
+		"runtime-legacy",
+		"legacy-discovery",
+		nil,
+	)
+	if events, err := store.ReadAll(context.Background()); err != nil ||
+		len(events) != 5 {
+		t.Fatalf("pre-construction fixture events=%d error=%v", len(events), err)
+	}
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := buildProductSetupService(
+		database,
+		store,
+		readModel,
+		productSetupRuntimeConfig{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup == nil {
+		t.Fatal("setup service unavailable")
+	}
+	defer setup.Close()
+
+	appendProductSetupRuntimeEvent(
+		t,
+		store,
+		"runtime-model-capable",
+		"model-discovery",
+		[]string{"loom-local/model-a"},
+	)
+	if events, err := store.ReadAll(context.Background()); err != nil ||
+		len(events) != 6 {
+		t.Fatalf("attempt-004 fixture events=%d error=%v", len(events), err)
+	}
+	snapshot, err := setup.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("SetupSnapshot() error = %v", err)
+	}
+	if len(snapshot.Runtimes) != 2 ||
+		len(snapshot.RoleOptions) != 2 ||
+		snapshot.RoleOptions[0].RuntimeInstanceID !=
+			"runtime-model-capable" ||
+		snapshot.RoleOptions[1].RuntimeInstanceID !=
+			"runtime-model-capable" {
+		t.Fatalf("refreshed snapshot = %#v", snapshot)
+	}
+	session, err := setup.StartBuilder(
+		context.Background(),
+		app.BuilderStartCommand{Source: app.BuilderSourceBlank},
+	)
+	if err != nil {
+		t.Fatalf("StartBuilder() error = %v", err)
+	}
+	if session.Question.ID != "team_name" ||
+		session.CatalogDigest == "" ||
+		session.ViewVersion != snapshot.ViewVersion {
+		t.Fatalf("builder session = %#v, snapshot = %#v", session, snapshot)
+	}
+}
+
+func appendProductSetupRuntimeEvent(
+	t *testing.T,
+	store *journal.Store,
+	runtimeID,
+	eventID string,
+	modelIDs []string,
+) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"discovery_digest": strings.Repeat(
+			map[bool]string{true: "a", false: "b"}[modelIDs == nil],
+			64,
+		),
+		"source_probe_id": "probe-" + runtimeID,
+		"instance": map[string]any{
+			"id":                    runtimeID,
+			"device_id":             "device-local",
+			"adapter_type":          "pi",
+			"display_name":          "Local Pi",
+			"executable_version":    "0.82.1",
+			"status":                "online",
+			"observed_capabilities": []string{"rpc"},
+			"capacity":              1,
+		},
+		"model_ids": modelIDs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Append(context.Background(), journal.Event{
+		ID:             eventID,
+		StreamID:       "runtime_instance:" + runtimeID,
+		Seq:            1,
+		IdempotencyKey: "idem-" + eventID,
+		Type:           "RuntimeInstanceDiscovered",
+		SchemaVersion:  1,
+		EmittedAt:      time.Unix(10, 0).UTC(),
+		CorrelationID:  "correlation-" + runtimeID,
+		PayloadJSON:    payload,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -116,6 +116,73 @@ func (mutator setupFixtureMutator) Revoke(
 	return credentials.MetadataResult{}, nil
 }
 
+type setupFixtureCatalogSource struct {
+	catalog LocalProductSetupCatalog
+	err     error
+	calls   int
+}
+
+func (source *setupFixtureCatalogSource) CatalogForView(
+	context.Context,
+	projection.GlobalReadView,
+) (LocalProductSetupCatalog, error) {
+	source.calls++
+	return cloneSetupCatalog(source.catalog), source.err
+}
+
+func TestLocalProductSetupRejectsChangedCatalogWithoutRebindingSession(
+	t *testing.T,
+) {
+	service, _, _, catalog := newSetupFixtureService(t)
+	source := &setupFixtureCatalogSource{catalog: catalog}
+	service.catalogSource = source
+	session, err := service.StartBuilder(
+		context.Background(),
+		BuilderStartCommand{Source: BuilderSourceBlank},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneSetupCatalog(catalog)
+	changed.CatalogDigest = setupDigest("changed-catalog")
+	changed.RuntimeProfiles[0].ModelID = "model-b"
+	changed.RuntimeProfiles[1].ModelID = "model-b"
+	observations := changed.RuntimeDiscovery.Observations()
+	observations[0].ModelIDs = []string{"model-b"}
+	changed.RuntimeDiscovery, err = loomruntime.DiscoverRuntime(
+		context.Background(),
+		[]loomruntime.RuntimeProbe{setupFixtureProbe{
+			observations: observations,
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.catalog = changed
+
+	_, err = service.AnswerBuilder(
+		context.Background(),
+		BuilderAnswerCommand{
+			DraftID:          session.DraftID,
+			ExpectedRevision: session.Revision,
+			CatalogDigest:    session.CatalogDigest,
+			ViewVersion:      session.ViewVersion,
+			QuestionID:       session.Question.ID,
+			Answer:           "Must remain bound to model-a",
+		},
+	)
+	if !errors.Is(err, ErrBuilderConflict) {
+		t.Fatalf("AnswerBuilder(changed catalog) error = %v", err)
+	}
+	stored := service.sessions[session.DraftID]
+	if stored == nil ||
+		stored.view.Revision != session.Revision ||
+		stored.catalog.RuntimeProfiles[0].ModelID != "model-a" ||
+		source.calls != 2 {
+		t.Fatalf("stored session=%#v source_calls=%d", stored, source.calls)
+	}
+}
+
 func TestLocalProductSetupBuilderBlankFlowRequiresExplicitConfirmation(
 	t *testing.T,
 ) {

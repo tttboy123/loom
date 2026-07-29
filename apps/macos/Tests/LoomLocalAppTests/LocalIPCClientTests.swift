@@ -91,6 +91,26 @@ final class LocalIPCClientTests: XCTestCase {
         XCTAssertFalse(LocalIPCWire.validRequestID("request/1"))
     }
 
+    func testCredentialVerifyAloneReceivesExtendedRequestTimeout() {
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "credential_verify"),
+            10
+        )
+        for method in [
+            "ping", "snapshot", "timeline_page", "setup_snapshot",
+            "codex_connect", "builder_start", "builder_answer",
+            "builder_edit", "builder_validate", "builder_confirm",
+            "team_archive", "team_restore", "credential_configure",
+            "credential_replace", "credential_revoke",
+        ] {
+            XCTAssertEqual(
+                LocalIPCClient.requestTimeoutSeconds(for: method),
+                5,
+                method
+            )
+        }
+    }
+
     func testClientAcceptsPrivateOwnedUnixSocket() throws {
         let root = URL(fileURLWithPath: "/private/tmp")
             .appendingPathComponent("loom-swift-\(UUID().uuidString.prefix(8))")

@@ -42,6 +42,14 @@ static CFMutableDictionaryRef loom_query(
 		CFDictionarySetValue(query, kSecAttrService, service);
 		CFDictionarySetValue(query, kSecAttrAccount, account);
 		CFDictionarySetValue(query, kSecAttrSynchronizable, kCFBooleanFalse);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		CFDictionarySetValue(
+			query,
+			kSecUseAuthenticationUI,
+			kSecUseAuthenticationUIFail
+		);
+#pragma clang diagnostic pop
 	}
 	CFRelease(service);
 	CFRelease(account);

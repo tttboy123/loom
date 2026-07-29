@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	connectionDeadline = 5 * time.Second
-	maxConnections     = 16
+	connectionDeadline       = 5 * time.Second
+	credentialVerifyDeadline = 10 * time.Second
+	maxConnections           = 16
 )
 
 type Handler interface {
@@ -253,6 +254,9 @@ func (server *Server) serveConnection(
 		)
 		return
 	}
+	_ = connection.SetDeadline(
+		time.Now().Add(requestDeadline(request.Method)),
+	)
 	response := server.handle(ctx, request)
 	response.Version = protocolVersion
 	response.RequestID = request.RequestID
@@ -281,13 +285,23 @@ func (server *Server) handle(
 		})
 		return Response{OK: true, Result: result}
 	}
-	handlerCtx, cancel := context.WithTimeout(ctx, connectionDeadline)
+	handlerCtx, cancel := context.WithTimeout(
+		ctx,
+		requestDeadline(request.Method),
+	)
 	defer cancel()
 	response := server.config.Handler.Handle(handlerCtx, request)
 	if !response.OK && response.Error == nil {
 		response.Error = safeProtocolError("internal", ErrInvalidProtocol)
 	}
 	return response
+}
+
+func requestDeadline(method string) time.Duration {
+	if method == "credential_verify" {
+		return credentialVerifyDeadline
+	}
+	return connectionDeadline
 }
 
 func readServerRequestFrame(connection *net.UnixConn) ([]byte, error) {

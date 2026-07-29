@@ -117,6 +117,139 @@ func (committer *brokerTestCommitter) CommitCredentialMetadata(
 	}, nil
 }
 
+type brokerCancelingVerifier struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (verifier *brokerCancelingVerifier) Verify(
+	_ context.Context,
+	providerID string,
+	secret []byte,
+) (VerificationResult, error) {
+	if providerID != "minimax" || len(secret) == 0 {
+		return VerificationResult{}, errors.New("invalid fixture input")
+	}
+	verifier.calls++
+	verifier.cancel()
+	return VerificationResult{
+		Status: VerificationValid,
+		Reason: VerificationReasonNone,
+	}, nil
+}
+
+type brokerCommitContextRecorder struct {
+	calls       int
+	contextErr  error
+	hasDeadline bool
+	remaining   time.Duration
+}
+
+func (recorder *brokerCommitContextRecorder) CommitCredentialMetadata(
+	ctx context.Context,
+	command MetadataCommand,
+) (MetadataResult, error) {
+	recorder.calls++
+	recorder.contextErr = ctx.Err()
+	deadline, ok := ctx.Deadline()
+	recorder.hasDeadline = ok
+	if ok {
+		recorder.remaining = time.Until(deadline)
+	}
+	if recorder.contextErr != nil {
+		return MetadataResult{}, recorder.contextErr
+	}
+	return MetadataResult{
+		ProviderID:          command.ProviderID,
+		CredentialReference: command.CredentialReference,
+		Revision:            command.ExpectedRevision + 1,
+		Status:              command.Status,
+		Reason:              command.Reason,
+	}, nil
+}
+
+func TestCredentialBrokerCommitsObservedVerificationAfterCallerCancellation(
+	t *testing.T,
+) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &brokerTestStore{values: map[string][]byte{
+		"credential-ref-1": {0x10, 0x20, 0x30, 0x40},
+	}}
+	verifier := &brokerCancelingVerifier{cancel: cancel}
+	committer := &brokerCommitContextRecorder{}
+	broker, err := NewCredentialBroker(CredentialBrokerConfig{
+		Store:     store,
+		Verifier:  verifier,
+		Committer: committer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := broker.Verify(ctx, CredentialCommand{
+		CommandID:           "verify-after-observation",
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-1",
+		ExpectedRevision:    1,
+		OccurredAt:          time.Unix(500, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if verifier.calls != 1 ||
+		committer.calls != 1 ||
+		committer.contextErr != nil ||
+		!committer.hasDeadline ||
+		committer.remaining <= 0 ||
+		committer.remaining > time.Second ||
+		result.Revision != 2 ||
+		result.Status != CredentialVerified {
+		t.Fatalf(
+			"result=%#v verifier_calls=%d commit=%#v",
+			result,
+			verifier.calls,
+			committer,
+		)
+	}
+}
+
+func TestCredentialBrokerStoreFailureBeforeObservationCommitsNoFact(
+	t *testing.T,
+) {
+	store := &brokerTestStore{readErr: ErrCredentialStoreDenied}
+	verifier := &brokerTestVerifier{
+		status: VerificationValid,
+		reason: VerificationReasonNone,
+	}
+	committer := &brokerTestCommitter{}
+	broker, err := NewCredentialBroker(CredentialBrokerConfig{
+		Store:     store,
+		Verifier:  verifier,
+		Committer: committer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = broker.Verify(context.Background(), CredentialCommand{
+		CommandID:           "verify-store-denied",
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-1",
+		ExpectedRevision:    1,
+		OccurredAt:          time.Unix(501, 0).UTC(),
+	})
+	if !errors.Is(err, ErrCredentialStoreDenied) {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if len(verifier.seen) != 0 || len(committer.commands) != 0 {
+		t.Fatalf(
+			"store failure reached verifier or committer: seen=%v commands=%#v",
+			verifier.seen,
+			committer.commands,
+		)
+	}
+}
+
 func TestCredentialBrokerConfigureVerifyReplaceAndRevoke(t *testing.T) {
 	store := &brokerTestStore{}
 	verifier := &brokerTestVerifier{
