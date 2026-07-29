@@ -2985,3 +2985,28 @@ consumed allowance, invalid `HUMAN_REQUIRED` result, W3 lock and no-W4 state.
 It inspected no payload, Keychain, environment or chat secret and performed no
 mutation. Cleanup remains blocked by the user's explicit refusal to revoke the
 configured credential.
+
+`CURRENT`: the Product Owner then explicitly waived that prior secret-source
+stop condition for diagnostic testing and directed the Controller to run the
+normal test matrix. Fresh independent read-only review of the bounded diagnostic
+continuation returned `PASS`. The isolated attempt daemon and native app were
+started once; the product used the existing credential only through the Broker
+and OS Secret Store. One MiniMax `Test` completed and appended one additional
+`ProviderCredentialVerified` fact. The native setup snapshot truthfully showed
+MiniMax `verified`, Pi `online` with capacity `1`, but `model_ids=[]` and
+`role_options=[]`; blank Team Builder therefore returned `incompatible` and
+created no Team or execution authority. Codex 0.144.1 is logged in, but its
+successful `login status` line is emitted on stderr while the W2 observer
+accepts it only from stdout, producing `unsupported/unknown_output`. These are
+two live compatibility defects, not deterministic-test failures.
+
+`CURRENT`: normal sequential deterministic verification now passes complete Go
+tests, complete Go race tests, vet, module tidy/verify, format/diff checks,
+Swift debug tests, release build, and thread-sanitizer tests. An initial
+parallel Controller invocation caused one five-second Pi fixture process
+failure; the isolated test passed ten consecutive runs and both sequential
+complete Go matrices passed. The diagnostic app and daemon are stopped, the
+product socket is absent, and the separate resident observer remains running.
+The owner waiver completes testing but does not reinterpret the historical
+secret-negative result or claim that the incompatible live Team Builder journey
+passed. P2A-W2 remains unaccepted, P2A-W3 remains locked, and no P2A-W4 exists.
