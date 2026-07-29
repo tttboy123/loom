@@ -1,7 +1,7 @@
 # P2A-W2 Observer Diagnostic and Live Closure Amendment
 
 **Date**: 2026-07-30
-**Status**: FROZEN — Contract Repair 2 fresh independent Re-review PASS
+**Status**: FROZEN — Contract Repair 3 fresh independent Re-review PASS
 **Parent**: `P2A-W2 Team Builder and Provider Onboarding`
 **Reopens**: the accepted Runtime metadata observation adapter and product
 daemon failure projection only inside P2A-W2
@@ -138,12 +138,12 @@ unknown or duplicate key and exactly:
     "sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
   },
   "node_executable": {
-    "path": "/Users/lune/Documents/Codex/devtools/node/bin/node",
+    "path": "/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin/node",
     "sha256": "1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8"
   },
   "runtime_search_paths": [
     "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/.bin",
-    "/Users/lune/Documents/Codex/devtools/node/bin"
+    "/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin"
   ],
   "llama_executable": {
     "path": "/Users/lune/Library/Application Support/Loom/phase1-live/runtime/llama-b10107/llama-server",
@@ -337,7 +337,53 @@ If startup fails, the stable reason code is recorded and the lineage stops. No
 silent retry, alternate executable, argument change, inherited state,
 additional canary or single-point amendment is permitted.
 
-## 6. Exit semantics
+## 6. Contract Repair 3 — canonical Node path
+
+The first enabled component-test invocation stopped at the pre-process
+manifest gate with the safe reason:
+
+```text
+component_node_identity
+```
+
+No Pi process was constructed and neither `--version` nor `--list-models` ran.
+The invocation therefore does not consume component execution A, because the
+finite allowance defines each component execution as exactly one version plus
+one model-list command.
+
+Read-only path inspection found that the Repair 2 manifest froze:
+
+```text
+/Users/lune/Documents/Codex/devtools/node/bin/node
+```
+
+but its `node` directory component is a symlink to:
+
+```text
+/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64
+```
+
+That contradicts the same contract's rule that the installed Pi `.bin/pi`
+leaf is the only permitted symlink. Repair 3 does not relax the no-symlink
+gate. It instead freezes the canonical regular Node path and canonical second
+search directory:
+
+```text
+/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin/node
+/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin
+```
+
+The accepted Node SHA-256, byte size, executable mode and owner are unchanged.
+The Pi search entry, resolved Pi target, first search directory, component
+root, isolation root, local-model private root, llama-server, GGUF, expected
+version/model, offline policy, finite A/B allowance and replacement canary 004
+remain unchanged.
+
+The manifest and component-test constants may be updated to these exact
+canonical values only after fresh independent Contract Repair 3 Re-review
+`PASS`. Installed Pi may not run during that re-review.
+
+## 7. Exit semantics
 
 Fresh independent Result-Evidence Review must verify both the locked component
 result and the replacement native journey. P2A-W2 is accepted only if:

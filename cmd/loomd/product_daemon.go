@@ -25,6 +25,8 @@ import (
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/runtime/discoveryscan"
+	"loom-pi-rebuild/internal/runtime/piadapter"
 	"loom-pi-rebuild/internal/state"
 
 	_ "modernc.org/sqlite"
@@ -37,8 +39,9 @@ type productSetupRuntimeConfig struct {
 }
 
 type productDaemonFailure struct {
-	code string
-	err  error
+	code   string
+	reason string
+	err    error
 }
 
 func (failure *productDaemonFailure) Error() string {
@@ -53,11 +56,145 @@ func (failure *productDaemonFailure) DaemonFailureCode() string {
 	return failure.code
 }
 
+func (failure *productDaemonFailure) DaemonFailureReason() string {
+	return failure.reason
+}
+
 func classifyProductDaemonFailure(code string, err error) error {
 	if err == nil {
 		err = errors.New("product daemon lifecycle failure")
 	}
-	return &productDaemonFailure{code: code, err: err}
+	reason := ""
+	if code == "observer" {
+		reason = observerFailureReason(err)
+	}
+	return &productDaemonFailure{code: code, reason: reason, err: err}
+}
+
+func observerFailureReason(err error) string {
+	if err == nil {
+		return "observer_unknown"
+	}
+	switch {
+	case errors.Is(err, app.ErrRuntimeObservationProjectionRefresh):
+		return "observer_projection"
+	case runtimeObservationWriteFailure(err):
+		return "observer_write"
+	case errors.Is(err, piadapter.ErrPiMetadataBindingChanged),
+		errors.Is(err, piadapter.ErrPiLocalRuntimeProbeBindingChanged):
+		return "observer_metadata_binding"
+	}
+
+	command, commandFailure := uniquePiMetadataFailureCommand(err)
+	if commandFailure {
+		return piMetadataObserverFailureReason(command, err)
+	}
+	if errors.Is(err, discoveryscan.ErrRuntimeProbeFactoryFailed) {
+		return "observer_probe_factory"
+	}
+	return "observer_unknown"
+}
+
+func uniquePiMetadataFailureCommand(
+	err error,
+) (loomruntime.PiMetadataCommand, bool) {
+	commands := make(map[loomruntime.PiMetadataCommand]struct{}, 2)
+	visitDaemonErrors(err, func(candidate error) {
+		if command, ok := candidate.(interface {
+			PiMetadataFailureCommand() loomruntime.PiMetadataCommand
+		}); ok {
+			commands[command.PiMetadataFailureCommand()] = struct{}{}
+		}
+	})
+	if len(commands) != 1 {
+		return "", false
+	}
+	for command := range commands {
+		switch command {
+		case loomruntime.PiMetadataVersion,
+			loomruntime.PiMetadataListModels:
+			return command, true
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func visitDaemonErrors(err error, visit func(error)) {
+	if err == nil {
+		return
+	}
+	visit(err)
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			visitDaemonErrors(child, visit)
+		}
+		return
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		visitDaemonErrors(wrapped.Unwrap(), visit)
+	}
+}
+
+func piMetadataObserverFailureReason(
+	command loomruntime.PiMetadataCommand,
+	err error,
+) string {
+	prefix := ""
+	switch command {
+	case loomruntime.PiMetadataVersion:
+		prefix = "observer_version_"
+	case loomruntime.PiMetadataListModels:
+		prefix = "observer_models_"
+	default:
+		return "observer_unknown"
+	}
+	switch {
+	case errors.Is(err, piadapter.ErrPiMetadataBindingChanged):
+		return "observer_metadata_binding"
+	case errors.Is(err, piadapter.ErrPiMetadataProcessTimeout):
+		return prefix + "timeout"
+	case errors.Is(err, piadapter.ErrPiMetadataProcessOutputTooLarge):
+		return prefix + "output_limit"
+	case errors.Is(err, piadapter.ErrPiMetadataProcessFailed):
+		return prefix + "process"
+	case errors.Is(err, loomruntime.ErrPiMetadataStderr):
+		return prefix + "stderr"
+	case errors.Is(err, loomruntime.ErrDuplicatePiRuntimeModel) &&
+		command == loomruntime.PiMetadataListModels:
+		return "observer_models_duplicate"
+	case errors.Is(err, loomruntime.ErrInvalidPiMetadataOutput),
+		errors.Is(err, loomruntime.ErrPiMetadataOutputTooLarge):
+		return prefix + "output"
+	default:
+		return "observer_unknown"
+	}
+}
+
+func runtimeObservationWriteFailure(err error) bool {
+	return errors.Is(err, app.ErrRuntimeDiscoveryCommitInputFailed) ||
+		errors.Is(err, app.ErrRuntimeDiscoveryCommitResultMismatch) ||
+		errors.Is(err, app.ErrRuntimeStatusCommitInputFailed) ||
+		errors.Is(err, app.ErrRuntimeStatusCommitResultMismatch) ||
+		errors.Is(err, app.ErrInvalidRuntimeObservationWriteRun)
+}
+
+func joinProductDaemonErrors(values ...error) error {
+	nonNil := make([]error, 0, len(values))
+	for _, value := range values {
+		if value != nil {
+			nonNil = append(nonNil, value)
+		}
+	}
+	switch len(nonNil) {
+	case 0:
+		return nil
+	case 1:
+		return nonNil[0]
+	default:
+		return errors.Join(nonNil...)
+	}
 }
 
 type productDaemonRunner struct {
@@ -554,7 +691,11 @@ func (runner *productDaemonRunner) Run(
 			!errors.Is(outcome.err, context.DeadlineExceeded) {
 			return outcome.result, classifyProductDaemonFailure(
 				"observer",
-				errors.Join(outcome.err, serverErr, closeErr),
+				joinProductDaemonErrors(
+					outcome.err,
+					serverErr,
+					closeErr,
+				),
 			)
 		}
 		if serverErr != nil || closeErr != nil {
@@ -581,7 +722,11 @@ func (runner *productDaemonRunner) Run(
 			!errors.Is(outcome.err, context.DeadlineExceeded) {
 			return outcome.result, classifyProductDaemonFailure(
 				"observer",
-				errors.Join(outcome.err, serverErr, closeErr),
+				joinProductDaemonErrors(
+					outcome.err,
+					serverErr,
+					closeErr,
+				),
 			)
 		}
 		if serverErr != nil || closeErr != nil {

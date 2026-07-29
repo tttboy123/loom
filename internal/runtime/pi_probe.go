@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -48,6 +47,44 @@ type PiMetadataRequest struct {
 type PiMetadataResult struct {
 	Stdout string
 	Stderr string
+}
+
+type piMetadataCommandFailure struct {
+	command PiMetadataCommand
+	cause   error
+}
+
+func (failure *piMetadataCommandFailure) Error() string {
+	return ErrPiMetadataCommandFailed.Error() +
+		": " + safePiMetadataCommand(failure.command)
+}
+
+func (failure *piMetadataCommandFailure) Unwrap() error {
+	return failure.cause
+}
+
+func (failure *piMetadataCommandFailure) Is(target error) bool {
+	return target == ErrPiMetadataCommandFailed
+}
+
+func (failure *piMetadataCommandFailure) PiMetadataFailureCommand() PiMetadataCommand {
+	return failure.command
+}
+
+func PiMetadataFailureCommand(err error) (PiMetadataCommand, bool) {
+	var failure interface {
+		PiMetadataFailureCommand() PiMetadataCommand
+	}
+	if !errors.As(err, &failure) {
+		return "", false
+	}
+	command := failure.PiMetadataFailureCommand()
+	switch command {
+	case PiMetadataVersion, PiMetadataListModels:
+		return command, true
+	default:
+		return "", false
+	}
 }
 
 type PiMetadataRunner interface {
@@ -105,7 +142,7 @@ func (p *piRuntimeProbe) ObserveRuntime(ctx context.Context) ([]RuntimeObservati
 	}
 	version, err := parsePiVersion(versionResult.Stdout)
 	if err != nil {
-		return nil, err
+		return nil, newPiMetadataCommandFailure(PiMetadataVersion, err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -129,7 +166,7 @@ func (p *piRuntimeProbe) ObserveRuntime(ctx context.Context) ([]RuntimeObservati
 	}
 	models, err := parsePiModels(modelResult.Stdout)
 	if err != nil {
-		return nil, err
+		return nil, newPiMetadataCommandFailure(PiMetadataListModels, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -165,18 +202,41 @@ func (p *piRuntimeProbe) runMetadata(ctx context.Context, request PiMetadataRequ
 		return PiMetadataResult{}, err
 	}
 	if runErr != nil {
-		return PiMetadataResult{}, fmt.Errorf("%w: %s", ErrPiMetadataCommandFailed, safePiMetadataCommand(request.Command))
+		return PiMetadataResult{},
+			newPiMetadataCommandFailure(request.Command, runErr)
 	}
 	if len(result.Stdout) > maxPiMetadataOutputBytes || len(result.Stderr) > maxPiMetadataOutputBytes {
-		return PiMetadataResult{}, ErrPiMetadataOutputTooLarge
+		return PiMetadataResult{}, newPiMetadataCommandFailure(
+			request.Command,
+			ErrPiMetadataOutputTooLarge,
+		)
 	}
 	if !validPiMetadataText(result.Stdout) || !validPiMetadataText(result.Stderr) {
-		return PiMetadataResult{}, ErrInvalidPiMetadataOutput
+		return PiMetadataResult{}, newPiMetadataCommandFailure(
+			request.Command,
+			ErrInvalidPiMetadataOutput,
+		)
 	}
 	if result.Stderr != "" {
-		return PiMetadataResult{}, ErrPiMetadataStderr
+		return PiMetadataResult{}, newPiMetadataCommandFailure(
+			request.Command,
+			ErrPiMetadataStderr,
+		)
 	}
 	return PiMetadataResult{Stdout: result.Stdout}, nil
+}
+
+func newPiMetadataCommandFailure(
+	command PiMetadataCommand,
+	cause error,
+) error {
+	if cause == nil {
+		cause = ErrPiMetadataCommandFailed
+	}
+	return &piMetadataCommandFailure{
+		command: command,
+		cause:   cause,
+	}
 }
 
 func isNilPiMetadataRunner(runner PiMetadataRunner) bool {

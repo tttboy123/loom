@@ -26,6 +26,9 @@ import (
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
+	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/runtime/discoveryscan"
+	"loom-pi-rebuild/internal/runtime/piadapter"
 	loomtui "loom-pi-rebuild/internal/tui"
 
 	_ "modernc.org/sqlite"
@@ -100,10 +103,176 @@ func TestProductDaemonClassifiesLifecycleFailureBoundaries(t *testing.T) {
 		}
 		_, runErr := runner.Run(context.Background())
 		assertDaemonFailureCode(t, runErr, "observer")
+		assertDaemonFailureReason(t, runErr, "observer_unknown")
 		if err := runner.Close(); err != nil {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestObserverFailureReasonIsClosedTypedAndNonDisclosing(t *testing.T) {
+	private := errors.New("private observer detail")
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "probe factory",
+			err: fmt.Errorf(
+				"%w: %w",
+				discoveryscan.ErrRuntimeProbeFactoryFailed,
+				private,
+			),
+			want: "observer_probe_factory",
+		},
+		{
+			name: "metadata binding",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataVersion,
+				cause:   piadapter.ErrPiMetadataBindingChanged,
+			},
+			want: "observer_metadata_binding",
+		},
+		{
+			name: "version process",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataVersion,
+				cause:   piadapter.ErrPiMetadataProcessFailed,
+			},
+			want: "observer_version_process",
+		},
+		{
+			name: "version timeout",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataVersion,
+				cause:   piadapter.ErrPiMetadataProcessTimeout,
+			},
+			want: "observer_version_timeout",
+		},
+		{
+			name: "version output limit",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataVersion,
+				cause:   piadapter.ErrPiMetadataProcessOutputTooLarge,
+			},
+			want: "observer_version_output_limit",
+		},
+		{
+			name: "version stderr",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataVersion,
+				cause:   loomruntime.ErrPiMetadataStderr,
+			},
+			want: "observer_version_stderr",
+		},
+		{
+			name: "version output",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataVersion,
+				cause:   loomruntime.ErrInvalidPiMetadataOutput,
+			},
+			want: "observer_version_output",
+		},
+		{
+			name: "models process",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataListModels,
+				cause:   piadapter.ErrPiMetadataProcessFailed,
+			},
+			want: "observer_models_process",
+		},
+		{
+			name: "models timeout",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataListModels,
+				cause:   piadapter.ErrPiMetadataProcessTimeout,
+			},
+			want: "observer_models_timeout",
+		},
+		{
+			name: "models output limit",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataListModels,
+				cause:   piadapter.ErrPiMetadataProcessOutputTooLarge,
+			},
+			want: "observer_models_output_limit",
+		},
+		{
+			name: "models stderr",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataListModels,
+				cause:   loomruntime.ErrPiMetadataStderr,
+			},
+			want: "observer_models_stderr",
+		},
+		{
+			name: "models output",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataListModels,
+				cause:   loomruntime.ErrInvalidPiMetadataOutput,
+			},
+			want: "observer_models_output",
+		},
+		{
+			name: "models duplicate",
+			err: testPiMetadataFailure{
+				command: loomruntime.PiMetadataListModels,
+				cause:   loomruntime.ErrDuplicatePiRuntimeModel,
+			},
+			want: "observer_models_duplicate",
+		},
+		{
+			name: "projection",
+			err: fmt.Errorf(
+				"%w: %w",
+				app.ErrRuntimeObservationProjectionRefresh,
+				private,
+			),
+			want: "observer_projection",
+		},
+		{
+			name: "write",
+			err: fmt.Errorf(
+				"%w: %w",
+				app.ErrRuntimeDiscoveryCommitInputFailed,
+				private,
+			),
+			want: "observer_write",
+		},
+		{
+			name: "unknown",
+			err:  private,
+			want: "observer_unknown",
+		},
+		{
+			name: "joined conflicting",
+			err: errors.Join(
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataVersion,
+					cause:   piadapter.ErrPiMetadataProcessFailed,
+				},
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataListModels,
+					cause:   loomruntime.ErrPiMetadataStderr,
+				},
+			),
+			want: "observer_unknown",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := observerFailureReason(test.err)
+			if got != test.want || strings.Contains(got, "private") {
+				t.Fatalf(
+					"observerFailureReason(%T) = %q, want %q",
+					test.err,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
 }
 
 func productDaemonFailureState(t *testing.T) (string, string) {
@@ -159,6 +328,34 @@ func assertDaemonFailureCode(t *testing.T, err error, want string) {
 		classified.DaemonFailureCode() != want {
 		t.Fatalf("failure=%T %v code=%q", err, err, want)
 	}
+}
+
+func assertDaemonFailureReason(t *testing.T, err error, want string) {
+	t.Helper()
+	var classified interface {
+		DaemonFailureReason() string
+	}
+	if !errors.As(err, &classified) ||
+		classified.DaemonFailureReason() != want {
+		t.Fatalf("failure=%T %v reason=%q", err, err, want)
+	}
+}
+
+type testPiMetadataFailure struct {
+	command loomruntime.PiMetadataCommand
+	cause   error
+}
+
+func (failure testPiMetadataFailure) Error() string {
+	return "safe test Pi metadata failure"
+}
+
+func (failure testPiMetadataFailure) Unwrap() error {
+	return failure.cause
+}
+
+func (failure testPiMetadataFailure) PiMetadataFailureCommand() loomruntime.PiMetadataCommand {
+	return failure.command
 }
 
 func TestProductDaemonServesAuthoritativeNilCollectionsToStrictSwiftClient(

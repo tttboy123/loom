@@ -28,6 +28,10 @@ type daemonFailureCoder interface {
 	DaemonFailureCode() string
 }
 
+type daemonFailureReasoner interface {
+	DaemonFailureReason() string
+}
+
 type daemonBuildConfig struct {
 	Observer        app.LocalRuntimeObservationDaemonConfig
 	SocketPath      string
@@ -197,7 +201,15 @@ func daemonFailureMessage(err error) string {
 	if errors.As(err, &failure) {
 		switch failure.DaemonFailureCode() {
 		case "observer":
-			return "daemon failed: observer"
+			reason := "observer_unknown"
+			var reasoner daemonFailureReasoner
+			if errors.As(err, &reasoner) &&
+				validObserverFailureReason(
+					reasoner.DaemonFailureReason(),
+				) {
+				reason = reasoner.DaemonFailureReason()
+			}
+			return "daemon failed: " + reason
 		case "local_ipc":
 			return "daemon failed: local_ipc"
 		case "shutdown":
@@ -205,6 +217,30 @@ func daemonFailureMessage(err error) string {
 		}
 	}
 	return "daemon failed: shutdown"
+}
+
+func validObserverFailureReason(reason string) bool {
+	switch reason {
+	case "observer_probe_factory",
+		"observer_metadata_binding",
+		"observer_version_process",
+		"observer_version_timeout",
+		"observer_version_output_limit",
+		"observer_version_stderr",
+		"observer_version_output",
+		"observer_models_process",
+		"observer_models_timeout",
+		"observer_models_output_limit",
+		"observer_models_stderr",
+		"observer_models_output",
+		"observer_models_duplicate",
+		"observer_projection",
+		"observer_write",
+		"observer_unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 type daemonOutput struct {

@@ -224,8 +224,11 @@ func TestRunProjectionSynchronizedRuntimeObservationOnceTriggerAndRefreshFailure
 				trigger,
 				observer,
 			)
-		if err == nil {
-			t.Fatal("expected pre-refresh failure")
+		if !errors.Is(err, ErrRuntimeObservationProjectionRefresh) {
+			t.Fatalf(
+				"pre-refresh error = %v, want ErrRuntimeObservationProjectionRefresh",
+				err,
+			)
 		}
 		assertZeroConfiguredRuntimeObservationRun(
 			t, snapshot, plan, discovery, reconciliation, status,
@@ -996,8 +999,11 @@ func TestRunProjectionSynchronizedRuntimeObservationOnceRetainsSuccessfulTupleOn
 		RunProjectionSynchronizedRuntimeObservationOnce(
 			ctx, trigger, observer,
 		)
-	if err == nil {
-		t.Fatal("expected post-refresh database error")
+	if !errors.Is(err, ErrRuntimeObservationProjectionRefresh) {
+		t.Fatalf(
+			"post-refresh error = %v, want ErrRuntimeObservationProjectionRefresh",
+			err,
+		)
 	}
 	if gotSnapshot.Digest() != snapshot.Digest() ||
 		plan.Kind() != RuntimeObservationWriteDiscovery ||

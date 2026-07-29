@@ -13,6 +13,10 @@ var ErrInvalidProjectionSynchronizedRuntimeObservationRun = errors.New(
 	"invalid projection-synchronized runtime observation run",
 )
 
+var ErrRuntimeObservationProjectionRefresh = errors.New(
+	"runtime observation projection refresh failed",
+)
+
 type projectionSynchronizedRuntimeObservationTrigger struct {
 	trigger   RuntimeObservationTrigger
 	readModel *projection.Projection
@@ -29,7 +33,13 @@ func (synchronized projectionSynchronizedRuntimeObservationTrigger) AwaitRuntime
 		return err
 	}
 	readModel := synchronized.readModel
-	return readModel.Rebuild(ctx)
+	if err := readModel.Rebuild(ctx); err != nil {
+		return errors.Join(
+			ErrRuntimeObservationProjectionRefresh,
+			err,
+		)
+	}
+	return nil
 }
 
 func RunProjectionSynchronizedRuntimeObservationOnce(
@@ -84,7 +94,11 @@ func RunProjectionSynchronizedRuntimeObservationOnce(
 			err
 	}
 	if err := readModel.Rebuild(ctx); err != nil {
-		return snapshot, plan, discovery, reconciliation, status, err
+		return snapshot, plan, discovery, reconciliation, status,
+			errors.Join(
+				ErrRuntimeObservationProjectionRefresh,
+				err,
+			)
 	}
 	return snapshot, plan, discovery, reconciliation, status, nil
 }

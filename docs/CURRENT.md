@@ -3136,3 +3136,42 @@ and local-model private roots. No installed Pi or live action occurred; fresh
 independent Contract Repair 2 Re-review returned `PASS` with no findings.
 Component execution A remains locked until its skip-closed test and manifest
 preflight are implemented and deterministic checks are GREEN.
+
+`CURRENT`: the locked Pi component test is implemented with strict
+duplicate/unknown/trailing JSON rejection, exact enable inputs, canonical
+path/hash/mode/uid/size checks, only the frozen Pi leaf symlink, a clean
+Factory→Runner→production-parser path, safe reason codes and deferred
+postconditions on every post-gate failure. Fresh independent pre-component
+Implementation Review Repair 1 returned `PASS` with no P0, P1 or P2 findings.
+
+`CURRENT`: the first enabled component preflight stopped before process
+construction at `component_node_identity`. Read-only inspection proved the
+frozen `/devtools/node` directory was itself a symlink, contradicting the
+contract's sole-Pi-leaf-symlink rule. Contract Repair 3 froze the canonical
+`node-v24.16.0-darwin-arm64/bin` directory and executable without changing
+hash, size, mode or owner. Fresh independent Contract Repair 3 Re-review
+returned `PASS`; the zero-command skip did not consume execution A.
+
+`CURRENT`: locked component execution A is `GREEN`. The real installed Pi
+0.82.1 Candidate ran exactly one version request and one offline model-list
+request and the production parser observed exactly
+`loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m`. Isolation, component
+Journal/socket/PID artifacts, port 18427, component/llama/attempt processes and
+all locked identities passed post-run checks. Execution B is forbidden.
+
+`CURRENT`: the complete Observer Diagnostic Candidate matrix passes focused
+tests, ten-run focused race, serial complete Go and repository-race tests, vet,
+module tidy/verify, format/diff, secret-negative checks, Swift debug tests,
+release build and thread-sanitizer tests. The first complete Go run exposed and
+repaired a static `internal/app` import-boundary violation caused by `fmt`;
+the repaired code retains the projection sentinel and cause through
+`errors.Join`, and the complete matrices were restarted and passed. Fresh
+independent Implementation Review returned `PASS` with no P0, P1 or P2
+findings after reproducing focused deterministic tests, focused race,
+format/diff, serial complete Go, vet and module checks without component enable
+environment. With component A `GREEN`, deterministic matrix `GREEN` and
+Implementation Review `PASS`, the contract gate for exactly one fresh isolated
+replacement live canary `p2a-w2-live-20260730-004` is open. The replacement
+canary has not run, no retry or component execution B is authorized, P2A-W2
+remains unaccepted until result evidence review, P2A-W3 remains locked and no
+P2A-W4 exists.

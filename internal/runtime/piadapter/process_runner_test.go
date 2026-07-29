@@ -211,6 +211,58 @@ func TestPiMetadataProcessRunnerMaterializesBoundLocalCatalog(t *testing.T) {
 	assertDirectoryEmpty(t, config.IsolationRoot)
 }
 
+func TestPiMetadataProcessRunnerRevalidatesCatalogExactlyOncePerCommand(
+	t *testing.T,
+) {
+	root := piLocalModelPrivateRoot(t, "metadata-runner-validation-count")
+	serverConfig, digest := piLocalModelInspectorFixture(t, root)
+	catalog, err := bindPiLocalModelCatalog(
+		PiLocalModelCatalogConfig{
+			PrivateRoot:    serverConfig.PrivateRoot,
+			ExecutablePath: serverConfig.ExecutablePath,
+			ModelPath:      serverConfig.ModelPath,
+		},
+		digest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := catalog.validateBinding
+	validations := 0
+	catalog.validateBinding = func() error {
+		validations++
+		return original()
+	}
+
+	fixture := makePiMetadataFixture(t, "catalog-success")
+	config := validPiMetadataProcessRunnerConfig(t, fixture)
+	expected, err := piLocalModelCatalogJSON(piLocalModelCatalogBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureControl(t, fixture, "expected-models-json", string(expected))
+	runner, err := newPiMetadataProcessRunnerWithBoundCatalog(config, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validations = 0
+
+	if _, err := runner.RunPiMetadata(
+		context.Background(),
+		piModelRequest(),
+	); err != nil {
+		t.Fatalf(
+			"RunPiMetadata() error = %v; fixture diagnostic = %s",
+			err,
+			readFixtureDiagnostic(fixture),
+		)
+	}
+	if validations != 1 {
+		t.Fatalf("catalog validations = %d, want exactly one", validations)
+	}
+	assertDirectoryEmpty(t, config.IsolationRoot)
+}
+
 func TestPiMetadataProcessRunnerBindingAndSymlinkBehavior(t *testing.T) {
 	t.Run("executable symlink retarget cannot redirect", func(t *testing.T) {
 		dir := t.TempDir()

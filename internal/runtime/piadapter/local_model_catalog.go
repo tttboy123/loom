@@ -27,6 +27,8 @@ type piLocalModelCatalog struct {
 	binding piLocalServerBinding
 	content []byte
 	digest  string
+
+	validateBinding func() error
 }
 
 func bindPiLocalModelCatalog(
@@ -50,23 +52,27 @@ func bindPiLocalModelCatalog(
 	if err != nil {
 		return nil, errors.Join(ErrInvalidPiLocalModelCatalog, err)
 	}
-	return &piLocalModelCatalog{
+	catalog := &piLocalModelCatalog{
 		config:  config,
 		binding: binding,
 		content: append([]byte(nil), content...),
 		digest:  expectedModelDigest,
-	}, nil
+	}
+	catalog.validateBinding = func() error {
+		return revalidatePiLocalServerBinding(
+			catalog.binding,
+			catalog.config,
+			catalog.digest,
+		)
+	}
+	return catalog, nil
 }
 
 func (catalog *piLocalModelCatalog) validate() error {
-	if catalog == nil {
+	if catalog == nil || catalog.validateBinding == nil {
 		return ErrInvalidPiLocalModelCatalog
 	}
-	if err := revalidatePiLocalServerBinding(
-		catalog.binding,
-		catalog.config,
-		catalog.digest,
-	); err != nil {
+	if err := catalog.validateBinding(); err != nil {
 		return errors.Join(ErrInvalidPiLocalModelCatalog, err)
 	}
 	return nil
@@ -75,6 +81,15 @@ func (catalog *piLocalModelCatalog) validate() error {
 func (catalog *piLocalModelCatalog) materialize(agentDirectory string) error {
 	if err := catalog.validate(); err != nil {
 		return err
+	}
+	return catalog.materializeValidated(agentDirectory)
+}
+
+func (catalog *piLocalModelCatalog) materializeValidated(
+	agentDirectory string,
+) error {
+	if catalog == nil || catalog.validateBinding == nil {
+		return ErrInvalidPiLocalModelCatalog
 	}
 	if err := ensurePiLocalPrivateDirectory(agentDirectory); err != nil {
 		return errors.Join(ErrPiLocalModelCatalogWrite, err)

@@ -206,9 +206,10 @@ func TestRunWritesClosedDaemonFailureReasonCodes(t *testing.T) {
 			name: "observer",
 			runErr: testDaemonFailure{
 				code:   "observer",
+				reason: "observer_models_stderr",
 				detail: "private observer output",
 			},
-			want: "daemon failed: observer\n",
+			want: "daemon failed: observer_models_stderr\n",
 		},
 		{
 			name: "local_ipc",
@@ -328,6 +329,7 @@ func (r *fakeDaemonRunner) Close() error {
 
 type testDaemonFailure struct {
 	code   string
+	reason string
 	detail string
 }
 
@@ -337,6 +339,10 @@ func (failure testDaemonFailure) Error() string {
 
 func (failure testDaemonFailure) DaemonFailureCode() string {
 	return failure.code
+}
+
+func (failure testDaemonFailure) DaemonFailureReason() string {
+	return failure.reason
 }
 
 type failingDaemonWriter struct{}

@@ -124,3 +124,115 @@ intact.
 Repair 2 changes no authority or live allowance. The Re-review was read-only
 and used no installed Pi, daemon, app, network, Keychain, Provider, credential
 or live surface.
+
+## Fresh independent Contract Repair 3 Re-review
+
+**Verdict**: `PASS`
+
+```text
+P0 = none
+P1 = none
+P2 = none
+VERDICT = PASS
+```
+
+The Reviewer confirmed that the old frozen Node path traversed the symlinked
+`/Users/lune/Documents/Codex/devtools/node` component. Repair 3 correctly
+freezes the canonical regular executable and search directory:
+
+```text
+/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin/node
+/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin
+```
+
+The canonical Node file remains uid `501`, mode `0755`, size `120573328`, with
+the same accepted SHA-256
+`1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8`.
+The installed Pi `.bin/pi` remains the only permitted symlink.
+
+The zero-command manifest-gate skip ran neither `--version` nor
+`--list-models`, so it does not consume component execution A. Repair 3 adds no
+daemon, app, network, Keychain, Journal, Projection, StateWriter, W3 or W4
+authority.
+
+The Re-review was read-only and ran no test, installed Pi, daemon, app,
+network, Keychain, Provider, credential or live action.
+
+## Fresh independent Implementation Review
+
+**Verdict**: `PASS`
+
+```text
+P0 = none
+P1 = none
+P2 = none
+VERDICT = PASS
+```
+
+The Reviewer inspected the Candidate diff and evidence from baseline
+`bd74c2e8c71d6ec699e46352459f2f4298a46584`, including the safe Pi metadata
+command-stage wrapper, closed observer reason projection, projection-refresh
+sentinel retention, catalog validation count boundary, strict locked-component
+manifest gate, component execution A evidence, scope boundaries and secret
+negative claims.
+
+Confirmed behavior:
+
+- Pi metadata failures retain only the typed safe `version` or `list_models`
+  command stage plus inspectable typed cause; public error text does not carry
+  raw stdout, stderr, path, environment, process detail or private wrapped
+  text.
+- `loomd` maps observer failures to the frozen allowlist and emits only
+  `daemon failed: <observer_reason>\n` with exit code `4`; `local_ipc` and
+  `shutdown` remain unchanged.
+- Projection refresh failures retain
+  `ErrRuntimeObservationProjectionRefresh` through `errors.Join` without
+  importing forbidden packages into `internal/app`.
+- The local model catalog is bound once and revalidated exactly once per
+  metadata command before materialization, without weakening file identity,
+  mode, owner, size or digest checks.
+- The locked Pi component test is skip-closed unless both exact enable inputs
+  match the frozen manifest, and the reported execution A evidence proves the
+  real Factory → Runner → DiscoverRuntime → production-parser path. Execution B
+  remains forbidden after A GREEN.
+- No Journal schema, StateWriter, Projection authority, Swift decoder/UI,
+  credential store, resident observer configuration, W3 or W4 boundary is
+  changed by this Candidate.
+
+Reviewer reproduction, all without `LOOM_P2A_W2_LOCKED_PI_*` component enable
+environment:
+
+```text
+go test ./internal/runtime ./internal/runtime/piadapter ./internal/app ./cmd/loomd \
+  -run 'TestPiRuntimeProbeRetainsSafeCommandStageAndTypedCause|TestPiMetadataProcessRunnerRevalidatesCatalogExactlyOncePerCommand|TestLockedPiManifestDecoderIsStrictAndDuplicateClosed|TestLockedPiComponent|TestRunProjectionSynchronizedRuntimeObservationOnceTriggerAndRefreshFailures|TestRunProjectionSynchronizedRuntimeObservationOnceRetainsSuccessfulTupleOnPostRefreshFailure|TestObserverFailureReasonIsClosedTypedAndNonDisclosing|TestRunWritesClosedDaemonFailureReasonCodes|TestProductDaemonClassifiesLifecycleFailureBoundaries' \
+  -count=1
+PASS
+
+go test ./cmd/loomd \
+  -run 'TestObserverFailureReasonIsClosedTypedAndNonDisclosing|TestRunWritesClosedDaemonFailureReasonCodes' \
+  -race -count=10
+PASS
+
+gofmt owned files
+PASS
+
+git diff --check
+PASS
+
+go test -p 1 ./... -count=1
+PASS
+
+go vet ./...
+PASS
+
+go mod tidy -diff && go mod verify
+PASS
+```
+
+The Review did not execute installed Pi, start a daemon, native app, Provider,
+network client, Keychain access, component canary or live canary. With component
+A GREEN, deterministic matrix GREEN and this Implementation Review PASS, the
+contract gate for exactly one fresh isolated replacement live canary
+`p2a-w2-live-20260730-004` is open. That canary remains a separate controlled
+execution and must not retry, use execution B, alter the manifest, or expand
+scope.

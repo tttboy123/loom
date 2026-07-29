@@ -293,6 +293,52 @@ func TestPiRuntimeProbeCancellationAndRunnerFailureReturnNoPartialObservation(t 
 	})
 }
 
+func TestPiRuntimeProbeRetainsSafeCommandStageAndTypedCause(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		command PiMetadataCommand
+	}{
+		{name: "version", command: PiMetadataVersion},
+		{name: "model-list", command: PiMetadataListModels},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			privateCause := errors.New("private-runner-detail-" + test.name)
+			runner := successfulPiMetadataRunner()
+			runner.errs = map[PiMetadataCommand]error{
+				test.command: privateCause,
+			}
+			probe := mustPiRuntimeProbeWithRunner(t, runner)
+
+			got, err := probe.ObserveRuntime(context.Background())
+			if len(got) != 0 ||
+				!errors.Is(err, ErrPiMetadataCommandFailed) ||
+				!errors.Is(err, privateCause) {
+				t.Fatalf(
+					"ObserveRuntime() = (%#v, %v), want typed command/cause",
+					got,
+					err,
+				)
+			}
+			command, ok := PiMetadataFailureCommand(err)
+			if !ok || command != test.command {
+				t.Fatalf(
+					"PiMetadataFailureCommand() = (%q, %t), want (%q, true)",
+					command,
+					ok,
+					test.command,
+				)
+			}
+			if strings.Contains(err.Error(), privateCause.Error()) {
+				t.Fatalf("safe error disclosed private cause: %v", err)
+			}
+		})
+	}
+}
+
 func TestParsePiMetadataOutputBoundary(t *testing.T) {
 	t.Parallel()
 

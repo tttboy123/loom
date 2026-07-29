@@ -157,7 +157,7 @@ func (r *piMetadataProcessRunner) RunPiMetadata(
 		return loomruntime.PiMetadataResult{}, ErrPiMetadataProcessFailed
 	}
 	if r.catalog != nil {
-		if err := r.catalog.materialize(directories.agent); err != nil {
+		if err := r.catalog.materializeValidated(directories.agent); err != nil {
 			if errors.Is(err, ErrPiLocalModelBindingChanged) {
 				return loomruntime.PiMetadataResult{}, ErrPiMetadataBindingChanged
 			}
