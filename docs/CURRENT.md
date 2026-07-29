@@ -3124,3 +3124,15 @@ replacement attempt-004 only after component, deterministic and fresh
 Implementation Review GREEN. It changes no Journal/StateWriter/Projection/Team
 authority, creates no W4 and keeps P2A-W3 locked. Mandatory deterministic RED
 is the current gate; no new Pi/product/live action has occurred.
+
+`CURRENT`: mandatory RED failed only on the missing safe command-stage,
+projection-stage, observer-reason and one-validation-per-command symbols. The
+minimal deterministic implementation is focused GREEN. Before creating the
+locked component manifest, Controller inspection found Contract Repair 2:
+Repair 1 incorrectly used the fresh component root as the local-model binding
+root even though the frozen llama-server/GGUF are descendants of the existing
+`/phase1-live` private root. The manifest now separates component, isolation
+and local-model private roots. No installed Pi or live action occurred; fresh
+independent Contract Repair 2 Re-review returned `PASS` with no findings.
+Component execution A remains locked until its skip-closed test and manifest
+preflight are implemented and deterministic checks are GREEN.

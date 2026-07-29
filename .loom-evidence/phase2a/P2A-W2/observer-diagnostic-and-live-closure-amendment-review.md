@@ -86,3 +86,41 @@ The Reviewer confirmed:
 The Re-review was read-only. The Reviewer modified and executed nothing and
 used no installed Pi, daemon, app, network, Keychain, Provider or credential
 surface.
+
+## Contract Repair 2
+
+Implementation preflight found that Repair 1 overloaded `private_root` with the
+fresh component root. The accepted llama-server and GGUF are descendants of
+the existing private `/phase1-live` root, not the component root; using the
+component root would make the accepted catalog binding fail closed before Pi.
+
+Repair 2 separates:
+
+- `component_root`: the fresh component lineage root;
+- `isolation_root`: its empty disposable metadata child;
+- `local_model_private_root`: the exact existing
+  `/Users/lune/Library/Application Support/Loom/phase1-live` binding root.
+
+No process or live action exposed this defect. Fresh independent Contract
+Repair 2 Re-review is required before component execution A.
+
+## Fresh independent Contract Repair 2 Re-review
+
+**Verdict**: `PASS`
+
+```text
+P0 = none
+P1 = none
+P2 = none
+VERDICT = PASS
+```
+
+The Reviewer confirmed that the frozen llama-server and GGUF are descendants
+of `local_model_private_root`, while `component_root` and its
+`isolation_root` remain fresh, separate and disposable. The strict schema,
+skip-closed input, path/hash/mode/owner/size and empty-isolation gates remain
+intact.
+
+Repair 2 changes no authority or live allowance. The Re-review was read-only
+and used no installed Pi, daemon, app, network, Keychain, Provider, credential
+or live surface.

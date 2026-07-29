@@ -1,7 +1,7 @@
 # P2A-W2 Observer Diagnostic and Live Closure Amendment
 
 **Date**: 2026-07-30
-**Status**: FROZEN — Repair 1 fresh independent Contract Re-review PASS
+**Status**: FROZEN — Contract Repair 2 fresh independent Re-review PASS
 **Parent**: `P2A-W2 Team Builder and Provider Onboarding`
 **Reopens**: the accepted Runtime metadata observation adapter and product
 daemon failure projection only inside P2A-W2
@@ -129,8 +129,9 @@ unknown or duplicate key and exactly:
 {
   "schema_version": 1,
   "lineage_id": "p2a-w2-pi-component-20260730-001",
-  "private_root": "<exact absolute root above>",
+  "component_root": "<exact absolute root above>",
   "isolation_root": "<exact absolute root above>/isolation",
+  "local_model_private_root": "/Users/lune/Library/Application Support/Loom/phase1-live",
   "pi_search_entry": {
     "path": "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/.bin/pi",
     "resolved_path": "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
@@ -165,7 +166,8 @@ entry, its exact resolved path/hash and the exact manifest SHA-256. The
 component test independently revalidates the permitted upstream leaf symlink
 to that exact regular resolved file, all directory components, every named
 path/hash/mode/owner/size, ordered search paths, private-root identity, empty
-isolation root, expected values and the exact manifest path.
+isolation root, local-model private-root identity, expected values and the
+exact manifest path.
 
 Both inputs must be present and exact:
 
