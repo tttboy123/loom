@@ -3196,3 +3196,42 @@ action. Component A GREEN, complete deterministic GREEN and this replacement
 Review PASS unlock exactly one controlled replacement canary
 `p2a-w2-live-20260730-004`. P2A-W2 remains unaccepted until live
 Result-Evidence Review PASS; P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: the single replacement canary
+`p2a-w2-live-20260730-004` is consumed with verdict
+`FAIL — NATIVE_JOURNEY_INCOMPATIBLE_AND_SHUTDOWN_STALLED`. The one daemon start
+appended exactly one model-capable Runtime discovery fact. The exact native app
+then narrowly live-proved the repaired Codex 0.144.1 observer boundary: the
+locked process passed the production observer and Codex was `Available`.
+Together with the prior diagnostic and deterministic stderr-specific tests,
+this proves the intended compatibility without retaining child output or
+claiming a model request or broader Provider behavior. MiniMax was recovered as
+`Verified`, Pi was online, and the same Provider/Runtime state reconstructed
+after an app quit/reopen. The single MiniMax `Test` appended no new verification
+fact, the one Candidate creation stopped at `Incompatible` before the first
+question, and the daemon closed its listener but required exact-PID `SIGKILL`
+after bounded `SIGINT`/`SIGTERM` shutdown waits. Final integrity is `ok`; the
+six-Event database contains only the inherited five Events plus the one Runtime
+discovery, with no TeamDefinition, TeamInstance, AgentInstance, WorkItem, Run,
+Grant, Evidence, dispatch or execution fact. The isolation root and product
+socket are absent, attempt processes are gone, and the separate resident daemon
+was not signalled or reconfigured. The stderr compatibility code remains
+deterministic and Implementation-Review `PASS`, but P2A-W2 is unaccepted,
+P2A-W3 remains locked, no P2A-W4 exists and no retry or additional single-point
+amendment is authorized. Fresh independent read-only Result-Evidence Review is
+the current gate.
+
+`CURRENT`: fresh independent read-only Result-Evidence Review returned `PASS`
+for the recorded failed outcome, with no P0 or P1 finding. It independently
+reproduced the attempt/source database hashes and integrity, exact six-versus-
+five Event delta, the sole new Runtime stream fact, zero Team/Run/Grant/Evidence
+classes, exact daemon/app hashes and private modes, empty isolation, absent
+product socket/lock and absent attempt processes. Its two non-blocking P2
+precision notes are retained: the live artifact does not preserve the exact
+Codex child-output stream/line count, so the compatibility conclusion remains
+limited to production observer acceptance plus native `Available`; and the
+result file did not freeze a reproducible resident-daemon pre/post hash tuple.
+The Reviewer confirmed a separate resident daemon currently exists and no
+attempt-004 residue does. The consumed canary remains
+`FAIL — NATIVE_JOURNEY_INCOMPATIBLE_AND_SHUTDOWN_STALLED`; P2A-W2 remains
+unaccepted, P2A-W3 locked, no P2A-W4 exists and no retry is authorized.
