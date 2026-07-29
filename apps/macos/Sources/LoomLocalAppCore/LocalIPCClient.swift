@@ -18,6 +18,12 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case unauthorizedPeer = "unauthorized_peer"
         case unsupportedPlatform = "unsupported_platform"
         case notFound = "not_found"
+        case conflict
+        case incompatible
+        case denied
+        case credentialUnavailable = "credential_unavailable"
+        case credentialRejected = "credential_rejected"
+        case credentialRollbackFailed = "credential_rollback_failed"
         case cursorConflict = "cursor_conflict"
         case streamGap = "stream_gap"
         case stateUnavailable = "state_unavailable"
@@ -250,6 +256,117 @@ private struct TimelineParams: Encodable {
     }
 }
 
+private struct BuilderStartParams: Encodable {
+    let source: String
+    let sourceID: String
+    let sourceVersion: Int
+    let sourceDigest: String
+
+    enum CodingKeys: String, CodingKey {
+        case source
+        case sourceID = "source_id"
+        case sourceVersion = "source_version"
+        case sourceDigest = "source_digest"
+    }
+}
+
+private struct BuilderAnswerParams: Encodable {
+    let draftID: String
+    let expectedRevision: Int
+    let catalogDigest: String
+    let viewVersion: String
+    let questionID: String
+    let answer: String
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case expectedRevision = "expected_revision"
+        case catalogDigest = "catalog_digest"
+        case viewVersion = "view_version"
+        case questionID = "question_id"
+        case answer
+    }
+}
+
+private struct BuilderEditParams: Encodable {
+    let draftID: String
+    let expectedRevision: Int
+    let catalogDigest: String
+    let viewVersion: String
+    let field: String
+    let value: String
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case expectedRevision = "expected_revision"
+        case catalogDigest = "catalog_digest"
+        case viewVersion = "view_version"
+        case field, value
+    }
+}
+
+private struct BuilderValidateParams: Encodable {
+    let draftID: String
+    let expectedRevision: Int
+    let catalogDigest: String
+    let viewVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case expectedRevision = "expected_revision"
+        case catalogDigest = "catalog_digest"
+        case viewVersion = "view_version"
+    }
+}
+
+private struct BuilderConfirmParams: Encodable {
+    let draftID: String
+    let expectedRevision: Int
+    let catalogDigest: String
+    let viewVersion: String
+    let bindingDigest: String
+    let definitionID: String
+    let scope: String
+    let projectID: String
+    let confirm: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case expectedRevision = "expected_revision"
+        case catalogDigest = "catalog_digest"
+        case viewVersion = "view_version"
+        case bindingDigest = "binding_digest"
+        case definitionID = "definition_id"
+        case scope
+        case projectID = "project_id"
+        case confirm
+    }
+}
+
+private struct TeamStatusParams: Encodable {
+    let definitionID: String
+    let expectedHead: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case definitionID = "definition_id"
+        case expectedHead = "expected_head"
+    }
+}
+
+private struct CredentialParams: Encodable {
+    let providerID: String
+    let credentialReference: String
+    let expectedRevision: Int64
+    let secret: String
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case credentialReference = "credential_reference"
+        case expectedRevision = "expected_revision"
+        case secret
+    }
+}
+
 private struct IPCRequest<Params: Encodable>: Encodable {
     let version = 1
     let requestID: String
@@ -263,7 +380,10 @@ private struct IPCRequest<Params: Encodable>: Encodable {
     }
 }
 
-public final class LocalIPCClient: LocalProductClientProtocol {
+public final class LocalIPCClient:
+    LocalProductClientProtocol,
+    LocalProductSetupClientProtocol
+{
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
     private let socketPath: String
@@ -326,6 +446,205 @@ public final class LocalIPCClient: LocalProductClientProtocol {
         return try LocalProductWire.decodeTimeline(result)
     }
 
+    public func setupSnapshot() async throws -> LocalProductSetupSnapshot {
+        let result = try await call(
+            method: "setup_snapshot",
+            params: EmptyParams()
+        )
+        return try LocalProductSetupWire.decodeSnapshot(result)
+    }
+
+    public func startBuilder(
+        source: String = "blank",
+        sourceID: String = "",
+        sourceVersion: Int = 0,
+        sourceDigest: String = ""
+    ) async throws -> LocalProductBuilderSession {
+        guard ["blank", "saved_team", "template"].contains(source),
+              sourceID.isEmpty || Self.validIdentifier(sourceID),
+              sourceVersion >= 0,
+              sourceDigest.isEmpty || Self.validDigest(sourceDigest) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "builder_start",
+            params: BuilderStartParams(
+                source: source,
+                sourceID: sourceID,
+                sourceVersion: sourceVersion,
+                sourceDigest: sourceDigest
+            )
+        )
+        return try LocalProductSetupWire.decodeBuilderSession(result)
+    }
+
+    public func answerBuilder(
+        session: LocalProductBuilderSession,
+        answer: String
+    ) async throws -> LocalProductBuilderSession {
+        guard Self.validBuilderText(answer),
+              !session.question.id.isEmpty else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "builder_answer",
+            params: BuilderAnswerParams(
+                draftID: session.draftID,
+                expectedRevision: session.revision,
+                catalogDigest: session.catalogDigest,
+                viewVersion: session.viewVersion,
+                questionID: session.question.id,
+                answer: answer
+            )
+        )
+        return try LocalProductSetupWire.decodeBuilderSession(result)
+    }
+
+    public func editBuilder(
+        session: LocalProductBuilderSession,
+        field: String,
+        value: String
+    ) async throws -> LocalProductBuilderSession {
+        guard ["team_name", "purpose", "main_role", "subagent_role"]
+            .contains(field),
+              Self.validBuilderText(value) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "builder_edit",
+            params: BuilderEditParams(
+                draftID: session.draftID,
+                expectedRevision: session.revision,
+                catalogDigest: session.catalogDigest,
+                viewVersion: session.viewVersion,
+                field: field,
+                value: value
+            )
+        )
+        return try LocalProductSetupWire.decodeBuilderSession(result)
+    }
+
+    public func validateBuilder(
+        session: LocalProductBuilderSession
+    ) async throws -> LocalProductBuilderSession {
+        let result = try await call(
+            method: "builder_validate",
+            params: BuilderValidateParams(
+                draftID: session.draftID,
+                expectedRevision: session.revision,
+                catalogDigest: session.catalogDigest,
+                viewVersion: session.viewVersion
+            )
+        )
+        return try LocalProductSetupWire.decodeBuilderSession(result)
+    }
+
+    public func confirmBuilder(
+        session: LocalProductBuilderSession,
+        definitionID: String
+    ) async throws -> LocalProductBuilderConfirmation {
+        guard session.canConfirm,
+              Self.validIdentifier(definitionID),
+              Self.validDigest(session.bindingDigest) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "builder_confirm",
+            params: BuilderConfirmParams(
+                draftID: session.draftID,
+                expectedRevision: session.revision,
+                catalogDigest: session.catalogDigest,
+                viewVersion: session.viewVersion,
+                bindingDigest: session.bindingDigest,
+                definitionID: definitionID,
+                scope: "reusable",
+                projectID: "",
+                confirm: true
+            )
+        )
+        return try LocalProductSetupWire.decodeBuilderConfirmation(result)
+    }
+
+    public func archiveTeam(
+        definitionID: String,
+        expectedHead: Int64
+    ) async throws -> LocalProductSetupSavedTeam {
+        try await teamStatus(
+            method: "team_archive",
+            definitionID: definitionID,
+            expectedHead: expectedHead
+        )
+    }
+
+    public func restoreTeam(
+        definitionID: String,
+        expectedHead: Int64
+    ) async throws -> LocalProductSetupSavedTeam {
+        try await teamStatus(
+            method: "team_restore",
+            definitionID: definitionID,
+            expectedHead: expectedHead
+        )
+    }
+
+    public func configureMiniMax(
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        guard Self.validSecret(secret) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "credential_configure",
+            params: CredentialParams(
+                providerID: "minimax",
+                credentialReference: "",
+                expectedRevision: 0,
+                secret: secret
+            )
+        )
+        return try LocalProductSetupWire.decodeCredentialResult(result)
+    }
+
+    public func verifyMiniMax(
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
+        try await credentialMutation(
+            method: "credential_verify",
+            reference: reference,
+            revision: revision,
+            secret: ""
+        )
+    }
+
+    public func replaceMiniMax(
+        reference: String,
+        revision: Int64,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        guard Self.validSecret(secret) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        return try await credentialMutation(
+            method: "credential_replace",
+            reference: reference,
+            revision: revision,
+            secret: secret
+        )
+    }
+
+    public func revokeMiniMax(
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
+        try await credentialMutation(
+            method: "credential_revoke",
+            reference: reference,
+            revision: revision,
+            secret: ""
+        )
+    }
+
     public func ping() async throws -> Bool {
         let result = try await call(method: "ping", params: EmptyParams())
         try StrictJSONScanner.validate(result)
@@ -339,8 +658,14 @@ public final class LocalIPCClient: LocalProductClientProtocol {
         params: Params
     ) async throws -> Data {
         let id = requestID()
-        guard LocalIPCWire.validRequestID(id),
-              ["ping", "snapshot", "timeline_page"].contains(method) else {
+        let methods = Set([
+            "ping", "snapshot", "timeline_page", "setup_snapshot",
+            "builder_start", "builder_answer", "builder_edit",
+            "builder_validate", "builder_confirm", "team_archive",
+            "team_restore", "credential_configure", "credential_verify",
+            "credential_replace", "credential_revoke",
+        ])
+        guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
             throw LocalProductClientError.invalidRequest
         }
         let request = IPCRequest(
@@ -503,6 +828,69 @@ public final class LocalIPCClient: LocalProductClientProtocol {
             CharacterSet.alphanumerics.contains($0) ||
                 $0 == "." || $0 == "_" || $0 == ":" || $0 == "-"
         }
+    }
+
+    private func teamStatus(
+        method: String,
+        definitionID: String,
+        expectedHead: Int64
+    ) async throws -> LocalProductSetupSavedTeam {
+        guard Self.validIdentifier(definitionID), expectedHead > 0 else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: method,
+            params: TeamStatusParams(
+                definitionID: definitionID,
+                expectedHead: expectedHead
+            )
+        )
+        return try LocalProductSetupWire.decodeSavedTeam(result)
+    }
+
+    private func credentialMutation(
+        method: String,
+        reference: String,
+        revision: Int64,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        guard Self.validIdentifier(reference), revision > 0 else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: method,
+            params: CredentialParams(
+                providerID: "minimax",
+                credentialReference: reference,
+                expectedRevision: revision,
+                secret: secret
+            )
+        )
+        return try LocalProductSetupWire.decodeCredentialResult(result)
+    }
+
+    private static func validDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        }
+    }
+
+    private static func validBuilderText(_ value: String) -> Bool {
+        guard (1...2_048).contains(value.utf8.count),
+              value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+        else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy {
+            !CharacterSet.controlCharacters.contains($0)
+        }
+    }
+
+    private static func validSecret(_ value: String) -> Bool {
+        (1...8_192).contains(value.utf8.count) &&
+            !value.unicodeScalars.contains(where: {
+                CharacterSet.controlCharacters.contains($0)
+            })
     }
 }
 

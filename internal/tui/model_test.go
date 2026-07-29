@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"loom-pi-rebuild/internal/api"
+	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/localipc"
 )
 
@@ -546,12 +547,16 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
 	model = updated.(Model)
 	if !strings.Contains(model.View(), "Home") ||
-		!strings.Contains(model.View(), "read-only") {
+		!strings.Contains(
+			model.View(),
+			"Team Draft confirmation never starts a Run",
+		) {
 		t.Fatalf("home view = %q", model.View())
 	}
 
 	wantScreens := []Screen{
 		ScreenRuntimes,
+		ScreenTeamBuilder,
 		ScreenTeams,
 		ScreenRuns,
 		ScreenEvidence,
@@ -615,5 +620,447 @@ func TestModelRendersOfflineStaleResizeAndSanitizesUntrustedText(t *testing.T) {
 		strings.Contains(view, "\u202e") ||
 		strings.Contains(view, "hidden\nnext") {
 		t.Fatalf("unsafe stale view = %q", view)
+	}
+}
+
+type fakeSetupClient struct {
+	fakeReadClient
+	setup       app.SetupSnapshot
+	session     app.BuilderSessionView
+	starts      int
+	answers     int
+	credentials int
+	statuses    int
+	lastStart   app.BuilderStartCommand
+	lastStatus  app.TeamStatusCommand
+}
+
+func (client *fakeSetupClient) SetupSnapshot(
+	context.Context,
+) (app.SetupSnapshot, error) {
+	return client.setup, client.err
+}
+
+func (client *fakeSetupClient) StartBuilder(
+	_ context.Context,
+	command app.BuilderStartCommand,
+) (app.BuilderSessionView, error) {
+	client.starts++
+	client.lastStart = command
+	return client.session, client.err
+}
+
+func (client *fakeSetupClient) AnswerBuilder(
+	_ context.Context,
+	_ app.BuilderAnswerCommand,
+) (app.BuilderSessionView, error) {
+	client.answers++
+	return client.session, client.err
+}
+
+func (client *fakeSetupClient) EditBuilder(
+	_ context.Context,
+	_ app.BuilderEditCommand,
+) (app.BuilderSessionView, error) {
+	return client.session, client.err
+}
+
+func (client *fakeSetupClient) ConfirmBuilder(
+	_ context.Context,
+	_ app.BuilderConfirmCommand,
+) (app.BuilderConfirmation, error) {
+	return app.BuilderConfirmation{
+		TeamDefinitionID: "team-fixture",
+		Status:           "active",
+	}, client.err
+}
+
+func (client *fakeSetupClient) ArchiveTeam(
+	_ context.Context,
+	command app.TeamStatusCommand,
+) (app.SetupSavedTeamPreview, error) {
+	client.statuses++
+	client.lastStatus = command
+	return app.SetupSavedTeamPreview{
+		ID:         command.DefinitionID,
+		Status:     "archived",
+		StreamHead: command.ExpectedHead + 1,
+	}, client.err
+}
+
+func (client *fakeSetupClient) RestoreTeam(
+	_ context.Context,
+	command app.TeamStatusCommand,
+) (app.SetupSavedTeamPreview, error) {
+	client.statuses++
+	client.lastStatus = command
+	return app.SetupSavedTeamPreview{
+		ID:         command.DefinitionID,
+		Status:     "active",
+		StreamHead: command.ExpectedHead + 1,
+	}, client.err
+}
+
+func (client *fakeSetupClient) ConfigureCredential(
+	_ context.Context,
+	_ app.CredentialSetupCommand,
+) (app.CredentialSetupResult, error) {
+	client.credentials++
+	return app.CredentialSetupResult{
+		ProviderID: "minimax",
+		Revision:   1,
+		Status:     "configured",
+	}, client.err
+}
+
+func (client *fakeSetupClient) VerifyCredential(
+	_ context.Context,
+	_ app.CredentialSetupCommand,
+) (app.CredentialSetupResult, error) {
+	client.credentials++
+	return app.CredentialSetupResult{
+		ProviderID: "minimax",
+		Revision:   2,
+		Status:     "verified",
+	}, client.err
+}
+
+func (client *fakeSetupClient) ReplaceCredential(
+	_ context.Context,
+	_ app.CredentialSetupCommand,
+) (app.CredentialSetupResult, error) {
+	client.credentials++
+	return app.CredentialSetupResult{
+		ProviderID: "minimax",
+		Revision:   2,
+		Status:     "configured",
+	}, client.err
+}
+
+func (client *fakeSetupClient) RevokeCredential(
+	_ context.Context,
+	_ app.CredentialSetupCommand,
+) (app.CredentialSetupResult, error) {
+	client.credentials++
+	return app.CredentialSetupResult{
+		ProviderID: "minimax",
+		Revision:   2,
+		Status:     "revoked",
+	}, client.err
+}
+
+func TestModelTeamBuilderOpensSavedAndTemplateCandidatesAndArchivesByHead(
+	t *testing.T,
+) {
+	digest := strings.Repeat("d", 64)
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SavedTeams: []app.SetupSavedTeamPreview{{
+				ID:               "team-saved",
+				Version:          1,
+				Name:             "Saved Review Team",
+				Status:           "active",
+				DefinitionDigest: digest,
+				StreamHead:       3,
+			}},
+			Templates: []app.SetupTeamTemplatePreview{{
+				ID:      "template-review",
+				Version: 2,
+				Digest:  digest,
+				Name:    "Template Review Team",
+			}},
+		},
+		session: app.BuilderSessionView{
+			DraftID: "draft-from-source",
+			Source:  app.BuilderSourceSavedTeam,
+		},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.setup = cloneSetupSnapshot(client.setup)
+	model.loading = false
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("saved Team selection did not start a Candidate")
+	}
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if client.lastStart.Source != app.BuilderSourceSavedTeam ||
+		client.lastStart.SourceID != "team-saved" ||
+		client.lastStart.SourceDigest != digest {
+		t.Fatalf("saved start = %#v", client.lastStart)
+	}
+
+	model.builder = app.BuilderSessionView{}
+	model.selected = 1
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("template selection did not start a Candidate")
+	}
+	model = updated.(Model)
+	_, _ = model.Update(command())
+	if client.lastStart.Source != app.BuilderSourceTemplate ||
+		client.lastStart.SourceID != "template-review" {
+		t.Fatalf("template start = %#v", client.lastStart)
+	}
+
+	model.builder = app.BuilderSessionView{}
+	model.selected = 0
+	model.loading = false
+	updated, command = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("a"),
+	})
+	if command == nil {
+		t.Fatal("archive action was not exposed")
+	}
+	model = updated.(Model)
+	_, _ = model.Update(command())
+	if client.statuses != 1 ||
+		client.lastStatus.DefinitionID != "team-saved" ||
+		client.lastStatus.ExpectedHead != 3 {
+		t.Fatalf(
+			"archive calls=%d command=%#v",
+			client.statuses,
+			client.lastStatus,
+		)
+	}
+}
+
+func TestModelTeamBuilderEnterDoesNotReplaceOpenCandidate(
+	t *testing.T,
+) {
+	digest := strings.Repeat("d", 64)
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SavedTeams: []app.SetupSavedTeamPreview{{
+				ID:               "team-saved",
+				Version:          1,
+				Name:             "Saved Review Team",
+				Status:           "active",
+				DefinitionDigest: digest,
+				StreamHead:       1,
+			}},
+		},
+		session: app.BuilderSessionView{DraftID: "unexpected"},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.setup = cloneSetupSnapshot(client.setup)
+	model.builder = app.BuilderSessionView{
+		DraftID:    "draft-open",
+		Revision:   4,
+		CanConfirm: true,
+		Preview: app.BuilderPreview{
+			Name: "Open Candidate",
+		},
+	}
+	model.loading = false
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command != nil {
+		t.Fatal("enter on an open Candidate started another setup command")
+	}
+	model = updated.(Model)
+	if client.starts != 0 || model.builder.DraftID != "draft-open" {
+		t.Fatalf(
+			"starts=%d builder=%#v",
+			client.starts,
+			model.builder,
+		)
+	}
+}
+
+func TestModelTeamBuilderUsesDaemonSetupClientWithoutTerminalInput(t *testing.T) {
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("a", 64),
+			Codex: app.ProviderSetupStatus{
+				ProviderID: "codex",
+				AuthMode:   "native_auth",
+				Status:     "available",
+			},
+			MiniMax: app.ProviderSetupStatus{
+				ProviderID: "minimax",
+				AuthMode:   "brokered",
+				Status:     "unconfigured",
+			},
+			Runtimes: []app.SetupRuntimePreview{{
+				RuntimeInstanceID: "runtime-pi",
+				DisplayName:       "Pi Coding Agent",
+				ExecutableVersion: "0.82.1",
+				Status:            "online",
+				ModelIDs:          []string{"model-a"},
+			}},
+			SavedTeams:  []app.SetupSavedTeamPreview{},
+			Templates:   []app.SetupTeamTemplatePreview{},
+			RoleOptions: []app.SetupRoleOptionPreview{},
+			Skills:      []app.SetupSkillRevision{},
+			Permissions: []string{},
+			Resources:   []app.SetupResourcePointer{},
+		},
+		session: app.BuilderSessionView{
+			SchemaVersion: 1,
+			DraftID:       "draft-1",
+			Revision:      1,
+			Source:        app.BuilderSourceBlank,
+			Question: app.BuilderQuestion{
+				ID:      "team_name",
+				Prompt:  "Name this team",
+				Options: []app.BuilderQuestionOption{},
+			},
+		},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("Team Builder enter did not call setup application client")
+	}
+	model = updated.(Model)
+	updated, command = model.Update(command())
+	if command != nil {
+		t.Fatal("setup snapshot result produced unexpected command")
+	}
+	model = updated.(Model)
+	view := model.View()
+	for _, want := range []string{
+		"Team Builder",
+		"Codex",
+		"native_auth",
+		"MiniMax",
+		"brokered",
+		"Pi Coding Agent",
+		"0.82.1",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Team Builder view missing %q: %q", want, view)
+		}
+	}
+	updated, command = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("n"),
+	})
+	if command == nil {
+		t.Fatal("new Team action did not start Candidate builder")
+	}
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if client.starts != 1 ||
+		!strings.Contains(model.View(), "Name this team") ||
+		strings.Contains(model.View(), "sqlite") ||
+		strings.Contains(model.View(), "launchctl") {
+		t.Fatalf(
+			"builder starts=%d view=%q",
+			client.starts,
+			model.View(),
+		)
+	}
+}
+
+func TestModelTeamBuilderAnswersAndMasksCredentialEntry(t *testing.T) {
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("a", 64),
+			MiniMax: app.ProviderSetupStatus{
+				ProviderID: "minimax",
+				AuthMode:   "brokered",
+				Status:     "unconfigured",
+			},
+			Runtimes:    []app.SetupRuntimePreview{},
+			SavedTeams:  []app.SetupSavedTeamPreview{},
+			Templates:   []app.SetupTeamTemplatePreview{},
+			RoleOptions: []app.SetupRoleOptionPreview{},
+			Skills:      []app.SetupSkillRevision{},
+			Permissions: []string{},
+			Resources:   []app.SetupResourcePointer{},
+		},
+		session: app.BuilderSessionView{
+			SchemaVersion: 1,
+			DraftID:       "draft-1",
+			Revision:      1,
+			Source:        app.BuilderSourceBlank,
+			CatalogDigest: strings.Repeat("b", 64),
+			Question: app.BuilderQuestion{
+				ID:      "team_name",
+				Prompt:  "Name this team",
+				Options: []app.BuilderQuestionOption{},
+			},
+		},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.setup = cloneSetupSnapshot(client.setup)
+	model.builder = cloneBuilderSession(client.session)
+	model.loading = false
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command != nil {
+		t.Fatal("opening answer input produced an external command")
+	}
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("Local Team"),
+	})
+	model = updated.(Model)
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("submitting an answer did not call the application service")
+	}
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if client.answers != 1 {
+		t.Fatalf("answer calls = %d", client.answers)
+	}
+
+	model.builder = app.BuilderSessionView{}
+	updated, command = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("g"),
+	})
+	if command != nil {
+		t.Fatal("opening masked credential entry produced a command")
+	}
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("alpha"),
+	})
+	model = updated.(Model)
+	if strings.Contains(model.View(), "alpha") ||
+		!strings.Contains(model.View(), "•••••") {
+		t.Fatalf("credential entry was not masked: %q", model.View())
+	}
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("credential submit did not call the setup service")
+	}
+	model = updated.(Model)
+	if len(model.entry) != 0 || model.entryMode != "" {
+		t.Fatal("credential input remained in TUI state after submit")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if client.credentials != 1 {
+		t.Fatalf("credential calls = %d", client.credentials)
 	}
 }

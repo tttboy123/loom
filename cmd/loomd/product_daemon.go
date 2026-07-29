@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,16 +16,25 @@ import (
 	"sync"
 	"time"
 
+	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
+	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/state"
 
 	_ "modernc.org/sqlite"
 )
 
 const localProductBuildID = "loom-phase2a-w1"
+
+type productSetupRuntimeConfig struct {
+	CodexExecutable string
+}
 
 type productDaemonFailure struct {
 	code string
@@ -62,6 +74,7 @@ func newProductDaemonRunner(
 	observer daemonRunner,
 	statePath,
 	socketPath string,
+	setupConfigs ...productSetupRuntimeConfig,
 ) (_ *productDaemonRunner, resultErr error) {
 	if observer == nil {
 		return nil, errors.New("invalid product daemon")
@@ -78,8 +91,12 @@ func newProductDaemonRunner(
 		}
 	}()
 	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		return nil, err
+	}
+	store := journal.NewStore(database)
 	service, err := api.NewLocalProductReadService(api.LocalProductReadConfig{
-		Journal:    journal.NewStore(database),
+		Journal:    store,
 		Projection: readModel,
 		Now: func() time.Time {
 			return time.Now().UTC()
@@ -88,12 +105,26 @@ func newProductDaemonRunner(
 	if err != nil {
 		return nil, err
 	}
+	var setupService *api.LocalProductSetupAPI
+	setupConfig := productSetupRuntimeConfig{}
+	if len(setupConfigs) == 1 {
+		setupConfig = setupConfigs[0]
+	}
+	setupService, err = buildProductSetupService(
+		database,
+		store,
+		readModel,
+		setupConfig,
+	)
+	if err != nil {
+		return nil, err
+	}
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
 		BuildID:      localProductBuildID,
 		Handler: localipc.HandlerFunc(
-			localProductHandler(service),
+			localProductHandler(service, setupService),
 		),
 	})
 	if err != nil {
@@ -104,6 +135,297 @@ func newProductDaemonRunner(
 		server:   server,
 		database: database,
 	}, nil
+}
+
+type productSetupProjectionProbe struct {
+	observations []loomruntime.RuntimeObservation
+}
+
+func productSetupRuntimeStatus(
+	status string,
+) (loomruntime.RuntimeStatus, bool) {
+	switch status {
+	case "online":
+		return loomruntime.RuntimeOnline, true
+	case "offline":
+		return loomruntime.RuntimeOffline, true
+	case "incompatible":
+		return loomruntime.RuntimeIncompatible, true
+	case "disabled":
+		return loomruntime.RuntimeDisabled, true
+	default:
+		return "", false
+	}
+}
+
+func (probe productSetupProjectionProbe) ID() string {
+	return "loom-product-projection"
+}
+
+func (probe productSetupProjectionProbe) ObserveRuntime(
+	context.Context,
+) ([]loomruntime.RuntimeObservation, error) {
+	return append([]loomruntime.RuntimeObservation{}, probe.observations...), nil
+}
+
+type productSetupIdentity struct{}
+
+func (productSetupIdentity) NextSetupID(kind string) (string, error) {
+	if kind == "" {
+		return "", app.ErrInvalidLocalProductSetup
+	}
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", app.ErrInvalidLocalProductSetup
+	}
+	return kind + "-" + hex.EncodeToString(value[:]), nil
+}
+
+type productNativeAuthObserver struct {
+	observer *provider.CodexNativeAuthObserver
+}
+
+func (observer productNativeAuthObserver) ObserveNativeAuth(
+	ctx context.Context,
+) (app.NativeAuthObservation, error) {
+	if observer.observer == nil {
+		return app.NativeAuthObservation{
+			Status:   "unavailable",
+			AuthMode: "native_auth",
+			Reason:   "unavailable",
+		}, nil
+	}
+	observation, err := observer.observer.Observe(ctx)
+	if err != nil {
+		return app.NativeAuthObservation{}, err
+	}
+	return app.NativeAuthObservation{
+		Status:   string(observation.Status),
+		AuthMode: observation.AuthMode,
+		Reason:   string(observation.Reason),
+	}, nil
+}
+
+type productCredentialStatusSource struct {
+	projection *projection.Projection
+}
+
+func (source productCredentialStatusSource) CredentialStatus(
+	ctx context.Context,
+	providerID string,
+) (credentials.MetadataResult, error) {
+	if source.projection == nil || ctx == nil || providerID != "minimax" {
+		return credentials.MetadataResult{},
+			credentials.ErrInvalidCredentialCommand
+	}
+	if err := source.projection.Rebuild(ctx); err != nil {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialStoreUnavailable
+	}
+	record, ok := source.projection.GlobalReadView().ProviderCredential(
+		providerID,
+	)
+	if !ok {
+		return credentials.MetadataResult{},
+			credentials.ErrCredentialNotFound
+	}
+	return credentials.MetadataResult{
+		ProviderID:          record.ProviderID,
+		CredentialReference: record.CredentialReference,
+		Revision:            record.Revision,
+		Status:              credentials.CredentialStatus(record.Status),
+		Reason:              credentials.VerificationReason(record.Reason),
+	}, nil
+}
+
+func buildProductSetupService(
+	database *sql.DB,
+	store *journal.Store,
+	readModel *projection.Projection,
+	config productSetupRuntimeConfig,
+) (*api.LocalProductSetupAPI, error) {
+	if database == nil || store == nil || readModel == nil {
+		return nil, errors.New("setup state unavailable")
+	}
+	runtimes, _ := readModel.GlobalReadView().RuntimeInstances("", 64)
+	observations := make([]loomruntime.RuntimeObservation, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		status, ok := productSetupRuntimeStatus(runtime.Status)
+		if !ok {
+			continue
+		}
+		observations = append(observations, loomruntime.RuntimeObservation{
+			Instance: loomruntime.RuntimeInstance{
+				ID:                runtime.ID,
+				DeviceID:          runtime.DeviceID,
+				AdapterType:       runtime.AdapterType,
+				DisplayName:       runtime.DisplayName,
+				ExecutableVersion: runtime.ExecutableVersion,
+				Status:            status,
+				ObservedCapabilities: append(
+					[]string{},
+					runtime.ObservedCapabilities...,
+				),
+				Capacity: runtime.Capacity,
+			},
+			ModelIDs: append([]string{}, runtime.ModelIDs...),
+		})
+	}
+	discovery, err := loomruntime.DiscoverRuntime(
+		context.Background(),
+		[]loomruntime.RuntimeProbe{
+			productSetupProjectionProbe{observations: observations},
+		},
+	)
+	if err != nil {
+		return nil, errors.New("setup runtime unavailable")
+	}
+	definitions := []agents.AgentDefinition{}
+	profiles := []loomruntime.RuntimeProfile{}
+	roleOptions := []app.SetupRoleOption{}
+	concurrencyCeiling := 1
+	var selected *loomruntime.RuntimeObservation
+	for _, observation := range discovery.Observations() {
+		if observation.Instance.Status == loomruntime.RuntimeOnline &&
+			observation.Instance.Capacity > 0 &&
+			len(observation.ModelIDs) > 0 {
+			copy := observation
+			selected = &copy
+			break
+		}
+	}
+	if selected != nil {
+		runtime := *selected
+		definitions = []agents.AgentDefinition{
+			{
+				ID:       "loom-main-coordinator",
+				Version:  1,
+				Scope:    agents.ScopeReusable,
+				Name:     "Coordinator",
+				RoleSpec: "Coordinate bounded work and review",
+				Status:   agents.DefinitionActive,
+			},
+			{
+				ID:       "loom-bounded-worker",
+				Version:  1,
+				Scope:    agents.ScopeReusable,
+				Name:     "Bounded Worker",
+				RoleSpec: "Deliver one bounded task for review",
+				Status:   agents.DefinitionActive,
+			},
+		}
+		mainProfile := loomruntime.RuntimeProfile{
+			ID:                   "loom-main-native",
+			AdapterType:          runtime.Instance.AdapterType,
+			ProviderID:           "local",
+			ModelID:              runtime.ModelIDs[0],
+			AuthMode:             loomruntime.AuthNative,
+			RequiredCapabilities: []string{},
+			Timeout:              5 * time.Minute,
+		}
+		subProfile := mainProfile
+		subProfile.ID = "loom-subagent-native"
+		profiles = []loomruntime.RuntimeProfile{mainProfile, subProfile}
+		roleOptions = []app.SetupRoleOption{
+			{
+				ID:                "coordinator",
+				Kind:              "main",
+				AgentDefinitionID: definitions[0].ID,
+				RuntimeProfileID:  mainProfile.ID,
+				RuntimeInstanceID: runtime.Instance.ID,
+				SkillRevisionIDs:  []string{},
+				PermissionIDs:     []string{},
+				ResourceIDs:       []string{},
+				Responsibility:    "Coordinate bounded work and review",
+			},
+			{
+				ID:                "bounded-worker",
+				Kind:              "subagent",
+				AgentDefinitionID: definitions[1].ID,
+				RuntimeProfileID:  subProfile.ID,
+				RuntimeInstanceID: runtime.Instance.ID,
+				SkillRevisionIDs:  []string{},
+				PermissionIDs:     []string{},
+				ResourceIDs:       []string{},
+				Responsibility:    "Deliver one bounded task for review",
+			},
+		}
+		concurrencyCeiling = min(runtime.Instance.Capacity, 2)
+	}
+	sum := sha256.Sum256([]byte(
+		"loom-product-setup-v1\x00" + discovery.Digest(),
+	))
+	catalog := app.LocalProductSetupCatalog{
+		CatalogDigest:      hex.EncodeToString(sum[:]),
+		AgentDefinitions:   definitions,
+		RuntimeProfiles:    profiles,
+		RuntimeDiscovery:   discovery,
+		SkillRevisions:     []app.SetupSkillRevision{},
+		Permissions:        []string{},
+		Resources:          []app.SetupResourcePointer{},
+		RoleOptions:        roleOptions,
+		Templates:          []app.SetupTeamTemplate{},
+		BudgetCeiling:      100,
+		ConcurrencyCeiling: concurrencyCeiling,
+	}
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		return nil, errors.New("setup state unavailable")
+	}
+	keychain, err := credentials.NewKeychainStore(
+		credentials.KeychainStoreConfig{},
+	)
+	if err != nil {
+		return nil, nil
+	}
+	verifier, err := provider.NewSystemMiniMaxCredentialVerifier(
+		5*time.Second,
+		64*1024,
+	)
+	if err != nil {
+		return nil, errors.New("setup Provider unavailable")
+	}
+	broker, err := credentials.NewCredentialBroker(
+		credentials.CredentialBrokerConfig{
+			Store:     keychain,
+			Verifier:  verifier,
+			Committer: writer,
+		},
+	)
+	if err != nil {
+		return nil, errors.New("setup credential boundary unavailable")
+	}
+	var native *provider.CodexNativeAuthObserver
+	if config.CodexExecutable != "" {
+		native, err = provider.NewCodexNativeAuthObserver(
+			provider.CodexNativeAuthConfig{
+				ExecutablePath: config.CodexExecutable,
+				Timeout:        5 * time.Second,
+				MaxOutputBytes: 4096,
+				Runner:         provider.NewSystemCodexStatusRunner(),
+			},
+		)
+		if err != nil {
+			return nil, errors.New("setup native auth unavailable")
+		}
+	}
+	setup, err := app.NewLocalProductSetupService(
+		app.LocalProductSetupConfig{
+			Journal:           store,
+			Projection:        readModel,
+			Writer:            writer,
+			Catalog:           catalog,
+			Identity:          productSetupIdentity{},
+			Now:               func() time.Time { return time.Now().UTC() },
+			NativeAuth:        productNativeAuthObserver{observer: native},
+			Credentials:       productCredentialStatusSource{projection: readModel},
+			CredentialMutator: broker,
+		},
+	)
+	if err != nil {
+		return nil, errors.New("setup service unavailable")
+	}
+	return api.NewLocalProductSetupAPI(setup)
 }
 
 func (runner *productDaemonRunner) Run(
@@ -235,13 +557,30 @@ func (runner *productDaemonRunner) Close() error {
 
 func localProductHandler(
 	service *api.LocalProductReadService,
+	setupServices ...*api.LocalProductSetupAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
+	var setup *api.LocalProductSetupAPI
+	if len(setupServices) == 1 {
+		setup = setupServices[0]
+	}
 	return func(
 		ctx context.Context,
 		request localipc.Request,
 	) localipc.Response {
+		if productSetupMethod(request.Method) && setup == nil {
+			return productErrorResponse(
+				"state_unavailable",
+				api.ErrInvalidLocalProductSetupAPI,
+			)
+		}
 		switch request.Method {
 		case "snapshot":
+			if service == nil {
+				return productErrorResponse(
+					"state_unavailable",
+					api.ErrLocalProductStateUnavailable,
+				)
+			}
 			var input api.LocalProductSnapshotRequest
 			if decodeExactProductParams(request.Params, &input) != nil {
 				return productErrorResponse(
@@ -255,6 +594,12 @@ func localProductHandler(
 			}
 			return productResultResponse(result)
 		case "timeline_page":
+			if service == nil {
+				return productErrorResponse(
+					"state_unavailable",
+					api.ErrLocalProductStateUnavailable,
+				)
+			}
 			var input api.LocalProductTimelineRequest
 			if decodeExactProductParams(request.Params, &input) != nil {
 				return productErrorResponse(
@@ -270,12 +615,183 @@ func localProductHandler(
 				}
 			}
 			return productResultResponse(result)
+		case "setup_snapshot":
+			if decodeExactProductParams(
+				request.Params,
+				&struct{}{},
+			) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.SetupSnapshot(ctx)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "builder_start":
+			var input app.BuilderStartCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.StartBuilder(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "builder_answer":
+			var input app.BuilderAnswerCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.AnswerBuilder(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "builder_edit":
+			var input app.BuilderEditCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.EditBuilder(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "builder_validate":
+			var input app.BuilderValidateCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.ValidateBuilder(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "builder_confirm":
+			var input app.BuilderConfirmCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			result, err := setup.ConfirmBuilder(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "team_archive", "team_restore":
+			var input app.TeamStatusCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			var (
+				result app.SetupSavedTeamPreview
+				err    error
+			)
+			if request.Method == "team_archive" {
+				result, err = setup.ArchiveTeam(ctx, input)
+			} else {
+				result, err = setup.RestoreTeam(ctx, input)
+			}
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "credential_configure",
+			"credential_verify",
+			"credential_replace",
+			"credential_revoke":
+			var input productCredentialParams
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
+			secret := []byte(input.Secret)
+			defer clearProductSecret(secret)
+			command := app.CredentialSetupCommand{
+				ProviderID:          input.ProviderID,
+				CredentialReference: input.CredentialReference,
+				ExpectedRevision:    input.ExpectedRevision,
+				Secret:              secret,
+			}
+			var (
+				result app.CredentialSetupResult
+				err    error
+			)
+			switch request.Method {
+			case "credential_configure":
+				result, err = setup.ConfigureCredential(ctx, command)
+			case "credential_verify":
+				result, err = setup.VerifyCredential(ctx, command)
+			case "credential_replace":
+				result, err = setup.ReplaceCredential(ctx, command)
+			case "credential_revoke":
+				result, err = setup.RevokeCredential(ctx, command)
+			}
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
 		default:
 			return productErrorResponse(
 				"unknown_method",
 				errors.New("unknown method"),
 			)
 		}
+	}
+}
+
+func productSetupMethod(method string) bool {
+	switch method {
+	case "setup_snapshot",
+		"builder_start",
+		"builder_answer",
+		"builder_edit",
+		"builder_validate",
+		"builder_confirm",
+		"team_archive",
+		"team_restore",
+		"credential_configure",
+		"credential_verify",
+		"credential_replace",
+		"credential_revoke":
+		return true
+	default:
+		return false
+	}
+}
+
+type productCredentialParams struct {
+	ProviderID          string `json:"provider_id"`
+	CredentialReference string `json:"credential_reference"`
+	ExpectedRevision    int64  `json:"expected_revision"`
+	Secret              string `json:"secret"`
+}
+
+func clearProductSecret(secret []byte) {
+	for index := range secret {
+		secret[index] = 0
 	}
 }
 
@@ -302,10 +818,28 @@ func productResultResponse(value any) localipc.Response {
 func productServiceError(err error) localipc.Response {
 	switch {
 	case errors.Is(err, api.ErrInvalidLocalProductRequest),
-		errors.Is(err, api.ErrInvalidTimelineRequest):
+		errors.Is(err, api.ErrInvalidTimelineRequest),
+		errors.Is(err, api.ErrInvalidLocalProductSetupAPI),
+		errors.Is(err, app.ErrInvalidLocalProductSetup):
 		return productErrorResponse("invalid_request", err)
-	case errors.Is(err, api.ErrTeamTimelineNotFound):
+	case errors.Is(err, api.ErrTeamTimelineNotFound),
+		errors.Is(err, app.ErrBuilderNotFound):
 		return productErrorResponse("not_found", err)
+	case errors.Is(err, app.ErrBuilderConflict):
+		return productErrorResponse("conflict", err)
+	case errors.Is(err, app.ErrBuilderIncompatible):
+		return productErrorResponse("incompatible", err)
+	case errors.Is(err, app.ErrBuilderConfirmationRequired):
+		return productErrorResponse("denied", err)
+	case errors.Is(err, credentials.ErrCredentialStoreDenied):
+		return productErrorResponse("denied", err)
+	case errors.Is(err, credentials.ErrCredentialStoreUnavailable),
+		errors.Is(err, app.ErrCredentialSetupUnavailable):
+		return productErrorResponse("credential_unavailable", err)
+	case errors.Is(err, credentials.ErrCredentialRejected):
+		return productErrorResponse("credential_rejected", err)
+	case errors.Is(err, credentials.ErrCredentialRollbackFailed):
+		return productErrorResponse("credential_rollback_failed", err)
 	case errors.Is(err, api.ErrTimelineCursorConflict):
 		return productErrorResponse("cursor_conflict", err)
 	case errors.Is(err, api.ErrStreamGap):
@@ -329,9 +863,24 @@ func localipcSafeError(code string, _ error) *localipc.ProtocolError {
 		message     string
 		recoverable bool
 	}{
-		"invalid_request":   {"invalid request", false},
-		"unknown_method":    {"unknown method", false},
-		"not_found":         {"not found", false},
+		"invalid_request": {"invalid request", false},
+		"unknown_method":  {"unknown method", false},
+		"not_found":       {"not found", false},
+		"conflict":        {"conflict", true},
+		"incompatible":    {"incompatible", false},
+		"denied":          {"denied", false},
+		"credential_unavailable": {
+			"credential unavailable",
+			true,
+		},
+		"credential_rejected": {
+			"credential rejected",
+			false,
+		},
+		"credential_rollback_failed": {
+			"credential rollback failed",
+			false,
+		},
 		"cursor_conflict":   {"cursor conflict", true},
 		"stream_gap":        {"stream gap", true},
 		"state_unavailable": {"state unavailable", true},
@@ -360,10 +909,9 @@ func openProductReadDatabase(statePath string) (*sql.DB, error) {
 		return nil, errors.New("state unavailable")
 	}
 	values := url.Values{}
-	values.Add("mode", "ro")
+	values.Add("mode", "rw")
 	values.Add("_pragma", "foreign_keys(1)")
 	values.Add("_pragma", "busy_timeout(5000)")
-	values.Add("_pragma", "query_only(1)")
 	uri := url.URL{Scheme: "file", Path: absolute}
 	uri.RawQuery = values.Encode()
 	database, err := sql.Open("sqlite", uri.String())

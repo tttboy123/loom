@@ -63,6 +63,58 @@ const swiftTimelineFixture = `{
   "attention":[]
 }`
 
+const swiftSetupFixture = `{
+  "schema_version":1,
+  "view_version":"view-setup-1",
+  "codex":{
+    "provider_id":"codex",
+    "auth_mode":"native_auth",
+    "credential_reference":"",
+    "revision":0,
+    "status":"available",
+    "reason":""
+  },
+  "minimax":{
+    "provider_id":"minimax",
+    "auth_mode":"brokered",
+    "credential_reference":"",
+    "revision":0,
+    "status":"unconfigured",
+    "reason":""
+  },
+  "runtimes":[],
+  "saved_teams":[],
+  "templates":[],
+  "role_options":[],
+  "skills":[],
+  "permissions":[],
+  "resources":[]
+}`
+
+const swiftBuilderFixture = `{
+  "schema_version":1,
+  "draft_id":"draft-swift-1",
+  "revision":1,
+  "source":"blank",
+  "catalog_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "view_version":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "content_digest":"",
+  "binding_digest":"",
+  "question":{"id":"team_name","prompt":"Name this team","options":[]},
+  "preview":{
+    "name":"",
+    "purpose":"",
+    "roles":[],
+    "permissions":[],
+    "resources":[],
+    "compatibility_gaps":[],
+    "requested_concurrency":0,
+    "maximum_budget_credits":0,
+    "estimated_maximum_cost":""
+  },
+  "can_confirm":false
+}`
+
 type swiftFixtureHandler struct {
 	mu        sync.Mutex
 	errorCode string
@@ -89,6 +141,10 @@ func (handler *swiftFixtureHandler) Handle(
 		return Response{OK: true, Result: json.RawMessage(swiftSnapshotFixture)}
 	case "timeline_page":
 		return Response{OK: true, Result: json.RawMessage(swiftTimelineFixture)}
+	case "setup_snapshot":
+		return Response{OK: true, Result: json.RawMessage(swiftSetupFixture)}
+	case "builder_start":
+		return Response{OK: true, Result: json.RawMessage(swiftBuilderFixture)}
 	default:
 		return Response{}
 	}
@@ -187,6 +243,75 @@ func TestSwiftClientInteroperatesWithRealGoServer(t *testing.T) {
 				expected,
 			)
 		}
+	}
+}
+
+func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
+	t *testing.T,
+) {
+	probe := buildSwiftSetupContractProbe(t)
+	root, socketPath := swiftPrivateSocketRoot(t)
+	defer os.RemoveAll(root)
+	handler := &swiftFixtureHandler{}
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "swift-setup-contract-fixture",
+		Handler:      handler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case err := <-serveDone:
+		t.Fatalf("server failed before ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not become ready")
+	}
+	output, runErr := exec.Command(
+		probe,
+		"--socket",
+		socketPath,
+	).CombinedOutput()
+	cancel()
+	if closeErr := server.Close(); closeErr != nil {
+		t.Errorf("Close() error = %v", closeErr)
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Errorf("Serve() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("server did not close")
+	}
+	if runErr != nil {
+		t.Fatalf("Swift setup probe error = %v, output = %q", runErr, output)
+	}
+	var actual struct {
+		SchemaVersion int    `json:"schema_version"`
+		CodexAuthMode string `json:"codex_auth_mode"`
+		MiniMaxMode   string `json:"minimax_auth_mode"`
+		RuntimeCount  int    `json:"runtime_count"`
+		DraftID       string `json:"draft_id"`
+		QuestionID    string `json:"question_id"`
+		CanConfirm    bool   `json:"can_confirm"`
+	}
+	if err := json.Unmarshal(output, &actual); err != nil {
+		t.Fatalf("Swift setup output invalid: %v, output = %q", err, output)
+	}
+	if actual.SchemaVersion != 1 ||
+		actual.CodexAuthMode != "native_auth" ||
+		actual.MiniMaxMode != "brokered" ||
+		actual.RuntimeCount != 0 ||
+		actual.DraftID != "draft-swift-1" ||
+		actual.QuestionID != "team_name" ||
+		actual.CanConfirm {
+		t.Fatalf("Swift setup output = %#v", actual)
 	}
 }
 
@@ -425,6 +550,80 @@ func buildSwiftContractProbe(t *testing.T) string {
 		strings.TrimSpace(string(output)),
 		"LoomLocalAppContractProbe",
 	)
+}
+
+func buildSwiftSetupContractProbe(t *testing.T) string {
+	t.Helper()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("repo root: %v", err)
+	}
+	sourceRoot := filepath.Join(
+		repoRoot,
+		"apps",
+		"macos",
+		"Sources",
+		"LoomLocalAppCore",
+	)
+	buildRoot := t.TempDir()
+	mainPath := filepath.Join(buildRoot, "SetupContractProbe.swift")
+	source := `import Darwin
+import Foundation
+
+@main
+struct SetupContractProbe {
+    static func main() async {
+        do {
+            let arguments = CommandLine.arguments
+            guard arguments.count == 3, arguments[1] == "--socket" else {
+                throw LocalProductClientError.invalidRequest
+            }
+            let client = try LocalIPCClient(socketPath: arguments[2])
+            let setup = try await client.setupSnapshot()
+            let candidate = try await client.startBuilder()
+            let result: [String: Any] = [
+                "schema_version": setup.schemaVersion,
+                "codex_auth_mode": setup.codex.authMode,
+                "minimax_auth_mode": setup.miniMax.authMode,
+                "runtime_count": setup.runtimes.count,
+                "draft_id": candidate.draftID,
+                "question_id": candidate.question.id,
+                "can_confirm": candidate.canConfirm,
+            ]
+            let encoded = try JSONSerialization.data(
+                withJSONObject: result,
+                options: [.sortedKeys]
+            )
+            FileHandle.standardOutput.write(encoded)
+        } catch {
+            FileHandle.standardError.write(Data("error:setup_probe\n".utf8))
+            exit(1)
+        }
+    }
+}
+`
+	if err := os.WriteFile(mainPath, []byte(source), 0o600); err != nil {
+		t.Fatalf("write Swift setup probe: %v", err)
+	}
+	probe := filepath.Join(buildRoot, "swift-setup-contract-probe")
+	command := exec.Command(
+		"/usr/bin/swiftc",
+		"-O",
+		"-parse-as-library",
+		filepath.Join(sourceRoot, "LocalProductModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductSetupModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductStore.swift"),
+		filepath.Join(sourceRoot, "LocalIPCClient.swift"),
+		mainPath,
+		"-framework",
+		"SwiftUI",
+		"-o",
+		probe,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("swiftc setup probe error = %v, output = %q", err, output)
+	}
+	return probe
 }
 
 func swiftPrivateSocketRoot(t *testing.T) (string, string) {

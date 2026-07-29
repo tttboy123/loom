@@ -347,6 +347,213 @@ func buildProductDaemonSwiftContractProbe(t *testing.T, root string) string {
 	)
 }
 
+func TestProductDaemonRealSetupServiceConfirmsCandidateOverPrivateUDS(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendProductDaemonFixture(t, database, []string{"model-a"})
+	beforeEvents, err := journal.NewStore(database).ReadAll(
+		context.Background(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeExecutionFacts := productSetupExecutionFactCount(beforeEvents)
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(root, "loomd.sock")
+	observer := &blockingObserverRunner{}
+	runner, err := newProductDaemonRunner(
+		observer,
+		statePath,
+		socketPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		runDone <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupClient, err := loomtui.NewDaemonReadClient(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := setupClient.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup.SchemaVersion != 1 ||
+		len(setup.Runtimes) != 1 ||
+		setup.Runtimes[0].ModelIDs == nil ||
+		setup.Codex.AuthMode != "native_auth" ||
+		setup.MiniMax.AuthMode != "brokered" {
+		t.Fatalf("setup snapshot = %#v", setup)
+	}
+	session, err := setupClient.StartBuilder(
+		context.Background(),
+		app.BuilderStartCommand{Source: app.BuilderSourceBlank},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := map[string]string{
+		"team_name":     "Private UDS Team",
+		"purpose":       "Confirm one Candidate through the daemon",
+		"main_role":     "coordinator",
+		"subagent_role": "bounded-worker",
+	}
+	for session.Question.ID != "" {
+		answer, ok := answers[session.Question.ID]
+		if !ok {
+			t.Fatalf("unexpected Builder question = %#v", session.Question)
+		}
+		session, err = setupClient.AnswerBuilder(
+			context.Background(),
+			app.BuilderAnswerCommand{
+				DraftID:          session.DraftID,
+				ExpectedRevision: session.Revision,
+				CatalogDigest:    session.CatalogDigest,
+				ViewVersion:      session.ViewVersion,
+				QuestionID:       session.Question.ID,
+				Answer:           answer,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !session.CanConfirm || session.BindingDigest == "" {
+		t.Fatalf("Candidate session = %#v", session)
+	}
+	confirmation, err := setupClient.ConfirmBuilder(
+		context.Background(),
+		app.BuilderConfirmCommand{
+			DraftID:          session.DraftID,
+			ExpectedRevision: session.Revision,
+			CatalogDigest:    session.CatalogDigest,
+			ViewVersion:      session.ViewVersion,
+			BindingDigest:    session.BindingDigest,
+			DefinitionID:     "team-private-uds",
+			Scope:            "reusable",
+			Confirm:          true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmation.TeamDefinitionID != "team-private-uds" ||
+		confirmation.Status != "active" ||
+		confirmation.TeamInstanceCreated ||
+		confirmation.RunCreated {
+		t.Fatalf("confirmation = %#v", confirmation)
+	}
+	cancel()
+	select {
+	case runErr := <-runDone:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	events, err := journal.NewStore(database).ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := 0
+	for _, event := range events {
+		if event.Type == "TeamDefinitionSaved" &&
+			event.StreamID == "team-definition/team-private-uds" {
+			saved++
+		}
+	}
+	if saved != 1 {
+		t.Fatalf("TeamDefinitionSaved events = %d", saved)
+	}
+	if after := productSetupExecutionFactCount(events); after != beforeExecutionFacts {
+		t.Fatalf(
+			"confirmation changed execution facts: before=%d after=%d",
+			beforeExecutionFacts,
+			after,
+		)
+	}
+}
+
+func TestProductSetupRemainsAvailableWhenNoRuntimeCanBuildATeam(t *testing.T) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := buildProductSetupService(
+		database,
+		journal.NewStore(database),
+		readModel,
+		productSetupRuntimeConfig{},
+	)
+	if err != nil || setup == nil {
+		t.Fatalf("buildProductSetupService() = %#v, %v", setup, err)
+	}
+	snapshot, err := setup.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Runtimes == nil ||
+		len(snapshot.Runtimes) != 0 ||
+		snapshot.Codex.AuthMode != "native_auth" ||
+		snapshot.MiniMax.AuthMode != "brokered" {
+		t.Fatalf("provider-only setup snapshot = %#v", snapshot)
+	}
+	if _, err := setup.StartBuilder(
+		context.Background(),
+		app.BuilderStartCommand{Source: app.BuilderSourceBlank},
+	); !errors.Is(err, app.ErrBuilderIncompatible) {
+		t.Fatalf("StartBuilder() without a Runtime error = %v", err)
+	}
+}
+
+func productSetupExecutionFactCount(events []journal.Event) int {
+	count := 0
+	for _, event := range events {
+		switch event.Type {
+		case "TeamInstanceCreated", "AgentInstanceCreated", "WorkItemCreated",
+			"RunCreated", "AgentGrantIssued", "EvidenceSubmitted",
+			"TeamExecutionPlanned", "TeamReadySetDispatched":
+			count++
+		}
+	}
+	return count
+}
+
 func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	t *testing.T,
 ) {
@@ -468,6 +675,7 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	}
 	model = updated.(loomtui.Model)
 	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyTab},
 		{Type: tea.KeyTab},
 		{Type: tea.KeyTab},
 		{Type: tea.KeyEnter},
@@ -838,7 +1046,11 @@ func waitForProductSocket(t *testing.T, socketPath string) {
 	}
 }
 
-func appendProductDaemonFixture(t *testing.T, database *sql.DB) {
+func appendProductDaemonFixture(
+	t *testing.T,
+	database *sql.DB,
+	runtimeModels ...[]string,
+) {
 	t.Helper()
 	const (
 		digest      = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -896,6 +1108,10 @@ func appendProductDaemonFixture(t *testing.T, database *sql.DB) {
 		0,
 		time.UTC,
 	).Format(time.RFC3339Nano)
+	var modelIDs any
+	if len(runtimeModels) == 1 {
+		modelIDs = append([]string{}, runtimeModels[0]...)
+	}
 	events := []journal.Event{
 		event(
 			"runtime-discovery",
@@ -916,7 +1132,7 @@ func appendProductDaemonFixture(t *testing.T, database *sql.DB) {
 					"observed_capabilities": []string{"models"},
 					"capacity":              1,
 				},
-				"model_ids": nil,
+				"model_ids": modelIDs,
 			},
 		),
 		event(
@@ -1214,4 +1430,95 @@ func productDaemonHeadsDigest(t *testing.T, database *sql.DB) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+type productSetupFixtureBackend struct{}
+
+func (productSetupFixtureBackend) SetupSnapshot(
+	context.Context,
+) (app.SetupSnapshot, error) {
+	return app.SetupSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+		Codex: app.ProviderSetupStatus{
+			ProviderID: "codex",
+			AuthMode:   "native_auth",
+			Status:     "available",
+		},
+		MiniMax: app.ProviderSetupStatus{
+			ProviderID: "minimax",
+			AuthMode:   "brokered",
+			Status:     "unconfigured",
+		},
+		Runtimes:    []app.SetupRuntimePreview{},
+		SavedTeams:  []app.SetupSavedTeamPreview{},
+		Templates:   []app.SetupTeamTemplatePreview{},
+		RoleOptions: []app.SetupRoleOptionPreview{},
+		Skills:      []app.SetupSkillRevision{},
+		Permissions: []string{},
+		Resources:   []app.SetupResourcePointer{},
+	}, nil
+}
+
+func (productSetupFixtureBackend) StartBuilder(
+	context.Context,
+	app.BuilderStartCommand,
+) (app.BuilderSessionView, error) {
+	return app.BuilderSessionView{}, errors.New("unexpected builder start")
+}
+
+func TestProductDaemonServesStrictSetupSnapshotWithoutCLIOrSQLiteClient(
+	t *testing.T,
+) {
+	unavailable := localProductHandler(nil)(
+		context.Background(),
+		localipc.Request{
+			Version:   1,
+			RequestID: "setup-unavailable",
+			Method:    "setup_snapshot",
+			Params:    json.RawMessage(`{}`),
+		},
+	)
+	if unavailable.OK ||
+		unavailable.Error == nil ||
+		unavailable.Error.Code != "state_unavailable" {
+		t.Fatalf("missing setup service response = %#v", unavailable)
+	}
+	setup, err := api.NewLocalProductSetupAPI(productSetupFixtureBackend{})
+	if err != nil {
+		t.Fatalf("NewLocalProductSetupAPI() error = %v", err)
+	}
+	handler := localProductHandler(nil, setup)
+	response := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "setup-request-1",
+		Method:    "setup_snapshot",
+		Params:    json.RawMessage(`{}`),
+	})
+	if !response.OK || response.Error != nil {
+		t.Fatalf("setup snapshot response = %#v", response)
+	}
+	var snapshot app.SetupSnapshot
+	if err := json.Unmarshal(response.Result, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Codex.AuthMode != "native_auth" ||
+		snapshot.MiniMax.AuthMode != "brokered" ||
+		snapshot.Runtimes == nil ||
+		snapshot.SavedTeams == nil ||
+		snapshot.Templates == nil {
+		t.Fatalf("setup snapshot = %#v", snapshot)
+	}
+
+	rejected := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "setup-request-2",
+		Method:    "setup_snapshot",
+		Params:    json.RawMessage(`{"unexpected":true}`),
+	})
+	if rejected.OK ||
+		rejected.Error == nil ||
+		rejected.Error.Code != "invalid_request" {
+		t.Fatalf("unknown setup field response = %#v", rejected)
+	}
 }

@@ -28,8 +28,9 @@ type daemonFailureCoder interface {
 }
 
 type daemonBuildConfig struct {
-	Observer   app.LocalRuntimeObservationDaemonConfig
-	SocketPath string
+	Observer        app.LocalRuntimeObservationDaemonConfig
+	SocketPath      string
+	CodexExecutable string
 }
 
 type daemonBuilder func(daemonBuildConfig) (daemonRunner, error)
@@ -66,6 +67,9 @@ func productionDaemonBuilder(
 		observer,
 		config.Observer.StatePath,
 		config.SocketPath,
+		productSetupRuntimeConfig{
+			CodexExecutable: config.CodexExecutable,
+		},
 	)
 }
 
@@ -97,6 +101,7 @@ func run(
 	processTimeout := fs.Duration("process-timeout", 0, "")
 	maxCycles := fs.Int("max-cycles", 0, "")
 	socketPath := fs.String("socket", "", "")
+	codexExecutable := fs.String("codex-executable", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
 	}
@@ -125,7 +130,8 @@ func run(
 			ProcessTimeout:      *processTimeout,
 			MaxCycles:           *maxCycles,
 		},
-		SocketPath: *socketPath,
+		SocketPath:      *socketPath,
+		CodexExecutable: *codexExecutable,
 	}
 	daemon, err := builder(config)
 	if err != nil || daemon == nil {

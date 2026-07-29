@@ -10,6 +10,11 @@ public enum LoomDesign {
 public struct ContentView: View {
     @ObservedObject private var store: LocalProductStore
     private let refreshOnAppear: Bool
+    @State private var builderAnswer = ""
+    @State private var builderEditField = ""
+    @State private var builderEditValue = ""
+    @State private var miniMaxSecret = ""
+    @State private var showTeamBuilder = false
 
     public init(
         store: LocalProductStore,
@@ -31,6 +36,10 @@ public struct ContentView: View {
             if refreshOnAppear {
                 await store.refresh()
             }
+        }
+        .sheet(isPresented: $showTeamBuilder) {
+            teamBuilder
+                .frame(minWidth: 760, minHeight: 620)
         }
     }
 
@@ -132,6 +141,18 @@ public struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle(store.selectedSection.rawValue)
         .toolbar {
+            if store.selectedSection == .teams {
+                ToolbarItem {
+                    Button {
+                        showTeamBuilder = true
+                    } label: {
+                        Label("Create team", systemImage: "plus")
+                    }
+                    .accessibilityHint(
+                        "Opens the Candidate Team Builder"
+                    )
+                }
+            }
             ToolbarItem {
                 refreshButton
             }
@@ -151,6 +172,351 @@ public struct ContentView: View {
             inbox
         case .system:
             system
+        }
+    }
+
+    private var teamBuilder: some View {
+        WorkspaceScroll {
+            PageHeader(
+                title: "Team Builder",
+                subtitle:
+                    "Create a Candidate team, review exact bindings, then confirm."
+            )
+            setupProviderPanel
+            setupRuntimePanel
+            setupAssetsPanel
+            builderPanel
+        }
+        .task {
+            if store.setupSnapshot == nil {
+                await store.refreshSetup()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var setupProviderPanel: some View {
+        if let setup = store.setupSnapshot {
+            let hasMiniMaxCredential =
+                !setup.miniMax.credentialReference.isEmpty &&
+                setup.miniMax.revision > 0 &&
+                setup.miniMax.status != "revoked"
+            SectionHeading(
+                title: "Providers",
+                detail: "Authentication stays outside Team and Run authority"
+            )
+            LoomPanel {
+                VStack(alignment: .leading, spacing: 14) {
+                    Label(
+                        "Codex · \(humanized(setup.codex.status)) · " +
+                            setup.codex.authMode,
+                        systemImage: "person.crop.circle.badge.checkmark"
+                    )
+                    Divider()
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("MiniMax")
+                                .font(.headline)
+                            Text(
+                                "\(humanized(setup.miniMax.status)) · " +
+                                    setup.miniMax.authMode
+                            )
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        SecureField("API key", text: $miniMaxSecret)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 280)
+                            .privacySensitive()
+                            .accessibilityLabel("MiniMax API key")
+                        if hasMiniMaxCredential {
+                            Button("Test") {
+                                Task { await store.verifyMiniMax() }
+                            }
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                            Button("Replace") {
+                                let secret = miniMaxSecret
+                                miniMaxSecret = ""
+                                Task {
+                                    await store.replaceMiniMax(secret: secret)
+                                }
+                            }
+                            .disabled(miniMaxSecret.isEmpty)
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                            Button("Revoke", role: .destructive) {
+                                miniMaxSecret = ""
+                                Task { await store.revokeMiniMax() }
+                            }
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                        } else {
+                            Button("Store securely") {
+                                let secret = miniMaxSecret
+                                miniMaxSecret = ""
+                                Task {
+                                    await store.configureMiniMax(secret: secret)
+                                }
+                            }
+                            .disabled(miniMaxSecret.isEmpty)
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                        }
+                    }
+                    if let status = store.credentialStatus {
+                        Text(
+                            "MiniMax credential · " +
+                                humanized(status.status)
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var setupAssetsPanel: some View {
+        if let setup = store.setupSnapshot,
+           !setup.savedTeams.isEmpty || !setup.templates.isEmpty
+        {
+            SectionHeading(
+                title: "Saved teams and templates",
+                detail: "Every selection opens a Candidate for review"
+            )
+            LoomPanel {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(setup.savedTeams) { team in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(team.name).font(.headline)
+                                Text("Saved team · \(humanized(team.status))")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if team.status == "active" {
+                                Button("Open Candidate") {
+                                    Task { await store.startBuilder(from: team) }
+                                }
+                                Button("Archive") {
+                                    Task { await store.archiveTeam(team) }
+                                }
+                            } else {
+                                Button("Restore") {
+                                    Task { await store.restoreTeam(team) }
+                                }
+                            }
+                        }
+                        .frame(minHeight: LoomDesign.minimumActionTarget)
+                    }
+                    if !setup.savedTeams.isEmpty && !setup.templates.isEmpty {
+                        Divider()
+                    }
+                    ForEach(setup.templates) { template in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(template.name).font(.headline)
+                                Text("Versioned template")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Use Template") {
+                                Task {
+                                    await store.startBuilder(from: template)
+                                }
+                            }
+                        }
+                        .frame(minHeight: LoomDesign.minimumActionTarget)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var setupRuntimePanel: some View {
+        if let setup = store.setupSnapshot {
+            SectionHeading(
+                title: "Available runtimes",
+                detail: "Exact local capabilities and models"
+            )
+            if setup.runtimes.isEmpty {
+                EmptyPanel(
+                    title: "No compatible runtime is available.",
+                    detail: "Loom will not invent a binding."
+                )
+            } else {
+                LoomPanel {
+                    VStack(spacing: 0) {
+                        ForEach(
+                            Array(setup.runtimes.enumerated()),
+                            id: \.element.id
+                        ) { offset, runtime in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(runtime.displayName)
+                                        .font(.headline)
+                                    Text(
+                                        "\(runtime.adapterType) · " +
+                                            "\(runtime.executableVersion) · " +
+                                            humanized(runtime.status)
+                                    )
+                                    .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(runtime.modelIDs.joined(separator: ", "))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 7)
+                            if offset < setup.runtimes.count - 1 {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var builderPanel: some View {
+        SectionHeading(
+            title: "Candidate team",
+            detail: "Nothing executes before a later explicit Run action"
+        )
+        switch store.setupState {
+        case .loading:
+            LoadingPanel(label: "Loading Team Builder")
+        case let .unavailable(reason), let .fatal(reason):
+            RecoveryPanel(
+                title: "Team Builder unavailable",
+                detail: humanized(reason),
+                systemImage: "exclamationmark.triangle"
+            ) {
+                Task { await store.refreshSetup() }
+            }
+        case .idle, .ready:
+            if let session = store.builderSession {
+                LoomPanel {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(
+                            session.preview.name.isEmpty
+                                ? "New team"
+                                : session.preview.name
+                        )
+                        .font(.title3.weight(.semibold))
+                        if !session.question.prompt.isEmpty {
+                            Text(session.question.prompt)
+                                .font(.headline)
+                            if session.question.options.isEmpty {
+                                TextField("Answer", text: $builderAnswer)
+                                    .textFieldStyle(.roundedBorder)
+                                Button("Continue") {
+                                    let answer = builderAnswer
+                                    builderAnswer = ""
+                                    Task {
+                                        await store.answerBuilder(answer)
+                                    }
+                                }
+                                .disabled(builderAnswer.isEmpty)
+                                .frame(
+                                    minHeight: LoomDesign.minimumActionTarget
+                                )
+                            } else {
+                                ForEach(session.question.options) { option in
+                                    Button(option.label) {
+                                        Task {
+                                            await store.answerBuilder(option.id)
+                                        }
+                                    }
+                                    .frame(
+                                        minHeight: LoomDesign.minimumActionTarget
+                                    )
+                                }
+                            }
+                            Button("Cancel Candidate", role: .cancel) {
+                                builderAnswer = ""
+                                store.cancelBuilder()
+                            }
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                        } else if session.canConfirm {
+                            Text(session.preview.purpose)
+                                .foregroundStyle(.secondary)
+                            Text(session.preview.estimatedMaximumCost)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                Button("Edit name") {
+                                    builderEditField = "team_name"
+                                    builderEditValue = session.preview.name
+                                }
+                                Button("Edit purpose") {
+                                    builderEditField = "purpose"
+                                    builderEditValue = session.preview.purpose
+                                }
+                                Button("Cancel Candidate", role: .cancel) {
+                                    builderEditField = ""
+                                    builderEditValue = ""
+                                    store.cancelBuilder()
+                                }
+                            }
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                            if !builderEditField.isEmpty {
+                                TextField(
+                                    builderEditField == "team_name"
+                                        ? "Team name"
+                                        : "Purpose",
+                                    text: $builderEditValue
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                HStack {
+                                    Button("Save edit") {
+                                        let field = builderEditField
+                                        let value = builderEditValue
+                                        builderEditField = ""
+                                        builderEditValue = ""
+                                        Task {
+                                            await store.editBuilder(
+                                                field: field,
+                                                value: value
+                                            )
+                                        }
+                                    }
+                                    .disabled(builderEditValue.isEmpty)
+                                    Button("Back", role: .cancel) {
+                                        builderEditField = ""
+                                        builderEditValue = ""
+                                    }
+                                }
+                                .frame(minHeight: LoomDesign.minimumActionTarget)
+                            }
+                            Button("Confirm saved team") {
+                                Task { await store.confirmBuilder() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .frame(minHeight: LoomDesign.minimumActionTarget)
+                            .accessibilityHint(
+                                "Saves the TeamDefinition and does not start a Run"
+                            )
+                        }
+                    }
+                }
+            } else {
+                LoomPanel {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Start from a blank team")
+                            .font(.headline)
+                        Text(
+                            "Loom asks one bounded question at a time and " +
+                                "shows exact runtime and cost bindings."
+                        )
+                        .foregroundStyle(.secondary)
+                        Button("Create Candidate team") {
+                            Task { await store.startBlankBuilder() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .frame(minHeight: LoomDesign.minimumActionTarget)
+                    }
+                }
+            }
         }
     }
 

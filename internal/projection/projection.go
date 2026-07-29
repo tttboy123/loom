@@ -70,6 +70,7 @@ type Snapshot struct {
 	Teams            map[string]TeamInstance
 	AgentInstances   map[string]AgentInstance
 	RuntimeInstances map[string]RuntimeInstance
+	localProductSetupSnapshotFields
 }
 
 type WorkItem struct {
@@ -378,7 +379,11 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	return candidate, nil
 }
 
-func (s Snapshot) apply(event journal.Event) error {
+func (s *Snapshot) apply(event journal.Event) error {
+	if isLocalProductSetupProjectionEvent(event) {
+		ensureLocalProductSetupSnapshot(s)
+		return applyLocalProductSetupProjection(*s, event)
+	}
 	switch event.Type {
 	case "ModeSelected":
 		var payload struct {
@@ -897,6 +902,7 @@ func (s Snapshot) clone() Snapshot {
 	for id, instance := range s.RuntimeInstances {
 		out.RuntimeInstances[id] = cloneProjectedRuntimeInstance(instance)
 	}
+	cloneLocalProductSetupSnapshot(s, &out)
 	return out
 }
 

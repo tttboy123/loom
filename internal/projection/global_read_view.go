@@ -85,20 +85,22 @@ type TeamTimelineAnchor struct {
 }
 
 type GlobalReadView struct {
-	version          string
-	heads            map[string]journal.StreamHead
-	workItems        map[string]WorkItem
-	runs             map[string]Run
-	agentGrants      map[string]AgentGrant
-	latestGrantByRun map[string]AgentGrant
-	evidence         map[string]Evidence
-	ruleSets         map[string]ProjectedRuleSet
-	approvalRequests map[string]ProjectedApprovalRequest
-	teams            map[string]TeamInstance
-	agentInstances   map[string]AgentInstance
-	runtimeInstances map[string]RuntimeInstance
-	teamExecutions   map[string]TeamExecution
-	activeRunCount   map[string]int
+	version             string
+	heads               map[string]journal.StreamHead
+	workItems           map[string]WorkItem
+	runs                map[string]Run
+	agentGrants         map[string]AgentGrant
+	latestGrantByRun    map[string]AgentGrant
+	evidence            map[string]Evidence
+	ruleSets            map[string]ProjectedRuleSet
+	approvalRequests    map[string]ProjectedApprovalRequest
+	teams               map[string]TeamInstance
+	agentInstances      map[string]AgentInstance
+	runtimeInstances    map[string]RuntimeInstance
+	teamDefinitions     map[string]TeamDefinitionRecord
+	providerCredentials map[string]ProviderCredentialRecord
+	teamExecutions      map[string]TeamExecution
+	activeRunCount      map[string]int
 }
 
 func (view GlobalReadView) Version() string { return view.version }
@@ -218,6 +220,39 @@ func (view GlobalReadView) AgentInstance(id string) (AgentInstance, bool) {
 func (view GlobalReadView) RuntimeInstance(id string) (RuntimeInstance, bool) {
 	record, ok := view.runtimeInstances[id]
 	return cloneProjectedRuntimeInstance(record), ok
+}
+
+func (view GlobalReadView) TeamDefinition(
+	id string,
+) (TeamDefinitionRecord, bool) {
+	record, ok := view.teamDefinitions[id]
+	return cloneTeamDefinitionRecord(record), ok
+}
+
+func (view GlobalReadView) ProviderCredential(
+	providerID string,
+) (ProviderCredentialRecord, bool) {
+	record, ok := view.providerCredentials[providerID]
+	return record, ok
+}
+
+func (view GlobalReadView) TeamDefinitions(
+	afterID string,
+	limit int,
+) ([]TeamDefinitionRecord, bool) {
+	ids, ok := globalReadPageIDs(view.teamDefinitions, afterID, limit)
+	if !ok {
+		return []TeamDefinitionRecord{}, false
+	}
+	records := make([]TeamDefinitionRecord, len(ids))
+	for index, id := range ids {
+		records[index] = cloneTeamDefinitionRecord(view.teamDefinitions[id])
+	}
+	return records, globalReadPageHasMore(
+		view.teamDefinitions,
+		ids,
+		afterID,
+	)
 }
 
 func (view GlobalReadView) TeamExecution(id string) (TeamExecution, bool) {
@@ -464,20 +499,22 @@ func buildGlobalReadView(
 		latestGrantSequence[*payload.RunID] = event.Seq
 	}
 	view := GlobalReadView{
-		version:          hex.EncodeToString(sum[:]),
-		heads:            heads,
-		workItems:        cloned.WorkItems,
-		runs:             cloned.Runs,
-		agentGrants:      cloned.AgentGrants,
-		latestGrantByRun: latestGrantByRun,
-		evidence:         cloned.Evidence,
-		ruleSets:         cloned.RuleSets,
-		approvalRequests: cloned.ApprovalRequests,
-		teams:            cloned.Teams,
-		agentInstances:   cloned.AgentInstances,
-		runtimeInstances: cloned.RuntimeInstances,
-		teamExecutions:   make(map[string]TeamExecution, len(teamExecutions)),
-		activeRunCount:   active,
+		version:             hex.EncodeToString(sum[:]),
+		heads:               heads,
+		workItems:           cloned.WorkItems,
+		runs:                cloned.Runs,
+		agentGrants:         cloned.AgentGrants,
+		latestGrantByRun:    latestGrantByRun,
+		evidence:            cloned.Evidence,
+		ruleSets:            cloned.RuleSets,
+		approvalRequests:    cloned.ApprovalRequests,
+		teams:               cloned.Teams,
+		agentInstances:      cloned.AgentInstances,
+		runtimeInstances:    cloned.RuntimeInstances,
+		teamDefinitions:     cloned.TeamDefinitions,
+		providerCredentials: cloned.ProviderCredentials,
+		teamExecutions:      make(map[string]TeamExecution, len(teamExecutions)),
+		activeRunCount:      active,
 	}
 	for id, record := range teamExecutions {
 		view.teamExecutions[id] = cloneGlobalTeamExecution(record)

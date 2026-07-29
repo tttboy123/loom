@@ -2781,3 +2781,91 @@ P2A-W1 product source, tests, reviewed amendments, and evidence may now be
 committed as one lineage while all pre-existing contract-excluded worktree
 changes remain untouched. Once that commit exists, the next Phase 2A governance
 boundary is the P2A-W2 child-contract freeze. No P2A-W4 exists.
+
+`CURRENT`: the reviewed P2A-W1 Candidate was committed atomically at
+`7c1c469c46c97eac0cab39a756b2d59867a49563` with excluded pre-existing
+worktree changes left unstaged. Its governed live result remains
+`FAIL - ROLLBACK_INCOMPLETE - HUMAN_REQUIRED - NO RETRY`, allowance `0`; the
+commit is a deterministic product checkpoint and not a successful live-delivery
+claim.
+
+`TARGET`: the only next Phase 2A WorkItem is now the single vertical
+`P2A-W2 Team Builder and Provider Onboarding`. Its Candidate contract is at
+`.loom-evidence/phase2a/P2A-W2/contract.md` and awaits fresh independent
+Contract Review. It composes the accepted Team Draft/TeamDefinition domain,
+adds only the minimum Journal-backed saved-Team and non-secret Provider metadata
+authority, and uses a macOS Keychain-backed Credential Broker plus a read-only
+Codex `login status` observer. It prohibits the previously chat-pasted MiniMax
+secret, creates no TeamInstance/Run/Grant/Evidence/dispatch fact, grants no live
+action before Implementation Review, keeps P2A-W3 locked, and creates no W4.
+
+`CURRENT`: fresh independent P2A-W2 Contract Review returned `PASS` with no P0,
+P1, or P2 findings. The single vertical contract is now `FROZEN`; mandatory RED
+is the current gate. The PASS grants no product implementation before RED, no
+installed Keychain mutation, no real Codex process, no MiniMax/network request,
+no resident daemon or installed-app action, no live canary, and no P2A-W3 work.
+
+`CURRENT`: P2A-W2 mandatory RED is preserved. Go focused tests failed only on
+the absent frozen Credential Broker, Codex/MiniMax Provider, setup StateWriter,
+Projection, Application/API, Bubble Tea, and daemon-handler symbols. Swift
+compiled the existing targets and failed only on the absent strict
+`LocalProductSetupWire`. RED used no network, Keychain, Codex process, installed
+app, resident daemon, Runtime/model, user SQLite, live action, staging, or prior
+chat-pasted secret. Minimal W2 implementation inside the exact owned files is
+now the current gate.
+
+`CURRENT`: the P2A-W2 deterministic Candidate now closes the frozen
+pre-execution journey through the shared Application Service and daemon IPC:
+blank/saved/template Candidate Builder, exact binding and compatibility
+preview, explicit TeamDefinition-only confirmation, archive/restore CAS,
+rebuildable saved-Team and non-secret Provider projections, Codex native-auth
+status observation, macOS Keychain Credential Broker, bounded non-generative
+MiniMax verification, and both Bubble Tea and strict native Swift clients.
+Provider-only setup remains available when no compatible Runtime can build a
+Team. The clients expose saved/template selection and archive/restore without
+asking users for internal IDs or stream heads.
+
+`CURRENT`: final deterministic verification passed focused and complete Go
+tests, complete repository race tests, vet, format/diff/module checks, cgo and
+unsupported-Keychain gates, strict Go-UDS/Swift fixtures, Swift debug tests,
+release build, and thread-sanitizer tests. A new real-process regression exposed
+and repaired an `os/exec` output-bound bypass caused by embedded
+`bytes.Buffer.ReadFrom`; bounded output, process-group cancellation, and
+post-run executable-identity replacement now have repeated deterministic
+coverage. No installed Keychain item, real Codex process, network/Provider
+request, resident daemon/app, Runtime, live canary, staging, or commit action
+occurred. Fresh independent P2A-W2 Implementation Review is the current gate;
+P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: fresh independent P2A-W2 Implementation Review returned `PASS` with
+no P0, P1, or P2 findings. The Reviewer checked the frozen contract SHA,
+mandatory RED, deterministic evidence, W2 source/tests, tracked diff against
+`7c1c469c46c97eac0cab39a756b2d59867a49563`, and untracked W2 files. It
+explicitly modified no files, staged or committed nothing, and ran no process,
+network, Keychain, Codex, or live action. A separately frozen W2 live manifest
+is now the current gate. No live action has yet occurred; P2A-W3 remains locked
+and no P2A-W4 exists.
+
+`CURRENT`: the single P2A-W2 live gate is now frozen by the reviewed
+`Live Gate and Deterministic Checkpoint Commit Amendment`. Its exact product
+source/test Merkle is
+`bd11f85b1b46cfd4927131484f77e8dff36afd9b5793d18ef061aec6b72a4dac`.
+Fresh independent Contract Review returned `PASS` with no P0, P1, or P2
+findings and independently reproduced that Merkle. The previously chat-pasted
+MiniMax secret remains prohibited; no fresh product-entered credential exists,
+so the controlled live result remains `HUMAN_REQUIRED`, allowance is
+unconsumed, and no Codex process, daemon, native app, Keychain, Provider,
+network, Journal, or other live action occurred. The Product Owner's explicit
+`全部授权，并进行提交` authorization permits one atomic deterministic W2
+checkpoint commit after final reverification. That commit cannot claim W2 live
+delivery or acceptance, cannot unlock P2A-W3, and creates no P2A-W4.
+
+`CURRENT`: final pre-commit reverification for the reviewed P2A-W2
+deterministic checkpoint is `PASS`. Complete Go tests, complete repository race
+tests, vet, isolated-cache module tidy/verify, cgo-disabled and fixed-Keychain
+gates, source-lock/Merkle, format/diff, secret-negative, Swift debug tests,
+release build, and thread-sanitizer tests all pass. The Swift test matrices each
+executed 27 XCTest cases with one expected visual-audit-only skip plus all three
+Swift Testing cases. No live action occurred. The current gate is the exact
+atomic checkpoint commit; W2 live/acceptance remains `HUMAN_REQUIRED` and
+P2A-W3 remains locked.

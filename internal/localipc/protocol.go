@@ -203,12 +203,27 @@ func protocolErrorDefinition(code string) (string, bool, bool) {
 		"unauthorized_peer":    {"unauthorized peer", false},
 		"unsupported_platform": {"unsupported platform", false},
 		"not_found":            {"not found", false},
-		"cursor_conflict":      {"cursor conflict", true},
-		"stream_gap":           {"stream gap", true},
-		"state_unavailable":    {"state unavailable", true},
-		"timeout":              {"request timed out", true},
-		"busy":                 {"daemon busy", true},
-		"internal":             {"internal error", true},
+		"conflict":             {"conflict", true},
+		"incompatible":         {"incompatible", false},
+		"denied":               {"denied", false},
+		"credential_unavailable": {
+			"credential unavailable",
+			true,
+		},
+		"credential_rejected": {
+			"credential rejected",
+			false,
+		},
+		"credential_rollback_failed": {
+			"credential rollback failed",
+			false,
+		},
+		"cursor_conflict":   {"cursor conflict", true},
+		"stream_gap":        {"stream gap", true},
+		"state_unavailable": {"state unavailable", true},
+		"timeout":           {"request timed out", true},
+		"busy":              {"daemon busy", true},
+		"internal":          {"internal error", true},
 	}
 	definition, ok := definitions[code]
 	return definition.message, definition.recoverable, ok
@@ -233,7 +248,21 @@ func validRequestID(value string) bool {
 
 func validMethod(method string) bool {
 	switch method {
-	case "ping", "snapshot", "timeline_page":
+	case "ping",
+		"snapshot",
+		"timeline_page",
+		"setup_snapshot",
+		"builder_start",
+		"builder_answer",
+		"builder_edit",
+		"builder_validate",
+		"builder_confirm",
+		"team_archive",
+		"team_restore",
+		"credential_configure",
+		"credential_verify",
+		"credential_replace",
+		"credential_revoke":
 		return true
 	default:
 		return false
