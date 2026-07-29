@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/journal"
 )
@@ -72,6 +74,14 @@ type TeamExecutionAttempt struct {
 	OutputClassification       string
 	OutputClassificationDigest string
 	OutputSummaryDigest        string
+}
+
+type TeamTimelineAnchor struct {
+	TeamInstanceID string
+	Kind           string
+	Confirmed      bool
+	Executable     bool
+	ReadOnly       bool
 }
 
 type GlobalReadView struct {
@@ -215,8 +225,173 @@ func (view GlobalReadView) TeamExecution(id string) (TeamExecution, bool) {
 	return cloneGlobalTeamExecution(record), ok
 }
 
+func (view GlobalReadView) Teams(
+	afterID string,
+	limit int,
+) ([]TeamInstance, bool) {
+	ids, ok := globalReadPageIDs(view.teams, afterID, limit)
+	if !ok {
+		return []TeamInstance{}, false
+	}
+	records := make([]TeamInstance, len(ids))
+	for index, id := range ids {
+		records[index] = cloneProjectedTeamInstance(view.teams[id])
+	}
+	return records, globalReadPageHasMore(view.teams, ids, afterID)
+}
+
+func (view GlobalReadView) Runs(afterID string, limit int) ([]Run, bool) {
+	ids, ok := globalReadPageIDs(view.runs, afterID, limit)
+	if !ok {
+		return []Run{}, false
+	}
+	records := make([]Run, len(ids))
+	for index, id := range ids {
+		records[index] = view.runs[id]
+	}
+	return records, globalReadPageHasMore(view.runs, ids, afterID)
+}
+
+func (view GlobalReadView) EvidenceRecords(
+	afterID string,
+	limit int,
+) ([]Evidence, bool) {
+	ids, ok := globalReadPageIDs(view.evidence, afterID, limit)
+	if !ok {
+		return []Evidence{}, false
+	}
+	records := make([]Evidence, len(ids))
+	for index, id := range ids {
+		records[index] = view.evidence[id]
+	}
+	return records, globalReadPageHasMore(view.evidence, ids, afterID)
+}
+
+func (view GlobalReadView) RuntimeInstances(
+	afterID string,
+	limit int,
+) ([]RuntimeInstance, bool) {
+	ids, ok := globalReadPageIDs(view.runtimeInstances, afterID, limit)
+	if !ok {
+		return []RuntimeInstance{}, false
+	}
+	records := make([]RuntimeInstance, len(ids))
+	for index, id := range ids {
+		records[index] = cloneProjectedRuntimeInstance(view.runtimeInstances[id])
+	}
+	return records, globalReadPageHasMore(view.runtimeInstances, ids, afterID)
+}
+
+func (view GlobalReadView) TeamExecutions(
+	afterID string,
+	limit int,
+) ([]TeamExecution, bool) {
+	ids, ok := globalReadPageIDs(view.teamExecutions, afterID, limit)
+	if !ok {
+		return []TeamExecution{}, false
+	}
+	records := make([]TeamExecution, len(ids))
+	for index, id := range ids {
+		records[index] = cloneGlobalTeamExecution(view.teamExecutions[id])
+	}
+	return records, globalReadPageHasMore(view.teamExecutions, ids, afterID)
+}
+
+func (view GlobalReadView) TeamTimelineAnchor(
+	teamInstanceID string,
+) (TeamTimelineAnchor, bool) {
+	if !validGlobalReadPageID(teamInstanceID) {
+		return TeamTimelineAnchor{}, false
+	}
+	if team, ok := view.Team(teamInstanceID); ok &&
+		team.ID == teamInstanceID {
+		return TeamTimelineAnchor{
+			TeamInstanceID: teamInstanceID,
+			Kind:           "saved_team",
+			Confirmed:      true,
+			Executable:     true,
+		}, true
+	}
+	execution, ok := view.TeamExecution(teamInstanceID)
+	if !ok ||
+		execution.TeamInstanceID != teamInstanceID ||
+		(execution.Status != "succeeded" && execution.Status != "failed") ||
+		len(execution.Nodes) == 0 {
+		return TeamTimelineAnchor{}, false
+	}
+	hasAttempt := false
+	for _, node := range execution.Nodes {
+		if len(node.Attempts) > 0 {
+			hasAttempt = true
+			break
+		}
+	}
+	head, ok := view.Head("team-execution/" + teamInstanceID)
+	if !hasAttempt || !ok || head.Sequence <= 0 || head.EventID == "" {
+		return TeamTimelineAnchor{}, false
+	}
+	return TeamTimelineAnchor{
+		TeamInstanceID: teamInstanceID,
+		Kind:           "historical_execution_only",
+		ReadOnly:       true,
+	}, true
+}
+
 func (view GlobalReadView) ActiveRunCount(runtimeInstanceID string) int {
 	return view.activeRunCount[runtimeInstanceID]
+}
+
+func globalReadPageIDs[T any](
+	records map[string]T,
+	afterID string,
+	limit int,
+) ([]string, bool) {
+	if limit < 1 || limit > 64 ||
+		afterID != "" && !validGlobalReadPageID(afterID) {
+		return []string{}, false
+	}
+	ids := make([]string, 0, len(records))
+	for id := range records {
+		if id > afterID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, true
+}
+
+func globalReadPageHasMore[T any](
+	records map[string]T,
+	pageIDs []string,
+	afterID string,
+) bool {
+	lastID := afterID
+	if len(pageIDs) > 0 {
+		lastID = pageIDs[len(pageIDs)-1]
+	}
+	for id := range records {
+		if id > lastID {
+			return true
+		}
+	}
+	return false
+}
+
+func validGlobalReadPageID(value string) bool {
+	if value == "" || len(value) > 512 ||
+		!utf8.ValidString(value) ||
+		strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 func buildGlobalReadView(

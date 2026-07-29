@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-07-28
+Updated: 2026-07-29
 
 ## Product state
 
@@ -1410,3 +1410,1374 @@ gates. The current gate is the P2A-W1 Local App Shell and Read Experience child
 contract and its fresh independent Contract Review. No Phase 2A product code,
 Provider traffic, credential mutation, daemon replacement, migration, or live
 canary is yet authorized.
+
+`CURRENT`: P2A-W1 Local App Shell and Read Experience has one draft child
+contract. It freezes a read-only Bubble Tea v1.3.4 product, bounded Projection
+enumeration, typed local product queries, private framed UDS v1, daemon/client
+lifecycle, ordinary CLI-to-API routing with explicit offline recovery, eight
+TUI screens, exact legacy Phase 1 timeline compatibility, a user-level
+launcher, deterministic real-SQLite/UDS/TUI evidence, and a post-
+Implementation-Review resident-daemon read-only live gate. The current gate is
+fresh independent P2A-W1 Contract Review. No W1 product code, dependency edit,
+running LaunchAgent change, Provider traffic, credential mutation, Runtime
+execution, or live gate is authorized before that Review returns `PASS`.
+
+`CURRENT`: P2A-W1 Contract Review returned `PASS` with no blocking findings.
+The child contract is `FROZEN`. Reviewer advisories preserve exact dependency
+verification, the existing copied single-head accessor, and compile-only
+Windows portability without weakening unsupported-platform peer rejection. The
+mandatory RED is captured: each focused failure names a missing frozen product
+boundary rather than a syntax, fixture, network, or test-helper failure. The
+bounded W1 Candidate and deterministic verification are GREEN, including
+focused, race, repository, repository-race, vet, module-checksum, compile-only
+Windows, installer, real-SQLite/UDS/headless-TUI, import-direction, scope, and
+secret-negative gates. A contract inconsistency between the ordinary default
+socket and section 16's proposed live socket is captured as bounded Amendment
+1; fresh independent Amendment Review returned `PASS` with no blocking
+findings, and no workaround or second socket was introduced. Its live advisory
+requires pre-state identity for both the authoritative default path and any
+historical demo-resident socket. The current gate is fresh independent
+Implementation Review. The resident daemon remains running and unchanged; no
+Provider traffic, credential mutation, Runtime execution, installed product
+change, or live gate has begun.
+
+`CURRENT`: P2A-W1 Implementation Review 1 returned `FAIL` before any live
+mutation. One bounded Repair inside the frozen owned files now closes every
+finding: cursor-correct stale reads rebuild from the last immutable
+`GlobalReadView`; actionable Attention and two-Run/Evidence Compare are real;
+partial/gap/board/Attention/fatal-protocol states and in-flight cancellation
+are visible; IPC handler/Accept/Close and exact socket/lock cleanup are bounded;
+the installer is transactionally recoverable and runs the installed Bubble Tea
+binary under a controlled PTY; and the non-empty SQLite/UDS/TUI/CLI/reconnect/
+restart test preserves exact Event count and stream-head digest. Focused,
+focused-race, whole-repository, repository-race, vet, module, Windows compile,
+coverage, repeated stress, installer, boundary, secret-negative, and diff
+checks are GREEN. The current gate is a fresh independent Implementation
+Re-review. The resident daemon and default socket remain unchanged; no live
+gate, Provider traffic, credential mutation, Runtime execution, installed
+product change, staging, or commit has begun.
+
+`CURRENT`: P2A-W1 Implementation Re-review 2 returned `FAIL` before any live
+mutation. Repair 2 remains inside the frozen W1 ownership and closes all three
+findings: IPC dispatch now requires exactly one bounded frame followed by EOF,
+including direct half-open rejection; trusted context-aware handlers execute
+inside the tracked connection lifecycle with no detached post-shutdown
+goroutine; and the real compiled `loom` CLI now reads status and timeline from
+the same non-empty SQLite-backed product daemon and immutable view exercised by
+the TUI. Focused, uncached whole-repository, uncached repository-race, vet,
+module, Windows compile, coverage (`localipc` 80.9%, TUI 86.8%), repeated
+stress/race, installer, format, diff, import-boundary, and secret-negative
+checks are GREEN. The current gate is fresh independent Implementation Review
+3. The resident daemon and both authoritative/historical socket paths remain
+unchanged; no live gate, Provider traffic, credential mutation, Runtime
+execution, installed product change, staging, or commit has begun.
+
+`CURRENT`: P2A-W1 fresh independent Implementation Review 3 returned `PASS`
+with no findings. The Reviewer independently passed focused, focused-race,
+whole-repository, repository-race, vet, Windows compile, installer, module,
+diff, scope, authority, and secret-boundary checks and performed no mutation or
+live action. The only unlocked action is the single controlled read-only
+resident-daemon live gate at the reviewed default
+`~/Library/Application Support/Loom/run/loomd.sock`, with exact pre-state
+capture and rollback. Provider/model requests, Runtime execution, credentials,
+authoritative writes, a second socket, retry, staging, commit, push, merge, or
+release remain excluded until that gate returns its own result.
+
+`CURRENT`: P2A-W1 Controlled Resident Live Gate 1 returned
+`FAIL — ROLLED_BACK` before any daemon socket or TUI started. The exact
+candidate install booted out the old service once, but immediate
+credential-clean candidate bootstrap returned macOS error 5. The transaction
+restored the original `loom`, `loomd`, wrapper, plist, absent launcher/run
+directory/socket, SQLite hash/integrity/one-Event state, and running observer.
+No product live capability is claimed. Read-only launchd evidence places
+service removal and Background Task Management reconciliation about 136ms
+apart, supporting a bounded namespace-quiescence diagnosis. Draft Amendment 2
+allows only one replacement canary after independent Review: wait at most ten
+seconds for exact service/PID absence before one bootstrap; any repeated
+failure, metadata Provider key, or invariant change restores pre-state and
+stops `HUMAN_REQUIRED`. No retry is currently authorized.
+
+`CURRENT`: P2A-W1 Amendment 2 independent Review returned `PASS` with no
+findings and the amendment is `FROZEN`. The Reviewer independently confirmed
+the exact restored installed/SQLite/service state and rebuilt the unchanged
+Candidate to the same two Live Gate 1 hashes. Exactly one replacement canary is
+now authorized: after clean `bootout`, poll only exact service/PID absence for
+at most ten seconds before one bootstrap. No third attempt, global launchd
+environment mutation, alternate daemon/socket, Provider/Runtime/model action,
+or state write is authorized.
+
+`CURRENT`: P2A-W1 Amendment 2 replacement live gate is
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`. Bounded service/PID quiescence succeeded,
+the exact reviewed candidate bootstrapped, and the private default socket,
+candidate hashes/modes, process secret-negative scan, and unchanged SQLite
+Event/head invariants all passed. The loaded launchd service metadata
+nevertheless retained legacy `DEEPSEEK_BASE_URL`, `STEPFUN_BASE_URL`,
+`MINIMAX_BASE_URL`, `DEEPSEEK_API_KEY`, and `STEPFUN_API_KEY` keys. No values
+were printed or passed to the daemon. The gate therefore stopped before TUI/
+Computer Use and atomically restored the original binaries/plist, absent
+launcher/run directory/sockets, unchanged one-Event SQLite state, and running
+observer. Both governed live allowances are consumed; no third bootstrap,
+global `launchctl setenv/unsetenv`, credential mutation, W1 commit, or P2A-W2
+freeze is authorized.
+
+`CURRENT`: P2A-W1 replacement Result-Evidence Review 1 returned `FAIL` on one
+evidence-only methodology error: the stable pipe-delimited head-row hash was
+misnamed as the canonical `GlobalReadView` digest. Repair 1 recomputed the
+implementation's exact NUL-delimited format as
+`6f43ee12d6593a9726e01e730cd8dd9dd509343cae86fb5af5cf266d321f9e05`
+from the unchanged one-Event SQLite bytes and corrected both gate records.
+There was no product edit, service action, credential value inspection, third
+live attempt, staging, or commit. The fail-closed `HUMAN_REQUIRED` result is
+unchanged and awaits fresh result-evidence re-review.
+
+`CURRENT`: P2A-W1 replacement Result-Evidence Review 2 returned `PASS` with no
+findings. The Reviewer independently reproduced canonical digest
+`6f43ee12d6593a9726e01e730cd8dd9dd509343cae86fb5af5cf266d321f9e05`
+from the unchanged installed one-Event SQLite state and rechecked exact
+rollback, absent product launcher/socket/run directory, restored observer,
+clean disk plist, and empty staged diff. This PASS validates only the
+fail-closed evidence. P2A-W1 remains `HUMAN_REQUIRED`, uncommitted, and not
+live-delivered; no third bootstrap or P2A-W2 work is authorized.
+
+`CURRENT`: P2A-W1 Reopen 3 is a non-executable draft for
+`Ambient Service-Manager Metadata Attribution`. Read-only evidence proves the
+five loaded service marker keys are the exact non-empty user-level launchd
+manager environment set, while the Loom disk plist, reviewed `env -i` wrapper,
+candidate process, logs, Journal, and evidence were clean. The draft therefore
+proposes attribution plus non-inheritance instead of deleting unrelated global
+credentials: exact manager/service key-name equality, non-emitting unchanged-
+value checks, zero child inheritance, and no `setenv/unsetenv`. It requests one
+explicitly authorized final canary after independent Review; it does not
+currently authorize a third bootstrap or change the `HUMAN_REQUIRED` result.
+
+`CURRENT`: P2A-W1 Reopen 3 independent Review returned `PASS` with no findings.
+The reviewed attribution/non-inheritance predicate preserves clean plist,
+reviewed `env -i` wrapper, zero child inheritance, secret-negative product
+surfaces, exact ambient/service five-key equality, unchanged-value checks, and
+fail-closed rollback without credential or global-environment mutation.
+Reopen 3 is `REVIEWED`, not active. It still requires the exact new user
+authorization named in the contract before one final canary; P2A-W1 remains
+`HUMAN_REQUIRED`, uncommitted, and not live-delivered.
+
+`CURRENT`: The user supplied Reopen 3's exact activation phrase. P2A-W1
+`Ambient Service-Manager Metadata Attribution Reopen` is now `ACTIVE` for one
+final controlled canary only. The gate must retain exact ambient/service
+five-key attribution, unchanged non-emitting values, zero child inheritance,
+secret-negative product surfaces, the reviewed Candidate hashes, one installed
+Computer Use TUI journey, one quit/relaunch, one daemon restart, unchanged
+Journal/Event/head state, and exact rollback on any failure. No fourth canary
+or other authority is implied.
+
+`CURRENT`: P2A-W1 Reopen 3 final controlled live canary is
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`. The reviewed Candidate was installed
+atomically and bootstrapped once, but the first aggregate validator failed
+before Computer Use/TUI and before the explicit daemon restart. Read-only
+diagnosis proves a live-harness `test_defect`: `ps -eww -p <pid>` selected
+1,074 host processes, so its secret-negative scan matched unrelated process
+state; the target-only command selected exactly one Candidate row and was
+secret-negative. Disk plist, launcher, clean `env -i` wrapper, exact ambient
+five-key attribution, SQLite bytes/Event/head state, and non-emitting
+credential handling remained clean. Automatic rollback restored exact original
+binary/wrapper/plist/SQLite hashes and modes, original observer service, and
+absent launcher/product run directory/default and historical sockets. Because
+the final Candidate bootstrap occurred, its allowance is consumed despite the
+false-positive test classification. No fourth canary or hidden retry is
+authorized; W1 is not accepted, installed, committed, or live-delivered, and
+P2A-W2 cannot begin.
+
+`CURRENT`: P2A-W1 Reopen 3 final result-evidence Review returned `PASS` with no
+findings. The independent Reviewer reproduced the macOS process-selection
+defect without emitting rows or values: the guard form selected all current
+host processes and matched, while target-only selection returned one clean
+restored-observer row. It also reverified original installed hashes/modes,
+SQLite integrity/one Event/canonical head digest, exact five ambient marker
+names, clean disk plist/wrapper, absent launcher/product sockets/run directory,
+loaded restored observer, and empty staged diff. This PASS validates only the
+fail-closed evidence, `test_defect` classification, allowance accounting, and
+rollback. P2A-W1 remains `HUMAN_REQUIRED`, uncommitted, and not live-delivered;
+there is no fourth canary allowance and P2A-W2 remains locked.
+
+`CURRENT`: P2A-W1 Reopen 4 `Vertical Live Closure` is frozen for independent
+Contract Review. It combines the two remaining evidence-led W1 blockers rather
+than creating another thin WorkItem: exact target-only macOS process
+environment attribution and truthful empty-Team/TUI behavior for the actual
+one-Event resident Journal. It preserves the accepted terminal read-only
+historical execution anchor for Journals that contain a fully related
+TeamExecution, but forbids fabricating or importing one into the current
+Journal. It owns only TUI empty-state files, a deterministic live-evidence
+helper/test, CURRENT, and Reopen evidence. No product edit, live action,
+credential access, authority migration, fourth WorkItem, or replacement
+bootstrap is authorized before Contract Review `PASS`, RED, GREEN, full
+verification, fresh Implementation Review `PASS`, and explicit post-Review
+activation.
+
+`CURRENT`: P2A-W1 Reopen 4 independent Contract Review returned `PASS` with no
+findings. The Reviewer reproduced target-only BSD `ps eww` behavior without
+emitting process rows or values, verified the current one-Event/no-Team
+resident Journal, and confirmed that explicit TUI empty-Team behavior preserves
+the existing strict historical execution anchor. The amendment adds no W4,
+second Journal, migration, fabricated Team, or live authority. The current gate
+is mandatory deterministic RED for the TUI empty state and target-process
+evidence helper; no replacement canary is active.
+
+`CURRENT`: P2A-W1 Reopen 4 mandatory RED is captured. The focused TUI test
+failed because the zero-Team snapshot still rendered generic `No records`
+instead of the frozen truthful resident-Journal message. The live-evidence
+script test failed because the reviewed helper does not yet exist. Both
+failures are exact missing behavior; no live, service, SQLite, credential,
+Provider, Runtime, staging, or authority action occurred. Minimal GREEN is the
+current gate.
+
+`CURRENT`: Reopen 4 TUI/helper minimal GREEN passed, but repeated W1
+verification exposed an existing local-IPC cleanup safety defect before
+Implementation Review. APFS can immediately reuse the removed socket's
+device/inode pair for a regular replacement; current `fileIdentity` does not
+include file kind, so cleanup can misidentify the replacement. The existing
+replacement-preservation test reproduces this under `-count=100`. Reopen 4
+Repair A is frozen to add type-aware identity and deterministic equal-inode/
+different-kind proof in the same W1. The prior Contract Review does not
+authorize this newly owned IPC edit; fresh supplemental Contract Review is the
+current gate. No IPC source edit, live action, new WorkItem, retry allowance,
+or activation has occurred.
+
+`CURRENT`: Reopen 4 Repair A supplemental Contract Review returned `PASS` with
+no findings. The Reviewer reproduced the device/inode-only cleanup failure and
+confirmed that adding `Lstat` file kind to identity is the minimal bounded fix;
+IPC protocol, authority, peer checks, connection lifecycle, timeouts, and error
+taxonomy remain closed. The current gate is Repair A's deterministic
+equal-device/inode different-kind RED. No live or activation authority is
+implied.
+
+`CURRENT`: Reopen 4 Repair A deterministic RED is captured. Equal-device/inode
+fake socket and regular `FileInfo` values collide under the current
+`fileIdentity`, exactly reproducing the missing type binding without relying on
+APFS timing. No live, installed-state, or authority action occurred. Minimal
+type-aware identity GREEN is the current gate.
+
+`CURRENT`: P2A-W1 Reopen 4 deterministic implementation is GREEN. The TUI now
+truthfully distinguishes a Journal with zero Teams and performs no timeline
+request on empty selection; direct Timeline navigation asks the user to select
+a Team. The existing strict saved/historical Team path is unchanged. The
+target-process helper locks live `ps eww -p` inspection to `/bin/ps`, one row,
+closed non-emitting statuses, and passes its fake-process matrix. Repair A adds
+`Lstat` file kind to cleanup identity; deterministic equal-inode proof, real
+replacement preservation at count 100, and race count 30 pass. Fresh full
+repository, full race, vet, dependency, Windows compile, installer, helper,
+repeat, coverage, format, scope, and security checks pass sequentially.
+Reproducible reviewed Candidate hashes are `b094536f...a20` for `loom` and
+`f9529cf6...bbb` for `loomd`. Fresh independent Implementation Review is the
+current gate; no live activation, installation, staging, commit, or P2A-W2
+work is authorized.
+
+`CURRENT`: P2A-W1 Reopen 4 Implementation Review 1 returned `FAIL` with two
+required findings. A transition from a previously selected Team to a zero-Team
+snapshot retained the stale timeline/current Team and could refresh it; the
+process helper also classified all-zero decimal PIDs such as `00` as
+`target_unavailable` rather than `invalid_pid`. Review Repair 1 RED reproduces
+both exact gaps. No live, installation, activation, staging, commit, or P2A-W2
+work occurred. Minimal review repair is the current gate.
+
+`CURRENT`: P2A-W1 Reopen 4 Review Repair 1 is GREEN. A zero-Team refresh now
+clears stale Team/timeline state and cannot re-request it; all-zero decimal PIDs
+return `invalid_pid`. Fresh focused, full repository, full race, vet,
+dependency, Windows compile, installer, helper, repeated lifecycle, coverage,
+format, and diff gates pass after the repair. The active reproducible Candidate
+hashes are `7ba4b41d...ffd` for `loom` and `f9529cf6...bbb` for `loomd`; earlier
+hashes are superseded. Fresh independent Implementation Re-review is the
+current gate. No live activation, installation, staging, commit, or P2A-W2 work
+is authorized.
+
+`CURRENT`: P2A-W1 Reopen 4 Implementation Review 2 returned `FAIL` on the
+replacement proof harness. The test retained a stale socket and then waited
+only for path existence, so it could replace the stale path before the new
+Server was ready; concurrent race review reproduced `context canceled`.
+Proof Repair 2 replaces that ambiguous observation with the existing exact
+`Server.Ready()` barrier, without changing product behavior, timeout, error
+assertion, or retry policy. Fresh repeated proof and re-review are the current
+gate; no live activation exists.
+
+`CURRENT`: P2A-W1 Reopen 4 Proof Repair 2 is GREEN. Server lifecycle tests now
+use the exact existing `Ready()` barrier; path polling remains only in client
+transport tests. Concurrent localipc race count 50, replacement race count 200,
+complete localipc count 100, fresh full repository, full race, vet, dependency,
+installer, helper, format, and diff checks pass. Product code and active
+Candidate hashes are unchanged. Fresh independent Implementation Re-review is
+the current gate; no live activation or installation authority exists.
+
+`CURRENT`: P2A-W1 Reopen 4 fresh Implementation Re-review 3 returned `PASS`
+with no findings. The Reviewer independently passed high-load local-IPC race
+proofs, zero-Team/stale-selection behavior, all-zero PID validation,
+type-aware cleanup, focused package checks, format/diff checks, staged-empty
+audit, and reproducible Candidate hashes. Reopen 4's deterministic and Review
+gates are closed. The current gate is the contract's explicit post-Review user
+activation for one replacement controlled canary; this PASS does not itself
+authorize installation, bootstrap, Computer Use, commit, or P2A-W2.
+
+`CURRENT`: P2A-W1 Reopen 4 post-Review activation audit is `PASS`. The original
+installed binaries, wrapper, plist, running observer, absent product
+run/socket/launcher paths, one-Event SQLite bytes and integrity, canonical head
+digest, retained reviewed Candidate, and empty staging all match the frozen
+pre-state. No live invocation was consumed and no installation, restart,
+Journal write, Provider, Runtime, or authority action occurred. The only
+remaining gate is the exact explicit post-Review activation phrase frozen in
+Reopen 4 section 10; P2A-W1 remains `HUMAN_REQUIRED` and P2A-W2 remains locked.
+
+`CURRENT`: the user supplied the exact Reopen 4 post-Review activation phrase
+for `P2A-W1 Vertical Live Closure Reopen 4 and one replacement controlled
+canary`. Exactly one Candidate bootstrap is now authorized. The allowance is
+not consumed by the activation record itself; any Candidate bootstrap consumes
+it. The frozen no-retry, fail-closed rollback, no Provider/Runtime/Team/write,
+Computer Use, one explicit daemon restart, and exact Journal invariants remain
+mandatory. P2A-W2 remains locked until the canary result and result-evidence
+review close W1.
+
+`CURRENT`: P2A-W1 Reopen 4's replacement Candidate bootstrapped once and passed
+every pre-UI live gate: exact installed hashes/modes, private socket,
+target-process secret-negative predicate, ambient service-manager attribution,
+unchanged values, secret-negative surfaces, one-Event Journal bytes/integrity/
+canonical digest, and the truthful typed snapshot with the real Pi Runtime and
+zero Teams/Runs/Evidence/Attention. Finder Computer Use then opened the exact
+installed `Loom.command`, but the Computer Use safety layer prohibited both
+reading and operating `com.apple.Terminal`; no separately addressable Loom
+window existed. The contract's required TUI screens, empty-Team Enter,
+quit/relaunch, and post-UI daemon restart were therefore not proven and were
+not replaced with CLI/PTY evidence. The no-retry trap restored exact original
+files, service, Journal, absent product paths, and pre-existing Terminal state.
+The sole Reopen 4 allowance is consumed. Current result:
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`; P2A-W2 remains locked pending independent
+result-evidence review and new user governance, not another hidden canary.
+
+`CURRENT`: fresh independent Reopen 4 Result-Evidence Review returned `PASS`
+with no findings. It independently matched the original installed hashes and
+modes, retained Candidate, SQLite integrity/Event count/canonical digest,
+absent product run/socket/lock/launcher paths, loaded original observer,
+non-running Terminal, and empty staging. It confirmed that exact activation
+existed, pre-install harness syntax failures were non-mutating/non-consuming,
+one Candidate bootstrap consumed the allowance, the Computer Use Terminal
+policy block left the required TUI/relaunch/restart proof missing, no CLI/PTY
+substitution occurred, and rollback was exact. This Review signs only the
+coherence of the fail-closed result. P2A-W1 remains
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`; it is not installed or accepted, another
+canary is not authorized, and P2A-W2 remains locked.
+
+`TARGET`: an evidence-led P2A-W1 native app host revision is frozen for fresh
+independent Contract Review. Proposed ADR-0012 refines ADR-0011: the default
+macOS launch surface becomes a user-level native window that calls the same
+private versioned daemon UDS directly, while Bubble Tea remains the equivalent
+text-mode client. This is a vertical P2A-W1 revision, not Reopen 5 or P2A-W4.
+The external historical Loom Cockpit bundle/source is reference-only because
+its Process-based bridge, workspace discovery, runtime-host scripts, and
+persistent CacheStore violate the current one-authority boundary. The new
+contract owns an exact dependency-free SwiftUI file set, direct bounded IPC
+compatibility, in-memory replaceable state, reproducible app packaging, and
+native-window Computer Use proof. No implementation, install, live invocation,
+commit, or P2A-W2 authority exists before Contract Review `PASS`.
+
+`TARGET`: P2A-W1 Native App Host Contract Review 1 returned `FAIL` on one real
+protocol omission: the Swift closed typed error set did not name Go v1
+`unsupported_platform`, which the daemon may emit when peer credential
+inspection is unavailable. The contract is repaired to include that code and
+to enumerate all twelve safe Go v1 error variants in the real
+Go-server/Swift-probe component matrix. No product or live boundary changed.
+Fresh independent Contract Re-review is the current gate; RED, Swift
+implementation, install, native canary, P2A-W2, and P2A-W4 remain unauthorized.
+
+`TARGET`: P2A-W1 Native App Host Contract Re-review 2 returned `PASS` with no
+findings. Repair 1 now binds `unsupported_platform` and every actual Go v1 safe
+error code in the Swift and Go-server/Swift-probe matrix. ADR-0012 is accepted;
+the Phase 2A Exit Amendment and exact W1 Revision are reviewed and frozen.
+Mandatory RED and implementation are now authorized inside the exact native
+app owned files. Install, resident daemon mutation, native live canary, P2A-W2,
+and P2A-W4 remain unauthorized.
+
+`CURRENT`: P2A-W1 Native App Host deterministic implementation is `GREEN`.
+Mandatory RED first proved the Swift core and app packaging transaction were
+absent. The Candidate now provides a dependency-free SwiftUI native window,
+strict direct Darwin UDS v1 client, copied in-memory store, bounded safe text,
+all eight W1 read screens, non-GUI Swift contract probe, reproducible signed
+arm64 `.app` builder, and atomic user-owned app install/rollback transaction.
+Swift's 14 tests, release build, app build/install fixtures, existing local
+product installer, real Go server to Swift probe snapshot/timeline and
+twelve-error-code matrix, malicious loopback response matrix, full Go
+repository, full race, vet, module, format, and staged-empty gates all pass.
+No Go production authority file was reopened; no app/daemon was installed or
+launched, Reopen 4 remains consumed, and P2A-W2 remains locked. Fresh
+independent Implementation Review is the current gate. A later Review `PASS`
+would still require the exact new post-Review native-canary activation phrase.
+
+`CURRENT`: P2A-W1 Native App Host Implementation Review 1 returned `FAIL` on
+three bounded gaps: Swift request IDs admitted non-ASCII alphanumerics, safe
+text preserved newline/tab controls, and the bundle builder delegated its
+static exclusion scan to the test wrapper. Review Repair 1 RED reproduced all
+three and also fixed same-contract fatal-state and signal-interrupted installer
+rollback boundaries. Repair GREEN now uses exact ASCII ID bytes, single-line
+control normalization, builder self-enforcement with a malicious shadow source,
+explicit nonrecoverable fatal UI state, descendant owner/mode checks, and
+transaction restoration on failure or signal. Swift's 17 tests, release build,
+all package/installer fixtures, full Go repository, full race, vet, module,
+diff, cache-reset, and staged-empty gates pass. No live/install action occurred.
+Fresh independent Implementation Re-review is the current gate; P2A-W2 remains
+locked and no native canary authority exists.
+
+`CURRENT`: P2A-W1 Native App Host fresh Implementation Re-review 2 returned
+`PASS` with no findings after Review Repair 1. Reviewer verification was
+read-only; Swift build cache was reset and staging remains empty. The direct
+native UDS client, strict schema/error boundary, safe single-line rendering,
+in-memory store, eight read screens, signed app builder, and atomic
+install/rollback Candidate are deterministically accepted for the next gate.
+This PASS does not authorize install or live work. P2A-W1 is
+`HUMAN_REQUIRED` pending the exact post-Review activation phrase
+`P2A-W1 Native App Host and one controlled native-window canary`; Reopen 4
+remains consumed and P2A-W2 remains locked.
+
+`CURRENT`: P2A-W1 Native App Host post-Review activation audit is `PASS`,
+pre-live only. The original installed binaries, wrapper, plist, loaded resident
+observer, absent product sockets/launcher, one-Event SQLite bytes/integrity,
+canonical head digest, and empty staging remain at the frozen rollback state.
+A fresh isolated arm64 ad-hoc-signed native bundle and Go Candidate were built
+and hashed; Swift, installer, full Go, race, vet, module, and diff gates pass.
+One cold parallel Go run hit two five-second fake-Pi fixture timeouts; both
+focused tests and the unchanged fresh full command then passed, and the
+transient is preserved in evidence. No install, bootstrap, Computer Use,
+Journal write, live invocation, or allowance consumption occurred. The exact
+post-Review phrase `P2A-W1 Native App Host and one controlled native-window
+canary` remains the sole live gate; P2A-W2 stays locked.
+
+`CURRENT`: the Native App Host controlled live runbook is frozen without
+activating it. It binds the one Candidate-bootstrap consumption point, exact
+original/app/daemon rollback transaction, direct Computer Use target
+`com.earendilworks.loom.local`, fresh accessibility-state discipline, all
+eight read screens, empty-Team no-op, quit/relaunch, one explicit daemon
+restart, Journal/canonical-view recovery, and secret-negative evidence. It
+forbids Terminal/CLI/PTY substitution and hidden retry. No live state changed;
+the exact post-Review activation phrase remains required.
+
+`CURRENT`: the exact Native App Host activation reached the pre-bootstrap
+installer dry-run and stopped fail-closed before any live mutation because the
+accepted resident state has `loom` and `loomd` but no historical
+`Loom.command`. Repair 1 RED reproduced that valid legacy pair rejection. The
+installer now supports exact empty, binary-pair, and binary-pair-plus-launcher
+generation shapes and swaps optional launcher presence without fabricating
+prior state. Focused legacy install/rollback, exact live dry-run, Swift,
+installer, full repository, race, vet, module, syntax, and diff gates pass.
+The original service and Journal remain exact and the native live allowance is
+still `1`, unconsumed. Fresh independent Implementation Review is the current
+gate; the pre-repair activation cannot authorize post-repair bootstrap.
+
+`CURRENT`: Native App Host Live Pre-Bootstrap Repair 1 Implementation Review 1
+returned `FAIL` on a high-risk signal gap: install/rollback signal traps could
+clean scratch without restoring and terminating the active transaction.
+Deterministic RED proved both rollback and install signal injection could
+unexpectedly succeed. Review Repair now separates normal cleanup from
+HUP/INT/TERM handling, restores the complete snapshot whenever mutation is
+active, blocks reentrant signals, and exits `98`. Both injected signal windows
+restore exact controlled digests; legacy and existing installer fixtures,
+exact live dry-run, full repository, full race, vet, module, syntax, and diff
+gates pass. Live bootstrap remains `0`; fresh independent Implementation
+Re-review is the current gate.
+
+`CURRENT`: Native App Host Live Pre-Bootstrap Repair 1 fresh independent
+Implementation Re-review 2 returned `PASS` with no findings. The Reviewer
+independently reproduced legacy pair/triple launcher semantics, install and
+rollback signal restoration with fixed exit `98`, sentinel-guarded test hooks,
+existing installer fixtures, exact live resident non-mutating dry-run, diff
+checks, and empty staging. No live mutation occurred; Candidate bootstrap
+remains `0` and the allowance remains `1`. Because the prior activation
+preceded this repaired implementation and Review, it cannot be reused. The
+current gate is a new exact post-Review message:
+`P2A-W1 Native App Host and one controlled native-window canary`.
+
+`CURRENT`: final post-Review Candidate rebuilding exposed that the native
+builder's reproducibility fixture reused one SwiftPM link cache. Two fully
+clean builds differed through random LC_UUID and current N_OSO object
+timestamps. Repair 2 RED reproduces the mismatch. The builder now disables
+linker UUID and automatic signing, strips non-runtime debug/N_OSO symbols, and
+performs one final bundle signature. Two package-reset builds now produce
+byte-identical signed bundle manifests; Swift, installer, full repository,
+race, vet, module, syntax, security, and live-destination dry-run gates pass.
+Fresh independent Implementation Review is the current gate. No live action
+occurred; bootstrap remains `0` and allowance remains `1`.
+
+`CURRENT`: Native App Host Live Pre-Bootstrap Repair 2 Implementation Review 1
+returned `FAIL` only on evidence reproducibility: every individual Candidate
+hash and product gate reproduced, but the published complete bundle manifest
+digest lacked an exact canonical byte format. The fixture and GREEN evidence
+now share one frozen algorithm: raw-relative-path sort and
+`path NUL stat-%Sp-mode NUL lowercase-sha256 LF` rows, then lowercase SHA-256.
+No Candidate binary or live state changed. Fresh independent Re-review of the
+manifest evidence is the current gate.
+
+`CURRENT`: Native App Host Live Pre-Bootstrap Repair 2 fresh independent
+Implementation Re-review 2 returned `PASS` with no findings. The Reviewer
+independently ran clean builds, reproduced every published binary/file hash and
+the exact canonical complete bundle manifest
+`221e9878...f67a`, and reconfirmed both live destination dry-runs, strict
+signature/arm64/no-UUID/no-symlink/security gates, empty staging, and removed
+Swift cache. No live action occurred; bootstrap remains `0` and allowance
+remains `1`. A new exact post-Review native-canary activation is the current
+gate.
+
+`CURRENT`: the final Native App Host post-Review activation audit is `PASS`,
+pre-live only. It binds the complete Repair 1/2 Review lineage, independently
+reproduced Go and canonical signed app hashes, exact original rollback hashes,
+running observer, one-Event Journal/canonical digest, absent product paths,
+empty staging, bootstrap count `0`, and allowance `1`. No earlier activation
+may be reused because it predates the final reviewed Candidate. The sole
+remaining gate is the exact message
+`P2A-W1 Native App Host and one controlled native-window canary`.
+
+`CURRENT`: the sole Native App Host controlled native-window canary is
+consumed and failed closed. The exact reviewed app and daemon installed,
+bootstrapped once, exposed the private `0600` AF_UNIX socket, returned the
+versioned one-Runtime/zero-Team typed view, preserved the Journal, and kept the
+Candidate target process free of all five frozen Provider marker names.
+Computer Use targeted only `com.earendilworks.loom.local`, but two fresh
+Accessibility-state reads timed out without yielding an independently
+addressable native window. No Terminal/CLI/PTY substitution, eight-screen
+claim, relaunch, or Candidate daemon restart was made. The transaction rolled
+back. A post-rollback macOS provenance/code-signing refusal initially left the
+exact original service loaded but inactive; the same rollback captured both
+original provenance xattrs, temporarily removed them for bootstrap, restored
+them byte-for-byte, and recovered the exact original observer to `running`.
+Original binary/plist/SQLite hashes, one-Event integrity, absent Candidate
+paths, clean target-process marker predicate, and empty staging now match the
+frozen pre-state. P2A-W1 is
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`; its native allowance is `0`, it is not
+installed, accepted, or committed, and P2A-W2 remains locked. Fresh independent
+Result-Evidence Review is the current gate and cannot authorize a retry.
+
+`CURRENT`: Native App Host Result-Evidence Review 1 returned `FAIL` on one
+exact-rollback evidence gap. Original `loom` and `loomd` hashes were correct,
+the observer was running, Journal and absent Candidate paths were exact, and
+staging was empty, but both installed binaries were mode `0700` instead of the
+frozen original `0755`. Result Repair 1 revalidated both hashes and restored
+only those two modes to `0755`; the original observer remained running and no
+Candidate, app, socket, Journal, xattr, plist, bootstrap, restart, or canary
+action occurred. Fresh independent Result-Evidence Re-review is the current
+gate. Product status remains `FAIL — ROLLED_BACK — HUMAN_REQUIRED`, allowance
+`0`, with P2A-W2 locked.
+
+`CURRENT`: fresh independent Native App Host Result-Evidence Re-review 2
+returned `PASS` with no findings. It reproduced all five frozen hashes and
+modes, the running original observer, zero Provider markers in the actual
+target process, SQLite integrity and one Event, both restored provenance xattr
+names, absent Candidate app/run/socket/launcher/process paths, and empty
+staging. This PASS validates only the coherent fail-closed result and exact
+rollback. P2A-W1 remains `FAIL — ROLLED_BACK — HUMAN_REQUIRED`, native
+allowance `0`, uninstalled, unaccepted, and uncommitted; it does not authorize
+retry or another canary, and P2A-W2 remains locked.
+
+`TARGET`: immutable post-canary crash inspection has closed the native-window
+root cause without another live invocation. Both Computer Use timeouts map to
+separate `LoomLocalApp` crash reports with
+`EXC_CRASH/SIGABRT`, termination namespace `DYLD`, and reason
+`missing LC_UUID load command`. The reviewed builder deliberately used
+`-no_uuid`, and its fixture incorrectly required UUID absence. Two isolated
+package-reset experiments with linker `-reproducible`, retained
+`-no_adhoc_codesign`, `strip -S`, and same-basename final signing produced the
+same non-empty content-derived arm64 UUID, byte-identical unsigned and signed
+executables, and strict-valid signatures. A single same-W1 Native App
+Launchability and Reproducibility Closure Contract is proposed for fresh
+independent Contract Review. It owns only the builder/test fixture and
+governance evidence, requires UUID-present byte-identical builds plus a bounded
+private-bundle process-survival smoke, and grants no live authority. Product
+status remains `FAIL — ROLLED_BACK — HUMAN_REQUIRED`, native allowance `0`,
+with P2A-W2 locked.
+
+`TARGET`: Native App Launchability Contract Review 1 returned `FAIL` on one
+external-side-effect gap: the proposed RED would execute the known no-UUID
+binary and could generate another user DiagnosticReports `.ips` outside the
+private fixture root. Contract Repair 1 now makes missing UUID a pre-spawn RED,
+requires unchanged crash-report inventory, and allows the private process
+smoke only after UUID/architecture/signature gates pass in GREEN. The smoke
+records before/after report names and hashes; any unexpected new report is
+preserved and stops `HUMAN_REQUIRED`, never silently deleted. No linker,
+product, ownership, live, allowance, or WorkItem boundary changed. Fresh
+independent Contract Re-review is the current gate; implementation and live
+remain unauthorized.
+
+`CURRENT`: fresh independent Native App Launchability Contract Re-review 2
+returned `PASS` with no findings. The repaired contract now safely freezes
+pre-spawn missing-UUID RED, UUID/architecture/signature-gated GREEN process
+smoke, before/after crash-report inventory, exact child cleanup, and
+preservation plus `HUMAN_REQUIRED` on any unexpected report. Ownership remains
+the exact builder/test pair plus governance evidence; no Swift, Go, daemon,
+IPC, authority, WorkItem, or live boundary is reopened. Mandatory RED and
+implementation are authorized inside that ownership. Native allowance remains
+`0`, installation/Computer Use/live remain unauthorized, and P2A-W2 stays
+locked.
+
+`CURRENT`: fresh independent Replacement Live Gate Contract Review returned
+`PASS` with no findings. It validated the consumed-no-retry accounting, exact
+repaired Candidate identity, original mode/provenance-aware rollback, initial
+Computer Use no-retry boundary, eight screens, relaunch/restart proof,
+non-destructive crash-report inventory, secret-negative evidence, and
+Result-Review-before-commit/P2A-W2 sequence. Current original observer,
+hashes/modes/xattr names, two reports, SQLite, absent Candidate paths, clean
+target-process marker predicate, and staging matched. The contract is frozen,
+but replacement allowance remains `0`; only the pre-live post-Review audit is
+authorized now.
+
+`CURRENT`: Native App Launchability mandatory RED is preserved. The repaired
+build fixture ran against the unchanged builder and failed pre-spawn with
+`native app executable is missing LC_UUID`. DiagnosticReports remained exactly
+the two preserved canary reports with matching hashes; no third report or
+native process was created. The original observer stayed running, resident
+SQLite bytes/Event count stayed exact, Candidate app/run/socket/launcher paths
+remained absent, and staging remained empty. Implementation may now change
+only the frozen builder's linker identity configuration; live remains locked.
+
+`CURRENT`: Native App Launchability implementation is deterministic `GREEN`.
+The builder now uses linker `-reproducible` instead of `-no_uuid`, retains
+unsigned intermediate linking, `strip -S`, and one final timestamp-free
+signature. The repaired fixture rejects missing/random UUID, requires one
+nonzero identical arm64 UUID and byte-identical signed bundles across two
+package-reset builds, proves no N_OSO records, runs a bounded exact-child
+private launch smoke, and leaves crash-report inventory unchanged. The
+reproduced Candidate executable is `f473684c...bc06b`, UUID
+`CE91F84E-4333-35DB-B493-88FADCBC6EC1`, and canonical bundle manifest
+`e29c1b6c...a1cbd`. Swift 17 tests, release build, native/full installer
+fixtures, complete Go repository, race, vet, module, format, shell, diff, and
+security gates pass. The first full Go run preserved one historical
+five-second fake-Pi metadata timeout; the exact focused test passed in 1.89s
+and one unchanged fresh full command passed. Original observer/Journal and
+absent Candidate paths remain exact, no new crash report exists, Swift cache
+and staging are empty. Fresh independent Implementation Review is the current
+gate; native allowance remains `0` and live/P2A-W2 stay locked.
+
+`CURRENT`: fresh independent Native App Launchability Implementation Review
+returned `PASS` with no findings. Reviewer independently reproduced the same
+content-derived UUID `CE91F84E...6EC1`, executable `f473684c...bc06b`,
+manifest `e29c1b6c...a1cbd`, strict signature, byte-identical clean bundles,
+private exact-child survival/quiescence, unchanged crash-report inventory,
+Swift 17 tests, install rollback fixtures, Go full/race/vet/module, and clean
+external state. The no-UUID dyld root cause is deterministically repaired.
+The prior native canary remains consumed and failed; its allowance is `0`.
+P2A-W1 is now
+`HUMAN_REQUIRED — DETERMINISTIC REPAIR PASS — LIVE LOCKED`, uninstalled,
+uncommitted, and unaccepted. A future installed native-window canary requires
+new explicit post-Review governance against the exact reviewed Candidate;
+P2A-W2 remains locked.
+
+`CURRENT`: the single P2A-W1 Local Product Vertical Live Closure allowance was
+consumed by one Candidate bootstrap and returned
+`FAIL - ROLLED_BACK - HUMAN_REQUIRED`. The Candidate daemon exited through the
+closed `daemon failed` surface before the transaction emitted `READY`; the
+native App was never opened, so Home/Work/Teams/Inbox/System, Refresh,
+relaunch, and the later classified lifecycle restart were not attempted. The
+transaction initially reported `rollback_incomplete` only because the exact
+original observer had not yet stabilized. Bounded rollback completion
+re-established the exact original bytes/modes/provenance at their governed
+paths, allowed launchd to converge on one PID stable for more than 60 seconds,
+restored two
+byte-identical historical crash reports after macOS moved them to `Retired`,
+and revalidated the original plist, one-Event SQLite digest/integrity, absent
+App/run/socket/backups, zero target-process Provider markers, and empty
+staging. One diagnostic command over-captured inherited credential values into
+transient tool output; no value entered repository evidence, Candidate,
+Journal, screenshot, or Loom log, and credentials were not silently changed.
+Allowance is `0`, retry is prohibited, P2A-W1 is unaccepted/uncommitted, and
+P2A-W2 remains locked pending fresh Result-Evidence Review and human direction.
+
+`TARGET`: one P2A-W1 Native App Launchability Replacement Live Gate Contract
+is proposed for fresh independent Contract Review. It does not reinterpret the
+consumed canary; it binds the repaired UUID/executable/manifest, exact original
+hashes/modes/provenance rollback, unchanged two-report crash inventory,
+single-launch Computer Use boundary, all eight native screens,
+quit/relaunch/required daemon restart, secret-negative proof, and one
+fail-closed replacement allowance. Review alone grants no live authority. Only
+a later passing activation audit plus the exact post-Review user message
+`P2A-W1 LC_UUID Launchability Repair and one replacement native-window canary`
+may make the allowance `1`; no blanket or earlier authorization substitutes.
+Until then P2A-W1 remains
+`HUMAN_REQUIRED — DETERMINISTIC REPAIR PASS — LIVE LOCKED`, with P2A-W2
+locked.
+
+`CURRENT`: the Replacement Live Gate post-Review activation audit is `PASS`,
+pre-live only. A first private Go rebuild used the older Reopen 4
+`-trimpath -buildvcs=false` artifact family and stopped on the exact-hash guard
+without mutation; the current reviewed default-build method then reproduced
+the frozen `loom`/`loomd` hashes. A reset Swift build reproduced
+`f473684c...bc06b`, UUID `CE91F84E...6EC1`, and manifest
+`e29c1b6c...a1cbd`; live-destination dry-runs and all three focused build/
+installer fixtures passed. Original hashes/modes/provenance names, running
+observer, zero target-process Provider markers, Journal, two crash reports,
+absent Candidate paths/process, removed Swift cache, and empty staging remain
+exact. No install, bootstrap, Computer Use, or live allowance exists. The only
+remaining activation is the exact new post-Review message
+`P2A-W1 LC_UUID Launchability Repair and one replacement native-window
+canary`; until then allowance remains `0` and P2A-W2 remains locked.
+
+`CURRENT`: the exact post-Review Native App Launchability replacement was
+activated and failed closed after one Candidate `launchctl bootstrap`, before
+Computer Use or native app launch. The exact reviewed app/product installed,
+the original observer quiesced, and the single bootstrap call succeeded, but
+the Candidate returned `daemon unavailable` before producing its socket.
+Read-only diagnosis proved the live transaction omitted creation of the
+required owned mode-`0700` socket parent; `localipc.validateSocketPath` rejects
+an absent parent during `newProductDaemonRunner` construction. The frozen
+native canary runbook already required creating that directory; this was a
+temporary transaction implementation omission. Its internal
+`bootstrap_consumed=0` diagnostic was also placed after readiness and is not
+the authority: `launchctl bootstrap` returned success and launchd executed the
+Candidate, so the contract's post-bootstrap consumption rule applies. The
+armed transaction restored exact original binary/plist hashes and modes,
+provenance attributes, running observer, zero target-process Provider markers,
+unchanged one-Event SQLite bytes/integrity, exact two-report crash inventory,
+absent Candidate app/run/socket/launcher/process paths, and empty staging. No
+second bootstrap was attempted. A diagnostic command also displayed inherited
+environment rows in the local tool transcript; no values were copied into
+workspace evidence, but affected Provider credentials must be rotated. The
+frozen post-bootstrap rule consumes the sole replacement allowance. P2A-W1 is
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`, allowance `0`, unaccepted and
+uncommitted; P2A-W2 remains locked. Fresh independent Result-Evidence Review is
+the only current gate and cannot authorize a retry.
+
+`CURRENT`: fresh independent Native App Launchability replacement
+Result-Evidence Review returned `PASS` with no findings. It independently
+reproved the deterministic absent-`0700`-socket-parent failure chain, exact
+original hashes/modes/provenance names, running observer, marker count `0`,
+unchanged one-Event SQLite state, exact two-report crash inventory, absent
+Candidate paths/process/Swift cache, empty staging, consumed allowance, and
+the credential-transcript disclosure without copying values. This `PASS`
+accepts only the failed-live evidence and exact rollback; it does not accept
+the product, authorize another bootstrap, permit the atomic W1 commit, or
+unlock P2A-W2. Terminal status remains
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`, allowance `0`, uncommitted, with P2A-W2
+locked.
+
+`TARGET`: one final P2A-W1 Native App Final Exit Closure Contract is frozen for
+fresh independent Contract Review. It preserves the consumed failed canary and
+opens no live authority or product source. The only proposed implementation is
+a governed evidence harness plus behavioral fixture that makes the already
+frozen run-directory preparation, bootstrap consumption point, no-retry
+control flow, exact rollback, native lifecycle sequence, and secret-negative
+output mechanically reviewable. It remains P2A-W1, creates no Reopen 5 or
+P2A-W4, and permits no further closure split. Contract Review, RED, GREEN, and
+Implementation Review cannot authorize live mutation; only a later passing
+post-Review audit plus the exact new user phrase frozen in the closure may
+grant one final native-window canary. Current product status remains
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`, allowance `0`, uncommitted, with P2A-W2
+locked.
+
+`CURRENT`: fresh independent P2A-W1 Native App Final Exit Closure Contract
+Review returned `PASS` with no findings. The Reviewer confirmed that the
+evidence harness plus behavioral fixture is one final vertical exit closure,
+not a product-source change, Reopen 5, point behavior Amendment, or P2A-W4.
+Run-root ordering, immediate post-bootstrap allowance accounting, no-backedge
+retry closure, lifecycle-restart classification, fixture isolation,
+secret-negative output, exact rollback/preserve rules, full verification, and
+future live activation are complete and testable. Original service/Journal/
+crash/path/staging predicates remain exact. This `PASS` authorizes only
+mandatory RED; live allowance remains `0`, P2A-W1 is uncommitted, and P2A-W2
+remains locked.
+
+`CURRENT`: P2A-W1 Final Exit Closure mandatory RED is preserved. The new
+behavioral fixture syntax passes and exits `1` exactly with
+`RED: governed final exit transaction harness is missing`; it already binds
+run-root ordering, pre/post-bootstrap consumption, no retry, rollback count,
+lifecycle restart, fixture isolation, path/symlink/mode/override attacks, and
+bounded secret-negative output. One outer zsh result-capture attempt used the
+read-only variable name `status`; it changed no state and the corrected capture
+reproduced the exact RED. Original hashes/modes, running observer, marker count
+`0`, one-Event SQLite state, two-report crash inventory, absent Candidate/
+Swift paths, and empty staging remain exact. Implementation authority is
+limited to the governed evidence transaction harness; no product source, live
+action, commit, or P2A-W2 work is authorized.
+
+`CURRENT`: P2A-W1 Final Exit Closure deterministic GREEN and complete matrix
+pass. The governed harness is production-path fixed, ambient-override closed,
+post-Review-audit locked, prepares/validates the `0700` run root before
+mutation, assigns consumption immediately after successful bootstrap, has no
+readiness-to-bootstrap backedge, classifies one later lifecycle restart, and
+can preserve only after Result Review. Its private behavioral fixture uses
+internal fake service-manager functions plus a real AF_UNIX socket and rejects
+sentinel/path/symlink/mode/owner/override/argument attacks without executing
+fixture-supplied code. Harness/production-lock, native build/install/product
+fixtures, Swift 17 tests and release build, complete Go repository, race, vet,
+module verification, formatting, diff, and secret-value scans pass. Exact
+Candidate hashes/LC_UUID/manifest and original service/Journal/view/crash/
+path/staging predicates are reproduced; Swift cache is absent. The RED
+`repo_root` traversal and an initial executable-fixture injection surface were
+corrected before GREEN; a naive literal secret scan was also replaced with a
+value-shaped scan. Final private-root validation was also moved before rollback
+disablement. A 65-character transcription of the second historical crash hash
+was corrected to the exact 64-character value; the fixture now locks every
+frozen identity constant. Focused gates passed again. No live action occurred
+and allowance remains `0`. Fresh
+independent Implementation Review is the current gate; P2A-W1 is uncommitted
+and P2A-W2 remains locked.
+
+`CURRENT`: the first independent P2A-W1 Final Exit Closure Implementation
+Review returned `FAIL` on two harness-only findings: fixture counter writes
+could follow a pre-existing symlink outside the private fixture root, and
+production preflight did not reject a pre-existing
+`Loom.command.previous` even though rollback removes that path. Repair 1 keeps
+counter state in process memory, writes only through validated private
+same-directory temporary files, rejects symlink/non-regular/foreign-owned/
+wrong-mode counters, and adds bootstrap/rollback/restart symlink cases that
+prove outside bytes unchanged. Production preflight now requires both launcher
+and launcher-backup paths absent. Syntax, normal and `env -i` fixtures, all
+three new attacks, diff checks, and exact production exit-`20` live lock pass.
+No live mutation occurred; allowance remains `0`. Fresh independent
+Implementation re-review is the current gate; P2A-W1 is uncommitted and
+P2A-W2 remains locked.
+
+`CURRENT`: Repair 1 re-review confirmed its counter and launcher-backup fixes
+but remained `FAIL`: inherited `PYTHONPATH` could execute private
+`sitecustomize.py` code at direct Python calls, Git checks inherited
+`GIT_INDEX_FILE`, and dangling launcher/binary-backup symlinks could satisfy
+an `! -e`-only absence test. Repair 2 now re-executes the fixed harness through
+an exact `env -i` boundary before fixture or production dispatch, validates
+the resulting environment allowlist, and rejects a forged clean marker with
+any injected name. Behavioral cases prove `BASH_ENV`, `ENV`, `PYTHONPATH`,
+`GIT_INDEX_FILE`, and the installer signal-control variable are inert and no
+private marker executes. Preflight and rollback require both nonexistence and
+non-symlink status for the launcher and both binary backup paths. Syntax,
+normal/clean-environment fixtures, exact production exit-`20` lock, and diff
+checks pass. No live mutation occurred; allowance remains `0`. Fresh
+independent Implementation re-review is the current gate, P2A-W1 remains
+uncommitted, and P2A-W2 remains locked.
+
+`CURRENT`: P2A-W1 Final Exit Closure Repair 2 now has fresh independent
+Implementation Review `PASS` with no findings. The Reviewer reproduced both
+syntax checks, normal and outer-`env -i` fixtures, ambient-command and forged
+marker closure, dangling-path closure, exact production exit-`20` lock, and
+clean diff/staging checks. The primary fresh post-repair matrix also passes:
+native build/app installer/product installer fixtures, Swift 17 tests and
+release build, complete Go repository, race, vet, module verification,
+formatting, diff, and secret-value scans. Swift cache was reset. Exact
+Candidate manifest/signature and original hashes/modes, running observer,
+marker count `0`, one-Event Journal bytes/integrity, two crash reports, absent
+Candidate paths/process, and empty staging remain exact. The post-Review audit
+is `PASS — ACTIVATION LOCKED` with allowance `0`; it deliberately cannot
+unlock the production harness. P2A-W1 remains uncommitted and unaccepted, and
+P2A-W2 remains locked. The only next action is a new exact activation message
+frozen in the Final Exit Closure Contract.
+
+`CURRENT`: the exact Final Exit Closure allowance was activated and consumed.
+The reviewed transaction created the required private run directory, installed
+the exact Candidate, performed one successful initial Candidate bootstrap,
+and passed daemon/socket/status/Journal/crash/secret-negative pre-UI gates.
+Computer Use opened only the native Loom bundle. Home displayed
+`Offline: invalid_response` with zero Runtimes; one bounded native Refresh
+returned the same result instead of the required one real Pi Runtime. No other
+screen, empty-Team activation, relaunch, lifecycle restart, or second
+bootstrap was attempted. Read-only diagnosis closed the cause: the sole
+`RuntimeInstanceDiscovered` fact has JSON `model_ids:null`; the Go local
+product read model preserves the nil slice and encodes `null`, while Swift
+strictly requires `[String]`, mapping the decode failure to
+`invalid_response`. The existing real Go-server/Swift-client test hard-codes a
+non-null model array and misses this authoritative live shape. The same
+reviewed harness rolled back exactly with
+`initial_bootstrap_calls=1 consumed=1 rollback_count=1 restart_count=0`.
+Original hashes/modes/provenance, running observer, marker count `0`,
+one-Event SQLite bytes/integrity, exact two crash reports, absent Candidate
+paths/process/Swift cache, and empty staging are restored. P2A-W1 is
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`, allowance `0`, uncommitted and
+unaccepted; P2A-W2 remains locked. Fresh independent Result-Evidence Review is
+the only current gate and cannot authorize another attempt or source change.
+
+`CURRENT`: fresh independent P2A-W1 Final Exit Closure Result-Evidence Review
+returned `PASS` with no findings. The Reviewer independently reproduced the
+authoritative `model_ids:null` shape, nil-preserving Go projection/read-model
+path, Swift required-array decode, closed `invalid_response` mapping, and the
+hard-coded non-null cross-language fixture gap. It confirmed exactly one
+consumed initial bootstrap, zero retry, zero Candidate restart, one rollback,
+exact original hashes/modes and running wrapper service, marker count `0`,
+one-Event SQLite bytes/integrity, exact two crash hashes, absent Candidate
+paths/process/Swift cache, matching transaction hash, passing working/cached
+diff checks, and empty staging. This `PASS` accepts only the failed-live result
+and exact rollback. P2A-W1 remains
+`FAIL — ROLLED_BACK — HUMAN_REQUIRED`, allowance `0`, uncommitted and
+unaccepted; P2A-W2 remains locked. No retry, source change, new point closure,
+commit, Provider/Runtime execution, push, merge, release, or publish is
+authorized.
+
+`CURRENT`: the Product Owner explicitly reopened only the P2A-W1 native
+presentation boundary for one vertical product-experience repair. Fresh
+independent Contract Review 1 found four completeness gaps; the same contract
+recorded the bounded UI-source authority, added a testable non-connecting
+`LoomLocalAppUI` boundary, replaced unsupported recency with source-ordered
+Work activity, and removed Compare in every state. Fresh independent Contract
+Re-review 2 returned `PASS` with no findings. Mandatory RED failed on the
+missing frozen UI module. Deterministic GREEN now presents exactly Home, Work,
+Teams, Inbox, and System; moves Runs/Evidence, Team timeline, attention, and
+Runtime health under user-meaningful destinations; removes the metric-card
+operator-console Home; and uses native semantic colors, SF Symbols, one system
+accent, functional copy, and accessible recovery targets. Swift 23 tests,
+release build, Thread Sanitizer, actual-view non-connecting state/light/dark/
+accessibility-size renders, diff, dependency, scope, copy, raw-ID, and staging
+audits pass. No executable, socket, daemon, live service, Runtime, Provider,
+model, Journal, installer, or native-window canary ran. The separate
+`model_ids:null` defect and terminal live result remain unchanged:
+`P2A-W1: FAIL - ROLLED_BACK - HUMAN_REQUIRED`, allowance `0`, uncommitted and
+unaccepted; P2A-W2 remains locked. Fresh independent Implementation Review is
+the current UI-only gate.
+
+`CURRENT`: P2A-W1 Native Product Experience Implementation Review 1 returned
+`FAIL` on four bounded findings: non-terminating preview path validation,
+state-insensitive non-nil-only render evidence, sanitized internal-ID fallback,
+and completed Team timeline failure remaining visually Loading. Repair 1
+captured focused RED for the missing safe-name and timeline-state boundaries;
+the stronger render test also rejected the old appearance-only digests.
+Repair 1 now rejects path mismatch/symlink before export, verifies bounded pixel
+content and 16 distinct state/appearance renders plus a narrower accessibility
+render, compares both sanitized name inputs, and closes Team timeline as idle,
+loading, loaded, unavailable, or fatal. Swift 27 tests pass with the locked
+visual-export test skipped by default; release, Thread Sanitizer, diff,
+dependency/import, visible-copy, focus/animation, preview-absence, and staging
+checks pass. No live action occurred. Fresh independent Implementation
+Re-review is the current UI-only gate. The separate `model_ids:null` defect,
+failed live result, allowance `0`, uncommitted state, and P2A-W2 lock remain
+unchanged.
+
+`CURRENT`: P2A-W1 Native Product Experience Implementation Re-review 2
+confirmed the safe-name, state-sensitive render, and terminal Team timeline
+findings closed, but returned `FAIL` because the preview validator compared two
+resolved instances of the same parent and could not reject an expected path
+beneath a symlinked parent. Repair 2 captured that exact failure before changing
+the validator, then required the frozen parent to equal its own canonical
+resolved path while retaining exact-path and leaf-symlink rejection. The
+focused regression now passes. No preview or live action occurred; fresh
+independent Implementation Re-review remains the current UI-only gate. The
+separate `model_ids:null` defect, failed live result, allowance `0`,
+uncommitted state, and P2A-W2 lock remain unchanged.
+
+`CURRENT`: the single reviewed replacement Native Product Experience preview
+passed visual audit. The 1100 by 720 fixture-only PNG visibly contains Loom
+identity, connection status, exact Home/Work/Teams/Inbox/System navigation,
+system-accent Home selection, attention-first Home hierarchy, source-ordered
+Work, Agent teams, and system readiness. It contains no copied Multica asset,
+fake primary action, raw identifier, credential, hidden reasoning, or live
+data. The frozen UI-only reopen is accepted. This is not installed-app,
+native-window, daemon, Runtime, Provider, or live proof and does not repair the
+separate `model_ids:null` defect. P2A-W1 therefore remains
+`FAIL - ROLLED_BACK - HUMAN_REQUIRED`, live allowance `0`, uncommitted and
+unaccepted; P2A-W2 remains locked.
+
+`CURRENT`: the only remaining P2A-W1 blocker is now frozen as the single
+`Local Product Vertical Live Closure Replacement Contract`. It replaces the
+remaining live-exit authority of the old Final Exit Closure and the completed
+UI-only reopen without creating another WorkItem or point Amendment. The
+contract places the exact `model_ids:null` compatibility repair at the shared
+local-product Application/API wire boundary, retains strict Swift decoding,
+requires canonical empty arrays for both Runtime collection fields, and
+prohibits changes to Journal, Projection, StateWriter, Runtime execution, or
+installed state before Review. Current observer/plist/product/one-Event SQLite
+hashes and rollback state match the accepted ledger; live allowance remains
+`0`, Git staging is empty, and P2A-W2 remains locked. Fresh independent
+Contract Review is the next gate.
+
+`CURRENT`: fresh independent Native Product Experience Implementation
+Re-review 4 returned `PASS` with no findings after the visual repair. It
+confirmed the production native split workspace, exact five semantic
+destinations, 44-point selection rows, toolbar/recovery-only Refresh,
+read-only interactions, system semantics, and the sidebar-contrast matrix
+across all states, light/dark, and accessibility width. Full Swift tests,
+release, Thread Sanitizer, diff/static audits, and empty staging passed. The
+first preview remains recorded as `FAIL`; exactly one in-memory-stub
+replacement preview at the owned path is now permitted. This does not create a
+live allowance or change the schema defect, failed live result, allowance `0`,
+uncommitted state, or P2A-W2 lock.
+
+`CURRENT`: fresh independent P2A-W1 Native Product Experience Implementation
+Re-review 3 returned `PASS` with no findings. It confirmed the exact
+standardized preview path, canonical non-symlink parent, leaf-symlink
+rejection, parent-symlink regression, 16 distinct state/appearance renders,
+bounded image content, sanitized-name fallback, and closed Team timeline
+states. Fresh `swift test` again passed 27 tests with only the locked visual
+export skipped; diff checks passed, staging was empty, and the preview remained
+absent. The reviewed UI-only gate now permits exactly one non-connecting,
+in-memory-stub preview export for visual audit. It does not alter the separate
+`model_ids:null` defect, failed live result, allowance `0`, uncommitted state,
+or P2A-W2 lock.
+
+`CURRENT`: the first bounded Native Product Experience visual audit returned
+`FAIL`: Home hierarchy was readable, but the real offscreen render reserved a
+completely blank sidebar. The failed 1100 by 720 PNG is recorded by digest in
+the visual-audit ledger. A deterministic sidebar-region regression then failed
+all state/light-dark/accessibility renders with zero contrast samples. The
+same production `ContentView` now uses a native `HSplitView`, explicit
+five-destination semantic sidebar, 44-point selectable rows, system-accent
+selection, local status, and a `NavigationStack` detail retaining Refresh.
+The focused real-view matrix is GREEN. No app, native window, service, socket,
+or live action occurred. Complete verification and fresh independent
+Implementation Re-review are required before the owned preview may be
+replaced. The separate schema defect, failed live result, allowance `0`,
+uncommitted state, and P2A-W2 lock remain unchanged.
+
+`CURRENT`: after that recorded failure, fresh independent Implementation
+Re-review 4 returned `PASS`, and the single reviewed replacement preview passed
+visual audit. The 1100 by 720 fixture-only PNG visibly contains Loom identity,
+connection status, exact Home/Work/Teams/Inbox/System navigation,
+system-accent Home selection, attention-first Home hierarchy, source-ordered
+Work, Agent teams, and system readiness. It contains no copied Multica asset,
+fake primary action, raw identifier, credential, hidden reasoning, or live
+data. The frozen UI-only reopen is accepted. This is not installed-app,
+native-window, daemon, Runtime, Provider, or live proof and does not repair the
+separate `model_ids:null` defect. P2A-W1 remains
+`FAIL - ROLLED_BACK - HUMAN_REQUIRED`, live allowance `0`, uncommitted and
+unaccepted; P2A-W2 remains locked.
+
+`CURRENT`: continuing the full Phase 2A goal, the only remaining P2A-W1
+blocker is frozen as the single `Local Product Vertical Live Closure
+Replacement Contract`. It replaces the remaining live-exit authority of the
+old Final Exit Closure and the completed UI-only reopen without creating
+another WorkItem or point Amendment. The exact `model_ids:null` compatibility
+repair is bounded to the shared local-product Application/API wire boundary;
+strict Swift remains strict, and Journal, Projection, StateWriter, Runtime
+execution, and installed state remain closed. Current observer/plist/product
+and one-Event SQLite hashes match the accepted rollback ledger. Live allowance
+is `0`, staging is empty, and P2A-W2 remains locked. Fresh independent Contract
+Review is the current gate.
+
+`CURRENT`: fresh independent Local Product Vertical Live Closure Contract
+Review 1 returned `FAIL` on three completeness gaps: missing authoritative
+Go-path RED for nil `observed_capabilities`, unbound Candidate source inputs in
+the dirty uncommitted worktree, and mutating `go mod tidy` despite no module
+lock ownership. The same single replacement contract now requires both sibling
+nil-collection RED/GREEN paths, binds base commit plus 53 exact accepted
+source/ADR/build/test hashes in source-lock SHA-256
+`0bd33d144c5aadcd078bef06a45685b8ac2ed2ab2bf76effe80730ee85e8a128`,
+allows only four final closure deltas, excludes generated/private/unrelated
+inputs, and uses read-only `go mod tidy -diff` with stop-on-drift. No RED,
+product edit, build, install, launchd, App, or live action occurred. Allowance
+remains `0`, staging is empty, and P2A-W2 remains locked. Fresh independent
+Contract Re-review is the current gate.
+
+`CURRENT`: fresh independent Local Product Vertical Live Closure Contract
+Re-review 2 returned `PASS` with no findings. The Reviewer reproduced the
+source-lock digest, all 53 path hashes, disjoint four-file delta allowlist,
+both sibling nil/null RED requirements, read-only module-lock gate, strict
+Swift boundary, and one-bootstrap/no-retry/rollback/P2A-W2 gates. The contract
+is now frozen. Mandatory RED is the current gate; no product source, resident
+service, App, Journal, or live state has changed, allowance remains `0`, and
+staging is empty.
+
+`CURRENT`: mandatory RED for the frozen P2A-W1 Local Product Vertical Live
+Closure is confirmed. Real Journal Event to Projection to
+`LocalProductReadService` tests fail because historical `model_ids:null` and
+the sibling `observed_capabilities:null` both remain nil slices; the real
+product daemon SQLite/IPC path fails on the same historical model-list shape.
+The strict Swift control accepts canonical empty arrays and rejects null,
+missing, duplicate, wrong-type, and unknown Runtime fields, so the client was
+not weakened. No product source, Journal, Projection, StateWriter, module
+lock, installed file, resident service, App, Provider, Runtime, credential, or
+live state changed. Minimal Application/API implementation is the current
+gate; allowance remains `0`, staging is empty, and P2A-W2 remains locked.
+
+`CURRENT`: P2A-W1 Local Product Vertical Live Closure is deterministically
+`GREEN`. The shared read-only Application/API boundary now converts historical
+nil Runtime model/capability collections to independent canonical empty arrays
+while preserving non-empty order; strict Swift remains fail-closed. Focused,
+package, full repository, full race, vet, module no-drift/verify, Swift debug,
+release, Thread Sanitizer, installer, transaction-fixture, formatting,
+authority, credential-negative, diff, and staging gates pass. All 53 accepted
+source inputs remain exact. A fresh private Candidate is bound by manifest
+SHA-256 `7c0ec8cd75129f0184d345ea39684bc1b1850db56907f1b95ea57f61302a1700`;
+its strict-valid arm64 App has non-zero `LC_UUID`
+`93E3FC61-0A19-3379-BFDB-8CA7726F59F6`. The new transaction remains locked by
+the absent post-Review activation audit and its failure/rollback/no-retry
+fixture passes. Fresh independent Implementation Review is the current gate.
+No install, bootstrap, App launch, launchd restart, Journal mutation, Provider
+or Runtime action occurred; live allowance remains `0`, staging is empty,
+P2A-W1 is uncommitted/unaccepted, and P2A-W2 remains locked.
+
+`CURRENT`: fresh independent P2A-W1 Local Product Vertical Live Closure
+Implementation Review 1 returned `FAIL` before live on one P1 transaction
+binding defect. The frozen contract owns only
+`local-product-live-closure-activation-audit.md`, while the transaction
+required an unowned `post-review` filename, so no contract-compliant activation
+could unlock it. All source, Candidate, causal implementation, focused/full
+test, race, vet, module, strict Swift, privacy, transaction-fixture, diff, and
+staging checks otherwise passed independently. The transaction now reads the
+exact owned activation path and its fixture rejects the obsolete unowned path.
+Post-repair deterministic verification and fresh independent Implementation
+Re-review are the current gate. No activation file, install, bootstrap, App
+launch, service restart, Journal mutation, Provider or Runtime action occurred;
+allowance remains `0`, staging is empty, and P2A-W2 remains locked.
+
+`CURRENT`: fresh independent P2A-W1 Local Product Vertical Live Closure
+Implementation Re-review 2 returned `PASS` with no findings. It reproduced the
+exact activation-path repair, Review 1 byte lineage, source/Candidate inputs,
+complete deterministic matrix, production zero-bootstrap lock, and empty
+staging. The post-Review activation audit then passed against the exact running
+observer, installed product/plist bytes, private modes/owner/provenance,
+one-Event SQLite integrity and historical `model_ids:null`, canonical view
+version, two-report crash inventory, absent App/run/socket/backups/cache, exact
+fresh Candidate, and zero Provider markers. The single replacement live
+allowance is now `1`; no bootstrap or App launch has yet occurred. Only the
+reviewed transaction and one controlled native-window canary may consume it.
+P2A-W2 remains locked.
+
+`CURRENT`: the single P2A-W1 Local Product Vertical Live Closure transaction
+consumed its one allowance and returned
+`FAIL - ROLLED_BACK - HUMAN_REQUIRED`. The exact Candidate daemon received one
+bootstrap but failed before the ready marker, so the native App was never
+opened and no Home, Work, Teams, Inbox, System, Refresh, relaunch, or later
+lifecycle-restart proof exists. No retry occurred. The exact installed
+binaries, wrapper, plist, provenance values, one-Event SQLite state, historical
+crash reports, and stable original observer were restored; the private
+Candidate is retained and Git staging is empty. A broader-than-intended
+read-only diagnostic transiently displayed inherited credential values in tool
+output; no value entered repository evidence, Candidate artifacts, Journal,
+screenshots, Agent definitions, or Loom-created logs. Credential rotation was
+not performed silently.
+
+`CURRENT`: fresh independent P2A-W1 Local Product Vertical Live Closure Result
+Review returned `PASS` with no findings. The Reviewer confirmed one Candidate
+bootstrap, pre-ready daemon failure, zero native App launches, zero retries,
+zero later lifecycle restarts, exact installed-state and SQLite rollback,
+stable original observer, preserved historical reports, no durable
+credential-value capture, retained private Candidate, and empty staging. This
+Review validates the failure evidence, not the product. The only terminal state
+is `FAIL - ROLLED_BACK - HUMAN_REQUIRED`; allowance is `0`, P2A-W1 remains
+unaccepted and uncommitted, no additional live canary is authorized, and
+P2A-W2 remains locked.
+
+`CURRENT`: post-failure bounded diagnosis now localizes the consumed P2A-W1
+pre-ready daemon exit to the production switch boundary. The exact retained
+Candidate passes direct one-cycle execution, copied resident isolation,
+private UDS, private launchd with exit `0`, and a resident-like
+`KeepAlive=true` launchd fixture with one PID stable for 12 seconds and a typed
+status response. All private labels and roots were removed, and no resident
+service, Journal, App, Provider, Runtime, or credential changed. The retained
+`daemon failed` stderr is too coarse to distinguish observer, local IPC, or
+shutdown without guessing. One `Local Product Launch Failure Closure Repair
+Contract` is frozen for fresh independent Contract Review. It keeps the failed
+allowance at `0`, owns closed reason codes plus switch ordering and exact-path
+preflight in the same existing P2A-W1, grants no production live action before
+Implementation Review, and keeps P2A-W2 locked.
+
+`CURRENT`: fresh independent Local Product Launch Failure Closure Contract
+Review 1 returned `FAIL` before preflight or implementation. It found two P1
+identity gaps: no fresh repaired Candidate/source-lock manifest existed to
+bind rebuilt binaries, App UUID/bundle, toolchains, transaction, and fixture;
+and the required closed failure-reason record had no exact owned path. The same
+single P2A-W1 repair contract now owns canonical
+`local-product-launch-failure-repair-source-lock.json`,
+`local-product-launch-failure-repair-candidate-manifest.json`, and
+`local-product-launch-failure-reason.json`, defines their exact closed content
+and privacy/mode rules, limits the retained failed Candidate to preflight, and
+requires activation to reproduce the fresh repaired Candidate identity. No
+exact-path preflight, RED, product edit, service mutation, or live action
+occurred. Allowance remains `0`, P2A-W1 remains
+`FAIL - ROLLED_BACK - HUMAN_REQUIRED`, and P2A-W2 remains locked. Fresh
+independent Contract Re-review is the current gate.
+
+`CURRENT`: fresh independent Local Product Launch Failure Closure Contract
+Re-review 2 returned `PASS` with no P0, P1, or P2 findings. It reproduced the
+fresh repaired source-lock and Candidate-manifest boundary, the unique closed
+failure-reason path and non-disclosing schema, the retained failed Candidate's
+preflight-only restriction, the causal RED requirements, the direct/private
+exact-path preflight, original-absence-before-install ordering, one-bootstrap
+and no-retry rules, and the acyclic source-lock → Candidate manifest →
+transaction → activation-audit identity chain. No installed product, App,
+service, Journal, Provider, Runtime, or live state changed. The bounded
+exact-production-socket preflight is now the only allowed next action; it
+grants no live allowance, P2A-W1 remains unaccepted and uncommitted, and
+P2A-W2 remains locked.
+
+`CURRENT`: the first exact-production-socket preflight execution has no product
+verdict because its evidence harness asserted a nonexistent nested
+`local_product_snapshot`; accepted CLI status embeds and flattens those fields.
+The process and private outputs were cleaned before the invalid assertion was
+classified, so no PASS or product failure is inferred. The original observer
+remains PID `85936`, state `running`, runs `1`; run root, Candidate process,
+and native App are absent; the resident Journal retains its exact hash,
+integrity `ok`, and one Event; staging is empty. The same single repair
+contract is frozen with a bounded harness reopen for at most one replacement
+preflight using the correct top-level typed envelope. Fresh independent
+Contract Re-review is required first. Live allowance remains `0`, P2A-W1 is
+unaccepted and uncommitted, and P2A-W2 remains locked.
+
+`CURRENT`: fresh independent Contract Re-review 3 returned `PASS` with no P0,
+P1, or P2 findings on the bounded exact-path evidence-harness reopen. It
+confirmed the first execution has no product verdict, reproduced the flattened
+status-envelope root cause and post-cleanup state, and permits exactly one
+replacement preflight with retained bounded outputs and the correct top-level
+typed predicate. That replacement remains a direct/private diagnostic, not a
+production bootstrap, live canary, retry, or allowance. Live allowance remains
+`0`; P2A-W1 is unaccepted and uncommitted, and P2A-W2 remains locked.
+
+`CURRENT`: the one reviewed replacement exact-production-socket preflight
+returned `PASS`. The retained Candidate produced one exact socket, one
+Candidate daemon process, a `753`-byte typed top-level status response, exit
+`0`, and zero daemon/CLI stderr; the private SQLite remained integrity `ok`
+with one Event and no native App launched. Cleanup restored absence of the run
+root and left the original observer at the same PID `85936`, state `running`,
+runs `1`; resident Journal and both historical report hashes remain exact and
+staging is empty. No launchd mutation, live bootstrap, Provider/Runtime
+execution, credential access, or allowance occurred. The invalid first
+evidence harness remains recorded without reinterpretation and no further
+preflight is permitted. Mandatory causal RED is now the current gate; live
+allowance remains `0`, P2A-W1 is unaccepted/uncommitted, and P2A-W2 remains
+locked.
+
+`CURRENT`: the Local Product Launch Failure Closure repair has a causal
+mandatory RED. Focused Go tests prove current code lacks typed
+server-before-ready `local_ipc` and observer-after-ready `observer`
+classification, collapses observer/local IPC/unknown-close failures to
+`daemon failed`, and collapses result encoding to the same text. The
+transaction fixture independently proves the governed reason path, atomic
+closed reason writer, exact-path preflight boundary, and
+original-service-absence-before-install ordering are absent. Production Go and
+transaction files remain unchanged from their frozen inputs; no service,
+installed product, Journal, Provider/Runtime, credential, staging, or live
+allowance changed. Minimal GREEN inside the same P2A-W1 contract is now the
+current gate; P2A-W2 remains locked.
+
+`CURRENT`: Local Product Launch Failure Closure is deterministically `GREEN`.
+Closed daemon lifecycle reason codes, original-absence-before-install
+ordering, exact-path preflight, `KeepAlive=false`, one-bootstrap/no-retry, and
+atomic 0600 reason-record fixtures pass. Sequential full Go, race, vet,
+module, Swift debug/release/Thread Sanitizer, native App build/install, local
+product installer, transaction, format, credential, authority, diff, and
+staging gates pass. A disclosed invalid parallel matrix saturated real Pi
+metadata fixtures and caused the pre-existing KeepAlive observer to
+self-restart to PID `97912`, runs `18`; installed bytes, plist, Journal,
+reports, App/run absence, and staging stayed exact, and the service is stable
+after load. Fresh source-lock SHA is
+`333097f377427eda8ef5c6c0d2a3fc4da47a3075a7f67a93c8637441ad679570`;
+fresh Candidate-manifest SHA is
+`ca47404f4761a26a6f9bfcc8ce18091832ea59314bd85a736ef2e8e3d2a00a58`;
+fresh `loomd` SHA is
+`af29fbb9cfa46ac0b97321a3240c9e7fd4048f0f64ce55cfd1b139a1a691d6e6`.
+The replacement activation record is absent and the transaction remains
+zero-bootstrap fail-closed. Fresh independent Implementation Review, including
+an explicit judgment on the disclosed resident continuity drift, is the
+current gate. Live allowance remains `0`; P2A-W1 is unaccepted/uncommitted,
+and P2A-W2 remains locked.
+
+`CURRENT`: fresh independent Local Product Launch Failure Closure
+Implementation Review returned `FAIL` with three P1 findings. The transaction
+does not terminate and join the direct exact-path Candidate on its signal
+path; the source lock omits most transitive in-repository Go production inputs
+and leaves `internal/api/local_product_read.go` unbound; and the disclosed
+resident change from PID `85936`, runs `1` to PID `97912`, runs `18` cannot be
+silently treated as exact continuity. No live state was read or changed by the
+Reviewer. Repair remains inside the same single P2A-W1 contract: add a causal
+signal-window fixture and bounded child cleanup, regenerate a complete
+production-input source closure and fresh Candidate identity, then reconcile
+resident drift through the separate reviewed activation audit. Live allowance
+remains `0`; P2A-W1 is unaccepted/uncommitted, and P2A-W2 remains locked.
+
+`CURRENT`: repair RED/GREEN now closes the first two Implementation Review
+findings. A signal-window fixture causally failed, then the transaction gained
+bounded termination and join of the direct exact-path Candidate and passed
+repeatedly. The source lock now binds `201` inputs, including `171`
+automatically enumerated in-repository Go production/test inputs and all
+native Swift inputs; the Candidate manifest binds the repaired lock. Sequential
+Go, race, vet, module, Swift debug/release/Thread Sanitizer, installer, shell,
+transaction, diff, staging, and zero-activation gates pass. Those resource
+heavy checks caused the unchanged KeepAlive observer to advance again, ending
+stable at PID `95853`, runs `36`, while installed bytes, plist, Journal, and
+reports remained exact. The same P2A-W1 contract is therefore frozen with a
+bounded continuity rebaseline amendment: historical process observations stay
+immutable, while a post-Review activation audit must freeze a new stable
+PID/run pair and the transaction must fail closed if it no longer matches.
+Fresh independent Contract Re-review is the current gate. Live allowance
+remains `0`; P2A-W1 is unaccepted/uncommitted, and P2A-W2 remains locked.
+
+`CURRENT`: fresh independent Contract Re-review 4 returned `PASS` with no P0,
+P1, or P2 findings, and exact Status-only hash-drift closure. A second causal
+RED then proved the transaction did not bind the audited resident PID/runs.
+GREEN now strictly parses exactly one closed decimal `Resident PID` and
+`Resident Runs`, matches both during preflight and immediately before rollback
+arm/bootout, and otherwise fails with zero bootstrap and zero mutation. The
+signal cleanup fixture, `201`-input source closure, Candidate identity,
+sequential full matrix, transaction fixture, and zero-activation gate pass.
+Fresh independent Implementation Re-review is the current gate; it must judge
+both repaired P1s and the reviewed continuity rebaseline. Live allowance
+remains `0`; P2A-W1 is unaccepted/uncommitted, and P2A-W2 remains locked.
+
+`CURRENT`: fresh independent Implementation Re-review returned `PASS` with no
+P0, P1, or P2 findings, and the separate activation-record audit passed. The
+single replacement transaction then failed before `READY` with exact result
+`rollback_incomplete`, `initial_bootstrap_calls=1`, `consumed=1`,
+`rollback_count=1`, `restart_count=0`. No native App or UI action occurred and
+no restart phase was reached. The original observer was initially
+`spawn scheduled` beyond the rollback deadline, then recovered without another
+transaction or manual lifecycle command and remained stable at PID `43503`,
+runs `32` over sixteen seconds. Original installed bytes, plist, Journal
+hash/integrity/one Event, reports, absent App/run/replacement paths, and empty
+staging are exact. The allowance is now `0` and the result is governed
+`FAIL - ROLLBACK_INCOMPLETE - ORIGINAL SERVICE LATE-RECOVERED - NO RETRY`.
+P2A-W1 remains unaccepted/uncommitted, P2A-W2 remains locked, and a new
+reviewed authority decision is required before any further live action.
+
+`CURRENT`: fresh independent Result Review returned `PASS` with no
+evidence-quality findings. It confirms exactly one consumed invocation,
+`rollback_incomplete`, no `READY`/App/UI/restart/retry, allowance `0`, and
+stable late recovery with exact immutable original state. This PASS reviews
+the failed evidence only; it does not convert the canary to success. The
+mandatory terminal state is `FAIL - ROLLBACK_INCOMPLETE - HUMAN_REQUIRED -
+NO RETRY`. Read-only diagnosis may continue, but no further live transaction
+is authorized; P2A-W1 remains unaccepted/uncommitted and P2A-W2 remains locked.
+
+`CURRENT`: read-only source diagnosis confirms the exact failed predicate
+cannot be recovered. After the sole Candidate bootstrap, every socket,
+process, install, App, status, Journal, report, and staging assertion before
+`READY` is a bare `set -e` check with no closed phase attribution; reason
+writing can itself fail without preserving the primary phase. The rollback's
+20-second original-service wait also ended before the observed late recovery.
+The next safe boundary is one non-live extension of the same P2A-W1 contract
+covering every pre-READY phase, reason-writer failure, and delayed recovery.
+It cannot infer the missing predicate, create a new WorkItem, restore
+allowance, or authorize live execution.
+
+`CURRENT`: Contract Re-review 5 and exact Status-only hash closure returned
+`PASS` with no P0/P1/P2 findings. Causal RED proved complete phase attribution
+and 60-second recovery settling were absent. Non-live GREEN now routes all
+twelve closed pre-READY phases through one recorder, preserves the primary
+phase if reason writing fails, catches an injected uncovered exit as
+`unclassified`, and tests 240-probe recovery using a fast sequence. All phase,
+reason-target, signal, success, source-lock, shell, diff, staging, and
+zero-activation fixtures pass. Transaction SHA is
+`99b448a8284fc58aadb0e57a5d66969cc84f1e6cd2360c475298f86d2150212b`;
+fixture SHA is
+`8066a20d0b31fc67a5ddc1fae029f2baf3787baf8b8167b7c4da2302508cfe4d`.
+Fresh independent Implementation Re-review is the current gate. Allowance
+remains `0`; no live action, P2A-W1 commit, or P2A-W2 work is authorized.
+
+`CURRENT`: fresh independent Implementation Re-review 6 returned `PASS` with
+no P0, P1, or P2 findings. It reproduced the ten-key/twelve-phase closure,
+reason-writer failure preservation, nonrecursive `unclassified` trap, shared
+240-probe recovery loop, success/no-retry behavior, shell syntax, and full
+transaction fixture. The deterministic non-live repair is reviewed complete,
+but the prior replacement canary remains consumed
+`FAIL - ROLLBACK_INCOMPLETE - HUMAN_REQUIRED - NO RETRY`. Allowance remains
+`0`; a new explicit post-failure reviewed authority record is required before
+any future live canary. P2A-W1 remains unaccepted/uncommitted and P2A-W2
+remains locked.
+
+`CURRENT`: the user-authorized P2A-W1 `Authoritative Collection Wire
+Normalization Reopen` is frozen and passed fresh independent Contract Review
+with no P0/P1/P2 findings. Genuine RED proved the shared snapshot clone still
+serialized nil top-level `teams`, `runs`, `evidence`, and `attention` as JSON
+`null`. The minimal Go repair now uses one fresh-slice helper for every
+snapshot collection, including Runtime `model_ids` and
+`observed_capabilities`; timeline `records`, `board.nodes`, and `attention`
+remain canonical arrays. A real historical `model_ids:null` Journal fixture
+now crosses Projection, `LocalProductReadService`, the production handler,
+real Go UDS server, and the compiled strict Swift client successfully. Focused,
+package, package-race, repository, repository-race, vet, offline module,
+Swift-test/build, format, diff, source-lock, and empty-staging gates pass.
+Swift decoder/probe bytes remain exact accepted source-lock inputs. Fresh
+independent Implementation Review returned `PASS` with no P0/P1/P2 findings
+and independently reproduced both the API collection test and the real
+Go-UDS-to-strict-Swift fixture. This non-live reopen is closed. It is still
+P2A-W1, creates no W4, grants no live canary, keeps live allowance `0`, and
+leaves the prior failed live result, P2A-W1 acceptance, and P2A-W2 lock
+unchanged.
+
+`CURRENT`: the Product Owner then explicitly authorized the complete reviewed
+P2A-W1 Candidate for one local atomic commit. That authorization preserves the
+governed live result as
+`FAIL - ROLLBACK_INCOMPLETE - HUMAN_REQUIRED - NO RETRY`; it does not reinterpret
+the failed canary, grant another live allowance, or claim live delivery.
+P2A-W1 product source, tests, reviewed amendments, and evidence may now be
+committed as one lineage while all pre-existing contract-excluded worktree
+changes remain untouched. Once that commit exists, the next Phase 2A governance
+boundary is the P2A-W2 child-contract freeze. No P2A-W4 exists.

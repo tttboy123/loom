@@ -23,9 +23,16 @@ type daemonRunner interface {
 	Close() error
 }
 
-type daemonBuilder func(
-	app.LocalRuntimeObservationDaemonConfig,
-) (daemonRunner, error)
+type daemonFailureCoder interface {
+	DaemonFailureCode() string
+}
+
+type daemonBuildConfig struct {
+	Observer   app.LocalRuntimeObservationDaemonConfig
+	SocketPath string
+}
+
+type daemonBuilder func(daemonBuildConfig) (daemonRunner, error)
 
 type repeatedStrings []string
 
@@ -42,12 +49,23 @@ func (values *repeatedStrings) Set(value string) error {
 }
 
 func productionDaemonBuilder(
-	config app.LocalRuntimeObservationDaemonConfig,
+	config daemonBuildConfig,
 ) (daemonRunner, error) {
-	return app.NewLocalRuntimeObservationDaemon(
-		config,
+	observer, err := app.NewLocalRuntimeObservationDaemon(
+		config.Observer,
 		app.NewSystemRuntimeObservationDaemonClock(),
 		app.NewCryptographicRuntimeObservationIdentitySource(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if config.SocketPath == "" {
+		return observer, nil
+	}
+	return newProductDaemonRunner(
+		observer,
+		config.Observer.StatePath,
+		config.SocketPath,
 	)
 }
 
@@ -78,6 +96,7 @@ func run(
 	interval := fs.Duration("interval", 0, "")
 	processTimeout := fs.Duration("process-timeout", 0, "")
 	maxCycles := fs.Int("max-cycles", 0, "")
+	socketPath := fs.String("socket", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
 	}
@@ -93,17 +112,20 @@ func run(
 		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
 	}
 
-	config := app.LocalRuntimeObservationDaemonConfig{
-		StatePath:           *statePath,
-		IsolationRoot:       *isolationRoot,
-		RuntimeSearchPaths:  append([]string(nil), runtimeDirs...),
-		ProbeID:             *probeID,
-		RuntimeInstanceID:   *instanceID,
-		DeviceID:            *deviceID,
-		DisplayName:         *displayName,
-		ObservationInterval: *interval,
-		ProcessTimeout:      *processTimeout,
-		MaxCycles:           *maxCycles,
+	config := daemonBuildConfig{
+		Observer: app.LocalRuntimeObservationDaemonConfig{
+			StatePath:           *statePath,
+			IsolationRoot:       *isolationRoot,
+			RuntimeSearchPaths:  append([]string(nil), runtimeDirs...),
+			ProbeID:             *probeID,
+			RuntimeInstanceID:   *instanceID,
+			DeviceID:            *deviceID,
+			DisplayName:         *displayName,
+			ObservationInterval: *interval,
+			ProcessTimeout:      *processTimeout,
+			MaxCycles:           *maxCycles,
+		},
+		SocketPath: *socketPath,
 	}
 	daemon, err := builder(config)
 	if err != nil || daemon == nil {
@@ -115,15 +137,42 @@ func run(
 	if runErr != nil &&
 		!errors.Is(runErr, context.Canceled) &&
 		!errors.Is(runErr, context.DeadlineExceeded) {
-		return writeDaemonError(stderr, exitRuntimeFailure, "daemon failed")
+		return writeDaemonError(
+			stderr,
+			exitRuntimeFailure,
+			daemonFailureMessage(runErr),
+		)
 	}
 	if closeErr != nil {
-		return writeDaemonError(stderr, exitRuntimeFailure, "daemon failed")
+		return writeDaemonError(
+			stderr,
+			exitRuntimeFailure,
+			"daemon failed: shutdown",
+		)
 	}
 	if err := writeDaemonResult(stdout, result); err != nil {
-		return writeDaemonError(stderr, exitRuntimeFailure, "daemon failed")
+		return writeDaemonError(
+			stderr,
+			exitRuntimeFailure,
+			"daemon failed: result",
+		)
 	}
 	return exitSuccess
+}
+
+func daemonFailureMessage(err error) string {
+	var failure daemonFailureCoder
+	if errors.As(err, &failure) {
+		switch failure.DaemonFailureCode() {
+		case "observer":
+			return "daemon failed: observer"
+		case "local_ipc":
+			return "daemon failed: local_ipc"
+		case "shutdown":
+			return "daemon failed: shutdown"
+		}
+	}
+	return "daemon failed: shutdown"
 }
 
 type daemonOutput struct {

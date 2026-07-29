@@ -1054,7 +1054,7 @@ func deriveRelatedScope(
 	view projection.GlobalReadView,
 	teamInstanceID string,
 ) ([]string, error) {
-	if _, ok := view.Team(teamInstanceID); !ok {
+	if _, ok := view.TeamTimelineAnchor(teamInstanceID); !ok {
 		return nil, ErrTeamTimelineNotFound
 	}
 	execution, ok := view.TeamExecution(teamInstanceID)

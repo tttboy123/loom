@@ -13,5 +13,6 @@
 | [0009](0009-authorized-node-output-and-attempt-recovery.md) | Authorized node output and explicit attempt recovery | accepted | 2026-07-26 |
 | [0010](0010-pi-rpc-bridge-and-controlled-offline-model.md) | Pi RPC translation behind the Loom bridge | accepted | 2026-07-27 |
 | [0011](0011-tui-first-local-product-over-versioned-daemon-ipc.md) | TUI-first local product over versioned daemon IPC | accepted | 2026-07-28 |
+| [0012](0012-native-app-host-over-shared-daemon-ipc.md) | Native app host over the shared daemon IPC | accepted | 2026-07-28 |
 
 New decisions use [template.md](template.md). Superseded decisions remain in this index and link to their replacement.

@@ -5,21 +5,293 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/journal"
+	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/mode"
 	"loom-pi-rebuild/internal/projection"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestRunWithoutArgumentsStartsPrimaryTUI(t *testing.T) {
+	calls := 0
+	deps := testDeps().runDeps
+	deps.app = func(context.Context, []string, io.Reader, io.Writer) error {
+		calls++
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), nil, &stdout, &stderr, deps)
+	if code != exitSuccess || calls != 1 || stderr.Len() != 0 {
+		t.Fatalf(
+			"run() code=%d app_calls=%d stdout=%q stderr=%q",
+			code,
+			calls,
+			stdout.String(),
+			stderr.String(),
+		)
+	}
+}
+
+func TestRunOrdinaryStatusAndTimelineUseTypedDaemonAPI(t *testing.T) {
+	deps := testDeps().runDeps
+	snapshotCalls := 0
+	timelineCalls := 0
+	deps.productSnapshot = func(
+		_ context.Context,
+		socketPath string,
+		request api.LocalProductSnapshotRequest,
+	) (api.LocalProductSnapshot, error) {
+		snapshotCalls++
+		if filepath.Base(socketPath) != "loomd.sock" || request.Limit != 64 {
+			t.Fatalf("snapshot socket=%q request=%#v", socketPath, request)
+		}
+		return api.LocalProductSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("a", 64),
+			Teams:         []api.LocalProductTeamSummary{},
+			Runtimes:      []api.LocalProductRuntimeSummary{},
+			Runs:          []api.LocalProductRunSummary{},
+			Evidence:      []api.LocalProductEvidenceSummary{},
+			Attention:     []api.AttentionItem{},
+		}, nil
+	}
+	deps.productTimeline = func(
+		_ context.Context,
+		socketPath string,
+		request api.LocalProductTimelineRequest,
+	) (api.LocalProductTimelinePage, error) {
+		timelineCalls++
+		if filepath.Base(socketPath) != "loomd.sock" ||
+			request.TeamInstanceID != "team-1" ||
+			request.Limit != 7 {
+			t.Fatalf("timeline socket=%q request=%#v", socketPath, request)
+		}
+		return api.LocalProductTimelinePage{
+			SchemaVersion:  1,
+			TeamInstanceID: "team-1",
+			ViewVersion:    strings.Repeat("b", 64),
+			Records:        []api.LocalProductTimelineRecord{},
+			Attention:      []api.AttentionItem{},
+		}, nil
+	}
+
+	var statusOut, statusErr bytes.Buffer
+	if code := run(
+		context.Background(),
+		[]string{"status"},
+		&statusOut,
+		&statusErr,
+		deps,
+	); code != exitSuccess {
+		t.Fatalf("online status code=%d stderr=%q", code, statusErr.String())
+	}
+	if !strings.Contains(statusOut.String(), `"source_mode":"daemon_api"`) ||
+		snapshotCalls != 1 {
+		t.Fatalf(
+			"online status output=%q calls=%d",
+			statusOut.String(),
+			snapshotCalls,
+		)
+	}
+
+	var timelineOut, timelineErr bytes.Buffer
+	if code := run(
+		context.Background(),
+		[]string{"timeline", "--team", "team-1", "--limit", "7"},
+		&timelineOut,
+		&timelineErr,
+		deps,
+	); code != exitSuccess {
+		t.Fatalf(
+			"online timeline code=%d stderr=%q",
+			code,
+			timelineErr.String(),
+		)
+	}
+	if !strings.Contains(
+		timelineOut.String(),
+		`"source_mode":"daemon_api"`,
+	) || timelineCalls != 1 {
+		t.Fatalf(
+			"online timeline output=%q calls=%d",
+			timelineOut.String(),
+			timelineCalls,
+		)
+	}
+}
+
+func TestProductionCLIReadsTypedSnapshotAndTimelineOverRealUDS(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "loom-cli-w1-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove CLI UDS root: %v", err)
+		}
+	})
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(root, "loomd.sock")
+	viewVersion := strings.Repeat("f", 64)
+	var gapMode atomic.Bool
+	handler := localipc.HandlerFunc(func(
+		_ context.Context,
+		request localipc.Request,
+	) localipc.Response {
+		var value any
+		switch request.Method {
+		case "snapshot":
+			value = api.LocalProductSnapshot{
+				SchemaVersion: 1,
+				ViewVersion:   viewVersion,
+				Teams: []api.LocalProductTeamSummary{{
+					TeamInstanceID: "team-1",
+					DisplayName:    "Delivery Team",
+				}},
+				Runtimes:  []api.LocalProductRuntimeSummary{},
+				Runs:      []api.LocalProductRunSummary{},
+				Evidence:  []api.LocalProductEvidenceSummary{},
+				Attention: []api.AttentionItem{},
+			}
+		case "timeline_page":
+			page := api.LocalProductTimelinePage{
+				SchemaVersion:  1,
+				TeamInstanceID: "team-1",
+				ViewVersion:    viewVersion,
+				NextCursor:     strings.Repeat("c", 64),
+				Records: []api.LocalProductTimelineRecord{{
+					Kind: "team_planned",
+				}},
+				Attention: []api.AttentionItem{},
+			}
+			if gapMode.Load() {
+				page.Records = []api.LocalProductTimelineRecord{}
+				page.Gap = &api.LocalProductStreamGap{
+					Reason:      "cursor_conflict",
+					Recoverable: true,
+				}
+			}
+			value = page
+		default:
+			return localipc.Response{
+				OK: false,
+				Error: &localipc.ProtocolError{
+					Code: "unknown_method",
+				},
+			}
+		}
+		result, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return localipc.Response{OK: true, Result: result}
+	})
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "cli-e2e",
+		Handler:      handler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case <-time.After(time.Second):
+		t.Fatal("CLI fixture server did not become ready")
+	}
+
+	var statusOut, statusErr bytes.Buffer
+	if code := run(
+		context.Background(),
+		[]string{"status", "--socket", socketPath},
+		&statusOut,
+		&statusErr,
+		productionDeps(),
+	); code != exitSuccess ||
+		!strings.Contains(statusOut.String(), viewVersion) ||
+		!strings.Contains(statusOut.String(), `"source_mode":"daemon_api"`) {
+		t.Fatalf(
+			"real UDS status code=%d stdout=%q stderr=%q",
+			code,
+			statusOut.String(),
+			statusErr.String(),
+		)
+	}
+	var timelineOut, timelineErr bytes.Buffer
+	if code := run(
+		context.Background(),
+		[]string{
+			"timeline",
+			"--socket",
+			socketPath,
+			"--team",
+			"team-1",
+		},
+		&timelineOut,
+		&timelineErr,
+		productionDeps(),
+	); code != exitSuccess ||
+		!strings.Contains(timelineOut.String(), "team_planned") ||
+		!strings.Contains(timelineOut.String(), viewVersion) {
+		t.Fatalf(
+			"real UDS timeline code=%d stdout=%q stderr=%q",
+			code,
+			timelineOut.String(),
+			timelineErr.String(),
+		)
+	}
+	gapMode.Store(true)
+	timelineOut.Reset()
+	timelineErr.Reset()
+	if code := run(
+		context.Background(),
+		[]string{
+			"timeline",
+			"--socket",
+			socketPath,
+			"--team",
+			"team-1",
+		},
+		&timelineOut,
+		&timelineErr,
+		productionDeps(),
+	); code != exitStreamGap ||
+		!strings.Contains(timelineOut.String(), "cursor_conflict") {
+		t.Fatalf(
+			"real UDS gap code=%d stdout=%q stderr=%q",
+			code,
+			timelineOut.String(),
+			timelineErr.String(),
+		)
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
 
 func TestRunRouteDistinguishesConversationAndExplicitAgentTriggers(t *testing.T) {
 	tests := []struct {
@@ -67,7 +339,7 @@ func TestRunStatusReadsOnlyProjectionInDeterministicOrder(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run status exit = %d, want 0; stderr=%q", code, stderr.String())
 	}
-	want := "{\"command\":\"status\",\"modes\":[{\"stream\":\"mode-a\",\"mode\":\"conversation\"},{\"stream\":\"mode-b\",\"mode\":\"agent\"}],\"work_items\":[{\"id\":\"work-a\",\"title\":\"Alpha\",\"status\":\"accepted\"},{\"id\":\"work-b\",\"title\":\"Beta\",\"status\":\"open\"}],\"evidence\":[{\"id\":\"evidence-a\",\"work_item_id\":\"work-a\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"id\":\"evidence-b\",\"work_item_id\":\"work-b\",\"digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}\n"
+	want := "{\"command\":\"status\",\"source_mode\":\"offline_recovery\",\"modes\":[{\"stream\":\"mode-a\",\"mode\":\"conversation\"},{\"stream\":\"mode-b\",\"mode\":\"agent\"}],\"work_items\":[{\"id\":\"work-a\",\"title\":\"Alpha\",\"status\":\"accepted\"},{\"id\":\"work-b\",\"title\":\"Beta\",\"status\":\"open\"}],\"evidence\":[{\"id\":\"evidence-a\",\"work_item_id\":\"work-a\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"id\":\"evidence-b\",\"work_item_id\":\"work-b\",\"digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
@@ -96,7 +368,7 @@ func TestRunStatusReadsSpecialPathJournalFilenames(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("run status exit = %d, want 0; stderr=%q", code, stderr.String())
 			}
-			if got := stdout.String(); got != "{\"command\":\"status\",\"modes\":[],\"work_items\":[],\"evidence\":[]}\n" {
+			if got := stdout.String(); got != "{\"command\":\"status\",\"source_mode\":\"offline_recovery\",\"modes\":[],\"work_items\":[],\"evidence\":[]}\n" {
 				t.Fatalf("stdout = %q, want empty status JSON", got)
 			}
 			if stderr.Len() != 0 {
@@ -114,7 +386,7 @@ func TestRunTimelineValidatesFlagsAndUsesFiniteInjectedRead(t *testing.T) {
 	tests := [][]string{
 		{"timeline"},
 		{"timeline", "--state", "journal.db"},
-		{"timeline", "--team", "team-1"},
+		{"timeline", "--state", "journal.db", "--socket", "/tmp/loomd.sock", "--team", "team-1"},
 		{"timeline", "--state", "journal.db", "--team", "team-1", "--limit", "0"},
 		{"timeline", "--state", "journal.db", "--team", "team-1", "--limit", "129"},
 		{"timeline", "--state", "journal.db", "--team", "team-1", "extra"},
@@ -338,12 +610,11 @@ func TestRunRejectsInvalidInput(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "no command", args: nil},
 		{name: "unknown command", args: []string{"unknown"}},
 		{name: "missing trigger", args: []string{"route"}},
 		{name: "unexpected route positional", args: []string{"route", "--trigger", "plain_input", "extra"}},
 		{name: "unexpected route flag", args: []string{"route", "--trigger", "plain_input", "--bad"}},
-		{name: "missing state path", args: []string{"status"}},
+		{name: "status state socket conflict", args: []string{"status", "--state", "journal.db", "--socket", "/tmp/loomd.sock"}},
 		{name: "unexpected status positional", args: []string{"status", "--state", "journal.db", "extra"}},
 		{name: "unexpected status flag", args: []string{"status", "--state", "journal.db", "--bad"}},
 	}
@@ -412,7 +683,7 @@ func TestRunHasNoBackgroundOrNetworkSideEffects(t *testing.T) {
 	if deps.routeCalls != 0 || deps.statusCalls != 1 {
 		t.Fatalf("route calls = %d, status calls = %d; want status only", deps.routeCalls, deps.statusCalls)
 	}
-	if got := statusOut.String(); got != "{\"command\":\"status\",\"modes\":[],\"work_items\":[],\"evidence\":[]}\n" {
+	if got := statusOut.String(); got != "{\"command\":\"status\",\"source_mode\":\"offline_recovery\",\"modes\":[],\"work_items\":[],\"evidence\":[]}\n" {
 		t.Fatalf("status stdout = %q, want empty snapshot JSON", got)
 	}
 }

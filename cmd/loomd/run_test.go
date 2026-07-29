@@ -26,8 +26,8 @@ func TestRunParsesExplicitConfigurationAndWritesDeterministicJSON(t *testing.T) 
 			}},
 		},
 	}
-	builder := func(config app.LocalRuntimeObservationDaemonConfig) (daemonRunner, error) {
-		captured = config
+	builder := func(config daemonBuildConfig) (daemonRunner, error) {
+		captured = config.Observer
 		return runner, nil
 	}
 	var stdout, stderr bytes.Buffer
@@ -64,6 +64,38 @@ func TestRunParsesExplicitConfigurationAndWritesDeterministicJSON(t *testing.T) 
 	}
 }
 
+func TestRunAcceptsOptionalPrivateProductSocket(t *testing.T) {
+	args := append(completeDaemonArgs(),
+		"--socket", "/tmp/loom-private/loomd.sock",
+		"--max-cycles", "1",
+	)
+	var stdout, stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		args,
+		&stdout,
+		&stderr,
+		func(config daemonBuildConfig) (daemonRunner, error) {
+			if config.SocketPath != "/tmp/loom-private/loomd.sock" {
+				t.Fatalf("socket path = %q", config.SocketPath)
+			}
+			return &fakeDaemonRunner{
+				result: app.LocalRuntimeObservationDaemonResult{
+					CompletedCycles: 1,
+				},
+			}, nil
+		},
+	)
+	if code != exitSuccess || stderr.Len() != 0 {
+		t.Fatalf(
+			"run --socket code=%d stdout=%q stderr=%q",
+			code,
+			stdout.String(),
+			stderr.String(),
+		)
+	}
+}
+
 func TestRunRejectsMissingAndMapsBuilderAndRuntimeFailures(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -78,7 +110,7 @@ func TestRunRejectsMissingAndMapsBuilderAndRuntimeFailures(t *testing.T) {
 		{
 			name: "builder",
 			args: completeDaemonArgs(),
-			builder: func(app.LocalRuntimeObservationDaemonConfig) (daemonRunner, error) {
+			builder: func(daemonBuildConfig) (daemonRunner, error) {
 				return nil, errors.New("local path must not escape")
 			},
 			want: exitUnavailable,
@@ -86,7 +118,7 @@ func TestRunRejectsMissingAndMapsBuilderAndRuntimeFailures(t *testing.T) {
 		{
 			name: "runtime",
 			args: completeDaemonArgs(),
-			builder: func(app.LocalRuntimeObservationDaemonConfig) (daemonRunner, error) {
+			builder: func(daemonBuildConfig) (daemonRunner, error) {
 				return &fakeDaemonRunner{err: errors.New("secret output")}, nil
 			},
 			want: exitRuntimeFailure,
@@ -108,6 +140,90 @@ func TestRunRejectsMissingAndMapsBuilderAndRuntimeFailures(t *testing.T) {
 	}
 }
 
+func TestRunWritesClosedDaemonFailureReasonCodes(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		runErr   error
+		closeErr error
+		want     string
+	}{
+		{
+			name: "observer",
+			runErr: testDaemonFailure{
+				code:   "observer",
+				detail: "private observer output",
+			},
+			want: "daemon failed: observer\n",
+		},
+		{
+			name: "local_ipc",
+			runErr: testDaemonFailure{
+				code:   "local_ipc",
+				detail: "private socket path",
+			},
+			want: "daemon failed: local_ipc\n",
+		},
+		{
+			name:   "unknown_fails_closed",
+			runErr: errors.New("private unknown error"),
+			want:   "daemon failed: shutdown\n",
+		},
+		{
+			name:     "close",
+			closeErr: errors.New("private close error"),
+			want:     "daemon failed: shutdown\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeDaemonRunner{
+				err:      test.runErr,
+				closeErr: test.closeErr,
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(
+				context.Background(),
+				completeDaemonArgs(),
+				&stdout,
+				&stderr,
+				func(daemonBuildConfig) (daemonRunner, error) {
+					return runner, nil
+				},
+			)
+			if code != exitRuntimeFailure ||
+				stderr.String() != test.want ||
+				bytes.Contains(stderr.Bytes(), []byte("private")) {
+				t.Fatalf(
+					"code=%d stdout=%q stderr=%q want=%q",
+					code,
+					stdout.String(),
+					stderr.String(),
+					test.want,
+				)
+			}
+		})
+	}
+}
+
+func TestRunClassifiesResultEncodingWithoutDisclosingWriterError(
+	t *testing.T,
+) {
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(),
+		completeDaemonArgs(),
+		failingDaemonWriter{},
+		&stderr,
+		func(daemonBuildConfig) (daemonRunner, error) {
+			return &fakeDaemonRunner{}, nil
+		},
+	)
+	if code != exitRuntimeFailure ||
+		stderr.String() != "daemon failed: result\n" ||
+		bytes.Contains(stderr.Bytes(), []byte("private")) {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
 func TestRunTreatsSignalCancellationAsGracefulBoundedOutput(t *testing.T) {
 	runner := &fakeDaemonRunner{
 		result: app.LocalRuntimeObservationDaemonResult{
@@ -122,7 +238,7 @@ func TestRunTreatsSignalCancellationAsGracefulBoundedOutput(t *testing.T) {
 		completeDaemonArgs(),
 		&stdout,
 		&stderr,
-		func(app.LocalRuntimeObservationDaemonConfig) (daemonRunner, error) {
+		func(daemonBuildConfig) (daemonRunner, error) {
 			return runner, nil
 		},
 	)
@@ -138,6 +254,7 @@ func TestRunTreatsSignalCancellationAsGracefulBoundedOutput(t *testing.T) {
 type fakeDaemonRunner struct {
 	result     app.LocalRuntimeObservationDaemonResult
 	err        error
+	closeErr   error
 	runCalls   int
 	closeCalls int
 }
@@ -151,7 +268,26 @@ func (r *fakeDaemonRunner) Run(
 
 func (r *fakeDaemonRunner) Close() error {
 	r.closeCalls++
-	return nil
+	return r.closeErr
+}
+
+type testDaemonFailure struct {
+	code   string
+	detail string
+}
+
+func (failure testDaemonFailure) Error() string {
+	return failure.detail
+}
+
+func (failure testDaemonFailure) DaemonFailureCode() string {
+	return failure.code
+}
+
+type failingDaemonWriter struct{}
+
+func (failingDaemonWriter) Write([]byte) (int, error) {
+	return 0, errors.New("private result writer")
 }
 
 func completeDaemonArgs() []string {

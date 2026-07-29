@@ -239,3 +239,191 @@ func TestGlobalReadViewReturnsOnlyRequestedTeamRecordsAsStableCopies(t *testing.
 		t.Fatalf("missing AgentGrantsForRun = %#v, want non-nil empty", got)
 	}
 }
+
+func TestGlobalReadViewReturnsBoundedStableProductPages(t *testing.T) {
+	snapshot := emptySnapshot()
+	snapshot.Teams["team-c"] = TeamInstance{
+		ID:               "team-c",
+		DormantSubAgents: []DormantSubAgent{{AgentDefinitionID: "agent-c"}},
+	}
+	snapshot.Teams["team-a"] = TeamInstance{ID: "team-a"}
+	snapshot.Teams["team-b"] = TeamInstance{ID: "team-b"}
+	snapshot.Runs["run-b"] = Run{ID: "run-b", Phase: "running"}
+	snapshot.Runs["run-a"] = Run{ID: "run-a", Phase: "terminal"}
+	snapshot.Evidence["evidence-b"] = Evidence{ID: "evidence-b"}
+	snapshot.Evidence["evidence-a"] = Evidence{ID: "evidence-a"}
+	snapshot.RuntimeInstances["runtime-b"] = RuntimeInstance{
+		ID:                   "runtime-b",
+		ModelIDs:             []string{"provider/model-b"},
+		ObservedCapabilities: []string{"streaming"},
+	}
+	snapshot.RuntimeInstances["runtime-a"] = RuntimeInstance{
+		ID: "runtime-a",
+	}
+	executions := map[string]TeamExecution{
+		"team-c": {
+			TeamInstanceID: "team-c",
+			Status:         "succeeded",
+			Nodes: []TeamExecutionNode{{
+				LogicalNodeID: "main",
+				Attempts: []TeamExecutionAttempt{{
+					AttemptNumber: 1,
+				}},
+			}},
+		},
+		"team-a": {TeamInstanceID: "team-a", Status: "planned"},
+	}
+	view := buildGlobalReadView(snapshot, nil, executions)
+
+	teams, more := view.Teams("", 2)
+	if got, want := []string{teams[0].ID, teams[1].ID},
+		[]string{"team-a", "team-b"}; !reflect.DeepEqual(got, want) || !more {
+		t.Fatalf("Teams() IDs=%v more=%v, want %v true", got, more, want)
+	}
+	teams, more = view.Teams("team-b", 2)
+	if len(teams) != 1 || teams[0].ID != "team-c" || more {
+		t.Fatalf("Teams(after) = %#v, %v", teams, more)
+	}
+	teams[0].DormantSubAgents[0].AgentDefinitionID = "mutated"
+	again, _ := view.Teams("team-b", 2)
+	if again[0].DormantSubAgents[0].AgentDefinitionID != "agent-c" {
+		t.Fatal("Teams() aliases nested caller mutation")
+	}
+
+	runs, _ := view.Runs("", 64)
+	evidence, _ := view.EvidenceRecords("", 64)
+	runtimes, _ := view.RuntimeInstances("", 64)
+	teamExecutions, _ := view.TeamExecutions("", 64)
+	if got := []string{runs[0].ID, runs[1].ID}; !reflect.DeepEqual(got, []string{"run-a", "run-b"}) {
+		t.Fatalf("Runs() IDs = %v", got)
+	}
+	if got := []string{evidence[0].ID, evidence[1].ID}; !reflect.DeepEqual(got, []string{"evidence-a", "evidence-b"}) {
+		t.Fatalf("EvidenceRecords() IDs = %v", got)
+	}
+	if got := []string{runtimes[0].ID, runtimes[1].ID}; !reflect.DeepEqual(got, []string{"runtime-a", "runtime-b"}) {
+		t.Fatalf("RuntimeInstances() IDs = %v", got)
+	}
+	if got := []string{teamExecutions[0].TeamInstanceID, teamExecutions[1].TeamInstanceID}; !reflect.DeepEqual(got, []string{"team-a", "team-c"}) {
+		t.Fatalf("TeamExecutions() IDs = %v", got)
+	}
+	runtimes[1].ModelIDs[0] = "mutated"
+	againRuntimes, _ := view.RuntimeInstances("", 64)
+	if againRuntimes[1].ModelIDs[0] != "provider/model-b" {
+		t.Fatal("RuntimeInstances() aliases caller mutation")
+	}
+	teamExecutions[1].Nodes[0].Attempts[0].AttemptNumber = 99
+	againExecutions, _ := view.TeamExecutions("", 64)
+	if againExecutions[1].Nodes[0].Attempts[0].AttemptNumber != 1 {
+		t.Fatal("TeamExecutions() aliases caller mutation")
+	}
+
+	for _, invalid := range []struct {
+		name string
+		call func() int
+	}{
+		{name: "teams-zero", call: func() int { got, _ := view.Teams("", 0); return len(got) }},
+		{name: "runs-high", call: func() int { got, _ := view.Runs("", 65); return len(got) }},
+		{name: "evidence-invalid-after", call: func() int { got, _ := view.EvidenceRecords("\n", 1); return len(got) }},
+		{name: "runtimes-invalid-after", call: func() int { got, _ := view.RuntimeInstances(" ", 1); return len(got) }},
+	} {
+		t.Run(invalid.name, func(t *testing.T) {
+			if got := invalid.call(); got != 0 {
+				t.Fatalf("invalid page length = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestGlobalReadViewTeamTimelineAnchorIsExactReadOnlyAndTerminal(t *testing.T) {
+	snapshot := emptySnapshot()
+	snapshot.Teams["team-saved"] = TeamInstance{ID: "team-saved"}
+	terminal := TeamExecution{
+		TeamInstanceID: "team-legacy",
+		Status:         "succeeded",
+		Nodes: []TeamExecutionNode{{
+			LogicalNodeID: "main",
+			Attempts: []TeamExecutionAttempt{{
+				AttemptNumber: 1,
+				WorkItemID:    "work-1",
+				RunID:         "run-1",
+			}},
+		}},
+	}
+	events := []journal.Event{{
+		ID:       "event-team-legacy-terminal",
+		StreamID: "team-execution/team-legacy",
+		Seq:      1,
+	}}
+	view := buildGlobalReadView(
+		snapshot,
+		events,
+		map[string]TeamExecution{
+			"team-legacy": terminal,
+			"team-saved": {
+				TeamInstanceID: "team-saved",
+				Status:         "planned",
+			},
+		},
+	)
+
+	saved, ok := view.TeamTimelineAnchor("team-saved")
+	if !ok || saved.Kind != "saved_team" || !saved.Confirmed ||
+		!saved.Executable || saved.ReadOnly {
+		t.Fatalf("saved anchor = %#v, %v", saved, ok)
+	}
+	legacy, ok := view.TeamTimelineAnchor("team-legacy")
+	if !ok ||
+		legacy.TeamInstanceID != "team-legacy" ||
+		legacy.Kind != "historical_execution_only" ||
+		legacy.Confirmed ||
+		legacy.Executable ||
+		!legacy.ReadOnly {
+		t.Fatalf("legacy anchor = %#v, %v", legacy, ok)
+	}
+
+	for _, test := range []struct {
+		name      string
+		execution TeamExecution
+		events    []journal.Event
+	}{
+		{name: "missing-head", execution: terminal},
+		{
+			name: "nonterminal",
+			execution: TeamExecution{
+				TeamInstanceID: "team-legacy",
+				Status:         "running",
+				Nodes:          terminal.Nodes,
+			},
+			events: events,
+		},
+		{
+			name: "no-attempt",
+			execution: TeamExecution{
+				TeamInstanceID: "team-legacy",
+				Status:         "failed",
+				Nodes:          []TeamExecutionNode{{LogicalNodeID: "main"}},
+			},
+			events: events,
+		},
+		{
+			name: "mismatched-id",
+			execution: TeamExecution{
+				TeamInstanceID: "other-team",
+				Status:         "failed",
+				Nodes:          terminal.Nodes,
+			},
+			events: events,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := buildGlobalReadView(
+				emptySnapshot(),
+				test.events,
+				map[string]TeamExecution{"team-legacy": test.execution},
+			)
+			if got, ok := candidate.TeamTimelineAnchor("team-legacy"); ok {
+				t.Fatalf("invalid anchor = %#v, want rejected", got)
+			}
+		})
+	}
+}

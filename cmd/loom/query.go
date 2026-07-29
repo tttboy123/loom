@@ -30,16 +30,30 @@ const (
 )
 
 type runDeps struct {
-	route    func(mode.Intent) mode.Decision
-	status   func(context.Context, string) (projection.Snapshot, error)
-	timeline func(context.Context, timelineInput) (api.TimelinePage, error)
+	route           func(mode.Intent) mode.Decision
+	status          func(context.Context, string) (projection.Snapshot, error)
+	timeline        func(context.Context, timelineInput) (api.TimelinePage, error)
+	app             func(context.Context, []string, io.Reader, io.Writer) error
+	productSnapshot func(
+		context.Context,
+		string,
+		api.LocalProductSnapshotRequest,
+	) (api.LocalProductSnapshot, error)
+	productTimeline func(
+		context.Context,
+		string,
+		api.LocalProductTimelineRequest,
+	) (api.LocalProductTimelinePage, error)
 }
 
 func productionDeps() runDeps {
 	return runDeps{
-		route:    mode.Route,
-		status:   readProductionStatus,
-		timeline: readProductionTimeline,
+		route:           mode.Route,
+		status:          readProductionStatus,
+		timeline:        readProductionTimeline,
+		app:             runTUIApp,
+		productSnapshot: readProductSnapshot,
+		productTimeline: readProductTimeline,
 	}
 }
 
@@ -53,11 +67,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps runD
 	if deps.timeline == nil {
 		deps.timeline = readProductionTimeline
 	}
+	if deps.app == nil {
+		deps.app = runTUIApp
+	}
+	if deps.productSnapshot == nil {
+		deps.productSnapshot = readProductSnapshot
+	}
+	if deps.productTimeline == nil {
+		deps.productTimeline = readProductTimeline
+	}
 	if len(args) == 0 {
-		return invalidInput(stderr, "missing command")
+		if err := deps.app(ctx, nil, os.Stdin, stdout); err != nil {
+			return stateUnavailable(stderr)
+		}
+		return exitSuccess
 	}
 
 	switch args[0] {
+	case "app":
+		if err := deps.app(ctx, args[1:], os.Stdin, stdout); err != nil {
+			return stateUnavailable(stderr)
+		}
+		return exitSuccess
 	case "route":
 		return runRoute(args[1:], stdout, stderr, deps)
 	case "status":
@@ -86,6 +117,7 @@ func runTimeline(
 	fs := flag.NewFlagSet("timeline", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	state := fs.String("state", "", "")
+	socket := fs.String("socket", "", "")
 	team := fs.String("team", "", "")
 	cursor := fs.String("cursor", "", "")
 	limit := fs.Int("limit", journal.MaxReadPageEvents, "")
@@ -95,14 +127,48 @@ func runTimeline(
 	if fs.NArg() != 0 {
 		return invalidInput(stderr, "unexpected positional arguments")
 	}
-	if *state == "" {
-		return invalidInput(stderr, "missing state")
-	}
 	if *team == "" {
 		return invalidInput(stderr, "missing team")
 	}
 	if *limit < 1 || *limit > journal.MaxReadPageEvents {
 		return invalidInput(stderr, "invalid limit")
+	}
+	if *state != "" && *socket != "" {
+		return invalidInput(stderr, "state and socket are mutually exclusive")
+	}
+	if *state == "" {
+		socketPath, err := productSocketPath(*socket)
+		if err != nil {
+			return invalidInput(stderr, "invalid socket")
+		}
+		page, err := deps.productTimeline(
+			ctx,
+			socketPath,
+			api.LocalProductTimelineRequest{
+				TeamInstanceID: *team,
+				Cursor:         *cursor,
+				Limit:          *limit,
+			},
+		)
+		if err != nil {
+			var remote *localProductRemoteError
+			if errors.As(err, &remote) && remote.code == "stream_gap" {
+				if writeJSON(stdout, stderr, onlineTimelineOutput{
+					Command:                  "timeline",
+					SourceMode:               "daemon_api",
+					LocalProductTimelinePage: page,
+				}) != exitSuccess {
+					return exitStateUnavailable
+				}
+				return exitStreamGap
+			}
+			return stateUnavailable(stderr)
+		}
+		return writeJSON(stdout, stderr, onlineTimelineOutput{
+			Command:                  "timeline",
+			SourceMode:               "daemon_api",
+			LocalProductTimelinePage: page,
+		})
 	}
 	page, err := deps.timeline(ctx, timelineInput{
 		StatePath:      *state,
@@ -113,7 +179,9 @@ func runTimeline(
 	if err != nil {
 		var gapErr *api.TimelineGapError
 		if errors.As(err, &gapErr) {
-			if writeJSON(stdout, stderr, timelineOutputFromPage(gapErr.Page())) != exitSuccess {
+			output := timelineOutputFromPage(gapErr.Page())
+			output.SourceMode = "offline_recovery"
+			if writeJSON(stdout, stderr, output) != exitSuccess {
 				return exitStateUnavailable
 			}
 			return exitStreamGap
@@ -124,7 +192,9 @@ func runTimeline(
 		}
 		return stateUnavailable(stderr)
 	}
-	return writeJSON(stdout, stderr, timelineOutputFromPage(page))
+	output := timelineOutputFromPage(page)
+	output.SourceMode = "offline_recovery"
+	return writeJSON(stdout, stderr, output)
 }
 
 func readProductionTimeline(
@@ -190,21 +260,43 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer, dep
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	state := fs.String("state", "", "")
+	socket := fs.String("socket", "", "")
 	if err := fs.Parse(args); err != nil {
 		return invalidInput(stderr, err.Error())
 	}
 	if fs.NArg() != 0 {
 		return invalidInput(stderr, "unexpected positional arguments")
 	}
+	if *state != "" && *socket != "" {
+		return invalidInput(stderr, "state and socket are mutually exclusive")
+	}
 	if *state == "" {
-		return invalidInput(stderr, "missing state")
+		socketPath, err := productSocketPath(*socket)
+		if err != nil {
+			return invalidInput(stderr, "invalid socket")
+		}
+		snapshot, err := deps.productSnapshot(
+			ctx,
+			socketPath,
+			api.LocalProductSnapshotRequest{Limit: 64},
+		)
+		if err != nil {
+			return stateUnavailable(stderr)
+		}
+		return writeJSON(stdout, stderr, onlineStatusOutput{
+			Command:              "status",
+			SourceMode:           "daemon_api",
+			LocalProductSnapshot: snapshot,
+		})
 	}
 
 	snapshot, err := deps.status(ctx, *state)
 	if err != nil {
 		return stateUnavailable(stderr)
 	}
-	return writeJSON(stdout, stderr, statusOutputFromSnapshot(snapshot))
+	output := statusOutputFromSnapshot(snapshot)
+	output.SourceMode = "offline_recovery"
+	return writeJSON(stdout, stderr, output)
 }
 
 func readProductionStatus(ctx context.Context, statePath string) (projection.Snapshot, error) {
@@ -267,10 +359,11 @@ type routeOutput struct {
 }
 
 type statusOutput struct {
-	Command   string           `json:"command"`
-	Modes     []modeStatus     `json:"modes"`
-	WorkItems []workItemStatus `json:"work_items"`
-	Evidence  []evidenceStatus `json:"evidence"`
+	Command    string           `json:"command"`
+	SourceMode string           `json:"source_mode"`
+	Modes      []modeStatus     `json:"modes"`
+	WorkItems  []workItemStatus `json:"work_items"`
+	Evidence   []evidenceStatus `json:"evidence"`
 }
 
 type modeStatus struct {
@@ -293,6 +386,7 @@ type evidenceStatus struct {
 type timelineOutput struct {
 	SchemaVersion  int                  `json:"schema_version"`
 	Command        string               `json:"command"`
+	SourceMode     string               `json:"source_mode"`
 	TeamInstanceID string               `json:"team_instance_id"`
 	ViewVersion    string               `json:"view_version"`
 	NextCursor     string               `json:"next_cursor"`
@@ -302,6 +396,24 @@ type timelineOutput struct {
 	Board          api.TeamBoard        `json:"board"`
 	Attention      []api.AttentionItem  `json:"attention"`
 }
+
+type onlineStatusOutput struct {
+	Command    string `json:"command"`
+	SourceMode string `json:"source_mode"`
+	api.LocalProductSnapshot
+}
+
+type onlineTimelineOutput struct {
+	Command    string `json:"command"`
+	SourceMode string `json:"source_mode"`
+	api.LocalProductTimelinePage
+}
+
+type localProductRemoteError struct {
+	code string
+}
+
+func (err *localProductRemoteError) Error() string { return err.code }
 
 func timelineOutputFromPage(page api.TimelinePage) timelineOutput {
 	var gap *api.StreamGap

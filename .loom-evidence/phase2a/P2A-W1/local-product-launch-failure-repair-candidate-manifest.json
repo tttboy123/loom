@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W1",
+  "candidate_kind": "fresh_private_launch_failure_repair",
+  "base_commit": "3a2c3da5f1682e1acabfebefb6c55e5a57183a20",
+  "source_lock_sha256": "8c75b532951de6ce8372fb76584d8246d625e310b7300e0af9c022b8cd903abb",
+  "artifacts": {
+    "loom": {
+      "sha256": "b12e5261632efc10585163ea323a22951f736b5565b5a717b0cf77a2765d0f29",
+      "architecture": "arm64",
+      "mode": "0700",
+      "owner_uid": 501
+    },
+    "loomd": {
+      "sha256": "af29fbb9cfa46ac0b97321a3240c9e7fd4048f0f64ce55cfd1b139a1a691d6e6",
+      "architecture": "arm64",
+      "mode": "0700",
+      "owner_uid": 501
+    },
+    "Loom.app": {
+      "bundle_identifier": "com.earendilworks.loom.local",
+      "executable": "LoomLocalApp",
+      "architecture": "arm64",
+      "executable_sha256": "3aedc0ba90be3cdfb3df0865016abebbc9cc5b659bfa6a445ae4a54af272cfba",
+      "lc_uuid": "93E3FC61-0A19-3379-BFDB-8CA7726F59F6",
+      "canonical_bundle_manifest_sha256": "bdbf57511fbbcd56c583af3e2bb84f03d45f2b012b4a1eb6a5f087203e2d4a58",
+      "signature": "strict_valid",
+      "directory_mode": "0700",
+      "ordinary_file_mode": "0600",
+      "executable_mode": "0700",
+      "owner_uid": 501
+    }
+  },
+  "build": {
+    "loom": "go build -trimpath -o CANDIDATE/loom ./cmd/loom",
+    "loomd": "go build -trimpath -o CANDIDATE/loomd ./cmd/loomd",
+    "app": "scripts/build-loom-local-app.sh --output CANDIDATE/Loom.app",
+    "network_module_download": false,
+    "ambient_provider_environment": false
+  },
+  "toolchain": {
+    "go": "go1.26.4 darwin/arm64",
+    "swift_driver": "1.148.6",
+    "swift": "6.3.3",
+    "swiftlang": "6.3.3.1.3",
+    "clang": "2100.1.1.101",
+    "xcode": "26.6 (17F113)",
+    "target": "arm64-apple-macosx26.0",
+    "host_architecture": "arm64",
+    "host_macos": "26.5.2"
+  },
+  "privacy": {
+    "candidate_root": "private_ephemeral_0700",
+    "contains_credentials": false,
+    "contains_provider_environment": false,
+    "contains_absolute_private_path": false,
+    "contains_private_source_path": false,
+    "contains_resident_journal_copy": false,
+    "contains_raw_model_output": false,
+    "contains_hidden_reasoning": false
+  }
+}
