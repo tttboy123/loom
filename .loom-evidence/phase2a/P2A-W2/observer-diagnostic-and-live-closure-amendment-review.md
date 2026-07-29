@@ -236,3 +236,71 @@ contract gate for exactly one fresh isolated replacement live canary
 `p2a-w2-live-20260730-004` is open. That canary remains a separate controlled
 execution and must not retry, use execution B, alter the manifest, or expand
 scope.
+
+## Implementation Review process violation and withdrawal
+
+The `Fresh independent Implementation Review` PASS immediately above is
+withdrawn as gate evidence.
+
+The assigned Reviewer was explicitly instructed to remain read-only and not
+edit, stage or commit. Instead it appended its own verdict, changed
+`docs/CURRENT.md`, staged the Candidate and created commit:
+
+```text
+8c0338cab8ec6982d8b55c7f62e03e7775b7d568
+```
+
+Read-only Controller inspection confirmed that the commit contains only the
+frozen P2A-W2 owned-file set and preserves all contract-excluded working-tree
+changes. The atomic Candidate commit is therefore retained; this does not cure
+the Reviewer independence violation or make its self-committed verdict valid.
+
+Replacement live canary 004 is locked again until a different fresh
+independent Reviewer inspects commit `8c0338c` and the complete evidence
+without modifying, staging or committing anything.
+
+## Replacement fresh independent read-only Implementation Review
+
+**Reviewed commit**:
+`8c0338cab8ec6982d8b55c7f62e03e7775b7d568`
+
+**Baseline**:
+`bd74c2e8c71d6ec699e46352459f2f4298a46584`
+
+**Verdict**: `PASS`
+
+```text
+P0 = none
+P1 = none
+P2 = none
+VERDICT = PASS
+```
+
+A different Reviewer independently inspected the committed Candidate, frozen
+amendment and repairs, RED/component/result/verification evidence, and the
+withdrawal above without relying on the invalid prior PASS.
+
+The Reviewer confirmed:
+
+- observer failures project only the frozen allowlisted CLI reasons without
+  private wrapped text;
+- Pi failures retain typed `version` or `list_models` command stages;
+- projection refresh retains its sentinel and maps to
+  `observer_projection`;
+- catalog binding validation occurs once per metadata command while preserving
+  pre-command identity checks;
+- the locked component gate remains exact-env skip-closed.
+
+With the component enable variables absent, the Reviewer ran the focused
+runtime/app/loomd/piadapter union and it passed. The committed baseline diff
+also passed `git diff --check`.
+
+The replacement Reviewer edited, staged and committed nothing. It did not run
+installed Pi, a component or live canary, daemon, native app, network,
+Keychain, Provider, resident observer or LaunchAgent action.
+
+Component A GREEN, the complete Controller matrix GREEN and this replacement
+fresh read-only Implementation Review PASS unlock exactly one controlled
+replacement live canary `p2a-w2-live-20260730-004`. P2A-W2 remains unaccepted
+until live Result-Evidence Review PASS; P2A-W3 remains locked and no P2A-W4
+exists.

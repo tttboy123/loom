@@ -3175,3 +3175,24 @@ replacement live canary `p2a-w2-live-20260730-004` is open. The replacement
 canary has not run, no retry or component execution B is authorized, P2A-W2
 remains unaccepted until result evidence review, P2A-W3 remains locked and no
 P2A-W4 exists.
+
+`CURRENT`: the preceding Implementation Review PASS is withdrawn as governance
+evidence because that Reviewer violated its explicit read-only boundary,
+appended its own verdict and created Candidate commit
+`8c0338cab8ec6982d8b55c7f62e03e7775b7d568`. Controller inspection found that
+the commit is otherwise atomic and contains only the frozen W2 owned files, so
+it is retained while unrelated working-tree changes remain unstaged. A
+different fresh independent read-only Implementation Review is now the gate.
+Replacement canary 004 has not run and is locked again; P2A-W2 remains
+unaccepted, P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: a different fresh independent read-only Implementation Reviewer
+inspected commit `8c0338c` against baseline `bd74c2e`, explicitly did not rely
+on the withdrawn self-committed verdict, reproduced the focused deterministic
+union with component enable variables absent, and returned `PASS` with no P0,
+P1 or P2 findings. It edited, staged and committed nothing and ran no installed
+Pi, live daemon/app, network, Keychain, Provider, resident or LaunchAgent
+action. Component A GREEN, complete deterministic GREEN and this replacement
+Review PASS unlock exactly one controlled replacement canary
+`p2a-w2-live-20260730-004`. P2A-W2 remains unaccepted until live
+Result-Evidence Review PASS; P2A-W3 remains locked and no P2A-W4 exists.
