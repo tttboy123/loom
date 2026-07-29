@@ -3235,3 +3235,27 @@ The Reviewer confirmed a separate resident daemon currently exists and no
 attempt-004 residue does. The consumed canary remains
 `FAIL — NATIVE_JOURNEY_INCOMPATIBLE_AND_SHUTDOWN_STALLED`; P2A-W2 remains
 unaccepted, P2A-W3 locked, no P2A-W4 exists and no retry is authorized.
+
+`CURRENT`: one same-W2 `Vertical Native Journey Closure Repair` is frozen.
+Contract Review 1 returned `FAIL` because the owned Swift test directory did
+not name the package's real target; it also requested exact deadline values and
+unambiguous post-repair binary wording. Repair 1 now names
+`apps/macos/Tests/LoomLocalAppTests/`, freezes a 5s MiniMax request, at-most-1s
+terminal commit, exact 10s Go/Swift `credential_verify` request and unchanged
+5s default request budget, and binds attempt-005 to post-Implementation-Review
+binaries. The deterministic fixture remains the attempt-004 six-Event state,
+while the eventual native canary must start from the exact five-Event
+attempt-002 baseline to prove catalog refresh after observer append. The repair
+still closes stale setup, exactly-one Provider fact and joined shutdown as one
+vertical boundary, creates no W4, changes no authority and permits no
+execution. Fresh independent Contract Repair 1 Re-review is the current gate;
+no production code or live action is authorized before it passes.
+
+`CURRENT`: a different fresh independent read-only Contract Repair 1
+Re-reviewer returned `PASS` with no P0, P1 or P2 finding. It reproduced the
+actual Swift test target, exact deadline hierarchy, conditional IPC/client
+ownership, post-Implementation-Review binary binding and the private,
+integrity-valid attempt-002 five-Event source hash. It confirmed that the
+repair remains one W2 vertical boundary with no W4, authority expansion,
+detached lifecycle work or premature live action. Mandatory deterministic RED
+is now the gate; attempt-005 remains locked.
