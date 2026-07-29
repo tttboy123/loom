@@ -3440,3 +3440,35 @@ Complete deterministic GREEN plus this Review unlock the atomic Candidate
 commit. Replacement lineage `p2a-w2-live-20260730-006` remains locked until
 that commit and exact preflight; P2A-W2 remains unaccepted, P2A-W3 remains
 locked and no P2A-W4 exists.
+
+`CURRENT`: Candidate commit `47d5f56` was materialized for the only replacement
+lineage `p2a-w2-live-20260730-006`, but the one permitted daemon start exited
+immediately with code `4` and exact safe stderr
+`daemon failed: local_ipc`. The Controller proved the default product socket
+absent before start but failed to include its sibling
+`/Users/lune/Library/Application Support/Loom/run/loomd.sock.lock` in that
+assertion. Post-failure evidence proves the private zero-byte lock predates the
+fresh attempt root by more than one hour and has no current owner. The strict
+IPC server refused it before listener readiness, so no native app, Computer
+Use, Runtime/Codex process, Keychain, Provider request, Team Builder action or
+SIGINT occurred. The attempt database remains byte-identical to the frozen
+five-Event source with integrity `ok`; product socket and attempt processes are
+absent, isolation is empty, the separate resident LaunchAgent was untouched,
+and secret-negative checks pass. The allowance is consumed without retry under
+the frozen stop rule. P2A-W2 is `HUMAN_REQUIRED` and not accepted, P2A-W3
+remains locked, no P2A-W4 exists, and fresh independent read-only
+Result-Evidence Review is the current gate.
+
+`CURRENT`: fresh independent read-only Result-Evidence Review returned `PASS`
+for the recorded attempt-006 failed outcome, with no P0, P1 or P2 finding. It
+reproduced the byte-identical five-Event databases, artifact identities,
+zero-byte stdout, exact 25-byte safe stderr, absent socket and attempt
+processes, empty isolation, unchanged resident configuration and
+secret-negative result. It independently proved the unowned private product
+lock predates the attempt root by 3,938 seconds and confirmed the exclusive
+lock-before-listener code path. Its only non-blocking note is that no separate
+exit-code sidecar was retained; code `4` is corroborated by the Controller
+result and exact Candidate mapping. Under the frozen no-retry stop rule,
+P2A-W2 is now `HUMAN_REQUIRED` and not accepted, P2A-W3 remains locked, no
+P2A-W4 exists, and no further single-point amendment or replacement canary is
+authorized.
