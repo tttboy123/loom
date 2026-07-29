@@ -2869,3 +2869,87 @@ executed 27 XCTest cases with one expected visual-audit-only skip plus all three
 Swift Testing cases. No live action occurred. The current gate is the exact
 atomic checkpoint commit; W2 live/acceptance remains `HUMAN_REQUIRED` and
 P2A-W3 remains locked.
+
+`CURRENT`: the reviewed P2A-W2 deterministic checkpoint was committed locally
+at `48eb18b7c72d06a6149e0220023aa0d6d4bf1677`; all contract-excluded user
+changes remain unstaged. The user then confirmed that a genuinely fresh
+MiniMax credential is ready for direct entry into the native product. Exact
+pre-live inspection stopped before every mutation because the frozen
+`--codex-executable` named the npm symlink/JavaScript wrapper while production
+`SystemCodexStatusRunner` accepts only a regular executable and runs with an
+empty environment. The same official Codex installation contains its regular
+arm64 native binary with SHA-256
+`29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a`.
+One same-W2 `Live Gate Codex Native Binary Correction` is now awaiting fresh
+independent Contract Review. The accepted resident Runtime observer remains
+running without a product socket and must remain untouched. The attempt root
+and default product socket remain absent; no Codex process, daemon, native app,
+Keychain, Provider, network, Journal, staging, or canary action occurred, so
+allowance remains unconsumed and P2A-W3 remains locked.
+
+`CURRENT`: fresh independent Contract Review of the same-W2 Codex native binary
+correction returned `PASS` with no P0, P1, or P2 findings. The corrected
+official native arm64 executable path may now enter exact preflight without
+relaxing the production regular-file, empty-environment, exact-argument or
+before/launch/after identity checks. The Reviewer modified and executed
+nothing. No canary action has occurred; allowance remains unconsumed, the
+resident no-socket Runtime observer remains untouched, and P2A-W3 remains
+locked.
+
+`CURRENT`: exact pre-consumption startup exposed one frozen Runtime input
+defect: production Pi metadata intentionally constructs its child `PATH` only
+from ordered `--runtime-dir` arguments, while the original W2 manifest named
+only Pi's `.bin` directory and could not resolve the reviewed Node interpreter.
+The first startup exited `daemon failed: observer` with zero Journal Events,
+no socket, no app, no credential, no Keychain or Provider action, so allowance
+remained unconsumed. The same-W2 `Pi Node Search Path Correction` locked the
+reviewed Node arm64 binary SHA-256
+`1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8`
+as the second ordered search directory. Fresh independent Contract Review and
+an exact Event-boundary wording re-review both returned `PASS`; no product
+source or authority boundary changed.
+
+`CURRENT`: the one corrected daemon startup passed with the exact private
+`0600` socket, `0600` SQLite and only one expected isolated
+`RuntimeInstanceDiscovered` Event. The frozen intermediate SwiftPM executable
+then proved non-addressable because it has no `CFBundleIdentifier`; it was
+stopped before UI interaction or canary consumption. The same-W2 reviewed
+`Native Bundle Materialization Correction` reused the already accepted W1
+`scripts/build-loom-local-app.sh` boundary to materialize one fresh
+`com.earendilworks.loom.local` arm64 `Loom.app`. Its executable SHA-256 is
+`1f8408a396fbf31c4e15c3561b79ef4df053222b37874ccf187f7e547a07f5e0`;
+strict signature, permissions and no-symlink verification passed. Computer Use
+then independently addressed the native Team Builder without restarting the
+daemon.
+
+`CURRENT`: the P2A-W2 native journey reached the required user-only MiniMax
+SecureField hand-off. Across three consecutive goal turns the field remained
+empty, `Store securely` remained disabled, MiniMax remained `Unconfigured`,
+and the user did not perform direct credential entry/submission. No Provider
+test, Keychain mutation, credential Event, TeamDefinition, TeamInstance,
+AgentInstance, WorkItem, Run, Grant, Evidence, dispatch or generation exists;
+the only authoritative fact is the expected isolated Runtime discovery.
+The addressable app and isolated daemon were cleanly stopped, the socket is
+absent, the SQLite/attempt root are retained for read-only Result-Evidence
+Review, and the resident accepted Runtime observer remains outside the attempt.
+The live allowance is unconsumed, P2A-W2 remains `HUMAN_REQUIRED` and not
+accepted, P2A-W3 remains locked, and P2A-W4 does not exist.
+
+`CURRENT`: fresh independent read-only Result-Evidence Review of the closed
+pre-consumption W2 attempt returned `PASS` with no P0, P1, or P2 findings. The
+Reviewer reproduced the exact six target hashes, attempt/database/bundle modes,
+absent socket and attempt processes, preserved resident no-socket observer, and
+the SQLite Event set of exactly one Runtime discovery and no credential, team
+or execution authority. It modified and executed no product surface and used
+no GUI, Keychain, environment, chat value or network. This accepts the
+`HUMAN_REQUIRED (allowance unconsumed)` status evidence only; it does not accept
+P2A-W2 or unlock P2A-W3.
+
+`CURRENT`: after Result-Evidence Review `PASS`, the closed secret-negative W2
+attempt root was moved to the user's Trash as a recoverable deletion and the
+initially absent, now-empty default run directory was removed. The exact
+attempt root, run directory and product socket are absent from Application
+Support; no attempt process remains. The resident accepted Runtime observer
+and its state remain untouched. This cleanup changes no acceptance state:
+P2A-W2 is still `HUMAN_REQUIRED` with allowance unconsumed, P2A-W3 is locked,
+and P2A-W4 does not exist.
