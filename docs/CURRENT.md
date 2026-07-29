@@ -3113,3 +3113,14 @@ absent socket/processes and separate resident observer without inspecting
 credential payloads/references or executing any live surface. This accepts only
 the corrected `FAIL — OBSERVER_AFTER_IPC_READY` evidence. P2A-W2 remains
 unaccepted, P2A-W3 stays locked, and no P2A-W4 exists.
+
+`CURRENT`: the same-W2 `Observer Diagnostic and Live Closure Amendment` is
+frozen after Contract Review required two P1 and one P2 repairs and fresh
+independent Repair 1 Re-review returned `PASS` with no findings. It freezes
+allowlisted observer stage/cause codes without raw child output, exact
+installed-Pi component manifest/enable/identity/offline boundaries, at most
+component execution A plus one conditional post-repair execution B, and one
+replacement attempt-004 only after component, deterministic and fresh
+Implementation Review GREEN. It changes no Journal/StateWriter/Projection/Team
+authority, creates no W4 and keeps P2A-W3 locked. Mandatory deterministic RED
+is the current gate; no new Pi/product/live action has occurred.
