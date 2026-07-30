@@ -4016,3 +4016,42 @@ paths compared before and after verification. The existing
 `apps/macos/.build/` remains user-owned and must not be cleaned or rewritten.
 The deterministic/preflight matrix is now the current gate; live remains
 locked.
+
+`CURRENT`: the Mission Orchestration Live Closure deterministic product matrix,
+canonical Codex transaction, source lock and exact binary materialization
+passed, but the excluded-path preflight gate returned `FAIL` before daemon
+start. Canonical Codex is the regular executable
+`/Users/lune/Documents/Codex/devtools/npm/lib/node_modules/@openai/codex/bin/codex.js`
+with SHA-256 `134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477`;
+its status-only observation returned the one accepted stderr line
+`Logged in using ChatGPT`.
+
+The first Go matrix was run concurrently with a fresh Swift build and five
+five-second process-start fixtures timed out. The failure was preserved;
+resource-isolated focused reruns passed, followed by complete Go, repository
+race, vet, Swift debug, Thread Sanitizer, Release and real Go-to-Swift IPC
+PASS. No product source differs from Candidate `d0252064`.
+
+However, one native bin-path discovery command unexpectedly wrote generated
+metadata into the pre-existing excluded `apps/macos/.build/` cache despite
+receiving an attempt-local scratch path. Repository dirty-state digest stayed
+identical, but excluded metadata digest changed from `9c26eecd...18d1c` to
+`9ad85089...7924`. The Controller did not clean or reset that user-owned cache.
+No daemon/app/TUI was started, the product socket/lock and controlled artifact
+root remain absent, the controlled SQLite is empty and isolation is empty, so
+the replacement lineage is not consumed. Live remains locked. Fresh
+independent Preflight Failure Review is the current gate; P2A-W2 remains
+`HUMAN_REQUIRED / NOT ACCEPTED`, P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: fresh independent Preflight Failure Review returned `PASS` on
+evidence accuracy with no P0/P1/P2. It independently confirmed the sequential
+matrix PASS, source and binary hashes, canonical Codex status contract,
+excluded metadata mismatch and timestamps, absence of controlled processes,
+socket/lock, fixture artifacts and state mutations, and the no-cleanup record.
+It also confirmed that the replacement lineage was not consumed because no
+daemon or controlled fixture side effect occurred.
+
+The live gate nevertheless remains `FAIL / LOCKED`: the excluded
+`apps/macos/.build/` cache was modified and cannot be truthfully presented as
+untouched. P2A-W2 remains `HUMAN_REQUIRED / NOT ACCEPTED`; P2A-W3 remains
+locked and no P2A-W4 exists.
