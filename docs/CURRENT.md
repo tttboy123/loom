@@ -3988,3 +3988,31 @@ process/socket/open-handle residue. Its sole P2 caveat is the explicitly
 recorded inferential root-cause strength above. This failed lineage is closed
 without retry; a new live execution would require an explicit reviewed reopen
 of the frozen no-retry boundary.
+
+`CURRENT`: the Product Owner's standing authorization for subsequent in-scope
+actions has now been applied to one complete P2A-W2 Mission Orchestration Live
+Closure Reopen. The frozen contract is
+`.loom-evidence/phase2a/P2A-W2/mission-orchestration-live-closure-reopen-contract.md`.
+It preserves the first failed lineage unchanged, creates no W4 or point
+Amendment, owns no product source, and retains every accepted Journal, Rules,
+Work, Grant, Evidence, Provider and IPC boundary.
+
+The reopen permits one fresh lineage only after Contract Review, complete
+deterministic/preflight verification and Preflight Implementation Review pass.
+It requires the configured Codex symlink to be resolved before daemon start
+and freezes the canonical regular executable identity; it does not relax
+native-auth validation or modify Codex installation/OAuth. Product live action
+remains locked. Fresh independent Contract Review is the current gate.
+
+`CURRENT`: fresh independent Mission Orchestration Live Closure Contract Review
+returned `PASS` with no P0/P1. It confirmed the one-complete-reopen precedence,
+unchanged first failure, exact no-product-source boundary, canonical Codex
+regular-file transaction, strict status parsing, fresh one-shot lineage,
+complete 15-step native/TUI proof and preserved authority boundaries.
+
+Its sole P2 execution caveat is binding: all mutable Go and Swift build/test
+caches must live under the controlled attempt root, with excluded repository
+paths compared before and after verification. The existing
+`apps/macos/.build/` remains user-owned and must not be cleaned or rewritten.
+The deterministic/preflight matrix is now the current gate; live remains
+locked.
