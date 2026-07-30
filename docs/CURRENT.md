@@ -4107,3 +4107,34 @@ replacement lineage
 preflight remains immutable `FAIL`; the recoverable quarantine is its reviewed
 Product Owner-authorized disposition. The complete 15-step canary and no-retry
 boundary remain mandatory.
+
+`CURRENT`: the unique Mission Orchestration replacement lineage
+`p2a-w2-mission-workbench-live-20260730-002` was consumed and stopped
+`FAIL — NATIVE_DECISION_CLIENT_PROTOCOL_UNAVAILABLE`.
+
+The exact signed native app connected to the product socket and proved the
+Journal-backed five-lane Mission Board, five controlled Missions, Mission Room
+draft/Inspector continuity, Team Pulse, the Provider Manage route, a
+fail-closed missing-Evidence Review Gate, real TUI parity and normal app/TUI/
+daemon shutdown. The controlled daemon appended exactly one Pi discovery
+Event; UI interaction appended no Event. Final state is 73 Events with SQLite
+integrity `ok`, empty isolation, absent product socket/lock, no controlled
+process or state handle and unchanged Candidate product source.
+
+The required prepared Authorization and Recovery interactions are blocked by a
+real product composition defect. `LocalIPCClient` implements the decision
+methods but declares only `LocalProductClientProtocol` and
+`LocalProductSetupClientProtocol`; `LocalProductStore` obtains the decision
+client through a conditional cast to `LocalProductDecisionClientProtocol`, so
+the real app receives `nil`. A read-only framed request proved the daemon
+returns the valid prepared sheet, isolating the failure from Journal, IPC and
+fixture authority.
+
+No hot patch, direct IPC mutation, daemon restart, alternate binary or second
+lineage was used. Fresh Result-Evidence Review returned `PASS` only for the
+recorded `FAIL / HUMAN_REQUIRED` classification: SQLite integrity, Event
+counts, secret-negative scans, process/socket cleanup, frozen binary identities,
+source immutability and the native decision-client protocol defect were
+independently checked. P2A-W2 remains `HUMAN_REQUIRED / NOT ACCEPTED`; P2A-W3
+remains locked and no P2A-W4 exists. Any product repair requires a reviewed
+complete P2A-W2 reopen rather than a point Amendment.

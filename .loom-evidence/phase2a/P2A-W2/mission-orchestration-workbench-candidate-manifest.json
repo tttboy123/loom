@@ -8,6 +8,9 @@
   "implementation_review": "PASS",
   "visual_review": "PASS",
   "live_canary": "FAIL",
+  "live_canary_attempt": "p2a-w2-mission-workbench-live-20260730-002",
+  "live_failure_code": "NATIVE_DECISION_CLIENT_PROTOCOL_UNAVAILABLE",
+  "live_result_review": "PASS_FOR_FAIL_HUMAN_REQUIRED",
   "excluded_dirty_paths": [
     ".loom-evidence/phase1-final-live-gate/",
     "AGENTS.md",
