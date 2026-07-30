@@ -382,6 +382,7 @@ private struct IPCRequest<Params: Encodable>: Encodable {
 
 public final class LocalIPCClient:
     LocalProductClientProtocol,
+    LocalProductDecisionClientProtocol,
     LocalProductSetupClientProtocol
 {
     public static let requestMaximum = 65_536

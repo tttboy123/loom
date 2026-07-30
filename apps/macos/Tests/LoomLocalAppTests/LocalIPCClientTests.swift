@@ -4,6 +4,13 @@ import XCTest
 @testable import LoomLocalAppCore
 
 final class LocalIPCClientTests: XCTestCase {
+    func testRealClientAdvertisesDecisionProtocolForNativeStoreComposition() throws {
+        let client: LocalProductClientProtocol =
+            try Self.makeClientBackedByPrivateSocket()
+
+        XCTAssertNotNil(client as? LocalProductDecisionClientProtocol)
+    }
+
     func testFrameUsesFourByteBigEndianLength() throws {
         let body = Data("{}".utf8)
         let framed = try LocalIPCWire.frame(body, maximum: 65_536)
@@ -162,5 +169,39 @@ final class LocalIPCClientTests: XCTestCase {
             XCTFail("realpath failed")
         }
         XCTAssertNoThrow(try LocalIPCClient(socketPath: path))
+    }
+
+    private static func makeClientBackedByPrivateSocket() throws -> LocalIPCClient {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-swift-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let path = root.appendingPathComponent("loomd.sock").path
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8CString)
+        withUnsafeMutableBytes(of: &address.sun_path) {
+            $0.copyBytes(from: bytes.map { UInt8(bitPattern: $0) })
+        }
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_un>.size)
+                )
+            }
+        }
+        XCTAssertEqual(result, 0)
+        XCTAssertEqual(chmod(path, 0o600), 0)
+        let client = try LocalIPCClient(socketPath: path)
+        Darwin.close(descriptor)
+        try FileManager.default.removeItem(at: root)
+        return client
     }
 }

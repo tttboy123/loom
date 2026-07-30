@@ -4190,3 +4190,41 @@ no cache handle, no live process/state and the bounded
 
 The exact recoverable quarantine and sequential controlled-route rerun are now
 unlocked. Live and Implementation acceptance remain locked.
+
+`CURRENT`: Deterministic Cache Repair 1 completed. The exact 88M generated
+cache was preserved by one same-volume atomic rename with unchanged root
+device/inode and matching 173-entry lstat, 147-file SHA and one-symlink
+manifests. No cache content was deleted, rewritten, restored or reused.
+
+The bounded `SWIFTPM_BUILD_DIR` probe resolved beneath the controlled attempt
+root. The real Go-to-Swift prepared-decision fixture, full Go matrix,
+repository race, vet and all focused authority/replay/concurrency gates then
+passed sequentially; `apps/macos/.build` remained absent after every command.
+Complete Swift debug, TSan and Release also pass.
+
+Product diff remains the exact two owned Swift files. No daemon, app, TUI,
+socket or Attempt 003 state exists. Fresh Cache Repair Result Review is the
+current gate; live and Implementation acceptance remain locked.
+
+`CURRENT`: fresh independent Deterministic Cache Repair 1 Result Review
+returned `PASS` with no P0/P1/P2. It reproduced absent repository cache,
+unchanged quarantine inode and size, byte-identical 173/147/1 manifests,
+controlled Swift contract-probe output, exact two-file product diff and no
+controlled process/socket/live residue.
+
+This PASS unlocks fresh Implementation Review only. Live remains locked.
+
+`CURRENT`: fresh independent Mission Decision Vertical Closure Implementation
+Review returned `PASS` with no P0/P1/P2. It independently confirmed the exact
+two-file product diff, minimal real-client protocol conformance, unchanged
+strict IPC/fail-closed behavior, a fresh focused real-client GREEN, absent
+repository SwiftPM cache and the repaired 32-file source lock:
+
+```text
+68ef6b9ab387fb5a4058a967f50795f4a988add34caf2854780e8fe6681abc66
+```
+
+No controlled daemon, native app, TUI, product socket or Attempt 003 state
+exists. This PASS unlocks exactly one fresh complete lineage,
+`p2a-w2-mission-decision-live-20260730-003`; P2A-W2 remains not accepted until
+that native canary and its fresh Result-Evidence Review pass.

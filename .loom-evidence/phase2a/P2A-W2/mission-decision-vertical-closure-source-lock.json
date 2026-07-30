@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W2",
+  "contract": "Mission Decision Vertical Closure Reopen",
+  "base_commit": "5fd31a460207874712082549386527ae0576cd19",
+  "combined_source_digest": "68ef6b9ab387fb5a4058a967f50795f4a988add34caf2854780e8fe6681abc66",
+  "file_count": 32,
+  "files": [
+    {
+      "path": "apps/macos/Sources/LoomLocalAppContractProbe/main.swift",
+      "sha256": "11bdd6944289d84706b002ec3ece141777a5afaaa4464460bd19007803a4ecd8"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",
+      "sha256": "ae1e82e86a369f64173186474434ba65c7a2055ab21123731be2b372ea0bc762"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductDecisionModels.swift",
+      "sha256": "4dc16012174dd3f60f33574a30a29cc2efe08cbe88043316b7b99884a4cb84cb"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductModels.swift",
+      "sha256": "a8da26c4dfb0d39e5e231ec923802e4cae6885ca4b18530716870b4f241cb4a6"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift",
+      "sha256": "234924d948c3856909315b6de8e424245fdd344e7cd102eaef7c74d5b08bb4ae"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/MissionOrchestration.swift",
+      "sha256": "db4924f7cd876d1bfb7a2450a9628c9a768f5ff464c925931fb0a1d2c58405b2"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/ContentView.swift",
+      "sha256": "fcd3119abb30a6e83fa352b3924c290807c189b45b83dab27d4a3bcec45c9ed8"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/LoomGraphite.swift",
+      "sha256": "0c0fbd9dc045c470b1442350e09ca739bfe210a3e7c0d99f13c191aac6af2cd9"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+      "sha256": "7e3962420e566c6dae317fb320cad7bd7d4614f025dbe8864f424d5ed08631bd"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift",
+      "sha256": "928baa71f396dbff2052224b88af8b17807fe2d3cdd0d59cbc7b8c4a61a28fb2"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductDecisionModelsTests.swift",
+      "sha256": "d5070d3eb92474d69e9261267fb335e82b7e9332719fbef4aba080aee0e4fb27"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift",
+      "sha256": "c3f67e3e1704db4bef86c9da8a1e28bd19bff49075e9efe44f7ecdd01fcb3777"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift",
+      "sha256": "6caf12f99c81098fc99c74349b1f989baf244b1e3a648d935f04517894352555"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LoomGraphiteViewTests.swift",
+      "sha256": "0e47734151f5f6c233a49bdc281310aaaf2768b574d5301a3bcbd5faa44ad8c2"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/MissionOrchestrationTests.swift",
+      "sha256": "428f0d48008dd1f10fc171e706b45fc05cbcc0c60d5aa3453f53a405e86e08eb"
+    },
+    {
+      "path": "cmd/loomd/product_daemon.go",
+      "sha256": "49a0b72d3bf712585c5e447a7e6d06573e90266574f5ac99ff6ba83edfe9e939"
+    },
+    {
+      "path": "cmd/loomd/product_daemon_test.go",
+      "sha256": "ab987454f6db3e4f3c08c9260249652c40a174bcd2613b82294f153903a60084"
+    },
+    {
+      "path": "internal/api/local_product_decision.go",
+      "sha256": "f4b44b24d9a5bfc9f0ba756276814d9503d2c9cfeac4764d42d286da05d0a7cd"
+    },
+    {
+      "path": "internal/api/local_product_decision_test.go",
+      "sha256": "db7081b1c9dee3e9c2836b4c2fae4eb9763e546cd3552459eecc81e3629312a3"
+    },
+    {
+      "path": "internal/api/local_product_mission.go",
+      "sha256": "8bc31b7beb780ca13a5de59a08303bff93ae4d174d3d907861621eafa2b1364f"
+    },
+    {
+      "path": "internal/api/local_product_mission_test.go",
+      "sha256": "f7fd7a51e6b31da0326ec3177a1a0de35c38674ebca152015fc3633c27392ae5"
+    },
+    {
+      "path": "internal/api/local_product_read.go",
+      "sha256": "8f9f11999f4a69b094ce6d117211b6f59294cd3b8389dc0b8de77d2acadc6347"
+    },
+    {
+      "path": "internal/api/local_product_read_test.go",
+      "sha256": "066ca340cf189bfaba2311c09dc271c813a33a5ffccad31ff0ce7d60f111595f"
+    },
+    {
+      "path": "internal/app/local_product_decision.go",
+      "sha256": "0b490859fe63b98e4b5ad85c0de80173e13656364047ec08443934aa4dfc775f"
+    },
+    {
+      "path": "internal/app/local_product_decision_test.go",
+      "sha256": "bc7c46473303ebcac6982b856164c9402d1d64889ee9914d9ab20e2f12e00235"
+    },
+    {
+      "path": "internal/localipc/protocol.go",
+      "sha256": "bda5e9ae375b3f72a5c5156318f304bc9f8a608b8e6e2f94ecbb9a4407d59963"
+    },
+    {
+      "path": "internal/localipc/protocol_test.go",
+      "sha256": "380f5697e1b75ab6e5617ac9b597c5aa2b6e0eef09b2252405482c4acaceb609"
+    },
+    {
+      "path": "internal/localipc/swift_contract_test.go",
+      "sha256": "c9a4669eda8dfe3c80bba2f4a6ceb7bb5412ab97b1c56dae5487863d3f9e34f1"
+    },
+    {
+      "path": "internal/projection/global_read_view.go",
+      "sha256": "78b4a2a83b6f5a337b022f46aa9740970f373ec5ed2d695b95715372b31d25c1"
+    },
+    {
+      "path": "internal/projection/team_execution.go",
+      "sha256": "3af9262311a55ae8f3d9b55c4ba2fd8e001dfad8b1867a3b70b76cd9df6f0724"
+    },
+    {
+      "path": "internal/tui/model.go",
+      "sha256": "622127e62db2d6d14866ff069b579a14ef1e5fada3752221808840c4872f4910"
+    },
+    {
+      "path": "internal/tui/model_test.go",
+      "sha256": "b184351dcae492f6a5823c20aef781f4cc4100d6100a378dd8de3722eb75f79a"
+    }
+  ]
+}
