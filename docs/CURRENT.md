@@ -4228,3 +4228,53 @@ No controlled daemon, native app, TUI, product socket or Attempt 003 state
 exists. This PASS unlocks exactly one fresh complete lineage,
 `p2a-w2-mission-decision-live-20260730-003`; P2A-W2 remains not accepted until
 that native canary and its fresh Result-Evidence Review pass.
+
+`CURRENT`: the one permitted
+`p2a-w2-mission-decision-live-20260730-003` lineage was consumed and stopped
+`FAIL — PREPARED_DECISION_VIEW_STALE_AFTER_DISCOVERY`.
+
+The signed native app proved the repaired real-client composition by opening a
+prepared Authorization sheet. Mission Board, Mission Room continuity, Team
+Pulse and Provider Manage also remained intact, and `Not now` produced no
+Journal mutation. The first and only `Deny` submission then failed closed with
+the sheet preserved and Events unchanged at 73.
+
+Read-only diagnostics bound the failure exactly: the current authoritative
+view version was `18ca4c66...32db5`, while every prepared decision retained
+`9d3f8a9f...f9579` from before the daemon's first Pi discovery Event advanced
+the GlobalReadView. Stale-view fencing therefore correctly rejected the
+command, but the controlled prepared-decision lifecycle is not live-submittable
+after first discovery.
+
+No second click, direct mutation, hidden retry, alternate binary or restart
+occurred. The native app and one controlled daemon exited normally; socket and
+lock are absent, isolation is empty, SQLite integrity is `ok`, all 73 baseline
+Events remain unchanged and product source is still Candidate `700086d`.
+
+P2A-W2 remains `HUMAN_REQUIRED / NOT ACCEPTED`; P2A-W3 remains locked and
+P2A-W4 does not exist. Fresh independent Result-Evidence Review is the only
+remaining permitted action for this consumed lineage.
+
+`CURRENT`: fresh independent Attempt 003 Result-Evidence Review returned
+`PASS` with no P0/P1/P2 for the failed-outcome evidence accuracy. It reproduced
+the private attempt identities, SQLite `ok`/73-Event baseline and hashes, zero
+decision-side-effect Events, absent controlled processes/socket/lock/handles,
+empty isolation, absent repository SwiftPM cache, exact 32-file source lock
+and product-source identity at Candidate `700086d`.
+
+Code inspection independently confirmed the lifecycle cause: the fixture
+freezes prepared sheet view versions before the observer's first discovery
+write, while execution refreshes the current view and rejects the resulting
+stale command.
+
+The authoritative stop state is now synchronized:
+
+```text
+P2A-W2 = HUMAN_REQUIRED / NOT ACCEPTED
+P2A-W3 = LOCKED
+P2A-W4 = DOES NOT EXIST
+```
+
+The Result Review PASS validates only that failed classification. The consumed
+complete reopen authorizes no restart, retry, direct mutation, new attempt or
+single-point Amendment.
