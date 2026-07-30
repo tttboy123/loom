@@ -1,0 +1,16 @@
+Loom · Board
+────────────────────────────────────────────────────────────────────────
+Lanes | Missions | Mission Detail
+Proposed · Ready · Orchestrating · Review · Complete
+  New Mission · describe the outcome and choose a Team
+› Ship reviewed change · Orchestrating · Human required
+
+Mission Detail · mission/team-1 · Normal priority
+Team · Main · Waiting · Attempt 1
+Current node · main
+Decision · Authorization prepared · a open
+Milestone · Human decision required
+
+/ filters Missions · enter opens · g b Board · g t current Mission
+
+Saving a team never starts work

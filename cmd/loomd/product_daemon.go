@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"loom-pi-rebuild/internal/agents"
@@ -33,6 +34,19 @@ import (
 )
 
 const localProductBuildID = "loom-phase2a-w1"
+
+const controlledMissionFixtureManifestEnvironment = "LOOM_CONTROLLED_MISSION_FIXTURE_MANIFEST"
+
+type controlledMissionFixtureManifest struct {
+	SchemaVersion     int    `json:"schema_version"`
+	Purpose           string `json:"purpose"`
+	AttemptID         string `json:"attempt_id"`
+	StatePath         string `json:"state_path"`
+	ArtifactRoot      string `json:"artifact_root"`
+	SourceCommit      string `json:"source_commit"`
+	AuthoritativeTime string `json:"authoritative_time"`
+	FixtureID         string `json:"fixture_id"`
+}
 
 type productSetupRuntimeConfig struct {
 	CodexExecutable string
@@ -234,6 +248,22 @@ func newProductDaemonRunner(
 	statePath,
 	socketPath string,
 	setupConfigs ...productSetupRuntimeConfig,
+) (*productDaemonRunner, error) {
+	return newProductDaemonRunnerWithPreparedDecisions(
+		observer,
+		statePath,
+		socketPath,
+		app.PreparedMissionDecisions{},
+		setupConfigs...,
+	)
+}
+
+func newProductDaemonRunnerWithPreparedDecisions(
+	observer daemonRunner,
+	statePath,
+	socketPath string,
+	prepared app.PreparedMissionDecisions,
+	setupConfigs ...productSetupRuntimeConfig,
 ) (_ *productDaemonRunner, resultErr error) {
 	if observer == nil {
 		return nil, errors.New("invalid product daemon")
@@ -258,12 +288,26 @@ func newProductDaemonRunner(
 		return nil, err
 	}
 	store := journal.NewStore(database)
+	prepared, err = controlledMissionFixtureFromEnvironment(
+		context.Background(),
+		database,
+		statePath,
+		prepared,
+	)
+	if err != nil {
+		return nil, err
+	}
+	decisionBackend, err := app.NewPreparedMissionDecisionBackend(prepared)
+	if err != nil {
+		return nil, err
+	}
 	service, err := api.NewLocalProductReadService(api.LocalProductReadConfig{
 		Journal:    store,
 		Projection: readModel,
 		Now: func() time.Time {
 			return time.Now().UTC()
 		},
+		Decisions: decisionBackend,
 	})
 	if err != nil {
 		return nil, err
@@ -282,12 +326,26 @@ func newProductDaemonRunner(
 	if err != nil {
 		return nil, err
 	}
+	decisionService, err := app.NewLocalProductDecisionService(
+		app.MissionDecisionConfig{Backend: decisionBackend},
+	)
+	if err != nil {
+		return nil, err
+	}
+	decisionAPI, err := api.NewLocalProductDecisionAPI(decisionService)
+	if err != nil {
+		return nil, err
+	}
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
 		BuildID:      localProductBuildID,
 		Handler: localipc.HandlerFunc(
-			localProductHandler(service, setupService),
+			localProductHandlerWithDecision(
+				service,
+				setupService,
+				decisionAPI,
+			),
 		),
 	})
 	if err != nil {
@@ -299,6 +357,198 @@ func newProductDaemonRunner(
 		database: database,
 		setup:    setupService,
 	}, nil
+}
+
+func controlledMissionFixtureFromEnvironment(
+	ctx context.Context,
+	database *sql.DB,
+	statePath string,
+	prepared app.PreparedMissionDecisions,
+) (app.PreparedMissionDecisions, error) {
+	manifestPath := os.Getenv(
+		controlledMissionFixtureManifestEnvironment,
+	)
+	if manifestPath == "" {
+		return prepared, nil
+	}
+	if len(prepared.Authorizations) != 0 ||
+		len(prepared.Reviews) != 0 ||
+		len(prepared.Recoveries) != 0 {
+		return app.PreparedMissionDecisions{}, errors.New(
+			"conflicting controlled mission fixture",
+		)
+	}
+	manifest, authoritativeTime, err :=
+		readControlledMissionFixtureManifest(
+			manifestPath,
+			statePath,
+		)
+	if err != nil {
+		return app.PreparedMissionDecisions{}, err
+	}
+	return app.BuildControlledMissionDecisionFixture(
+		ctx,
+		app.ControlledMissionDecisionFixtureConfig{
+			Database:          database,
+			ArtifactRoot:      manifest.ArtifactRoot,
+			AuthoritativeTime: authoritativeTime,
+			FixtureID:         manifest.FixtureID,
+		},
+	)
+}
+
+func readControlledMissionFixtureManifest(
+	manifestPath, statePath string,
+) (controlledMissionFixtureManifest, time.Time, error) {
+	if !filepath.IsAbs(manifestPath) ||
+		!filepath.IsAbs(statePath) {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture path")
+	}
+	canonicalManifest, err := filepath.EvalSymlinks(manifestPath)
+	if err != nil || canonicalManifest != manifestPath {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture manifest")
+	}
+	info, err := os.Lstat(manifestPath)
+	if err != nil ||
+		!info.Mode().IsRegular() ||
+		info.Mode().Perm() != 0o600 ||
+		info.Size() <= 0 ||
+		info.Size() > 64<<10 {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture manifest")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture owner")
+	}
+	content, err := os.ReadFile(manifestPath)
+	if err != nil || len(content) == 0 || len(content) > 64<<10 {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture manifest")
+	}
+	var manifest controlledMissionFixtureManifest
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&manifest) != nil ||
+		decoder.Decode(&struct{}{}) != io.EOF {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture manifest")
+	}
+	canonicalState, err := filepath.EvalSymlinks(statePath)
+	if err != nil || canonicalState != statePath ||
+		manifest.StatePath != statePath ||
+		manifest.SchemaVersion != 1 ||
+		manifest.Purpose !=
+			"p2a-w2-mission-workbench-controlled-live" ||
+		manifest.AttemptID == "" ||
+		manifest.FixtureID == "" ||
+		!validProductHex(manifest.SourceCommit, 40) {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture identity")
+	}
+	attemptRoot := filepath.Dir(filepath.Dir(statePath))
+	if filepath.Base(attemptRoot) != manifest.AttemptID ||
+		manifestPath != filepath.Join(
+			attemptRoot,
+			"manifest",
+			"mission-fixture.json",
+		) ||
+		manifest.ArtifactRoot != filepath.Join(
+			attemptRoot,
+			"artifacts",
+			"mission-fixture",
+		) {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture scope")
+	}
+	artifactParent := filepath.Dir(manifest.ArtifactRoot)
+	for _, directory := range []string{
+		attemptRoot,
+		filepath.Dir(manifestPath),
+		filepath.Dir(statePath),
+		artifactParent,
+	} {
+		if !validControlledProductDirectory(directory) {
+			return controlledMissionFixtureManifest{}, time.Time{},
+				errors.New("invalid controlled mission fixture directory")
+		}
+	}
+	if !validControlledProductFile(statePath, 0o600) {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture state")
+	}
+	canonicalArtifactParent, err := filepath.EvalSymlinks(artifactParent)
+	if err != nil || canonicalArtifactParent != artifactParent {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission artifact root")
+	}
+	if _, err := os.Lstat(manifest.ArtifactRoot); !errors.Is(
+		err,
+		os.ErrNotExist,
+	) {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("controlled mission artifact root is not fresh")
+	}
+	authoritativeTime, err := time.Parse(
+		time.RFC3339Nano,
+		manifest.AuthoritativeTime,
+	)
+	if err != nil ||
+		authoritativeTime.Location() != time.UTC ||
+		authoritativeTime.After(time.Now().UTC().Add(time.Minute)) {
+		return controlledMissionFixtureManifest{}, time.Time{},
+			errors.New("invalid controlled mission fixture time")
+	}
+	return manifest, authoritativeTime, nil
+}
+
+func validControlledProductDirectory(path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || canonical != path {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
+}
+
+func validControlledProductFile(path string, mode os.FileMode) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || canonical != path {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != mode {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
+}
+
+func validProductHex(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	for _, current := range value {
+		if current < '0' || current > '9' {
+			if current < 'a' || current > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type productSetupProjectionProbe struct {
@@ -942,6 +1192,30 @@ func localProductHandler(
 	if len(setupServices) == 1 {
 		setup = setupServices[0]
 	}
+	backend, err := app.NewPreparedMissionDecisionBackend(
+		app.PreparedMissionDecisions{},
+	)
+	if err != nil {
+		return localProductHandlerWithDecision(service, setup, nil)
+	}
+	decisionService, err := app.NewLocalProductDecisionService(
+		app.MissionDecisionConfig{Backend: backend},
+	)
+	if err != nil {
+		return localProductHandlerWithDecision(service, setup, nil)
+	}
+	decision, err := api.NewLocalProductDecisionAPI(decisionService)
+	if err != nil {
+		return localProductHandlerWithDecision(service, setup, nil)
+	}
+	return localProductHandlerWithDecision(service, setup, decision)
+}
+
+func localProductHandlerWithDecision(
+	service *api.LocalProductReadService,
+	setup *api.LocalProductSetupAPI,
+	decision *api.LocalProductDecisionAPI,
+) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
 		request localipc.Request,
@@ -950,6 +1224,12 @@ func localProductHandler(
 			return productErrorResponse(
 				"state_unavailable",
 				api.ErrInvalidLocalProductSetupAPI,
+			)
+		}
+		if request.Method == "mission_decision" && decision == nil {
+			return productErrorResponse(
+				"state_unavailable",
+				api.ErrInvalidLocalProductDecisionAPI,
 			)
 		}
 		switch request.Method {
@@ -992,6 +1272,26 @@ func localProductHandler(
 				if !errors.As(err, &gapErr) {
 					return productServiceError(err)
 				}
+			}
+			return productResultResponse(result)
+		case "mission_decision":
+			var input app.MissionDecisionCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					app.ErrInvalidMissionDecision,
+				)
+			}
+			if input.Operation == "read" {
+				result, err := decision.ReadMissionDecision(ctx, input)
+				if err != nil {
+					return productServiceError(err)
+				}
+				return productResultResponse(result)
+			}
+			result, err := decision.DecideMission(ctx, input)
+			if err != nil {
+				return productServiceError(err)
 			}
 			return productResultResponse(result)
 		case "setup_snapshot":
@@ -1215,12 +1515,15 @@ func productServiceError(err error) localipc.Response {
 	case errors.Is(err, api.ErrInvalidLocalProductRequest),
 		errors.Is(err, api.ErrInvalidTimelineRequest),
 		errors.Is(err, api.ErrInvalidLocalProductSetupAPI),
+		errors.Is(err, api.ErrInvalidLocalProductDecisionAPI),
+		errors.Is(err, app.ErrInvalidMissionDecision),
 		errors.Is(err, app.ErrInvalidLocalProductSetup):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
 		errors.Is(err, app.ErrBuilderNotFound):
 		return productErrorResponse("not_found", err)
-	case errors.Is(err, app.ErrBuilderConflict):
+	case errors.Is(err, app.ErrBuilderConflict),
+		errors.Is(err, app.ErrMissionDecisionConflict):
 		return productErrorResponse("conflict", err)
 	case errors.Is(err, app.ErrBuilderIncompatible):
 		return productErrorResponse("incompatible", err)

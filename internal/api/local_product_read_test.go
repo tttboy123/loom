@@ -55,7 +55,7 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SchemaVersion != 1 ||
+	if snapshot.SchemaVersion != 2 ||
 		snapshot.ViewVersion == "" ||
 		snapshot.Stale ||
 		len(snapshot.Teams) != 1 ||

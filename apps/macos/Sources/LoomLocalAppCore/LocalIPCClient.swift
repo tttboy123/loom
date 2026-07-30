@@ -446,6 +446,29 @@ public final class LocalIPCClient:
         return try LocalProductWire.decodeTimeline(result)
     }
 
+    public func decideMission(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionResult {
+        let result = try await call(
+            method: "mission_decision",
+            params: command
+        )
+        return try LocalProductDecisionWire.decodeResult(result)
+    }
+
+    public func readMissionDecision(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionSheet {
+        guard command.operation == "read", command.action == "read" else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "mission_decision",
+            params: command
+        )
+        return try LocalProductDecisionWire.decodeSheet(result)
+    }
+
     public func setupSnapshot() async throws -> LocalProductSetupSnapshot {
         let result = try await call(
             method: "setup_snapshot",
@@ -672,7 +695,7 @@ public final class LocalIPCClient:
             "builder_start", "builder_answer", "builder_edit",
             "builder_validate", "builder_confirm", "team_archive",
             "team_restore", "credential_configure", "credential_verify",
-            "credential_replace", "credential_revoke",
+            "credential_replace", "credential_revoke", "mission_decision",
         ])
         guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
             throw LocalProductClientError.invalidRequest

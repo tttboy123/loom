@@ -121,6 +121,33 @@ const swiftCodexConnectFixture = `{
   "status":"already_connected"
 }`
 
+const swiftDecisionFixture = `{
+  "schema_version":1,
+  "kind":"authorization",
+  "mission_id":"mission/team-1",
+  "team_instance_id":"team-1",
+  "view_version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "decision_id":"decision-1",
+  "decision_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "title":"Authorization required",
+  "summary":"Review the prepared command.",
+  "requester":"Release Team",
+  "target":"repository",
+  "command_type":"local process",
+  "network_access":"none",
+  "credential_access":"none",
+  "permission_scope":"this Mission",
+  "attempt_scope":"Attempt 1",
+  "expected_evidence":"accepted Evidence",
+  "technical_details":[],
+  "actions":["not_now","deny","edit_scope","allow_once"],
+  "prepared_actions":["deny","allow_once"],
+  "prepared":true,
+  "logical_node_id":"main",
+  "attempt_number":1,
+  "claim_generation":1
+}`
+
 type swiftFixtureHandler struct {
 	mu        sync.Mutex
 	errorCode string
@@ -156,9 +183,83 @@ func (handler *swiftFixtureHandler) Handle(
 		}
 	case "builder_start":
 		return Response{OK: true, Result: json.RawMessage(swiftBuilderFixture)}
+	case "mission_decision":
+		return Response{OK: true, Result: json.RawMessage(swiftDecisionFixture)}
 	default:
 		return Response{}
 	}
+}
+
+func TestStrictSwiftClientReadsPreparedDecisionFromRealGoServer(t *testing.T) {
+	probe := buildSwiftContractProbe(t)
+	root, socketPath := swiftPrivateSocketRoot(t)
+	defer os.RemoveAll(root)
+
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "swift-decision-contract-fixture",
+		Handler:      &swiftFixtureHandler{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case err := <-serveDone:
+		t.Fatalf("server failed before ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not become ready")
+	}
+	defer func() {
+		_ = server.Close()
+		<-serveDone
+	}()
+
+	output, runErr := exec.Command(
+		probe,
+		"--socket",
+		socketPath,
+		"--decision",
+		"authorization",
+	).CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("Swift decision probe error = %v, output = %q", runErr, output)
+	}
+	var actual struct {
+		Kind      string   `json:"kind"`
+		MissionID string   `json:"missionID"`
+		Actions   []string `json:"actions"`
+		Prepared  bool     `json:"prepared"`
+	}
+	if err := json.Unmarshal(output, &actual); err != nil {
+		t.Fatalf("decision output invalid: %v, output = %q", err, output)
+	}
+	if actual.Kind != "authorization" ||
+		actual.MissionID != "mission/team-1" ||
+		!actual.Prepared ||
+		!equalStrings(
+			actual.Actions,
+			[]string{"not_now", "deny", "edit_scope", "allow_once"},
+		) {
+		t.Fatalf("decision output = %#v", actual)
+	}
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSwiftClientInteroperatesWithRealGoServer(t *testing.T) {
@@ -626,6 +727,8 @@ struct SetupContractProbe {
 		"-O",
 		"-parse-as-library",
 		filepath.Join(sourceRoot, "LocalProductModels.swift"),
+		filepath.Join(sourceRoot, "MissionOrchestration.swift"),
+		filepath.Join(sourceRoot, "LocalProductDecisionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductSetupModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductStore.swift"),
 		filepath.Join(sourceRoot, "LocalIPCClient.swift"),

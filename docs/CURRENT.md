@@ -2007,6 +2007,25 @@ implementation are authorized inside that ownership. Native allowance remains
 `0`, installation/Computer Use/live remain unauthorized, and P2A-W2 stays
 locked.
 
+`CURRENT`: Visual Review 2 returned `FAIL` on one evidence-consistency P1 and
+no product UI finding. All nine PNG hashes and all prior visual repairs passed,
+but the semantic comparison still described the shared prepared Authorization
+fixture as absent while both final clients correctly showed it as prepared.
+The comparison now records `authorization`, native `Open Authorization` and
+TUI `Authorization prepared · a open`, and separately identifies the tested
+missing-Evidence Review fixture as the read-only disabled case. No source byte
+or source lock changed, so Implementation Review 6 remains valid. Fresh Visual
+Review is the current gate; live remains locked.
+
+`CURRENT`: fresh independent Visual Review 3 returned `PASS` with no P0, P1
+or P2 visual findings. It confirmed the corrected shared Authorization
+semantics, all nine artifact hashes, exact card/five-lane/compact/Light-Dark
+behavior, three-column permission-aware Mission Room, TUI Mission Detail and
+all three Decision sheets. Implementation Review 6 and source lock
+`de25e3e4687e558de3fe7f409b07ff513f72812c2ccf7f977c0391bcd9ecaff7`
+remain valid. Atomic owned-file commit is now the gate; live remains locked
+until post-commit preflight independently binds commit and binary hashes.
+
 `CURRENT`: fresh independent Replacement Live Gate Contract Review returned
 `PASS` with no findings. It validated the consumed-no-retry accounting, exact
 repaired Candidate identity, original mode/provenance-aware rollback, initial
@@ -3766,3 +3785,163 @@ The Mission Orchestration Workbench Exit Contract is now `FROZEN`. The pure
 governance checkpoint commit is the current gate; only after that commit may
 mandatory behavioral RED begin. No product implementation, daemon, socket,
 Provider, Keychain, prepared authority command or live action has occurred.
+
+`CURRENT`: governance checkpoint `0506166` unlocked the single P2A-W2 Mission
+Orchestration Workbench Candidate. Mandatory RED is preserved in
+`mission-orchestration-workbench-red.md`; it failed only on the frozen missing
+Mission facade, five-lane Board, prepared Decision boundary, strict Swift
+models, Mission-first TUI and Loom Graphite symbols.
+
+The scoped Candidate is deterministically GREEN. The Go Projection/read facade
+derives Mission, Team Pulse and Topology only from existing TeamExecution,
+Team, Run, Evidence and Attention facts and normalizes all public collections
+to JSON arrays. The one `mission_decision` method now has closed
+`read`/`defer`/`submit` operations over an immutable prepared-command registry:
+stale view or generation fails before authority, `Not now`/`Edit scope` are
+zero-authority presentation results, concurrent submit has one winner, and an
+opposite terminal action conflicts. Production without a prepared command
+remains read-only.
+
+The native app now opens to the five-lane Mission Board and provides a
+three-column Mission Room, persistent per-Mission draft/Inspector state,
+Provider management from the ordinary rail, and one native Loom Graphite host
+for Authorization, Review and Recovery sheets. The TUI uses the same Mission
+facade, exact lanes and `g b`/`g t`/`/`/`Enter`/`Esc`; `a` opens a bounded
+read-only Approval presentation when no prepared command exists.
+
+Implementation Review 1 returned `FAIL` on three P1 findings: the first
+prepared backend accepted an arbitrary callback, the production runner omitted
+the Decision API, and the exact full race command had not passed. Repair 1
+closed all three within the same P2A-W2 Candidate.
+
+Authorization now binds a real pending `rules.ApprovalRequestRecord` and exact
+`rules.ApprovalDecisionRequest`; Review binds an exact
+`work.TeamNodeAcceptanceInput`; Recovery binds an exact
+`work.TeamRecoveryInput`. Real test-owned SQLite Journal, Run, Evidence and
+Projection fixtures prove all three authority paths. The strict
+`prepared_actions` collection enables only exact bound mutations. The
+production daemon always mounts a fail-closed prepared registry; an empty
+registry returns `conflict`, never `state_unavailable`. Submission rebuilds
+the Projection before authority dispatch and rejects a real post-sheet Journal
+view advance, not only a forged command version.
+
+Complete Go, exact `go test -race ./...`, vet, Swift debug, Swift Thread
+Sanitizer and Swift Release matrices pass. Strict real Go-server-to-Swift
+decision decoding, the production-daemon socket boundary, wide/compact
+Light/Dark, Mission Room, all three Decision sheets and TUI evidence are
+recorded under `.loom-evidence/phase2a/P2A-W2/`. Fresh independent
+Implementation Re-review and then Visual Review are the current gates. No
+external daemon, Provider, Keychain, installed app or live canary has run.
+P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: fresh final Implementation Re-review returned `FAIL` on two related
+P1 prepared-command bindings and no P0/P2. Review/Recovery did not bind the
+sheet `decision_digest` to the actual Work decision, and Authorization did not
+bind the presented Mission/Team/Node/Attempt to the pending Rules request's
+original ActionContext.
+
+Repair 2 preserves a causal RED in
+`mission-orchestration-workbench-repair-2-red.md`. Authorization now
+reconstructs the exact pending request ID from the immutable ActionContext,
+continuation and Rules Decision digests and checks the sheet identities.
+Review binds the exact valid AcceptanceDecision and deterministic result.
+Recovery binds the exact valid RecoveryDecision plus the current
+TeamAttemptRecord, Evidence/classification digests and claim generation. No
+Rules/Work authority or schema file was reopened. Full deterministic
+verification and fresh independent Implementation Re-review remain the current
+gates; live remains locked.
+
+`CURRENT`: fresh Implementation Review 3 returned `FAIL` before any live
+action. It confirmed the Repair 2 identity bindings, but found that the exact
+production `loomd` runner could only mount an empty prepared registry and that
+the recorded source lock no longer covered the newly reachable prepared-command
+wire/UI path.
+
+Repair 3 stays inside the same frozen P2A-W2 owned boundary. The ordinary
+production runner can now construct five real Journal-backed Mission fixtures
+and four exact prepared Rules/Work commands only when given one private,
+canonical, attempt-bound controlled-fixture manifest. Without that manifest it
+retains the empty fail-closed registry. Swift schema 2 requires
+`prepared_decisions` to be an array, and a Review Mission without a prepared
+acceptance command opens a read-only gate whose mutations remain disabled.
+
+Focused, whole-repository, exact repository-race, vet, Swift debug, Thread
+Sanitizer, Swift Release, visual-export, TUI, diff, forbidden-authority and
+secret-negative checks are GREEN. The current 31-file source lock is
+`2badc23c740b0c24fad494a02f2bf8956a60e4dfb2f35f17701fab6695213b55`.
+Fresh independent Implementation Review 4 is the current gate, followed by
+fresh Visual Review. No external daemon, installed app, Provider, credential
+mutation, staging, commit or live canary has occurred. P2A-W3 remains locked
+and no P2A-W4 exists.
+
+`CURRENT`: fresh independent Implementation Review 4 returned `PASS` with no
+P0/P1 findings. It reproduced every source hash and the combined lock, confirmed
+the exact production/default fail-closed split, real authority lineage,
+strict wire behavior, ordinary Inspector reachability, read-only missing-
+Evidence gate and Repair 2 bindings. Its only P2 caveat is that the controlled
+manifest's lexical 40-hex `source_commit` field is not runner self-attestation;
+the mandatory post-commit preflight must bind exact binary hashes and commit
+identity independently. Fresh independent Visual Review is now the sole gate
+before atomic commit. Live remains locked.
+
+`CURRENT`: Visual Review 1 returned `FAIL` with no P0 and four P1 findings.
+Board cards did not expose Mission identity, priority, Team presence and a
+readable milestone; the default TUI evidence omitted a shared Mission Detail;
+Decision fixtures used generic or misleading values; and the Mission composer
+did not expose the three frozen permission modes. A compact-lane overflow cue
+was also missing at P2. Repair remains inside the same P2A-W2 Candidate and
+does not create W4. Because production and fixture sources are reopening, the
+previous source lock and Implementation Review PASS are superseded. Fresh
+deterministic verification, source locking, Implementation Review and Visual
+Review are required before commit; live remains locked.
+
+`CURRENT`: the Visual Review 1 repair is deterministically GREEN inside the
+same P2A-W2 Candidate. Board cards now show full Mission identity, priority,
+Team/Attempt presence, node progress and readable milestone; the compact Board
+has a visible five-lane horizontal-navigation cue. The TUI default Board selects
+a real Mission and renders Team role/state, Attempt, current node, prepared
+decision availability and milestone. Authorization, Review and Recovery sheets
+now carry distinct truthful semantics, and the Mission composer visibly offers
+`Plan only`, `Guided` and `Delegated` while stating that selection is only a
+proposal until Loom confirms authority. Complete Go, repository race, vet,
+Swift debug, Thread Sanitizer and Release matrices pass. The fresh 31-file
+source lock is
+`8269aac930e31afa9d8f581dcdceb61779436b2033b2cd071ca9dc5af802c8a2`.
+Fresh independent Implementation Review is the current gate, followed by
+Visual Review. No commit or live action has occurred.
+
+`CURRENT`: fresh independent Implementation Review 5 returned `PASS` with no
+P0/P1 findings. It reproduced the exact 31-file source lock, found no staged
+Candidate or W4/authority expansion, and confirmed the prior Rules/Work
+bindings, strict single-method IPC, default fail-closed production path,
+private controlled fixture, default TUI Mission Detail and presentation-only
+permission mode. Its only P2 caveat remains that manifest `source_commit` is
+lexical metadata rather than runner self-attestation; post-commit preflight
+must independently bind commit identity and exact binary hashes. Fresh
+independent Visual Review is now the sole pre-commit gate. Live remains locked.
+
+`CURRENT`: controller pre-Visual exact-contract self-check found that the
+repaired Mission card still omitted `source_kind`, despite the frozen card
+contract requiring Mission ID, title/source and priority. Visual Review 2 was
+paused before verdict. The single UI source is reopened in the same Candidate;
+the prior source lock and Implementation Review 5 PASS are superseded for final
+bytes. Fresh Swift verification, source lock, Implementation Review and Visual
+Review are required. Live remains locked.
+
+`CURRENT`: the exact card contract is now closed by rendering the bounded
+Mission `source_kind` beside priority. Swift debug, Thread Sanitizer and
+Release all pass on the final UI byte, and deterministic wide/compact
+Light/Dark evidence has been regenerated and inspected. The final 31-file
+source lock is
+`de25e3e4687e558de3fe7f409b07ff513f72812c2ccf7f977c0391bcd9ecaff7`.
+Fresh Implementation Review is again the current gate, followed by Visual
+Review. Live remains locked.
+
+`CURRENT`: fresh independent Implementation Review 6 returned `PASS` with no
+P0/P1. It reproduced the final 31-file source lock and confirmed
+`MissionWorkbench.swift` is the only byte changed since Review 5; the added
+`source_kind` remains bounded strict-snapshot presentation. All permission,
+TUI, IPC, Rules/Work and default fail-closed closures remain unchanged. The
+manifest self-attestation P2 caveat remains assigned to post-commit preflight.
+Fresh independent Visual Review is now the sole pre-commit gate. Live remains
+locked.

@@ -251,6 +251,63 @@ final class LocalProductStoreTests: XCTestCase {
         XCTAssertEqual(store.setupSnapshot?.miniMax.status, "verified")
         XCTAssertEqual(store.setupState, .ready)
     }
+
+    func testPreparedDecisionReadAndNotNowRemainPresentationOnly() async throws {
+        let client = try DecisionStubClient()
+        let store = LocalProductStore(client: client)
+        let read = client.command(operation: "read", action: "read")
+
+        await store.openPreparedDecision(read)
+        XCTAssertEqual(store.activeDecisionSheet?.kind, .authorization)
+        XCTAssertEqual(client.readCount, 1)
+        XCTAssertEqual(client.submitCount, 0)
+
+        await store.submitDecisionAction("not_now")
+        XCTAssertNil(store.activeDecisionSheet)
+        XCTAssertEqual(client.submitCount, 1)
+        XCTAssertEqual(client.lastCommand?.operation, "defer")
+        XCTAssertEqual(client.lastCommand?.action, "not_now")
+    }
+
+    func testUnpreparedReviewGateIsReadOnlyAndNeverCallsDecisionClient() async throws {
+        let client = try DecisionStubClient()
+        let store = LocalProductStore(client: client)
+        let mission = LocalProductMissionSummary(
+            missionID: "mission/team-review-missing",
+            teamInstanceID: "team-review-missing",
+            title: "Review missing Evidence",
+            sourceKind: "team_execution",
+            lane: "Review",
+            status: "ready_for_review",
+            priority: "normal",
+            planDigest: String(repeating: "a", count: 64),
+            simple: true,
+            nodeCount: 1,
+            completedNodeCount: 0,
+            activeNodeCount: 0,
+            reviewNodeCount: 1,
+            attentionCount: 1,
+            currentNodeID: "main",
+            lastMilestone: "Review required",
+            teamPulse: [],
+            topology: []
+        )
+
+        store.openReadOnlyReviewDecision(for: mission)
+        XCTAssertEqual(store.activeDecisionSheet?.kind, .review)
+        XCTAssertEqual(store.activeDecisionSheet?.prepared, false)
+        XCTAssertEqual(store.activeDecisionSheet?.preparedActions, [])
+
+        await store.submitDecisionAction("accept_result")
+        XCTAssertNotNil(store.activeDecisionSheet)
+        XCTAssertEqual(client.readCount, 0)
+        XCTAssertEqual(client.submitCount, 0)
+
+        await store.submitDecisionAction("not_now")
+        XCTAssertNil(store.activeDecisionSheet)
+        XCTAssertEqual(client.readCount, 0)
+        XCTAssertEqual(client.submitCount, 0)
+    }
 }
 
 private final class StubLocalProductClient: LocalProductClientProtocol {
@@ -279,6 +336,112 @@ private final class StubLocalProductClient: LocalProductClientProtocol {
         lastTimelineLimit = limit
         lastTimelineTeamID = teamInstanceID
         throw LocalProductClientError.notFound
+    }
+}
+
+private final class DecisionStubClient:
+    LocalProductClientProtocol,
+    LocalProductDecisionClientProtocol
+{
+    private(set) var readCount = 0
+    private(set) var submitCount = 0
+    private(set) var lastCommand: LocalProductDecisionCommand?
+    private let sheet: LocalProductDecisionSheet
+
+    init() throws {
+        sheet = try LocalProductDecisionWire.decodeSheet(
+            Data(
+                """
+                {
+                  "schema_version":1,
+                  "kind":"authorization",
+                  "mission_id":"mission/team-1",
+                  "team_instance_id":"team-1",
+                  "view_version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "decision_id":"decision-1",
+                  "decision_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "title":"Authorization required",
+                  "summary":"Review the prepared command.",
+                  "requester":"Release Team",
+                  "target":"repository",
+                  "command_type":"local process",
+                  "network_access":"none",
+                  "credential_access":"none",
+                  "permission_scope":"this Mission",
+                  "attempt_scope":"Attempt 1",
+                  "expected_evidence":"accepted Evidence",
+                  "technical_details":[],
+                  "actions":["not_now","deny","edit_scope","allow_once"],
+                  "prepared_actions":["deny","allow_once"],
+                  "prepared":true,
+                  "logical_node_id":"main",
+                  "attempt_number":1,
+                  "claim_generation":1
+                }
+                """.utf8
+            )
+        )
+    }
+
+    func command(
+        operation: String,
+        action: String
+    ) -> LocalProductDecisionCommand {
+        LocalProductDecisionCommand(
+            operation: operation,
+            kind: sheet.kind,
+            action: action,
+            missionID: sheet.missionID,
+            teamInstanceID: sheet.teamInstanceID,
+            viewVersion: sheet.viewVersion,
+            decisionID: sheet.decisionID,
+            decisionDigest: sheet.decisionDigest,
+            logicalNodeID: sheet.logicalNodeID,
+            attemptNumber: sheet.attemptNumber,
+            claimGeneration: sheet.claimGeneration,
+            correlationID: "11111111-1111-4111-8111-111111111111"
+        )
+    }
+
+    func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+        .empty(viewVersion: "view-2")
+    }
+
+    func timeline(
+        teamInstanceID: String,
+        cursor: String,
+        limit: Int
+    ) async throws -> LocalProductTimelinePage {
+        throw LocalProductClientError.notFound
+    }
+
+    func readMissionDecision(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionSheet {
+        readCount += 1
+        lastCommand = command
+        return sheet
+    }
+
+    func decideMission(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionResult {
+        submitCount += 1
+        lastCommand = command
+        return try LocalProductDecisionWire.decodeResult(
+            Data(
+                """
+                {
+                  "schema_version":1,
+                  "mission_id":"mission/team-1",
+                  "decision_id":"decision-1",
+                  "status":"pending",
+                  "authoritative":false,
+                  "view_version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+                """.utf8
+            )
+        )
     }
 }
 

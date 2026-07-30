@@ -48,33 +48,7 @@ public struct ContentView: View {
     }
 
     public var body: some View {
-        GeometryReader { geometry in
-            if geometry.size.width >= 940 {
-                HSplitView {
-                    taskSidebar
-                        .frame(minWidth: 190, idealWidth: 220, maxWidth: 270)
-                    conversationWorkspace
-                        .frame(minWidth: 420)
-                    workspaceInspector
-                        .frame(minWidth: 230, idealWidth: 270, maxWidth: 340)
-                }
-            } else {
-                HSplitView {
-                    taskSidebar
-                        .frame(minWidth: 175, idealWidth: 200, maxWidth: 225)
-                    conversationWorkspace
-                        .frame(minWidth: 390)
-                }
-                .inspector(isPresented: $showInspector) {
-                    workspaceInspector
-                        .inspectorColumnWidth(
-                            min: 230,
-                            ideal: 270,
-                            max: 340
-                        )
-                }
-            }
-        }
+        MissionWorkbench(store: store)
         .task {
             if refreshOnAppear {
                 async let read: Void = store.refresh()
@@ -82,7 +56,7 @@ public struct ContentView: View {
                 _ = await (read, setup)
             }
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: 780, minHeight: 580)
     }
 
     private var experience: LocalProductExperience {

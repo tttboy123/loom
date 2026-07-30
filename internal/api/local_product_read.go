@@ -8,11 +8,12 @@ import (
 	"sync"
 	"time"
 
+	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 )
 
-const localProductSchemaVersion = 1
+const localProductSchemaVersion = 2
 
 var (
 	ErrInvalidLocalProductRequest   = errors.New("invalid local product request")
@@ -25,15 +26,23 @@ type LocalProductReadConfig struct {
 	Journal    *journal.Store
 	Projection ViewSource
 	Now        func() time.Time
+	Decisions  MissionDecisionCommandSource
 }
 
 type LocalProductReadService struct {
 	journal    *journal.Store
 	projection ViewSource
 	now        func() time.Time
+	decisions  MissionDecisionCommandSource
 
 	mu       sync.Mutex
 	lastView *projection.GlobalReadView
+}
+
+type MissionDecisionCommandSource interface {
+	ListMissionDecisionCommands(
+		context.Context,
+	) ([]app.MissionDecisionCommand, error)
 }
 
 func NewLocalProductReadService(
@@ -46,6 +55,7 @@ func NewLocalProductReadService(
 		journal:    config.Journal,
 		projection: config.Projection,
 		now:        config.Now,
+		decisions:  config.Decisions,
 	}, nil
 }
 
@@ -109,12 +119,15 @@ type LocalProductSnapshot struct {
 
 	Runtimes  []LocalProductRuntimeSummary  `json:"runtimes"`
 	Teams     []LocalProductTeamSummary     `json:"teams"`
+	Missions  []LocalProductMissionSummary  `json:"missions"`
 	Runs      []LocalProductRunSummary      `json:"runs"`
 	Evidence  []LocalProductEvidenceSummary `json:"evidence"`
 	Attention []AttentionItem               `json:"attention"`
+	PreparedDecisions []app.MissionDecisionCommand `json:"prepared_decisions"`
 
 	RuntimePage  LocalProductPageCursor `json:"runtime_page"`
 	TeamPage     LocalProductPageCursor `json:"team_page"`
+	MissionPage  LocalProductPageCursor `json:"mission_page"`
 	RunPage      LocalProductPageCursor `json:"run_page"`
 	EvidencePage LocalProductPageCursor `json:"evidence_page"`
 }
@@ -138,14 +151,40 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 		}
 		stale := buildLocalProductSnapshot(*service.lastView, request)
+		prepared, err := service.preparedMissionDecisionCommands(ctx)
+		if err != nil {
+			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
+		}
+		stale.PreparedDecisions = prepared
 		stale.Stale = true
 		stale.Reason = "projection_refresh_failed"
 		return cloneLocalProductSnapshot(stale), nil
 	}
 	view := service.projection.GlobalReadView()
 	snapshot := buildLocalProductSnapshot(view, request)
+	prepared, err := service.preparedMissionDecisionCommands(ctx)
+	if err != nil {
+		return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
+	}
+	snapshot.PreparedDecisions = prepared
 	service.lastView = &view
 	return cloneLocalProductSnapshot(snapshot), nil
+}
+
+func (service *LocalProductReadService) preparedMissionDecisionCommands(
+	ctx context.Context,
+) ([]app.MissionDecisionCommand, error) {
+	if service.decisions == nil {
+		return []app.MissionDecisionCommand{}, nil
+	}
+	commands, err := service.decisions.ListMissionDecisionCommands(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if commands == nil {
+		return []app.MissionDecisionCommand{}, nil
+	}
+	return cloneLocalProductSlice(commands), nil
 }
 
 func buildLocalProductSnapshot(
@@ -173,6 +212,12 @@ func buildLocalProductSnapshot(
 		executions,
 		request.Limit,
 		savedTeamMore || executionTeamMore,
+	)
+	missionSummaries, missionPage := buildLocalProductMissionPage(
+		view,
+		executions,
+		request.Limit,
+		executionTeamMore,
 	)
 
 	runtimeSummaries := make([]LocalProductRuntimeSummary, len(runtimes))
@@ -248,10 +293,11 @@ func buildLocalProductSnapshot(
 	return LocalProductSnapshot{
 		SchemaVersion: localProductSchemaVersion,
 		ViewVersion:   view.Version(),
-		Partial: runtimeMore || teamPage.HasMore || runMore ||
+		Partial: runtimeMore || teamPage.HasMore || missionPage.HasMore || runMore ||
 			evidenceMore || len(seenAttention) > len(attention),
 		Runtimes:  runtimeSummaries,
 		Teams:     teamSummaries,
+		Missions:  missionSummaries,
 		Runs:      runSummaries,
 		Evidence:  evidenceSummaries,
 		Attention: attention,
@@ -262,7 +308,8 @@ func buildLocalProductSnapshot(
 				return record.RuntimeInstanceID
 			},
 		),
-		TeamPage: teamPage,
+		TeamPage:    teamPage,
+		MissionPage: missionPage,
 		RunPage: localProductPageCursor(
 			runSummaries,
 			runMore,
@@ -522,9 +569,27 @@ func cloneLocalProductSnapshot(
 			)
 	}
 	snapshot.Teams = cloneLocalProductSlice(snapshot.Teams)
+	snapshot.Missions = cloneLocalProductSlice(snapshot.Missions)
+	for index := range snapshot.Missions {
+		snapshot.Missions[index].TeamPulse = cloneLocalProductSlice(
+			snapshot.Missions[index].TeamPulse,
+		)
+		snapshot.Missions[index].Topology = cloneLocalProductSlice(
+			snapshot.Missions[index].Topology,
+		)
+		for nodeIndex := range snapshot.Missions[index].Topology {
+			snapshot.Missions[index].Topology[nodeIndex].DependsOn =
+				cloneLocalProductSlice(
+					snapshot.Missions[index].Topology[nodeIndex].DependsOn,
+				)
+		}
+	}
 	snapshot.Runs = cloneLocalProductSlice(snapshot.Runs)
 	snapshot.Evidence = cloneLocalProductSlice(snapshot.Evidence)
 	snapshot.Attention = cloneLocalProductSlice(snapshot.Attention)
+	snapshot.PreparedDecisions = cloneLocalProductSlice(
+		snapshot.PreparedDecisions,
+	)
 	return snapshot
 }
 

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W2",
+  "candidate": "Mission Orchestration Workbench",
+  "base_commit": "0506166b9672c3b4aba51d5b7f4c996a1b0dc649",
+  "source_lock": "de25e3e4687e558de3fe7f409b07ff513f72812c2ccf7f977c0391bcd9ecaff7",
+  "source_file_count": 31,
+  "implementation_review": "PASS",
+  "visual_review": "PASS",
+  "live_canary": "LOCKED",
+  "excluded_dirty_paths": [
+    ".loom-evidence/phase1-final-live-gate/",
+    "AGENTS.md",
+    "PROGRESS.md",
+    ".codex/",
+    ".loom-drafts/",
+    "apps/macos/.build/"
+  ]
+}

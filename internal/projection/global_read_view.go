@@ -24,6 +24,12 @@ type TeamExecution struct {
 
 type TeamExecutionNode struct {
 	LogicalNodeID               string
+	Title                       string
+	AgentInstanceID             string
+	RuntimeInstanceID           string
+	Role                        string
+	DependsOn                   []string
+	MaxAttempts                 int
 	Status                      string
 	DependencySatisfied         bool
 	CurrentAttempt              int
@@ -525,6 +531,10 @@ func buildGlobalReadView(
 func cloneGlobalTeamExecution(record TeamExecution) TeamExecution {
 	record.Nodes = append([]TeamExecutionNode(nil), record.Nodes...)
 	for index := range record.Nodes {
+		record.Nodes[index].DependsOn = append(
+			[]string(nil),
+			record.Nodes[index].DependsOn...,
+		)
 		record.Nodes[index].PriorClassifications = append(
 			[]string(nil),
 			record.Nodes[index].PriorClassifications...,

@@ -251,6 +251,7 @@ func validMethod(method string) bool {
 	case "ping",
 		"snapshot",
 		"timeline_page",
+		"mission_decision",
 		"setup_snapshot",
 		"codex_connect",
 		"builder_start",

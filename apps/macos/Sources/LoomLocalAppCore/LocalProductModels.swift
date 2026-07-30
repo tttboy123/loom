@@ -243,6 +243,224 @@ public struct LocalProductAttention: Codable, Equatable, Sendable, Identifiable 
     }
 }
 
+public struct LocalProductMissionPulse:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { nodeID }
+    public let agentInstanceID: String
+    public let runtimeInstanceID: String
+    public let role: String
+    public let state: String
+    public let nodeID: String
+    public let attemptNumber: Int
+
+    enum CodingKeys: String, CodingKey {
+        case agentInstanceID = "agent_instance_id"
+        case runtimeInstanceID = "runtime_instance_id"
+        case role, state
+        case nodeID = "node_id"
+        case attemptNumber = "attempt_number"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: [
+            "agent_instance_id", "runtime_instance_id", "role", "state",
+            "node_id", "attempt_number",
+        ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        agentInstanceID = try values.decode(String.self, forKey: .agentInstanceID)
+        runtimeInstanceID = try values.decode(
+            String.self,
+            forKey: .runtimeInstanceID
+        )
+        role = try values.decode(String.self, forKey: .role)
+        state = try values.decode(String.self, forKey: .state)
+        nodeID = try values.decode(String.self, forKey: .nodeID)
+        attemptNumber = try values.decode(Int.self, forKey: .attemptNumber)
+    }
+}
+
+public struct LocalProductMissionNode:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { logicalNodeID }
+    public let logicalNodeID: String
+    public let title: String
+    public let agentInstanceID: String
+    public let runtimeInstanceID: String
+    public let role: String
+    public let dependsOn: [String]
+    public let maxAttempts: Int
+    public let status: String
+    public let attemptNumber: Int
+    public let ready: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case logicalNodeID = "logical_node_id"
+        case title
+        case agentInstanceID = "agent_instance_id"
+        case runtimeInstanceID = "runtime_instance_id"
+        case role
+        case dependsOn = "depends_on"
+        case maxAttempts = "max_attempts"
+        case status
+        case attemptNumber = "attempt_number"
+        case ready
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: [
+            "logical_node_id", "title", "agent_instance_id",
+            "runtime_instance_id", "role", "depends_on", "max_attempts",
+            "status", "attempt_number", "ready",
+        ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        logicalNodeID = try values.decode(String.self, forKey: .logicalNodeID)
+        title = try values.decode(String.self, forKey: .title)
+        agentInstanceID = try values.decode(String.self, forKey: .agentInstanceID)
+        runtimeInstanceID = try values.decode(
+            String.self,
+            forKey: .runtimeInstanceID
+        )
+        role = try values.decode(String.self, forKey: .role)
+        dependsOn = try values.decode([String].self, forKey: .dependsOn)
+        maxAttempts = try values.decode(Int.self, forKey: .maxAttempts)
+        status = try values.decode(String.self, forKey: .status)
+        attemptNumber = try values.decode(Int.self, forKey: .attemptNumber)
+        ready = try values.decode(Bool.self, forKey: .ready)
+    }
+}
+
+public struct LocalProductMissionSummary:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { missionID }
+    public let schemaVersion: Int
+    public let missionID: String
+    public let teamInstanceID: String
+    public let title: String
+    public let sourceKind: String
+    public let lane: String
+    public let status: String
+    public let priority: String
+    public let planDigest: String
+    public let simple: Bool
+    public let nodeCount: Int
+    public let completedNodeCount: Int
+    public let activeNodeCount: Int
+    public let reviewNodeCount: Int
+    public let attentionCount: Int
+    public let currentNodeID: String
+    public let lastMilestone: String
+    public let teamPulse: [LocalProductMissionPulse]
+    public let topology: [LocalProductMissionNode]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case missionID = "mission_id"
+        case teamInstanceID = "team_instance_id"
+        case title
+        case sourceKind = "source_kind"
+        case lane, status, priority
+        case planDigest = "plan_digest"
+        case simple
+        case nodeCount = "node_count"
+        case completedNodeCount = "completed_node_count"
+        case activeNodeCount = "active_node_count"
+        case reviewNodeCount = "review_node_count"
+        case attentionCount = "attention_count"
+        case currentNodeID = "current_node_id"
+        case lastMilestone = "last_milestone"
+        case teamPulse = "team_pulse"
+        case topology
+    }
+
+    public init(
+        schemaVersion: Int = 1,
+        missionID: String,
+        teamInstanceID: String,
+        title: String,
+        sourceKind: String,
+        lane: String,
+        status: String,
+        priority: String,
+        planDigest: String,
+        simple: Bool,
+        nodeCount: Int,
+        completedNodeCount: Int,
+        activeNodeCount: Int,
+        reviewNodeCount: Int,
+        attentionCount: Int,
+        currentNodeID: String,
+        lastMilestone: String,
+        teamPulse: [LocalProductMissionPulse],
+        topology: [LocalProductMissionNode]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.missionID = missionID
+        self.teamInstanceID = teamInstanceID
+        self.title = title
+        self.sourceKind = sourceKind
+        self.lane = lane
+        self.status = status
+        self.priority = priority
+        self.planDigest = planDigest
+        self.simple = simple
+        self.nodeCount = nodeCount
+        self.completedNodeCount = completedNodeCount
+        self.activeNodeCount = activeNodeCount
+        self.reviewNodeCount = reviewNodeCount
+        self.attentionCount = attentionCount
+        self.currentNodeID = currentNodeID
+        self.lastMilestone = lastMilestone
+        self.teamPulse = teamPulse
+        self.topology = topology
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: [
+            "schema_version", "mission_id", "team_instance_id", "title",
+            "source_kind", "lane", "status", "priority", "plan_digest",
+            "simple", "node_count", "completed_node_count",
+            "active_node_count", "review_node_count", "attention_count",
+            "current_node_id", "last_milestone", "team_pulse", "topology",
+        ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        guard schemaVersion == 1 else {
+            throw LocalProductWireError.unsupportedSchema
+        }
+        missionID = try values.decode(String.self, forKey: .missionID)
+        teamInstanceID = try values.decode(String.self, forKey: .teamInstanceID)
+        title = try values.decode(String.self, forKey: .title)
+        sourceKind = try values.decode(String.self, forKey: .sourceKind)
+        lane = try values.decode(String.self, forKey: .lane)
+        guard ["Proposed", "Ready", "Orchestrating", "Review", "Complete"]
+            .contains(lane) else {
+            throw LocalProductWireError.invalidJSON
+        }
+        status = try values.decode(String.self, forKey: .status)
+        priority = try values.decode(String.self, forKey: .priority)
+        planDigest = try values.decode(String.self, forKey: .planDigest)
+        simple = try values.decode(Bool.self, forKey: .simple)
+        nodeCount = try values.decode(Int.self, forKey: .nodeCount)
+        completedNodeCount = try values.decode(Int.self, forKey: .completedNodeCount)
+        activeNodeCount = try values.decode(Int.self, forKey: .activeNodeCount)
+        reviewNodeCount = try values.decode(Int.self, forKey: .reviewNodeCount)
+        attentionCount = try values.decode(Int.self, forKey: .attentionCount)
+        currentNodeID = try values.decode(String.self, forKey: .currentNodeID)
+        lastMilestone = try values.decode(String.self, forKey: .lastMilestone)
+        teamPulse = try values.decode(
+            [LocalProductMissionPulse].self,
+            forKey: .teamPulse
+        )
+        topology = try values.decode(
+            [LocalProductMissionNode].self,
+            forKey: .topology
+        )
+    }
+}
+
 public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let viewVersion: String
@@ -251,20 +469,26 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     public let reason: String
     public let runtimes: [LocalProductRuntimeSummary]
     public let teams: [LocalProductTeamSummary]
+    public let missions: [LocalProductMissionSummary]
     public let runs: [LocalProductRunSummary]
     public let evidence: [LocalProductEvidenceSummary]
     public let attention: [LocalProductAttention]
+    public let preparedDecisions: [LocalProductDecisionCommand]
     public let runtimePage: LocalProductPageCursor
     public let teamPage: LocalProductPageCursor
+    public let missionPage: LocalProductPageCursor
     public let runPage: LocalProductPageCursor
     public let evidencePage: LocalProductPageCursor
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case viewVersion = "view_version"
-        case partial, stale, reason, runtimes, teams, runs, evidence, attention
+        case partial, stale, reason, runtimes, teams, missions, runs, evidence
+        case attention
+        case preparedDecisions = "prepared_decisions"
         case runtimePage = "runtime_page"
         case teamPage = "team_page"
+        case missionPage = "mission_page"
         case runPage = "run_page"
         case evidencePage = "evidence_page"
     }
@@ -272,12 +496,13 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         try rejectUnknownKeys(decoder, allowed: [
             "schema_version", "view_version", "partial", "stale", "reason",
-            "runtimes", "teams", "runs", "evidence", "attention",
-            "runtime_page", "team_page", "run_page", "evidence_page",
+            "runtimes", "teams", "missions", "runs", "evidence", "attention",
+            "prepared_decisions", "runtime_page", "team_page", "mission_page",
+            "run_page", "evidence_page",
         ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
-        guard schemaVersion == 1 else {
+        guard schemaVersion == 1 || schemaVersion == 2 else {
             throw LocalProductWireError.unsupportedSchema
         }
         viewVersion = try values.decode(String.self, forKey: .viewVersion)
@@ -286,11 +511,35 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         reason = try values.decode(String.self, forKey: .reason)
         runtimes = try values.decode([LocalProductRuntimeSummary].self, forKey: .runtimes)
         teams = try values.decode([LocalProductTeamSummary].self, forKey: .teams)
+        if schemaVersion == 2 {
+            missions = try values.decode(
+                [LocalProductMissionSummary].self,
+                forKey: .missions
+            )
+        } else {
+            missions = []
+        }
         runs = try values.decode([LocalProductRunSummary].self, forKey: .runs)
         evidence = try values.decode([LocalProductEvidenceSummary].self, forKey: .evidence)
         attention = try values.decode([LocalProductAttention].self, forKey: .attention)
+        if schemaVersion == 2 {
+            preparedDecisions = try values.decode(
+                [LocalProductDecisionCommand].self,
+                forKey: .preparedDecisions
+            )
+        } else {
+            preparedDecisions = []
+        }
         runtimePage = try values.decode(LocalProductPageCursor.self, forKey: .runtimePage)
         teamPage = try values.decode(LocalProductPageCursor.self, forKey: .teamPage)
+        if schemaVersion == 2 {
+            missionPage = try values.decode(
+                LocalProductPageCursor.self,
+                forKey: .missionPage
+            )
+        } else {
+            missionPage = .init()
+        }
         runPage = try values.decode(LocalProductPageCursor.self, forKey: .runPage)
         evidencePage = try values.decode(LocalProductPageCursor.self, forKey: .evidencePage)
     }
@@ -303,11 +552,14 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         reason: String = "",
         runtimes: [LocalProductRuntimeSummary] = [],
         teams: [LocalProductTeamSummary] = [],
+        missions: [LocalProductMissionSummary] = [],
         runs: [LocalProductRunSummary] = [],
         evidence: [LocalProductEvidenceSummary] = [],
         attention: [LocalProductAttention] = [],
+        preparedDecisions: [LocalProductDecisionCommand] = [],
         runtimePage: LocalProductPageCursor = .init(),
         teamPage: LocalProductPageCursor = .init(),
+        missionPage: LocalProductPageCursor = .init(),
         runPage: LocalProductPageCursor = .init(),
         evidencePage: LocalProductPageCursor = .init()
     ) {
@@ -318,13 +570,43 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         self.reason = reason
         self.runtimes = runtimes
         self.teams = teams
+        self.missions = missions
         self.runs = runs
         self.evidence = evidence
         self.attention = attention
+        self.preparedDecisions = preparedDecisions
         self.runtimePage = runtimePage
         self.teamPage = teamPage
+        self.missionPage = missionPage
         self.runPage = runPage
         self.evidencePage = evidencePage
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(viewVersion, forKey: .viewVersion)
+        try values.encode(partial, forKey: .partial)
+        try values.encode(stale, forKey: .stale)
+        try values.encode(reason, forKey: .reason)
+        try values.encode(runtimes, forKey: .runtimes)
+        try values.encode(teams, forKey: .teams)
+        if schemaVersion == 2 {
+            try values.encode(missions, forKey: .missions)
+        }
+        try values.encode(runs, forKey: .runs)
+        try values.encode(evidence, forKey: .evidence)
+        try values.encode(attention, forKey: .attention)
+        if schemaVersion == 2 {
+            try values.encode(preparedDecisions, forKey: .preparedDecisions)
+        }
+        try values.encode(runtimePage, forKey: .runtimePage)
+        try values.encode(teamPage, forKey: .teamPage)
+        if schemaVersion == 2 {
+            try values.encode(missionPage, forKey: .missionPage)
+        }
+        try values.encode(runPage, forKey: .runPage)
+        try values.encode(evidencePage, forKey: .evidencePage)
     }
 
     public static func empty(viewVersion: String) -> Self {

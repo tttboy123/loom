@@ -158,6 +158,7 @@ final class LocalProductExperienceViewTests: XCTestCase {
         ]
 
         var stateDigests = Set<String>()
+        var digestOwners: [String: String] = [:]
         for fixture in fixtures {
             let store = LocalProductStore(client: fixture.client)
             for _ in 0..<fixture.refreshCount {
@@ -192,7 +193,15 @@ final class LocalProductExperienceViewTests: XCTestCase {
                     180,
                     "\(fixture.name) rendered a visually empty sidebar in \(scheme)"
                 )
-                stateDigests.insert(image.digest)
+                let owner = "\(fixture.name)-\(scheme)"
+                if let previous = digestOwners[image.digest] {
+                    XCTFail(
+                        "duplicate rendered state \(owner) matches \(previous)"
+                    )
+                } else {
+                    digestOwners[image.digest] = owner
+                    stateDigests.insert(image.digest)
+                }
             }
         }
         XCTAssertEqual(stateDigests.count, fixtures.count * 2)
@@ -230,6 +239,12 @@ final class LocalProductExperienceViewTests: XCTestCase {
             "LOOM_UI_PREVIEW_PATH"
         ], let compactRequestedPath = ProcessInfo.processInfo.environment[
             "LOOM_UI_COMPACT_PREVIEW_PATH"
+        ], let darkRequestedPath = ProcessInfo.processInfo.environment[
+            "LOOM_UI_DARK_PREVIEW_PATH"
+        ], let darkCompactRequestedPath = ProcessInfo.processInfo.environment[
+            "LOOM_UI_DARK_COMPACT_PREVIEW_PATH"
+        ], let missionRoomRequestedPath = ProcessInfo.processInfo.environment[
+            "LOOM_UI_MISSION_ROOM_PATH"
         ] else {
             throw XCTSkip(
                 "Wide and compact preview export is enabled only for visual audit"
@@ -247,8 +262,28 @@ final class LocalProductExperienceViewTests: XCTestCase {
                 currentDirectory: FileManager.default.currentDirectoryPath
             )
         )
+        let darkRequestedURL = try validatedPreviewURL(
+            requestedPath: darkRequestedPath,
+            expectedURL: expectedDarkPreviewURL(
+                currentDirectory: FileManager.default.currentDirectoryPath
+            )
+        )
+        let darkCompactRequestedURL = try validatedPreviewURL(
+            requestedPath: darkCompactRequestedPath,
+            expectedURL: expectedDarkCompactPreviewURL(
+                currentDirectory: FileManager.default.currentDirectoryPath
+            )
+        )
+        let missionRoomRequestedURL = try validatedPreviewURL(
+            requestedPath: missionRoomRequestedPath,
+            expectedURL: expectedMissionRoomPreviewURL(
+                currentDirectory: FileManager.default.currentDirectoryPath
+            )
+        )
 
-        let snapshot = try ExperienceFixtures.populatedSnapshot()
+        let snapshot = try LocalProductWire.decodeSnapshot(
+            Data(MissionOrchestrationTests.snapshotJSON.utf8)
+        )
         let store = LocalProductStore(
             client: ExperienceViewStubClient(results: [.success(snapshot)])
         )
@@ -280,6 +315,42 @@ final class LocalProductExperienceViewTests: XCTestCase {
         try compact.png.write(to: compactRequestedURL, options: .atomic)
         XCTAssertGreaterThan(compact.png.count, 20_000)
         XCTAssertNotEqual(rendered.digest, compact.digest)
+        let dark = try XCTUnwrap(
+            render(
+                ContentView(store: store, refreshOnAppear: false),
+                colorScheme: .dark,
+                dynamicTypeSize: .large
+            )
+        )
+        try dark.png.write(to: darkRequestedURL, options: .atomic)
+        let darkCompact = try XCTUnwrap(
+            render(
+                ContentView(store: store, refreshOnAppear: false),
+                colorScheme: .dark,
+                dynamicTypeSize: .large,
+                width: 780,
+                height: 720
+            )
+        )
+        try darkCompact.png.write(
+            to: darkCompactRequestedURL,
+            options: .atomic
+        )
+        XCTAssertNotEqual(dark.digest, rendered.digest)
+        XCTAssertNotEqual(darkCompact.digest, compact.digest)
+        store.openMission("mission/team-1")
+        let missionRoom = try XCTUnwrap(
+            render(
+                ContentView(store: store, refreshOnAppear: false),
+                colorScheme: .light,
+                dynamicTypeSize: .large
+            )
+        )
+        try missionRoom.png.write(
+            to: missionRoomRequestedURL,
+            options: .atomic
+        )
+        XCTAssertNotEqual(missionRoom.digest, rendered.digest)
     }
 
     private func render<Root: View>(
@@ -405,7 +476,7 @@ final class LocalProductExperienceViewTests: XCTestCase {
         URL(fileURLWithPath: currentDirectory)
             .appendingPathComponent(
                 "../../.loom-evidence/phase2a/P2A-W2/" +
-                    "interaction-continuity-wide.png"
+                    "mission-workbench-wide-light.png"
             )
             .standardizedFileURL
     }
@@ -416,7 +487,38 @@ final class LocalProductExperienceViewTests: XCTestCase {
         URL(fileURLWithPath: currentDirectory)
             .appendingPathComponent(
                 "../../.loom-evidence/phase2a/P2A-W2/" +
-                    "interaction-continuity-compact.png"
+                    "mission-workbench-compact-light.png"
+            )
+            .standardizedFileURL
+    }
+
+    private func expectedDarkPreviewURL(currentDirectory: String) -> URL {
+        URL(fileURLWithPath: currentDirectory)
+            .appendingPathComponent(
+                "../../.loom-evidence/phase2a/P2A-W2/" +
+                    "mission-workbench-wide-dark.png"
+            )
+            .standardizedFileURL
+    }
+
+    private func expectedDarkCompactPreviewURL(
+        currentDirectory: String
+    ) -> URL {
+        URL(fileURLWithPath: currentDirectory)
+            .appendingPathComponent(
+                "../../.loom-evidence/phase2a/P2A-W2/" +
+                    "mission-workbench-compact-dark.png"
+            )
+            .standardizedFileURL
+    }
+
+    private func expectedMissionRoomPreviewURL(
+        currentDirectory: String
+    ) -> URL {
+        URL(fileURLWithPath: currentDirectory)
+            .appendingPathComponent(
+                "../../.loom-evidence/phase2a/P2A-W2/" +
+                    "mission-room-wide-light.png"
             )
             .standardizedFileURL
     }

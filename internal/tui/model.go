@@ -20,7 +20,8 @@ import (
 type Screen string
 
 const (
-	ScreenTasks       Screen = "Tasks"
+	ScreenBoard       Screen = "Board"
+	ScreenMission     Screen = "Mission"
 	ScreenHome        Screen = "Home"
 	ScreenRuntimes    Screen = "Runtimes"
 	ScreenTeamBuilder Screen = "Team Builder"
@@ -33,7 +34,8 @@ const (
 )
 
 var screens = []Screen{
-	ScreenTasks,
+	ScreenBoard,
+	ScreenMission,
 	ScreenTeamBuilder,
 	ScreenRuns,
 	ScreenAttention,
@@ -299,26 +301,29 @@ type Model struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 
-	screenIndex  int
-	selections   [16]int
-	width        int
-	height       int
-	selected     int
-	help         bool
-	loading      bool
-	offline      bool
-	lastError    string
-	snapshot     api.LocalProductSnapshot
-	timeline     api.LocalProductTimelinePage
-	setup        app.SetupSnapshot
-	builder      app.BuilderSessionView
-	confirmation app.BuilderConfirmation
-	credential   app.CredentialSetupResult
-	entryMode    string
-	entry        []byte
-	compareRuns  []string
-	currentTeam  string
-	taskFilter   string
+	screenIndex      int
+	selections       [16]int
+	width            int
+	height           int
+	selected         int
+	help             bool
+	loading          bool
+	offline          bool
+	lastError        string
+	snapshot         api.LocalProductSnapshot
+	timeline         api.LocalProductTimelinePage
+	setup            app.SetupSnapshot
+	builder          app.BuilderSessionView
+	confirmation     app.BuilderConfirmation
+	credential       app.CredentialSetupResult
+	entryMode        string
+	entry            []byte
+	compareRuns      []string
+	currentTeam      string
+	currentMission   string
+	decisionOpen     bool
+	taskFilter       string
+	navigationPrefix bool
 }
 
 func NewModel(client ReadClient) (Model, error) {
@@ -363,9 +368,22 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.offline = false
 		model.lastError = ""
 		model.snapshot = cloneSnapshot(message.snapshot)
+		if model.currentMission != "" {
+			if _, ok := model.currentMissionRecord(); !ok {
+				model.currentMission = ""
+				if model.Screen() == ScreenMission {
+					model.switchScreen(indexOfScreen(ScreenBoard))
+				}
+			}
+		}
 		if len(model.snapshot.Teams) == 0 {
 			model.currentTeam = ""
 			model.timeline = api.LocalProductTimelinePage{}
+		}
+		if model.Screen() == ScreenBoard &&
+			model.selected == 0 &&
+			len(model.snapshot.Missions) > 0 {
+			model.selected = 1
 		}
 		model.clampSelection()
 		return model, nil
@@ -440,7 +458,38 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if model.entryMode != "" {
 			return model.updateEntry(message)
 		}
-		switch message.String() {
+		key := message.String()
+		if model.navigationPrefix {
+			model.navigationPrefix = false
+			switch key {
+			case "b":
+				model.switchScreen(indexOfScreen(ScreenBoard))
+				return model, nil
+			case "t":
+				if model.currentMission == "" {
+					if mission, ok := model.selectedMission(); ok {
+						model.currentMission = mission.MissionID
+					}
+				}
+				model.switchScreen(indexOfScreen(ScreenMission))
+				return model, nil
+			}
+		}
+		switch key {
+		case "g":
+			if model.Screen() == ScreenTeamBuilder &&
+				model.setupClient != nil {
+				model.entryMode = entryCredentialPut
+				if model.setup.MiniMax.CredentialReference != "" &&
+					model.setup.MiniMax.Revision > 0 &&
+					model.setup.MiniMax.Status != "revoked" {
+					model.entryMode = entryCredentialSwap
+				}
+				model.entry = []byte{}
+				return model, nil
+			}
+			model.navigationPrefix = true
+			return model, nil
 		case "q", "ctrl+c":
 			model.cancel()
 			return model, tea.Quit
@@ -457,7 +506,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.switchScreen(next)
 			return model, nil
 		case "down", "j":
-			if model.Screen() == ScreenTasks {
+			if model.Screen() == ScreenBoard {
 				model.moveTaskSelection(1)
 				return model, nil
 			}
@@ -465,7 +514,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.clampSelection()
 			return model, nil
 		case "up", "k":
-			if model.Screen() == ScreenTasks {
+			if model.Screen() == ScreenBoard {
 				model.moveTaskSelection(-1)
 				return model, nil
 			}
@@ -494,8 +543,13 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.help = !model.help
 			return model, nil
 		case "esc":
-			if model.Screen() == ScreenTimeline {
-				model.switchScreen(indexOfScreen(ScreenTasks))
+			if model.Screen() == ScreenMission && model.decisionOpen {
+				model.decisionOpen = false
+				return model, nil
+			}
+			if model.Screen() == ScreenMission ||
+				model.Screen() == ScreenTimeline {
+				model.switchScreen(indexOfScreen(ScreenBoard))
 			} else if model.Screen() == ScreenTeamBuilder {
 				clearTUIBytes(model.entry)
 				model.entry = nil
@@ -504,18 +558,21 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return model, nil
 		case "enter":
-			if model.Screen() == ScreenTasks {
+			if model.Screen() == ScreenBoard {
 				if model.selected == 0 {
 					model.switchScreen(indexOfScreen(ScreenTeamBuilder))
 					model.loading = true
 					return model, model.loadSetup()
 				}
-				if team, ok := model.selectedTaskTeam(); ok {
-					teamID := team.TeamInstanceID
-					model.currentTeam = teamID
-					model.switchScreen(indexOfScreen(ScreenTimeline))
+				if mission, ok := model.selectedMission(); ok {
+					model.currentTeam = mission.TeamInstanceID
+					model.currentMission = mission.MissionID
+					model.switchScreen(indexOfScreen(ScreenMission))
 					model.loading = true
-					return model, model.loadTimeline(teamID, "")
+					return model, model.loadTimeline(
+						mission.TeamInstanceID,
+						"",
+					)
 				}
 			}
 			if model.Screen() == ScreenTeamBuilder {
@@ -567,7 +624,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.startBlankBuilder()
 			}
 		case "/":
-			if model.Screen() == ScreenTasks {
+			if model.Screen() == ScreenBoard {
 				model.entryMode = entryTaskSearch
 				model.entry = []byte(model.taskFilter)
 				return model, nil
@@ -579,6 +636,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.confirmBuilder()
 			}
 		case "a":
+			if model.Screen() == ScreenMission {
+				if _, ok := model.currentMissionAttention(); ok {
+					model.decisionOpen = true
+				}
+				return model, nil
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.builder.DraftID == "" &&
 				model.selected < len(model.setup.SavedTeams) &&
@@ -625,18 +688,6 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					model.loading = true
 					return model, model.editBuilder(field, value)
 				}
-			}
-		case "g":
-			if model.Screen() == ScreenTeamBuilder &&
-				model.setupClient != nil {
-				model.entryMode = entryCredentialPut
-				if model.setup.MiniMax.CredentialReference != "" &&
-					model.setup.MiniMax.Revision > 0 &&
-					model.setup.MiniMax.Status != "revoked" {
-					model.entryMode = entryCredentialSwap
-				}
-				model.entry = []byte{}
-				return model, nil
 			}
 		case "v":
 			if model.Screen() == ScreenTeamBuilder &&
@@ -704,35 +755,87 @@ func (model Model) View() string {
 
 func (model Model) Screen() Screen {
 	if model.screenIndex < 0 || model.screenIndex >= len(screens) {
-		return ScreenTasks
+		return ScreenBoard
 	}
 	return screens[model.screenIndex]
 }
 
 func (model Model) screenBody() string {
 	switch model.Screen() {
-	case ScreenTasks:
+	case ScreenBoard:
 		lines := []string{
-			"Tasks",
-			"› New task · describe what you want to accomplish",
+			"Lanes | Missions | Mission Detail",
+			"Proposed · Ready · Orchestrating · Review · Complete",
 		}
+		newMissionMarker := " "
+		if model.selected == 0 {
+			newMissionMarker = "›"
+		}
+		lines = append(
+			lines,
+			newMissionMarker+
+				" New Mission · describe the outcome and choose a Team",
+		)
 		if model.taskFilter != "" {
 			lines = append(
 				lines,
 				"Filter · "+sanitizeCell(model.taskFilter, 48),
 			)
 		}
-		for _, row := range model.taskTeamRows() {
+		for index, mission := range model.filteredMissions() {
 			marker := " "
-			if row.selection == model.selected {
+			if index+1 == model.selected {
 				marker = "›"
 			}
 			lines = append(lines, fmt.Sprintf(
-				"%s %s · %s",
+				"%s %s · %s · %s",
 				marker,
-				sanitizeCell(row.team.DisplayName, 48),
-				humanizeStatus(row.team.State),
+				sanitizeCell(mission.Title, 42),
+				sanitizeCell(string(mission.Lane), 18),
+				humanizeStatus(mission.Status),
 			))
+		}
+		if mission, ok := model.selectedMission(); ok {
+			lines = append(
+				lines,
+				"",
+				fmt.Sprintf(
+					"Mission Detail · %s · %s priority",
+					sanitizeCell(mission.MissionID, 48),
+					humanizeStatus(mission.Priority),
+				),
+			)
+			if len(mission.TeamPulse) == 0 {
+				lines = append(lines, "Team · no active presence")
+			} else {
+				pulse := mission.TeamPulse[0]
+				lines = append(lines, fmt.Sprintf(
+					"Team · %s · %s · Attempt %d",
+					humanizeStatus(pulse.Role),
+					humanizeStatus(pulse.State),
+					pulse.AttemptNumber,
+				))
+			}
+			lines = append(lines, "Current node · "+
+				sanitizeCell(mission.CurrentNodeID, 32))
+			if decision, available :=
+				model.preparedMissionDecision(mission.MissionID); available {
+				lines = append(lines, fmt.Sprintf(
+					"Decision · %s prepared · a open",
+					humanizeStatus(decision.Kind),
+				))
+			} else if mission.AttentionCount > 0 {
+				lines = append(
+					lines,
+					"Decision · attention exists · no prepared mutation",
+				)
+			} else {
+				lines = append(lines, "Decision · none required")
+			}
+			lines = append(
+				lines,
+				"Milestone · "+sanitizeCell(mission.LastMilestone, 72),
+			)
 		}
 		if len(model.snapshot.Runs) > 0 {
 			lines = append(lines, fmt.Sprintf(
@@ -749,8 +852,87 @@ func (model Model) screenBody() string {
 		lines = append(
 			lines,
 			"",
-			"/ filters tasks · enter opens · tab shows work and inspector",
+			"/ filters Missions · enter opens · g b Board · g t current Mission",
 		)
+		return strings.Join(lines, "\n") + "\n"
+	case ScreenMission:
+		mission, ok := model.currentMissionRecord()
+		if !ok {
+			return "Mission Detail\nChoose a Mission from the Board.\n"
+		}
+		if model.decisionOpen {
+			attention, ok := model.currentMissionAttention()
+			if !ok {
+				return "Decision unavailable\nNo prepared decision is available.\n"
+			}
+			return strings.Join([]string{
+				"Authorization Decision",
+				"Mission · " + sanitizeCell(mission.Title, 48),
+				"Action · " + humanizeStatus(attention.ActionRequired),
+				"Request · " + sanitizeCell(
+					attention.ApprovalRequestID,
+					48,
+				),
+				"Status · " + humanizeStatus(attention.Status),
+				"Prepared command unavailable · mutation actions disabled",
+				"Esc · Not now",
+			}, "\n") + "\n"
+		}
+		lines := []string{
+			"Mission Detail",
+			fmt.Sprintf(
+				"%s · %s · %s",
+				sanitizeCell(mission.Title, 48),
+				sanitizeCell(string(mission.Lane), 18),
+				humanizeStatus(mission.Status),
+			),
+			"Team | Plan | Changes | Evidence",
+			fmt.Sprintf(
+				"Nodes %d · Complete %d · Review %d · Active %d",
+				mission.NodeCount,
+				mission.CompletedNodeCount,
+				mission.ReviewNodeCount,
+				mission.ActiveNodeCount,
+			),
+		}
+		if mission.AttentionCount > 0 {
+			lines = append(
+				lines,
+				"Needs You · prepared decision required · a open Approval",
+			)
+		}
+		for _, pulse := range mission.TeamPulse {
+			lines = append(lines, fmt.Sprintf(
+				"Team Pulse · %s · %s · Attempt %d · %s",
+				humanizeStatus(pulse.Role),
+				sanitizeCell(pulse.NodeID, 32),
+				pulse.AttemptNumber,
+				humanizeStatus(pulse.State),
+			))
+		}
+		for _, node := range mission.Topology {
+			if len(node.DependsOn) == 0 {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf(
+				"Plan · %s waits for %s",
+				sanitizeCell(node.LogicalNodeID, 32),
+				sanitizeCell(strings.Join(node.DependsOn, ", "), 48),
+			))
+		}
+		for _, record := range model.timeline.Records {
+			if record.Payload.Status != "" {
+				lines = append(
+					lines,
+					"Timeline · "+humanizeStatus(record.Payload.Status),
+				)
+			} else if record.Kind != "" {
+				lines = append(
+					lines,
+					"Timeline · "+humanizeStatus(record.Kind),
+				)
+			}
+		}
 		return strings.Join(lines, "\n") + "\n"
 	case ScreenHome:
 		return fmt.Sprintf(
@@ -1524,7 +1706,7 @@ func (model Model) renderCompare() string {
 func (model *Model) clampSelection() {
 	maximum := 0
 	switch model.Screen() {
-	case ScreenTasks:
+	case ScreenBoard:
 		model.clampTaskSelection()
 		return
 	case ScreenTeams:
@@ -1563,43 +1745,79 @@ func (model Model) setupSelectableCount() int {
 	return len(model.setup.SavedTeams) + len(model.setup.Templates)
 }
 
-type taskTeamRow struct {
-	selection int
-	team      api.LocalProductTeamSummary
-}
-
-func (model Model) taskTeamRows() []taskTeamRow {
+func (model Model) filteredMissions() []api.LocalProductMissionSummary {
 	filter := strings.ToLower(strings.TrimSpace(model.taskFilter))
-	rows := make([]taskTeamRow, 0, len(model.snapshot.Teams))
-	for index, team := range model.snapshot.Teams {
+	rows := make(
+		[]api.LocalProductMissionSummary,
+		0,
+		len(model.snapshot.Missions),
+	)
+	for index, mission := range model.snapshot.Missions {
 		selection := index + 1
-		name := strings.ToLower(sanitizeCell(team.DisplayName, 96))
-		state := strings.ToLower(sanitizeCell(team.State, 48))
+		name := strings.ToLower(sanitizeCell(mission.Title, 96))
+		state := strings.ToLower(sanitizeCell(mission.Status, 48))
+		lane := strings.ToLower(sanitizeCell(string(mission.Lane), 24))
 		if filter == "" || selection == model.selected ||
 			strings.Contains(name, filter) ||
-			strings.Contains(state, filter) {
-			rows = append(rows, taskTeamRow{
-				selection: selection,
-				team:      team,
-			})
+			strings.Contains(state, filter) ||
+			strings.Contains(lane, filter) {
+			rows = append(rows, mission)
 		}
 	}
 	return rows
 }
 
-func (model Model) selectedTaskTeam() (api.LocalProductTeamSummary, bool) {
-	for _, row := range model.taskTeamRows() {
-		if row.selection == model.selected {
-			return row.team, true
+func (model Model) selectedMission() (
+	api.LocalProductMissionSummary,
+	bool,
+) {
+	if model.selected < 1 || model.selected > len(model.snapshot.Missions) {
+		return api.LocalProductMissionSummary{}, false
+	}
+	return model.snapshot.Missions[model.selected-1], true
+}
+
+func (model Model) currentMissionRecord() (
+	api.LocalProductMissionSummary,
+	bool,
+) {
+	for _, mission := range model.snapshot.Missions {
+		if mission.MissionID == model.currentMission {
+			return mission, true
 		}
 	}
-	return api.LocalProductTeamSummary{}, false
+	return api.LocalProductMissionSummary{}, false
+}
+
+func (model Model) currentMissionAttention() (api.AttentionItem, bool) {
+	mission, ok := model.currentMissionRecord()
+	if !ok {
+		return api.AttentionItem{}, false
+	}
+	for _, attention := range model.snapshot.Attention {
+		if attention.TeamInstanceID == mission.TeamInstanceID &&
+			attention.ApprovalRequestID != "" {
+			return attention, true
+		}
+	}
+	return api.AttentionItem{}, false
+}
+
+func (model Model) preparedMissionDecision(
+	missionID string,
+) (app.MissionDecisionCommand, bool) {
+	for _, decision := range model.snapshot.PreparedDecisions {
+		if decision.MissionID == missionID {
+			return decision, true
+		}
+	}
+	return app.MissionDecisionCommand{}, false
 }
 
 func (model *Model) taskSelections() []int {
 	selections := []int{0}
-	for _, row := range model.taskTeamRows() {
-		selections = append(selections, row.selection)
+	for index := range model.filteredMissions() {
+		selections = append(selections, index+1)
 	}
 	return selections
 }
@@ -1983,6 +2201,26 @@ func cloneSnapshot(snapshot api.LocalProductSnapshot) api.LocalProductSnapshot {
 		[]api.LocalProductTeamSummary(nil),
 		snapshot.Teams...,
 	)
+	snapshot.Missions = append(
+		[]api.LocalProductMissionSummary(nil),
+		snapshot.Missions...,
+	)
+	for index := range snapshot.Missions {
+		snapshot.Missions[index].TeamPulse = append(
+			[]api.LocalProductMissionPulse(nil),
+			snapshot.Missions[index].TeamPulse...,
+		)
+		snapshot.Missions[index].Topology = append(
+			[]api.LocalProductMissionNode(nil),
+			snapshot.Missions[index].Topology...,
+		)
+		for nodeIndex := range snapshot.Missions[index].Topology {
+			snapshot.Missions[index].Topology[nodeIndex].DependsOn = append(
+				[]string(nil),
+				snapshot.Missions[index].Topology[nodeIndex].DependsOn...,
+			)
+		}
+	}
 	snapshot.Runs = append(
 		[]api.LocalProductRunSummary(nil),
 		snapshot.Runs...,

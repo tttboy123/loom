@@ -1322,9 +1322,10 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SchemaVersion != 1 ||
+	if snapshot.SchemaVersion != 2 ||
 		snapshot.ViewVersion == "" ||
 		len(snapshot.Teams) != 1 ||
+		len(snapshot.Missions) != 1 ||
 		len(snapshot.Runtimes) != 1 ||
 		snapshot.Runtimes[0].ModelIDs == nil ||
 		snapshot.Runtimes[0].ObservedCapabilities == nil ||
@@ -2776,5 +2777,305 @@ func TestProductDaemonServesStrictSetupSnapshotWithoutCLIOrSQLiteClient(
 		rejected.Error == nil ||
 		rejected.Error.Code != "invalid_request" {
 		t.Fatalf("unknown setup field response = %#v", rejected)
+	}
+}
+
+func TestProductDaemonRoutesOneStrictMissionDecisionMethod(t *testing.T) {
+	backend, err := app.NewPreparedMissionDecisionBackend(
+		app.PreparedMissionDecisions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewLocalProductDecisionService(
+		app.MissionDecisionConfig{Backend: backend},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := api.NewLocalProductDecisionAPI(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := localProductHandlerWithDecision(nil, nil, decision)
+	command := app.MissionDecisionCommand{
+		SchemaVersion:   1,
+		Operation:       "read",
+		Kind:            "authorization",
+		Action:          "read",
+		MissionID:       "mission/team-1",
+		TeamInstanceID:  "team-1",
+		ViewVersion:     strings.Repeat("a", 64),
+		DecisionID:      "decision-1",
+		DecisionDigest:  strings.Repeat("b", 64),
+		LogicalNodeID:   "main",
+		AttemptNumber:   1,
+		ClaimGeneration: 0,
+		CorrelationID:   "11111111-1111-4111-8111-111111111111",
+	}
+	params, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "mission-read-1",
+		Method:    "mission_decision",
+		Params:    params,
+	})
+	if read.OK || read.Error == nil || read.Error.Code != "conflict" {
+		t.Fatalf("unprepared read response=%#v", read)
+	}
+
+	command.Operation = "defer"
+	command.Action = "not_now"
+	params, _ = json.Marshal(command)
+	deferred := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "mission-defer-1",
+		Method:    "mission_decision",
+		Params:    params,
+	})
+	if !deferred.OK || deferred.Error != nil {
+		t.Fatalf("defer response=%#v", deferred)
+	}
+
+	command.Operation = "submit"
+	command.Action = "deny"
+	params, _ = json.Marshal(command)
+	submitted := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "mission-submit-1",
+		Method:    "mission_decision",
+		Params:    params,
+	})
+	if submitted.OK ||
+		submitted.Error == nil ||
+		submitted.Error.Code != "conflict" {
+		t.Fatalf("unprepared submit response=%#v", submitted)
+	}
+}
+
+func TestProductDaemonProductionRunnerWiresFailClosedDecisionRegistry(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	runner, err := newProductDaemonRunner(
+		&blockingObserverRunner{},
+		statePath,
+		socketPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := app.MissionDecisionCommand{
+		SchemaVersion:   1,
+		Operation:       "read",
+		Kind:            "authorization",
+		Action:          "read",
+		MissionID:       "mission/team-1",
+		TeamInstanceID:  "team-1",
+		ViewVersion:     strings.Repeat("a", 64),
+		DecisionID:      "decision-1",
+		DecisionDigest:  strings.Repeat("b", 64),
+		LogicalNodeID:   "main",
+		AttemptNumber:   1,
+		ClaimGeneration: 0,
+		CorrelationID:   "11111111-1111-4111-8111-111111111111",
+	}
+	var sheet app.MissionDecisionSheet
+	err = client.Call(
+		context.Background(),
+		"mission_decision",
+		command,
+		&sheet,
+	)
+	var remote *localipc.RemoteError
+	if !errors.As(err, &remote) || remote.Code != "conflict" {
+		t.Fatalf("production unprepared decision error = %v", err)
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProductDaemonProductionRunnerLoadsControlledMissionFixture(
+	t *testing.T,
+) {
+	root, err := os.MkdirTemp("/tmp", "lw2-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove controlled fixture root: %v", err)
+		}
+	})
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID := filepath.Base(root)
+	stateDirectory := filepath.Join(root, "state")
+	manifestDirectory := filepath.Join(root, "manifest")
+	artifactDirectory := filepath.Join(root, "artifacts")
+	for _, directory := range []string{
+		stateDirectory,
+		manifestDirectory,
+		artifactDirectory,
+	} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statePath := filepath.Join(stateDirectory, "loom.db")
+	stateFile, err := os.OpenFile(
+		statePath,
+		os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+		0o600,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stateFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Migrate(context.Background(), database); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(
+		manifestDirectory,
+		"mission-fixture.json",
+	)
+	manifestBody, err := json.Marshal(controlledMissionFixtureManifest{
+		SchemaVersion: 1,
+		Purpose:       "p2a-w2-mission-workbench-controlled-live",
+		AttemptID:     attemptID,
+		StatePath:     statePath,
+		ArtifactRoot: filepath.Join(
+			artifactDirectory,
+			"mission-fixture",
+		),
+		SourceCommit:      strings.Repeat("a", 40),
+		AuthoritativeTime: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		FixtureID:         "controlled-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(
+		controlledMissionFixtureManifestEnvironment,
+		manifestPath,
+	)
+
+	socketPath := filepath.Join(root, "loomd.sock")
+	runner, err := newProductDaemonRunner(
+		&blockingObserverRunner{},
+		statePath,
+		socketPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot api.LocalProductSnapshot
+	if err := client.Call(
+		context.Background(),
+		"snapshot",
+		api.LocalProductSnapshotRequest{Limit: 64},
+		&snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Missions) != 5 ||
+		len(snapshot.PreparedDecisions) != 4 {
+		t.Fatalf(
+			"controlled snapshot missions=%d prepared=%d: %#v",
+			len(snapshot.Missions),
+			len(snapshot.PreparedDecisions),
+			snapshot,
+		)
+	}
+	var sheet app.MissionDecisionSheet
+	if err := client.Call(
+		context.Background(),
+		"mission_decision",
+		snapshot.PreparedDecisions[0],
+		&sheet,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !sheet.Prepared ||
+		sheet.MissionID != snapshot.PreparedDecisions[0].MissionID {
+		t.Fatalf("controlled decision sheet=%#v", sheet)
+	}
+
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{socketPath, socketPath + ".lock"} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned IPC path remains after close %q: %v", path, err)
+		}
 	}
 }

@@ -84,6 +84,34 @@ func TestDecodeRequestRequiresExactVersionMethodIDAndJSONShape(t *testing.T) {
 	}
 }
 
+func TestMissionDecisionIsTheOnlyAcceptedMissionMutationMethod(t *testing.T) {
+	valid := []byte(
+		`{"version":1,"request_id":"decision-1","method":"mission_decision","params":{"operation":"read"}}`,
+	)
+	request, err := decodeRequest(valid)
+	if err != nil {
+		t.Fatalf("mission_decision decode error = %v", err)
+	}
+	if request.Method != "mission_decision" {
+		t.Fatalf("method = %q", request.Method)
+	}
+	for _, method := range []string{
+		"decision_authorization",
+		"decision_review",
+		"decision_recovery",
+		"mission_decide",
+		"mission_decision_v2",
+	} {
+		input := []byte(
+			`{"version":1,"request_id":"decision-1","method":"` +
+				method + `","params":{}}`,
+		)
+		if _, err := decodeRequest(input); err == nil {
+			t.Fatalf("decodeRequest accepted alias %q", method)
+		}
+	}
+}
+
 func TestProtocolErrorIsClosedAndNeverIncludesCause(t *testing.T) {
 	cause := errors.New("private /Users/name/state.db token=secret")
 	protocolErr := safeProtocolError("state_unavailable", cause)

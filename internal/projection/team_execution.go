@@ -166,9 +166,15 @@ func projectTeamExecutionStream(
 					return TeamExecution{}, ErrInvalidProjectionEvent
 				}
 				record.Nodes[index] = TeamExecutionNode{
-					LogicalNodeID: node.LogicalNodeID,
-					Status:        "pending",
-					Attempts:      []TeamExecutionAttempt{},
+					LogicalNodeID:     node.LogicalNodeID,
+					Title:             node.Title,
+					AgentInstanceID:   node.AgentInstanceID,
+					RuntimeInstanceID: node.RuntimeInstanceID,
+					Role:              node.Role,
+					DependsOn:         append([]string(nil), node.DependsOn...),
+					MaxAttempts:       node.MaxAttempts,
+					Status:            "pending",
+					Attempts:          []TeamExecutionAttempt{},
 				}
 				if payload.SemanticBindings != nil {
 					bindingIndex, ok := semanticIndexes[node.LogicalNodeID]

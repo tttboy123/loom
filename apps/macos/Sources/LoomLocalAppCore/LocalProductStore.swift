@@ -198,6 +198,15 @@ public protocol LocalProductClientProtocol {
     ) async throws -> LocalProductTimelinePage
 }
 
+public protocol LocalProductDecisionClientProtocol {
+    func readMissionDecision(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionSheet
+    func decideMission(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionResult
+}
+
 public protocol LocalProductSetupClientProtocol {
     func setupSnapshot() async throws -> LocalProductSetupSnapshot
     func connectCodex() async throws -> LocalProductProviderConnectResult
@@ -263,15 +272,24 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var providerConnectionStatus:
         LocalProductProviderConnectResult?
     @Published public private(set) var workspace = LocalProductWorkspaceState()
+    @Published public private(set) var workbench = MissionWorkspaceState()
+    @Published public private(set) var activeDecisionSheet:
+        LocalProductDecisionSheet?
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
     private let client: LocalProductClientProtocol
     private let setupClient: LocalProductSetupClientProtocol?
+    private let decisionClient: LocalProductDecisionClientProtocol?
 
     public init(client: LocalProductClientProtocol) {
         self.client = client
         setupClient = client as? LocalProductSetupClientProtocol
+        decisionClient = client as? LocalProductDecisionClientProtocol
+    }
+
+    public var providerManagementReachable: Bool {
+        setupClient != nil
     }
 
     public var teamTimelineMessage: String {
@@ -299,6 +317,7 @@ public final class LocalProductStore: ObservableObject {
             let next = try await client.snapshot(limit: 64)
             snapshot = next
             reconcileWorkspace()
+            reconcileMissions()
             if next.stale {
                 connectionState = .stale(
                     reason: closedReason(next.reason, fallback: "stale_view")
@@ -380,6 +399,150 @@ public final class LocalProductStore: ObservableObject {
                 : .fatal(reason: remote.code.rawValue)
         } catch {
             setupState = .unavailable(reason: closedClientReason(error))
+        }
+    }
+
+    public func openMission(_ id: String) {
+        workbench.openMission(id)
+    }
+
+    public func showMissionBoard() {
+        workbench.showBoard()
+    }
+
+    public func updateMissionBoardFilter(_ value: String) {
+        workbench.updateBoardFilter(value)
+    }
+
+    public func updateMissionComposerDraft(_ value: String) {
+        workbench.updateComposerDraft(value)
+    }
+
+    public func selectMissionPermissionMode(_ mode: MissionPermissionMode) {
+        workbench.selectPermissionMode(mode)
+    }
+
+    public func selectMissionInspector(_ tab: MissionInspectorTab) {
+        workbench.selectInspector(tab)
+    }
+
+    public func setMissionInspectorVisible(_ visible: Bool) {
+        workbench.setInspectorVisible(visible)
+    }
+
+    public func decideMission(
+        _ command: LocalProductDecisionCommand
+    ) async throws -> LocalProductDecisionResult {
+        guard let decisionClient else {
+            throw LocalProductClientError.unavailable
+        }
+        let result = try await decisionClient.decideMission(command)
+        await refresh()
+        return result
+    }
+
+    public func openPreparedDecision(
+        _ command: LocalProductDecisionCommand
+    ) async {
+        guard let decisionClient, command.operation == "read" else {
+            activeDecisionSheet = nil
+            return
+        }
+        do {
+            activeDecisionSheet = try await decisionClient.readMissionDecision(
+                command
+            )
+        } catch {
+            activeDecisionSheet = nil
+        }
+    }
+
+    public func openReadOnlyReviewDecision(
+        for mission: LocalProductMissionSummary
+    ) {
+        guard mission.lane == "Review",
+              preparedDecisionCommand(
+                for: mission.missionID,
+                kind: .review
+              ) == nil else {
+            activeDecisionSheet = nil
+            return
+        }
+        activeDecisionSheet = LocalProductDecisionSheet(
+            kind: .review,
+            missionID: mission.missionID,
+            teamInstanceID: mission.teamInstanceID,
+            viewVersion: snapshot?.viewVersion ?? "",
+            decisionID: "unprepared-review-\(mission.missionID)",
+            decisionDigest: "",
+            title: "Review Gate unavailable",
+            summary: "This Mission is waiting for review, but no authoritative acceptance command is prepared.",
+            requester: "Loom authority",
+            target: mission.title,
+            commandType: "No terminal verification is available",
+            networkAccess: "Not accepted",
+            credentialAccess: "none",
+            permissionScope: "read-only",
+            attemptScope: mission.currentNodeID.isEmpty
+                ? "No current Attempt"
+                : "Current node \(mission.currentNodeID)",
+            expectedEvidence: "Accepted terminal Evidence is required before completion",
+            technicalDetails: [
+                "No Journal mutation is available from this sheet.",
+                "Accept Result remains disabled until the authority prepares an exact command.",
+            ],
+            actions: ["not_now", "request_changes", "accept_result"],
+            preparedActions: [],
+            prepared: false,
+            logicalNodeID: mission.currentNodeID,
+            attemptNumber: 0,
+            claimGeneration: 0
+        )
+    }
+
+    public func preparedDecisionCommand(
+        for missionID: String,
+        kind: LocalProductDecisionKind? = nil
+    ) -> LocalProductDecisionCommand? {
+        snapshot?.preparedDecisions.first {
+            $0.missionID == missionID && (kind == nil || $0.kind == kind)
+        }
+    }
+
+    public func dismissDecisionSheet() {
+        activeDecisionSheet = nil
+    }
+
+    public func submitDecisionAction(_ action: String) async {
+        guard let sheet = activeDecisionSheet else { return }
+        if !sheet.prepared {
+            if action == "not_now" || action == "edit_scope" {
+                activeDecisionSheet = nil
+            }
+            return
+        }
+        let operation = action == "not_now" || action == "edit_scope"
+            ? "defer"
+            : "submit"
+        let command = LocalProductDecisionCommand(
+            operation: operation,
+            kind: sheet.kind,
+            action: action,
+            missionID: sheet.missionID,
+            teamInstanceID: sheet.teamInstanceID,
+            viewVersion: sheet.viewVersion,
+            decisionID: sheet.decisionID,
+            decisionDigest: sheet.decisionDigest,
+            logicalNodeID: sheet.logicalNodeID,
+            attemptNumber: sheet.attemptNumber,
+            claimGeneration: sheet.claimGeneration,
+            correlationID: UUID().uuidString.lowercased()
+        )
+        do {
+            _ = try await decideMission(command)
+            activeDecisionSheet = nil
+        } catch {
+            // Keep the exact prepared sheet visible after conflict/failure.
         }
     }
 
@@ -738,6 +901,12 @@ public final class LocalProductStore: ObservableObject {
             )
         }
         workspace.mergeAuthoritativeTasks(attention + runs + teams + saved)
+    }
+
+    private func reconcileMissions() {
+        workbench.mergeMissions(
+            snapshot?.missions.compactMap(\.listItem) ?? []
+        )
     }
 
     private func humanWorkspaceStatus(_ value: String) -> String {
