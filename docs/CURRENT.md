@@ -3701,3 +3701,68 @@ P2A-W4 = DOES NOT EXIST
 
 No retry, alternate live route or single-point Amendment is permitted by the
 frozen contract.
+
+`CURRENT`: the Product Owner authorized one complete P2A-W2 Exit Contract
+reopen and froze the Phase 2A Interaction Continuity / Mission Orchestration
+Workbench Extra Goal at
+`.loom-evidence/phase2a/P2A-W2/mission-orchestration-workbench-exit-contract.md`.
+The baseline is `bcd27c1`. This remains the same P2A-W2, creates no W4, and
+preserves attempt 007 as a trustworthy failed historical result.
+
+The new vertical contract replaces the dashboard/task-list-first primary
+surface with a Journal/Projection-derived Orchestration Board, Mission Room,
+Team Pulse, Topology, Evidence Inspector, three Loom Decision Sheet templates,
+Loom Graphite visual system and matching TUI semantics. Mission is explicitly
+a facade over existing TeamExecution/WorkItem/Run/Evidence lineage, never a
+second authority.
+
+Decision commands are restricted to exact prepared inputs owned by the
+existing Rules/Work authorities. Missing Evidence, policy, receipt, Grant,
+view version or generation disables mutation; the product layer cannot infer
+or write an authoritative result. Event, Grant and Evidence schema remain
+unowned. Attempt-007 Provider-management reachability is a mandatory regression.
+
+Fresh independent Contract Review is now the sole gate. No product source,
+RED, daemon, native app, Provider, Keychain, prepared command, staging, commit
+or live canary is authorized before Contract Review `PASS`. P2A-W2 remains
+`HUMAN_REQUIRED / NOT ACCEPTED`, P2A-W3 remains locked and P2A-W4 does not
+exist.
+
+`CURRENT`: fresh independent Mission Workbench Contract Review 1 returned
+`FAIL` with one P1 and no P0/P2. The decision facade requires one new strict
+local IPC method, but the original owned list omitted the closed method
+allowlist in `internal/localipc/protocol.go` and its test, so the protocol would
+reject the command before daemon dispatch.
+
+Contract Repair 1 reopens only those two protocol files and adds a causal RED:
+the exact reviewed decision method must become allowed while every unknown
+`decision_*` method remains fail-closed. `internal/localipc/server.go` remains
+excluded. No other authority or scope finding was reported. Fresh independent
+Contract Repair 1 Re-review is the only gate; product source and live actions
+remain locked.
+
+`CURRENT`: fresh Contract Repair 1 Re-review confirmed the prior IPC-ownership
+P1 is closed, then returned `FAIL` on one new P1: the contract incorrectly made
+`Needs You` a lifecycle lane. The authorized Board lifecycle is exactly
+`Proposed`, `Ready`, `Orchestrating`, `Review`, `Complete`; `Blocked`,
+`Retrying` and `Needs You` are card status, Attention filters, Timeline facts
+or Mission Room inline decisions.
+
+Contract Repair 2 freezes those exact lanes. It also names the single new IPC
+method `mission_decision` and forbids per-sheet/alias methods. Pre-Review visual
+evidence is clarified as a deterministic non-installed AppKit `NSWindow`
+fixture only; the sole production native/socket/authority lineage remains
+locked behind Implementation and Visual Review PASS. Fresh Contract Repair 2
+Re-review is the current gate.
+
+`CURRENT`: fresh independent Contract Repair 2 Re-review returned `PASS` with
+no P0, P1 or P2 findings. It confirmed the exact five Board lanes, non-lifecycle
+Attention semantics, single `mission_decision` method, causal protocol RED,
+Projection-only Mission facade, prepared-command authority boundary,
+attempt-007 Provider regression, deterministic-window/live separation, no W4
+and one-canary/no-retry sequence.
+
+The Mission Orchestration Workbench Exit Contract is now `FROZEN`. The pure
+governance checkpoint commit is the current gate; only after that commit may
+mandatory behavioral RED begin. No product implementation, daemon, socket,
+Provider, Keychain, prepared authority command or live action has occurred.
