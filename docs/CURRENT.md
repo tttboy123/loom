@@ -4055,3 +4055,26 @@ The live gate nevertheless remains `FAIL / LOCKED`: the excluded
 `apps/macos/.build/` cache was modified and cannot be truthfully presented as
 untouched. P2A-W2 remains `HUMAN_REQUIRED / NOT ACCEPTED`; P2A-W3 remains
 locked and no P2A-W4 exists.
+
+`CURRENT`: the Product Owner explicitly selected `隔离后继续` for the generated
+Swift cache affected by the failed preflight. Preflight Repair 1 is frozen
+inside the same complete P2A-W2 reopen at
+`.loom-evidence/phase2a/P2A-W2/mission-orchestration-live-closure-preflight-repair-1.md`.
+It preserves the failed preflight verdict and owns no product source.
+
+The repair permits one exact same-volume atomic rename of the current
+`apps/macos/.build/` directory into the private attempt quarantine after
+content/metadata manifesting and open-handle checks. It permits no deletion,
+recursive rewrite, cache reuse or later SwiftPM command. The replacement
+lineage remains unconsumed and live remains locked. Fresh independent Repair
+Contract Review is the current gate.
+
+`CURRENT`: fresh independent Preflight Repair 1 Contract Review returned
+`PASS` with no P0/P1. Its sole P2 execution caveat is binding: the cache
+manifest must use symlink-safe `lstat` metadata, hash regular files only and
+record but never follow the existing `debug` and `release` symlinks.
+
+The exact same-volume quarantine transaction is now unlocked. It remains
+recoverable, may not delete or recursively rewrite the cache, and does not
+unlock daemon/App/TUI execution. Fresh independent post-rename Repair Review is
+required before live.
