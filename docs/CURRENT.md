@@ -3665,3 +3665,39 @@ native/TUI continuity, exact socket/lock transaction and excluded-dirt
 isolation. The atomic Candidate commit is the current gate. Live lineage
 `p2a-w2-live-20260730-007` remains locked until that exact committed Candidate
 passes preflight; P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: atomic P2A-W2 Interaction Continuity Candidate commit `2225c9f`
+passed exact preflight and consumed its only authorized live lineage
+`p2a-w2-live-20260730-007`. The Candidate daemon safely reclaimed the exact
+abandoned product lock, became the sole private listener, discovered the
+model-capable Pi 0.82.1 Runtime and later completed normal `SIGINT` joined
+shutdown with `exit 0`, removing its exact product socket/lock pair without
+SIGTERM or SIGKILL.
+
+The exact native bundle opened directly into the task-first
+Tasks/Conversation/Inspector workspace and completed the bounded task,
+one-question Team Builder, exact role selection and human-readable preflight.
+The live journey then exposed a product-path defect:
+`ContentView` mounts `setupProviderPanel` only while `setupSnapshot == nil`,
+but `ProviderConnectionDirectory` renders only when that snapshot is non-nil.
+No Settings scene or alternate native route exists. The ordinary window
+therefore cannot reach Provider `Manage` or the required MiniMax `Test`.
+
+The Controller stopped without IPC/terminal bypass, Provider request, save,
+retry or execution. Final SQLite integrity is `ok` with exactly one additional
+model-capable `RuntimeInstanceDiscovered` fact and no new verification, Team or
+execution fact. Source DB, resident lineage and excluded dirt remain
+unmodified; attempt processes and isolation are clean.
+
+Fresh independent Result-Evidence Review returned `PASS` with no P0, P1 or P2,
+confirming the failed record is trustworthy rather than accepting W2. The only
+lineage is consumed:
+
+```text
+P2A-W2 = HUMAN_REQUIRED / NOT ACCEPTED
+P2A-W3 = LOCKED
+P2A-W4 = DOES NOT EXIST
+```
+
+No retry, alternate live route or single-point Amendment is permitted by the
+frozen contract.
