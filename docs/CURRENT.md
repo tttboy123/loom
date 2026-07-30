@@ -4078,3 +4078,32 @@ The exact same-volume quarantine transaction is now unlocked. It remains
 recoverable, may not delete or recursively rewrite the cache, and does not
 unlock daemon/App/TUI execution. Fresh independent post-rename Repair Review is
 required before live.
+
+`CURRENT`: Preflight Repair 1 quarantine completed by one exact same-volume
+atomic rename. The repository `apps/macos/.build` path is absent; its complete
+observed `493M` cache is preserved under the private attempt quarantine with
+the same root device/inode and matching pre/post manifests for `7,308`
+filesystem entries, `5,145` regular-file hashes and two untraversed relative
+symlinks. Repository status excluding that intentional move is unchanged.
+
+No SwiftPM process or open cache handle existed before rename. No file was
+deleted, recursively rewritten, restored or reused. The exact daemon, TUI,
+native, manifest and canonical Codex hashes remain frozen; product source still
+matches Candidate `d0252064`. No daemon/App/TUI ran, product socket/lock and
+fixture artifact root are absent, SQLite and isolation remain empty, and the
+replacement lineage remains unconsumed. Live stays locked pending fresh
+independent Preflight Repair 1 Review.
+
+`CURRENT`: fresh independent Preflight Repair 1 Result Review returned `PASS`
+with no P0/P1/P2. It reproduced the quarantine root identity and size, all
+entry/file/symlink counts, matching symlink-safe manifests, unchanged
+repository status outside the intentional move, source lock, exact live-input
+hashes, empty process/handle/state/isolation checks and absent product
+socket/lock/artifact root.
+
+This Review unlocks the first daemon invocation for the same unconsumed
+replacement lineage
+`p2a-w2-mission-workbench-live-20260730-002`. The earlier excluded-cache
+preflight remains immutable `FAIL`; the recoverable quarantine is its reviewed
+Product Owner-authorized disposition. The complete 15-step canary and no-retry
+boundary remain mandatory.
