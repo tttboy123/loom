@@ -4138,3 +4138,24 @@ source immutability and the native decision-client protocol defect were
 independently checked. P2A-W2 remains `HUMAN_REQUIRED / NOT ACCEPTED`; P2A-W3
 remains locked and no P2A-W4 exists. Any product repair requires a reviewed
 complete P2A-W2 reopen rather than a point Amendment.
+
+`CURRENT`: under the Product Owner's standing authorization, one complete
+P2A-W2 Mission Decision Vertical Closure Reopen is now frozen at
+`.loom-evidence/phase2a/P2A-W2/mission-decision-vertical-closure-reopen.md`.
+It preserves both consumed failed live lineages and creates no point Amendment,
+W2 subdivision or P2A-W4.
+
+The exact product boundary is
+`apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift` plus its real
+production-composition coverage in
+`apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift`. The permitted
+repair is only the missing `LocalProductDecisionClientProtocol` attribution
+for already-implemented strict IPC methods. Journal, decision authority,
+request/response shape, strict decoding, Store behavior and UI remain
+unchanged.
+
+Implementation and live remain locked. Fresh independent Contract Review is
+the current gate. After Contract Review, the required order is real-client RED,
+minimal composition repair, complete deterministic matrix, fresh
+Implementation Review, then at most one fresh isolated complete native
+decision canary.
