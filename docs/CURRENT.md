@@ -3945,3 +3945,46 @@ TUI, IPC, Rules/Work and default fail-closed closures remain unchanged. The
 manifest self-attestation P2 caveat remains assigned to post-commit preflight.
 Fresh independent Visual Review is now the sole pre-commit gate. Live remains
 locked.
+
+`CURRENT`: fresh independent Visual Review 3 returned `PASS` with no P0/P1/P2,
+and the exact P2A-W2 Mission Orchestration Workbench Candidate was atomically
+committed as `d0252064e43dc2c7d9e047aaa36942ef7b92d97b`. Post-commit preflight
+reproduced source lock
+`de25e3e4687e558de3fe7f409b07ff513f72812c2ccf7f977c0391bcd9ecaff7`
+and independently froze the exact daemon, TUI, native executable, manifest and
+state identities.
+
+The single authorized live lineage
+`p2a-w2-mission-workbench-live-20260730-001` was then consumed. The exact daemon
+exited during construction with code `3` and bounded output
+`daemon unavailable`; it never exposed the product socket and no native window
+or TUI was launched. Read-only diagnosis showed the controlled real
+Journal/Evidence fixture had passed and committed `72` Events across `27`
+streams, after which the setup boundary rejected the supplied Codex executable:
+`/Users/lune/Documents/Codex/devtools/npm/bin/codex` is a symlink, while the
+accepted native-auth observer intentionally requires an absolute regular
+executable by `Lstat`. The canonical target was not substituted because that
+would be a forbidden replacement start.
+
+This root-cause classification is strongly supported rather than directly
+logged: the bounded daemon contract exposes only `daemon unavailable`, and
+source order includes earlier setup constructors before native-auth setup. The
+complete controlled fixture side effects, real symlink mismatch and committed
+validation path support the diagnosis without weakening the bounded external
+error contract.
+
+Post-stop evidence confirms no controlled daemon/app/TUI process, no product
+socket or product socket lock, an empty isolation directory, no open state
+handle, `integrity_check = ok`, and no secret-like or hidden-reasoning Event
+payload. No retry, alternate path or manual cleanup was used. Deterministic,
+Implementation and Visual gates remain PASS for the committed bytes, but the
+live requirements are unproven. P2A-W2 is therefore `HUMAN_REQUIRED / NOT
+ACCEPTED`; P2A-W3 remains locked and no P2A-W4 exists.
+
+Fresh independent Result-Evidence Review returned `PASS` with no P0/P1. It
+independently reproduced the exit classification, SQLite counts and integrity,
+binary/path identities, secret-negative scan and absence of controlled
+process/socket/open-handle residue. Its sole P2 caveat is the explicitly
+recorded inferential root-cause strength above. This failed lineage is closed
+without retry; a new live execution would require an explicit reviewed reopen
+of the frozen no-retry boundary.
