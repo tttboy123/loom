@@ -3472,3 +3472,56 @@ result and exact Candidate mapping. Under the frozen no-retry stop rule,
 P2A-W2 is now `HUMAN_REQUIRED` and not accepted, P2A-W3 remains locked, no
 P2A-W4 exists, and no further single-point amendment or replacement canary is
 authorized.
+
+`CURRENT`: the Product Owner explicitly reopened the complete P2A-W2 Exit
+Contract and authorized one `Phase 2A Interaction Continuity Contract`. The
+single frozen Candidate is
+`.loom-evidence/phase2a/P2A-W2/interaction-continuity-exit-reopen-contract.md`.
+It replaces the dashboard-first `Home/Work/Teams/Inbox/System` journey with a
+task-first conversation workspace: recent tasks/history on the left, the
+bounded Team Builder and inline status in the center, and contextual
+Team/Context/Changes/Evidence inspection on the right. The Bubble Tea client
+adopts the same task-first order without becoming the native app transport.
+W2 remains pre-execution and may save only one TeamDefinition through the
+existing authority.
+
+The same complete contract adds one fail-closed product socket/lock ownership
+transaction. It permits reclaim only after an exact private lock descriptor,
+non-blocking kernel advisory lock, stable file identity and bounded sibling
+socket liveness checks; live, foreign, ambiguous or replacement paths remain
+untouched. This is not a standalone socket Amendment.
+
+The contract permits no W2a/W2b, no P2A-W4 and no later single-point Amendment.
+P2A-W3 remains locked. Mandatory RED, implementation, deterministic and visual
+GREEN, fresh independent Implementation Review, one atomic Candidate commit
+and exact preflight must all pass before the only vertical lineage
+`p2a-w2-live-20260730-007` may run once. Fresh independent Contract Review is
+the current gate; no product source, real socket/lock, Keychain, Provider,
+installed app, daemon or resident service action is yet authorized.
+
+`CURRENT`: fresh independent Interaction Continuity Contract Review 1 returned
+`FAIL` with one P1 and one P2. The P1 found that the exact owned files omitted
+`internal/localipc/server.go`, although the frozen safe shutdown order requires
+changing its current close-lock-before-remove sequence. The P2 found ambiguous
+`unowned lock` wording where the intended reclaim input is an abandoned,
+effective-user-owned lock and wrong-owner paths must remain fail-closed.
+
+Contract Repair 1 adds only `internal/localipc/server.go`, freezes an explicit
+close-order/concurrent-contender proof, and corrects the stale input to
+`abandoned owned`. It changes no UI, protocol, credential, Provider, authority,
+live or exit requirement. Fresh independent Contract Repair 1 Re-review is the
+current gate. Product RED, implementation and all live actions remain locked.
+
+`CURRENT`: fresh independent Contract Repair 1 Re-review returned `PASS` with
+no P0, P1 or P2 finding. It confirmed `internal/localipc/server.go` ownership,
+remove-before-advisory-lock-release ordering, the concurrent-contender proof,
+the `abandoned owned` stale-lock term and wrong-owner rejection. It also
+confirmed the existing Builder can support the required two-action
+Provider/model presentation only by selecting a compatible existing role option
+and showing its already-bound Runtime profile, model and auth mode; no
+standalone model protocol, catalog or authority may be introduced.
+
+The frozen Interaction Continuity contract is now ready for a pure governance
+checkpoint commit. After that exact commit, mandatory deterministic RED is the
+next gate. No product implementation or live action has occurred; P2A-W3
+remains locked and no P2A-W4 exists.
