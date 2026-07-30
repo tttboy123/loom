@@ -4159,3 +4159,34 @@ the current gate. After Contract Review, the required order is real-client RED,
 minimal composition repair, complete deterministic matrix, fresh
 Implementation Review, then at most one fresh isolated complete native
 decision canary.
+
+`CURRENT`: Mission Decision Vertical Closure Contract Review returned `PASS`
+with no P0/P1/P2. The real production-client RED was reproduced after the
+reviewed contract commit, and the one-line
+`LocalProductDecisionClientProtocol` conformance turns that focused test GREEN.
+Complete Swift debug, Thread Sanitizer and Release gates pass using
+attempt-local scratch paths.
+
+The first Go full/race/vet commands also pass, but their evidence is not
+accepted: the real Go-to-Swift contract fixture internally invoked SwiftPM
+without a scratch path and recreated `apps/macos/.build` as an observed 88M
+generated cache. No live process or state was started, so the one fresh live
+lineage remains unconsumed.
+
+Deterministic Cache Repair 1 is frozen inside the same complete P2A-W2 reopen
+at
+`.loom-evidence/phase2a/P2A-W2/mission-decision-deterministic-cache-repair-1.md`.
+It permits only a reviewed same-volume recoverable quarantine of that exact
+generated cache, followed by controlled `SWIFTPM_BUILD_DIR` routing and a
+sequential real Go-to-Swift/full/race/vet rerun. No product scope expands.
+Quarantine and rerun remain locked pending fresh Repair Review; live remains
+locked.
+
+`CURRENT`: fresh independent Deterministic Cache Repair 1 Review returned
+`PASS` with no P0/P1/P2. It confirmed the exact 88M generated cache identity,
+same-volume absent quarantine destination, symlink-safe manifest requirement,
+no cache handle, no live process/state and the bounded
+`SWIFTPM_BUILD_DIR` routing gate.
+
+The exact recoverable quarantine and sequential controlled-route rerun are now
+unlocked. Live and Implementation acceptance remain locked.
