@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -130,6 +131,285 @@ func TestSocketLockAndExactIdentityCleanupFailClosed(t *testing.T) {
 	}
 	if _, ok := statUintField(nil, "Uid"); ok {
 		t.Fatal("nil file info produced stat field")
+	}
+}
+
+func TestExactRemovePreservesReplacementInsertedAfterInitialCheck(
+	t *testing.T,
+) {
+	root := shortPrivateSocketRoot(t)
+	path := filepath.Join(root, "replacement")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, ok := identityOf(info)
+	if !ok {
+		t.Fatal("original identity unavailable")
+	}
+	replacement := []byte("replacement")
+	err = removeExactFileObserved(path, identity, func() {
+		if removeErr := os.Remove(path); removeErr != nil {
+			t.Fatal(removeErr)
+		}
+		if writeErr := os.WriteFile(path, replacement, 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	})
+	if !errors.Is(err, ErrInvalidSocketPath) {
+		t.Fatalf("replacement remove error = %v", err)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != string(replacement) {
+		t.Fatalf("replacement data=%q error=%v", data, readErr)
+	}
+}
+
+func TestPrepareSocketReclaimsAbandonedOwnedLockWithMissingSocket(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	lockPath := socketPath + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lockPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lock, err := prepareSocket(socketPath, os.Geteuid())
+	if err != nil {
+		t.Fatalf("prepareSocket(abandoned owned lock) error = %v", err)
+	}
+	lockInfo, err := lock.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockIdentity, ok := identityOf(lockInfo)
+	if !ok || !lockInfo.Mode().IsRegular() ||
+		lockInfo.Mode().Perm() != 0o600 ||
+		ownerUID(lockInfo) != os.Geteuid() {
+		t.Fatalf(
+			"fresh lock info=%#v identity=%#v ok=%v",
+			lockInfo,
+			lockIdentity,
+			ok,
+		)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeExactFile(lockPath, lockIdentity); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareSocketRejectsUnsafeExistingLockShapesWithoutDeletion(
+	t *testing.T,
+) {
+	tests := []struct {
+		name string
+		make func(t *testing.T, root, lockPath string)
+	}{
+		{
+			name: "symlink",
+			make: func(t *testing.T, root, lockPath string) {
+				target := filepath.Join(root, "target")
+				if err := os.WriteFile(target, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, lockPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "hard_link",
+			make: func(t *testing.T, root, lockPath string) {
+				target := filepath.Join(root, "target")
+				if err := os.WriteFile(target, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(target, lockPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wrong_mode",
+			make: func(t *testing.T, _, lockPath string) {
+				if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(lockPath, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "nonzero",
+			make: func(t *testing.T, _, lockPath string) {
+				if err := os.WriteFile(
+					lockPath,
+					[]byte("occupied"),
+					0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := shortPrivateSocketRoot(t)
+			socketPath := filepath.Join(root, "loomd.sock")
+			lockPath := socketPath + ".lock"
+			test.make(t, root, lockPath)
+			before, err := os.Lstat(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeIdentity, ok := identityOf(before)
+			if !ok {
+				t.Fatal("unsafe fixture identity unavailable")
+			}
+			if lock, err := prepareSocket(
+				socketPath,
+				os.Geteuid(),
+			); err == nil {
+				_ = releaseLockFile(lockPath, lock)
+				t.Fatal("unsafe existing lock was accepted")
+			}
+			after, err := os.Lstat(lockPath)
+			afterIdentity, ok := identityOf(after)
+			if err != nil || !ok || afterIdentity != beforeIdentity {
+				t.Fatalf(
+					"unsafe lock changed: before=%#v after=%#v err=%v",
+					beforeIdentity,
+					afterIdentity,
+					err,
+				)
+			}
+		})
+	}
+}
+
+func TestPrepareSocketRejectsActiveAdvisoryOwnerWithoutDeletion(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	lockPath := socketPath + ".lock"
+	owner, err := os.OpenFile(
+		lockPath,
+		os.O_RDWR|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if err := syscall.Flock(
+		int(owner.Fd()),
+		syscall.LOCK_EX|syscall.LOCK_NB,
+	); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(owner.Fd()), syscall.LOCK_UN)
+	before, err := owner.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeIdentity, ok := identityOf(before)
+	if !ok {
+		t.Fatal("active lock identity unavailable")
+	}
+	if _, err := prepareSocket(socketPath, os.Geteuid()); err == nil {
+		t.Fatal("active advisory owner was accepted")
+	}
+	if !pathMatchesIdentity(lockPath, beforeIdentity) {
+		t.Fatal("active advisory lock path changed")
+	}
+}
+
+func TestPrepareSocketReclaimsLegacyStaleSocketAndLock(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	listener, err := net.ListenUnix(
+		"unix",
+		&net.UnixAddr{Name: socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socketPath+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := prepareSocket(socketPath, os.Geteuid())
+	if err != nil {
+		t.Fatalf("legacy stale pair was not reclaimed: %v", err)
+	}
+	if _, err := os.Lstat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("stale socket remains: %v", err)
+	}
+	if err := releaseLockFile(socketPath+".lock", lock); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareSocketConcurrentReclaimHasSingleWinnerFiftyTimes(
+	t *testing.T,
+) {
+	for iteration := 0; iteration < 50; iteration++ {
+		root := shortPrivateSocketRoot(t)
+		socketPath := filepath.Join(root, "loomd.sock")
+		lockPath := socketPath + ".lock"
+		if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		results := make(chan *os.File, 2)
+		var wait sync.WaitGroup
+		for contender := 0; contender < 2; contender++ {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				lock, err := prepareSocket(socketPath, os.Geteuid())
+				if err != nil {
+					results <- nil
+					return
+				}
+				results <- lock
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(results)
+		winners := 0
+		for lock := range results {
+			if lock == nil {
+				continue
+			}
+			winners++
+			if err := releaseLockFile(lockPath, lock); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if winners != 1 {
+			t.Fatalf(
+				"iteration %d winners=%d, want 1",
+				iteration,
+				winners,
+			)
+		}
 	}
 }
 

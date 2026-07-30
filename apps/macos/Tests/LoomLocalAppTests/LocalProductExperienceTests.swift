@@ -5,12 +5,18 @@ import XCTest
 final class LocalProductExperienceTests: XCTestCase {
     func testPrimaryDestinationsAreTaskFirstAndBounded() {
         XCTAssertEqual(
-            LocalProductSection.allCases,
-            [.home, .work, .teams, .inbox, .system]
+            LocalProductWorkspaceState().tasks.map(\.title),
+            ["New task"]
         )
         XCTAssertEqual(
-            LocalProductSection.allCases.map(\.rawValue),
-            ["Home", "Work", "Teams", "Inbox", "System"]
+            LocalProductInspectorTab.allCases.map(\.rawValue),
+            ["Team", "Context", "Changes", "Evidence"]
+        )
+        XCTAssertFalse(
+            LocalProductInteractionCopy.primaryFlow.contains("Home")
+        )
+        XCTAssertFalse(
+            LocalProductInteractionCopy.primaryFlow.contains("System")
         )
     }
 
@@ -38,7 +44,7 @@ final class LocalProductExperienceTests: XCTestCase {
             ["Review blocked work"]
         )
         XCTAssertFalse(
-            LocalProductSection.allCases.map(\.rawValue).contains("Compare")
+            LocalProductInteractionCopy.primaryFlow.contains("Compare")
         )
     }
 

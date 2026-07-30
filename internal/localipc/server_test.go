@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -259,6 +260,99 @@ func TestServerReclaimsOnlyStaleSocketAndPreservesReplacement(t *testing.T) {
 		t.Fatalf("Serve() replacement error = %v", err)
 	}
 	data, err := os.ReadFile(socketPath)
+	if err != nil || !bytes.Equal(data, replacement) {
+		t.Fatalf("replacement data=%q error=%v", data, err)
+	}
+}
+
+func TestServerRemovesLockPathBeforeReleasingAdvisoryOwnership(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "fixture-build",
+		Handler: HandlerFunc(func(
+			context.Context,
+			Request,
+		) Response {
+			return Response{}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForServerReady(t, server)
+
+	contender, err := os.OpenFile(socketPath+".lock", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contender.Close()
+	if err := syscall.Flock(
+		int(contender.Fd()),
+		syscall.LOCK_EX|syscall.LOCK_NB,
+	); err == nil {
+		_ = syscall.Flock(int(contender.Fd()), syscall.LOCK_UN)
+		t.Fatal("active server lock had no advisory ownership")
+	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("active server lock contention error = %v", err)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(
+		int(contender.Fd()),
+		syscall.LOCK_EX|syscall.LOCK_NB,
+	); err != nil {
+		t.Fatalf("released server lock remains held: %v", err)
+	}
+	defer syscall.Flock(int(contender.Fd()), syscall.LOCK_UN)
+	if _, err := os.Lstat(socketPath + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf(
+			"lock path exists after advisory ownership release: %v",
+			err,
+		)
+	}
+}
+
+func TestServerClosePreservesReplacementLockPath(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "fixture-build",
+		Handler: HandlerFunc(func(context.Context, Request) Response {
+			return Response{}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForServerReady(t, server)
+
+	lockPath := socketPath + ".lock"
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte("replacement")
+	if err := os.WriteFile(lockPath, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, ErrInvalidSocketPath) {
+		t.Fatalf("replacement close error = %v", err)
+	}
+	data, err := os.ReadFile(lockPath)
 	if err != nil || !bytes.Equal(data, replacement) {
 		t.Fatalf("replacement data=%q error=%v", data, err)
 	}

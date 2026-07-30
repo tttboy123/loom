@@ -41,6 +41,55 @@ final class LocalProductStoreTests: XCTestCase {
         XCTAssertEqual(store.connectionState, .offline(reason: "unavailable"))
     }
 
+    func testRefreshPreservesSelectedTaskDraftAndInspector() async throws {
+        let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
+            of: "\"teams\":[]",
+            with: """
+            "teams":[{
+              "team_instance_id":"team-1",
+              "display_name":"Release review",
+              "source_kind":"saved",
+              "state":"ready",
+              "confirmed":true,
+              "executable":true,
+              "read_only":false
+            }]
+            """
+        )
+        let snapshot = try LocalProductWire.decodeSnapshot(Data(json.utf8))
+        let client = StubLocalProductClient(
+            snapshots: [
+                .success(snapshot),
+                .failure(LocalProductClientError.unavailable),
+                .success(snapshot),
+            ]
+        )
+        let store = LocalProductStore(client: client)
+        await store.refresh()
+        let task = try XCTUnwrap(
+            store.workspace.tasks.first(where: { $0.kind == .team })
+        )
+        store.selectWorkspaceTask(task.id)
+        store.updateComposerDraft("Keep this local note")
+        store.selectInspector(.changes)
+
+        await store.refresh()
+        XCTAssertEqual(store.workspace.selectedTaskID, task.id)
+        XCTAssertEqual(
+            store.workspace.selectedContinuity.composerDraft,
+            "Keep this local note"
+        )
+        XCTAssertEqual(store.workspace.selectedContinuity.inspector, .changes)
+
+        await store.refresh()
+        XCTAssertEqual(store.workspace.selectedTaskID, task.id)
+        XCTAssertEqual(
+            store.workspace.selectedContinuity.composerDraft,
+            "Keep this local note"
+        )
+        XCTAssertEqual(store.workspace.selectedContinuity.inspector, .changes)
+    }
+
     func testSelectingVisibleTeamPerformsOneBoundedTimelineRequest() async throws {
         let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
             of: "\"teams\":[]",
@@ -64,6 +113,37 @@ final class LocalProductStoreTests: XCTestCase {
         store.selectTeam(snapshot.teams[0])
         XCTAssertEqual(store.selectedSection, .teams)
         await store.activateSelectedTeam()
+
+        XCTAssertEqual(client.timelineRequestCount, 1)
+        XCTAssertEqual(client.lastTimelineLimit, 64)
+        XCTAssertEqual(client.lastTimelineTeamID, "team-1")
+    }
+
+    func testWorkspaceTeamSelectionLoadsItsBoundedActivity() async throws {
+        let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
+            of: "\"teams\":[]",
+            with: """
+            "teams":[{
+              "team_instance_id":"team-1",
+              "display_name":"Review Team",
+              "source_kind":"saved",
+              "state":"ready",
+              "confirmed":true,
+              "executable":true,
+              "read_only":false
+            }]
+            """
+        )
+        let snapshot = try LocalProductWire.decodeSnapshot(Data(json.utf8))
+        let client = StubLocalProductClient(snapshots: [.success(snapshot)])
+        let store = LocalProductStore(client: client)
+
+        await store.refresh()
+        let task = try XCTUnwrap(
+            store.workspace.tasks.first(where: { $0.kind == .team })
+        )
+        store.selectWorkspaceTask(task.id)
+        await store.activateWorkspaceTask()
 
         XCTAssertEqual(client.timelineRequestCount, 1)
         XCTAssertEqual(client.lastTimelineLimit, 64)

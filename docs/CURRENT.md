@@ -3525,3 +3525,143 @@ The frozen Interaction Continuity contract is now ready for a pure governance
 checkpoint commit. After that exact commit, mandatory deterministic RED is the
 next gate. No product implementation or live action has occurred; P2A-W3
 remains locked and no P2A-W4 exists.
+
+`CURRENT`: pure governance checkpoint `65c719c` froze the complete P2A-W2
+Interaction Continuity Exit Reopen before product edits. Mandatory RED is now
+captured in
+`.loom-evidence/phase2a/P2A-W2/interaction-continuity-exit-reopen-red.md`.
+After discarding and correcting one test-only undefined fixture, the valid
+local IPC RED proves that an abandoned owned lock is rejected and an active
+server holds no advisory ownership. The task-first TUI RED fails only on the
+missing `ScreenTasks` product symbol. The native Swift RED fails only on the
+missing frozen workspace-continuity types, inspector cases and safe primary
+copy. No production file, real socket/lock, Keychain, Provider, daemon,
+installed app or resident service was changed. Minimal implementation is now
+unlocked only inside the frozen complete owned boundary; live lineage
+`p2a-w2-live-20260730-007` remains locked until full GREEN, visual proof,
+fresh independent Implementation Review, atomic Candidate commit and exact
+preflight. P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: the complete P2A-W2 Interaction Continuity Candidate is
+deterministically GREEN. The native app now opens a task/chat-first
+Tasks/Conversation/Inspector workspace, preserves per-task local continuity,
+loads bounded historical activity, keeps Team Builder inline and save-only,
+and uses human-facing Provider/model review language. Bubble Tea now starts at
+Tasks, preserves task selection across primary views and hides raw history
+identifiers.
+
+The same Candidate implements the complete product socket/lock transaction:
+strict private metadata, no-follow open, single-link/zero-byte/owned `0600`
+validation, stable descriptor/path identity, a non-blocking exclusive advisory
+lock held for the listener lifetime, bounded socket liveness, one-winner stale
+reclaim and remove-before-release shutdown. Active, live, foreign, symlink,
+hard-link, wrong-mode, nonzero, regular and replacement paths remain
+fail-closed. The integrated product daemon starts from the attempt-006-shaped
+abandoned owned lock in a private fixture and cleans its owned pair.
+
+Focused tests, 50 two-contender repetitions, complete serial Go and race
+suites, vet, module checks, 39 XCTest plus 4 Swift Testing debug cases, the
+same Thread Sanitizer matrix, Swift Release build, diff/secret/scope checks and
+wide/compact/minimum visual proof all pass. Evidence is recorded in
+`interaction-continuity-deterministic-green.md` and
+`interaction-continuity-visual-audit.md`. No real product socket/lock,
+Keychain, Provider, installed app or resident service was touched. Fresh
+independent read-only Implementation Review is the current gate; staging,
+Candidate commit and live lineage `p2a-w2-live-20260730-007` remain locked.
+P2A-W3 remains locked and no P2A-W4 exists.
+
+`CURRENT`: fresh independent Implementation Review 1 returned `FAIL` with one
+P1 and two P2 findings. The P1 found that native and TUI confirmation omitted
+the already-bound role Runtime, Provider, model, auth, permissions,
+compatibility and complete budget review. One P2 found native/TUI task
+search/filter missing. The other P2 found no observed interleaving proof for a
+replacement installed after exact-remove's initial identity check. No P0 was
+reported.
+
+Repair 1 stays inside the same complete P2A-W2 contract and its exact owned
+files; it creates no Amendment and no W4. Mandatory Repair 1 RED is recorded in
+`interaction-continuity-repair-1-red.md`: missing native preflight/filter
+symbols, missing TUI search and complete preflight copy, and missing observed
+exact-remove boundary all fail causally. Real product socket/lock, Keychain,
+Provider, installed app and resident service remain untouched. Repair
+implementation is now the current gate; staging, commit and live lineage
+`p2a-w2-live-20260730-007` remain locked.
+
+`CURRENT`: P2A-W2 Repair 1 is deterministically GREEN inside the same frozen
+complete Interaction Continuity contract. Native and TUI now provide bounded
+task search/filter while preserving the selected task, and their final Builder
+confirmation exposes the complete already-bound role, Provider, model, auth
+mode, Runtime compatibility, permissions, maximum budget and estimated cost.
+Exact lock-file removal now revalidates identity after an observed interleaving
+seam and preserves a replacement installed after the first check.
+
+The full matrix found and closed one cross-language source-boundary omission:
+new Store state had acquired dependencies outside the existing standalone
+`swiftc` fixture. Workspace continuity types now live with the owned Store,
+Store reconciliation has no presentation-only dependency, and the unchanged
+real Go IPC Server to Swift Client fixture passes. Focused tests,
+50 two-contender lock repetitions, complete serial Go and race suites, vet,
+module and diff checks, 41 XCTest plus 4 Swift Testing debug cases, the same
+Thread Sanitizer matrix, Swift Release build, and regenerated wide/compact
+visual proof all pass. No real product socket/lock, Keychain, Provider,
+installed app or resident service was touched. Fresh independent read-only
+Repair 1 Implementation Re-review is the current gate; staging, commit and live
+lineage `p2a-w2-live-20260730-007` remain locked. P2A-W3 remains locked and no
+P2A-W4 exists.
+
+`CURRENT`: fresh independent Repair 1 Implementation Re-review 2 returned
+`FAIL` with one P1 and no P0/P2. It confirmed the complete preflight,
+task-search continuity, exact-remove interleaving proof and unchanged strict
+Go-to-Swift fixture, but found role-option continuity still incomplete:
+responsibility-only choice labels and name/purpose-only confirmation did not
+expose the existing `builder_edit main_role/subagent_role` path.
+
+Mandatory Repair 2 RED is recorded in
+`interaction-continuity-repair-2-red.md`. Native lacked the bounded
+role-option presentation/accepted role-edit fields; TUI lacked role choices and
+an exact `main_role` edit command. Repair 2 remains inside the same complete
+contract and exact owned files, creates no Amendment or W4, and changes no
+application service, protocol, authority or live surface.
+
+`CURRENT`: Repair 2 implementation is focused GREEN. Native role questions and
+confirmation now show compatible existing roles and submit exact role-option
+IDs through the existing `main_role`/`subagent_role` Builder fields. TUI
+exposes the same choices and `m`/`s` one-action edits, then renders the returned
+authoritative preview. No standalone model picker, protocol field, catalog or
+authority was added.
+
+Fresh Repair 2 Implementation Re-review returned `FAIL` with one P1 and one P2:
+unselected alternatives received invented generic `Local provider`/`Native`
+metadata even though only their Runtime/model are present in the bounded setup
+snapshot, and alternate-profile truthfulness was not tested.
+
+Mandatory Repair 3 RED is recorded in
+`interaction-continuity-repair-3-red.md`. Repair 3 removes those guesses.
+Unselected options show only authoritative responsibility, Runtime and model
+plus a select-to-review cue; the selected option shows exact Provider/auth from
+the returned Builder preview. Focused native and TUI tests pass. Full
+deterministic re-verification passed.
+
+Fresh Repair 3 Re-review returned `FAIL` with one P1 and one P2. Same-Agent
+role options with different Runtime profile/instance bindings were still
+matched as current by kind plus AgentDefinition, and the GREEN gate text still
+named Repair 1.
+
+Mandatory Repair 4 RED is recorded in
+`interaction-continuity-repair-4-red.md`. Native and TUI now match selected
+presentation with the full available tuple of kind, AgentDefinition, Runtime
+profile and Runtime instance. Same-Agent alternate-profile fixtures pass, and
+the GREEN gate text names Repair 4. Complete deterministic re-verification
+passes: complete serial Go and race suites, vet, module checks, 41 XCTest plus
+4 Swift Testing cases in debug and Thread Sanitizer configurations, Swift
+Release, strict unchanged Go-to-Swift fixture, diff, scope, screenshot and
+secret-negative checks are green.
+
+Fresh independent Repair 4 Implementation Re-review 5 returned `PASS` with no
+P0, P1 or P2 findings. It independently confirmed full-tuple role matching,
+same-Agent alternate-profile truthfulness, exact existing Builder edit
+dispatch, returned authoritative Provider/auth presentation, task-first
+native/TUI continuity, exact socket/lock transaction and excluded-dirt
+isolation. The atomic Candidate commit is the current gate. Live lineage
+`p2a-w2-live-20260730-007` remains locked until that exact committed Candidate
+passes preflight; P2A-W3 remains locked and no P2A-W4 exists.

@@ -29,7 +29,7 @@ public enum LocalProductCopy {
     public static let evidence = "Accepted evidence"
     public static let teamsTitle = "Teams"
     public static let teamsSubtitle =
-        "Choose a team to inspect its authoritative timeline."
+        "Choose a team to inspect its activity."
     public static let inboxTitle = "Inbox"
     public static let inboxSubtitle = "Only items that need a human decision."
     public static let systemTitle = "System"

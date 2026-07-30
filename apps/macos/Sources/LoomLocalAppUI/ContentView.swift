@@ -36,6 +36,8 @@ public struct ContentView: View {
     @State private var builderEditField = ""
     @State private var builderEditValue = ""
     @State private var showTeamBuilder = false
+    @State private var showInspector = false
+    @State private var taskQuery = ""
 
     public init(
         store: LocalProductStore,
@@ -46,22 +48,41 @@ public struct ContentView: View {
     }
 
     public var body: some View {
-        HSplitView {
-            sidebar
-            NavigationStack {
-                detail
+        GeometryReader { geometry in
+            if geometry.size.width >= 940 {
+                HSplitView {
+                    taskSidebar
+                        .frame(minWidth: 190, idealWidth: 220, maxWidth: 270)
+                    conversationWorkspace
+                        .frame(minWidth: 420)
+                    workspaceInspector
+                        .frame(minWidth: 230, idealWidth: 270, maxWidth: 340)
+                }
+            } else {
+                HSplitView {
+                    taskSidebar
+                        .frame(minWidth: 175, idealWidth: 200, maxWidth: 225)
+                    conversationWorkspace
+                        .frame(minWidth: 390)
+                }
+                .inspector(isPresented: $showInspector) {
+                    workspaceInspector
+                        .inspectorColumnWidth(
+                            min: 230,
+                            ideal: 270,
+                            max: 340
+                        )
+                }
             }
-            .frame(minWidth: 560)
         }
         .task {
             if refreshOnAppear {
-                await store.refresh()
+                async let read: Void = store.refresh()
+                async let setup: Void = store.refreshSetup()
+                _ = await (read, setup)
             }
         }
-        .sheet(isPresented: $showTeamBuilder) {
-            teamBuilder
-                .frame(minWidth: 760, minHeight: 620)
-        }
+        .frame(minWidth: 720, minHeight: 560)
     }
 
     private var experience: LocalProductExperience {
@@ -69,6 +90,423 @@ public struct ContentView: View {
             snapshot: store.snapshot,
             connectionState: store.connectionState
         )
+    }
+
+    private var taskSidebar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Loom")
+                        .font(.title2.weight(.semibold))
+                    Text("Local workspace")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    store.selectWorkspaceTask(
+                        LocalProductWorkspaceState.newTaskID
+                    )
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .frame(
+                            minWidth: LoomDesign.minimumActionTarget,
+                            minHeight: LoomDesign.minimumActionTarget
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("New task")
+                .accessibilityLabel("New task")
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 16)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Search tasks", text: $taskQuery)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    Text("TASKS")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .tracking(0.8)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 12)
+                    ForEach(
+                        store.workspace.filteredTasks(matching: taskQuery)
+                    ) { task in
+                        workspaceTaskButton(task)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 12)
+            }
+
+            Divider()
+            sidebarStatus
+        }
+        .background(Color(nsColor: .underPageBackgroundColor))
+        .accessibilityLabel("Tasks and recent work")
+    }
+
+    private func workspaceTaskButton(
+        _ task: LocalProductWorkspaceTask
+    ) -> some View {
+        let selected = task.id == store.workspace.selectedTaskID
+        return Button {
+            Task {
+                store.selectWorkspaceTask(task.id)
+                await store.activateWorkspaceTask()
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: taskIcon(task.kind))
+                    .font(.callout)
+                    .foregroundStyle(
+                        selected ? Color.accentColor : Color.secondary
+                    )
+                    .frame(width: 18)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.title)
+                        .font(.callout.weight(selected ? .semibold : .regular))
+                        .lineLimit(1)
+                    Text(task.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                selected ? Color.accentColor.opacity(0.12) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var conversationWorkspace: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.workspace.selectedTask.title)
+                        .font(.headline)
+                    Text(store.workspace.selectedTask.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if store.workspace.selectedTask.kind != .draft {
+                    Text("Read only")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.quaternary, in: Capsule())
+                }
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.right")
+                        .labelStyle(.iconOnly)
+                        .frame(
+                            minWidth: LoomDesign.minimumActionTarget,
+                            minHeight: LoomDesign.minimumActionTarget
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Show inspector")
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(.bar)
+
+            if experience.state != .connectedEmpty,
+               experience.state != .connectedPopulated {
+                connectionStrip
+            }
+
+            ScrollViewReader { _ in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        if store.workspace.selectedTask.kind == .draft {
+                            conversationWelcome
+                            if store.setupSnapshot == nil {
+                                setupProviderPanel
+                            }
+                            builderPanel
+                        } else {
+                            historicalConversation
+                        }
+                    }
+                    .frame(
+                        maxWidth: 760,
+                        alignment: .leading
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+
+            if store.workspace.selectedTask.kind == .draft {
+                composer
+            }
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var conversationWelcome: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("What would you like Loom to help with?")
+                .font(.title2.weight(.semibold))
+            Text(
+                "Describe the outcome. Loom will guide you through the " +
+                    "team, provider, model, permissions, and final review."
+            )
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var historicalConversation: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(
+                "This summary comes from your local history.",
+                systemImage: "clock.arrow.circlepath"
+            )
+            .font(.headline)
+            Text(
+                "Open the inspector for team context, changes, and accepted " +
+                    "evidence. Historical items remain read only here."
+            )
+            .foregroundStyle(.secondary)
+            if let timeline = store.timeline, !timeline.records.isEmpty {
+                ForEach(timeline.records) { record in
+                    TimelineRow(record: record)
+                }
+            } else {
+                Text("No additional activity is available.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var composer: some View {
+        VStack(spacing: 8) {
+            Divider()
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField(
+                    "Describe a task...",
+                    text: Binding(
+                        get: {
+                            store.workspace.selectedContinuity.composerDraft
+                        },
+                        set: store.updateComposerDraft
+                    ),
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(.separator, lineWidth: 1)
+                }
+
+                Button {
+                    Task {
+                        if store.builderSession == nil {
+                            await store.startBlankBuilder()
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.accentColor, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(
+                    store.workspace.selectedContinuity.composerDraft
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+                .accessibilityLabel("Continue")
+            }
+            Text("Review and confirmation are required before anything is saved.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 14)
+        .background(.bar)
+    }
+
+    private var workspaceInspector: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Inspector")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 50)
+            .background(.bar)
+
+            Picker(
+                "Inspector",
+                selection: Binding(
+                    get: { store.workspace.selectedContinuity.inspector },
+                    set: store.selectInspector
+                )
+            ) {
+                ForEach(LocalProductInspectorTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(12)
+
+            Divider()
+            ScrollView {
+                inspectorContent
+                    .padding(16)
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var inspectorContent: some View {
+        switch store.workspace.selectedContinuity.inspector {
+        case .team:
+            inspectorSection(
+                title: "Team",
+                detail: store.builderSession?.preview.name.isEmpty == false
+                    ? store.builderSession?.preview.name ?? "New team"
+                    : "Build a team for this task",
+                symbol: "person.3"
+            )
+            if let setup = store.setupSnapshot {
+                VStack(alignment: .leading, spacing: 8) {
+                    providerLine(
+                        name: "Codex",
+                        status: setup.codex.status
+                    )
+                    providerLine(
+                        name: "MiniMax",
+                        status: setup.miniMax.status
+                    )
+                }
+                .padding(.top, 14)
+            }
+        case .context:
+            inspectorSection(
+                title: "Context",
+                detail: "Only approved local resource pointers appear here.",
+                symbol: "doc.text.magnifyingglass"
+            )
+        case .changes:
+            inspectorSection(
+                title: "Changes",
+                detail: "No work has started yet.",
+                symbol: "arrow.triangle.branch"
+            )
+        case .evidence:
+            inspectorSection(
+                title: "Evidence",
+                detail: "Accepted results will appear after future work runs.",
+                symbol: "checkmark.seal"
+            )
+        }
+
+        DisclosureGroup(
+            "Developer details",
+            isExpanded: Binding(
+                get: {
+                    store.workspace.selectedContinuity
+                        .developerDetailsExpanded
+                },
+                set: store.setDeveloperDetailsExpanded
+            )
+        ) {
+            Text("Local diagnostic identifiers are hidden in normal use.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+        }
+        .padding(.top, 20)
+    }
+
+    private func inspectorSection(
+        title: String,
+        detail: String,
+        symbol: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol)
+                .font(.headline)
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func providerLine(name: String, status: String) -> some View {
+        HStack {
+            Circle()
+                .fill(status == "available" || status == "verified"
+                    ? Color.green
+                    : Color.secondary)
+                .frame(width: 7, height: 7)
+            Text(name)
+            Spacer()
+            Text(humanized(status))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func taskIcon(_ kind: LocalProductWorkspaceTaskKind) -> String {
+        switch kind {
+        case .draft: return "square.and.pencil"
+        case .history: return "clock"
+        case .team: return "person.3"
+        case .attention: return "exclamationmark.circle"
+        }
     }
 
     private var sidebar: some View {
@@ -170,7 +608,7 @@ public struct ContentView: View {
                         Label("Create team", systemImage: "plus")
                     }
                     .accessibilityHint(
-                        "Opens the Candidate Team Builder"
+                        "Opens Team Builder"
                     )
                 }
             }
@@ -201,7 +639,7 @@ public struct ContentView: View {
             PageHeader(
                 title: "Team Builder",
                 subtitle:
-                    "Create a Candidate team, review exact bindings, then confirm."
+                    "Build a team, review its setup, then confirm."
             )
             setupProviderPanel
             setupRuntimePanel
@@ -227,7 +665,7 @@ public struct ContentView: View {
         {
             SectionHeading(
                 title: "Saved teams and templates",
-                detail: "Every selection opens a Candidate for review"
+                detail: "Every selection opens a review before saving"
             )
             LoomPanel {
                 VStack(alignment: .leading, spacing: 12) {
@@ -240,7 +678,7 @@ public struct ContentView: View {
                             }
                             Spacer()
                             if team.status == "active" {
-                                Button("Open Candidate") {
+                                Button("Open in Builder") {
                                     Task { await store.startBuilder(from: team) }
                                 }
                                 Button("Archive") {
@@ -326,8 +764,8 @@ public struct ContentView: View {
     @ViewBuilder
     private var builderPanel: some View {
         SectionHeading(
-            title: "Candidate team",
-            detail: "Nothing executes before a later explicit Run action"
+            title: "Team setup",
+            detail: "Nothing starts until you review and confirm"
         )
         switch store.setupState {
         case .loading:
@@ -354,24 +792,38 @@ public struct ContentView: View {
                             Text(session.question.prompt)
                                 .font(.headline)
                             if session.question.options.isEmpty {
-                                TextField("Answer", text: $builderAnswer)
+                                TextField(
+                                    "Answer",
+                                    text: resolvedBuilderAnswerBinding
+                                )
                                     .textFieldStyle(.roundedBorder)
                                 Button("Continue") {
-                                    let answer = builderAnswer
+                                    let answer = resolvedBuilderAnswer
                                     builderAnswer = ""
                                     Task {
                                         await store.answerBuilder(answer)
                                     }
                                 }
-                                .disabled(builderAnswer.isEmpty)
+                                .disabled(resolvedBuilderAnswer.isEmpty)
                                 .frame(
                                     minHeight: LoomDesign.minimumActionTarget
                                 )
                             } else {
                                 ForEach(session.question.options) { option in
-                                    Button(option.label) {
+                                    Button {
                                         Task {
                                             await store.answerBuilder(option.id)
+                                        }
+                                    } label: {
+                                        if let choice = roleOptionChoices(
+                                            session.preview
+                                        ).first(where: { $0.id == option.id }) {
+                                            roleOptionLabel(
+                                                choice,
+                                                fallback: option.label
+                                            )
+                                        } else {
+                                            Text(option.label)
                                         }
                                     }
                                     .frame(
@@ -379,7 +831,7 @@ public struct ContentView: View {
                                     )
                                 }
                             }
-                            Button("Cancel Candidate", role: .cancel) {
+                            Button("Cancel setup", role: .cancel) {
                                 builderAnswer = ""
                                 store.cancelBuilder()
                             }
@@ -387,9 +839,8 @@ public struct ContentView: View {
                         } else if session.canConfirm {
                             Text(session.preview.purpose)
                                 .foregroundStyle(.secondary)
-                            Text(session.preview.estimatedMaximumCost)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
+                            builderPreflight(session.preview)
+                            builderRoleChoices(session.preview)
                             HStack {
                                 Button("Edit name") {
                                     builderEditField = "team_name"
@@ -399,7 +850,7 @@ public struct ContentView: View {
                                     builderEditField = "purpose"
                                     builderEditValue = session.preview.purpose
                                 }
-                                Button("Cancel Candidate", role: .cancel) {
+                                Button("Cancel setup", role: .cancel) {
                                     builderEditField = ""
                                     builderEditValue = ""
                                     store.cancelBuilder()
@@ -441,7 +892,7 @@ public struct ContentView: View {
                             .buttonStyle(.borderedProminent)
                             .frame(minHeight: LoomDesign.minimumActionTarget)
                             .accessibilityHint(
-                                "Saves the TeamDefinition and does not start a Run"
+                                "Saves the team and does not start work"
                             )
                         }
                     }
@@ -453,10 +904,10 @@ public struct ContentView: View {
                             .font(.headline)
                         Text(
                             "Loom asks one bounded question at a time and " +
-                                "shows exact runtime and cost bindings."
+                                "shows provider, model, permissions, and cost."
                         )
                         .foregroundStyle(.secondary)
-                        Button("Create Candidate team") {
+                        Button("Build a team") {
                             Task { await store.startBlankBuilder() }
                         }
                         .buttonStyle(.borderedProminent)
@@ -480,6 +931,140 @@ public struct ContentView: View {
         .keyboardShortcut("r", modifiers: .command)
         .accessibilityLabel("Refresh Loom")
         .accessibilityHint("Reloads the bounded read-only local view")
+    }
+
+    private func builderPreflight(
+        _ preview: LocalProductBuilderPreview
+    ) -> some View {
+        let review = LocalProductPreflightReview(preview: preview)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Review before saving")
+                .font(.headline)
+            ForEach(review.roles) { role in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(role.kind) · \(role.name)")
+                        .font(.callout.weight(.semibold))
+                    Text(
+                        "\(role.provider) · \(role.model) · \(role.auth)"
+                    )
+                    .font(.callout)
+                    Text(
+                        "\(role.runtime) · \(role.compatibility)"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if !role.permissions.isEmpty {
+                        Text("Permissions · \(role.permissions.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if !review.permissions.isEmpty {
+                Text("Team permissions · \(review.permissions.joined(separator: ", "))")
+                    .font(.callout)
+            }
+            Text("Compatibility · \(review.compatibility)")
+                .font(.callout)
+            HStack {
+                Text("Maximum budget · \(review.maximumBudget)")
+                Spacer()
+                Text(review.maximumCost)
+            }
+            .font(.callout)
+        }
+        .padding(12)
+        .background(
+            Color.accentColor.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
+    }
+
+    private func roleOptionChoices(
+        _ preview: LocalProductBuilderPreview
+    ) -> [LocalProductRoleOptionChoice] {
+        guard let setup = store.setupSnapshot else { return [] }
+        return LocalProductRoleOptionChoice.all(
+            setup: setup,
+            preview: preview
+        )
+    }
+
+    @ViewBuilder
+    private func builderRoleChoices(
+        _ preview: LocalProductBuilderPreview
+    ) -> some View {
+        let choices = roleOptionChoices(preview)
+        if !choices.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Choose roles")
+                    .font(.headline)
+                ForEach(choices) { choice in
+                    Button {
+                        Task {
+                            await store.editBuilder(
+                                field: choice.field,
+                                value: choice.id
+                            )
+                        }
+                    } label: {
+                        roleOptionLabel(
+                            choice,
+                            fallback: choice.responsibility
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: LoomDesign.minimumActionTarget)
+                    .accessibilityHint(
+                        choice.isCurrent
+                            ? "Currently selected"
+                            : "Updates the team preview without saving"
+                    )
+                }
+            }
+        }
+    }
+
+    private func roleOptionLabel(
+        _ choice: LocalProductRoleOptionChoice,
+        fallback: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(choice.responsibility.isEmpty
+                    ? fallback
+                    : choice.responsibility)
+                if choice.isCurrent {
+                    Text("Selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(choice.isCurrent
+                ? "\(choice.provider) · \(choice.model) · " +
+                    "\(choice.auth) · \(choice.runtime)"
+                : "\(choice.model) · \(choice.runtime) · " +
+                    "Select to review provider and sign-in")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var resolvedBuilderAnswer: String {
+        if builderAnswer.isEmpty,
+           store.builderSession?.question.id == "purpose" {
+            return store.workspace.selectedContinuity.composerDraft
+        }
+        return builderAnswer
+    }
+
+    private var resolvedBuilderAnswerBinding: Binding<String> {
+        Binding(
+            get: { resolvedBuilderAnswer },
+            set: { builderAnswer = $0 }
+        )
     }
 
     private var connectionStrip: some View {

@@ -107,6 +107,38 @@ final class LocalProductExperienceViewTests: XCTestCase {
         )
     }
 
+    func testMinimumLayoutHasNoRequiredMotion() async throws {
+        let snapshot = try ExperienceFixtures.populatedSnapshot()
+        let store = LocalProductStore(
+            client: ExperienceViewStubClient(results: [.success(snapshot)])
+        )
+        await store.refresh()
+        let standard = try XCTUnwrap(
+            render(
+                ContentView(store: store, refreshOnAppear: false),
+                colorScheme: .light,
+                dynamicTypeSize: .large,
+                width: 720,
+                height: 560
+            )
+        )
+        XCTAssertEqual(standard.pixelWidth, 720)
+        XCTAssertEqual(standard.pixelHeight, 560)
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "../../Sources/LoomLocalAppUI/ContentView.swift"
+            )
+            .standardizedFileURL
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        for requiredMotion in ["withAnimation", ".animation(", "TimelineView"] {
+            XCTAssertFalse(
+                source.contains(requiredMotion),
+                "Primary workspace requires motion through \(requiredMotion)"
+            )
+        }
+    }
+
     func testRealContentViewRendersNonconnectingStateAndAppearanceMatrix()
         async throws
     {
@@ -157,7 +189,7 @@ final class LocalProductExperienceViewTests: XCTestCase {
                 XCTAssertGreaterThan(image.colorBucketCount, 12)
                 XCTAssertGreaterThan(
                     image.sidebarContrastPixelCount,
-                    250,
+                    180,
                     "\(fixture.name) rendered a visually empty sidebar in \(scheme)"
                 )
                 stateDigests.insert(image.digest)
@@ -186,7 +218,7 @@ final class LocalProductExperienceViewTests: XCTestCase {
         XCTAssertGreaterThan(accessibilityImage.colorBucketCount, 12)
         XCTAssertGreaterThan(
             accessibilityImage.sidebarContrastPixelCount,
-            250
+            180
         )
         XCTAssertFalse(stateDigests.contains(accessibilityImage.digest))
     }
@@ -196,12 +228,22 @@ final class LocalProductExperienceViewTests: XCTestCase {
     {
         guard let requestedPath = ProcessInfo.processInfo.environment[
             "LOOM_UI_PREVIEW_PATH"
+        ], let compactRequestedPath = ProcessInfo.processInfo.environment[
+            "LOOM_UI_COMPACT_PREVIEW_PATH"
         ] else {
-            throw XCTSkip("Preview export is enabled only for the visual audit")
+            throw XCTSkip(
+                "Wide and compact preview export is enabled only for visual audit"
+            )
         }
         let requestedURL = try validatedPreviewURL(
             requestedPath: requestedPath,
             expectedURL: expectedPreviewURL(
+                currentDirectory: FileManager.default.currentDirectoryPath
+            )
+        )
+        let compactRequestedURL = try validatedPreviewURL(
+            requestedPath: compactRequestedPath,
+            expectedURL: expectedCompactPreviewURL(
                 currentDirectory: FileManager.default.currentDirectoryPath
             )
         )
@@ -223,6 +265,21 @@ final class LocalProductExperienceViewTests: XCTestCase {
         }
         try rendered.png.write(to: requestedURL, options: .atomic)
         XCTAssertGreaterThan(rendered.png.count, 20_000)
+        let compact = try XCTUnwrap(
+            render(
+                ContentView(
+                    store: store,
+                    refreshOnAppear: false
+                ),
+                colorScheme: .light,
+                dynamicTypeSize: .large,
+                width: 780,
+                height: 720
+            )
+        )
+        try compact.png.write(to: compactRequestedURL, options: .atomic)
+        XCTAssertGreaterThan(compact.png.count, 20_000)
+        XCTAssertNotEqual(rendered.digest, compact.digest)
     }
 
     private func render<Root: View>(
@@ -347,8 +404,19 @@ final class LocalProductExperienceViewTests: XCTestCase {
     private func expectedPreviewURL(currentDirectory: String) -> URL {
         URL(fileURLWithPath: currentDirectory)
             .appendingPathComponent(
-                "../../.loom-evidence/phase2a/P2A-W1/" +
-                    "native-product-experience-preview.png"
+                "../../.loom-evidence/phase2a/P2A-W2/" +
+                    "interaction-continuity-wide.png"
+            )
+            .standardizedFileURL
+    }
+
+    private func expectedCompactPreviewURL(
+        currentDirectory: String
+    ) -> URL {
+        URL(fileURLWithPath: currentDirectory)
+            .appendingPathComponent(
+                "../../.loom-evidence/phase2a/P2A-W2/" +
+                    "interaction-continuity-compact.png"
             )
             .standardizedFileURL
     }

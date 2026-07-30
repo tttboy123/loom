@@ -22,6 +22,209 @@ type fakeReadClient struct {
 	timelineCalls int
 }
 
+func TestInteractionContinuityStartsWithTasksInsteadOfHome(t *testing.T) {
+	if len(screens) == 0 || screens[0] != ScreenTasks {
+		t.Fatalf("initial screen = %v, want %v", screens, ScreenTasks)
+	}
+	for _, screen := range screens {
+		switch screen {
+		case ScreenHome, ScreenRuntimes, ScreenTeams:
+			t.Fatalf("object/dashboard-first primary screen remains: %q", screen)
+		}
+	}
+}
+
+func TestTaskSelectionSurvivesPrimaryViewSwitches(t *testing.T) {
+	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+		Teams: []api.LocalProductTeamSummary{{
+			TeamInstanceID: "team-1",
+			DisplayName:    "Release review",
+			State:          "ready",
+		}},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	if model.selected != 1 {
+		t.Fatalf("task selection=%d, want 1", model.selected)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model = updated.(Model)
+	if model.Screen() != ScreenTasks || model.selected != 1 {
+		t.Fatalf(
+			"restored screen=%s selection=%d",
+			model.Screen(),
+			model.selected,
+		)
+	}
+}
+
+func TestTasksFilterWithoutReplacingCurrentSelection(t *testing.T) {
+	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+		Teams: []api.LocalProductTeamSummary{
+			{
+				TeamInstanceID: "team-alpha",
+				DisplayName:    "Alpha review",
+				State:          "ready",
+			},
+			{
+				TeamInstanceID: "team-beta",
+				DisplayName:    "Beta migration",
+				State:          "ready",
+			},
+		},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("/"),
+	})
+	model = updated.(Model)
+	if model.entryMode != "task_search" {
+		t.Fatalf("Tasks search mode = %q", model.entryMode)
+	}
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("beta")},
+		{Type: tea.KeyEnter},
+	} {
+		updated, _ = model.Update(key)
+		model = updated.(Model)
+	}
+	view := model.View()
+	if !strings.Contains(view, "Filter · beta") ||
+		!strings.Contains(view, "Alpha review") ||
+		!strings.Contains(view, "Beta migration") {
+		t.Fatalf("filtered Tasks did not preserve selection: %q", view)
+	}
+}
+
+func TestTeamBuilderPreflightShowsBoundProviderModelAndLimits(t *testing.T) {
+	client := &fakeSetupClient{}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.loading = false
+	model.builder = app.BuilderSessionView{
+		DraftID:    "draft-1",
+		CanConfirm: true,
+		Preview: app.BuilderPreview{
+			Name:                 "Release team",
+			Purpose:              "Review the release",
+			Permissions:          []string{"repo.read"},
+			MaximumBudgetCredits: 200,
+			EstimatedMaximumCost: "Up to 2 credits",
+			Roles: []app.BuilderRolePreview{{
+				Kind:        "main",
+				DisplayName: "Coordinator",
+				Runtime: app.SetupRuntimePreview{
+					DisplayName: "Pi Coding Agent",
+				},
+				ModelID:       "codex-model",
+				AuthMode:      "native_auth",
+				PermissionIDs: []string{"repo.read"},
+				Compatible:    true,
+			}},
+		},
+	}
+	model.setup = app.SetupSnapshot{
+		Runtimes: []app.SetupRuntimePreview{{
+			RuntimeInstanceID: "runtime-pi",
+			DisplayName:       "Pi Coding Agent",
+			AdapterType:       "pi",
+			ModelID:           "codex-model",
+			ModelIDs:          []string{"codex-model"},
+		}, {
+			RuntimeInstanceID: "runtime-alt",
+			DisplayName:       "Alternate Runtime",
+			AdapterType:       "pi",
+			ModelID:           "alternate-model",
+			ModelIDs:          []string{"alternate-model"},
+		}},
+		RoleOptions: []app.SetupRoleOptionPreview{
+			{
+				ID:                "coordinator",
+				Kind:              "main",
+				AgentDefinitionID: "agent-main",
+				RuntimeProfileID:  "profile",
+				RuntimeInstanceID: "runtime-pi",
+				Responsibility:    "Coordinate",
+			},
+			{
+				ID:                "reviewer",
+				Kind:              "main",
+				AgentDefinitionID: "agent-main",
+				RuntimeProfileID:  "profile-alt",
+				RuntimeInstanceID: "runtime-alt",
+				Responsibility:    "Review",
+			},
+		},
+	}
+	model.builder.Preview.Roles[0].AgentDefinitionID = "agent-main"
+	model.builder.Preview.Roles[0].RuntimeProfileID = "profile"
+	model.builder.Preview.Roles[0].Runtime.RuntimeInstanceID = "runtime-pi"
+	view := model.View()
+	for _, want := range []string{
+		"Coordinator",
+		"Codex",
+		"codex-model",
+		"Native auth",
+		"Repo read",
+		"Compatible",
+		"200 credits",
+		"Up to 2 credits",
+		"Main role choices",
+		"m change Main role",
+		"Review · alternate-model · Select to review provider and sign-in",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("preflight missing %q: %q", want, view)
+		}
+	}
+	if strings.Contains(
+		view,
+		"Review · Local provider · alternate-model · Native",
+	) {
+		t.Fatalf("unselected role invented provider/auth: %q", view)
+	}
+
+	updated, command := model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("m"),
+	})
+	if command == nil {
+		t.Fatal("Main role change did not call builder_edit")
+	}
+	model = updated.(Model)
+	_, _ = model.Update(command())
+	if client.edits != 1 ||
+		client.lastEdit.Field != "main_role" ||
+		client.lastEdit.Value != "reviewer" {
+		t.Fatalf(
+			"role edits=%d command=%#v",
+			client.edits,
+			client.lastEdit,
+		)
+	}
+}
+
 func (client *fakeReadClient) Snapshot(
 	context.Context,
 	api.LocalProductSnapshotRequest,
@@ -62,34 +265,14 @@ func TestModelTruthfullyHandlesJournalWithNoTeams(t *testing.T) {
 		t.Fatal("snapshot load produced unexpected command")
 	}
 	model = updated.(Model)
-	if view := model.View(); !strings.Contains(view, "0 teams") {
-		t.Fatalf("Home did not report zero Teams: %q", view)
-	}
-
-	model.screenIndex = indexOfScreen(ScreenTeams)
-	if view := model.View(); !strings.Contains(
-		view,
-		"No Teams exist in this Journal yet.",
-	) {
-		t.Fatalf("Teams empty state = %q", view)
-	}
-	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(Model)
-	if command != nil ||
-		model.Screen() != ScreenTeams ||
-		client.timelineCalls != 0 {
-		t.Fatalf(
-			"empty Team enter command=%v screen=%s timeline_calls=%d",
-			command,
-			model.Screen(),
-			client.timelineCalls,
-		)
+	if view := model.View(); !strings.Contains(view, "New task") {
+		t.Fatalf("Tasks did not offer a new task: %q", view)
 	}
 
 	model.screenIndex = indexOfScreen(ScreenTimeline)
 	if view := model.View(); !strings.Contains(
 		view,
-		"Select a Team from Teams to open its authoritative timeline.",
+		"Choose a task to inspect its activity.",
 	) {
 		t.Fatalf("direct Timeline empty state = %q", view)
 	}
@@ -127,7 +310,8 @@ func TestModelTruthfullyHandlesJournalWithNoTeams(t *testing.T) {
 		snapshot: transitionClient.snapshot,
 	})
 	transition = updated.(Model)
-	transition.screenIndex = indexOfScreen(ScreenTeams)
+	transition.screenIndex = indexOfScreen(ScreenTasks)
+	transition.selected = 1
 	updated, command = transition.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	transition = updated.(Model)
 	if command == nil {
@@ -152,7 +336,7 @@ func TestModelTruthfullyHandlesJournalWithNoTeams(t *testing.T) {
 		transition.timeline.TeamInstanceID != "" ||
 		!strings.Contains(
 			transition.View(),
-			"Select a Team from Teams to open its authoritative timeline.",
+			"Choose a task to inspect its activity.",
 		) {
 		t.Fatalf(
 			"zero-Team refresh retained stale selection: %#v view=%q",
@@ -242,14 +426,11 @@ func TestModelRendersEveryBoundedScreenAndTeamTimelineInteraction(
 		screen Screen
 		text   string
 	}{
-		{ScreenHome, "Delivery Team"},
-		{ScreenRuntimes, "Local Pi"},
-		{ScreenTeams, "Delivery Team"},
-		{ScreenRuns, "run-1"},
-		{ScreenEvidence, "evidence-1"},
-		{ScreenCompare, "Select two"},
-		{ScreenAttention, "human_required"},
-		{ScreenTimeline, "Select a Team"},
+		{ScreenTasks, "Delivery Team"},
+		{ScreenTeamBuilder, "What would you like"},
+		{ScreenRuns, "Work 1"},
+		{ScreenAttention, "review"},
+		{ScreenTimeline, "Choose a task"},
 	} {
 		model.screenIndex = indexOfScreen(test.screen)
 		if view := model.View(); !strings.Contains(view, test.text) {
@@ -257,7 +438,8 @@ func TestModelRendersEveryBoundedScreenAndTeamTimelineInteraction(
 		}
 	}
 
-	model.screenIndex = indexOfScreen(ScreenTeams)
+	model.screenIndex = indexOfScreen(ScreenTasks)
+	model.selected = 1
 	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
 	if model.Screen() != ScreenTimeline || command == nil {
@@ -270,12 +452,12 @@ func TestModelRendersEveryBoundedScreenAndTeamTimelineInteraction(
 	updated, command = model.Update(command())
 	model = updated.(Model)
 	if command != nil ||
-		!strings.Contains(model.View(), "succeeded") {
+		!strings.Contains(model.View(), "Succeeded") {
 		t.Fatalf("loaded timeline view = %q", model.View())
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model = updated.(Model)
-	if model.Screen() != ScreenTeams {
+	if model.Screen() != ScreenTasks {
 		t.Fatalf("escape screen = %s", model.Screen())
 	}
 
@@ -347,7 +529,7 @@ func TestModelMapsRemoteFailuresAndStripsOSCAndIncompleteEscapes(t *testing.T) {
 	}
 }
 
-func TestModelSelectsTwoRunsForExactSummaryAndEvidenceCompare(t *testing.T) {
+func TestModelPresentsRecentWorkWithoutRawInternalIdentifiers(t *testing.T) {
 	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
 		SchemaVersion: 1,
 		ViewVersion:   strings.Repeat("a", 64),
@@ -390,30 +572,23 @@ func TestModelSelectsTwoRunsForExactSummaryAndEvidenceCompare(t *testing.T) {
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
 	model = updated.(Model)
 	model.screenIndex = indexOfScreen(ScreenRuns)
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if command != nil {
-		t.Fatal("Run compare selection dispatched I/O")
-	}
-	model = updated.(Model)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
-	model = updated.(Model)
-	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if command != nil {
-		t.Fatal("second Run compare selection dispatched I/O")
-	}
-	model = updated.(Model)
-	model.screenIndex = indexOfScreen(ScreenCompare)
 	view := model.View()
 	for _, want := range []string{
-		"run-1",
-		"run-2",
-		"succeeded",
-		"verification_failed",
-		"evidence-1",
-		"evidence-2",
+		"Work 1",
+		"Work 2",
+		"Succeeded",
+		"Failed",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("Compare view missing %q: %q", want, view)
+			t.Fatalf("Recent work view missing %q: %q", want, view)
+		}
+	}
+	for _, forbidden := range []string{
+		"run-1", "run-2", "runtime-1", "runtime-2",
+		"evidence-1", "evidence-2",
+	} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("Recent work exposed %q: %q", forbidden, view)
 		}
 	}
 }
@@ -488,10 +663,10 @@ func TestModelSurfacesGapPartialProtocolMismatchAndCancelsInflightRead(
 	})
 	model = updated.(Model)
 	for _, want := range []string{
-		"stream gap",
+		"Some activity is unavailable",
 		"press r",
-		"blocked",
-		"human_required",
+		"Blocked",
+		"Provide input",
 	} {
 		if !strings.Contains(model.View(), want) {
 			t.Fatalf("gap view missing %q: %q", want, model.View())
@@ -546,24 +721,20 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
 	model = updated.(Model)
-	if !strings.Contains(model.View(), "Home") ||
+	if !strings.Contains(model.View(), "Tasks") ||
 		!strings.Contains(
 			model.View(),
-			"Team Draft confirmation never starts a Run",
+			"Saving a team never starts work",
 		) {
-		t.Fatalf("home view = %q", model.View())
+		t.Fatalf("tasks view = %q", model.View())
 	}
 
 	wantScreens := []Screen{
-		ScreenRuntimes,
 		ScreenTeamBuilder,
-		ScreenTeams,
 		ScreenRuns,
-		ScreenEvidence,
-		ScreenCompare,
 		ScreenAttention,
 		ScreenTimeline,
-		ScreenHome,
+		ScreenTasks,
 	}
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -631,8 +802,10 @@ type fakeSetupClient struct {
 	answers     int
 	credentials int
 	statuses    int
+	edits       int
 	lastStart   app.BuilderStartCommand
 	lastStatus  app.TeamStatusCommand
+	lastEdit    app.BuilderEditCommand
 }
 
 func (client *fakeSetupClient) SetupSnapshot(
@@ -660,8 +833,10 @@ func (client *fakeSetupClient) AnswerBuilder(
 
 func (client *fakeSetupClient) EditBuilder(
 	_ context.Context,
-	_ app.BuilderEditCommand,
+	command app.BuilderEditCommand,
 ) (app.BuilderSessionView, error) {
+	client.edits++
+	client.lastEdit = command
 	return client.session, client.err
 }
 

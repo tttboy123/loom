@@ -100,8 +100,14 @@ func (server *Server) Serve(ctx context.Context) error {
 	}
 	lockInfo, err := lock.Stat()
 	lockIdentity, identityOK := identityOf(lockInfo)
-	if err != nil || !identityOK {
-		_ = lock.Close()
+	if err != nil || !identityOK ||
+		!validLockInfo(lockInfo, server.config.EffectiveUID) ||
+		!pathMatchesOwnedLock(
+			server.config.SocketPath+".lock",
+			lockIdentity,
+			server.config.EffectiveUID,
+		) {
+		_ = releaseLockFile(server.config.SocketPath+".lock", lock)
 		return ErrInvalidSocketPath
 	}
 	listener, err := net.ListenUnix(
@@ -109,33 +115,23 @@ func (server *Server) Serve(ctx context.Context) error {
 		&net.UnixAddr{Name: server.config.SocketPath, Net: "unix"},
 	)
 	if err != nil {
-		_ = lock.Close()
-		_ = removeExactFile(
-			server.config.SocketPath+".lock",
-			lockIdentity,
-		)
+		_ = releaseLockFile(server.config.SocketPath+".lock", lock)
 		return ErrInvalidSocketPath
 	}
 	listener.SetUnlinkOnClose(false)
 	if err := os.Chmod(server.config.SocketPath, 0o600); err != nil {
 		_ = listener.Close()
-		_ = lock.Close()
-		_ = removeExactFile(
-			server.config.SocketPath+".lock",
-			lockIdentity,
-		)
+		_ = releaseLockFile(server.config.SocketPath+".lock", lock)
 		return ErrInvalidSocketPath
 	}
 	socketInfo, err := os.Lstat(server.config.SocketPath)
 	socketIdentity, identityOK := identityOf(socketInfo)
 	if err != nil || !identityOK || !isSocket(socketInfo) ||
-		socketInfo.Mode().Perm() != 0o600 {
+		socketInfo.Mode().Perm() != 0o600 ||
+		ownerUID(socketInfo) != server.config.EffectiveUID ||
+		!serverLockStillOwned(lock, lockIdentity, server.config) {
 		_ = listener.Close()
-		_ = lock.Close()
-		_ = removeExactFile(
-			server.config.SocketPath+".lock",
-			lockIdentity,
-		)
+		_ = releaseLockFile(server.config.SocketPath+".lock", lock)
 		return ErrInvalidSocketPath
 	}
 
@@ -143,12 +139,8 @@ func (server *Server) Serve(ctx context.Context) error {
 	if server.closed {
 		server.mu.Unlock()
 		_ = listener.Close()
-		_ = lock.Close()
 		_ = removeExactFile(server.config.SocketPath, socketIdentity)
-		_ = removeExactFile(
-			server.config.SocketPath+".lock",
-			lockIdentity,
-		)
+		_ = releaseLockFile(server.config.SocketPath+".lock", lock)
 		return nil
 	}
 	server.listener = listener
@@ -202,6 +194,22 @@ func (server *Server) Serve(ctx context.Context) error {
 			_ = connection.Close()
 		}
 	}
+}
+
+func serverLockStillOwned(
+	lock *os.File,
+	identity fileIdentity,
+	config ServerConfig,
+) bool {
+	info, err := lock.Stat()
+	current, ok := identityOf(info)
+	return err == nil && ok && current == identity &&
+		validLockInfo(info, config.EffectiveUID) &&
+		pathMatchesOwnedLock(
+			config.SocketPath+".lock",
+			identity,
+			config.EffectiveUID,
+		)
 }
 
 func (server *Server) serveConnection(
@@ -390,17 +398,13 @@ func (server *Server) Close() error {
 				removeExactFile(server.config.SocketPath, socketIdentity),
 			)
 		}
-		if lock != nil {
-			closeErr = errors.Join(closeErr, lock.Close())
-		}
-		if lockIdentity != (fileIdentity{}) {
+		if lock != nil && lockIdentity != (fileIdentity{}) {
 			closeErr = errors.Join(
 				closeErr,
-				removeExactFile(
-					server.config.SocketPath+".lock",
-					lockIdentity,
-				),
+				releaseLockFile(server.config.SocketPath+".lock", lock),
 			)
+		} else if lock != nil {
+			closeErr = errors.Join(closeErr, lock.Close())
 		}
 		server.mu.Lock()
 		server.closeErr = closeErr

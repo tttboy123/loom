@@ -1,6 +1,159 @@
 import Foundation
 import SwiftUI
 
+public enum LocalProductWorkspaceTaskKind: String, Equatable, Sendable {
+    case draft
+    case history
+    case team
+    case attention
+}
+
+public enum LocalProductInspectorTab: String, CaseIterable, Identifiable, Sendable {
+    case team = "Team"
+    case context = "Context"
+    case changes = "Changes"
+    case evidence = "Evidence"
+
+    public var id: String { rawValue }
+}
+
+public struct LocalProductTaskContinuity: Equatable, Sendable {
+    public var composerDraft: String
+    public var inspector: LocalProductInspectorTab
+    public var threadAnchor: String
+    public var developerDetailsExpanded: Bool
+
+    public init(
+        composerDraft: String = "",
+        inspector: LocalProductInspectorTab = .team,
+        threadAnchor: String = "start",
+        developerDetailsExpanded: Bool = false
+    ) {
+        self.composerDraft = composerDraft
+        self.inspector = inspector
+        self.threadAnchor = threadAnchor
+        self.developerDetailsExpanded = developerDetailsExpanded
+    }
+}
+
+public struct LocalProductWorkspaceTask: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let subtitle: String
+    public let kind: LocalProductWorkspaceTaskKind
+
+    public init(
+        id: String,
+        title: String,
+        subtitle: String,
+        kind: LocalProductWorkspaceTaskKind
+    ) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.kind = kind
+    }
+}
+
+public struct LocalProductWorkspaceState: Equatable, Sendable {
+    public static let newTaskID = "local:new-task"
+
+    public private(set) var selectedTaskID: String
+    public private(set) var tasks: [LocalProductWorkspaceTask]
+    private var continuityByTask: [String: LocalProductTaskContinuity]
+
+    public init() {
+        let newTask = LocalProductWorkspaceTask(
+            id: Self.newTaskID,
+            title: "New task",
+            subtitle: "Describe what you want to accomplish",
+            kind: .draft
+        )
+        selectedTaskID = Self.newTaskID
+        tasks = [newTask]
+        continuityByTask = [Self.newTaskID: LocalProductTaskContinuity()]
+    }
+
+    public var selectedTask: LocalProductWorkspaceTask {
+        tasks.first(where: { $0.id == selectedTaskID }) ?? tasks[0]
+    }
+
+    public var selectedContinuity: LocalProductTaskContinuity {
+        continuityByTask[selectedTaskID] ?? LocalProductTaskContinuity()
+    }
+
+    public mutating func selectTask(_ id: String) {
+        guard tasks.contains(where: { $0.id == id }) else { return }
+        selectedTaskID = id
+        if continuityByTask[id] == nil {
+            continuityByTask[id] = LocalProductTaskContinuity()
+        }
+    }
+
+    public mutating func updateComposerDraft(_ value: String) {
+        mutateSelected { $0.composerDraft = String(value.prefix(4_096)) }
+    }
+
+    public mutating func selectInspector(_ inspector: LocalProductInspectorTab) {
+        mutateSelected { $0.inspector = inspector }
+    }
+
+    public mutating func updateThreadAnchor(_ value: String) {
+        mutateSelected { $0.threadAnchor = String(value.prefix(256)) }
+    }
+
+    public mutating func setDeveloperDetailsExpanded(_ expanded: Bool) {
+        mutateSelected { $0.developerDetailsExpanded = expanded }
+    }
+
+    public mutating func mergeAuthoritativeTasks(
+        _ authoritative: [LocalProductWorkspaceTask]
+    ) {
+        let newTask = tasks.first(where: { $0.id == Self.newTaskID }) ??
+            LocalProductWorkspaceTask(
+                id: Self.newTaskID,
+                title: "New task",
+                subtitle: "Describe what you want to accomplish",
+                kind: .draft
+            )
+        var seen = Set([Self.newTaskID])
+        let bounded = authoritative.filter { task in
+            !task.id.isEmpty && seen.insert(task.id).inserted
+        }
+        tasks = [newTask] + bounded
+        for task in tasks where continuityByTask[task.id] == nil {
+            continuityByTask[task.id] = LocalProductTaskContinuity()
+        }
+        continuityByTask = continuityByTask.filter { id, _ in
+            tasks.contains(where: { $0.id == id })
+        }
+        if !tasks.contains(where: { $0.id == selectedTaskID }) {
+            selectedTaskID = Self.newTaskID
+        }
+    }
+
+    public func filteredTasks(matching query: String) -> [LocalProductWorkspaceTask] {
+        let normalized = query.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalized.isEmpty else { return tasks }
+        let selected = selectedTaskID
+        return tasks.filter { task in
+            task.id == selected ||
+                task.title.localizedCaseInsensitiveContains(normalized) ||
+                task.subtitle.localizedCaseInsensitiveContains(normalized)
+        }
+    }
+
+    private mutating func mutateSelected(
+        _ mutation: (inout LocalProductTaskContinuity) -> Void
+    ) {
+        var continuity = selectedContinuity
+        mutation(&continuity)
+        continuityByTask[selectedTaskID] = continuity
+    }
+}
+
 public enum LocalProductConnectionState: Equatable, Sendable {
     case loading
     case online
@@ -109,6 +262,7 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var credentialStatus: LocalProductCredentialSetupResult?
     @Published public private(set) var providerConnectionStatus:
         LocalProductProviderConnectResult?
+    @Published public private(set) var workspace = LocalProductWorkspaceState()
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
@@ -144,6 +298,7 @@ public final class LocalProductStore: ObservableObject {
         do {
             let next = try await client.snapshot(limit: 64)
             snapshot = next
+            reconcileWorkspace()
             if next.stale {
                 connectionState = .stale(
                     reason: closedReason(next.reason, fallback: "stale_view")
@@ -217,6 +372,7 @@ public final class LocalProductStore: ObservableObject {
         setupState = .loading
         do {
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch let remote as LocalIPCRemoteError {
             setupState = remote.recoverable
@@ -238,6 +394,7 @@ public final class LocalProductStore: ObservableObject {
             for attempt in 0..<120 {
                 let next = try await setupClient.setupSnapshot()
                 setupSnapshot = next
+                reconcileWorkspace()
                 if next.codex.status == "available" {
                     setupState = .ready
                     return
@@ -343,6 +500,7 @@ public final class LocalProductStore: ObservableObject {
             )
             self.builderSession = nil
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -351,7 +509,7 @@ public final class LocalProductStore: ObservableObject {
 
     public func editBuilder(field: String, value: String) async {
         guard let setupClient, let builderSession,
-              ["team_name", "purpose"].contains(field),
+              Self.allowsBuilderEditField(field),
               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             setupState = .unavailable(reason: "invalid_request")
@@ -370,10 +528,42 @@ public final class LocalProductStore: ObservableObject {
         }
     }
 
+    public static func allowsBuilderEditField(_ field: String) -> Bool {
+        ["team_name", "purpose", "main_role", "subagent_role"].contains(field)
+    }
+
     public func cancelBuilder() {
         builderSession = nil
         lastConfirmation = nil
         setupState = .ready
+    }
+
+    public func selectWorkspaceTask(_ id: String) {
+        workspace.selectTask(id)
+    }
+
+    public func activateWorkspaceTask() async {
+        let prefix = "team:"
+        guard workspace.selectedTaskID.hasPrefix(prefix),
+              let team = snapshot?.teams.first(where: {
+                  "team:\($0.teamInstanceID)" == workspace.selectedTaskID
+              }) else {
+            return
+        }
+        selectTeam(team)
+        await activateSelectedTeam()
+    }
+
+    public func updateComposerDraft(_ value: String) {
+        workspace.updateComposerDraft(value)
+    }
+
+    public func selectInspector(_ inspector: LocalProductInspectorTab) {
+        workspace.selectInspector(inspector)
+    }
+
+    public func setDeveloperDetailsExpanded(_ expanded: Bool) {
+        workspace.setDeveloperDetailsExpanded(expanded)
     }
 
     public func archiveTeam(_ team: LocalProductSetupSavedTeam) async {
@@ -406,6 +596,7 @@ public final class LocalProductStore: ObservableObject {
                 )
             }
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -423,6 +614,7 @@ public final class LocalProductStore: ObservableObject {
                 secret: secret
             )
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -444,6 +636,7 @@ public final class LocalProductStore: ObservableObject {
                 revision: provider.revision
             )
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -466,6 +659,7 @@ public final class LocalProductStore: ObservableObject {
                 secret: secret
             )
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -487,6 +681,7 @@ public final class LocalProductStore: ObservableObject {
                 revision: provider.revision
             )
             setupSnapshot = try await setupClient.setupSnapshot()
+            reconcileWorkspace()
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -502,6 +697,72 @@ public final class LocalProductStore: ObservableObject {
             setupState = .unavailable(reason: closedClientReason(error))
         }
     }
+
+    private func reconcileWorkspace() {
+        let teams = (snapshot?.teams ?? []).map { team in
+            LocalProductWorkspaceTask(
+                id: "team:\(team.teamInstanceID)",
+                title: workspaceVisibleName(
+                    team.displayName,
+                    internalID: team.teamInstanceID,
+                    fallback: "Saved team"
+                ),
+                subtitle: humanWorkspaceStatus(team.state),
+                kind: .team
+            )
+        }
+        let runs = (snapshot?.runs ?? []).map { run in
+            LocalProductWorkspaceTask(
+                id: "run:\(run.runID)",
+                title: "Recent work",
+                subtitle: humanWorkspaceStatus(
+                    run.terminalStatus.isEmpty ? run.phase : run.terminalStatus
+                ),
+                kind: .history
+            )
+        }
+        let attention = (snapshot?.attention ?? []).map { item in
+            LocalProductWorkspaceTask(
+                id: "attention:\(item.attentionID)",
+                title: "Needs your attention",
+                subtitle: humanWorkspaceStatus(item.status),
+                kind: .attention
+            )
+        }
+        let saved = (setupSnapshot?.savedTeams ?? []).map { team in
+            LocalProductWorkspaceTask(
+                id: "saved:\(team.id)",
+                title: team.name.isEmpty ? "Saved team" : team.name,
+                subtitle: humanWorkspaceStatus(team.status),
+                kind: .team
+            )
+        }
+        workspace.mergeAuthoritativeTasks(attention + runs + teams + saved)
+    }
+
+    private func humanWorkspaceStatus(_ value: String) -> String {
+        value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func workspaceVisibleName(
+        _ candidate: String,
+        internalID: String,
+        fallback: String
+    ) -> String {
+        let bounded = String(candidate.prefix(96))
+        let safe = bounded.unicodeScalars.filter { scalar in
+            !CharacterSet.controlCharacters.contains(scalar) &&
+                !Self.workspaceBidiOverrides.contains(scalar.value)
+        }
+        let visible = String(String.UnicodeScalarView(safe))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.isEmpty || visible == internalID ? fallback : visible
+    }
+
+    private static let workspaceBidiOverrides: Set<UInt32> = [
+        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+        0x2066, 0x2067, 0x2068, 0x2069,
+    ]
 
     private func closedReason(_ value: String, fallback: String) -> String {
         let allowed = Set([

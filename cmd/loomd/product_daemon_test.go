@@ -113,6 +113,46 @@ func TestProductDaemonClassifiesLifecycleFailureBoundaries(t *testing.T) {
 	})
 }
 
+func TestProductDaemonReclaimsAbandonedOwnedLockAndCleansOwnedPair(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	lockPath := socketPath + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observer := &blockingObserverRunner{}
+	runner, err := newProductDaemonRunner(observer, statePath, socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{socketPath, lockPath} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("owned path remains after close %q: %v", path, err)
+		}
+	}
+}
+
 func TestObserverFailureReasonIsClosedTypedAndNonDisclosing(t *testing.T) {
 	private := errors.New("private observer detail")
 	tests := []struct {
@@ -1304,18 +1344,17 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	message := model.Init()()
 	updated, command := model.Update(message)
 	if command != nil ||
-		!strings.Contains(updated.View(), snapshot.ViewVersion) {
+		!strings.Contains(updated.View(), "team.delivery") ||
+		strings.Contains(updated.View(), snapshot.ViewVersion) {
 		t.Fatalf(
-			"headless TUI view does not match daemon view %q: %q",
+			"headless TUI does not present the daemon view safely %q: %q",
 			snapshot.ViewVersion,
 			updated.View(),
 		)
 	}
 	model = updated.(loomtui.Model)
 	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyTab},
-		{Type: tea.KeyTab},
-		{Type: tea.KeyTab},
+		{Type: tea.KeyDown},
 		{Type: tea.KeyEnter},
 	} {
 		updatedModel, next := model.Update(key)
@@ -1325,8 +1364,8 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 			model = updatedModel.(loomtui.Model)
 		}
 	}
-	if !strings.Contains(model.View(), "team_planned") {
-		t.Fatalf("TUI timeline did not render authoritative record: %q", model.View())
+	if !strings.Contains(model.View(), "Team planned") {
+		t.Fatalf("TUI timeline did not render the activity record: %q", model.View())
 	}
 	var firstPage api.LocalProductTimelinePage
 	if err := client.Call(
