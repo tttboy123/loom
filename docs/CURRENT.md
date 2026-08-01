@@ -4278,3 +4278,36 @@ P2A-W4 = DOES NOT EXIST
 The Result Review PASS validates only that failed classification. The consumed
 complete reopen authorizes no restart, retry, direct mutation, new attempt or
 single-point Amendment.
+
+`CURRENT`: under the Product Owner's standing authorization and the active
+Phase 2A Extra Goal, one complete P2A-W2 Final Mission Decision View Lifecycle
+Closure Reopen is drafted at
+`.loom-evidence/phase2a/P2A-W2/mission-decision-view-lifecycle-closure-reopen.md`.
+It preserves consumed Attempt 003 unchanged, creates no W2 subdivision or
+P2A-W4, and owns only the prepared-command/read-snapshot lifecycle plus exact
+tests.
+
+The frozen intended invariant is that a successful authoritative snapshot and
+all still-prepared Decision commands carry one exact GlobalReadView version.
+The registry must refresh and rebind atomically only after every unconsumed
+entry proves that version; a projection failure preserves the prior immutable
+view and command bytes without refresh. Submission still independently fences
+stale view/generation, replay, identity drift and concurrent losers before the
+existing Rules/Work authority.
+
+Fresh independent Contract Review is the current gate. Production source,
+RED, daemon, native app, Provider, credential, staging, commit and replacement
+live lineage remain locked. P2A-W2 is `HUMAN_REQUIRED / NOT ACCEPTED`, P2A-W3
+is locked and P2A-W4 does not exist.
+
+`CURRENT`: fresh independent Final Mission Decision View Lifecycle Contract
+Review returned `PASS` with no P0/P1/P2 findings. It confirmed the complete
+reopen precedence, exact owned files, successful-view atomic rebind,
+projection-failure cache preservation, old-command and generation fencing,
+unchanged authority boundaries, real Go-server/strict-Swift fixture, one fresh
+lineage/no retry and no-W4 constraints.
+
+The contract is now `FROZEN`. A pure governance checkpoint is the current
+gate. Only after that checkpoint may mandatory RED modify the exact test
+boundary. Product implementation, daemon/native live action and replacement
+lineage remain locked.
