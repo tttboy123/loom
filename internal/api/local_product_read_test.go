@@ -24,11 +24,14 @@ type controlledLocalProductViewSource struct {
 type sequencedMissionDecisionCommandSource struct {
 	commands [][]app.MissionDecisionCommand
 	calls    int
+	queries  []app.MissionDecisionCommandQuery
 }
 
 func (source *sequencedMissionDecisionCommandSource) ListMissionDecisionCommands(
-	context.Context,
+	_ context.Context,
+	query app.MissionDecisionCommandQuery,
 ) ([]app.MissionDecisionCommand, error) {
+	source.queries = append(source.queries, query)
 	index := source.calls
 	if index >= len(source.commands) {
 		index = len(source.commands) - 1
@@ -128,10 +131,8 @@ func TestLocalProductReadServicePreservesPreparedCommandsWithStaleView(
 		ClaimGeneration: 0,
 		CorrelationID:   "77777777-7777-4777-8777-777777777777",
 	}
-	changed := initial
-	changed.ViewVersion = strings.Repeat("b", 64)
 	decisions := &sequencedMissionDecisionCommandSource{
-		commands: [][]app.MissionDecisionCommand{{initial}, {changed}},
+		commands: [][]app.MissionDecisionCommand{{initial}},
 	}
 	service, err := NewLocalProductReadService(LocalProductReadConfig{
 		Journal:    store,
@@ -173,6 +174,73 @@ func TestLocalProductReadServicePreservesPreparedCommandsWithStaleView(
 			current.PreparedDecisions,
 			stale.PreparedDecisions,
 		)
+	}
+	if len(decisions.queries) != 2 ||
+		decisions.queries[0].Mode !=
+			app.MissionDecisionCommandRefreshCurrent ||
+		decisions.queries[0].ViewVersion != current.ViewVersion ||
+		decisions.queries[1].Mode !=
+			app.MissionDecisionCommandPreserveStale ||
+		decisions.queries[1].ViewVersion != current.ViewVersion {
+		t.Fatalf("decision queries = %#v", decisions.queries)
+	}
+}
+
+func TestLocalProductReadServiceRejectsMixedStaleViewAndCommands(
+	t *testing.T,
+) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	appendAPITimelineFixture(t, store)
+	readModel := projection.New(db)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	view := readModel.GlobalReadView()
+	source := &controlledLocalProductViewSource{view: view}
+	command := app.MissionDecisionCommand{
+		SchemaVersion:   1,
+		Operation:       "read",
+		Kind:            "authorization",
+		Action:          "read",
+		MissionID:       "mission/team-mixed",
+		TeamInstanceID:  "team-mixed",
+		ViewVersion:     view.Version(),
+		DecisionID:      "decision-mixed",
+		DecisionDigest:  strings.Repeat("c", 64),
+		LogicalNodeID:   "main",
+		AttemptNumber:   1,
+		ClaimGeneration: 0,
+		CorrelationID:   "88888888-8888-4888-8888-888888888888",
+	}
+	decisions := &sequencedMissionDecisionCommandSource{
+		commands: [][]app.MissionDecisionCommand{{command}},
+	}
+	service, err := NewLocalProductReadService(LocalProductReadConfig{
+		Journal:    store,
+		Projection: source,
+		Now: func() time.Time {
+			return time.Date(2026, 7, 30, 22, 5, 0, 0, time.UTC)
+		},
+		Decisions: decisions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{Limit: 64},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	decisions.commands[0][0].ViewVersion = strings.Repeat("d", 64)
+	source.err = errors.New("private projection failure")
+	if _, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{Limit: 64},
+	); !errors.Is(err, ErrLocalProductStateUnavailable) {
+		t.Fatalf("mixed stale state error = %v", err)
 	}
 }
 

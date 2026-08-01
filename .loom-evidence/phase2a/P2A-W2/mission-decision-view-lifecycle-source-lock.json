@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W2",
+  "contract": "Final Mission Decision View Lifecycle Closure Reopen",
+  "base_commit": "3eea638",
+  "combined_source_digest": "c5c103e3ba540f694685673430f464ba0c4be523ae810a6acc38345fe9068724",
+  "combined_digest_method": "sha256 of sha256sum output lines in files array order",
+  "file_count": 5,
+  "files": [
+    {
+      "path": "cmd/loomd/product_daemon_test.go",
+      "sha256": "3f73bb11feb902997fc947e3a3530791f9e7c3a0c955dbb60eee1ff58d39e996"
+    },
+    {
+      "path": "internal/api/local_product_read.go",
+      "sha256": "0f2a5fa0360b6204d618152c2a9bfcba8cefabdf205fcdd7de134ac7dcce0b15"
+    },
+    {
+      "path": "internal/api/local_product_read_test.go",
+      "sha256": "e38c7fe67350872fc376f9306fd6b928511f1f465f96eb7dea8561205a1cdab8"
+    },
+    {
+      "path": "internal/app/local_product_decision.go",
+      "sha256": "89b8f20e895cedb3459eb9783255ee89b78dfb832025684da5c00739b4b9fcf8"
+    },
+    {
+      "path": "internal/app/local_product_decision_test.go",
+      "sha256": "5fe09d3eb5e2525b84778e7f508b57213c447a652e62bf75ecd3f5673ca2cb15"
+    }
+  ]
+}

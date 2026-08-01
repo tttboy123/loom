@@ -58,6 +58,28 @@ type failingObserverRunner struct {
 	closed bool
 }
 
+type productDaemonRuntimeProbe struct {
+	id       string
+	instance loomruntime.RuntimeInstance
+	models   []string
+}
+
+func (probe productDaemonRuntimeProbe) ID() string {
+	return probe.id
+}
+
+func (probe productDaemonRuntimeProbe) ObserveRuntime(
+	ctx context.Context,
+) ([]loomruntime.RuntimeObservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []loomruntime.RuntimeObservation{{
+		Instance: probe.instance,
+		ModelIDs: append([]string(nil), probe.models...),
+	}}, nil
+}
+
 func (runner *failingObserverRunner) Run(
 	context.Context,
 ) (app.LocalRuntimeObservationDaemonResult, error) {
@@ -2853,6 +2875,228 @@ func TestProductDaemonRoutesOneStrictMissionDecisionMethod(t *testing.T) {
 		submitted.Error == nil ||
 		submitted.Error.Code != "conflict" {
 		t.Fatalf("unprepared submit response=%#v", submitted)
+	}
+}
+
+func TestProductDaemonSnapshotRebindsPreparedDecisionsAfterRuntimeDiscovery(
+	t *testing.T,
+) {
+	t.Setenv("TMPDIR", "/private/tmp")
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	prepared, err := app.BuildControlledMissionDecisionFixture(
+		ctx,
+		app.ControlledMissionDecisionFixtureConfig{
+			Database:          database,
+			ArtifactRoot:      filepath.Join(root, "decision-artifacts"),
+			AuthoritativeTime: time.Date(2026, 7, 30, 23, 0, 0, 0, time.UTC),
+			FixtureID:         "daemon-view-lifecycle",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := app.NewPreparedMissionDecisionBackend(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionService, err := app.NewLocalProductDecisionService(
+		app.MissionDecisionConfig{Backend: backend},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionAPI, err := api.NewLocalProductDecisionAPI(decisionService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readService, err := api.NewLocalProductReadService(
+		api.LocalProductReadConfig{
+			Journal:    journal.NewStore(database),
+			Projection: projection.New(database),
+			Now: func() time.Time {
+				return time.Date(2026, 7, 30, 23, 1, 0, 0, time.UTC)
+			},
+			Decisions: backend,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := localProductHandlerWithDecision(
+		readService,
+		nil,
+		decisionAPI,
+	)
+	socketPath := filepath.Join(root, "loomd.sock")
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "decision-view-lifecycle-fixture",
+		Handler:      localipc.HandlerFunc(handler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(serverCtx) }()
+	select {
+	case <-server.Ready():
+	case err := <-serveDone:
+		t.Fatalf("Go IPC server failed before ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Go IPC server did not become ready")
+	}
+	defer func() {
+		cancelServer()
+		if err := server.Close(); err != nil {
+			t.Errorf("close Go IPC server: %v", err)
+		}
+		select {
+		case err := <-serveDone:
+			if err != nil {
+				t.Errorf("Go IPC Serve() error = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Go IPC server did not close")
+		}
+	}()
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readSnapshot := func(requestID string) api.LocalProductSnapshot {
+		t.Helper()
+		var snapshot api.LocalProductSnapshot
+		if err := client.Call(
+			ctx,
+			"snapshot",
+			api.LocalProductSnapshotRequest{Limit: 64},
+			&snapshot,
+		); err != nil {
+			t.Fatalf("%s snapshot call: %v", requestID, err)
+		}
+		return snapshot
+	}
+
+	before := readSnapshot("snapshot-before-discovery")
+	if len(before.PreparedDecisions) != 4 {
+		t.Fatalf("prepared decisions before discovery = %#v", before)
+	}
+	oldCommand := before.PreparedDecisions[0]
+
+	instance, err := loomruntime.NewRuntimeInstance(
+		loomruntime.RuntimeInstance{
+			ID:                   "runtime-after-prepared-snapshot",
+			DeviceID:             "device-after-prepared-snapshot",
+			AdapterType:          "fixture",
+			DisplayName:          "Runtime after prepared snapshot",
+			ExecutableVersion:    "1.0.0",
+			Status:               loomruntime.RuntimeOnline,
+			ObservedCapabilities: []string{"models"},
+			Capacity:             1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := loomruntime.DiscoverRuntime(
+		ctx,
+		[]loomruntime.RuntimeProbe{productDaemonRuntimeProbe{
+			id:       "probe-after-prepared-snapshot",
+			instance: instance,
+			models:   []string{"controlled-model"},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.CommitRuntimeDiscoverySnapshot(
+		ctx,
+		journal.NewStore(database),
+		discovery,
+		state.RuntimeDiscoveryCommitInput{
+			DiscoveryID: "discovery-after-prepared-snapshot",
+			EmittedAt:   time.Date(2026, 7, 30, 23, 2, 0, 0, time.UTC),
+			Events: []state.RuntimeDiscoveryEventInput{{
+				RuntimeInstanceID: instance.ID,
+				EventID:           "event-after-prepared-snapshot",
+				IdempotencyKey:    "runtime-after-prepared-snapshot",
+				Seq:               1,
+			}},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	var eventCountAfterDiscovery int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM events`).Scan(
+		&eventCountAfterDiscovery,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	after := readSnapshot("snapshot-after-discovery")
+	if after.ViewVersion == before.ViewVersion {
+		t.Fatal("Runtime discovery did not advance the snapshot view")
+	}
+	if len(after.PreparedDecisions) != len(before.PreparedDecisions) {
+		t.Fatalf("prepared decisions after discovery = %#v", after)
+	}
+	for _, command := range after.PreparedDecisions {
+		if command.ViewVersion != after.ViewVersion {
+			t.Fatalf(
+				"snapshot view = %s, prepared command = %#v",
+				after.ViewVersion,
+				command,
+			)
+		}
+	}
+
+	var oldSheet app.MissionDecisionSheet
+	err = client.Call(
+		ctx,
+		"mission_decision",
+		oldCommand,
+		&oldSheet,
+	)
+	var remoteError *localipc.RemoteError
+	if !errors.As(err, &remoteError) || remoteError.Code != "conflict" {
+		t.Fatalf("old command error = %v", err)
+	}
+	var currentSheet app.MissionDecisionSheet
+	if err := client.Call(
+		ctx,
+		"mission_decision",
+		after.PreparedDecisions[0],
+		&currentSheet,
+	); err != nil {
+		t.Fatalf("current command call = %v", err)
+	}
+	if currentSheet.ViewVersion != after.ViewVersion ||
+		currentSheet.DecisionID != after.PreparedDecisions[0].DecisionID {
+		t.Fatalf("current command sheet = %#v", currentSheet)
+	}
+	var finalEventCount int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM events`).Scan(
+		&finalEventCount,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if finalEventCount != eventCountAfterDiscovery {
+		t.Fatalf(
+			"read-only IPC changed Events: after discovery=%d final=%d",
+			eventCountAfterDiscovery,
+			finalEventCount,
+		)
 	}
 }
 

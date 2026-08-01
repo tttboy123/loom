@@ -47,6 +47,18 @@ type MissionDecisionCommand struct {
 	CorrelationID   string `json:"correlation_id"`
 }
 
+type MissionDecisionCommandListMode string
+
+const (
+	MissionDecisionCommandRefreshCurrent MissionDecisionCommandListMode = "refresh_current"
+	MissionDecisionCommandPreserveStale  MissionDecisionCommandListMode = "preserve_stale"
+)
+
+type MissionDecisionCommandQuery struct {
+	ViewVersion string
+	Mode        MissionDecisionCommandListMode
+}
+
 type MissionDecisionResult struct {
 	SchemaVersion int    `json:"schema_version"`
 	MissionID     string `json:"mission_id"`
@@ -1290,17 +1302,49 @@ func (backend *PreparedMissionDecisionBackend) ReadMissionDecision(
 
 func (backend *PreparedMissionDecisionBackend) ListMissionDecisionCommands(
 	ctx context.Context,
+	query MissionDecisionCommandQuery,
 ) ([]MissionDecisionCommand, error) {
-	if backend == nil || ctx == nil || ctx.Err() != nil {
+	if backend == nil || ctx == nil || ctx.Err() != nil ||
+		!validDecisionDigest(query.ViewVersion) ||
+		(query.Mode != MissionDecisionCommandRefreshCurrent &&
+			query.Mode != MissionDecisionCommandPreserveStale) {
 		return nil, ErrInvalidMissionDecision
 	}
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	commands := make([]MissionDecisionCommand, 0, len(backend.entries))
+
+	entries := make([]*preparedMissionDecisionEntry, 0, len(backend.entries))
 	for _, entry := range backend.entries {
 		if entry.consumed {
 			continue
 		}
+		if entry.inFlight {
+			return nil, ErrMissionDecisionConflict
+		}
+		entries = append(entries, entry)
+	}
+
+	switch query.Mode {
+	case MissionDecisionCommandRefreshCurrent:
+		for _, entry := range entries {
+			currentView, err := entry.refresh.RefreshMissionDecisionView(ctx)
+			if err != nil || currentView != query.ViewVersion {
+				return nil, errors.Join(ErrMissionDecisionConflict, err)
+			}
+		}
+		for _, entry := range entries {
+			entry.sheet.ViewVersion = query.ViewVersion
+		}
+	case MissionDecisionCommandPreserveStale:
+		for _, entry := range entries {
+			if entry.sheet.ViewVersion != query.ViewVersion {
+				return nil, ErrMissionDecisionConflict
+			}
+		}
+	}
+
+	commands := make([]MissionDecisionCommand, 0, len(backend.entries))
+	for _, entry := range entries {
 		commands = append(
 			commands,
 			missionDecisionCommandFromSheet(entry.sheet, "read", "read"),

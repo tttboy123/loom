@@ -25,6 +25,7 @@ type preparedApprovalFixture struct {
 	backend    *PreparedMissionDecisionBackend
 	service    *LocalProductDecisionService
 	authority  *rules.Authority
+	store      *journal.Store
 	work       *work.Authority
 	projection *projection.Projection
 	pending    rules.ApprovalRequestRecord
@@ -188,6 +189,10 @@ func TestControlledMissionDecisionFixtureBuildsRealJournalBackedRegistry(
 	}
 	commands, err := backend.ListMissionDecisionCommands(
 		context.Background(),
+		MissionDecisionCommandQuery{
+			ViewVersion: prepared.Authorizations[0].Sheet.ViewVersion,
+			Mode:        MissionDecisionCommandRefreshCurrent,
+		},
 	)
 	if err != nil || len(commands) != 4 {
 		t.Fatalf("commands = %#v, %v", commands, err)
@@ -228,6 +233,10 @@ func TestControlledMissionDecisionFixtureBuildsRealJournalBackedRegistry(
 	}
 	remaining, err := backend.ListMissionDecisionCommands(
 		context.Background(),
+		MissionDecisionCommandQuery{
+			ViewVersion: result.ViewVersion,
+			Mode:        MissionDecisionCommandRefreshCurrent,
+		},
 	)
 	if err != nil || len(remaining) != 3 {
 		t.Fatalf("remaining commands = %#v, %v", remaining, err)
@@ -393,21 +402,24 @@ func TestPreparedMissionDecisionPublishesCurrentViewAfterJournalAdvance(
 ) {
 	fixture := newPreparedApprovalFixture(t, nil)
 	ctx := context.Background()
-	before, err := fixture.backend.ListMissionDecisionCommands(ctx)
+	before, err := fixture.backend.ListMissionDecisionCommands(
+		ctx,
+		MissionDecisionCommandQuery{
+			ViewVersion: fixture.sheet.ViewVersion,
+			Mode:        MissionDecisionCommandRefreshCurrent,
+		},
+	)
 	if err != nil || len(before) != 1 {
 		t.Fatalf("initial commands = %#v, %v", before, err)
 	}
 	oldCommand := before[0]
 
-	if _, _, err := fixture.work.CreateAndAssign(
+	if err := commitControlledMissionRuntime(
 		ctx,
-		work.WorkItemAssignmentInput{
-			WorkItemID:      "work-after-prepared-snapshot",
-			Title:           "Advance prepared decision view",
-			RunID:           "run-after-prepared-snapshot",
-			AgentInstanceID: "agent-after-prepared-snapshot",
-			CorrelationID:   "44444444-4444-4444-8444-444444444444",
-		},
+		fixture.store,
+		"runtime-after-prepared-snapshot",
+		"after-prepared-snapshot",
+		time.Date(2026, 7, 30, 12, 1, 0, 0, time.UTC),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +431,13 @@ func TestPreparedMissionDecisionPublishesCurrentViewAfterJournalAdvance(
 		t.Fatal("Journal advance did not change the authoritative view")
 	}
 
-	current, err := fixture.backend.ListMissionDecisionCommands(ctx)
+	current, err := fixture.backend.ListMissionDecisionCommands(
+		ctx,
+		MissionDecisionCommandQuery{
+			ViewVersion: currentView,
+			Mode:        MissionDecisionCommandRefreshCurrent,
+		},
+	)
 	if err != nil || len(current) != 1 {
 		t.Fatalf("current commands = %#v, %v", current, err)
 	}
@@ -451,6 +469,109 @@ func TestPreparedMissionDecisionPublishesCurrentViewAfterJournalAdvance(
 	}
 }
 
+func TestPreparedMissionDecisionRefreshIsAllOrNothing(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		failingView string
+		failingErr  error
+	}{
+		{
+			name:        "view_mismatch",
+			failingView: strings.Repeat("e", 64),
+		},
+		{
+			name:       "refresh_error",
+			failingErr: errors.New("private projection refresh failure"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTeamCanaryDB(t)
+			artifactParent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := BuildControlledMissionDecisionFixture(
+				context.Background(),
+				ControlledMissionDecisionFixtureConfig{
+					Database: db,
+					ArtifactRoot: filepath.Join(
+						artifactParent,
+						"controlled-artifacts",
+					),
+					AuthoritativeTime: time.Date(
+						2026, 7, 30, 19, 0, 0, 0, time.UTC,
+					),
+					FixtureID: "atomic-refresh-" + test.name,
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialView := prepared.Authorizations[0].Sheet.ViewVersion
+			expectedView := strings.Repeat("f", 64)
+			matching := MissionDecisionViewRefreshFunc(func(
+				context.Context,
+			) (string, error) {
+				return expectedView, nil
+			})
+			for index := range prepared.Authorizations {
+				prepared.Authorizations[index].Refresh = matching
+			}
+			for index := range prepared.Reviews {
+				prepared.Reviews[index].Refresh = matching
+			}
+			for index := range prepared.Recoveries {
+				prepared.Recoveries[index].Refresh = matching
+			}
+			prepared.Reviews[0].Refresh = MissionDecisionViewRefreshFunc(func(
+				context.Context,
+			) (string, error) {
+				return test.failingView, test.failingErr
+			})
+
+			backend, err := NewPreparedMissionDecisionBackend(prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := backend.ListMissionDecisionCommands(
+				context.Background(),
+				MissionDecisionCommandQuery{
+					ViewVersion: initialView,
+					Mode:        MissionDecisionCommandPreserveStale,
+				},
+			)
+			if err != nil || len(before) != 4 {
+				t.Fatalf("initial commands = %#v, %v", before, err)
+			}
+			_, err = backend.ListMissionDecisionCommands(
+				context.Background(),
+				MissionDecisionCommandQuery{
+					ViewVersion: expectedView,
+					Mode:        MissionDecisionCommandRefreshCurrent,
+				},
+			)
+			if !errors.Is(err, ErrMissionDecisionConflict) {
+				t.Fatalf("refresh error = %v", err)
+			}
+			after, err := backend.ListMissionDecisionCommands(
+				context.Background(),
+				MissionDecisionCommandQuery{
+					ViewVersion: initialView,
+					Mode:        MissionDecisionCommandPreserveStale,
+				},
+			)
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf(
+					"partial refresh: before=%#v after=%#v err=%v",
+					before,
+					after,
+					err,
+				)
+			}
+		})
+	}
+}
+
 func TestPreparedMissionDecisionConcurrentSubmissionHasOneWinner(t *testing.T) {
 	blocking := &blockingApprovalAuthority{
 		started: make(chan struct{}),
@@ -475,6 +596,15 @@ func TestPreparedMissionDecisionConcurrentSubmissionHasOneWinner(t *testing.T) {
 		first <- outcome{result: result, err: err}
 	}()
 	<-blocking.started
+	if _, err := fixture.backend.ListMissionDecisionCommands(
+		context.Background(),
+		MissionDecisionCommandQuery{
+			ViewVersion: command.ViewVersion,
+			Mode:        MissionDecisionCommandRefreshCurrent,
+		},
+	); !errors.Is(err, ErrMissionDecisionConflict) {
+		t.Fatalf("in-flight list error = %v", err)
+	}
 	second := command
 	second.CorrelationID = "22222222-2222-4222-8222-222222222222"
 	_, secondErr := fixture.service.DecideMission(
@@ -1203,6 +1333,7 @@ func newPreparedApprovalFixture(
 		backend:    backend,
 		service:    service,
 		authority:  authority,
+		store:      store,
 		work:       workAuthority,
 		projection: readModel,
 		pending:    pending,

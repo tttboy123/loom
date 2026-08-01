@@ -4327,3 +4327,73 @@ no production source or live process changed.
 The exact two production files are now eligible for minimal implementation.
 Live, staging and Candidate acceptance remain locked pending deterministic
 GREEN and fresh independent Implementation Review.
+
+`CURRENT`: the Final Mission Decision View Lifecycle Candidate is
+deterministically GREEN inside the exact frozen five-file boundary. Successful
+snapshot reads now atomically rebind every unconsumed prepared command only
+after all Journal-backed refreshers prove the snapshot's exact GlobalReadView.
+Projection failure verifies and preserves the prior immutable view/command
+pair; a mismatch fails state-unavailable. Old view/generation, replay,
+identity drift, in-flight listing and concurrent losers remain fail-closed
+before the existing Rules/Work authority.
+
+Focused app/API/daemon tests, real Journal -> read service -> Go IPC coverage,
+full Go, repository race, vet, real Go-server-to-strict-Swift fixture, Swift
+debug, Thread Sanitizer and Release all pass from attempt-local build paths.
+The initial package-parallel Go run encountered only a shared SwiftPM
+`build.db` lock and is not counted; serialized package execution passed the
+complete matrix. Repository `apps/macos/.build` remains absent.
+
+The exact five-file source lock is
+`10ae688306cab607d3de8b266ce358bbb5d0f972fb69eb62882030e59b8d1dea`.
+Fresh independent Implementation Review is now the sole gate before an atomic
+Candidate commit and preflight. No daemon/native live action or replacement
+lineage has run; P2A-W2 remains not accepted, P2A-W3 locked and no P2A-W4
+exists.
+
+`CURRENT`: fresh independent Final Mission Decision View Lifecycle
+Implementation Review 1 returned `FAIL` with one P1 and one P2. Production
+semantics and authority boundaries passed review, but the new vertical test
+stopped at direct handler invocation and therefore did not prove the exact
+snapshot -> Runtime discovery -> rebound Decision lifecycle through a real Go
+IPC server/socket/client. The source-lock combined digest also reproduced only
+in file order while its method text incorrectly said sorted.
+
+Repair 1 is frozen inside the same complete P2A-W2 contract and exact owned
+boundary. It reopens only `cmd/loomd/product_daemon_test.go` to route the
+existing lifecycle through `localipc.NewServer` and `NewClient`, plus evidence
+and source-lock wording. Both production files remain locked byte-for-byte.
+Fresh deterministic verification and independent Implementation Re-review are
+required; Candidate commit and live remain locked.
+
+`CURRENT`: Repair 1 is deterministically `PASS`. The exact lifecycle test now
+uses one private real Go IPC server/client for snapshot before discovery,
+Runtime discovery commit, snapshot after discovery, old-command conflict and
+current-command read, with unchanged Event count. Focused and full Go/race,
+vet, strict Swift real-server fixture, and Swift debug/TSan/Release all pass.
+
+Implementation Review 1's independent Swift fixture had recreated an 81 MiB
+repository `.build` cache without the controlled environment. With no process
+or handle using it, the exact directory was preserved by same-volume atomic
+move to Loom's private quarantine; device/inode `16777229/77062929`, size
+`83264 KiB` and `172` entries are unchanged. Nothing was deleted or reused,
+and repository `apps/macos/.build` is absent again.
+
+The corrected five-file source lock is
+`c5c103e3ba540f694685673430f464ba0c4be523ae810a6acc38345fe9068724`,
+computed in files-array order. Both production files are byte-identical to
+Review 1. Fresh independent Implementation Re-review is the only gate;
+Candidate commit and live remain locked.
+
+`CURRENT`: fresh independent Implementation Re-review returned `PASS` with no
+P0/P1/P2. It reproduced all five hashes and combined source lock, confirmed
+the real Unix socket/framing/client lifecycle closes Review 1 P1, and accepted
+all-or-nothing refresh, stale-pair preservation, independent submission
+fencing, concurrency behavior and unchanged authority boundaries. Focused
+Go/race, vet and diff checks passed; no Swift command ran and repository
+`.build` stayed absent.
+
+The atomic Candidate commit is now the sole gate before exact post-commit
+preflight. The one replacement live lineage remains locked until that commit
+and preflight succeed. P2A-W2 remains not accepted, P2A-W3 remains locked and
+no P2A-W4 exists.

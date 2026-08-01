@@ -35,13 +35,15 @@ type LocalProductReadService struct {
 	now        func() time.Time
 	decisions  MissionDecisionCommandSource
 
-	mu       sync.Mutex
-	lastView *projection.GlobalReadView
+	mu                    sync.Mutex
+	lastView              *projection.GlobalReadView
+	lastPreparedDecisions []app.MissionDecisionCommand
 }
 
 type MissionDecisionCommandSource interface {
 	ListMissionDecisionCommands(
 		context.Context,
+		app.MissionDecisionCommandQuery,
 	) ([]app.MissionDecisionCommand, error)
 }
 
@@ -117,13 +119,13 @@ type LocalProductSnapshot struct {
 	Stale         bool   `json:"stale"`
 	Reason        string `json:"reason"`
 
-	Runtimes  []LocalProductRuntimeSummary  `json:"runtimes"`
-	Teams     []LocalProductTeamSummary     `json:"teams"`
-	Missions  []LocalProductMissionSummary  `json:"missions"`
-	Runs      []LocalProductRunSummary      `json:"runs"`
-	Evidence  []LocalProductEvidenceSummary `json:"evidence"`
-	Attention []AttentionItem               `json:"attention"`
-	PreparedDecisions []app.MissionDecisionCommand `json:"prepared_decisions"`
+	Runtimes          []LocalProductRuntimeSummary  `json:"runtimes"`
+	Teams             []LocalProductTeamSummary     `json:"teams"`
+	Missions          []LocalProductMissionSummary  `json:"missions"`
+	Runs              []LocalProductRunSummary      `json:"runs"`
+	Evidence          []LocalProductEvidenceSummary `json:"evidence"`
+	Attention         []AttentionItem               `json:"attention"`
+	PreparedDecisions []app.MissionDecisionCommand  `json:"prepared_decisions"`
 
 	RuntimePage  LocalProductPageCursor `json:"runtime_page"`
 	TeamPage     LocalProductPageCursor `json:"team_page"`
@@ -151,33 +153,52 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 		}
 		stale := buildLocalProductSnapshot(*service.lastView, request)
-		prepared, err := service.preparedMissionDecisionCommands(ctx)
-		if err != nil {
+		prepared, err := service.preparedMissionDecisionCommands(
+			ctx,
+			app.MissionDecisionCommandQuery{
+				ViewVersion: service.lastView.Version(),
+				Mode:        app.MissionDecisionCommandPreserveStale,
+			},
+		)
+		if err != nil || !equalMissionDecisionCommands(
+			prepared,
+			service.lastPreparedDecisions,
+		) {
 			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 		}
-		stale.PreparedDecisions = prepared
+		stale.PreparedDecisions = cloneLocalProductSlice(
+			service.lastPreparedDecisions,
+		)
 		stale.Stale = true
 		stale.Reason = "projection_refresh_failed"
 		return cloneLocalProductSnapshot(stale), nil
 	}
 	view := service.projection.GlobalReadView()
 	snapshot := buildLocalProductSnapshot(view, request)
-	prepared, err := service.preparedMissionDecisionCommands(ctx)
+	prepared, err := service.preparedMissionDecisionCommands(
+		ctx,
+		app.MissionDecisionCommandQuery{
+			ViewVersion: view.Version(),
+			Mode:        app.MissionDecisionCommandRefreshCurrent,
+		},
+	)
 	if err != nil {
 		return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 	}
 	snapshot.PreparedDecisions = prepared
 	service.lastView = &view
+	service.lastPreparedDecisions = cloneLocalProductSlice(prepared)
 	return cloneLocalProductSnapshot(snapshot), nil
 }
 
 func (service *LocalProductReadService) preparedMissionDecisionCommands(
 	ctx context.Context,
+	query app.MissionDecisionCommandQuery,
 ) ([]app.MissionDecisionCommand, error) {
 	if service.decisions == nil {
 		return []app.MissionDecisionCommand{}, nil
 	}
-	commands, err := service.decisions.ListMissionDecisionCommands(ctx)
+	commands, err := service.decisions.ListMissionDecisionCommands(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +206,20 @@ func (service *LocalProductReadService) preparedMissionDecisionCommands(
 		return []app.MissionDecisionCommand{}, nil
 	}
 	return cloneLocalProductSlice(commands), nil
+}
+
+func equalMissionDecisionCommands(
+	left, right []app.MissionDecisionCommand,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func buildLocalProductSnapshot(
