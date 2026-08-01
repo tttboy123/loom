@@ -849,6 +849,52 @@ source Run/Evidence digest、脱敏摘要、scope diff、预期收益和风险�
 Sidecar 继续通过受限 command/API 提交 Candidate，不能直接写 SQLite/Artifact Store 或修改运行中
 团队。Pattern extraction 不保存 raw Grant、凭据、隐藏推理或完整敏感 prompt。
 
+### 12.3 Phase 3A/3B 技术进入条件
+
+Phase 3A 承载计划中的 `v0.2.0` Versioned Evolution Assets and Runtime Materialization，
+但不得在 Phase 2A 内扩项。进入 Phase 3A 前必须满足：
+
+1. Phase 2A 的 P2A-W1、P2A-W2、P2A-W3、whole-Phase Review 和用户 sign-off 全部通过；
+2. Phase 2 的 Runtime Capability Matrix、凭证边界和 exact Skill revision 绑定入口已接受；
+3. 新合同证明所有资产状态仍由 Event Journal fact 驱动，Projection、索引和资产目录可重建；
+4. TeamDefinition、WorkItem、Run/Attempt、AgentGrant 和 Evidence 仍是唯一既有执行 lineage，
+   不进行 Squad、Issue/Task 或三 Token 的替换式迁移。
+
+Phase 3A 的最小纵向链必须是：
+
+```text
+受控导入或本地创建 SkillRevision
+→ Candidate 验证和用户显式激活
+→ Team/Agent/WorkPackage 绑定 exact revision + digest
+→ Codex 或 Pi Runtime 原生路径物化且不覆盖 repo-owned Skill
+→ Run 冻结 revision + digest
+→ 授权执行、Evidence、验收
+→ archive/restore/rollback Journal fact
+→ Projection 从 Journal 重建同一资产状态
+```
+
+Phase 3B 是 Phase 3A 后的独立可选隔离边界。它先冻结供应商中立的最小能力：
+`Create`、`Exec`、`Cancel`、`Pause`、`Resume`、`Destroy` 和
+`InspectCapabilities`。AgentENV、CubeSandbox、E2B Cloud 或其他候选只能通过受控 spike
+选出一个实现；不得因接口相似而同时承诺双后端。
+
+Phase 3B 必须保持：
+
+- macOS 本地受监督 Runtime 是默认路径，远程 Linux sandbox 是显式 isolation tier；
+- policy 要求 sandbox 时，不可用或身份/网络校验失败必须 fail closed；
+- sandbox scheduler、checkpoint、session、callback 和 E2B-compatible API 都不是状态权威；
+- 远程通信使用独立 Runtime/Sandbox identity、最小权限和 generation fencing；
+- AgentGrant 仍是执行授权权威；所谓 RunToken 只能是它的短寿命传输凭证；
+- sandbox 不接收 Provider 原始凭证、raw Grant、隐藏推理或超出当前 Run 的 workspace；
+- Loom 从 Journal 和 accepted artifact facts 重建、reconcile、取消和清理远程实例；
+- 一个后端的 controlled live canary、恢复、无重复副作用和无凭证泄漏通过前，状态保持
+  `EXPERIMENTAL`。
+
+Runtime 支持按 `discovered`、`managed_execution` 和 `governed_execution` 分级。
+Phase 3A 只承诺通过完整 conformance 的 Codex、Pi，或合同明确加入的有限 Runtime；能力矩阵
+不能把只有 stdin wrapper 的 CLI 声称为完整支持。MCP 优先使用 Runtime 原生配置的受控物化，
+只有两个以上 Runtime 出现无法由原生 binding 解决的共同问题时，才可另行评估 Broker。
+
 ## 13. 技术栈
 
 | 组件 | Phase 1 选择 |

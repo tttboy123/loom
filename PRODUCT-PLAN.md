@@ -387,7 +387,11 @@ prompt。
 - 从空白、模板或历史 Candidate 开始的对话式 Agent/Team Builder；
 - exact Skill revision 的 attach/detach、权限与 Runtime 兼容性预览。
 
-### Phase 3：复用与共进化
+Phase 2 只铺设后续资产绑定所需的产品入口和兼容性预览。它不创建第二套 Skill 权威，
+不把 Team、WorkItem 或 AgentGrant 替换为 Squad、Issue/Task 或另一套 Token，也不在
+Phase 2A 的三个冻结 WorkItem 中加入 Skill Library、SandboxBackend 或新的薄包装 WorkItem。
+
+### Phase 3A：版本化资产与 Runtime 物化
 
 - 项目 Agent 和个人复用 Agent 库；
 - Versioned Skill Library、Template Library 和 Runtime materialization；
@@ -396,12 +400,43 @@ prompt。
 - 离线评测、基线比较、版本、显式激活和回滚；
 - 多 WorkPackage。
 
+Phase 3A 是计划中的 `v0.2.0` 核心交付边界。它必须复用现有 TeamDefinition、WorkItem、
+Run、Attempt、AgentGrant、Evidence 和 Event Journal 权威。Squad 可以是团队模板或产品
+呈现名称，Issue/Mission 可以是用户意图父层或界面 facade，RunToken 可以是 AgentGrant
+的传输凭证；三者都不能在本阶段替换既有权威模型。
+
+Phase 3A 只有在 Phase 2A 的 W1/W2/W3、whole-Phase Review 和用户 sign-off 全部通过，
+且 Phase 2 的 Runtime、凭证和 exact-revision 兼容性入口完成后才能冻结实施合同。
+
+### Phase 3B：可选的受治理沙箱隔离
+
+- 冻结最小 `SandboxBackend` capability contract，而不是绑定单一供应商的数据模型；
+- 对 AgentENV、CubeSandbox 和 E2B Cloud 做有界部署、安全、恢复、数据驻留与成本 spike；
+- 每个实施合同最多选择一个后端，默认关闭，不在同一版本维护双后端；
+- policy 要求沙箱而后端不可用时 fail closed，不得静默回退到较弱隔离；
+- 远程 sandbox、其 scheduler、checkpoint 和 callback 不是状态权威；Loom 从 Journal
+  恢复并 reconcile；
+- 至少完成一个真实 Runtime 的隔离执行、取消、重启恢复和无凭证泄漏 canary。
+
+Phase 3B 在 Phase 3A 接受后单独治理，建议作为 `v0.2.1 experimental`，不阻塞
+`v0.2.0` 的本地 Skill 资产与 Runtime 物化价值。
+
 ### Phase 4：互通
 
 - 可替换 Provider 路由后端；
 - Multica 等协作平台适配；
 - 可选 Web UI；
 - 明确的导入、导出和共享合同。
+
+版本与阶段的计划映射如下；版本号是发布目标，不是对未完成能力的交付声明：
+
+| 版本目标 | 阶段边界 | 计划能力 |
+|---|---|---|
+| `v0.1.x` | Phase 1 + Phase 2A | 本地执行内核与普通用户可操作的受控产品链 |
+| `v0.2.0-alpha` | Phase 2 | 第二 Runtime、凭证、能力矩阵与资产绑定入口 |
+| `v0.2.0` | Phase 3A | Versioned Skill Library 与 exact Runtime materialization |
+| `v0.2.1 experimental` | Phase 3B | 一个默认关闭、可替换的受治理 sandbox backend |
+| `v0.3+` | Phase 4 及独立后续合同 | 协作平台互通、可选 Web、更多 Runtime 和共享能力 |
 
 Phase 1 后的 later opt-in 能力包括 standing orders/Autopilot、团队共享资产目录、外部通知和
 多用户权限。它们默认关闭，必须分别定义持久授权、触发器、预算、并发、scope、stop/revoke 和
