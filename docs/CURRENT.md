@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-07-30
+Updated: 2026-08-01
 
 ## Product state
 
@@ -4397,3 +4397,52 @@ The atomic Candidate commit is now the sole gate before exact post-commit
 preflight. The one replacement live lineage remains locked until that commit
 and preflight succeed. P2A-W2 remains not accepted, P2A-W3 remains locked and
 no P2A-W4 exists.
+
+`CURRENT`: atomic Candidate commit `c94f30b` contains the complete Final Mission
+Decision View Lifecycle repair. Exact post-commit preflight then passed for the
+single fresh lineage `p2a-w2-mission-decision-live-20260801-004`.
+
+The controlled daemon and signed native app each started exactly once. The
+daemon's first Pi discovery advanced the GlobalReadView; the next real product
+snapshot returned all four unconsumed prepared commands rebound to the exact
+current view. In the real native Mission Room, `Not now` left Journal Events at
+73. One `Deny` then succeeded exactly once and appended only:
+
+```text
+ApprovalDecided              +1
+WorkItemApprovalResolved     +1
+```
+
+The resulting authoritative snapshot advanced again, retained exactly three
+prepared commands on the new view and removed the consumed deny command. A
+replay of the consumed command failed closed with `conflict`. The same native
+lineage also proved Mission Board, Mission Room, Team Pulse, Provider Manage,
+missing-Evidence Review Gate and disabled unauthorized composer behavior. The
+attempt-local TUI read the same five Mission/lane identities from the same
+socket and exited without a Journal write.
+
+Native app, TUI and daemon exited normally. Product socket and
+`loomd.sock.lock` cleaned up without manual removal; SQLite integrity is `ok`
+with exactly 75 Events; isolation is empty; product source and executable
+hashes remain locked to Candidate `c94f30b`; repository `apps/macos/.build`
+remains absent; and the unrelated resident Runtime observer was not signalled
+or reconfigured.
+
+Fresh independent Attempt 004 Result-Evidence Review returned `PASS` with no
+P0/P1. It independently reproduced Candidate/source/manifest/native identities,
+the exact 73 -> 75 two-fact authority delta, SQLite integrity, process/socket
+cleanup, empty isolation and absence of persisted sensitive data. Its P2 notes
+correctly limit offline reproducibility of Controller-only IPC/UI/TUI
+transcripts and distinguish inactive attempt-local SQLite/SwiftPM lock files
+from the cleaned product IPC lock.
+
+The Phase 2A Extra Goal's Mission Orchestration Workbench boundary is accepted
+inside P2A-W2. It creates no second authority and does not activate autonomous
+execution. The next Phase 2A work may only begin by freezing the separate
+P2A-W3 Controlled Execution Experience contract.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ELIGIBLE FOR CONTRACT FREEZE / NOT YET STARTED
+P2A-W4 = DOES NOT EXIST
+```
