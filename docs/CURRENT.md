@@ -4311,3 +4311,19 @@ The contract is now `FROZEN`. A pure governance checkpoint is the current
 gate. Only after that checkpoint may mandatory RED modify the exact test
 boundary. Product implementation, daemon/native live action and replacement
 lineage remain locked.
+
+`CURRENT`: governance checkpoint `a649679` froze the complete Final Mission
+Decision View Lifecycle Closure contract and independent Review PASS.
+Mandatory RED is preserved at
+`.loom-evidence/phase2a/P2A-W2/mission-decision-view-lifecycle-closure-red.md`.
+
+The real Journal-backed app test proves a later authoritative fact changes the
+GlobalReadView while the prepared registry still publishes the old view. The
+API test proves a Projection-failure stale snapshot currently re-reads and
+mixes in a different command version instead of preserving the previous
+coherent pair. Both tests fail only on the frozen missing lifecycle behavior;
+no production source or live process changed.
+
+The exact two production files are now eligible for minimal implementation.
+Live, staging and Candidate acceptance remain locked pending deterministic
+GREEN and fresh independent Implementation Review.

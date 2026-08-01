@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 )
@@ -18,6 +19,22 @@ import (
 type controlledLocalProductViewSource struct {
 	view projection.GlobalReadView
 	err  error
+}
+
+type sequencedMissionDecisionCommandSource struct {
+	commands [][]app.MissionDecisionCommand
+	calls    int
+}
+
+func (source *sequencedMissionDecisionCommandSource) ListMissionDecisionCommands(
+	context.Context,
+) ([]app.MissionDecisionCommand, error) {
+	index := source.calls
+	if index >= len(source.commands) {
+		index = len(source.commands) - 1
+	}
+	source.calls++
+	return append([]app.MissionDecisionCommand(nil), source.commands[index]...), nil
 }
 
 func (source *controlledLocalProductViewSource) Rebuild(context.Context) error {
@@ -81,6 +98,81 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 	if strings.Contains(stale.Reason, "sqlite") ||
 		strings.Contains(stale.Reason, "path") {
 		t.Fatalf("stale reason leaked private error: %q", stale.Reason)
+	}
+}
+
+func TestLocalProductReadServicePreservesPreparedCommandsWithStaleView(
+	t *testing.T,
+) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	appendAPITimelineFixture(t, store)
+	readModel := projection.New(db)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	view := readModel.GlobalReadView()
+	source := &controlledLocalProductViewSource{view: view}
+	initial := app.MissionDecisionCommand{
+		SchemaVersion:   1,
+		Operation:       "read",
+		Kind:            "authorization",
+		Action:          "read",
+		MissionID:       "mission/team-one",
+		TeamInstanceID:  "team-one",
+		ViewVersion:     view.Version(),
+		DecisionID:      "decision-one",
+		DecisionDigest:  strings.Repeat("a", 64),
+		LogicalNodeID:   "main",
+		AttemptNumber:   1,
+		ClaimGeneration: 0,
+		CorrelationID:   "77777777-7777-4777-8777-777777777777",
+	}
+	changed := initial
+	changed.ViewVersion = strings.Repeat("b", 64)
+	decisions := &sequencedMissionDecisionCommandSource{
+		commands: [][]app.MissionDecisionCommand{{initial}, {changed}},
+	}
+	service, err := NewLocalProductReadService(LocalProductReadConfig{
+		Journal:    store,
+		Projection: source,
+		Now: func() time.Time {
+			return time.Date(2026, 7, 30, 22, 0, 0, 0, time.UTC)
+		},
+		Decisions: decisions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{Limit: 64},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current.PreparedDecisions, []app.MissionDecisionCommand{initial}) {
+		t.Fatalf("current prepared decisions = %#v", current.PreparedDecisions)
+	}
+
+	source.err = errors.New("private projection failure")
+	stale, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{Limit: 64},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stale.Stale || stale.ViewVersion != current.ViewVersion {
+		t.Fatalf("stale snapshot = %#v", stale)
+	}
+	if !reflect.DeepEqual(stale.PreparedDecisions, current.PreparedDecisions) {
+		t.Fatalf(
+			"stale commands changed: current=%#v stale=%#v",
+			current.PreparedDecisions,
+			stale.PreparedDecisions,
+		)
 	}
 }
 

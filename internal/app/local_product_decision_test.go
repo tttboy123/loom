@@ -388,6 +388,69 @@ func TestPreparedMissionDecisionRejectsStaleViewAndGenerationBeforeAuthority(
 	}
 }
 
+func TestPreparedMissionDecisionPublishesCurrentViewAfterJournalAdvance(
+	t *testing.T,
+) {
+	fixture := newPreparedApprovalFixture(t, nil)
+	ctx := context.Background()
+	before, err := fixture.backend.ListMissionDecisionCommands(ctx)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("initial commands = %#v, %v", before, err)
+	}
+	oldCommand := before[0]
+
+	if _, _, err := fixture.work.CreateAndAssign(
+		ctx,
+		work.WorkItemAssignmentInput{
+			WorkItemID:      "work-after-prepared-snapshot",
+			Title:           "Advance prepared decision view",
+			RunID:           "run-after-prepared-snapshot",
+			AgentInstanceID: "agent-after-prepared-snapshot",
+			CorrelationID:   "44444444-4444-4444-8444-444444444444",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.projection.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	currentView := fixture.projection.GlobalReadView().Version()
+	if currentView == oldCommand.ViewVersion {
+		t.Fatal("Journal advance did not change the authoritative view")
+	}
+
+	current, err := fixture.backend.ListMissionDecisionCommands(ctx)
+	if err != nil || len(current) != 1 {
+		t.Fatalf("current commands = %#v, %v", current, err)
+	}
+	if current[0].ViewVersion != currentView {
+		t.Fatalf(
+			"prepared command view = %s, authoritative view = %s",
+			current[0].ViewVersion,
+			currentView,
+		)
+	}
+
+	oldCommand.Operation = "submit"
+	oldCommand.Action = "deny"
+	oldCommand.CorrelationID = "55555555-5555-4555-8555-555555555555"
+	if _, err := fixture.service.DecideMission(ctx, oldCommand); !errors.Is(
+		err,
+		ErrMissionDecisionConflict,
+	) {
+		t.Fatalf("pre-rebind command error = %v", err)
+	}
+
+	newCommand := current[0]
+	newCommand.Operation = "submit"
+	newCommand.Action = "deny"
+	newCommand.CorrelationID = "66666666-6666-4666-8666-666666666666"
+	result, err := fixture.service.DecideMission(ctx, newCommand)
+	if err != nil || result.Status != "denied" || !result.Authoritative {
+		t.Fatalf("current command result = %#v, %v", result, err)
+	}
+}
+
 func TestPreparedMissionDecisionConcurrentSubmissionHasOneWinner(t *testing.T) {
 	blocking := &blockingApprovalAuthority{
 		started: make(chan struct{}),
