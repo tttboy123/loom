@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "repair": "Final Native Timeline Pagination Repair 7 Test Proof Repair 1",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "parent_source_lock_sha256": "96c4f6a06ba244b897be9e982f895994069201bd6c8702d9e014b677bf95ee28",
+  "implementation_review_1_sha256": "45428501d1c7adcddcba0826528c4bc69b04e6dc6afbf4b9e4a74d6976d844c3",
+  "test_proof_repair_1_sha256": "f872c7eae7ed6202ed74d674a7ffb2da3c76bbd516f39e0c4c7366aba695605f",
+  "source_combined_sha256": "db6cc1a2a2e89496960de661edcd01f5faa8477e553d646ba24d9eca0c47eb47",
+  "source_combined_method": "sha256 of LC_ALL=C lexically sorted sha256sum output lines",
+  "source_files": [
+    {
+      "path": "apps/macos/Sources/LoomLocalAppContractProbe/main.swift",
+      "sha256": "01ec7a6647b1ba8c4c37c9a0df3d82bf7d93a57f67f0ab3b5065a70b48de7049"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",
+      "sha256": "66e35f6156591e58243d6184824483e4e17a7bfd8354d411fdb3296e566200c3"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductModels.swift",
+      "sha256": "f6ac3fe1023cfa7eb0643d725b96b9242769a1afb0d0e963a6cfb36497fc6b5e"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift",
+      "sha256": "f3b83c53c8a2af91d91a8deafed6d53ecd3f0340896af88e6237503a5cbce44c"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift",
+      "sha256": "13a158179518eb8e4220bb4e5ecea166dbef885368e94e3aa536a08253a53f40"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift",
+      "sha256": "93066dfe7cc6ddad663526ed7ad37c9d2b29e2fbb1a33c8cf946c8411f5e8a29"
+    },
+    {
+      "path": "cmd/loomd/product_daemon_test.go",
+      "sha256": "2bcf2b52c3a768b7a735a05fc622b9d75828e730da67e6dade6f28cc166cc8aa"
+    },
+    {
+      "path": "internal/localipc/swift_contract_test.go",
+      "sha256": "ab98654b2cec755989b59cdf6303c06b26f48cbc71d12042795e6ae7c12b2595"
+    }
+  ],
+  "excluded_paths": [
+    "AGENTS.md",
+    "README.md",
+    "PROGRESS.md",
+    ".loom-evidence/phase1-final-live-gate/**",
+    ".loom-evidence/phase1-slice3/**",
+    ".loom-evidence/plan-amendments/**",
+    ".codex/**",
+    ".loom-drafts/**",
+    "apps/macos/.build/**"
+  ]
+}

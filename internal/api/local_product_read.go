@@ -2,18 +2,27 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
 
 const localProductSchemaVersion = 2
+
+const (
+	maxMissionExecutionObservers = 64
+	maxMissionTentativeRecords   = 64
+)
 
 var (
 	ErrInvalidLocalProductRequest   = errors.New("invalid local product request")
@@ -23,21 +32,38 @@ var (
 )
 
 type LocalProductReadConfig struct {
-	Journal    *journal.Store
-	Projection ViewSource
-	Now        func() time.Time
-	Decisions  MissionDecisionCommandSource
+	Journal       *journal.Store
+	Projection    ViewSource
+	Now           func() time.Time
+	Decisions     MissionDecisionCommandSource
+	RuntimeHealth RuntimeObservationHealthSource
 }
 
 type LocalProductReadService struct {
-	journal    *journal.Store
-	projection ViewSource
-	now        func() time.Time
-	decisions  MissionDecisionCommandSource
+	journal       *journal.Store
+	projection    ViewSource
+	now           func() time.Time
+	decisions     MissionDecisionCommandSource
+	runtimeHealth RuntimeObservationHealthSource
 
 	mu                    sync.Mutex
 	lastView              *projection.GlobalReadView
 	lastPreparedDecisions []app.MissionDecisionCommand
+
+	executionMu        sync.Mutex
+	executionObservers map[string]*localProductMissionObserver
+	tentativeRecords   map[string][]LocalProductTimelineRecord
+	tentativeGaps      map[string]*LocalProductStreamGap
+}
+
+type localProductMissionObserver struct {
+	service        *LocalProductReadService
+	teamInstanceID string
+
+	mu           sync.Mutex
+	stream       *TeamExecutionStream
+	subscription *Subscription
+	closed       bool
 }
 
 type MissionDecisionCommandSource interface {
@@ -47,6 +73,10 @@ type MissionDecisionCommandSource interface {
 	) ([]app.MissionDecisionCommand, error)
 }
 
+type RuntimeObservationHealthSource interface {
+	RuntimeObservationHealth() (reason string, partial bool)
+}
+
 func NewLocalProductReadService(
 	config LocalProductReadConfig,
 ) (*LocalProductReadService, error) {
@@ -54,10 +84,14 @@ func NewLocalProductReadService(
 		return nil, ErrInvalidLocalProductRequest
 	}
 	return &LocalProductReadService{
-		journal:    config.Journal,
-		projection: config.Projection,
-		now:        config.Now,
-		decisions:  config.Decisions,
+		journal:            config.Journal,
+		projection:         config.Projection,
+		now:                config.Now,
+		decisions:          config.Decisions,
+		runtimeHealth:      config.RuntimeHealth,
+		executionObservers: make(map[string]*localProductMissionObserver),
+		tentativeRecords:   make(map[string][]LocalProductTimelineRecord),
+		tentativeGaps:      make(map[string]*LocalProductStreamGap),
 	}, nil
 }
 
@@ -112,12 +146,19 @@ type LocalProductPageCursor struct {
 	HasMore    bool   `json:"has_more"`
 }
 
+type LocalProductHealth struct {
+	Daemon     string `json:"daemon"`
+	Journal    string `json:"journal"`
+	Projection string `json:"projection"`
+}
+
 type LocalProductSnapshot struct {
-	SchemaVersion int    `json:"schema_version"`
-	ViewVersion   string `json:"view_version"`
-	Partial       bool   `json:"partial"`
-	Stale         bool   `json:"stale"`
-	Reason        string `json:"reason"`
+	SchemaVersion int                `json:"schema_version"`
+	ViewVersion   string             `json:"view_version"`
+	Partial       bool               `json:"partial"`
+	Stale         bool               `json:"stale"`
+	Reason        string             `json:"reason"`
+	Health        LocalProductHealth `json:"health"`
 
 	Runtimes          []LocalProductRuntimeSummary  `json:"runtimes"`
 	Teams             []LocalProductTeamSummary     `json:"teams"`
@@ -153,6 +194,9 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 		}
 		stale := buildLocalProductSnapshot(*service.lastView, request)
+		if stale, err = service.applyRuntimeObservationHealth(stale); err != nil {
+			return LocalProductSnapshot{}, err
+		}
 		prepared, err := service.preparedMissionDecisionCommands(
 			ctx,
 			app.MissionDecisionCommandQuery{
@@ -171,6 +215,7 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 		)
 		stale.Stale = true
 		stale.Reason = "projection_refresh_failed"
+		stale.Health.Projection = "stale"
 		return cloneLocalProductSnapshot(stale), nil
 	}
 	view := service.projection.GlobalReadView()
@@ -186,9 +231,35 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 		return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 	}
 	snapshot.PreparedDecisions = prepared
+	snapshot, err = service.applyRuntimeObservationHealth(snapshot)
+	if err != nil {
+		return LocalProductSnapshot{}, err
+	}
 	service.lastView = &view
 	service.lastPreparedDecisions = cloneLocalProductSlice(prepared)
 	return cloneLocalProductSnapshot(snapshot), nil
+}
+
+func (service *LocalProductReadService) applyRuntimeObservationHealth(
+	snapshot LocalProductSnapshot,
+) (LocalProductSnapshot, error) {
+	if service.runtimeHealth == nil {
+		return snapshot, nil
+	}
+	reason, partial := service.runtimeHealth.RuntimeObservationHealth()
+	if !partial {
+		if reason != "" {
+			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
+		}
+		return snapshot, nil
+	}
+	if reason != "observer_version_timeout" &&
+		reason != "observer_models_timeout" {
+		return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
+	}
+	snapshot.Partial = true
+	snapshot.Reason = reason
+	return snapshot, nil
 }
 
 func (service *LocalProductReadService) preparedMissionDecisionCommands(
@@ -328,6 +399,11 @@ func buildLocalProductSnapshot(
 	return LocalProductSnapshot{
 		SchemaVersion: localProductSchemaVersion,
 		ViewVersion:   view.Version(),
+		Health: LocalProductHealth{
+			Daemon:     "serving_request",
+			Journal:    "available",
+			Projection: "current",
+		},
 		Partial: runtimeMore || teamPage.HasMore || missionPage.HasMore || runMore ||
 			evidenceMore || len(seenAttention) > len(attention),
 		Runtimes:  runtimeSummaries,
@@ -403,10 +479,7 @@ func buildLocalProductTeamPage(
 	for _, id := range orderedIDs {
 		if team, ok := teamByID[id]; ok {
 			anchor, _ := view.TeamTimelineAnchor(team.ID)
-			displayName := team.TeamDefinitionID
-			if displayName == "" {
-				displayName = team.ID
-			}
+			displayName := localProductSavedTeamDisplayName(view, team)
 			summaries = append(summaries, LocalProductTeamSummary{
 				TeamInstanceID: team.ID,
 				DisplayName:    displayName,
@@ -432,6 +505,38 @@ func buildLocalProductTeamPage(
 		})
 	}
 	return summaries, page
+}
+
+func localProductSavedTeamDisplayName(
+	view projection.GlobalReadView,
+	team projection.TeamInstance,
+) string {
+	const fallback = "Saved team"
+	definition, ok := view.TeamDefinition(team.TeamDefinitionID)
+	if !ok || definition.ID != team.TeamDefinitionID ||
+		definition.Version != team.TeamDefinitionVersion ||
+		definition.Scope != team.TeamDefinitionScope ||
+		definition.DefinitionDigest != team.TeamDefinitionDigest ||
+		definition.Name == "" {
+		return fallback
+	}
+	switch definition.Scope {
+	case "project":
+		if definition.ScopeIdentity.ProjectID == "" ||
+			definition.ScopeIdentity.ProjectID != team.ScopeIdentity.ProjectID ||
+			definition.ScopeIdentity.GenerationID == "" ||
+			team.ScopeIdentity.GenerationID != "" {
+			return fallback
+		}
+	case "reusable":
+		if definition.ScopeIdentity != (projection.ScopeIdentity{}) ||
+			team.ScopeIdentity != (projection.ScopeIdentity{}) {
+			return fallback
+		}
+	default:
+		return fallback
+	}
+	return definition.Name
 }
 
 func localProductPageCursor[T any](
@@ -521,6 +626,279 @@ type LocalProductTimelinePage struct {
 	Attention      []AttentionItem              `json:"attention"`
 }
 
+func (service *LocalProductReadService) MissionExecutionObserver(
+	ctx context.Context,
+	teamInstanceID string,
+) (app.NodeOutputObserver, error) {
+	if service == nil || ctx == nil || !validTimelineID(teamInstanceID) {
+		return nil, ErrInvalidLocalProductRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	service.executionMu.Lock()
+	defer service.executionMu.Unlock()
+	if existing := service.executionObservers[teamInstanceID]; existing != nil {
+		return existing, nil
+	}
+	if len(service.executionObservers) >= maxMissionExecutionObservers {
+		return nil, ErrTooManySubscribers
+	}
+	observer := &localProductMissionObserver{
+		service: service, teamInstanceID: teamInstanceID,
+	}
+	service.executionObservers[teamInstanceID] = observer
+	return observer, nil
+}
+
+func (observer *localProductMissionObserver) ObserveNodeOutput(
+	ctx context.Context,
+	output app.NodeOutput,
+) error {
+	if observer == nil || observer.service == nil || ctx == nil {
+		return ErrInvalidNodeOutput
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if observer.closed {
+		return context.Canceled
+	}
+	frame := output.AuthorizedFrame().Frame()
+	if frame.Type() != bridgev1.MessageEvent {
+		if observer.stream == nil {
+			return nil
+		}
+		return observer.stream.ObserveNodeOutput(ctx, output)
+	}
+	if observer.stream == nil {
+		stream, err := NewTeamExecutionStream(TeamExecutionStreamConfig{
+			TeamInstanceID: observer.teamInstanceID,
+			Journal:        observer.service.journal,
+			Projection:     observer.service.projection,
+			Now:            observer.service.now,
+		})
+		if err != nil {
+			return err
+		}
+		subscription, err := stream.Subscribe(ctx, "")
+		if err != nil {
+			return err
+		}
+		observer.stream = stream
+		observer.subscription = subscription
+	}
+	if err := observer.stream.ObserveNodeOutput(ctx, output); err != nil {
+		return err
+	}
+	item, err := observer.subscription.Next(ctx)
+	if err != nil {
+		return err
+	}
+	if delivery, ok := item.Delivery(); ok {
+		encoded, err := json.Marshal(delivery)
+		if err != nil {
+			return ErrInvalidDeliveryRecord
+		}
+		var record LocalProductTimelineRecord
+		if err := json.Unmarshal(encoded, &record); err != nil {
+			return ErrInvalidDeliveryRecord
+		}
+		return observer.service.cacheMissionExecutionDelivery(record)
+	}
+	if gap, ok := item.Gap(); ok {
+		encoded, err := json.Marshal(gap)
+		if err != nil {
+			return ErrInvalidDeliveryRecord
+		}
+		var record LocalProductStreamGap
+		if err := json.Unmarshal(encoded, &record); err != nil {
+			return ErrInvalidDeliveryRecord
+		}
+		observer.service.cacheMissionExecutionGap(record)
+		return nil
+	}
+	return ErrInvalidDeliveryRecord
+}
+
+func (observer *localProductMissionObserver) Close() error {
+	if observer == nil {
+		return nil
+	}
+	observer.mu.Lock()
+	if observer.closed {
+		observer.mu.Unlock()
+		return nil
+	}
+	observer.closed = true
+	subscription := observer.subscription
+	observer.subscription = nil
+	observer.stream = nil
+	observer.mu.Unlock()
+	if subscription != nil {
+		return subscription.Close()
+	}
+	return nil
+}
+
+func (service *LocalProductReadService) CloseMissionExecutionObservers() error {
+	if service == nil {
+		return nil
+	}
+	service.executionMu.Lock()
+	observers := make([]*localProductMissionObserver, 0, len(service.executionObservers))
+	for _, observer := range service.executionObservers {
+		observers = append(observers, observer)
+	}
+	service.executionObservers = make(map[string]*localProductMissionObserver)
+	service.executionMu.Unlock()
+	var result error
+	for _, observer := range observers {
+		result = errors.Join(result, observer.Close())
+	}
+	return result
+}
+
+func (service *LocalProductReadService) cacheMissionExecutionDelivery(
+	record LocalProductTimelineRecord,
+) error {
+	if service == nil || record.SchemaVersion != timelineSchemaVersion ||
+		!validDigest(record.DeliveryID) ||
+		record.Kind != "node_output_delta" ||
+		record.Authority != "tentative" ||
+		!validTimelineID(record.TeamInstanceID) ||
+		!validTimelineID(record.LogicalNodeID) ||
+		record.AttemptNumber <= 0 || record.SourceSequence <= 0 ||
+		!validTimelineID(record.SourceEventID) ||
+		!validTentativeDelta(record.Payload.TextDelta) {
+		return ErrInvalidDeliveryRecord
+	}
+	occurredAt, err := time.Parse(time.RFC3339Nano, record.OccurredAt)
+	if err != nil || occurredAt.Location() != time.UTC {
+		return ErrInvalidDeliveryRecord
+	}
+	record.Cursor = ""
+	service.executionMu.Lock()
+	defer service.executionMu.Unlock()
+	records := service.tentativeRecords[record.TeamInstanceID]
+	for _, existing := range records {
+		if existing.DeliveryID == record.DeliveryID {
+			return nil
+		}
+	}
+	if len(records) >= maxMissionTentativeRecords {
+		service.tentativeGaps[record.TeamInstanceID] =
+			service.newMissionExecutionGap(record.TeamInstanceID, occurredAt)
+		return nil
+	}
+	service.tentativeRecords[record.TeamInstanceID] = append(
+		append([]LocalProductTimelineRecord(nil), records...),
+		record,
+	)
+	return nil
+}
+
+func (service *LocalProductReadService) newMissionExecutionGap(
+	teamInstanceID string,
+	occurredAt time.Time,
+) *LocalProductStreamGap {
+	viewVersion := service.projection.GlobalReadView().Version()
+	digest := sha256.Sum256([]byte(
+		"loom.local-product.tentative-gap.v1\x00" +
+			teamInstanceID + "\x00" + viewVersion,
+	))
+	return &LocalProductStreamGap{
+		SchemaVersion:      timelineSchemaVersion,
+		DeliveryID:         hex.EncodeToString(digest[:]),
+		Kind:               "stream_gap",
+		TeamInstanceID:     teamInstanceID,
+		Reason:             "tentative_overflow",
+		CurrentViewVersion: viewVersion,
+		Recoverable:        true,
+		OccurredAt:         occurredAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func (service *LocalProductReadService) cacheMissionExecutionGap(
+	gap LocalProductStreamGap,
+) {
+	if service == nil || !validTimelineID(gap.TeamInstanceID) {
+		return
+	}
+	service.executionMu.Lock()
+	copy := gap
+	service.tentativeGaps[gap.TeamInstanceID] = &copy
+	service.executionMu.Unlock()
+}
+
+func (service *LocalProductReadService) mergeMissionExecutionTimeline(
+	result *LocalProductTimelinePage,
+	limit int,
+) {
+	if service == nil || result == nil || limit < 1 {
+		return
+	}
+	if terminalLocalProductTeamStatus(result.Board.Status) {
+		service.clearMissionExecutionState(result.TeamInstanceID)
+		return
+	}
+	service.executionMu.Lock()
+	records := append(
+		[]LocalProductTimelineRecord(nil),
+		service.tentativeRecords[result.TeamInstanceID]...,
+	)
+	var gap *LocalProductStreamGap
+	if stored := service.tentativeGaps[result.TeamInstanceID]; stored != nil {
+		copy := *stored
+		gap = &copy
+	}
+	service.executionMu.Unlock()
+	seen := make(map[string]struct{}, len(result.Records))
+	for _, record := range result.Records {
+		seen[record.DeliveryID] = struct{}{}
+	}
+	for _, record := range records {
+		if len(result.Records) >= limit {
+			result.HasMore = true
+			break
+		}
+		if _, exists := seen[record.DeliveryID]; exists {
+			continue
+		}
+		record.Cursor = result.NextCursor
+		result.Records = append(result.Records, record)
+		seen[record.DeliveryID] = struct{}{}
+	}
+	if result.Gap == nil && gap != nil {
+		result.Gap = gap
+	}
+}
+
+func terminalLocalProductTeamStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "cancelled", "blocked", "human_required":
+		return true
+	default:
+		return false
+	}
+}
+
+func (service *LocalProductReadService) clearMissionExecutionState(
+	teamInstanceID string,
+) {
+	service.executionMu.Lock()
+	observer := service.executionObservers[teamInstanceID]
+	delete(service.executionObservers, teamInstanceID)
+	delete(service.tentativeRecords, teamInstanceID)
+	delete(service.tentativeGaps, teamInstanceID)
+	service.executionMu.Unlock()
+	if observer != nil {
+		_ = observer.Close()
+	}
+}
+
 func (service *LocalProductReadService) ReadLocalProductTimeline(
 	ctx context.Context,
 	request LocalProductTimelineRequest,
@@ -564,10 +942,39 @@ func (service *LocalProductReadService) ReadLocalProductTimeline(
 	if result.Board.Nodes == nil {
 		result.Board.Nodes = []NodeBoardRow{}
 	}
+	enrichLocalProductEvidenceDigests(
+		&result,
+		service.projection.GlobalReadView(),
+	)
+	service.mergeMissionExecutionTimeline(&result, request.Limit)
 	if readErr != nil {
 		return result, readErr
 	}
 	return result, nil
+}
+
+func enrichLocalProductEvidenceDigests(
+	page *LocalProductTimelinePage,
+	view projection.GlobalReadView,
+) {
+	if page == nil {
+		return
+	}
+	for index := range page.Records {
+		record := &page.Records[index]
+		if record.Kind != "evidence_available" ||
+			record.Authority != "journal" ||
+			record.Payload.EvidenceDigest != "" ||
+			!strings.HasPrefix(record.SourceStreamID, "evidence/") {
+			continue
+		}
+		evidenceID := strings.TrimPrefix(record.SourceStreamID, "evidence/")
+		evidence, ok := view.Evidence(evidenceID)
+		if !ok || evidence.ID != evidenceID || !validDigest(evidence.Digest) {
+			continue
+		}
+		record.Payload.EvidenceDigest = evidence.Digest
+	}
 }
 
 func validLocalProductSnapshotRequest(

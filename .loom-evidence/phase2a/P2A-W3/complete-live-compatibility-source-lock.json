@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3 Controlled Execution Experience",
+  "reopen": "Complete Live Compatibility",
+  "status": "DETERMINISTIC_PASS_IMPLEMENTATION_REVIEW_PENDING",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "branch": "codex/loom-platform-slice2",
+  "contract_sha256": "8e7d77ef06c9867799d5dd759db6c826d77a76a7a2960b17ad55ba35946d5f75",
+  "contract_rereview_sha256": "6bf8254c2818e27261ab0717f1082c9bf63b6b70f1b55729ee60b26f6ca9ade4",
+  "causal_red_sha256": "5c0bbb1d2d56a10def73f62df267b658638052e6cfc48ab69d9b24dbe0d21de3",
+  "implementation_review_3_sha256": "47b6ef043ccf9d40349fd085482e914d16f05f90c9555f8c028d931547d9c3b6",
+  "live_canary_authorized": false,
+  "p2a_w4_exists": false,
+  "files": {
+    "cmd/loomd/product_daemon.go": "904b8b6f11567191280cbdfb49b6588ac162b544f5d76082d3a2036fbd1913c6",
+    "cmd/loomd/product_daemon_test.go": "63fffdd427fbffacadd33451af6ff63d65414c93f725cadf79c52b9098eecf39",
+    "internal/app/local_product_execution.go": "d3faa9633b37fb41abbf5c4c32614d255aa7200d672eddfcf7d54d36dcad5e67",
+    "internal/app/local_product_execution_test.go": "529b10272c01838997d0edde1d182ff42374cb4a986683ae92964646630f4878",
+    "internal/app/local_product_setup.go": "c1b9193678fec7c03b29fe144b41578cc4e594b0556a040324118dbb2851069d",
+    "internal/app/local_product_setup_test.go": "5a61f35698c871facf2d7fa283aee3149fb34741f69b39f7739348237199a518",
+    "internal/api/local_product_read.go": "38f7a8e637195da3d98b123dce7baa4c78161011245e28d185e897d6b0c8c1fb",
+    "internal/api/local_product_read_test.go": "48f016be97f325a8f3f33b1804df1236308d433f32356c92bca440689684550c",
+    "internal/api/local_product_setup.go": "df2007a45765b395a3933d0740db836900648eb4a37564289f49dcdae02b38a6",
+    "internal/api/local_product_setup_test.go": "a9688010a9777cc46333f8223b4169b0504cf0f49d43f6a45717317eb3acc86c",
+    "internal/credentials/credential_broker.go": "dc41a3e528a3f283a1d037ee0d19ecff6679de7db040d291f00cc8da0c3af498",
+    "internal/credentials/credential_broker_test.go": "c937a988fbeaf74609c9b38f25d5cd279b1b3be7e88dbe7d5ff94f29c4b59d74",
+    "internal/localipc/swift_contract_test.go": "bf9a07f5261dbcf2189050f72444a48925b6c83525c617f69c4e224b17a93495",
+    "internal/tui/model.go": "4113b10b001704aef857aa5746fbc50df399ee476db166e9573626ef88a9d309",
+    "internal/tui/model_test.go": "f0b2748861a17f3dbcdc095a2b19e0e1359f788592d1489bc7c1588cf06a271d",
+    "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift": "e54a312d8c5b317f5bc981d9dfac6102916c0d205a3e5673b5018c2cd431301a",
+    "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift": "8d054bb636b424a7ba9d66dc3db4c249e7f0288c5ab616511e3b2c098700b02a",
+    "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift": "2a604b5988b1069ebdb06ca1a7ba7de2ba262e396559ffba45bd6b29ffc2ddcf",
+    "apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift": "ba5dddc5daa9bb242695dd40d471bfd08dd21b81bac42ef81dc01bff404d80fe",
+    "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift": "402c01a1fc58805efaf08c5c2937a7c8c81282160a6be9defec62161011babe8"
+  },
+  "locked_authority_hashes": {
+    "internal/localipc/protocol.go": "496fa5d51f790c3b4289c84cfd31ec9c89c9aa064f72a660085f6992f67160dc",
+    "internal/state/local_product_setup_writer.go": "5a453e1b219d409054a3153423f9a4084c85f02eb413be34b0648d331739bf37",
+    "internal/projection/local_product_setup.go": "7ea7dfd1b270b0166e64e3a8753818464411692ba671d5afae00962311c37673",
+    "internal/supervisor/managed_execution.go": "968005d032ff6c0d8fedbaf28e7c3789ab084ea5fbcd660a060a0043a337d637",
+    "protocol/bridge/v1/frame.go": "1c40aa90d1be2012ff6f0ea637f152722c2153dc2ace8b877dc8bacff9938365"
+  }
+}

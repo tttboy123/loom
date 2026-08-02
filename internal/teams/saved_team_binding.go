@@ -121,7 +121,7 @@ func BuildSavedTeamRuntimeBinding(
 	}
 
 	bindings := make([]SavedTeamRuntimeRoleBinding, 0, len(load.Roles))
-	usage := make(map[string]int)
+	materializationUsage := make(map[string]int)
 	for _, role := range load.Roles {
 		selection := selectionByAgent[role.AgentDefinitionID]
 		profile, ok := profileByID[role.RuntimeProfileID]
@@ -139,7 +139,9 @@ func BuildSavedTeamRuntimeBinding(
 		if err != nil {
 			return SavedTeamRuntimeBindingCandidate{}, err
 		}
-		usage[selection.RuntimeInstanceID]++
+		if role.Kind == TeamDefinitionRoleMain {
+			materializationUsage[selection.RuntimeInstanceID]++
+		}
 		bindings = append(bindings, SavedTeamRuntimeRoleBinding{
 			Kind:              role.Kind,
 			AgentDefinitionID: role.AgentDefinitionID,
@@ -148,7 +150,7 @@ func BuildSavedTeamRuntimeBinding(
 			Binding:           binding,
 		})
 	}
-	for runtimeID, count := range usage {
+	for runtimeID, count := range materializationUsage {
 		if observationByID[runtimeID].Instance.Capacity < count {
 			return SavedTeamRuntimeBindingCandidate{}, ErrSavedTeamRuntimeCapacityExceeded
 		}

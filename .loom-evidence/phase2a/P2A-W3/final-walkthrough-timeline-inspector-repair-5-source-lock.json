@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "boundary": "final-walkthrough-timeline-inspector-repair-5",
+  "date": "2026-08-03",
+  "files": [
+    {
+      "path": "internal/api/team_execution_stream.go",
+      "sha256": "0933f46c916563e18bdfdea729de3084d97e2f526acaa6ae457e4a8348a10343"
+    },
+    {
+      "path": "internal/api/team_execution_stream_test.go",
+      "sha256": "da8359f0809a7ca8e300b006f7673e44d56d78d615ba1ff42668abb3a69a0a76"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+      "sha256": "2d158ee9adf0a9b11a650ec34523efbed7356b516aebd9a2be9d05820ec8439e"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift",
+      "sha256": "28fc6657823e13c74b2d7a3779d917cf96b55dbe01e782fdb63b3eb08b57bcbb"
+    }
+  ],
+  "combined_sha256": "d616d7ac1e5b98db887a65fcdffd02a14222f185767cd63cd56ef448ce12c405",
+  "walkthrough_root": "root004-consumed-diagnostic-only",
+  "next_gate": "fresh-independent-implementation-rereview"
+}

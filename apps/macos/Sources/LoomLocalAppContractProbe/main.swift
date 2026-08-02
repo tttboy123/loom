@@ -14,16 +14,24 @@ private struct ProbeDecisionOutput: Encodable {
     let prepared: Bool
 }
 
+private struct ProbeExecutionOutput: Encodable {
+    let preflightDigest: String
+    let expiresAt: String
+    let status: String
+    let executionDigest: String
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
         do {
             let arguments = CommandLine.arguments
-            guard (arguments.count == 3 || arguments.count == 5),
-                  arguments[1] == "--socket",
-                  arguments.count == 3 ||
-                    arguments[3] == "--team" ||
-                    arguments[3] == "--decision" else {
+            guard arguments.count == 3 || arguments.count == 4 || arguments.count == 5,
+                arguments[1] == "--socket",
+                arguments.count == 3 || arguments.count == 4 && arguments[3] == "--execution"
+                    || arguments[3] == "--team" || arguments[3] == "--team-all"
+                    || arguments[3] == "--decision"
+            else {
                 throw LocalProductClientError.invalidRequest
             }
             let client = try LocalIPCClient(
@@ -32,6 +40,45 @@ enum LoomLocalAppContractProbe {
             )
             guard try await client.ping() else {
                 throw LocalProductClientError.invalidResponse
+            }
+            if arguments.count == 4 {
+                let preflightEnvelope = try await client.executeMission(
+                    .preflight(
+                        missionID: "mission/team-swift-contract",
+                        teamInstanceID: "team-swift-contract",
+                        workPackageID: "work-package.coding",
+                        workPackageDigest: String(repeating: "a", count: 64),
+                        objective: "Verify the strict Swift execution contract",
+                        expectedViewVersion: String(repeating: "b", count: 64),
+                        correlationID: "11111111-1111-4111-8111-111111111111"
+                    )
+                )
+                guard let preflight = preflightEnvelope.preflight else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                let startEnvelope = try await client.executeMission(
+                    .start(
+                        preflight: preflight,
+                        objective: "Verify the strict Swift execution contract",
+                        correlationID: "22222222-2222-4222-8222-222222222222"
+                    )
+                )
+                guard let result = startEnvelope.result else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                let encoded = try JSONEncoder().encode(
+                    ProbeExecutionOutput(
+                        preflightDigest: preflight.preflightDigest,
+                        expiresAt: preflight.expiresAt,
+                        status: result.status,
+                        executionDigest: result.executionDigest
+                    )
+                )
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
             }
             if arguments.count == 5 && arguments[3] == "--decision" {
                 let kind = try decisionKind(arguments[4])
@@ -59,6 +106,32 @@ enum LoomLocalAppContractProbe {
                         actions: sheet.actions,
                         prepared: sheet.prepared
                     )
+                )
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--team-all" {
+                let store = LocalProductStore(client: client)
+                await store.refresh()
+                guard let team = store.snapshot?.teams.first(where: {
+                    $0.teamInstanceID == arguments[4]
+                }) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                store.selectTeam(team)
+                await store.activateSelectedTeam()
+                guard store.timelineState == .loaded,
+                      let timeline = store.timeline,
+                      let snapshot = store.snapshot else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                let encoded = try encoder.encode(
+                    ProbeOutput(snapshot: snapshot, timeline: timeline)
                 )
                 guard let output = String(data: encoded, encoding: .utf8) else {
                     throw LocalProductClientError.invalidResponse

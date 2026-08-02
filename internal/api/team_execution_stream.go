@@ -1272,7 +1272,7 @@ var authoritativeKinds = map[string]string{
 
 func mapAuthoritativeRecords(
 	teamInstanceID string,
-	view projection.GlobalReadView,
+	view timelineLineageView,
 	startHeads []journal.StreamHead,
 	events []journal.Event,
 ) ([]DeliveryRecord, error) {
@@ -1361,6 +1361,16 @@ func mapAuthoritativeRecords(
 		records = append(records, record)
 	}
 	return records, nil
+}
+
+type timelineLineageView interface {
+	Version() string
+	TeamExecution(string) (projection.TeamExecution, bool)
+	WorkItem(string) (projection.WorkItem, bool)
+	WorkItemsForTeam(string) []projection.WorkItem
+	Run(string) (projection.Run, bool)
+	Evidence(string) (projection.Evidence, bool)
+	ApprovalRequest(string) (projection.ProjectedApprovalRequest, bool)
 }
 
 func deriveBoardAndAttention(
@@ -1592,7 +1602,7 @@ func findProjectedAttemptByRunID(
 }
 
 func relatedWorkItemLineage(
-	view projection.GlobalReadView,
+	view timelineLineageView,
 	execution projection.TeamExecution,
 	teamInstanceID,
 	workItemID string,
@@ -1637,7 +1647,7 @@ func relatedWorkItemLineage(
 }
 
 func relatedRunLineage(
-	view projection.GlobalReadView,
+	view timelineLineageView,
 	execution projection.TeamExecution,
 	teamInstanceID,
 	runID string,
@@ -1672,7 +1682,7 @@ func relatedRunLineage(
 }
 
 func relatedEvidenceLineage(
-	view projection.GlobalReadView,
+	view timelineLineageView,
 	execution projection.TeamExecution,
 	teamInstanceID,
 	evidenceID string,
@@ -1690,7 +1700,7 @@ func relatedEvidenceLineage(
 }
 
 func relatedApprovalLineage(
-	view projection.GlobalReadView,
+	view timelineLineageView,
 	execution projection.TeamExecution,
 	teamInstanceID,
 	approvalID string,
@@ -1720,7 +1730,7 @@ func relatedApprovalLineage(
 
 func resolveDeliveryLineage(
 	teamInstanceID string,
-	view projection.GlobalReadView,
+	view timelineLineageView,
 	event journal.Event,
 	kind string,
 	safe map[string]string,
@@ -1772,18 +1782,13 @@ func resolveDeliveryLineage(
 			logicalNodeID = safe["logical_node_id"]
 		}
 	}
-	safeAttempt := 0
-	if safe["attempt_number"] != "" {
-		safeAttempt, _ = strconv.Atoi(safe["attempt_number"])
-	}
-	if safe["logical_node_id"] != "" || safeAttempt != 0 {
-		if !found ||
-			safe["logical_node_id"] == "" ||
-			safeAttempt <= 0 ||
-			logicalNodeID != safe["logical_node_id"] ||
-			attemptNumber != safeAttempt {
-			return "", 0, ErrInvalidDeliveryRecord
-		}
+	if err := validateDeliveryLineageFields(
+		found,
+		logicalNodeID,
+		attemptNumber,
+		safe,
+	); err != nil {
+		return "", 0, err
 	}
 	if found {
 		return logicalNodeID, attemptNumber, nil
@@ -1794,6 +1799,28 @@ func resolveDeliveryLineage(
 	default:
 		return "", 0, ErrInvalidDeliveryRecord
 	}
+}
+
+func validateDeliveryLineageFields(
+	found bool,
+	logicalNodeID string,
+	attemptNumber int,
+	safe map[string]string,
+) error {
+	if safeLogicalNodeID, present := safe["logical_node_id"]; present {
+		if safeLogicalNodeID == "" || !found ||
+			logicalNodeID != safeLogicalNodeID {
+			return ErrInvalidDeliveryRecord
+		}
+	}
+	if encodedAttempt, present := safe["attempt_number"]; present {
+		safeAttempt, err := strconv.Atoi(encodedAttempt)
+		if err != nil || safeAttempt <= 0 || !found ||
+			attemptNumber != safeAttempt {
+			return ErrInvalidDeliveryRecord
+		}
+	}
+	return nil
 }
 
 func safeEventFields(payload []byte) (map[string]string, error) {

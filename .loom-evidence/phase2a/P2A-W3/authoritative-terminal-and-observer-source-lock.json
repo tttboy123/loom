@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3 Controlled Execution Experience",
+  "reopen": "Authoritative Terminal and Observer Closure",
+  "status": "DETERMINISTIC_PASS_IMPLEMENTATION_REVIEW_PENDING",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "branch": "codex/loom-platform-slice2",
+  "parent_source_lock_sha256": "904b1ceec6b1cd11d27498382b221c734180e0817eff8b31360d98d0b3160ccd",
+  "diagnosis_sha256": "98a279da6924db8871d220a9faeed4e2972ca99be708347cf9e9d1b720380d70",
+  "contract_sha256": "4d98c0b8b179ee1244d06fa45e21fe14441d045a192204843fbd4b1b5cc8c57b",
+  "contract_review_sha256": "93acd9295ac94b4bf7545224dafd0b6f0a7c759d9cf63338ee1af14ef0903fb2",
+  "causal_red_sha256": "4f4035a7d45e1fcf71511a622732abcfba121fad7e83db1b489768697c94d584",
+  "verification_sha256": "b7d0c3a9176a90ac84e6df35a6d677263e3919d42248e95cf4e841113f45a7d0",
+  "live_canary_authorized": false,
+  "p2a_w4_exists": false,
+  "files": {
+    "internal/credentials/credential_broker.go": "742be016dfebf50206af0d96b700308c0459dcc838e8ecf0512f0826e653c4b1",
+    "internal/credentials/credential_broker_test.go": "fdaf8ea629aa344f04e3dda026bc9c5b180e31d7f056aff25c6005315ceb4b61",
+    "cmd/loomd/product_daemon.go": "43057a7991e5c83bc81ec6aef447cf30c03a95ee8fff57561bc3b44ceb38bd81",
+    "cmd/loomd/product_daemon_test.go": "1f1a7ed9030fed6dc3ad72d5f7f14bda39fe607397f01e38d898c88265eb0d15",
+    "cmd/loomd/run.go": "732ff73cd960774e8d78ac4bbc8c22be34eca7125e3192c7b019d4768dd7cfc6",
+    "cmd/loomd/run_test.go": "0e8155d79d3d47ff1a132cfe09d70cc141741dcae004d9a325c690b226a115d5",
+    "internal/localipc/swift_contract_test.go": "3e2a3e80f38f6a4efe1e76c9eb30be1d2e0a78e4d74dfb01a6c069f7af242c13",
+    "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift": "8d054bb636b424a7ba9d66dc3db4c249e7f0288c5ab616511e3b2c098700b02a",
+    "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift": "d884b86087012ce7241e532ffda9edf33dff62a3b046e62c7211190b7158f92d"
+  },
+  "locked_authority_hashes": {
+    "internal/localipc/protocol.go": "496fa5d51f790c3b4289c84cfd31ec9c89c9aa064f72a660085f6992f67160dc",
+    "internal/state/local_product_setup_writer.go": "5a453e1b219d409054a3153423f9a4084c85f02eb413be34b0648d331739bf37",
+    "internal/projection/local_product_setup.go": "7ea7dfd1b270b0166e64e3a8753818464411692ba671d5afae00962311c37673",
+    "internal/supervisor/managed_execution.go": "968005d032ff6c0d8fedbaf28e7c3789ab084ea5fbcd660a060a0043a337d637",
+    "protocol/bridge/v1/frame.go": "1c40aa90d1be2012ff6f0ea637f152722c2153dc2ace8b877dc8bacff9938365"
+  }
+}

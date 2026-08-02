@@ -1,0 +1,983 @@
+{
+  "schema": "loom.p2a-w3.final-source-evidence-lock.v1",
+  "generated_at": "2026-08-03",
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "branch": "codex/loom-platform-slice2",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "purpose": "Corrected narrow inventory for final P2A-W3 whole-Candidate Review and exact atomic commit.",
+  "supersedes_for_final_inventory": ".loom-evidence/phase2a/P2A-W3/source-lock.json",
+  "canonical_digest_method": "For each listed entry in bytewise path order, concatenate lowercase sha256, two ASCII spaces, path, and LF; SHA-256 the resulting UTF-8 byte sequence.",
+  "source_inventory": {
+    "count": 48,
+    "ordered_sha256_lines_digest": "ea2b6dbc0f126e7bb439554fd61ce877e5b3008bf193586257ed5f6b4717efaa",
+    "files": [
+      {
+        "path": "apps/macos/Sources/LoomLocalAppContractProbe/main.swift",
+        "sha256": "01ec7a6647b1ba8c4c37c9a0df3d82bf7d93a57f67f0ab3b5065a70b48de7049"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",
+        "sha256": "66e35f6156591e58243d6184824483e4e17a7bfd8354d411fdb3296e566200c3"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductExecutionModels.swift",
+        "sha256": "f4e9a5699f4a47a82a7a69f234daab112dc9578d2381d724962c7220c3c6fabf"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductModels.swift",
+        "sha256": "f6ac3fe1023cfa7eb0643d725b96b9242769a1afb0d0e963a6cfb36497fc6b5e"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift",
+        "sha256": "f3b83c53c8a2af91d91a8deafed6d53ecd3f0340896af88e6237503a5cbce44c"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/MissionOrchestration.swift",
+        "sha256": "3f8aecc49cb435a21e67b1255a92a7ccc6b9b6851dd551b5f6133041d7ee8835"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+        "sha256": "1f9103a66b0fa67dbd6fa1103fdeff261da17c61284060f69cf0dfd907172059"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift",
+        "sha256": "13a158179518eb8e4220bb4e5ecea166dbef885368e94e3aa536a08253a53f40"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExecutionModelsTests.swift",
+        "sha256": "2c6af90e8fba87830deac721afbbd58897cb895b537f447c26d4316bed8327f1"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift",
+        "sha256": "3a25af14e4fee8551bf42b38b2016464dbc00064fcb44a2a46528d1c98a8484e"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductModelsTests.swift",
+        "sha256": "17a2cc0ac7fc08477db34e4100fdf031ea7d21ecdc182a0faa52876fe935d5ed"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift",
+        "sha256": "93066dfe7cc6ddad663526ed7ad37c9d2b29e2fbb1a33c8cf946c8411f5e8a29"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/MissionOrchestrationTests.swift",
+        "sha256": "d39ff160a20e039d786bbb66fdf7d1b44b723c005806fc406738a0f93a9ad261"
+      },
+      {
+        "path": "cmd/loomd/product_daemon.go",
+        "sha256": "88894f5622b1099d6d33489ed35945b40dc70a2f2450abd67f2b736b6fc65312"
+      },
+      {
+        "path": "cmd/loomd/product_daemon_test.go",
+        "sha256": "2bcf2b52c3a768b7a735a05fc622b9d75828e730da67e6dade6f28cc166cc8aa"
+      },
+      {
+        "path": "cmd/loomd/run.go",
+        "sha256": "715232fbbe0e606475181fe9d0c46bb19be56682e05e66b656c384fe662f8e19"
+      },
+      {
+        "path": "cmd/loomd/run_test.go",
+        "sha256": "e7733b53cf1a4e0816d72219b52ce3248af99912e1aa942393e0f00b7db6c44c"
+      },
+      {
+        "path": "internal/api/local_product_execution.go",
+        "sha256": "7e1bb917a86046f362b2365e42171a506b54b08da6dc2fcd676628b7706a08a3"
+      },
+      {
+        "path": "internal/api/local_product_execution_test.go",
+        "sha256": "1f4e5998418efdfbd8579eaa71fc644fa1c028ff382f35eb9b0190864751cd3c"
+      },
+      {
+        "path": "internal/api/local_product_mission.go",
+        "sha256": "ea38a00816f5d4c3608405ef749353bc91356e0d953c5744bd3019141da475bb"
+      },
+      {
+        "path": "internal/api/local_product_mission_test.go",
+        "sha256": "81299c5687eb2462149dc563d7025cb7ac9ad3240fe8fd7f09be1167d4ea49e3"
+      },
+      {
+        "path": "internal/api/local_product_read.go",
+        "sha256": "38f7a8e637195da3d98b123dce7baa4c78161011245e28d185e897d6b0c8c1fb"
+      },
+      {
+        "path": "internal/api/local_product_read_test.go",
+        "sha256": "ad948a3759c7095f17280e48252530e3130cd9aef8c3be3cc76c96a71ec44134"
+      },
+      {
+        "path": "internal/api/team_execution_stream.go",
+        "sha256": "0933f46c916563e18bdfdea729de3084d97e2f526acaa6ae457e4a8348a10343"
+      },
+      {
+        "path": "internal/api/team_execution_stream_test.go",
+        "sha256": "da8359f0809a7ca8e300b006f7673e44d56d78d615ba1ff42668abb3a69a0a76"
+      },
+      {
+        "path": "internal/app/local_product_decision.go",
+        "sha256": "adcffde19e2256d7d5a441bc8f8ae62cc5bcbc4a943d336c5e8cdd2756af2ccb"
+      },
+      {
+        "path": "internal/app/local_product_decision_test.go",
+        "sha256": "6db5b7313974f488ffc2affe0d614c4e921c4eedc96040c1532932f8bce4007c"
+      },
+      {
+        "path": "internal/app/local_product_execution.go",
+        "sha256": "d3faa9633b37fb41abbf5c4c32614d255aa7200d672eddfcf7d54d36dcad5e67"
+      },
+      {
+        "path": "internal/app/local_product_execution_test.go",
+        "sha256": "529b10272c01838997d0edde1d182ff42374cb4a986683ae92964646630f4878"
+      },
+      {
+        "path": "internal/app/local_product_setup.go",
+        "sha256": "c1b9193678fec7c03b29fe144b41578cc4e594b0556a040324118dbb2851069d"
+      },
+      {
+        "path": "internal/app/local_product_setup_test.go",
+        "sha256": "5a61f35698c871facf2d7fa283aee3149fb34741f69b39f7739348237199a518"
+      },
+      {
+        "path": "internal/app/team_execution.go",
+        "sha256": "4d1c75883b625327b642bbdd220da2cd0057510c0d282b7d92727b27f85a1813"
+      },
+      {
+        "path": "internal/app/team_execution_test.go",
+        "sha256": "5448bdc3600b3a721ae207857e43ce58f890668b7ed022476c24b030d004ce8b"
+      },
+      {
+        "path": "internal/credentials/credential_broker.go",
+        "sha256": "742be016dfebf50206af0d96b700308c0459dcc838e8ecf0512f0826e653c4b1"
+      },
+      {
+        "path": "internal/credentials/credential_broker_test.go",
+        "sha256": "fdaf8ea629aa344f04e3dda026bc9c5b180e31d7f056aff25c6005315ceb4b61"
+      },
+      {
+        "path": "internal/localipc/protocol.go",
+        "sha256": "496fa5d51f790c3b4289c84cfd31ec9c89c9aa064f72a660085f6992f67160dc"
+      },
+      {
+        "path": "internal/localipc/protocol_test.go",
+        "sha256": "842d4a2fbcaac21f77e888e566362e81a02004c82903b482a4645461279178b0"
+      },
+      {
+        "path": "internal/localipc/swift_contract_test.go",
+        "sha256": "ab98654b2cec755989b59cdf6303c06b26f48cbc71d12042795e6ae7c12b2595"
+      },
+      {
+        "path": "internal/provider/codex_native_auth.go",
+        "sha256": "ed06a2dc86a809442afcd7c16284388df27fec3b40abb58719e440bfa63e3c83"
+      },
+      {
+        "path": "internal/provider/codex_native_auth_test.go",
+        "sha256": "8c868d1370981acf37735ec3e6de424adf7b2c23762a7b8878a366ceacd9d839"
+      },
+      {
+        "path": "internal/teams/saved_team_binding.go",
+        "sha256": "aee0bd62d92eaa03d090fc2e86eb728f53982aac87a0a74c132ab2c5f820b228"
+      },
+      {
+        "path": "internal/teams/saved_team_binding_test.go",
+        "sha256": "1e3f170270a468e0f56cc266efbc73255a926bc7e086337e662c2929470a38f8"
+      },
+      {
+        "path": "internal/tui/model.go",
+        "sha256": "1f74b475e25f1e35c4097124914a8de30e76866e9318c6ec59be302300549b85"
+      },
+      {
+        "path": "internal/tui/model_test.go",
+        "sha256": "34e221e7ef63f060b14d39d0d0d8ebb05c91ab09b8a4103cb513bafe38508056"
+      },
+      {
+        "path": "internal/work/team_execution_authority.go",
+        "sha256": "1d0f8c56989a2ae82ae2edb500065d962f6b194125cb7880946afcddd740b2a7"
+      },
+      {
+        "path": "internal/work/team_execution_authority_test.go",
+        "sha256": "d839a1ba0b0035771c393d8d9f922f0d7c3fd24f92b368279d4ebff374ee2aa4"
+      },
+      {
+        "path": "internal/work/verification_authority.go",
+        "sha256": "748920a6a2a430ae323494de9ba35f124a592032aed4a6023ca134e9cef5637f"
+      },
+      {
+        "path": "internal/work/verification_authority_test.go",
+        "sha256": "31302b5404a48d64133a7d425ba6ecb358b7ee81f4ccc391d3b56b6e3b0a29a4"
+      }
+    ]
+  },
+  "evidence_inventory": {
+    "count": 177,
+    "ordered_sha256_lines_digest": "62ee729a3ce7e2e942fcc0e8ef73b734d8de18282069434d85a228436ba59328",
+    "files": [
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-contract-repair-4.md",
+        "sha256": "4d54af39b1e08b6b499775107cda4d8c88e74fe929cd4c08d6b81ff3885798d4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-contract-repair-review-3.md",
+        "sha256": "7664745d4abce0ad634f57bd865b0eba6a0a91552f228862915153b702736a4e"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-implementation-review-1.md",
+        "sha256": "580a13eb824173233ca59fde1a8ac1dec5c428eb6c980b8fd2d386ec36e11de4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-pi-live-manifest.json",
+        "sha256": "c765a4f48cf2185418af592e22e523d4d8348ed3bbc930399238e4c1c220586f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-pi-live-preflight.md",
+        "sha256": "486dc44e2dc7061202dae61f0b02bc01ca286eba6a2655f2a0904ed15949707e"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-pi-live-result-lock.json",
+        "sha256": "d115c37db635b99879847f10169a59bbb872e80741b3c9b67329d533eb3ffeb8"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-pi-live-result-review.md",
+        "sha256": "95483dcb6a43079ebb3f0d88aed69a1905109520c1c51dc937e906e45360503c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-pi-live-result.md",
+        "sha256": "0329f456f770e13a7da89c25a717460102fbde15b024bd2365d07772d570f8df"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-duplicate-red.md",
+        "sha256": "46ea8febb8355d1ea472b62aa5e60f03e8cfb3774db84ce0c0a31f6d5501dc4f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-final-implementation-review.md",
+        "sha256": "5544dfc7574b62a2c548469e19f04e28eb3dcad866b39235e95b615b795133a4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-final-source-lock.json",
+        "sha256": "3148271012989d1ebdd00d190587f730fb691444bfae9bd4f8f29fe861c981ea"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-implementation-rereview-2.md",
+        "sha256": "cd1a03869c9fb93975aa152247bbbc642976e7f54101840780b751f10b321178"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-red.md",
+        "sha256": "68f75db5a115babeaadbbf83a4e2850b773c32edcdd659f6a2af71b0b9faddc1"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-source-lock.json",
+        "sha256": "70e7b380f7eb40d1b978dee393c6f4ed21efe63e3df2afb091c7ee322f8c9954"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-verification-2.md",
+        "sha256": "36d7917b5644cd2d841b8626ab53fa3e2ec1ffe59d804d645c2f41196374ce1e"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-repair-4-verification.md",
+        "sha256": "85f1bb866060dc6ed446dce56a8e7f96ab2366849e7f982cd548ae0142921e37"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-source-lock.json",
+        "sha256": "29facd9ea623685795131202281afb8fa6cf9ee33676b930096ebc235f1c5098"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-verification.md",
+        "sha256": "60c31b8d6a1768ba660001c159c1854368167f394bb081d8d46710fcd82a22ee"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-causal-red.md",
+        "sha256": "2fb5625c60d17e89699f86f169fa2661be23ce17f136ab4283d1caf7f6d5262c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-closure-contract.md",
+        "sha256": "d43ea00569669effa642a3cb8e80ee5e0f5957fedb5799f7e3cceb964c6ffc11"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-contract-repair-1.md",
+        "sha256": "b7281445dc10e9b8c26850b6c329f68fe152e727eaeb09044a7bee38794de7f2"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-contract-repair-2.md",
+        "sha256": "277befe1c672714a6b19d31bdfff2d4244a0ee445689fed2786f873292cb82e5"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-contract-repair-3.md",
+        "sha256": "fa0522c61267fdfe9c2c10ff300c7c58c9b798536a2822454d473d7a1b1d9a23"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-contract-repair-review-1.md",
+        "sha256": "6b39a0e31cc72b69d2e1177be5f4c4de6db7f396362a216e2e5976bea599189f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-contract-repair-review-2.md",
+        "sha256": "ba828b2f9d52839d6ca02ebe6a81a4d66e89213fbd46ffd7f24eeac3fa34aeef"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-acceptance-time-terminal-contract-review-1.md",
+        "sha256": "8ad39aa99ea6617c491d90a7ab78b76736f43e4532b65ea962d9ce6c8b2d3bf9"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-live-construction-failure-diagnosis.md",
+        "sha256": "69f5220068f941080e2938935b06936a0cae516f18b094b421586a1009b5551b"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-observer-pi-live-manifest.json",
+        "sha256": "4c8240e787c85ceb53bf5aeee957874d3040748f25ed2fbf30e8bb62d07e44ea"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-observer-pi-live-result.md",
+        "sha256": "f6c0450bc9b64cc92370513c7f24967fc10b6ebada80c18625312c1ee614995c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-closure-contract.md",
+        "sha256": "4d98c0b8b179ee1244d06fa45e21fe14441d045a192204843fbd4b1b5cc8c57b"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-contract-review.md",
+        "sha256": "93acd9295ac94b4bf7545224dafd0b6f0a7c759d9cf63338ee1af14ef0903fb2"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-implementation-rereview-2.md",
+        "sha256": "d3016148742d49122f08bc2c58470666e229b4d70c44a480e1d38b7c29a5b76c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-implementation-rereview-3.md",
+        "sha256": "ba128d9d3ab0d7347eee00ab1e601877159c80ad688923ff48de60ded4946961"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-implementation-review-1.md",
+        "sha256": "3c204be243bf08340fa80a028c35708180478caef5077a829d41adbe6e46fce2"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-live-preflight.md",
+        "sha256": "0cda9d0f52c9f7546194039c12c119a95f080a02b51dfabc449372d5da2b1fa1"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-live-result-lock.json",
+        "sha256": "64e5c53dd3010892a1e4942a9abc16d369840043690737031bd64d6f2967ed94"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-live-result-review.md",
+        "sha256": "4b7fd47018fa65a1db0b6ad8c4c0d147158913356ef4c73472a4623a882809aa"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-red.md",
+        "sha256": "4f4035a7d45e1fcf71511a622732abcfba121fad7e83db1b489768697c94d584"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-repair-1-red.md",
+        "sha256": "2e7adea45c27016ac63d372205f2643746bf9d5b22e2039b6f324c97495ce0e5"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-repair-1-source-lock.json",
+        "sha256": "7e315b3c8c6e9a3921a03e868ad3e23344126c2aab7ad88c31e1958f3d357954"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-repair-2-red.md",
+        "sha256": "6667dc81c5356262fba61fe61cb7bb2e8b4c2f320cd294383daaeadc069cf1bd"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-repair-2-source-lock.json",
+        "sha256": "9ddf62b829760fa4c0b10f2488f40b008dc423ecee1cbea906e77292419430a8"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-source-lock.json",
+        "sha256": "c63641f0d5204113cca074e40308a136b65477f0760dc1f140178893bea5a195"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-verification.md",
+        "sha256": "c611787a8aeb0211f7d24c7c84d8abbc0adc50df783c98b54d3d6e18d943bad1"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-minimax-live-manifest.json",
+        "sha256": "f9d220345fa578dee316d5e30cc39178540a28941796e4cb342a018790b031d5"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-minimax-live-result.md",
+        "sha256": "693cf50a688b7fa64a7a8f0ac6cf8bbc4433a543373954069cc3ea0f4efd4953"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/candidate-progress.md",
+        "sha256": "6cc2c3c2326c66ce9f54b569abc61f7239d9fbed37340f30f29e1ef98208abb8"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/codex-native-auth-live-manifest.json",
+        "sha256": "38ec546bb46e6153f7e4e4b3c74f71747faf8538f31563cbe33666705a2a6ba1"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/codex-native-auth-live-result-review.md",
+        "sha256": "9bdbcd06f597bd02f07861016d2cf53757512668a8f3cd889be3f050ae7a5569"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/codex-native-auth-live-result.md",
+        "sha256": "4d219db40daeeef6a7ed8e8f94718b167d78cfa3066036d51d2a848ad451b223"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-codex-replacement-manifest.json",
+        "sha256": "7f00efcf01f20c70f1aec5a9cda6e14e7581afd791a2d361c3b44596a7df5e87"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-codex-replacement-result.md",
+        "sha256": "ec5a76d757e0c5b3afd23375e2fd2b6f61bcdf92b5d794edf9fc2db81c33cd18"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-contract-rereview-2.md",
+        "sha256": "6bf8254c2818e27261ab0717f1082c9bf63b6b70f1b55729ee60b26f6ca9ade4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-contract-review-1.md",
+        "sha256": "602e39751ef1a0cd161ad5dbe1d242efd45cf590781ad7a8d2722f16c4eb37a6"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-implementation-review-1.md",
+        "sha256": "0adfce67e3b4a9be7b7de838ac37a51d0de3b0353aa232b125a3b96fc2407015"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-implementation-review-2.md",
+        "sha256": "d02fa95180f162084b4b183acd252393165085876070f6e9f50ccf717fab5ecb"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-implementation-review-3.md",
+        "sha256": "47b6ef043ccf9d40349fd085482e914d16f05f90c9555f8c028d931547d9c3b6"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-implementation-review-4.md",
+        "sha256": "27c57555d7821e3a79a670e993fd2ef5c2b931aae87189d228eaa1472d9a9fc7"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-red.md",
+        "sha256": "5c0bbb1d2d56a10def73f62df267b658638052e6cfc48ab69d9b24dbe0d21de3"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-reopen-contract.md",
+        "sha256": "8e7d77ef06c9867799d5dd759db6c826d77a76a7a2960b17ad55ba35946d5f75"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-source-lock.json",
+        "sha256": "904b1ceec6b1cd11d27498382b221c734180e0817eff8b31360d98d0b3160ccd"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-compatibility-verification.md",
+        "sha256": "c7f5119c9d2b9d53d82bc7846e68ad2e4a23ad049c88d70dcbf52899e8af74fb"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-failure-diagnosis.md",
+        "sha256": "98a279da6924db8871d220a9faeed4e2972ca99be708347cf9e9d1b720380d70"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-minimax-replacement-manifest.json",
+        "sha256": "244b6e043359f86057c1bd000731264227df83a2d3a569c0e3b935cccdad5b45"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-minimax-replacement-result.md",
+        "sha256": "5d198e860b26485f401dbf6e21c355b747eeabc7c568e378859d91589814e703"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-pi-replacement-manifest.json",
+        "sha256": "f62114519efcfbe4a35d68be177d527ecbce980114e61f7aa220c3bb20068861"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-pi-replacement-result.md",
+        "sha256": "3f36c3340b482edd1d8f889d8bcee0033c3f9cb1d1ef849e393d35db2340115b"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-replacement-result-lock.json",
+        "sha256": "42f71716993d279fe96255812bfd309045cf099e5440d9ea1487500513d5e267"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/complete-live-replacement-result-review.md",
+        "sha256": "0a3ae9473ec76b76fefa7bb714aa14fe77bb78cf58d87eed336255f1efae5691"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/contract-repair-1-review.md",
+        "sha256": "dfe111b245889bc2bdbf62fc6c5832bd47f2d1ddddea2f535bc05cc83a7df154"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/contract-review-1.md",
+        "sha256": "fc5a2fff8e6353e4f297e52930ca617dec3b5cf6c61f22e41d8dc99f8f4fe6be"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/contract.md",
+        "sha256": "80d947440c4f3d03e6922cd35a32cdf603dd446347423bb80f9c3fe383baca86"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/exit-gap-matrix.md",
+        "sha256": "fb811482c2c9e6a2a78c327fbc8da5742456b9009ea13d3aa1a87885b354b340"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-contract-repair-1-review.md",
+        "sha256": "2ce3de3f993c0a0f74d4491869152894e94ad1c49edca447835158603b7581f8"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-contract-repair-1.md",
+        "sha256": "dc69f189553f7b55b4b62bc229293fae115cecccac635d3e3012feec1b55e457"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-contract-repair-2-review.md",
+        "sha256": "529945526f5281f129f260f432c6fbc9c961809b626b2cf380600347f8eb4e57"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-contract-repair-2.md",
+        "sha256": "726e63e644399d72debb03a2418345a1b5bd8e690b29eecc2e5dab964acb25bd"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-contract-review-1.md",
+        "sha256": "9b01351d9fa4be3c3cf00460174f43fdfb8cc457def7457801f8f40ffb2f9dd0"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-contract.md",
+        "sha256": "65aaf00a69d223fc8fe98532dbf5b83fb85eb5067ead8e7593621043e6ff222f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-focused-verification.md",
+        "sha256": "7f473e92141e16205056060b428354d3b7fd54f459632cbd1984d2a27d427119"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-implementation-review-1.md",
+        "sha256": "45428501d1c7adcddcba0826528c4bc69b04e6dc6afbf4b9e4a74d6976d844c3"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-red.md",
+        "sha256": "6b0a0831d51814e6dbe340b003e2dc3e0512482e346d9aa78aaba0e6258b6c08"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-source-lock.json",
+        "sha256": "96c4f6a06ba244b897be9e982f895994069201bd6c8702d9e014b677bf95ee28"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-test-proof-diagnosis-1.md",
+        "sha256": "60e8e851c4cfb21d527e8226dad5140936923392a9c440c3b756bd8dda0f69bc"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-test-proof-repair-1-implementation-rereview.md",
+        "sha256": "92d89911143a8c5f63ed6d4ca72cec9c14ae4fe386472340fd766cda060a2f0f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-test-proof-repair-1-source-lock.json",
+        "sha256": "6d258b302c800b7d484ec1e20771e77a3543ff18d55ab84d43102b06047b83cb"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-test-proof-repair-1-verification.md",
+        "sha256": "0d8ec30713d6d71fa5a3bd9c7c4478a33117d22519e9779114542a0d6347b11c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-test-proof-repair-1.md",
+        "sha256": "f872c7eae7ed6202ed74d674a7ffb2da3c76bbd516f39e0c4c7366aba695605f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-native-timeline-pagination-repair-7-verification.md",
+        "sha256": "665db32097d6f79048d2f79fa65b71d4ac952e3a2997aeb369b0a260f9cd06b1"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-incomplete-timeline-repair-6-implementation-rereview.md",
+        "sha256": "e80c6f05efbd258c45a54b0f5a0cc4678eb45d428c67769ca62f1724c229ac6f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-incomplete-timeline-repair-6-red.md",
+        "sha256": "3e529b6fe5cc88231f81fc3435de06f2807b555a4cf74c9d0092e10541fb37c9"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-incomplete-timeline-repair-6-source-lock.json",
+        "sha256": "09b2b47988fd63fabf498885116dd077cf33f980263c331fc725d77b1b0aed3a"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-incomplete-timeline-repair-6-verification.md",
+        "sha256": "7477827332a1a59aa9ee20094ca8cd53381871aefbd8ba03ab0eb74acc1574b5"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair-2-implementation-review.md",
+        "sha256": "33f5b34d1a2e0129cfe4e0c21fbdf07abf97d8ca6f9de5ca6c0e5a31f9edb62f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair-2-red.md",
+        "sha256": "6248ad4787770ad0e53e761557c29c54acb10b5df7d6e4aaae7f76cb2aac7385"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair-implementation-review-1.md",
+        "sha256": "4c68a825965c4ddd0464177a9474b7e8b4e2b0303220524ff32b0940156e22ba"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair-red.md",
+        "sha256": "0e1a906c0d7a7943f7d809f5ebdbd3c15aaff0258297041ec73715f51d3cb2db"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair-source-lock.json",
+        "sha256": "1ff211a96030f904b3f292315ed16fed7850f354921808eb1ada3e9baff15cd5"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair-verification.md",
+        "sha256": "52336c336d2368724e8e3fa50284eded68f067a0db3718913e249da368a0d9f6"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-navigation-repair.md",
+        "sha256": "042f64b2440e9a86140a31cb7d9acd18ad20812014c5050a8f93a09ced3c14de"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root003-result.md",
+        "sha256": "5c133c9858f8446c557c857ac960a1574097e0eb41f8f8a51c81f2deabdd7245"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root004-result.md",
+        "sha256": "6f905c80be5c91eea7d9e0ea036904bc59994f6b5f481eb8769026c5254c24af"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root005-result-lock.json",
+        "sha256": "0b41df886439d1229f062ebc25740b0b6a1596ec7eeb59e4dc349400b41b6b1b"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root005-result.md",
+        "sha256": "265cff12de277002b19d21f517863ff4f1b42cc86a4747939ca75c60bf685e5d"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root006-manifest.json",
+        "sha256": "93debdf1cb4219c85f3424ddeabffaea44c35b8461c3a8fad69678723272c03d"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root006-preflight.md",
+        "sha256": "e1ed1b8b0cdd74f4c3df3933c2b2d259a964b8ec233fe99f29eef020b9b5eca8"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root006-result-lock.json",
+        "sha256": "deec99bfc4addeaefcde30e4d28d8987bc124528147fedf00a6453633dc1459f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root006-result-review.md",
+        "sha256": "c75712a19fc58dcd1a3ccceffb0a1c27cd04538c3ef40639cdd68f65714afb72"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-root006-result.md",
+        "sha256": "933273c8d47ac7d3f0ade7a767e5bb8ad9fec9b3d82675fae65569bf8fc9eed9"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-2-implementation-review.md",
+        "sha256": "538ef37e83037d40a344083ec7070c5a6ffc94a3e0605bad04d6b7ac9912203b"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-2-red.md",
+        "sha256": "ee8527298163302cc742b38be2057662c82720cfb718757ac387ee8f39c147bd"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-2-source-lock.json",
+        "sha256": "5f64b9ae6853d413abdaf5449827e4a51eaf5b59c35185dea4c9ec3f58a6682f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-2-verification.md",
+        "sha256": "fe6018f3ba0a2195ef6d6063b1e52b82693d1241f541816ae50697d71e1edc34"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-3-implementation-review.md",
+        "sha256": "4ad6286b72dbc068e3654c6b7c850b22b03369f5d44d3d6c37f3be60a01d866d"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-3-red.md",
+        "sha256": "57214122b4d98065b253adf3eec2180a354263326c9bd6769e66796e80c090e3"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-3-source-lock.json",
+        "sha256": "3673ec26fa2804bc8e1b7c9ac983c3f7c1b6dc53cd646fce283c8a611d3d3c34"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-3-verification.md",
+        "sha256": "d0abc2e2c2c60949fba971d4b080649cc6fcc6acfbc6200129f4880a8fe36d4c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-implementation-review-1.md",
+        "sha256": "184c9e4381f287a7ae7df24442482944a84253d69e357c878cddbaced22d17e7"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-red.md",
+        "sha256": "595917ac1fd2a0f355b897e37071204f11729276ea6e85ff5d82fb84adc62fc6"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-source-lock.json",
+        "sha256": "fd24cca53906e13e7e246a164ae887aef32bc40e7f813d25692678282f34b40c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair-verification.md",
+        "sha256": "09b10dac9ff23c31b4fa63e6906dace779b05752a5f502b65a666681e0642136"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-safe-name-repair.md",
+        "sha256": "2bb9cb7343d035d32637e3b73c603d88e636601d0462a17c0cbd72cbb7d70df7"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-inspector-repair-5-implementation-rereview-1.md",
+        "sha256": "fa938a6b05789f162276cefc453b712c58997775c5185650fa8180a9feb81eb9"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-inspector-repair-5-red.md",
+        "sha256": "745b2b6d28095df4bf81bb9d3caf56c97b8c8b17f3d8ecdacc7a5275c29fbbbc"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-inspector-repair-5-source-lock.json",
+        "sha256": "89f35da1b7ae074ff8456383a1c35c740c65735a717c7a1bbe3def8ae9cf8cda"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-inspector-repair-5-verification.md",
+        "sha256": "c7cf7ae453a0713405d96a02f8f51e9aee561c77d8608d81d5c0afa08da80a88"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-lineage-repair-implementation-review-1.md",
+        "sha256": "eea08c65ccd3f8dc7b3b65d78d92719101a2cd010af4297cbc4cf2f70b2decd0"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-lineage-repair-red.md",
+        "sha256": "efa198f480ee09983963b87c32fb083a123b6a0b5089c95f5d1ea8d8d62902ce"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-lineage-repair-source-lock.json",
+        "sha256": "e889ad4d9f4a5e41a6a967281889b86859d7c9569421aa7bb993ebc01cea636a"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-walkthrough-timeline-lineage-repair-verification.md",
+        "sha256": "1a51d2196fcfaefd561913feaa549a0fdc8f1897c94daa048bfbaffc93458596"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/final-whole-candidate-review-1.md",
+        "sha256": "cdab202745a12ef3f268a461036fd7e8dc3fda49bdadb1bddd8c48bef1968036"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/implementation-review-1.md",
+        "sha256": "69d7e11708a8f211eb8e1eb402f1d7cd123f2fdbf1bae7817c2268074b562418"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/implementation-review-2.md",
+        "sha256": "89e7fc9caea0530296c915d461d49afd621346eb880912788309daeff6bf3d1a"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/implementation-review-3.md",
+        "sha256": "5644048c4727c43254a09505d2c8901065b0a1633710644f24f824558ec5c6df"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/implementation-review-4.md",
+        "sha256": "eba43885f1b8e0ab5ca7c8b27592475e12ee482e3bfc33e9eaa343a2c8156053"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/live-precondition-audit.md",
+        "sha256": "d719748ddaf811e9729eb5bf750a2b762f1968603ab664975d63e1c03c790025"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/minimax-verification-live-manifest.json",
+        "sha256": "a96860080c32c91e21bd399165a956d2164646a98ebff0e6ec52c307b5d20d36"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/minimax-verification-live-result.md",
+        "sha256": "bb928d748a62cc45a51cae6f2cec26ceeec9be38b4b4b05029e73b6c10cc785f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-closure-contract.md",
+        "sha256": "4493858a9be2411ba6cac1594df7bfdc0e4e7be062f5ec528b7c3746c7d30b18"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-contract-review.md",
+        "sha256": "0d1e62500f97fbaa99e869ec37affeaeef9b75621db297cd4c843937d82286d5"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-implementation-rereview-2.md",
+        "sha256": "fa524c201f97a1629dc03f25c047f718e4ed3f724b0c82b64dcc20cbc09d99eb"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-implementation-review-1.md",
+        "sha256": "5b38553e911cb2d124e64ff5a7fbe00308fba1a94a17de3f2fc89bfb33e4c7b4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-red.md",
+        "sha256": "9cc338f1a88da81299a41b99f8209f9404a9d6968117744ab3bebbf7c49bc2db"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-repair-red.md",
+        "sha256": "9ad52188f18449cc568588b9cadda2bc08785e34054bd0c37435e1d71b4db679"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-review-1-repair.md",
+        "sha256": "f822dcda8d89eb6d82874c8e1ab8b8f583bd57ab6d53099b80710e5ca46a7b39"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-source-lock.json",
+        "sha256": "f6bb68656cd70b2c9d75861bc5a77325ea488bd78dcfa49fc0c1cc41dd64d772"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-verification.md",
+        "sha256": "ef017fd8d7373c82c4f6bc44fd67c5432a6c88924438afe0d886ade69ef6df65"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-build-methodology-amendment-review.md",
+        "sha256": "f866bb2fa4691f3e74efe6d4067a9ade4b4878bbfb978c995b0066dad40a7eee"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-build-methodology-amendment.md",
+        "sha256": "78a57fdad99e97daa629db16910986be6570cc402f7ced894111123ae0be22bc"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-invocation-transaction-amendment-review.md",
+        "sha256": "a12484ed252f086bba353a215bf8877db092a112df5d6f89335cd227f2bd268f"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-invocation-transaction-amendment.md",
+        "sha256": "f1ab059b5cafd89a56267c9211794a84633827e1f2857069a9720504ddeb6a42"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-preflight.md",
+        "sha256": "0eced8e3505bc6e8284a7d7dfca63f35e4405fef62e7f6447cd2ba76d2edebed"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-result-lock.json",
+        "sha256": "0a66ec718634a5f809abbabf14ccf3cad65fa347625bfbc41ab4c9fc74f1fbdd"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-result-review.md",
+        "sha256": "1e60ec960ff52878f0cdcc280d219028d8ee0e1d369d11f5c6784802291ec422"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-minimax-live-manifest.json",
+        "sha256": "889350d951fd9f7b3285a5500df9ddb5d78a7b1cf5701934b5d0d17b778c75d4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-minimax-live-result.md",
+        "sha256": "e129ec8acc2b19b77af615a32c95634287cdaca632d4251eb5c5e9671c06dc33"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-live-manifest.json",
+        "sha256": "0b76124d920abdd2eac8fc9c1e1ce05e7c8f66547e074eefbabc0442ede0feaa"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-live-result.md",
+        "sha256": "144a21f250111bba1677ec948db3d4371a1936ef3ade059fbd547d270564a216"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-replacement-live-manifest.json",
+        "sha256": "6eb40813739faff661b3e93dfd7b5dea395bc11d903a0a118186494b479a4d92"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-replacement-live-preflight.md",
+        "sha256": "a1522d02aebfd1f8ea0d66cfe5c576299a439efa1543b2a273c566b241f85195"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-replacement-live-result.md",
+        "sha256": "8b8f53c1937664a9ad6c1e66f714bf8cb150a5cb1360c77a84d3ab845aaa952a"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-replacement-live-result-lock.json",
+        "sha256": "2182d602d742db674afb6f1628c8444a613e86b57746e0918f662e3860446f75"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-replacement-live-result-review.md",
+        "sha256": "65ed939fa5c76e74ca449479958884ef944cad5e5eed38c7f7dc2bb6e734cc01"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/pi-controlled-execution-live-manifest.json",
+        "sha256": "5657c07a0ca1d71862ce676a80c06e370bfa2d6c706cd41c5c7619cc99752bc1"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/pi-controlled-execution-live-result.md",
+        "sha256": "f71996caa062ebef05d70e2007b3dcfc3964981c60e71eb89b79e4edc049e520"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/pi-terminal-aggregation-time-diagnosis.md",
+        "sha256": "9b7056556e6da7b49828fffba2cee1c5f61340aa08922e695f6c3a7e8c8faca0"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/post-live-source-lock-reconciliation.md",
+        "sha256": "ee05b284ca0d800b06cd026cb9eb870a88fc33850b6e5788a6e9f677e0bee6e4"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/red.md",
+        "sha256": "2e608ba27d015238a054fe46d16e9ab46a6440095ff8908f3c37e0611612d370"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/remaining-live-manifest-budget-closure.md",
+        "sha256": "54eb630e22541138c673bcaf442c74111844f2df74053c5c832c96100b66eb44"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/remaining-live-result-review.md",
+        "sha256": "03c56e659421a616edd7b10adbe5150e07d24da730199881a8d4b38f1e09bc3c"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/retained-pi-six-fact-state.sqlite.gz.b64",
+        "sha256": "a091fafa218efef0f701894a49343df2775f744aaf5b058e2a8cc6505202a2c0"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/saved-team-dormant-capacity-amendment-contract-review.md",
+        "sha256": "7ea6e588bd0704e2fe541ddb34b007501b59159e5e55b20569a1782a00a1c216"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/saved-team-dormant-capacity-amendment-red.md",
+        "sha256": "8b5d9231332f52a415ddd5675bd4595d5b8e856399ca7cf6b0cbadeab9eaef92"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/saved-team-dormant-capacity-amendment-source-lock.json",
+        "sha256": "80564487039479e2fb0fbea3eb9682b557fb7f4a11b9d0e81823c0df3115f3cc"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/saved-team-dormant-capacity-amendment.md",
+        "sha256": "39824721399e2767fc7387202639e2829dcf0d1d65ee86b0bb9f71f806727e73"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/source-lock.json",
+        "sha256": "212eebc075879d993e5fc1782e885a2bb3ac1d88358eb0ae2ccaac9c5556cf23"
+      },
+      {
+        "path": ".loom-evidence/phase2a/P2A-W3/verification.md",
+        "sha256": "240d15ed13abf3ceb8ce77801c88768a7ec149d828c66dd63c59ae99773fe33c"
+      }
+    ]
+  },
+  "status_snapshot": {
+    "path": "docs/CURRENT.md",
+    "sha256": "0662d75ce678900019eb9fea4ac2f1cab34397636a1044a965339e6875b9e4e8"
+  },
+  "intentionally_excluded": [
+    {
+      "path": ".loom-evidence/phase1-final-live-gate/**",
+      "reason": "pre-existing Phase 1 evidence, outside P2A-W3"
+    },
+    {
+      "path": ".loom-evidence/phase1-slice3/POST-S3-W5-QUEUED-CONTRACT-INPUTS.md",
+      "reason": "queued roadmap input, outside P2A-W3"
+    },
+    {
+      "path": ".loom-evidence/plan-amendments/**",
+      "reason": "plan queue, outside P2A-W3"
+    },
+    {
+      "path": ".loom-drafts/**",
+      "reason": "user drafts and roadmap material, outside Candidate"
+    },
+    {
+      "path": ".codex/**",
+      "reason": "local Codex configuration and skills, outside Candidate"
+    },
+    {
+      "path": "AGENTS.md",
+      "reason": "pre-existing project instruction change, outside P2A-W3"
+    },
+    {
+      "path": "README.md",
+      "reason": "pre-existing documentation change, outside P2A-W3"
+    },
+    {
+      "path": "PROGRESS.md",
+      "reason": "pre-existing progress change, outside P2A-W3"
+    },
+    {
+      "path": "apps/macos/.build/**",
+      "reason": "generated build output"
+    },
+    {
+      "path": "/Users/lune/Library/Application Support/Loom/**",
+      "reason": "external consumed live and walkthrough roots, never committed"
+    }
+  ],
+  "non_recursive_artifacts": [
+    {
+      "path": ".loom-evidence/phase2a/P2A-W3/final-source-evidence-lock.json",
+      "reason": "this lock cannot hash itself"
+    },
+    {
+      "path": ".loom-evidence/phase2a/P2A-W3/final-whole-candidate-review-2.md",
+      "reason": "created only after independent review of this lock"
+    },
+    {
+      "path": "docs/CURRENT.md",
+      "reason": "may receive one final gate/commit status append after Review PASS; final staged hash must be inspected before commit"
+    }
+  ],
+  "gate_state": "ROOT006 RESULT REVIEW PASS; FINAL WHOLE-CANDIDATE REVIEW PENDING; NO LIVE; NO STAGE; NO COMMIT"
+}

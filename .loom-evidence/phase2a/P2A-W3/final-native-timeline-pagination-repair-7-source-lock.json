@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "repair": "Final Native Timeline Pagination Repair 7",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "contract_sha256": "65aaf00a69d223fc8fe98532dbf5b83fb85eb5067ead8e7593621043e6ff222f",
+  "contract_repair_1_sha256": "dc69f189553f7b55b4b62bc229293fae115cecccac635d3e3012feec1b55e457",
+  "contract_repair_2_sha256": "726e63e644399d72debb03a2418345a1b5bd8e690b29eecc2e5dab964acb25bd",
+  "contract_review_sha256": "529945526f5281f129f260f432c6fbc9c961809b626b2cf380600347f8eb4e57",
+  "source_combined_sha256": "8520c8ab66cb4b85a4a06710db684a5452d037582d21231699c47123d0a0d040",
+  "source_combined_method": "sha256 of LC_ALL=C lexically sorted sha256sum output lines",
+  "source_files": [
+    {
+      "path": "apps/macos/Sources/LoomLocalAppContractProbe/main.swift",
+      "sha256": "01ec7a6647b1ba8c4c37c9a0df3d82bf7d93a57f67f0ab3b5065a70b48de7049"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",
+      "sha256": "66e35f6156591e58243d6184824483e4e17a7bfd8354d411fdb3296e566200c3"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductModels.swift",
+      "sha256": "f6ac3fe1023cfa7eb0643d725b96b9242769a1afb0d0e963a6cfb36497fc6b5e"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift",
+      "sha256": "a9cd4e46827acd51d9b356edbe6c2c5d6197ca6a92e60d45ee356956d774f94f"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift",
+      "sha256": "13a158179518eb8e4220bb4e5ecea166dbef885368e94e3aa536a08253a53f40"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift",
+      "sha256": "d23fd36387567b4f478a241ee0e1268fc833ad35bc66fdb0472779bcbda46f9b"
+    },
+    {
+      "path": "cmd/loomd/product_daemon_test.go",
+      "sha256": "30b12b419aaee2758dcf64b1409e0cc8770074404698e899f04dda5d6cbb4bdf"
+    },
+    {
+      "path": "internal/localipc/swift_contract_test.go",
+      "sha256": "ab98654b2cec755989b59cdf6303c06b26f48cbc71d12042795e6ae7c12b2595"
+    }
+  ],
+  "excluded_paths": [
+    "AGENTS.md",
+    "README.md",
+    "PROGRESS.md",
+    ".loom-evidence/phase1-final-live-gate/**",
+    ".loom-evidence/phase1-slice3/**",
+    ".loom-evidence/plan-amendments/**",
+    ".codex/**",
+    ".loom-drafts/**",
+    "apps/macos/.build/**"
+  ]
+}

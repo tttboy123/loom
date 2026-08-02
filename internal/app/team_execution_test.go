@@ -33,10 +33,36 @@ import (
 )
 
 type teamCanaryClock struct {
-	now time.Time
+	mu   sync.Mutex
+	now  time.Time
+	step time.Duration
 }
 
-func (clock *teamCanaryClock) Now() time.Time { return clock.now }
+func (clock *teamCanaryClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	current := clock.now
+	clock.now = clock.now.Add(clock.step)
+	return current
+}
+
+func (clock *teamCanaryClock) Set(now time.Time) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.now = now
+}
+
+func (clock *teamCanaryClock) Current() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.now
+}
+
+func (clock *teamCanaryClock) SetStep(step time.Duration) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.step = step
+}
 
 type teamCanaryBarrier struct {
 	active    atomic.Int32
@@ -193,6 +219,7 @@ func TestTeamCoordinatorUsesDistinctIndependentVerifierLineage(t *testing.T) {
 			Instance:   template.Instance,
 			Executor:   verifierExecutor,
 		}
+	fixture.clock.SetStep(time.Millisecond)
 	result, err := fixture.coordinator.Run(
 		context.Background(),
 		fixture.request,
@@ -340,6 +367,7 @@ func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing
 			Instance:   template.Instance,
 			Executor:   verifierExecutor,
 		}
+	fixture.clock.SetStep(time.Millisecond)
 	result, err := fixture.coordinator.Run(
 		context.Background(),
 		fixture.request,
@@ -362,8 +390,16 @@ func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing
 		t.Fatal(err)
 	}
 	counts := make(map[string]int)
+	acceptanceTimes := make([]time.Time, 0, 2)
+	recoveryTimes := make([]time.Time, 0, 2)
 	for _, event := range events {
 		counts[event.Type]++
+		if event.Type == "TeamNodeAcceptanceCommitted" {
+			acceptanceTimes = append(acceptanceTimes, event.EmittedAt)
+		}
+		if event.Type == "TeamNodeRecoveryRecorded" {
+			recoveryTimes = append(recoveryTimes, event.EmittedAt)
+		}
 		if event.Type == "TeamNodeRecoveryRecorded" &&
 			(strings.Contains(
 				string(event.PayloadJSON),
@@ -381,6 +417,23 @@ func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing
 		counts["TeamNodeRecoveryRecorded"] != 2 ||
 		counts["TeamExecutionTerminal"] != 1 {
 		t.Fatalf("rejection Event counts = %v", counts)
+	}
+	if len(acceptanceTimes) != 2 || len(recoveryTimes) != 2 {
+		t.Fatalf(
+			"advancing recovery/acceptance times = %v/%v",
+			acceptanceTimes,
+			recoveryTimes,
+		)
+	}
+	for index := range acceptanceTimes {
+		if !recoveryTimes[index].After(acceptanceTimes[index]) {
+			t.Fatalf(
+				"recovery %d did not follow acceptance: %s/%s",
+				index,
+				acceptanceTimes[index],
+				recoveryTimes[index],
+			)
+		}
 	}
 }
 
@@ -580,8 +633,8 @@ func TestIndependentVerifierTerminalReceiptRestartsWithoutReexecution(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.clock.now = now.Add(2 * time.Minute)
-	fixture.request.AuthoritativeTime = fixture.clock.now
+	fixture.clock.Set(now.Add(2 * time.Minute))
+	fixture.request.AuthoritativeTime = fixture.clock.Current()
 	firstCandidate, firstReceipt, err :=
 		fixture.coordinator.runIndependentVerifier(
 			context.Background(),
@@ -998,7 +1051,7 @@ func TestTeamDAGExecutionControlledCanary(t *testing.T) {
 	}
 	retryAt := now.Add(time.Minute)
 	request.AuthoritativeTime = retryAt
-	clock.now = retryAt
+	clock.Set(retryAt)
 	result, err := coordinator.Run(ctx, request)
 	if err != nil {
 		t.Fatalf("recovery Run() error = %v", err)
@@ -1137,8 +1190,8 @@ func TestTeamCoordinatorRecoversDurableAttemptWindows(t *testing.T) {
 		fixture := newTeamRecoveryFixture(t)
 		tasks := fixture.dispatchAndPrepare(t)
 		oldGrantID := tasks[0].grant.Record().ID()
-		fixture.clock.now = fixture.clock.now.Add(2 * time.Minute)
-		fixture.request.AuthoritativeTime = fixture.clock.now
+		fixture.clock.Set(fixture.clock.Current().Add(2 * time.Minute))
+		fixture.request.AuthoritativeTime = fixture.clock.Current()
 		result, err := fixture.coordinator.Run(
 			context.Background(),
 			fixture.request,
@@ -1307,8 +1360,8 @@ func TestTeamCoordinatorRecoversDurableAttemptWindows(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			fixture := newTeamRecoveryFixture(t)
 			tasks := fixture.dispatchAndPrepare(t)
-			fixture.clock.now = fixture.clock.now.Add(2 * time.Minute)
-			fixture.request.AuthoritativeTime = fixture.clock.now
+			fixture.clock.Set(fixture.clock.Current().Add(2 * time.Minute))
+			fixture.request.AuthoritativeTime = fixture.clock.Current()
 			if _, err := fixture.grants.Revoke(
 				context.Background(),
 				authorization.RevokeInput{
@@ -1446,8 +1499,8 @@ func TestTeamCoordinatorClassifiesAllowedAndTransientEmptyOutput(t *testing.T) {
 			len(first.ExecutedNodeIDs()) != 1 {
 			t.Fatalf("transient first Run() = %#v, %v", first, err)
 		}
-		retryAt := fixture.clock.now.Add(time.Minute)
-		fixture.clock.now = retryAt
+		retryAt := fixture.clock.Current().Add(time.Minute)
+		fixture.clock.Set(retryAt)
 		fixture.request.AuthoritativeTime = retryAt
 		second, err := fixture.coordinator.Run(
 			context.Background(),
@@ -1587,8 +1640,8 @@ func TestTeamCoordinatorRefreshesProjectionBeforeAuthorizedObservation(t *testin
 			expectedGeneration: 2,
 		}
 		fixture.request.OutputObserver = observer
-		fixture.clock.now = fixture.clock.now.Add(2 * time.Minute)
-		fixture.request.AuthoritativeTime = fixture.clock.now
+		fixture.clock.Set(fixture.clock.Current().Add(2 * time.Minute))
+		fixture.request.AuthoritativeTime = fixture.clock.Current()
 		result, err := fixture.coordinator.Run(
 			context.Background(),
 			fixture.request,

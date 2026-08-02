@@ -9,11 +9,79 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
 )
+
+// ResolveCodexNativeExecutable converts a supported launcher into the exact
+// regular native executable whose identity the auth runners will fence.
+func ResolveCodexNativeExecutable(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	if !filepath.IsAbs(cleaned) || cleaned != path {
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	info, err := os.Lstat(cleaned)
+	if err != nil {
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	if info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+		return cleaned, nil
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	wrapper, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	wrapper = filepath.Clean(wrapper)
+	wrapperInfo, err := os.Lstat(wrapper)
+	if err != nil || !wrapperInfo.Mode().IsRegular() || wrapperInfo.Mode()&0o111 == 0 ||
+		filepath.Base(wrapper) != "codex.js" {
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	packageRoot := filepath.Dir(filepath.Dir(wrapper))
+	if filepath.Base(packageRoot) != "codex" ||
+		filepath.Base(filepath.Dir(packageRoot)) != "@openai" {
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	triple, platformPackage := "", ""
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "darwin/arm64":
+		triple, platformPackage = "aarch64-apple-darwin", "codex-darwin-arm64"
+	case "darwin/amd64":
+		triple, platformPackage = "x86_64-apple-darwin", "codex-darwin-x64"
+	default:
+		return "", ErrInvalidCodexNativeAuthConfig
+	}
+	candidates := []string{
+		filepath.Join(packageRoot, "node_modules", "@openai", platformPackage, "vendor", triple, "bin", "codex"),
+		filepath.Join(packageRoot, "vendor", triple, "bin", "codex"),
+	}
+	for _, candidate := range candidates {
+		candidateInfo, candidateErr := os.Lstat(candidate)
+		if candidateErr != nil || !candidateInfo.Mode().IsRegular() || candidateInfo.Mode()&0o111 == 0 {
+			continue
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(candidate)
+		if resolveErr != nil {
+			continue
+		}
+		resolved = filepath.Clean(resolved)
+		resolvedInfo, statErr := os.Lstat(resolved)
+		relative, relativeErr := filepath.Rel(packageRoot, resolved)
+		if statErr == nil && relativeErr == nil && relative != ".." &&
+			!strings.HasPrefix(relative, ".."+string(filepath.Separator)) && filepath.IsAbs(resolved) &&
+			resolvedInfo.Mode().IsRegular() && resolvedInfo.Mode()&0o111 != 0 {
+			return resolved, nil
+		}
+	}
+	return "", ErrInvalidCodexNativeAuthConfig
+}
 
 var (
 	ErrInvalidCodexNativeAuthConfig   = errors.New("invalid Codex native auth configuration")

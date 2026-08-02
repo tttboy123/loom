@@ -74,7 +74,7 @@ func TestBuildSavedTeamRuntimeBinding(t *testing.T) {
 	}
 }
 
-func TestBuildSavedTeamRuntimeBindingCardinalityResolutionAndReorder(t *testing.T) {
+func TestBuildSavedTeamRuntimeBindingCardinalityDormantCapacityResolutionAndReorder(t *testing.T) {
 	definitions, profiles, baseInput := teamDefinitionFixture()
 	for _, roleCount := range []int{1, 2, 3} {
 		t.Run(string(rune('0'+roleCount))+"_roles", func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestBuildSavedTeamRuntimeBindingCardinalityResolutionAndReorder(t *testing.
 				{AgentDefinitionID: "agent.sub.two", RuntimeInstanceID: "runtime.shared"},
 			}
 			selections = selections[:roleCount]
-			discovery := savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, roleCount, []string{"model.test"})
+			discovery := savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, 1, []string{"model.test"})
 			got, err := BuildSavedTeamRuntimeBinding(
 				[]TeamDefinition{team}, input.ID, input.ScopeIdentity,
 				definitions, profiles, discovery, selections,
@@ -98,6 +98,25 @@ func TestBuildSavedTeamRuntimeBindingCardinalityResolutionAndReorder(t *testing.
 			}
 			if got.RoleCount() != roleCount || len(got.SubAgentBindings()) != roleCount-1 {
 				t.Fatalf("cardinality Candidate = %#v", got)
+			}
+			if got.MainBinding().Kind != TeamDefinitionRoleMain {
+				t.Fatalf("MainBinding().Kind = %q", got.MainBinding().Kind)
+			}
+			for _, subAgent := range got.SubAgentBindings() {
+				if subAgent.Kind != TeamDefinitionRoleSubAgent ||
+					subAgent.RuntimeInstanceID != "runtime.shared" {
+					t.Fatalf("dormant SubAgent binding = %#v", subAgent)
+				}
+			}
+			validated, err := ValidateSavedTeamRuntimeBinding(
+				got, []TeamDefinition{team}, input.ID, input.ScopeIdentity,
+				definitions, profiles, discovery, selections,
+			)
+			if err != nil || !validated.Valid || validated.RoleCount != roleCount {
+				t.Fatalf("ValidateSavedTeamRuntimeBinding() = (%#v,%v)", validated, err)
+			}
+			if discovery.Observations()[0].Instance.Capacity != 1 {
+				t.Fatal("binding mutated or reserved Runtime capacity")
 			}
 		})
 	}
@@ -164,7 +183,6 @@ func TestBuildSavedTeamRuntimeBindingFailures(t *testing.T) {
 		{name: "adapter mismatch", discovery: savedTeamBindingDiscoveryMutated(t, func(instance *loomruntime.RuntimeInstance) { instance.AdapterType = "other" }), selections: savedTeamBindingSelections(), profiles: profiles, want: loomruntime.ErrAdapterMismatch},
 		{name: "capability missing", discovery: savedTeamBindingDiscoveryMutated(t, func(instance *loomruntime.RuntimeInstance) { instance.ObservedCapabilities = nil }), selections: savedTeamBindingSelections(), profiles: profiles, want: loomruntime.ErrMissingCapability},
 		{name: "invalid profile", discovery: validDiscovery, selections: savedTeamBindingSelections(), profiles: mutateSavedTeamProfiles(profiles, func(profile *loomruntime.RuntimeProfile) { profile.ID = "" }), want: ErrInvalidTeamDefinitionCatalog},
-		{name: "capacity", discovery: savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, 2, []string{"model.test"}), selections: savedTeamBindingSelections(), profiles: profiles, want: ErrSavedTeamRuntimeCapacityExceeded},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -243,7 +261,7 @@ func TestValidateSavedTeamRuntimeBindingFailures(t *testing.T) {
 		{name: "digest", got: tampered, discovery: discovery, selections: selections, want: ErrSavedTeamRuntimeBindingDigestMismatch},
 		{name: "changed selections", got: valid, discovery: discovery, selections: selections[:2], want: ErrIncompleteSavedTeamRuntimeSelection},
 		{name: "changed discovery", got: valid, discovery: savedTeamBindingDiscoveryWithID(t, "runtime.other", 3), selections: selections, want: ErrSavedTeamRuntimeInstanceNotFound},
-		{name: "capacity source", got: valid, discovery: savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, 2, []string{"model.test"}), selections: selections, want: ErrSavedTeamRuntimeCapacityExceeded},
+		{name: "capacity source", got: valid, discovery: savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, 2, []string{"model.test"}), selections: selections, want: ErrSavedTeamRuntimeBindingSourceMismatch},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			candidate, err := ValidateSavedTeamRuntimeBinding(

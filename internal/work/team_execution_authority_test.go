@@ -19,6 +19,49 @@ import (
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
 
+type testRecoveryPolicyPort struct {
+	policy rules.RecoveryPolicy
+}
+
+func (port testRecoveryPolicyPort) Valid() bool    { return port.policy.Valid() }
+func (port testRecoveryPolicyPort) Version() int   { return port.policy.Version() }
+func (port testRecoveryPolicyPort) Digest() string { return port.policy.Digest() }
+func (port testRecoveryPolicyPort) AttemptCredits() int {
+	return port.policy.AttemptCredits()
+}
+func (port testRecoveryPolicyPort) RetryDelay() time.Duration {
+	return port.policy.RetryDelay()
+}
+func (port testRecoveryPolicyPort) RecoveryApprovalRequired() bool {
+	return port.policy.RecoveryApprovalRequired()
+}
+func (port testRecoveryPolicyPort) Decide(
+	request TeamRecoveryDecisionRequest,
+) (TeamRecoveryDecision, error) {
+	return rules.DecideRecovery(
+		port.policy,
+		rules.RecoveryInput{
+			TeamInstanceID:           request.TeamInstanceID,
+			PlanDigest:               request.PlanDigest,
+			LogicalNodeID:            request.LogicalNodeID,
+			AttemptNumber:            request.AttemptNumber,
+			MaxAttempts:              request.MaxAttempts,
+			AgentInstanceID:          request.AgentInstanceID,
+			RuntimeInstanceID:        request.RuntimeInstanceID,
+			EvidenceID:               request.EvidenceID,
+			EvidenceDigest:           request.EvidenceDigest,
+			OutputSummaryDigest:      request.OutputSummaryDigest,
+			Classification:           request.Classification,
+			PriorClassifications:     request.PriorClassifications,
+			RemainingCredits:         request.RemainingCredits,
+			FallbackConsumed:         request.FallbackConsumed,
+			DecisionTime:             request.DecisionTime,
+			Trigger:                  rules.RecoveryTrigger(request.Trigger),
+			AcceptanceDecisionDigest: request.AcceptanceDecisionDigest,
+		},
+	)
+}
+
 func TestTeamDispatchCASHasOneWinnerAndIndependentAttemptLineage(t *testing.T) {
 	store := openAuthorityStore(t)
 	clock := &mutableClock{now: testNow}
@@ -295,18 +338,17 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 		team.Nodes()[0].Status() != "awaiting_recovery" {
 		t.Fatalf("failed attempt state = %#v", team.Nodes())
 	}
-	retryAt := testNow.Add(time.Minute)
-	firstDecision := testTeamRecoveryDecision(
+	recoveryAuthorityTime := testNow.Add(30 * time.Second)
+	retryAt := recoveryAuthorityTime.Add(time.Minute)
+	recoveryInput := testTeamRecoveryInput(
 		t,
 		plan,
 		team,
 		firstClassification,
 		testNow,
 	)
-	recoveryInput := TeamRecoveryInput{
-		Decision:      firstDecision,
-		CorrelationID: testCorrelation,
-	}
+	clock.Set(recoveryAuthorityTime)
+	recoveryInput.Decision = nil
 	var recoveryWait sync.WaitGroup
 	recoveryWait.Add(2)
 	recoveryResults := make(chan error, 2)
@@ -385,7 +427,7 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 		t.Fatalf("dispatch before retry_at error = %v", err)
 	}
 
-	clock.now = retryAt
+	clock.Set(retryAt)
 	retryInput := dispatchInput(2, retryAt)
 	var wait sync.WaitGroup
 	wait.Add(2)
@@ -424,19 +466,17 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 	if team.Nodes()[0].Status() != "awaiting_recovery" {
 		t.Fatalf("second failed attempt = %#v", team.Nodes()[0])
 	}
-	secondDecision := testTeamRecoveryDecision(
+	secondRecovery := testTeamRecoveryInput(
 		t,
 		plan,
 		team,
 		secondClassification,
 		retryAt,
 	)
+	clock.Set(retryAt.Add(30 * time.Second))
 	team, err = authority.ScheduleTeamNodeRecovery(
 		context.Background(),
-		TeamRecoveryInput{
-			Decision:      secondDecision,
-			CorrelationID: testCorrelation,
-		},
+		secondRecovery,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -446,12 +486,10 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 		len(team.Nodes()[0].Attempts()) != 2 {
 		t.Fatalf("bounded recovery terminal = %#v", team)
 	}
+	clock.Set(retryAt.Add(time.Minute))
 	if _, err := authority.ScheduleTeamNodeRecovery(
 		context.Background(),
-		TeamRecoveryInput{
-			Decision:      secondDecision,
-			CorrelationID: testCorrelation,
-		},
+		secondRecovery,
 	); err != nil {
 		t.Fatalf("exact terminal recovery retry error = %v", err)
 	}
@@ -502,16 +540,13 @@ func TestTeamTerminalRecoveryIsTerminalOnceAndExactRetryIsIdempotent(t *testing.
 		"failed",
 		"f",
 	)
-	recovery := TeamRecoveryInput{
-		Decision: testTeamRecoveryDecision(
-			t,
-			plan,
-			failedTeam,
-			classification,
-			testNow,
-		),
-		CorrelationID: testCorrelation,
-	}
+	recovery := testTeamRecoveryInput(
+		t,
+		plan,
+		failedTeam,
+		classification,
+		testNow,
+	)
 	team, err := authority.ScheduleTeamNodeRecovery(
 		context.Background(),
 		recovery,
@@ -586,6 +621,350 @@ func TestTeamTerminalRecoveryIsTerminalOnceAndExactRetryIsIdempotent(t *testing.
 		conflict,
 	); !errors.Is(err, ErrTeamExecutionConflict) {
 		t.Fatalf("conflicting recovery retry error = %v", err)
+	}
+}
+
+func TestTeamRecoveryExactReplayRejectsMissingScheduledAttempt(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x82)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-partial-retry",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := dispatchTeamAttemptForTest(
+		t,
+		store,
+		authority,
+		plan,
+		1,
+		testNow,
+	)
+	failedTeam, classification := commitTeamAttemptTerminalForTest(
+		t,
+		authority,
+		plan,
+		dispatched,
+		1,
+		"failed",
+		"partial-retry",
+	)
+	recovery := testTeamRecoveryInput(
+		t,
+		plan,
+		failedTeam,
+		classification,
+		testNow,
+	)
+	if recovery.Decision.ActionValue() != "retry" {
+		t.Fatalf("recovery action = %q", recovery.Decision.ActionValue())
+	}
+	appendRecoveryEventWithoutDownstreamForTest(
+		t,
+		store,
+		failedTeam,
+		recovery,
+	)
+
+	clock.Set(testNow.Add(time.Hour))
+	if _, err := authority.ScheduleTeamNodeRecovery(
+		context.Background(),
+		recovery,
+	); !errors.Is(err, ErrTeamExecutionConflict) {
+		t.Fatalf("partial retry replay error = %v, want conflict", err)
+	}
+}
+
+func TestTeamRecoveryExactReplayRejectsMissingTeamTerminal(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x83)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-partial-terminal",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := dispatchTeamAttemptForTest(
+		t,
+		store,
+		authority,
+		plan,
+		1,
+		testNow,
+	)
+	failedTeam, classification := commitTeamAttemptTerminalForTest(
+		t,
+		authority,
+		plan,
+		dispatched,
+		1,
+		"failed",
+		"partial-terminal",
+	)
+	recovery := testTeamRecoveryInput(
+		t,
+		plan,
+		failedTeam,
+		classification,
+		testNow,
+	)
+	if recovery.Decision.ActionValue() != "blocked" {
+		t.Fatalf("recovery action = %q", recovery.Decision.ActionValue())
+	}
+	appendRecoveryEventWithoutDownstreamForTest(
+		t,
+		store,
+		failedTeam,
+		recovery,
+	)
+
+	clock.Set(testNow.Add(time.Hour))
+	if _, err := authority.ScheduleTeamNodeRecovery(
+		context.Background(),
+		recovery,
+	); !errors.Is(err, ErrTeamExecutionConflict) {
+		t.Fatalf("partial terminal replay error = %v, want conflict", err)
+	}
+}
+
+func TestTeamRecoveryExactReplayRejectsMismatchedDownstreamFact(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x84)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-mismatched-retry",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := dispatchTeamAttemptForTest(
+		t,
+		store,
+		authority,
+		plan,
+		1,
+		testNow,
+	)
+	failedTeam, classification := commitTeamAttemptTerminalForTest(
+		t,
+		authority,
+		plan,
+		dispatched,
+		1,
+		"failed",
+		"mismatched-retry",
+	)
+	recovery := testTeamRecoveryInput(
+		t,
+		plan,
+		failedTeam,
+		classification,
+		testNow,
+	)
+	transaction, err := buildTeamRecoveryTransaction(
+		failedTeam,
+		recovery,
+		recovery.Decision,
+	)
+	if err != nil || len(transaction) != 2 {
+		t.Fatalf("recovery transaction = %#v, %v", transaction, err)
+	}
+	transaction[1].CausationID = "mismatched-recovery-causation"
+	if _, err := store.AppendBatchIfStreamHeads(
+		context.Background(),
+		[]journal.StreamHeadExpectation{{
+			StreamID: teamExecutionStream(plan.TeamInstanceID()),
+			Sequence: failedTeam.streamSequence,
+		}},
+		transaction,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Set(testNow.Add(time.Hour))
+	if _, err := authority.ScheduleTeamNodeRecovery(
+		context.Background(),
+		recovery,
+	); !errors.Is(err, ErrTeamExecutionConflict) {
+		t.Fatalf("mismatched retry replay error = %v, want conflict", err)
+	}
+}
+
+func TestTeamRecoveryExactReplayRejectsDuplicateScheduledAttempt(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x85)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-duplicate-retry",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := dispatchTeamAttemptForTest(
+		t,
+		store,
+		authority,
+		plan,
+		1,
+		testNow,
+	)
+	failedTeam, classification := commitTeamAttemptTerminalForTest(
+		t,
+		authority,
+		plan,
+		dispatched,
+		1,
+		"failed",
+		"duplicate-retry",
+	)
+	recovery := testTeamRecoveryInput(
+		t,
+		plan,
+		failedTeam,
+		classification,
+		testNow,
+	)
+	transaction, err := buildTeamRecoveryTransaction(
+		failedTeam,
+		recovery,
+		recovery.Decision,
+	)
+	if err != nil || len(transaction) != 2 {
+		t.Fatalf("recovery transaction = %#v, %v", transaction, err)
+	}
+	duplicate := transaction[1]
+	duplicate.ID = deterministicEventID(
+		"DuplicateTeamNodeAttemptScheduled",
+		plan.TeamInstanceID(),
+		"main",
+		"2",
+	)
+	duplicate.IdempotencyKey = duplicate.ID
+	duplicate.Seq++
+	duplicate.CausationID = transaction[1].ID
+	transaction = append(transaction, duplicate)
+	if _, err := store.AppendBatchIfStreamHeads(
+		context.Background(),
+		[]journal.StreamHeadExpectation{{
+			StreamID: teamExecutionStream(plan.TeamInstanceID()),
+			Sequence: failedTeam.streamSequence,
+		}},
+		transaction,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Set(testNow.Add(time.Hour))
+	if _, err := authority.ScheduleTeamNodeRecovery(
+		context.Background(),
+		recovery,
+	); !errors.Is(err, ErrTeamExecutionConflict) {
+		t.Fatalf("duplicate retry replay error = %v, want conflict", err)
+	}
+}
+
+func TestTeamRecoveryExactReplayRejectsDuplicateTeamTerminal(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x86)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-duplicate-terminal",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := dispatchTeamAttemptForTest(
+		t,
+		store,
+		authority,
+		plan,
+		1,
+		testNow,
+	)
+	failedTeam, classification := commitTeamAttemptTerminalForTest(
+		t,
+		authority,
+		plan,
+		dispatched,
+		1,
+		"failed",
+		"duplicate-terminal",
+	)
+	recovery := testTeamRecoveryInput(
+		t,
+		plan,
+		failedTeam,
+		classification,
+		testNow,
+	)
+	transaction, err := buildTeamRecoveryTransaction(
+		failedTeam,
+		recovery,
+		recovery.Decision,
+	)
+	if err != nil || len(transaction) != 2 {
+		t.Fatalf("recovery transaction = %#v, %v", transaction, err)
+	}
+	duplicate := transaction[1]
+	duplicate.ID = deterministicEventID(
+		"DuplicateTeamExecutionTerminal",
+		plan.TeamInstanceID(),
+		plan.Digest(),
+	)
+	duplicate.IdempotencyKey = duplicate.ID
+	duplicate.Seq++
+	duplicate.CausationID = transaction[1].ID
+	transaction = append(transaction, duplicate)
+	if _, err := store.AppendBatchIfStreamHeads(
+		context.Background(),
+		[]journal.StreamHeadExpectation{{
+			StreamID: teamExecutionStream(plan.TeamInstanceID()),
+			Sequence: failedTeam.streamSequence,
+		}},
+		transaction,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Set(testNow.Add(time.Hour))
+	if _, err := authority.ScheduleTeamNodeRecovery(
+		context.Background(),
+		recovery,
+	); !errors.Is(err, ErrTeamExecutionConflict) {
+		t.Fatalf("duplicate terminal replay error = %v, want conflict", err)
 	}
 }
 
@@ -1282,13 +1661,13 @@ func testTeamAttemptFrame(
 	return frame
 }
 
-func testTeamRecoveryDecision(
+func testTeamRecoveryInput(
 	t testing.TB,
 	plan teams.ExecutionPlan,
 	team TeamExecutionRecord,
 	classification verification.Classification,
 	decisionTime time.Time,
-) rules.RecoveryDecision {
+) TeamRecoveryInput {
 	t.Helper()
 	node := teamNodeByID(&team, "main")
 	if node == nil {
@@ -1336,5 +1715,85 @@ func testTeamRecoveryDecision(
 	if err != nil {
 		t.Fatal(err)
 	}
-	return decision
+	return TeamRecoveryInput{
+		TeamInstanceID:      plan.TeamInstanceID(),
+		PlanDigest:          plan.Digest(),
+		LogicalNodeID:       node.logicalNodeID,
+		AttemptNumber:       node.currentAttempt,
+		MaxAttempts:         node.maxAttempts,
+		AgentInstanceID:     attempt.agentInstanceID,
+		RuntimeInstanceID:   attempt.runtimeInstanceID,
+		EvidenceID:          classification.EvidenceID(),
+		EvidenceDigest:      classification.EvidenceDigest(),
+		OutputSummaryDigest: classification.SummaryDigest(),
+		Classification:      classification,
+		RecoveryPolicy:      testRecoveryPolicyPort{policy: policy},
+		Decision:            decision,
+		CorrelationID:       testCorrelation,
+	}
+}
+
+func appendRecoveryEventWithoutDownstreamForTest(
+	t testing.TB,
+	store *journal.Store,
+	team TeamExecutionRecord,
+	input TeamRecoveryInput,
+) {
+	t.Helper()
+	decision := input.Decision
+	if decision == nil || !decision.Valid() {
+		t.Fatal("missing valid recovery decision")
+	}
+	prior := decision.PriorClassificationValues()
+	streamID := teamExecutionStream(input.TeamInstanceID)
+	recoveryID := deterministicEventID(
+		"TeamNodeRecoveryRecorded",
+		decision.TeamInstanceID(),
+		decision.LogicalNodeID(),
+		fmt.Sprint(decision.AttemptNumber()),
+		decision.Digest(),
+	)
+	event := newEvent(
+		recoveryID,
+		streamID,
+		team.streamSequence+1,
+		"TeamNodeRecoveryRecorded",
+		decision.DecisionTime(),
+		input.CorrelationID,
+		team.lastEventID,
+		teamRecoveryPayload{
+			LogicalNodeID:          decision.LogicalNodeID(),
+			AttemptNumber:          decision.AttemptNumber(),
+			Action:                 decision.ActionValue(),
+			DecisionTime:           decision.DecisionTime().Format(time.RFC3339Nano),
+			RetryAt:                formatOptionalUTC(decision.RetryAt()),
+			NextAttemptNumber:      decision.NextAttemptNumber(),
+			NextAgentInstanceID:    decision.NextAgentInstanceID(),
+			NextRuntimeInstanceID:  decision.NextRuntimeInstanceID(),
+			WorkflowFallbackKey:    decision.WorkflowFallbackKey(),
+			RecoveryPolicyVersion:  decision.PolicyVersion(),
+			RecoveryPolicyDigest:   decision.PolicyDigest(),
+			RecoveryDecisionDigest: decision.Digest(),
+			ClassificationDigest:   decision.ClassificationDigest(),
+			PriorClassifications:   prior,
+			CreditsBefore:          decision.CreditsBefore(),
+			CreditsAfter:           decision.CreditsAfter(),
+			FallbackConsumed: decision.FallbackConsumed() ||
+				decision.ActionValue() == "fallback",
+			RecoveryApprovalRequired: decision.RecoveryApprovalRequired(),
+			DependencySatisfied:      decision.ActionValue() == "degraded",
+			RecoveryTrigger:          decision.TriggerValue(),
+			AcceptanceDecisionDigest: decision.AcceptanceDecisionDigest(),
+		},
+	)
+	if _, err := store.AppendBatchIfStreamHeads(
+		context.Background(),
+		[]journal.StreamHeadExpectation{{
+			StreamID: streamID,
+			Sequence: team.streamSequence,
+		}},
+		[]journal.Event{event},
+	); err != nil {
+		t.Fatal(err)
+	}
 }

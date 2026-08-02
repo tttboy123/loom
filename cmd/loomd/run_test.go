@@ -9,7 +9,41 @@ import (
 	"testing"
 
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/runtime/piadapter"
 )
+
+func TestMissionExecutionConfigFromDaemonBuildPreservesExactRuntimeBinding(
+	t *testing.T,
+) {
+	searchPaths := []string{"/opt/pi-a", "/opt/pi-b"}
+	catalog := &piadapter.PiLocalModelCatalogConfig{
+		PrivateRoot:    "/private/model",
+		ExecutablePath: "/private/model/llama-server",
+		ModelPath:      "/private/model/model.gguf",
+	}
+	config := missionExecutionConfigFromDaemonBuild(daemonBuildConfig{
+		Observer: app.LocalRuntimeObservationDaemonConfig{
+			RuntimeSearchPaths: searchPaths,
+			RuntimeInstanceID:  "runtime-1",
+			LocalModelCatalog:  catalog,
+		},
+	})
+	if config == nil || config.RuntimeInstanceID != "runtime-1" ||
+		!reflect.DeepEqual(config.RuntimeSearchPaths, searchPaths) ||
+		config.LocalModelCatalog == nil ||
+		*config.LocalModelCatalog != *catalog {
+		t.Fatalf("execution config = %#v", config)
+	}
+	searchPaths[0] = "/changed"
+	catalog.ModelPath = "/changed"
+	if config.RuntimeSearchPaths[0] != "/opt/pi-a" ||
+		config.LocalModelCatalog.ModelPath != "/private/model/model.gguf" {
+		t.Fatalf("execution config aliases daemon input = %#v", config)
+	}
+	if empty := missionExecutionConfigFromDaemonBuild(daemonBuildConfig{}); empty != nil {
+		t.Fatalf("empty execution config = %#v", empty)
+	}
+}
 
 func TestRunParsesExplicitConfigurationAndWritesDeterministicJSON(t *testing.T) {
 	var captured app.LocalRuntimeObservationDaemonConfig
@@ -260,6 +294,44 @@ func TestRunWritesClosedDaemonFailureReasonCodes(t *testing.T) {
 	}
 }
 
+func TestRunFreezesCompleteObserverFailureReasonAllowlist(t *testing.T) {
+	allowed := []string{
+		"observer_probe_factory",
+		"observer_probe_candidate",
+		"observer_probe_construction",
+		"observer_metadata_binding",
+		"observer_version_process",
+		"observer_version_timeout",
+		"observer_version_output_limit",
+		"observer_version_stderr",
+		"observer_version_output",
+		"observer_models_process",
+		"observer_models_timeout",
+		"observer_models_output_limit",
+		"observer_models_stderr",
+		"observer_models_output",
+		"observer_models_duplicate",
+		"observer_inventory",
+		"observer_projection",
+		"observer_plan",
+		"observer_identity_metadata",
+		"observer_write",
+		"observer_unknown",
+	}
+	for _, reason := range allowed {
+		if !validObserverFailureReason(reason) {
+			t.Errorf("reason %q rejected", reason)
+		}
+	}
+	for _, reason := range []string{
+		"", "observer", "observer_private", "observer_write\nprivate",
+	} {
+		if validObserverFailureReason(reason) {
+			t.Errorf("unsafe reason %q accepted", reason)
+		}
+	}
+}
+
 func TestRunClassifiesResultEncodingWithoutDisclosingWriterError(
 	t *testing.T,
 ) {
@@ -362,5 +434,62 @@ func completeDaemonArgs() []string {
 		"--display-name", "Local Pi",
 		"--interval", "1s",
 		"--process-timeout", "2s",
+	}
+}
+
+func TestRunPublishesSafeBuildFailureReason(t *testing.T) {
+	for _, reason := range []string{
+		"build_observer", "build_state", "build_setup_runtime",
+		"build_setup_credential", "build_setup_provider",
+		"build_setup_native_auth", "build_decision", "build_execution",
+		"build_ipc", "build_unknown",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := run(
+				context.Background(), completeDaemonArgs(), &bytes.Buffer{}, &stderr,
+				func(daemonBuildConfig) (daemonRunner, error) {
+					return nil, newDaemonBuildFailure(reason, errors.New("/private/path"))
+				},
+			)
+			if code != exitUnavailable {
+				t.Fatalf("code = %d", code)
+			}
+			if got, want := stderr.String(), "daemon unavailable: "+reason+"\n"; got != want {
+				t.Fatalf("stderr = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRunBuildFailureAmbiguityFailsClosed(t *testing.T) {
+	var stderr bytes.Buffer
+	code := run(
+		context.Background(), completeDaemonArgs(), &bytes.Buffer{}, &stderr,
+		func(daemonBuildConfig) (daemonRunner, error) {
+			return nil, errors.Join(
+				newDaemonBuildFailure("build_state", errors.New("private state")),
+				newDaemonBuildFailure("build_ipc", errors.New("private socket")),
+			)
+		},
+	)
+	if code != exitUnavailable {
+		t.Fatalf("code = %d", code)
+	}
+	if got := stderr.String(); got != "daemon unavailable: build_unknown\n" {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestDaemonBuildFailureNestedAmbiguityFailsClosed(t *testing.T) {
+	err := newDaemonBuildFailure(
+		"build_decision",
+		newDaemonBuildFailure(
+			"build_setup_native_auth",
+			errors.New("private native auth path"),
+		),
+	)
+	if got := daemonBuildFailureReason(err); got != "build_unknown" {
+		t.Fatalf("reason = %q, want build_unknown", got)
 	}
 }

@@ -49,6 +49,7 @@ func TestLocalProductMissionFacadeUsesRealProjectionAndPreservesStaleView(
 	mission := snapshot.Missions[0]
 	if mission.MissionID != "mission/team-instance.one" ||
 		mission.TeamInstanceID != "team-instance.one" ||
+		mission.Title != "Saved team" ||
 		mission.Lane != MissionLaneProposed ||
 		mission.Status != "planned" ||
 		mission.PlanDigest != strings.Repeat("a", 64) ||
@@ -56,6 +57,13 @@ func TestLocalProductMissionFacadeUsesRealProjectionAndPreservesStaleView(
 		!mission.Simple ||
 		len(mission.TeamPulse) != 1 {
 		t.Fatalf("mission = %#v", mission)
+	}
+	for _, internalID := range []string{
+		mission.MissionID, mission.TeamInstanceID, "team.delivery",
+	} {
+		if strings.Contains(mission.Title, internalID) {
+			t.Fatalf("Mission title exposed internal ID %q: %#v", internalID, mission)
+		}
 	}
 	pulse := mission.TeamPulse[0]
 	if pulse.AgentInstanceID != "agent-instance.main" ||

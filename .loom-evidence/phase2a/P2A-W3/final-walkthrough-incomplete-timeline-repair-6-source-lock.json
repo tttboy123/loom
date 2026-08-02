@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "boundary": "final-walkthrough-incomplete-timeline-repair-6",
+  "date": "2026-08-03",
+  "files": [
+    {
+      "path": "internal/api/team_execution_stream.go",
+      "sha256": "0933f46c916563e18bdfdea729de3084d97e2f526acaa6ae457e4a8348a10343"
+    },
+    {
+      "path": "internal/api/team_execution_stream_test.go",
+      "sha256": "da8359f0809a7ca8e300b006f7673e44d56d78d615ba1ff42668abb3a69a0a76"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+      "sha256": "1f9103a66b0fa67dbd6fa1103fdeff261da17c61284060f69cf0dfd907172059"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift",
+      "sha256": "3a25af14e4fee8551bf42b38b2016464dbc00064fcb44a2a46528d1c98a8484e"
+    }
+  ],
+  "combined_sha256": "473b4b454fa02b6f63c0b4d33c356862b60d8c91b819b935000ce80b6a3ab1e2",
+  "walkthrough_root": "root004-consumed-diagnostic-only",
+  "next_gate": "fresh-independent-implementation-rereview"
+}

@@ -78,6 +78,33 @@ final class MissionOrchestrationTests: XCTestCase {
         )
     }
 
+    func testWorkspaceRailRoutesAreRealAndPreserveMissionContinuity() {
+        var workspace = MissionWorkspaceState()
+        workspace.mergeMissions([
+            MissionListItem(
+                id: "mission/team-1",
+                title: "Ship reviewed change",
+                lane: .complete,
+                status: "succeeded"
+            ),
+        ])
+        workspace.openMission("mission/team-1")
+        workspace.updateComposerDraft("Preserve this draft")
+
+        workspace.showTeams()
+        XCTAssertEqual(workspace.route, .teams)
+        workspace.showAttention()
+        XCTAssertEqual(workspace.route, .attention)
+        workspace.showLibrary()
+        XCTAssertEqual(workspace.route, .library)
+        workspace.openMission("mission/team-1")
+
+        XCTAssertEqual(
+            workspace.selectedContinuity.composerDraft,
+            "Preserve this draft"
+        )
+    }
+
     static let snapshotJSON = """
     {
       "schema_version":2,

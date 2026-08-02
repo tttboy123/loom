@@ -9,6 +9,7 @@ final class LocalIPCClientTests: XCTestCase {
             try Self.makeClientBackedByPrivateSocket()
 
         XCTAssertNotNil(client as? LocalProductDecisionClientProtocol)
+        XCTAssertNotNil(client as? LocalProductExecutionClientProtocol)
     }
 
     func testFrameUsesFourByteBigEndianLength() throws {
@@ -98,9 +99,47 @@ final class LocalIPCClientTests: XCTestCase {
         XCTAssertFalse(LocalIPCWire.validRequestID("request/1"))
     }
 
+    func testTimelineCursorUsesCanonicalRawURLBoundaryNotBusinessIdentifierLimit() {
+        let longCanonical = Data(repeating: 0x61, count: 1_024)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+
+        XCTAssertGreaterThan(longCanonical.utf8.count, 256)
+        XCTAssertTrue(LocalIPCClient.validTimelineCursor(""))
+        XCTAssertTrue(LocalIPCClient.validTimelineCursor(longCanonical))
+        XCTAssertFalse(LocalIPCClient.validIdentifier(longCanonical))
+    }
+
+    func testTimelineCursorRejectsNoncanonicalAndOversizedRawURL() {
+        let nonzeroTrailingBits = "AB"
+        let invalidModulus = "A"
+        let oversized = String(repeating: "A", count: 32_769)
+        for invalid in [
+            nonzeroTrailingBits,
+            invalidModulus,
+            "YQ==",
+            "Y Q",
+            "YQ\n",
+            "réel",
+            oversized,
+        ] {
+            XCTAssertFalse(
+                LocalIPCClient.validTimelineCursor(invalid),
+                invalid.debugDescription
+            )
+        }
+        XCTAssertTrue(LocalIPCClient.validTimelineCursor("YQ"))
+    }
+
     func testCredentialVerifyAloneReceivesExtendedRequestTimeout() {
         XCTAssertEqual(
             LocalIPCClient.requestTimeoutSeconds(for: "credential_verify"),
+            10
+        )
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "mission_execution"),
             10
         )
         for method in [

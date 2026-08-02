@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "canary": "native_launcher_pi_controlled_execution_replacement",
+  "attempt_id": "phase2a-w3-live-20260802-pi-005",
+  "status": "frozen_unconsumed",
+  "one_shot": true,
+  "hidden_retry": false,
+  "claim": "one exact saved-Team Pi preflight and explicit controlled DAG execution through the repaired npm Codex launcher construction, Supervisor, Grant, authorized Frames and Evidence",
+  "source": {
+    "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+    "closure_source_lock_sha256": "f6bb68656cd70b2c9d75861bc5a77325ea488bd78dcfa49fc0c1cc41dd64d772",
+    "implementation_review_sha256": "fa524c201f97a1629dc03f25c047f718e4ed3f724b0c82b64dcc20cbc09d99eb",
+    "implementation_review_verdict": "PASS",
+    "invocation_amendment_sha256": "f1ab059b5cafd89a56267c9211794a84633827e1f2857069a9720504ddeb6a42",
+    "invocation_amendment_review_sha256": "a12484ed252f086bba353a215bf8877db092a112df5d6f89335cd227f2bd268f",
+    "invocation_amendment_review_verdict": "PASS"
+  },
+  "attempt": {
+    "root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005",
+    "state_path": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/state/loom.db",
+    "initial_state_source": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-004/state/loom.db",
+    "initial_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+    "initial_fact_count": 6,
+    "isolation_root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/isolation",
+    "socket_path": "/Users/lune/Library/Application Support/Loom/run/loomd.sock",
+    "root_mode": "0700",
+    "state_mode": "0600",
+    "manifest_mode": "0600"
+  },
+  "artifacts": {
+    "loomd": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/bin/loomd",
+    "loomd_sha256": "e48d898485ecd23aa6e8c8f30c80cc6f7094365e460b800b1713d667164a8d0e",
+    "loom": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/bin/loom",
+    "loom_sha256": "e756a7ed80550995ee57122f5e2d8dd4ac6a0bef20b61dc2f878e8effe3ab5d5",
+    "native_app": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/native/Loom.app",
+    "native_executable_sha256": "f998eabe5320eb24b3f9668222aa08a28c803cf18ef861536d0fca529e2f01b8",
+    "bundle_id": "com.earendilworks.loom.local",
+    "architecture": "arm64",
+    "lc_uuid": "C63B9C7D-B0C7-3AB3-A2F4-7C86B8B89DE2"
+  },
+  "runtime": {
+    "probe_id": "p2a-w3-pi-probe",
+    "instance_id": "pi-0.82.1-p2a-w3-pi",
+    "device_id": "local-mac-p2a-w3",
+    "display_name": "Pi 0.82.1 P2A-W3 Execution Canary",
+    "pi_search_path": "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/.bin",
+    "node_search_path": "/Users/lune/Documents/Codex/devtools/node/bin",
+    "codex_executable": "/Users/lune/Documents/Codex/devtools/npm/bin/codex",
+    "local_model_private_root": "/Users/lune/Library/Application Support/Loom/phase1-live",
+    "local_model_executable": "/Users/lune/Library/Application Support/Loom/phase1-live/runtime/llama-b10107/llama-server",
+    "local_model_path": "/Users/lune/Library/Application Support/Loom/phase1-live/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+  },
+  "external_hashes": {
+    "pi_target_sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca",
+    "node_sha256": "1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8",
+    "codex_wrapper_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+    "codex_native_sha256": "29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a",
+    "local_model_executable_sha256": "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b",
+    "local_model_sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
+  },
+  "invocation": {
+    "executable": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/bin/loomd",
+    "daemon_args_count": 32,
+    "first_arg": "--state",
+    "positional_args": 0,
+    "canonical_jq": "jq -cS --arg executable $EXACT_LOOMD '{executable:$executable,args:.daemon_args}' manifest.json",
+    "canonical_invocation_sha256": "d91c670f9e0be2695e26c6175a34acb44d2c60e92d92d62bc55fde386a115a65"
+  },
+  "daemon_args": [
+    "--state", "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/state/loom.db",
+    "--isolation-root", "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-005/isolation",
+    "--runtime-dir", "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/.bin",
+    "--runtime-dir", "/Users/lune/Documents/Codex/devtools/node/bin",
+    "--probe-id", "p2a-w3-pi-probe",
+    "--instance-id", "pi-0.82.1-p2a-w3-pi",
+    "--device-id", "local-mac-p2a-w3",
+    "--display-name", "Pi 0.82.1 P2A-W3 Execution Canary",
+    "--interval", "1h",
+    "--process-timeout", "30s",
+    "--max-cycles", "0",
+    "--socket", "/Users/lune/Library/Application Support/Loom/run/loomd.sock",
+    "--codex-executable", "/Users/lune/Documents/Codex/devtools/npm/bin/codex",
+    "--local-model-private-root", "/Users/lune/Library/Application Support/Loom/phase1-live",
+    "--local-model-executable", "/Users/lune/Library/Application Support/Loom/phase1-live/runtime/llama-b10107/llama-server",
+    "--local-model-path", "/Users/lune/Library/Application Support/Loom/phase1-live/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+  ],
+  "limits": {
+    "binary_invocations": 1,
+    "daemon_starts": 1,
+    "mission_preflights": 1,
+    "mission_starts": 1,
+    "provider_requests": 0,
+    "deadline_seconds": 600,
+    "retry": false,
+    "compaction": false
+  },
+  "required_terminal": {
+    "team_execution_planned": 1,
+    "ready_set_dispatched": 1,
+    "runs": 2,
+    "grants": 2,
+    "evidence": 2,
+    "team_terminal": 1,
+    "reconnect_writes": 0
+  },
+  "resident_exclusion": "pre-existing demo-resident observer remains untouched",
+  "live_consumed": false
+}

@@ -15,12 +15,14 @@ import (
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/work"
 )
 
 type Screen string
 
 const (
 	ScreenBoard       Screen = "Board"
+	ScreenNewMission  Screen = "New Mission"
 	ScreenMission     Screen = "Mission"
 	ScreenHome        Screen = "Home"
 	ScreenRuntimes    Screen = "Runtimes"
@@ -35,9 +37,11 @@ const (
 
 var screens = []Screen{
 	ScreenBoard,
+	ScreenNewMission,
 	ScreenMission,
 	ScreenTeamBuilder,
 	ScreenRuns,
+	ScreenCompare,
 	ScreenAttention,
 	ScreenTimeline,
 }
@@ -97,6 +101,13 @@ type SetupClient interface {
 	) (app.CredentialSetupResult, error)
 }
 
+type ExecutionClient interface {
+	ExecuteMission(
+		context.Context,
+		app.MissionExecutionCommand,
+	) (api.MissionExecutionEnvelope, error)
+}
+
 type DaemonReadClient struct {
 	client *localipc.Client
 }
@@ -124,6 +135,15 @@ func (client *DaemonReadClient) TimelinePage(
 	var page api.LocalProductTimelinePage
 	err := client.client.Call(ctx, "timeline_page", request, &page)
 	return page, err
+}
+
+func (client *DaemonReadClient) ExecuteMission(
+	ctx context.Context,
+	command app.MissionExecutionCommand,
+) (api.MissionExecutionEnvelope, error) {
+	var envelope api.MissionExecutionEnvelope
+	err := client.client.Call(ctx, "mission_execution", command, &envelope)
+	return envelope, err
 }
 
 func (client *DaemonReadClient) SetupSnapshot(
@@ -286,44 +306,64 @@ type credentialUpdatedMsg struct {
 	result app.CredentialSetupResult
 }
 
+type missionPreflightedMsg struct {
+	preflight app.MissionExecutionPreflight
+}
+
+type missionStartedMsg struct {
+	result app.MissionExecutionResult
+}
+
+type missionExecutionFailedMsg struct {
+	err error
+}
+
 const (
-	entryBuilderAnswer  = "builder_answer"
-	entryEditName       = "edit_name"
-	entryEditPurpose    = "edit_purpose"
-	entryCredentialPut  = "credential_put"
-	entryCredentialSwap = "credential_swap"
-	entryTaskSearch     = "task_search"
+	entryBuilderAnswer    = "builder_answer"
+	entryEditName         = "edit_name"
+	entryEditPurpose      = "edit_purpose"
+	entryCredentialPut    = "credential_put"
+	entryCredentialSwap   = "credential_swap"
+	entryTaskSearch       = "task_search"
+	entryMissionObjective = "mission_objective"
 )
 
 type Model struct {
-	client      ReadClient
-	setupClient SetupClient
-	ctx         context.Context
-	cancel      context.CancelFunc
+	client          ReadClient
+	setupClient     SetupClient
+	executionClient ExecutionClient
+	ctx             context.Context
+	cancel          context.CancelFunc
 
-	screenIndex      int
-	selections       [16]int
-	width            int
-	height           int
-	selected         int
-	help             bool
-	loading          bool
-	offline          bool
-	lastError        string
-	snapshot         api.LocalProductSnapshot
-	timeline         api.LocalProductTimelinePage
-	setup            app.SetupSnapshot
-	builder          app.BuilderSessionView
-	confirmation     app.BuilderConfirmation
-	credential       app.CredentialSetupResult
-	entryMode        string
-	entry            []byte
-	compareRuns      []string
-	currentTeam      string
-	currentMission   string
-	decisionOpen     bool
-	taskFilter       string
-	navigationPrefix bool
+	screenIndex         int
+	selections          [16]int
+	width               int
+	height              int
+	selected            int
+	help                bool
+	loading             bool
+	offline             bool
+	lastError           string
+	snapshot            api.LocalProductSnapshot
+	timeline            api.LocalProductTimelinePage
+	setup               app.SetupSnapshot
+	builder             app.BuilderSessionView
+	confirmation        app.BuilderConfirmation
+	credential          app.CredentialSetupResult
+	entryMode           string
+	entry               []byte
+	compareRuns         []string
+	currentTeam         string
+	currentMission      string
+	missionID           string
+	missionObjective    string
+	missionTeamIndex    int
+	missionPackageIndex int
+	missionPreflight    app.MissionExecutionPreflight
+	missionResult       app.MissionExecutionResult
+	decisionOpen        bool
+	taskFilter          string
+	navigationPrefix    bool
 }
 
 func NewModel(client ReadClient) (Model, error) {
@@ -342,14 +382,16 @@ func newModelWithContext(
 	}
 	ctx, cancel := context.WithCancel(parent)
 	setupClient, _ := client.(SetupClient)
+	executionClient, _ := client.(ExecutionClient)
 	return Model{
-		client:      client,
-		setupClient: setupClient,
-		ctx:         ctx,
-		cancel:      cancel,
-		width:       80,
-		height:      24,
-		loading:     true,
+		client:          client,
+		setupClient:     setupClient,
+		executionClient: executionClient,
+		ctx:             ctx,
+		cancel:          cancel,
+		width:           80,
+		height:          24,
+		loading:         true,
 	}, nil
 }
 
@@ -368,6 +410,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.offline = false
 		model.lastError = ""
 		model.snapshot = cloneSnapshot(message.snapshot)
+		if model.missionPreflight.PreflightDigest != "" &&
+			model.missionPreflight.ViewVersion != model.snapshot.ViewVersion {
+			model.missionPreflight = app.MissionExecutionPreflight{}
+			model.missionResult = app.MissionExecutionResult{}
+			model.lastError = "preflight_expired"
+		}
 		if model.currentMission != "" {
 			if _, ok := model.currentMissionRecord(); !ok {
 				model.currentMission = ""
@@ -434,6 +482,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.lastError = ""
 		model.confirmation = message.confirmation
 		model.builder = app.BuilderSessionView{}
+		if message.confirmation.TeamInstanceCreated {
+			return model, tea.Batch(model.loadSetup(), model.loadSnapshot())
+		}
 		return model, model.loadSetup()
 	case teamStatusUpdatedMsg:
 		model.loading = false
@@ -446,6 +497,29 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.lastError = ""
 		model.credential = message.result
 		return model, model.loadSetup()
+	case missionPreflightedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.missionPreflight = message.preflight
+		model.missionResult = app.MissionExecutionResult{}
+		return model, nil
+	case missionStartedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.missionResult = message.result
+		model.currentMission = message.result.MissionID
+		model.currentTeam = message.result.TeamInstanceID
+		return model, model.loadSnapshot()
+	case missionExecutionFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
 	case setupFailedMsg:
 		model.loading = false
 		model.offline = errors.Is(
@@ -550,6 +624,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenMission ||
 				model.Screen() == ScreenTimeline {
 				model.switchScreen(indexOfScreen(ScreenBoard))
+			} else if model.Screen() == ScreenNewMission {
+				model.resetMissionDraft()
+				model.switchScreen(indexOfScreen(ScreenBoard))
 			} else if model.Screen() == ScreenTeamBuilder {
 				clearTUIBytes(model.entry)
 				model.entry = nil
@@ -560,9 +637,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if model.Screen() == ScreenBoard {
 				if model.selected == 0 {
-					model.switchScreen(indexOfScreen(ScreenTeamBuilder))
-					model.loading = true
-					return model, model.loadSetup()
+					model.resetMissionDraft()
+					model.switchScreen(indexOfScreen(ScreenNewMission))
+					return model, nil
 				}
 				if mission, ok := model.selectedMission(); ok {
 					model.currentTeam = mission.TeamInstanceID
@@ -574,6 +651,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 						"",
 					)
 				}
+			}
+			if model.Screen() == ScreenNewMission {
+				model.entryMode = entryMissionObjective
+				model.entry = []byte(model.missionObjective)
+				return model, nil
 			}
 			if model.Screen() == ScreenTeamBuilder {
 				if model.builder.Question.ID != "" {
@@ -630,6 +712,13 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "c":
+			if model.Screen() == ScreenMission {
+				if _, ok := model.currentMissionCancelBinding(); ok {
+					model.loading = true
+					return model, model.cancelMission()
+				}
+				return model, nil
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.builder.CanConfirm {
 				model.loading = true
@@ -665,6 +754,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "p":
+			if model.Screen() == ScreenNewMission &&
+				model.canPreflightMission() {
+				model.loading = true
+				return model, model.preflightMission()
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.builder.CanConfirm {
 				model.entryMode = entryEditPurpose
@@ -681,6 +775,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "s":
+			if model.Screen() == ScreenNewMission &&
+				model.missionPreflight.PreflightDigest != "" {
+				model.loading = true
+				return model, model.startMission()
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.builder.CanConfirm {
 				field, value, ok := model.nextRoleOption("subagent")
@@ -688,6 +787,17 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					model.loading = true
 					return model, model.editBuilder(field, value)
 				}
+			}
+		case "t":
+			if model.Screen() == ScreenNewMission {
+				model.cycleMissionTeam()
+				return model, nil
+			}
+		case "w":
+			if model.Screen() == ScreenNewMission {
+				model.missionPackageIndex = (model.missionPackageIndex + 1) % 2
+				model.invalidateMissionPreflight()
+				return model, nil
 			}
 		case "v":
 			if model.Screen() == ScreenTeamBuilder &&
@@ -731,10 +841,8 @@ func (model Model) View() string {
 		builder.WriteString(model.screenBody())
 	}
 	if model.snapshot.Stale {
-		builder.WriteString("\nstale · ")
+		builder.WriteString("\nstale · showing the last preserved view · ")
 		builder.WriteString(sanitizeCell(model.snapshot.Reason, 80))
-		builder.WriteString(" · last view ")
-		builder.WriteString(sanitizeCell(model.snapshot.ViewVersion, 64))
 		builder.WriteByte('\n')
 	}
 	if model.snapshot.Partial {
@@ -790,7 +898,7 @@ func (model Model) screenBody() string {
 			lines = append(lines, fmt.Sprintf(
 				"%s %s · %s · %s",
 				marker,
-				sanitizeCell(mission.Title, 42),
+				model.missionDisplayTitle(mission),
 				sanitizeCell(string(mission.Lane), 18),
 				humanizeStatus(mission.Status),
 			))
@@ -801,7 +909,7 @@ func (model Model) screenBody() string {
 				"",
 				fmt.Sprintf(
 					"Mission Detail · %s · %s priority",
-					sanitizeCell(mission.MissionID, 48),
+					model.missionDisplayTitle(mission),
 					humanizeStatus(mission.Priority),
 				),
 			)
@@ -817,7 +925,7 @@ func (model Model) screenBody() string {
 				))
 			}
 			lines = append(lines, "Current node · "+
-				sanitizeCell(mission.CurrentNodeID, 32))
+				model.missionNodeDisplayTitle(mission, mission.CurrentNodeID))
 			if decision, available :=
 				model.preparedMissionDecision(mission.MissionID); available {
 				lines = append(lines, fmt.Sprintf(
@@ -855,6 +963,8 @@ func (model Model) screenBody() string {
 			"/ filters Missions · enter opens · g b Board · g t current Mission",
 		)
 		return strings.Join(lines, "\n") + "\n"
+	case ScreenNewMission:
+		return model.renderNewMission()
 	case ScreenMission:
 		mission, ok := model.currentMissionRecord()
 		if !ok {
@@ -867,12 +977,9 @@ func (model Model) screenBody() string {
 			}
 			return strings.Join([]string{
 				"Authorization Decision",
-				"Mission · " + sanitizeCell(mission.Title, 48),
+				"Mission · " + model.missionDisplayTitle(mission),
 				"Action · " + humanizeStatus(attention.ActionRequired),
-				"Request · " + sanitizeCell(
-					attention.ApprovalRequestID,
-					48,
-				),
+				"Request · Prepared authorization request",
 				"Status · " + humanizeStatus(attention.Status),
 				"Prepared command unavailable · mutation actions disabled",
 				"Esc · Not now",
@@ -882,7 +989,7 @@ func (model Model) screenBody() string {
 			"Mission Detail",
 			fmt.Sprintf(
 				"%s · %s · %s",
-				sanitizeCell(mission.Title, 48),
+				model.missionDisplayTitle(mission),
 				sanitizeCell(string(mission.Lane), 18),
 				humanizeStatus(mission.Status),
 			),
@@ -903,9 +1010,8 @@ func (model Model) screenBody() string {
 		}
 		for _, pulse := range mission.TeamPulse {
 			lines = append(lines, fmt.Sprintf(
-				"Team Pulse · %s · %s · Attempt %d · %s",
+				"Team Pulse · %s · Attempt %d · %s",
 				humanizeStatus(pulse.Role),
-				sanitizeCell(pulse.NodeID, 32),
 				pulse.AttemptNumber,
 				humanizeStatus(pulse.State),
 			))
@@ -916,12 +1022,17 @@ func (model Model) screenBody() string {
 			}
 			lines = append(lines, fmt.Sprintf(
 				"Plan · %s waits for %s",
-				sanitizeCell(node.LogicalNodeID, 32),
-				sanitizeCell(strings.Join(node.DependsOn, ", "), 48),
+				model.missionNodeDisplayTitle(mission, node.LogicalNodeID),
+				model.missionDependencyDisplayTitles(mission, node.DependsOn),
 			))
 		}
 		for _, record := range model.timeline.Records {
-			if record.Payload.Status != "" {
+			if record.Payload.TextDelta != "" {
+				lines = append(
+					lines,
+					"Tentative output · "+sanitizeCell(record.Payload.TextDelta, 72),
+				)
+			} else if record.Payload.Status != "" {
 				lines = append(
 					lines,
 					"Timeline · "+humanizeStatus(record.Payload.Status),
@@ -933,16 +1044,18 @@ func (model Model) screenBody() string {
 				)
 			}
 		}
+		if _, ok := model.currentMissionCancelBinding(); ok {
+			lines = append(lines, "c Cancel Mission · exact current Attempt only")
+		}
 		return strings.Join(lines, "\n") + "\n"
 	case ScreenHome:
 		return fmt.Sprintf(
-			"Home\nView %s\n%d runtimes · %d teams · %d runs · %d evidence\n%s",
-			sanitizeCell(model.snapshot.ViewVersion, 64),
+			"Home\nCurrent read view\n%d runtimes · %d teams · %d runs · %d evidence\n%s",
 			len(model.snapshot.Runtimes),
 			len(model.snapshot.Teams),
 			len(model.snapshot.Runs),
 			len(model.snapshot.Evidence),
-			renderTeamNames(model.snapshot.Teams),
+			model.renderTeamNames(),
 		)
 	case ScreenRuntimes:
 		lines := make([]string, 0, len(model.snapshot.Runtimes)+1)
@@ -950,7 +1063,7 @@ func (model Model) screenBody() string {
 		for _, runtime := range model.snapshot.Runtimes {
 			lines = append(lines, fmt.Sprintf(
 				"• %s · %s · %s",
-				sanitizeCell(runtime.DisplayName, 48),
+				model.runtimeDisplayName(runtime.RuntimeInstanceID),
 				sanitizeCell(runtime.Status, 24),
 				sanitizeCell(runtime.ExecutableVersion, 24),
 			))
@@ -971,7 +1084,7 @@ func (model Model) screenBody() string {
 			lines = append(lines, fmt.Sprintf(
 				"%s %s · %s",
 				marker,
-				sanitizeCell(team.DisplayName, 48),
+				model.teamDisplayName(team),
 				sanitizeCell(team.SourceKind, 32),
 			))
 		}
@@ -994,10 +1107,10 @@ func (model Model) screenBody() string {
 		return emptyOrLines(lines, len(model.snapshot.Runs))
 	case ScreenEvidence:
 		lines := []string{"Accepted Evidence references"}
-		for _, evidence := range model.snapshot.Evidence {
+		for index, evidence := range model.snapshot.Evidence {
 			lines = append(lines, fmt.Sprintf(
-				"• %s · %s",
-				sanitizeCell(evidence.EvidenceID, 48),
+				"• Evidence %d · %s",
+				index+1,
 				sanitizeCell(evidence.Digest, 64),
 			))
 		}
@@ -1100,8 +1213,8 @@ func (model Model) renderTeamBuilder() string {
 	for _, runtime := range model.setup.Runtimes {
 		lines = append(lines, fmt.Sprintf(
 			"Runtime · %s · %s · %s",
-			sanitizeCell(runtime.DisplayName, 40),
-			sanitizeCell(runtime.Status, 20),
+			setupRuntimeDisplayName(runtime),
+			humanizeStatus(sanitizeCell(runtime.Status, 20)),
 			sanitizeCell(runtime.ExecutableVersion, 20),
 		))
 	}
@@ -1229,6 +1342,279 @@ func (model Model) renderTeamBuilder() string {
 		)
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func (model Model) renderNewMission() string {
+	lines := []string{
+		"Describe the outcome, choose a confirmed Team, then review preflight.",
+	}
+	teamName := "No executable confirmed Team available"
+	if team, ok := model.selectedMissionTeam(); ok {
+		teamName = model.teamDisplayName(team)
+	}
+	packageName := "Coding"
+	if model.missionPackageIndex == 1 {
+		packageName = "Knowledge"
+	}
+	objective := "Not described yet · enter to describe"
+	if model.missionObjective != "" {
+		objective = sanitizeCell(model.missionObjective, 72)
+	}
+	lines = append(lines,
+		"Outcome · "+objective,
+		"Team · "+teamName+" · t change",
+		"Work type · "+packageName+" · w change",
+	)
+	if model.entryMode == entryMissionObjective {
+		lines = append(
+			lines,
+			"Outcome input · "+sanitizeCell(string(model.entry), 72),
+			"enter save · esc clear",
+		)
+	}
+	if model.missionPreflight.PreflightDigest == "" {
+		if model.canPreflightMission() {
+			lines = append(lines, "p Review preflight")
+		} else {
+			lines = append(lines, "Complete the outcome and choose a Team to review preflight")
+		}
+	} else {
+		preflight := model.missionPreflight
+		lines = append(lines,
+			"",
+			"Preflight ready · nothing has started",
+			fmt.Sprintf(
+				"Runtime · %s · %s · %d available",
+				sanitizeCell(preflight.ModelID, 32),
+				humanizeStatus(preflight.AuthMode),
+				preflight.CapacityAvailable,
+			),
+			"Permissions · "+humanizeList(preflight.PermissionScopes),
+			"Approval points · "+humanizeList(preflight.ApprovalPoints),
+			fmt.Sprintf(
+				"Plan · %d step(s) · budget %s",
+				len(preflight.Nodes),
+				humanizeStatus(preflight.BudgetStatus),
+			),
+			"s Start",
+		)
+	}
+	if model.missionResult.Status != "" {
+		lines = append(
+			lines,
+			"Execution accepted · "+humanizeStatus(model.missionResult.Status),
+		)
+	}
+	lines = append(lines, "", "Nothing runs before Start · Esc returns to Board")
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func (model Model) eligibleMissionTeams() []api.LocalProductTeamSummary {
+	teams := make([]api.LocalProductTeamSummary, 0, len(model.snapshot.Teams))
+	for _, team := range model.snapshot.Teams {
+		if team.Confirmed && team.Executable && !team.ReadOnly &&
+			team.SourceKind == "saved_team" {
+			teams = append(teams, team)
+		}
+	}
+	return teams
+}
+
+func (model Model) selectedMissionTeam() (api.LocalProductTeamSummary, bool) {
+	teams := model.eligibleMissionTeams()
+	if len(teams) == 0 || model.missionTeamIndex < 0 ||
+		model.missionTeamIndex >= len(teams) {
+		return api.LocalProductTeamSummary{}, false
+	}
+	return teams[model.missionTeamIndex], true
+}
+
+func (model *Model) cycleMissionTeam() {
+	teams := model.eligibleMissionTeams()
+	if len(teams) == 0 {
+		model.missionTeamIndex = 0
+		return
+	}
+	model.missionTeamIndex = (model.missionTeamIndex + 1) % len(teams)
+	model.invalidateMissionPreflight()
+}
+
+func (model Model) canPreflightMission() bool {
+	_, ok := model.selectedMissionTeam()
+	return ok && model.executionClient != nil &&
+		strings.TrimSpace(model.missionObjective) != "" &&
+		model.snapshot.ViewVersion != "" && !model.snapshot.Stale
+}
+
+func (model *Model) invalidateMissionPreflight() {
+	model.missionID = ""
+	model.missionPreflight = app.MissionExecutionPreflight{}
+	model.missionResult = app.MissionExecutionResult{}
+}
+
+func (model *Model) resetMissionDraft() {
+	clearTUIBytes(model.entry)
+	model.entry = nil
+	model.entryMode = ""
+	model.missionID = ""
+	model.missionObjective = ""
+	model.missionTeamIndex = 0
+	model.missionPackageIndex = 0
+	model.missionPreflight = app.MissionExecutionPreflight{}
+	model.missionResult = app.MissionExecutionResult{}
+}
+
+func (model Model) missionWorkPackage() (work.WorkPackage, error) {
+	if model.missionPackageIndex == 1 {
+		return work.KnowledgeWorkPackage()
+	}
+	return work.CodingWorkPackage()
+}
+
+func (model Model) preflightMission() tea.Cmd {
+	client := model.executionClient
+	ctx := model.ctx
+	team, teamOK := model.selectedMissionTeam()
+	workPackage, packageErr := model.missionWorkPackage()
+	missionID := "mission/" + team.TeamInstanceID
+	objective := strings.TrimSpace(model.missionObjective)
+	viewVersion := model.snapshot.ViewVersion
+	return func() tea.Msg {
+		if client == nil || !teamOK || packageErr != nil {
+			return missionExecutionFailedMsg{err: app.ErrInvalidMissionExecution}
+		}
+		correlationID, err := newTUICorrelationID()
+		if err != nil {
+			return missionExecutionFailedMsg{err: err}
+		}
+		envelope, err := client.ExecuteMission(ctx, app.MissionExecutionCommand{
+			SchemaVersion:       app.MissionExecutionSchemaVersion,
+			Operation:           "preflight",
+			MissionID:           missionID,
+			TeamInstanceID:      team.TeamInstanceID,
+			WorkPackageID:       workPackage.ID(),
+			WorkPackageDigest:   workPackage.Digest(),
+			Objective:           objective,
+			ExpectedViewVersion: viewVersion,
+			CorrelationID:       correlationID,
+		})
+		if err != nil {
+			return missionExecutionFailedMsg{err: err}
+		}
+		if envelope.Operation != "preflight" || envelope.Preflight == nil {
+			return missionExecutionFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return missionPreflightedMsg{preflight: *envelope.Preflight}
+	}
+}
+
+func (model Model) startMission() tea.Cmd {
+	client := model.executionClient
+	ctx := model.ctx
+	preflight := model.missionPreflight
+	objective := strings.TrimSpace(model.missionObjective)
+	return func() tea.Msg {
+		if client == nil || preflight.PreflightDigest == "" {
+			return missionExecutionFailedMsg{err: app.ErrInvalidMissionExecution}
+		}
+		correlationID, err := newTUICorrelationID()
+		if err != nil {
+			return missionExecutionFailedMsg{err: err}
+		}
+		envelope, err := client.ExecuteMission(ctx, app.MissionExecutionCommand{
+			SchemaVersion:       app.MissionExecutionSchemaVersion,
+			Operation:           "start",
+			MissionID:           preflight.MissionID,
+			TeamInstanceID:      preflight.TeamInstanceID,
+			WorkPackageID:       preflight.WorkPackageID,
+			WorkPackageDigest:   preflight.WorkPackageDigest,
+			Objective:           objective,
+			ExpectedViewVersion: preflight.ViewVersion,
+			PreflightDigest:     preflight.PreflightDigest,
+			CorrelationID:       correlationID,
+		})
+		if err != nil {
+			return missionExecutionFailedMsg{err: err}
+		}
+		if envelope.Operation != "start" || envelope.Result == nil {
+			return missionExecutionFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return missionStartedMsg{result: *envelope.Result}
+	}
+}
+
+type missionCancelBinding struct {
+	viewVersion     string
+	logicalNodeID   string
+	attemptNumber   int
+	claimGeneration int64
+}
+
+func (model Model) currentMissionCancelBinding() (missionCancelBinding, bool) {
+	result := model.missionResult
+	if result.MissionID == "" || result.MissionID != model.currentMission ||
+		result.TeamInstanceID == "" || result.TeamInstanceID != model.currentTeam ||
+		len(result.ExecutionDigest) != 64 ||
+		model.snapshot.ViewVersion == "" ||
+		model.timeline.ViewVersion != model.snapshot.ViewVersion ||
+		model.timeline.Board.ViewVersion != model.snapshot.ViewVersion ||
+		model.timeline.TeamInstanceID != model.currentTeam ||
+		model.timeline.Board.TeamInstanceID != model.currentTeam {
+		return missionCancelBinding{}, false
+	}
+	for _, node := range model.timeline.Board.Nodes {
+		if node.CurrentAttempt < 1 || node.RunID == "" ||
+			node.Status == "succeeded" || node.Status == "failed" ||
+			node.Status == "cancelled" {
+			continue
+		}
+		for _, run := range model.snapshot.Runs {
+			if run.RunID == node.RunID && run.ClaimGeneration > 0 &&
+				run.TerminalStatus == "" {
+				return missionCancelBinding{
+					viewVersion:     model.snapshot.ViewVersion,
+					logicalNodeID:   node.LogicalNodeID,
+					attemptNumber:   node.CurrentAttempt,
+					claimGeneration: run.ClaimGeneration,
+				}, true
+			}
+		}
+	}
+	return missionCancelBinding{}, false
+}
+
+func (model Model) cancelMission() tea.Cmd {
+	client := model.executionClient
+	ctx := model.ctx
+	result := model.missionResult
+	binding, ok := model.currentMissionCancelBinding()
+	return func() tea.Msg {
+		if client == nil || !ok {
+			return missionExecutionFailedMsg{err: app.ErrMissionExecutionConflict}
+		}
+		correlationID, err := newTUICorrelationID()
+		if err != nil {
+			return missionExecutionFailedMsg{err: err}
+		}
+		envelope, err := client.ExecuteMission(ctx, app.MissionExecutionCommand{
+			SchemaVersion: app.MissionExecutionSchemaVersion,
+			Operation:     "control", MissionID: result.MissionID,
+			TeamInstanceID:      result.TeamInstanceID,
+			ExpectedViewVersion: binding.viewVersion,
+			ControlAction:       "cancel", ExecutionDigest: result.ExecutionDigest,
+			LogicalNodeID:   binding.logicalNodeID,
+			AttemptNumber:   binding.attemptNumber,
+			ClaimGeneration: binding.claimGeneration,
+			CorrelationID:   correlationID,
+		})
+		if err != nil {
+			return missionExecutionFailedMsg{err: err}
+		}
+		if envelope.Operation != "control" || envelope.Result == nil {
+			return missionExecutionFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return missionStartedMsg{result: *envelope.Result}
+	}
 }
 
 func (model Model) loadSnapshot() tea.Cmd {
@@ -1396,6 +1782,18 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.clampTaskSelection()
 			return model, nil
 		}
+		if model.entryMode == entryMissionObjective {
+			objective := strings.TrimSpace(sanitizeCell(string(model.entry), 4096))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if objective == "" {
+				return model, nil
+			}
+			model.missionObjective = objective
+			model.invalidateMissionPreflight()
+			return model, nil
+		}
 		if len(model.entry) == 0 {
 			return model, nil
 		}
@@ -1429,6 +1827,9 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return model, nil
 	}
 	maximum := 2048
+	if model.entryMode == entryMissionObjective {
+		maximum = 4096
+	}
 	if model.entryMode == entryCredentialPut ||
 		model.entryMode == entryCredentialSwap {
 		maximum = 8192
@@ -1623,6 +2024,19 @@ func newTUITeamDefinitionID() (string, error) {
 	return "team-" + hex.EncodeToString(value[:]), nil
 }
 
+func newTUICorrelationID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", errors.New("Request identifier unavailable")
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(value[:])
+	return encoded[0:8] + "-" + encoded[8:12] + "-" +
+		encoded[12:16] + "-" + encoded[16:20] + "-" +
+		encoded[20:32], nil
+}
+
 func clearTUIBytes(value []byte) {
 	for index := range value {
 		value[index] = 0
@@ -1667,36 +2081,33 @@ func (model Model) renderCompare() string {
 			if run.RunID != runID {
 				continue
 			}
-			evidence := make([]string, 0)
+			evidenceCount := 0
 			for _, record := range model.snapshot.Evidence {
 				if record.WorkItemID == run.WorkItemID {
-					evidence = append(
-						evidence,
-						sanitizeCell(record.EvidenceID, 32)+":"+
-							sanitizeCell(record.Digest, 16),
-					)
+					evidenceCount++
 				}
 			}
-			evidenceText := "none"
-			if len(evidence) > 0 {
-				evidenceText = strings.Join(evidence, ",")
+			label := "Previous"
+			if position == 1 {
+				label = "Current"
 			}
 			lines = append(lines, fmt.Sprintf(
-				"%d. %s · %s · %s/%s",
-				position+1,
-				sanitizeCell(run.RunID, 32),
-				sanitizeCell(run.Phase, 16),
-				sanitizeCell(run.TerminalStatus, 16),
-				sanitizeCell(run.TerminalReason, 24),
+				"%s · %s · %s",
+				label,
+				humanizeStatus(run.Phase),
+				humanizeStatus(run.TerminalStatus),
 			))
+			if run.TerminalReason != "" {
+				lines = append(lines, "   Reason · "+humanizeStatus(run.TerminalReason))
+			}
 			lines = append(lines, fmt.Sprintf(
-				"   runtime=%s · generation=%d",
-				sanitizeCell(run.RuntimeInstanceID, 24),
+				"   Runtime · %s · Attempt generation %d",
+				model.runtimeDisplayName(run.RuntimeInstanceID),
 				run.ClaimGeneration,
 			))
 			lines = append(lines, fmt.Sprintf(
-				"   evidence=%s",
-				evidenceText,
+				"   Evidence · %d",
+				evidenceCount,
 			))
 		}
 	}
@@ -1739,6 +2150,103 @@ func humanizeStatus(value string) string {
 		return "Ready"
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func (model Model) missionDisplayTitle(
+	mission api.LocalProductMissionSummary,
+) string {
+	candidate := sanitizeCell(mission.Title, 48)
+	missionID := sanitizeCell(mission.MissionID, 96)
+	teamID := sanitizeCell(mission.TeamInstanceID, 96)
+	if candidate != "" && candidate != missionID && candidate != teamID {
+		return candidate
+	}
+	for _, team := range model.snapshot.Teams {
+		if team.TeamInstanceID != mission.TeamInstanceID {
+			continue
+		}
+		name := sanitizeCell(team.DisplayName, 48)
+		if name != "" && name != sanitizeCell(team.TeamInstanceID, 96) {
+			return name
+		}
+	}
+	return "Mission"
+}
+
+func (model Model) missionNodeDisplayTitle(
+	mission api.LocalProductMissionSummary,
+	nodeID string,
+) string {
+	for _, node := range mission.Topology {
+		if node.LogicalNodeID != nodeID {
+			continue
+		}
+		title := sanitizeCell(node.Title, 48)
+		if title != "" && title != sanitizeCell(node.LogicalNodeID, 96) {
+			return title
+		}
+		role := sanitizeCell(node.Role, 32)
+		if role != "" && role != sanitizeCell(node.LogicalNodeID, 96) {
+			return humanizeStatus(role)
+		}
+	}
+	for _, pulse := range mission.TeamPulse {
+		if pulse.NodeID == nodeID && sanitizeCell(pulse.Role, 32) != "" {
+			return humanizeStatus(sanitizeCell(pulse.Role, 32))
+		}
+	}
+	if strings.TrimSpace(nodeID) == "" {
+		return "No current step"
+	}
+	return "Mission step"
+}
+
+func (model Model) missionDependencyDisplayTitles(
+	mission api.LocalProductMissionSummary,
+	nodeIDs []string,
+) string {
+	titles := make([]string, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		titles = append(titles, model.missionNodeDisplayTitle(mission, nodeID))
+	}
+	return sanitizeCell(strings.Join(titles, ", "), 48)
+}
+
+func (model Model) runtimeDisplayName(runtimeID string) string {
+	for _, runtime := range model.snapshot.Runtimes {
+		if runtime.RuntimeInstanceID != runtimeID {
+			continue
+		}
+		name := sanitizeCell(runtime.DisplayName, 48)
+		if name != "" && name != sanitizeCell(runtime.RuntimeInstanceID, 96) {
+			return name
+		}
+	}
+	return "Runtime unavailable"
+}
+
+func setupRuntimeDisplayName(runtime app.SetupRuntimePreview) string {
+	name := sanitizeCell(runtime.DisplayName, 40)
+	if name != "" && name != sanitizeCell(runtime.RuntimeInstanceID, 96) {
+		return name
+	}
+	return "Runtime unavailable"
+}
+
+func (model Model) teamDisplayName(team api.LocalProductTeamSummary) string {
+	name := sanitizeCell(team.DisplayName, 48)
+	if name != "" && name != sanitizeCell(team.TeamInstanceID, 96) {
+		return name
+	}
+	return "Confirmed Team"
+}
+
+func (model Model) renderTeamNames() string {
+	lines := make([]string, 0, len(model.snapshot.Teams))
+	for _, team := range model.snapshot.Teams {
+		lines = append(lines, "• "+model.teamDisplayName(team))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (model Model) setupSelectableCount() int {
@@ -2315,14 +2823,6 @@ func cloneBuilderSession(
 		session.Preview.CompatibilityGaps...,
 	)
 	return session
-}
-
-func renderTeamNames(teams []api.LocalProductTeamSummary) string {
-	lines := make([]string, 0, len(teams))
-	for _, team := range teams {
-		lines = append(lines, "• "+sanitizeCell(team.DisplayName, 48))
-	}
-	return strings.Join(lines, "\n")
 }
 
 func emptyOrLines(lines []string, count int) string {

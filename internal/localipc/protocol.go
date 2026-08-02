@@ -252,6 +252,7 @@ func validMethod(method string) bool {
 		"snapshot",
 		"timeline_page",
 		"mission_decision",
+		"mission_execution",
 		"setup_snapshot",
 		"codex_connect",
 		"builder_start",

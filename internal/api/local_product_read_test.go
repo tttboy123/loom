@@ -21,6 +21,18 @@ type controlledLocalProductViewSource struct {
 	err  error
 }
 
+type controlledRuntimeObservationHealthSource struct {
+	reason  string
+	partial bool
+}
+
+func (source *controlledRuntimeObservationHealthSource) RuntimeObservationHealth() (
+	string,
+	bool,
+) {
+	return source.reason, source.partial
+}
+
 type sequencedMissionDecisionCommandSource struct {
 	commands [][]app.MissionDecisionCommand
 	calls    int
@@ -52,17 +64,58 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 	db := openAPITimelineDB(t)
 	store := journal.NewStore(db)
 	appendAPITimelineFixture(t, store)
+	definitionPayload := mustMarshalLocalProductTest(t, map[string]any{
+		"definition": map[string]any{
+			"id": "team.delivery", "version": 1, "scope": "project",
+			"scope_identity": map[string]any{
+				"project_id": "project.one", "generation_id": "generation.one",
+			},
+			"name": "Release Crew", "status": "active",
+			"roles": []map[string]any{{
+				"kind": "main", "agent_definition_id": "agent.main",
+				"runtime_profile_id": "profile.main",
+				"responsibility":     "Coordinate bounded work",
+			}},
+			"digest": strings.Repeat("a", 64),
+		},
+		"draft_id": "draft-release", "draft_revision": 1,
+		"catalog_digest": strings.Repeat("b", 64),
+		"content_digest": strings.Repeat("c", 64),
+		"binding_digest": strings.Repeat("d", 64),
+		"configuration": map[string]any{
+			"requested_concurrency": 1, "maximum_budget_credits": 100,
+			"role_bindings": []map[string]any{{
+				"kind": "main", "agent_definition_id": "agent.main",
+				"runtime_profile_id":  "profile.main",
+				"runtime_instance_id": "runtime.shared",
+				"model_id":            "model.local",
+				"skill_revisions":     []any{}, "permission_ids": []any{},
+				"resource_ids": []any{},
+			}},
+		},
+	})
+	if _, err := store.Append(context.Background(), journal.Event{
+		ID: "event.team.definition.saved", StreamID: "team-definition/team.delivery",
+		Seq: 1, IdempotencyKey: "key.team.definition.saved",
+		Type: "TeamDefinitionSaved", SchemaVersion: 1,
+		EmittedAt:   time.Date(2026, 7, 25, 2, 29, 0, 0, time.UTC),
+		PayloadJSON: definitionPayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	readModel := projection.New(db)
 	if err := readModel.Rebuild(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	source := &controlledLocalProductViewSource{view: readModel.GlobalReadView()}
+	health := &controlledRuntimeObservationHealthSource{}
 	service, err := NewLocalProductReadService(LocalProductReadConfig{
 		Journal:    store,
 		Projection: source,
 		Now: func() time.Time {
 			return time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
 		},
+		RuntimeHealth: health,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,13 +129,43 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 		t.Fatal(err)
 	}
 	if snapshot.SchemaVersion != 2 ||
+		snapshot.Health != (LocalProductHealth{
+			Daemon: "serving_request", Journal: "available", Projection: "current",
+		}) ||
 		snapshot.ViewVersion == "" ||
 		snapshot.Stale ||
 		len(snapshot.Teams) != 1 ||
 		snapshot.Teams[0].TeamInstanceID != "team-instance.one" ||
-		snapshot.Teams[0].SourceKind != "saved_team" {
+		snapshot.Teams[0].DisplayName != "Release Crew" ||
+		snapshot.Teams[0].SourceKind != "saved_team" ||
+		len(snapshot.Missions) != 1 ||
+		snapshot.Missions[0].Title != "Release Crew" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
+	health.reason = "observer_models_timeout"
+	health.partial = true
+	partial, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{Limit: 64},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !partial.Partial || partial.Reason != "observer_models_timeout" ||
+		partial.Health != (LocalProductHealth{
+			Daemon: "serving_request", Journal: "available", Projection: "current",
+		}) {
+		t.Fatalf("Runtime-partial snapshot = %#v", partial)
+	}
+	health.reason = "unknown_observer_failure"
+	if _, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{Limit: 64},
+	); !errors.Is(err, ErrLocalProductStateUnavailable) {
+		t.Fatalf("unknown Runtime health error = %v", err)
+	}
+	health.reason = ""
+	health.partial = false
 
 	source.err = errors.New("private sqlite path must not escape")
 	stale, err := service.ReadLocalProductSnapshot(
@@ -94,6 +177,9 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 	}
 	if !stale.Stale ||
 		stale.Reason != "projection_refresh_failed" ||
+		stale.Health != (LocalProductHealth{
+			Daemon: "serving_request", Journal: "available", Projection: "stale",
+		}) ||
 		stale.ViewVersion != snapshot.ViewVersion ||
 		!equalLocalProductSnapshotsIgnoringStale(snapshot, stale) {
 		t.Fatalf("stale snapshot = %#v, previous = %#v", stale, snapshot)
@@ -454,6 +540,147 @@ func TestLocalProductReadServiceMapsTeamTimelineWithoutExposingEventPayload(t *t
 	}
 }
 
+func TestLocalProductReadServiceReplaysBoundedTentativeOutputWithoutDispatch(
+	t *testing.T,
+) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	appendAPITimelineFixture(t, store)
+	readModel := projection.New(db)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocalProductReadService(LocalProductReadConfig{
+		Journal: store, Projection: readModel,
+		Now: func() time.Time {
+			return time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := LocalProductTimelineRecord{
+		SchemaVersion:  1,
+		DeliveryID:     strings.Repeat("d", 64),
+		Kind:           "node_output_delta",
+		Authority:      "tentative",
+		TeamInstanceID: "team-instance.one",
+		LogicalNodeID:  "main",
+		AttemptNumber:  1,
+		SourceSequence: 3,
+		SourceEventID:  "frame-3",
+		OccurredAt:     "2026-07-28T08:00:00Z",
+		Payload: LocalProductTimelinePayload{
+			TextDelta: "authorized tentative output",
+		},
+	}
+	if err := service.cacheMissionExecutionDelivery(record); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.ReadLocalProductTimeline(
+		context.Background(),
+		LocalProductTimelineRequest{
+			TeamInstanceID: "team-instance.one", Limit: 128,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.ReadLocalProductTimeline(
+		context.Background(),
+		LocalProductTimelineRequest{
+			TeamInstanceID: "team-instance.one", Limit: 128,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range []LocalProductTimelinePage{first, second} {
+		last := page.Records[len(page.Records)-1]
+		if last.DeliveryID != record.DeliveryID ||
+			last.Authority != "tentative" ||
+			last.Payload.TextDelta != "authorized tentative output" ||
+			last.Cursor != page.NextCursor {
+			t.Fatalf("tentative timeline = %#v", page)
+		}
+	}
+	if len(first.Records) != len(second.Records) {
+		t.Fatalf("reconnect record counts = %d, %d", len(first.Records), len(second.Records))
+	}
+	observerOne, err := service.MissionExecutionObserver(
+		context.Background(),
+		"team-instance.one",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerTwo, err := service.MissionExecutionObserver(
+		context.Background(),
+		"team-instance.one",
+	)
+	if err != nil || observerOne != observerTwo {
+		t.Fatalf("observer reuse = %T %T, %v", observerOne, observerTwo, err)
+	}
+	if err := service.CloseMissionExecutionObservers(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalProductReadServiceTentativeCacheIsBoundedAndEmitsGap(
+	t *testing.T,
+) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	appendAPITimelineFixture(t, store)
+	readModel := projection.New(db)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocalProductReadService(LocalProductReadConfig{
+		Journal: store, Projection: readModel,
+		Now: func() time.Time {
+			return time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 65; index++ {
+		record := LocalProductTimelineRecord{
+			SchemaVersion: 1,
+			DeliveryID: fmt.Sprintf(
+				"%064x", index+1,
+			),
+			Kind: "node_output_delta", Authority: "tentative",
+			TeamInstanceID: "team-instance.one",
+			LogicalNodeID:  fmt.Sprintf("node-%02d", index),
+			AttemptNumber:  1,
+			SourceSequence: int64(index + 1),
+			SourceEventID:  fmt.Sprintf("frame-%d", index+1),
+			OccurredAt:     "2026-07-28T08:00:00Z",
+			Payload: LocalProductTimelinePayload{
+				TextDelta: "x",
+			},
+		}
+		if err := service.cacheMissionExecutionDelivery(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := service.ReadLocalProductTimeline(
+		context.Background(),
+		LocalProductTimelineRequest{
+			TeamInstanceID: "team-instance.one", Limit: 128,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Gap == nil || page.Gap.Reason != "tentative_overflow" ||
+		len(page.Records) > 65 {
+		t.Fatalf("bounded tentative page = %#v", page)
+	}
+}
+
 func TestLocalProductTeamPageAdvancesPastNonHistoricalExecutions(
 	t *testing.T,
 ) {
@@ -619,8 +846,10 @@ func equalLocalProductSnapshotsIgnoringStale(
 ) bool {
 	left.Stale = false
 	left.Reason = ""
+	left.Health.Projection = ""
 	right.Stale = false
 	right.Reason = ""
+	right.Health.Projection = ""
 	return reflect.DeepEqual(left, right)
 }
 

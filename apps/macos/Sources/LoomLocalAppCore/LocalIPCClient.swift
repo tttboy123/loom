@@ -357,12 +357,14 @@ private struct CredentialParams: Encodable {
     let providerID: String
     let credentialReference: String
     let expectedRevision: Int64
+    let operationID: String?
     let secret: String
 
     enum CodingKeys: String, CodingKey {
         case providerID = "provider_id"
         case credentialReference = "credential_reference"
         case expectedRevision = "expected_revision"
+        case operationID = "operation_id"
         case secret
     }
 }
@@ -383,7 +385,8 @@ private struct IPCRequest<Params: Encodable>: Encodable {
 public final class LocalIPCClient:
     LocalProductClientProtocol,
     LocalProductDecisionClientProtocol,
-    LocalProductSetupClientProtocol
+    LocalProductSetupClientProtocol,
+    LocalProductExecutionClientProtocol
 {
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
@@ -432,7 +435,7 @@ public final class LocalIPCClient:
         limit: Int
     ) async throws -> LocalProductTimelinePage {
         guard Self.validIdentifier(teamInstanceID),
-              cursor.isEmpty || Self.validIdentifier(cursor),
+              Self.validTimelineCursor(cursor),
               (1...64).contains(limit) else {
             throw LocalProductClientError.invalidRequest
         }
@@ -468,6 +471,35 @@ public final class LocalIPCClient:
             params: command
         )
         return try LocalProductDecisionWire.decodeSheet(result)
+    }
+
+    public func executeMission(
+        _ command: LocalProductExecutionCommand
+    ) async throws -> LocalProductExecutionEnvelope {
+        let result = try await call(
+            method: "mission_execution",
+            params: command
+        )
+        let envelope = try LocalProductExecutionWire.decodeEnvelope(result)
+        guard envelope.operation == command.operation else {
+            throw LocalProductClientError.invalidResponse
+        }
+        if let preflight = envelope.preflight {
+            guard preflight.missionID == command.missionID,
+                  preflight.teamInstanceID == command.teamInstanceID,
+                  preflight.workPackageID == command.workPackageID,
+                  preflight.workPackageDigest == command.workPackageDigest,
+                  preflight.viewVersion == command.expectedViewVersion else {
+                throw LocalProductClientError.invalidResponse
+            }
+        }
+        if let execution = envelope.result {
+            guard execution.missionID == command.missionID,
+                  execution.teamInstanceID == command.teamInstanceID else {
+                throw LocalProductClientError.invalidResponse
+            }
+        }
+        return envelope
     }
 
     public func setupSnapshot() async throws -> LocalProductSetupSnapshot {
@@ -631,6 +663,7 @@ public final class LocalIPCClient:
                 providerID: "minimax",
                 credentialReference: "",
                 expectedRevision: 0,
+                operationID: nil,
                 secret: secret
             )
         )
@@ -641,10 +674,12 @@ public final class LocalIPCClient:
         reference: String,
         revision: Int64
     ) async throws -> LocalProductCredentialSetupResult {
-        try await credentialMutation(
+        let operationID = UUID().uuidString.lowercased()
+        return try await credentialMutation(
             method: "credential_verify",
             reference: reference,
             revision: revision,
+            operationID: operationID,
             secret: ""
         )
     }
@@ -697,6 +732,7 @@ public final class LocalIPCClient:
             "builder_validate", "builder_confirm", "team_archive",
             "team_restore", "credential_configure", "credential_verify",
             "credential_replace", "credential_revoke", "mission_decision",
+            "mission_execution",
         ])
         guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
             throw LocalProductClientError.invalidRequest
@@ -726,7 +762,7 @@ public final class LocalIPCClient:
     }
 
     static func requestTimeoutSeconds(for method: String) -> Int {
-        method == "credential_verify" ? 10 : 5
+        method == "credential_verify" || method == "mission_execution" ? 10 : 5
     }
 
     private static func exchange(
@@ -875,6 +911,34 @@ public final class LocalIPCClient:
         }
     }
 
+    static func validTimelineCursor(_ value: String) -> Bool {
+        if value.isEmpty { return true }
+        guard (1...(32 << 10)).contains(value.utf8.count),
+              value.unicodeScalars.allSatisfy({ scalar in
+                  let code = scalar.value
+                  return code >= 65 && code <= 90
+                      || code >= 97 && code <= 122
+                      || code >= 48 && code <= 57
+                      || code == 45 || code == 95
+              }) else {
+            return false
+        }
+        var standard = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = standard.utf8.count % 4
+        guard remainder != 1 else { return false }
+        if remainder != 0 {
+            standard += String(repeating: "=", count: 4 - remainder)
+        }
+        guard let decoded = Data(base64Encoded: standard) else { return false }
+        let canonical = decoded.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return canonical == value
+    }
+
     private func teamStatus(
         method: String,
         definitionID: String,
@@ -897,6 +961,7 @@ public final class LocalIPCClient:
         method: String,
         reference: String,
         revision: Int64,
+        operationID: String? = nil,
         secret: String
     ) async throws -> LocalProductCredentialSetupResult {
         guard Self.validIdentifier(reference), revision > 0 else {
@@ -908,6 +973,7 @@ public final class LocalIPCClient:
                 providerID: "minimax",
                 credentialReference: reference,
                 expectedRevision: revision,
+                operationID: operationID,
                 secret: secret
             )
         )

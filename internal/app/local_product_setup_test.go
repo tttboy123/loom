@@ -84,6 +84,42 @@ type setupFixtureMutator struct {
 	called *bool
 }
 
+type setupCapturingCredentialMutator struct {
+	command credentials.CredentialCommand
+}
+
+func (mutator *setupCapturingCredentialMutator) Configure(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected configure")
+}
+
+func (mutator *setupCapturingCredentialMutator) Verify(
+	_ context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	mutator.command = command
+	return credentials.MetadataResult{
+		ProviderID: command.ProviderID, CredentialReference: command.CredentialReference,
+		Revision: command.ExpectedRevision + 1, Status: credentials.CredentialVerified,
+	}, nil
+}
+
+func (mutator *setupCapturingCredentialMutator) Replace(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected replace")
+}
+
+func (mutator *setupCapturingCredentialMutator) Revoke(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected revoke")
+}
+
 func (mutator setupFixtureMutator) Configure(
 	context.Context,
 	credentials.CredentialCommand,
@@ -834,6 +870,69 @@ func TestLocalProductSetupRejectsNonOpaqueCredentialReferenceBeforeMutation(
 	}
 	if called {
 		t.Fatal("non-opaque credential reference reached mutator")
+	}
+}
+
+func TestLocalProductSetupVerifyCredentialBindsStrictOperationIdentity(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	mutator := &setupCapturingCredentialMutator{}
+	service.credentialMutator = mutator
+	operationID := "11111111-1111-4111-8111-111111111111"
+
+	result, err := service.VerifyCredential(
+		context.Background(),
+		CredentialSetupCommand{
+			ProviderID: "minimax", CredentialReference: "credential-ref-1",
+			ExpectedRevision: 1, OperationID: operationID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Revision != 2 ||
+		mutator.command.CommandID != "verify-credential-"+operationID {
+		t.Fatalf("result=%#v command=%#v", result, mutator.command)
+	}
+
+	for _, invalid := range []string{
+		"", "11111111-1111-4111-8111-11111111111A",
+		"11111111-1111-5111-8111-111111111111",
+		"11111111-1111-4111-7111-111111111111",
+	} {
+		mutator.command = credentials.CredentialCommand{}
+		_, err := service.VerifyCredential(
+			context.Background(),
+			CredentialSetupCommand{
+				ProviderID: "minimax", CredentialReference: "credential-ref-1",
+				ExpectedRevision: 1, OperationID: invalid,
+			},
+		)
+		if !errors.Is(err, ErrCredentialSetupUnavailable) ||
+			mutator.command.CommandID != "" {
+			t.Fatalf("operation_id=%q error=%v command=%#v", invalid, err, mutator.command)
+		}
+	}
+}
+
+func TestLocalProductSetupNonVerifyCredentialRejectsOperationIdentity(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	called := false
+	service.credentialMutator = setupFixtureMutator{called: &called}
+	_, err := service.ReplaceCredential(
+		context.Background(),
+		CredentialSetupCommand{
+			ProviderID: "minimax", CredentialReference: "credential-ref-1",
+			ExpectedRevision: 1,
+			OperationID:      "11111111-1111-4111-8111-111111111111",
+			Secret:           []byte("replacement"),
+		},
+	)
+	if !errors.Is(err, ErrCredentialSetupUnavailable) || called {
+		t.Fatalf("ReplaceCredential() error=%v called=%v", err, called)
 	}
 }
 

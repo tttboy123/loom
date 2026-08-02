@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "attempt_id": "phase2a-w3-walkthrough-20260803-006",
+  "date": "2026-08-03",
+  "product_verdict": "PASS",
+  "evidence_review": "PENDING",
+  "source": {
+    "manifest_sha256": "93debdf1cb4219c85f3424ddeabffaea44c35b8461c3a8fad69678723272c03d",
+    "preflight_sha256": "e1ed1b8b0cdd74f4c3df3933c2b2d259a964b8ec233fe99f29eef020b9b5eca8",
+    "repair_source_lock_sha256": "6d258b302c800b7d484ec1e20771e77a3543ff18d55ab84d43102b06047b83cb",
+    "implementation_rereview_sha256": "92d89911143a8c5f63ed6d4ca72cec9c14ae4fe386472340fd766cda060a2f0f",
+    "result_sha256": "933273c8d47ac7d3f0ade7a767e5bb8ad9fec9b3d82675fae65569bf8fc9eed9"
+  },
+  "state": {
+    "initial_sha256": "3af352562fbc85cb47c9509096655f2cda4a05ddbb999702bc764ab90f77ed56",
+    "final_sha256": "3af352562fbc85cb47c9509096655f2cda4a05ddbb999702bc764ab90f77ed56",
+    "integrity": "ok",
+    "event_count": 103
+  },
+  "artifacts": {
+    "loom_sha256": "dc8172acef0c867760c970521b680702f79fe0dfb7c6a81319ef3e918b91c205",
+    "loomd_sha256": "8be1487b2b868d1e4ce17a5606d1c72b79183dd8f98d443eaf29033c2492e078",
+    "native_executable_sha256": "96f6d93f944921ee3e31e6f47c2ce710573e7914493f2e371056d08ad0e9e01a",
+    "bundle_id": "com.earendilworks.loom.local",
+    "lc_uuid": "DB497D0C-9EF3-3568-82A5-947953A07F0F",
+    "daemon_result_sha256": "16e83254742da5fe0bc665dfb61f6eb462f793621de2bb6128293535c0e5fb4d",
+    "tui_transcript_raw_sha256": "b244711465a417eba793e4fedec68c9b39562980f971a240dabf7012c3bb0c08",
+    "tui_transcript_sha256": "cb1a0415d0da22c4cd4b2826f289f75e3dd4abe67ae35091d1ddf9fa45359945"
+  },
+  "screenshots": {
+    "native-board.png": "e94f5535e634e513ced1dadf9b7998a9a551eddc6ba8b8b28062fdf1998030d2",
+    "native-mission-team.png": "5a977c633f7a89cfd606ae1584d06088db639e8b027fdb462000c5fcfa758e8f",
+    "native-mission-plan.png": "5cdf3f6adbd860e52812700fe2d84671245c7de9d66f4c1244b7f9ed76f4a623",
+    "native-mission-changes.png": "830c0ba69f5eddd50f726e39f19e9cce9640a0d030a521ac025df02e5f041269",
+    "native-mission-evidence.png": "bb38ee2b7b19d8a6da9fa183d415f2ee16db5d1bd3b0bf09819f21eb6928dab9"
+  },
+  "visible_proof": {
+    "mission": "P2AW3ControlledTeam",
+    "terminal": "Complete / Succeeded",
+    "changes_complete": true,
+    "evidence_rows": 4,
+    "tui_screens": 7,
+    "tui_next_page": true
+  },
+  "actions": {
+    "daemon_starts": 1,
+    "native_launches": 1,
+    "tui_launches": 1,
+    "observation_cycles": 1,
+    "observation_writes": 0,
+    "objective_entries": 0,
+    "preflights": 0,
+    "starts": 0,
+    "provider_tests": 0,
+    "authority_mutations": 0,
+    "provider_requests": 0,
+    "retries": 0
+  },
+  "cleanup": {
+    "product_socket_absent": true,
+    "product_socket_lock_absent": true,
+    "attempt_processes_absent": true,
+    "open_state_handles_absent": true,
+    "isolation_empty": true,
+    "nondisclosure_pass": true,
+    "resident_state_untouched": true,
+    "resident_process_present_at_final_check": false,
+    "resident_liveness_note": "preflight PID 18814 became absent without a root006-targeted command or signal; no restart was attempted"
+  },
+  "consumed": true
+}

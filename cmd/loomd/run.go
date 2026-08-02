@@ -32,6 +32,68 @@ type daemonFailureReasoner interface {
 	DaemonFailureReason() string
 }
 
+type daemonBuildFailure struct {
+	reason string
+	err    error
+}
+
+func (failure *daemonBuildFailure) Error() string                    { return "daemon unavailable" }
+func (failure *daemonBuildFailure) Unwrap() error                    { return failure.err }
+func (failure *daemonBuildFailure) DaemonBuildFailureReason() string { return failure.reason }
+
+func newDaemonBuildFailure(reason string, err error) error {
+	if err == nil || !validDaemonBuildFailureReason(reason) {
+		return &daemonBuildFailure{reason: "build_unknown", err: err}
+	}
+	return &daemonBuildFailure{reason: reason, err: err}
+}
+
+func validDaemonBuildFailureReason(reason string) bool {
+	switch reason {
+	case "build_observer", "build_state", "build_setup_runtime",
+		"build_setup_credential", "build_setup_provider",
+		"build_setup_native_auth", "build_decision", "build_execution",
+		"build_ipc", "build_unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func daemonBuildFailureReason(err error) string {
+	reasons := map[string]struct{}{}
+	var visit func(error)
+	visit = func(current error) {
+		if current == nil {
+			return
+		}
+		if reasoner, ok := current.(interface{ DaemonBuildFailureReason() string }); ok {
+			reason := reasoner.DaemonBuildFailureReason()
+			if !validDaemonBuildFailureReason(reason) {
+				reason = "build_unknown"
+			}
+			reasons[reason] = struct{}{}
+		}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				visit(child)
+			}
+			return
+		}
+		if wrapped := errors.Unwrap(current); wrapped != nil {
+			visit(wrapped)
+		}
+	}
+	visit(err)
+	if len(reasons) != 1 {
+		return "build_unknown"
+	}
+	for reason := range reasons {
+		return reason
+	}
+	return "build_unknown"
+}
+
 type daemonBuildConfig struct {
 	Observer        app.LocalRuntimeObservationDaemonConfig
 	SocketPath      string
@@ -63,7 +125,7 @@ func productionDaemonBuilder(
 		app.NewCryptographicRuntimeObservationIdentitySource(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_observer", err)
 	}
 	if config.SocketPath == "" {
 		return observer, nil
@@ -74,8 +136,26 @@ func productionDaemonBuilder(
 		config.SocketPath,
 		productSetupRuntimeConfig{
 			CodexExecutable: config.CodexExecutable,
+			Execution:       missionExecutionConfigFromDaemonBuild(config),
 		},
 	)
+}
+
+func missionExecutionConfigFromDaemonBuild(
+	config daemonBuildConfig,
+) *productMissionExecutionRuntimeConfig {
+	if config.Observer.LocalModelCatalog == nil {
+		return nil
+	}
+	catalog := *config.Observer.LocalModelCatalog
+	return &productMissionExecutionRuntimeConfig{
+		RuntimeSearchPaths: append(
+			[]string(nil),
+			config.Observer.RuntimeSearchPaths...,
+		),
+		RuntimeInstanceID: config.Observer.RuntimeInstanceID,
+		LocalModelCatalog: &catalog,
+	}
 }
 
 func run(
@@ -165,7 +245,10 @@ func run(
 	}
 	daemon, err := builder(config)
 	if err != nil || daemon == nil {
-		return writeDaemonError(stderr, exitUnavailable, "daemon unavailable")
+		return writeDaemonError(
+			stderr, exitUnavailable,
+			"daemon unavailable: "+daemonBuildFailureReason(err),
+		)
 	}
 
 	result, runErr := daemon.Run(ctx)
@@ -222,6 +305,8 @@ func daemonFailureMessage(err error) string {
 func validObserverFailureReason(reason string) bool {
 	switch reason {
 	case "observer_probe_factory",
+		"observer_probe_candidate",
+		"observer_probe_construction",
 		"observer_metadata_binding",
 		"observer_version_process",
 		"observer_version_timeout",
@@ -234,7 +319,10 @@ func validObserverFailureReason(reason string) bool {
 		"observer_models_stderr",
 		"observer_models_output",
 		"observer_models_duplicate",
+		"observer_inventory",
 		"observer_projection",
+		"observer_plan",
+		"observer_identity_metadata",
 		"observer_write",
 		"observer_unknown":
 		return true

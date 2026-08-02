@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3 Controlled Execution Experience",
+  "reopen": "Authoritative Terminal and Observer Closure Repair 2",
+  "status": "DETERMINISTIC_PASS_IMPLEMENTATION_REREVIEW_PENDING",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "branch": "codex/loom-platform-slice2",
+  "superseded_source_lock_sha256": "7e315b3c8c6e9a3921a03e868ad3e23344126c2aab7ad88c31e1958f3d357954",
+  "diagnosis_sha256": "98a279da6924db8871d220a9faeed4e2972ca99be708347cf9e9d1b720380d70",
+  "contract_sha256": "4d98c0b8b179ee1244d06fa45e21fe14441d045a192204843fbd4b1b5cc8c57b",
+  "contract_review_sha256": "93acd9295ac94b4bf7545224dafd0b6f0a7c759d9cf63338ee1af14ef0903fb2",
+  "causal_red_sha256": "4f4035a7d45e1fcf71511a622732abcfba121fad7e83db1b489768697c94d584",
+  "implementation_review_1_sha256": "3c204be243bf08340fa80a028c35708180478caef5077a829d41adbe6e46fce2",
+  "repair_1_red_sha256": "2e7adea45c27016ac63d372205f2643746bf9d5b22e2039b6f324c97495ce0e5",
+  "implementation_rereview_2_sha256": "d3016148742d49122f08bc2c58470666e229b4d70c44a480e1d38b7c29a5b76c",
+  "repair_2_red_sha256": "6667dc81c5356262fba61fe61cb7bb2e8b4c2f320cd294383daaeadc069cf1bd",
+  "verification_sha256": "c611787a8aeb0211f7d24c7c84d8abbc0adc50df783c98b54d3d6e18d943bad1",
+  "retained_pi_fixture_sha256": "a091fafa218efef0f701894a49343df2775f744aaf5b058e2a8cc6505202a2c0",
+  "retained_pi_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+  "live_canary_authorized": false,
+  "p2a_w4_exists": false,
+  "files": {
+    "internal/credentials/credential_broker.go": "742be016dfebf50206af0d96b700308c0459dcc838e8ecf0512f0826e653c4b1",
+    "internal/credentials/credential_broker_test.go": "fdaf8ea629aa344f04e3dda026bc9c5b180e31d7f056aff25c6005315ceb4b61",
+    "cmd/loomd/product_daemon.go": "1a3fbd3744c6e0cf343ea1ada204b51404ce914d16c63d3f46d37528b5131764",
+    "cmd/loomd/product_daemon_test.go": "fe5c1c2bcaa1e09847cedd64d1bd0753cfc6cbdedad795da15b6c7f27275bf2e",
+    "cmd/loomd/run.go": "732ff73cd960774e8d78ac4bbc8c22be34eca7125e3192c7b019d4768dd7cfc6",
+    "cmd/loomd/run_test.go": "0e8155d79d3d47ff1a132cfe09d70cc141741dcae004d9a325c690b226a115d5",
+    "internal/localipc/swift_contract_test.go": "3e2a3e80f38f6a4efe1e76c9eb30be1d2e0a78e4d74dfb01a6c069f7af242c13",
+    "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift": "8d054bb636b424a7ba9d66dc3db4c249e7f0288c5ab616511e3b2c098700b02a",
+    "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift": "d884b86087012ce7241e532ffda9edf33dff62a3b046e62c7211190b7158f92d",
+    ".loom-evidence/phase2a/P2A-W3/retained-pi-six-fact-state.sqlite.gz.b64": "a091fafa218efef0f701894a49343df2775f744aaf5b058e2a8cc6505202a2c0"
+  },
+  "locked_authority_hashes": {
+    "internal/localipc/protocol.go": "496fa5d51f790c3b4289c84cfd31ec9c89c9aa064f72a660085f6992f67160dc",
+    "internal/state/local_product_setup_writer.go": "5a453e1b219d409054a3153423f9a4084c85f02eb413be34b0648d331739bf37",
+    "internal/projection/local_product_setup.go": "7ea7dfd1b270b0166e64e3a8753818464411692ba671d5afae00962311c37673",
+    "internal/supervisor/managed_execution.go": "968005d032ff6c0d8fedbaf28e7c3789ab084ea5fbcd660a060a0043a337d637",
+    "protocol/bridge/v1/frame.go": "1c40aa90d1be2012ff6f0ea637f152722c2153dc2ace8b877dc8bacff9938365"
+  }
+}

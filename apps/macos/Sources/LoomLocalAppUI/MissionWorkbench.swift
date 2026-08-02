@@ -1,10 +1,270 @@
-import SwiftUI
 import LoomLocalAppCore
+import SwiftUI
+
+func missionRuntimeDisplayName(
+    run: LocalProductRunSummary,
+    snapshot: LocalProductSnapshot
+) -> String {
+    guard let runtime = snapshot.runtimes.first(where: {
+        $0.runtimeInstanceID == run.runtimeInstanceID
+    }) else {
+        return "Runtime unavailable"
+    }
+    return LocalProductExperience.visibleName(
+        runtime.displayName,
+        internalID: runtime.runtimeInstanceID,
+        fallback: "Runtime unavailable"
+    )
+}
+
+func missionDisplayTitle(
+    candidate: String,
+    missionID: String,
+    teamInstanceID: String,
+    teams: [LocalProductTeamSummary]
+) -> String {
+    let safeCandidate = SafeText.sanitize(candidate, limit: 96)
+    let safeMissionID = SafeText.sanitize(missionID, limit: 96)
+    let safeTeamID = SafeText.sanitize(teamInstanceID, limit: 96)
+    if !safeCandidate.isEmpty,
+        safeCandidate != safeMissionID,
+        safeCandidate != safeTeamID
+    {
+        return safeCandidate
+    }
+    guard let team = teams.first(where: {
+        $0.teamInstanceID == teamInstanceID
+    }) else {
+        return "Mission"
+    }
+    return LocalProductExperience.visibleName(
+        team.displayName,
+        internalID: team.teamInstanceID,
+        fallback: "Mission"
+    )
+}
+
+func missionNodeDisplayTitle(
+    nodeID: String,
+    topology: [LocalProductMissionNode],
+    pulse: [LocalProductMissionPulse]
+) -> String {
+    if let node = topology.first(where: { $0.logicalNodeID == nodeID }) {
+        let title = LocalProductExperience.visibleName(
+            node.title,
+            internalID: node.logicalNodeID,
+            fallback: ""
+        )
+        if !title.isEmpty { return title }
+        let role = SafeText.sanitize(node.role, limit: 48)
+        if !role.isEmpty { return role.capitalized }
+    }
+    if let role = pulse.first(where: { $0.nodeID == nodeID })?.role {
+        let safeRole = SafeText.sanitize(role, limit: 48)
+        if !safeRole.isEmpty { return safeRole.capitalized }
+    }
+    return nodeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? "No current step"
+        : "Mission step"
+}
+
+func missionHumanStatus(_ value: String) -> String {
+    value.replacingOccurrences(of: "_", with: " ").capitalized
+}
+
+enum MissionSnapshotPresentation: Equatable {
+    case current
+    case partial(String)
+    case preserved(String)
+    case unavailable(String)
+
+    var isCurrent: Bool { self == .current }
+
+    var notice: String? {
+        switch self {
+        case .current:
+            return nil
+        case .partial(let reason):
+            return "Partial view · \(reason). Some items may be missing."
+        case .preserved(let reason):
+            return "Showing a preserved view · \(reason). New items may be missing."
+        case .unavailable(let reason):
+            return "Current view unavailable · \(reason)."
+        }
+    }
+}
+
+func missionSnapshotPresentation(
+    connection: LocalProductConnectionState,
+    hasSnapshot: Bool
+) -> MissionSnapshotPresentation {
+    guard hasSnapshot else {
+        switch connection {
+        case .partial(let reason), .stale(let reason),
+            .offline(let reason), .fatal(let reason):
+            return .unavailable(reason)
+        case .loading:
+            return .unavailable("loading")
+        case .online:
+            return .unavailable("state_unavailable")
+        }
+    }
+    switch connection {
+    case .online:
+        return .current
+    case .partial(let reason):
+        return .partial(reason)
+    case .stale(let reason), .offline(let reason), .fatal(let reason):
+        return .preserved(reason)
+    case .loading:
+        return .preserved("refreshing")
+    }
+}
+
+struct MissionAttentionEmptyCopy: Equatable {
+    let icon: String
+    let title: String
+    let detail: String
+}
+
+func missionAttentionEmptyCopy(
+    presentation: MissionSnapshotPresentation
+) -> MissionAttentionEmptyCopy {
+    if presentation.isCurrent {
+        return MissionAttentionEmptyCopy(
+            icon: "checkmark.circle",
+            title: "Nothing needs you",
+            detail: "No approval, blocked, retry-exhausted or verification action is pending."
+        )
+    }
+    return MissionAttentionEmptyCopy(
+        icon: "clock.arrow.circlepath",
+        title: "No recorded attention in this view",
+        detail: presentation.notice ?? "Current Attention is unavailable."
+    )
+}
+
+struct MissionInspectorSection: Equatable {
+    let heading: String
+    let rows: [String]
+    let emptyMessage: String
+}
+
+func missionInspectorSection(
+    tab: MissionInspectorTab,
+    record: LocalProductMissionSummary?,
+    timeline: LocalProductTimelinePage?
+) -> MissionInspectorSection {
+    switch tab {
+    case .team:
+        let rows = (record?.teamPulse ?? []).map {
+            "\($0.role.capitalized) · \(missionHumanStatus($0.state)) · Attempt \($0.attemptNumber)"
+        }
+        return MissionInspectorSection(
+            heading: "Team Pulse",
+            rows: rows,
+            emptyMessage: "No Team presence is available."
+        )
+    case .plan:
+        let rows = (record?.topology ?? []).map { node in
+            let title = missionNodeDisplayTitle(
+                nodeID: node.logicalNodeID,
+                topology: record?.topology ?? [],
+                pulse: record?.teamPulse ?? []
+            )
+            let attempt = node.attemptNumber > 0
+                ? " · Attempt \(node.attemptNumber)"
+                : ""
+            return "\(title) · \(missionHumanStatus(node.status))\(attempt)"
+        }
+        return MissionInspectorSection(
+            heading: "Plan",
+            rows: rows,
+            emptyMessage: "No authoritative Plan is available."
+        )
+    case .changes:
+        guard let record,
+              let timeline,
+              timeline.teamInstanceID == record.teamInstanceID,
+              timeline.gap == nil,
+              !timeline.hasMore else {
+            return MissionInspectorSection(
+                heading: "Changes",
+                rows: [],
+                emptyMessage: "Changes are unavailable until complete authoritative activity loads."
+            )
+        }
+        let labels = [
+            "ready_for_review": "Ready for review",
+            "verification_recorded": "Verification recorded",
+            "verification_rejected": "Verification rejected",
+            "node_acceptance": "Acceptance recorded",
+        ]
+        let rows = timeline.records.compactMap { item -> String? in
+            guard item.authority == "journal",
+                  item.teamInstanceID == record.teamInstanceID,
+                  let label = labels[item.kind] else { return nil }
+            let node = missionNodeDisplayTitle(
+                nodeID: item.logicalNodeID,
+                topology: record.topology,
+                pulse: record.teamPulse
+            )
+            let attempt = item.attemptNumber > 0
+                ? " · Attempt \(item.attemptNumber)"
+                : ""
+            return "\(label) · \(node)\(attempt)"
+        }
+        return MissionInspectorSection(
+            heading: "Changes",
+            rows: rows,
+            emptyMessage: "No review or acceptance changes are recorded."
+        )
+    case .evidence:
+        guard let record,
+              let timeline,
+              timeline.teamInstanceID == record.teamInstanceID,
+              timeline.gap == nil,
+              !timeline.hasMore else {
+            return MissionInspectorSection(
+                heading: "Evidence",
+                rows: [],
+                emptyMessage: "Evidence is unavailable until complete authoritative activity loads."
+            )
+        }
+        var ordinal = 0
+        let rows = timeline.records.compactMap { item -> String? in
+            guard item.kind == "evidence_available",
+                  item.authority == "journal",
+                  item.teamInstanceID == record.teamInstanceID else {
+                return nil
+            }
+            ordinal += 1
+            let node = missionNodeDisplayTitle(
+                nodeID: item.logicalNodeID,
+                topology: record.topology,
+                pulse: record.teamPulse
+            )
+            let attempt = item.attemptNumber > 0
+                ? " · Attempt \(item.attemptNumber)"
+                : ""
+            return "Evidence \(ordinal) · \(node)\(attempt)"
+        }
+        return MissionInspectorSection(
+            heading: "Evidence",
+            rows: rows,
+            emptyMessage: "No Evidence reference is recorded."
+        )
+    }
+}
 
 public struct MissionWorkbench: View {
     @ObservedObject private var store: LocalProductStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showProviders = false
+    @State private var showNewMission = false
+    @State private var newMissionObjective = ""
+    @State private var newMissionTeamID = ""
+    @State private var newMissionWorkPackageID =
+        LocalProductWorkPackageOption.coding.id
 
     public init(store: LocalProductStore) {
         self.store = store
@@ -22,8 +282,17 @@ public struct MissionWorkbench: View {
             case .board:
                 orchestrationBoard
                     .frame(minWidth: 560)
-            case let .mission(id):
+            case .mission(let id):
                 missionRoom(id)
+                    .frame(minWidth: 560)
+            case .teams:
+                teamsWorkspace
+                    .frame(minWidth: 560)
+            case .attention:
+                attentionWorkspace
+                    .frame(minWidth: 560)
+            case .library:
+                libraryWorkspace
                     .frame(minWidth: 560)
             }
         }
@@ -31,6 +300,10 @@ public struct MissionWorkbench: View {
         .sheet(isPresented: $showProviders) {
             providerManagement
                 .frame(minWidth: 560, minHeight: 380)
+        }
+        .sheet(isPresented: $showNewMission) {
+            newMissionSheet
+                .frame(minWidth: 620, minHeight: 520)
         }
         .sheet(
             item: Binding(
@@ -67,12 +340,21 @@ public struct MissionWorkbench: View {
             .padding(.horizontal, 14)
             .frame(height: 52)
 
-            railButton("New Mission", systemImage: "plus.square") {}
+            railButton("New Mission", systemImage: "plus.square") {
+                if newMissionTeamID.isEmpty {
+                    newMissionTeamID = executableTeams.first?.teamInstanceID ?? ""
+                }
+                showNewMission = true
+            }
             railButton("My Missions", systemImage: "rectangle.3.group") {
                 store.showMissionBoard()
             }
-            railButton("Teams", systemImage: "person.3") {}
-            railButton("Needs You", systemImage: "exclamationmark.bubble") {}
+            railButton("Teams", systemImage: "person.3") {
+                store.showMissionTeams()
+            }
+            railButton("Needs You", systemImage: "exclamationmark.bubble") {
+                store.showMissionAttention()
+            }
 
             Divider().padding(.vertical, 10)
 
@@ -82,7 +364,9 @@ public struct MissionWorkbench: View {
                 .tracking(0.8)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 4)
-            railButton("Library", systemImage: "books.vertical") {}
+            railButton("Library", systemImage: "books.vertical") {
+                store.showMissionLibrary()
+            }
             railButton("Runtime & Providers", systemImage: "switch.2") {
                 showProviders = true
             }
@@ -92,6 +376,136 @@ public struct MissionWorkbench: View {
         }
         .background(LoomGraphite.rail)
         .accessibilityLabel("Mission navigation")
+    }
+
+    private var executableTeams: [LocalProductTeamSummary] {
+        (store.snapshot?.teams ?? []).filter {
+            $0.confirmed && $0.executable && !$0.readOnly
+        }
+    }
+
+    private var selectedWorkPackage: LocalProductWorkPackageOption {
+        LocalProductWorkPackageOption.accepted.first {
+            $0.id == newMissionWorkPackageID
+        } ?? .coding
+    }
+
+    private var newMissionSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("New Mission")
+                        .font(.title2.weight(.semibold))
+                    Text("Choose the work and Team, review exact access, then start explicitly.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close") { showNewMission = false }
+            }
+
+            Picker("Work type", selection: $newMissionWorkPackageID) {
+                ForEach(LocalProductWorkPackageOption.accepted) { option in
+                    Text(option.title).tag(option.id)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Team", selection: $newMissionTeamID) {
+                if executableTeams.isEmpty {
+                    Text("No confirmed Team available").tag("")
+                }
+                ForEach(executableTeams, id: \.teamInstanceID) { team in
+                    Text(LocalProductExperience.visibleName(
+                        team.displayName,
+                        internalID: team.teamInstanceID,
+                        fallback: "Confirmed Team"
+                    ))
+                    .tag(team.teamInstanceID)
+                }
+            }
+
+            TextField(
+                "What should this Mission accomplish?",
+                text: $newMissionObjective,
+                axis: .vertical
+            )
+            .lineLimit(4...8)
+            .textFieldStyle(.roundedBorder)
+
+            if let preflight = store.executionPreflight {
+                GroupBox("Preflight") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(
+                            "\(preflight.nodes.count) node · \(preflight.authMode) · \(preflight.modelID)",
+                            systemImage: "checkmark.shield"
+                        )
+                        Text("Capacity available: \(preflight.capacityAvailable)")
+                        Text("Permissions: \(preflight.permissionScopes.joined(separator: ", "))")
+                        Text("Approvals: \(preflight.approvalPoints.joined(separator: ", "))")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            Spacer()
+            HStack {
+                Text(executionStateLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if store.executionState == .ready {
+                    Button("Start Mission") {
+                        Task {
+                            await store.startPreflightedMission()
+                            if store.executionState == .running
+                                || store.executionState == .awaitingRecovery
+                                || store.executionState == .succeeded
+                            {
+                                showNewMission = false
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Review preflight") {
+                        guard
+                            let team = executableTeams.first(where: {
+                                $0.teamInstanceID == newMissionTeamID
+                            })
+                        else { return }
+                        Task {
+                            await store.preflightMission(
+                                objective: newMissionObjective,
+                                team: team,
+                                workPackage: selectedWorkPackage
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        newMissionObjective.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty || newMissionTeamID.isEmpty || !store.missionExecutionReachable
+                    )
+                }
+            }
+        }
+        .padding(24)
+    }
+
+    private var executionStateLabel: String {
+        switch store.executionState {
+        case .idle: return "Nothing runs before you review preflight."
+        case .preflighting: return "Checking Team, Runtime, capacity and access…"
+        case .ready: return "Preflight is ready. Starting still requires your click."
+        case .starting: return "Starting the authoritative execution…"
+        case .cancelling: return "Cancelling the exact current Attempt…"
+        case .running: return "Mission is running. Follow it in the Mission Room."
+        case .awaitingRecovery: return "Mission is waiting for bounded recovery."
+        case .succeeded: return "Mission completed with accepted Evidence."
+        case .cancelled: return "Mission was cancelled with authoritative terminal Evidence."
+        case .failed(let reason): return "Mission could not proceed: \(reason)"
+        }
     }
 
     private func railButton(
@@ -203,9 +617,9 @@ public struct MissionWorkbench: View {
 
     private func missionLane(_ lane: MissionLane) -> some View {
         let missions = store.workbench.missions.filter {
-            $0.lane == lane &&
-                (store.workbench.boardFilter.isEmpty ||
-                    $0.title.localizedCaseInsensitiveContains(
+            $0.lane == lane
+                && (store.workbench.boardFilter.isEmpty
+                    || $0.title.localizedCaseInsensitiveContains(
                         store.workbench.boardFilter
                     ))
         }
@@ -239,35 +653,30 @@ public struct MissionWorkbench: View {
     }
 
     private func missionCard(_ mission: MissionListItem) -> some View {
-        Button {
-            withAnimation(
-                reduceMotion
-                    ? nil
-                    : .easeOut(duration: LoomGraphite.motionDuration)
-            ) {
-                store.openMission(mission.id)
-            }
+        let record = missionRecord(mission.id)
+        let displayTitle = missionDisplayTitle(
+            candidate: record?.title ?? mission.title,
+            missionID: record?.missionID ?? mission.id,
+            teamInstanceID: record?.teamInstanceID ?? "",
+            teams: store.snapshot?.teams ?? []
+        )
+        return Button {
+            Task { await store.openMissionAndActivate(mission.id) }
         } label: {
             VStack(alignment: .leading, spacing: 7) {
-                if let record = missionRecord(mission.id) {
-                    Text(record.missionID)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                if let record {
                     Text(
                         "\(humanStatus(record.sourceKind)) · \(record.priority.capitalized) priority"
                     )
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
                 HStack {
-                    Text(mission.title)
+                    Text(displayTitle)
                         .font(.callout.weight(.semibold))
                         .lineLimit(2)
                     Spacer(minLength: 4)
-                    if mission.status == "human_required" ||
-                        mission.status == "blocked" {
+                    if mission.status == "human_required" || mission.status == "blocked" {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundStyle(.orange)
                             .accessibilityLabel("Needs attention")
@@ -276,7 +685,7 @@ public struct MissionWorkbench: View {
                 Text(humanStatus(mission.status))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let record = missionRecord(mission.id) {
+                if let record {
                     Group {
                         if let pulse = record.teamPulse.first {
                             Label(
@@ -295,7 +704,7 @@ public struct MissionWorkbench: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     Label(
-                        "\(record.teamPulse.first.map { "Attempt \($0.attemptNumber)" } ?? "No active attempt") · \(record.completedNodeCount)/\(record.nodeCount) nodes · \(record.currentNodeID.isEmpty ? "No current node" : record.currentNodeID)",
+                        "\(record.teamPulse.first.map { "Attempt \($0.attemptNumber)" } ?? "No active attempt") · \(record.completedNodeCount)/\(record.nodeCount) nodes · \(missionNodeDisplayTitle(nodeID: record.currentNodeID, topology: record.topology, pulse: record.teamPulse))",
                         systemImage: "point.3.connected.trianglepath.dotted"
                     )
                     .font(.caption2)
@@ -327,7 +736,7 @@ public struct MissionWorkbench: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            "\(mission.title), \(mission.lane.rawValue), \(humanStatus(mission.status))"
+            "\(displayTitle), \(mission.lane.rawValue), \(humanStatus(mission.status))"
         )
     }
 
@@ -362,11 +771,17 @@ public struct MissionWorkbench: View {
             ScrollView {
                 LazyVStack(spacing: 3) {
                     ForEach(store.workbench.missions) { mission in
+                        let record = missionRecord(mission.id)
                         Button {
-                            store.openMission(mission.id)
+                            Task { await store.openMissionAndActivate(mission.id) }
                         } label: {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(mission.title)
+                                Text(missionDisplayTitle(
+                                    candidate: record?.title ?? mission.title,
+                                    missionID: record?.missionID ?? mission.id,
+                                    teamInstanceID: record?.teamInstanceID ?? "",
+                                    teams: store.snapshot?.teams ?? []
+                                ))
                                     .font(.callout.weight(.medium))
                                     .lineLimit(1)
                                 Text(mission.lane.rawValue)
@@ -395,7 +810,12 @@ public struct MissionWorkbench: View {
         let record = missionRecord(id)
         return VStack(spacing: 0) {
             workbenchToolbar(
-                title: record?.title ?? "Mission",
+                title: missionDisplayTitle(
+                    candidate: record?.title ?? "",
+                    missionID: record?.missionID ?? id,
+                    teamInstanceID: record?.teamInstanceID ?? "",
+                    teams: store.snapshot?.teams ?? []
+                ),
                 subtitle: record.map {
                     "\($0.lane) · \(humanStatus($0.status))"
                 } ?? "Unavailable"
@@ -405,8 +825,8 @@ public struct MissionWorkbench: View {
                     contentBlock(
                         title: "Outcome",
                         icon: "scope",
-                        text: record?.lastMilestone ??
-                            "No authoritative Mission record is available."
+                        text: record?.lastMilestone
+                            ?? "No authoritative Mission record is available."
                     )
                     contentBlock(
                         title: "Plan",
@@ -415,13 +835,14 @@ public struct MissionWorkbench: View {
                             "\($0.nodeCount) node(s), \($0.completedNodeCount) complete, \($0.reviewNodeCount) in review."
                         } ?? "No plan is available."
                     )
-                    contentBlock(
-                        title: "Activity",
-                        icon: "waveform.path.ecg",
-                        text: record?.activeNodeCount == 0
-                            ? "No active authorized output."
-                            : "Authorized activity is in progress. Live output is tentative until Evidence is accepted."
-                    )
+                    missionActivity(record)
+                    if store.missionCancelAvailable {
+                        Button("Cancel Mission", role: .destructive) {
+                            Task { await store.cancelCurrentMission() }
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Cancels only the exact current authorized Attempt.")
+                    }
                     contentBlock(
                         title: "Evidence",
                         icon: "checkmark.seal",
@@ -447,8 +868,7 @@ public struct MissionWorkbench: View {
                         .padding(.horizontal, 9)
                         .frame(minHeight: 28)
                         .background(
-                            store.workbench.selectedContinuity.permissionMode ==
-                                mode
+                            store.workbench.selectedContinuity.permissionMode == mode
                                 ? LoomGraphite.accent.opacity(0.15)
                                 : LoomGraphite.surface,
                             in: RoundedRectangle(cornerRadius: 7)
@@ -483,7 +903,9 @@ public struct MissionWorkbench: View {
                     Button("Send", systemImage: "arrow.up.circle.fill") {}
                         .buttonStyle(.borderedProminent)
                         .disabled(true)
-                        .help("Composer remains disabled until an accepted Mission messaging authority exists.")
+                        .help(
+                            "Composer remains disabled until an accepted Mission messaging authority exists."
+                        )
                 }
             }
             .padding(12)
@@ -493,6 +915,11 @@ public struct MissionWorkbench: View {
 
     private func missionInspector(_ id: String) -> some View {
         let record = missionRecord(id)
+        let section = missionInspectorSection(
+            tab: store.workbench.selectedContinuity.inspector,
+            record: record,
+            timeline: store.timeline
+        )
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Inspector")
@@ -520,28 +947,23 @@ public struct MissionWorkbench: View {
             }
             .pickerStyle(.segmented)
             Divider()
-            Text("Team Pulse")
+            Text(section.heading)
                 .font(.subheadline.weight(.semibold))
-            if let record, !record.teamPulse.isEmpty {
-                ForEach(record.teamPulse) { pulse in
+            if section.rows.isEmpty {
+                Text(section.emptyMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
                     HStack {
-                        Image(systemName: pulse.role == "main"
-                            ? "person.crop.circle.fill"
-                            : "person.crop.circle")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(pulse.role.capitalized)
-                            Text(
-                                "\(humanStatus(pulse.state)) · Attempt \(pulse.attemptNumber)"
-                            )
+                        Image(systemName: inspectorSectionIcon)
+                            .foregroundStyle(LoomGraphite.accent)
+                        Text(row)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                     }
                 }
-            } else {
-                Text("No Team presence is available.")
-                    .foregroundStyle(.secondary)
             }
             Divider()
             Text("Decision availability")
@@ -554,7 +976,7 @@ public struct MissionWorkbench: View {
                 .loomActionTarget()
                 .accessibilityLabel(decisionCTA(command.kind))
                 Text(
-                    "Bound to \(command.logicalNodeID) · Attempt \(command.attemptNumber)"
+                    "Bound to \(record.map { missionNodeDisplayTitle(nodeID: command.logicalNodeID, topology: $0.topology, pulse: $0.teamPulse) } ?? "Mission step") · Attempt \(command.attemptNumber)"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -581,6 +1003,15 @@ public struct MissionWorkbench: View {
         .background(LoomGraphite.surface)
     }
 
+    private var inspectorSectionIcon: String {
+        switch store.workbench.selectedContinuity.inspector {
+        case .team: return "person.crop.circle"
+        case .plan: return "point.3.connected.trianglepath.dotted"
+        case .changes: return "arrow.triangle.2.circlepath"
+        case .evidence: return "checkmark.seal"
+        }
+    }
+
     private func workbenchToolbar(
         title: String,
         subtitle: String
@@ -595,7 +1026,8 @@ public struct MissionWorkbench: View {
             }
             Spacer()
             if !store.workbench.selectedContinuity.inspectorVisible,
-               case .mission = store.workbench.route {
+                case .mission = store.workbench.route
+            {
                 Button {
                     store.setMissionInspectorVisible(true)
                 } label: {
@@ -606,7 +1038,14 @@ public struct MissionWorkbench: View {
                 .accessibilityLabel("Show Inspector")
             }
             Button {
-                Task { await store.refresh() }
+                Task {
+                    switch store.workbench.route {
+                    case .mission(let id):
+                        await store.refreshMission(id)
+                    case .board, .teams, .attention, .library:
+                        await store.refresh()
+                    }
+                }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -642,6 +1081,72 @@ public struct MissionWorkbench: View {
         )
     }
 
+    @ViewBuilder
+    private func missionActivity(
+        _ mission: LocalProductMissionSummary?
+    ) -> some View {
+        let records = store.timeline?.records ?? []
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Activity", systemImage: "waveform.path.ecg")
+                .font(.subheadline.weight(.semibold))
+            if let gap = store.timeline?.gap {
+                Label(
+                    "Some live activity is unavailable · \(humanStatus(gap.reason))",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+            if records.isEmpty {
+                Text(
+                    mission?.activeNodeCount == 0
+                        ? "No active authorized output."
+                        : "Authorized activity is in progress. Live output is tentative until Evidence is accepted."
+                )
+                .foregroundStyle(.secondary)
+            } else {
+                ForEach(records) { item in
+                    VStack(alignment: .leading, spacing: 4) {
+                        if !item.payload.textDelta.isEmpty {
+                            Label("Tentative output", systemImage: "text.bubble")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.orange)
+                            Text(item.payload.textDelta)
+                                .textSelection(.enabled)
+                        } else {
+                            Text(
+                                humanStatus(
+                                    item.payload.status.isEmpty
+                                        ? item.kind
+                                        : item.payload.status
+                                )
+                            )
+                            .font(.callout.weight(.medium))
+                            if !item.payload.warningCode.isEmpty {
+                                Text(humanStatus(item.payload.warningCode))
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+            Text("Tentative text is not authoritative until terminal Evidence is accepted.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LoomGraphite.surface,
+            in: RoundedRectangle(
+                cornerRadius: LoomGraphite.cardRadius,
+                style: .continuous
+            )
+        )
+    }
+
     private func truthfulState(
         icon: String,
         title: String,
@@ -653,6 +1158,292 @@ public struct MissionWorkbench: View {
             description: Text(detail)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var teamsWorkspace: some View {
+        VStack(spacing: 0) {
+            workbenchToolbar(
+                title: "Teams",
+                subtitle: "Confirmed Team records"
+            )
+            workspaceReadBanner
+            if let snapshot = store.snapshot {
+                if snapshot.teams.isEmpty {
+                    truthfulState(
+                        icon: "person.3",
+                        title: "No confirmed Teams",
+                        detail: "Create and confirm a Team before starting a Mission."
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(snapshot.teams) { team in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text(LocalProductExperience.visibleName(
+                                            team.displayName,
+                                            internalID: team.teamInstanceID,
+                                            fallback: "Confirmed Team"
+                                        ))
+                                            .font(.headline)
+                                        Spacer()
+                                        Text(humanStatus(team.state))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(
+                                                team.executable && !team.readOnly
+                                                    ? .green
+                                                    : .secondary
+                                            )
+                                    }
+                                    Text(
+                                        workspacePresentation.isCurrent
+                                            ? (team.executable && !team.readOnly
+                                            ? "Confirmed · Available for explicit Mission start"
+                                            : "Read-only · Not available for execution")
+                                            : "Preserved record · Refresh before execution"
+                                    )
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    Text("Source · \(humanStatus(team.sourceKind))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(14)
+                                .background(
+                                    LoomGraphite.surface,
+                                    in: RoundedRectangle(
+                                        cornerRadius: LoomGraphite.cardRadius,
+                                        style: .continuous
+                                    )
+                                )
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+                        .padding(18)
+                    }
+                }
+            } else {
+                truthfulState(
+                    icon: "person.3",
+                    title: "Teams unavailable",
+                    detail: connectionLabel
+                )
+            }
+        }
+        .background(LoomGraphite.canvas)
+    }
+
+    private var attentionWorkspace: some View {
+        VStack(spacing: 0) {
+            workbenchToolbar(
+                title: "Needs You",
+                subtitle: "Approvals and blocked decisions"
+            )
+            workspaceReadBanner
+            if let snapshot = store.snapshot {
+                if snapshot.attention.isEmpty {
+                    let copy = missionAttentionEmptyCopy(
+                        presentation: workspacePresentation
+                    )
+                    truthfulState(
+                        icon: copy.icon,
+                        title: copy.title,
+                        detail: copy.detail
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(snapshot.attention) { item in
+                                VStack(alignment: .leading, spacing: 7) {
+                                    HStack {
+                                        Text(humanStatus(item.kind))
+                                            .font(.headline)
+                                        Spacer()
+                                        Text(humanStatus(item.severity))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Text(humanStatus(item.status))
+                                        .foregroundStyle(.secondary)
+                                    if !item.actionRequired.isEmpty {
+                                        Text(item.actionRequired)
+                                            .font(.callout)
+                                    }
+                                }
+                                .padding(14)
+                                .background(
+                                    LoomGraphite.surface,
+                                    in: RoundedRectangle(
+                                        cornerRadius: LoomGraphite.cardRadius,
+                                        style: .continuous
+                                    )
+                                )
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+                        .padding(18)
+                    }
+                }
+            } else {
+                truthfulState(
+                    icon: "exclamationmark.bubble",
+                    title: "Attention unavailable",
+                    detail: connectionLabel
+                )
+            }
+        }
+        .background(LoomGraphite.canvas)
+    }
+
+    private var libraryWorkspace: some View {
+        VStack(spacing: 0) {
+            workbenchToolbar(
+                title: "Library",
+                subtitle: "History and Compare"
+            )
+            workspaceReadBanner
+            if let snapshot = store.snapshot {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        Text("History")
+                            .font(.title3.weight(.semibold))
+                        if snapshot.runs.isEmpty {
+                            Text("No Run history is available.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(Array(snapshot.runs.reversed())) { run in
+                                historyRunCard(run, snapshot: snapshot)
+                            }
+                        }
+
+                        Divider()
+                        Text("Compare")
+                            .font(.title3.weight(.semibold))
+                        if snapshot.runs.count < 2 {
+                            Text("Two authoritative Runs are required for comparison.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            let pair = Array(snapshot.runs.suffix(2))
+                            HStack(alignment: .top, spacing: 12) {
+                                comparisonColumn(
+                                    label: "Previous",
+                                    run: pair[0],
+                                    snapshot: snapshot
+                                )
+                                comparisonColumn(
+                                    label: "Current",
+                                    run: pair[1],
+                                    snapshot: snapshot
+                                )
+                            }
+                        }
+                    }
+                    .padding(18)
+                }
+            } else {
+                truthfulState(
+                    icon: "books.vertical",
+                    title: "History unavailable",
+                    detail: connectionLabel
+                )
+            }
+        }
+        .background(LoomGraphite.canvas)
+    }
+
+    private func historyRunCard(
+        _ run: LocalProductRunSummary,
+        snapshot: LocalProductSnapshot
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(LoomGraphite.accent)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(humanStatus(run.phase))
+                    .font(.headline)
+                Text(
+                    run.terminalStatus.isEmpty
+                        ? "In progress"
+                        : humanStatus(run.terminalStatus)
+                )
+                .foregroundStyle(.secondary)
+                Text(
+                    "Runtime · \(missionRuntimeDisplayName(run: run, snapshot: snapshot)) · Attempt generation \(run.claimGeneration)"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Text("Accepted Evidence · \(evidenceCount(for: run, in: snapshot))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(
+            LoomGraphite.surface,
+            in: RoundedRectangle(
+                cornerRadius: LoomGraphite.cardRadius,
+                style: .continuous
+            )
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private func comparisonColumn(
+        label: String,
+        run: LocalProductRunSummary,
+        snapshot: LocalProductSnapshot
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(humanStatus(run.terminalStatus.isEmpty ? run.phase : run.terminalStatus))
+                .font(.headline)
+            Text("Runtime · \(missionRuntimeDisplayName(run: run, snapshot: snapshot))")
+                .font(.caption)
+            Text("Attempt generation · \(run.claimGeneration)")
+                .font(.caption)
+            Text("Evidence · \(evidenceCount(for: run, in: snapshot))")
+                .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            LoomGraphite.surface,
+            in: RoundedRectangle(
+                cornerRadius: LoomGraphite.cardRadius,
+                style: .continuous
+            )
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private func evidenceCount(
+        for run: LocalProductRunSummary,
+        in snapshot: LocalProductSnapshot
+    ) -> Int {
+        snapshot.evidence.filter { $0.workItemID == run.workItemID }.count
+    }
+
+    private var workspacePresentation: MissionSnapshotPresentation {
+        missionSnapshotPresentation(
+            connection: store.connectionState,
+            hasSnapshot: store.snapshot != nil
+        )
+    }
+
+    @ViewBuilder
+    private var workspaceReadBanner: some View {
+        if let notice = workspacePresentation.notice {
+            Label(notice, systemImage: "clock.arrow.circlepath")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(Color.orange.opacity(0.08))
+        }
     }
 
     private var providerManagement: some View {
@@ -680,11 +1471,14 @@ public struct MissionWorkbench: View {
             }
             providerRow(
                 title: "MiniMax",
-                status: store.setupSnapshot?.miniMax.status ?? "unavailable",
+                status: store.miniMaxVerificationStatus == "Idle"
+                    ? (store.setupSnapshot?.miniMax.status ?? "unavailable")
+                    : store.miniMaxVerificationStatus,
                 action: "Test"
             ) {
                 Task { await store.verifyMiniMax() }
             }
+            .disabled(store.isVerifyingMiniMax)
             Spacer()
             Text(
                 "Credentials stay in the private Broker and Keychain boundary. Loom never displays the raw secret."
@@ -752,13 +1546,13 @@ public struct MissionWorkbench: View {
             return nil
         case .loading:
             return "Connecting to the authoritative Journal view"
-        case let .partial(reason):
+        case .partial(let reason):
             return "Partial authoritative view · \(reason)"
-        case let .stale(reason):
+        case .stale(let reason):
             return "Showing preserved view · \(reason)"
-        case let .offline(reason):
+        case .offline(let reason):
             return "Loom is offline · \(reason)"
-        case let .fatal(reason):
+        case .fatal(let reason):
             return "Workbench needs attention · \(reason)"
         }
     }
@@ -767,7 +1561,8 @@ public struct MissionWorkbench: View {
         let teamCount = store.snapshot?.teams.count ?? 0
         let runCount = store.snapshot?.runs.count ?? 0
         if teamCount > 0 || runCount > 0 {
-            return "No Mission execution exists. \(teamCount) Team(s) and \(runCount) historical Run(s) remain available."
+            return
+                "No Mission execution exists. \(teamCount) Team(s) and \(runCount) historical Run(s) remain available."
         }
         return "Create a Mission, choose a confirmed Team, then review the plan before execution."
     }
@@ -781,7 +1576,7 @@ public struct MissionWorkbench: View {
     }
 
     private func humanStatus(_ value: String) -> String {
-        value.replacingOccurrences(of: "_", with: " ").capitalized
+        missionHumanStatus(value)
     }
 
     private func decisionCTA(_ kind: LocalProductDecisionKind) -> String {
@@ -873,7 +1668,7 @@ public struct LoomDecisionSheet: View {
 
     private var identitySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            decisionRow("Mission", sheet.missionID)
+            decisionRow("Mission", "Current Mission")
             decisionRow("Requested by", sheet.requester)
             decisionRow("Target", sheet.target)
             decisionRow("Attempt", sheet.attemptScope)
@@ -923,9 +1718,11 @@ public struct LoomDecisionSheet: View {
                     ("Team / Provider changes", sheet.target),
                     ("Permission / budget", sheet.permissionScope),
                 ])
-                Text("No hidden retry. A new attempt is confirmed only after a fresh Attempt and claim generation appear in the authoritative Projection.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "No hidden retry. A new attempt is confirmed only after a fresh Attempt and claim generation appear in the authoritative Projection."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }
@@ -987,8 +1784,7 @@ public struct LoomDecisionSheet: View {
         }
         .loomActionTarget()
         .disabled(
-            requiresPrepared(action) &&
-                (!sheet.prepared || !sheet.preparedActions.contains(action))
+            requiresPrepared(action) && (!sheet.prepared || !sheet.preparedActions.contains(action))
         )
         .accessibilityLabel(actionLabel(action))
     }
@@ -998,8 +1794,10 @@ public struct LoomDecisionSheet: View {
     }
 
     private func primaryAction(_ action: String) -> Bool {
-        ["allow_once", "allow_for_mission", "accept_result",
-         "start_new_attempt"].contains(action)
+        [
+            "allow_once", "allow_for_mission", "accept_result",
+            "start_new_attempt",
+        ].contains(action)
     }
 
     private func actionLabel(_ action: String) -> String {

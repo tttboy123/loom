@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-08-01
+Updated: 2026-08-03
 
 ## Product state
 
@@ -4444,5 +4444,1271 @@ P2A-W3 Controlled Execution Experience contract.
 ```text
 P2A-W2 = ACCEPTED
 P2A-W3 = ELIGIBLE FOR CONTRACT FREEZE / NOT YET STARTED
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the unique `P2A-W3 Controlled Execution Experience` is now frozen
+at `.loom-evidence/phase2a/P2A-W3/contract.md` against baseline `848f068`.
+Its required DONE/PARTIAL/MISSING reconciliation is frozen at
+`.loom-evidence/phase2a/P2A-W3/exit-gap-matrix.md`. Contract Review 1 returned
+`FAIL` on three owned-boundary defects: an unsupported authoritative
+WorkPackage/restart claim, an unowned real Swift contract probe, and unowned
+PX-02 Go/Swift health surfaces. Contract Repair 1 keeps WorkPackage as a typed
+pre-start proposal, begins durable authority at the accepted TeamExecution
+facts, and adds the exact Swift probe and product-read/model files to ownership.
+Fresh independent Repair 1 Re-review returned `PASS` with no P0/P1.
+
+No Event schema, Journal, Projection, Rules, Work, Grant, Evidence, Supervisor,
+Runtime adapter or bridge authority is reopened. Codex and MiniMax W3 canaries
+remain bounded authentication/provider product-path claims; only Pi may claim
+controlled execution. Mandatory behavioral RED and two bounded Repair REDs are
+recorded. The Candidate now composes the strict `mission_execution` API through
+the accepted TeamCoordinator, Work/Grant authorities, Supervisor, Pi adapter,
+Evidence Store, GlobalReadView and TeamExecutionStream. Native and TUI product
+flows provide visible WorkPackage/confirmed-Team selection, exact preflight,
+explicit Start, tentative output, prepared decision routing, exact cancel and
+same-lineage reconnect without typed internal IDs.
+
+A real-SQLite deterministic vertical loopback closes source and independent
+Verifier Run/Grant/Frame/Evidence lineages plus one canonical terminal, and
+proves reconnect does not redispatch. Restart reconstructs only exact
+Journal-visible plan/semantic/workflow/recipe state and fails closed on unknown
+recipes. Focused, repeated, whole-repository, race, vet, dependency, Swift,
+Thread Sanitizer and native Release-build gates pass. The Candidate is now
+source-lock ready for fresh independent Implementation Review. Review 1 returned
+`FAIL` with three P1 findings: the concrete backend implemented only cancel,
+the production Swift probe did not exercise `mission_execution`, and terminal
+flights were never reaped; it also reported an unbounded preflight lifetime as
+P2. Bounded Repair 1 now routes every closed non-cancel action through exact
+refresh-current prepared Decision commands, adds a five-minute server-owned
+preflight lease and strict Swift expiry wire, exercises production Swift
+preflight/start plus malformed-wire rejection through the real Go UDS server,
+and reaps completed authoritative terminal flights. A focused RED additionally
+caught and corrected `decide` versus the accepted `submit` operation token.
+
+All focused, full, race, vet, dependency, Swift, TSan, release-build, format and
+diff gates pass again after Repair 1. The repaired source lock is ready for a
+fresh independent Implementation Re-review. Re-review 2 returned `FAIL` on two
+P1 identity gaps: native/TUI used an ephemeral MissionID that the Journal-backed
+read model could not reconstruct, and control did not reject MissionID drift.
+Repair 2 now derives the single rebuildable `mission/<team_instance_id>` identity
+in native, TUI, contract-probe and restart paths, rejects Mission/Team mismatch
+before any backend call, and proves the Start result identity equals the
+terminal Snapshot identity. The full deterministic matrix passes again.
+
+The Repair 2 source lock is ready for a new fresh independent Implementation
+Re-review. P2A-W3 is not yet accepted and no live process, credential action or
+canary has occurred.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = REPAIR 2 COMPLETE / IMPLEMENTATION RE-REVIEW PENDING / NO LIVE CANARY
+P2A-W4 = DOES NOT EXIST
+```
+
+`HUMAN_REQUIRED`: fresh Implementation Re-review 3 returned `PASS` for the
+exact Repair 2 30-file source lock. Before freezing any live manifest, the
+required post-review precondition audit proved a vertical product gap that the
+review had not exercised: accepted Builder confirmation persists a
+TeamDefinition but creates no TeamInstance/Main AgentInstance, and every
+retained P2A-W2 product database has zero such facts. Therefore a fresh user
+cannot select the executable confirmed Team required by W3 preflight.
+
+Repair 3 RED now proves the missing Go daemon, TUI refresh and native refresh
+behavior. A W3-owned composition through the accepted Saved-Team builders
+failed closed because the mandatory Main plus dormant SubAgent selections count
+as Runtime usage 2 while installed Pi truthfully reports capacity 1. Correcting
+that rule requires reopening the accepted
+`internal/teams/saved_team_binding.go` authority boundary, which Section 12 of
+the frozen contract forbids without a reviewed amendment. The attempted
+production composition was removed and the reviewed daemon source hash was
+restored. The exact evidence is in
+`.loom-evidence/phase2a/P2A-W3/live-precondition-audit.md`.
+
+No Codex, MiniMax or Pi manifest was frozen or consumed; no Provider,
+credential, Runtime execution, native walkthrough or W3 commit occurred. The
+unrelated resident daemon remains untouched.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / SAVED-TEAM CAPACITY AMENDMENT REQUIRED / NO LIVE CANARY
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the Product Owner authorized the bounded `P2A-W3 Saved-Team Dormant
+Capacity Amendment`. It is frozen at
+`.loom-evidence/phase2a/P2A-W3/saved-team-dormant-capacity-amendment.md` and
+reopens only `internal/teams/saved_team_binding.go` plus its test. A fresh
+independent read-only Contract Review returned `PASS` with no P0/P1/P2
+findings. The reviewed decision counts only the single active-on-materialization
+Main against saved-Team materialization capacity while retaining and fully
+validating every dormant SubAgent binding. Runtime truth, dispatch/run-time
+capacity, future activation, CAS/generation fencing, Journal and all other
+accepted authorities remain unchanged.
+
+Repair 3 is now unlocked RED-first. No production change under the Amendment,
+Provider/credential access, Runtime execution, live manifest or canary has yet
+occurred. Live remains locked until the complete deterministic matrix and a
+fresh independent Implementation Review pass.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = DORMANT CAPACITY AMENDMENT CONTRACT PASS / REPAIR 3 RED NEXT / NO LIVE CANARY
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: P2A-W3 Repair 3 has implemented the reviewed Saved-Team Dormant
+Capacity Amendment. Only the active-on-materialization Main consumes saved-Team
+materialization capacity; every dormant SubAgent binding is still retained and
+fully validated, and no active execution capacity or future activation rule is
+changed. Builder confirmation now composes the accepted Saved-Team authorities
+to create exactly one TeamInstance and one Main AgentInstance, with no WorkItem,
+Run, Grant or execution fact, then refreshes the TUI/native authoritative view.
+
+The Amendment RED, three product-level Repair 3 REDs, focused and complete Go/
+Swift suites, whole-repository non-race/race tests, vet, dependency, Thread
+Sanitizer, Release-build, format, diff, scope and secret gates all pass. A fresh
+independent Implementation Review over the exact Repair 3 source lock is next.
+No live manifest, Provider/credential access, Runtime execution or canary has
+occurred; all live gates remain locked pending that Review.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = REPAIR 3 DETERMINISTIC PASS / IMPLEMENTATION REVIEW PENDING / NO LIVE CANARY
+P2A-W4 = DOES NOT EXIST
+```
+
+`HUMAN_REQUIRED`: P2A-W3 Repair 3 passed the complete deterministic matrix and
+fresh independent Implementation Review 4 over the exact 42-entry source lock
+`03d213d9862ce1f7be95d4547bfaae67893e58a8c98018d6a6cd651bd251c3ce`.
+The reviewed Saved-Team Dormant Capacity Amendment also passed its live bounded
+claim: one online capacity-1 Pi Runtime materialized exactly one Main
+AgentInstance while retaining the selected SubAgent as dormant, with zero
+WorkItem, Run, Grant or execution fact.
+
+The three separate source-locked, one-shot live gates did not pass:
+
+- Codex was visible as `Available`, but the daemon closed at
+  `observer_models_timeout` before product preflight;
+- MiniMax retained `Verified`, but one explicit product `Test` action committed
+  no new terminal `ProviderCredentialVerified` fact; and
+- Pi saved an executable Team, but exact read-only Mission preflight failed
+  closed because live metadata exposes
+  `loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m` while the source-locked mission
+  binding accepts only the unnamespaced identity.
+
+No Mission Start occurred. All controlled processes exited, product socket and
+lock cleaned up, isolation is empty, retained SQLite databases pass integrity,
+and no credential material was retained. Fresh independent Result-Evidence
+Reviews returned `PASS` for evidence trustworthiness with no P0/P1; they confirm
+the product failures rather than accepting them. The no-terminal walkthrough
+is ineligible because the live prerequisites failed.
+
+All live lineages are consumed with no retry. The Candidate is not accepted and
+must not be committed. Any correction requires a reviewed complete P2A-W3
+reopen of the affected product boundaries; it must not be split into another
+single-point Amendment or P2A-W4.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / LIVE GATES FAILED / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`HUMAN_REQUIRED`: the unique `P2A-W3 Complete Live Compatibility` reopen closed
+its complete deterministic matrix after three independent repair Reviews. The
+final source lock
+`904b1ceec6b1cd11d27498382b221c734180e0817eff8b31360d98d0b3160ccd`
+passed fresh independent Implementation Review 4 with no P0/P1/P2. The repair
+keeps only exact typed Pi metadata timeouts containable, publishes bounded
+Runtime degradation as snapshot `partial` plus exact reason while daemon,
+Journal and Projection remain available/current, preserves strict Swift schema
+v2 decoding through a real Go UDS fixture, closes exact qualified Pi identity,
+causal MiniMax operation identity and saved-Team human display.
+
+Three fresh source-locked replacement live lineages were then consumed once:
+
+- Codex `PASS`: one deterministic Pi `--list-models` timeout was contained with
+  exactly one invocation; the same product daemon remained available, native
+  `Codex Available` and `Partial authoritative view` were visible, and the saved
+  Team returned exact product `Preflight is ready` without Start or state write.
+- MiniMax `FAIL / product_defect`: one native `Test` visibly traversed
+  `Verified -> Testing -> Unavailable`, but a bounded Journal observation still
+  found only the three inherited `ProviderCredentialVerified` facts. No new
+  attributable terminal revision/fact was committed and no retry occurred.
+- Pi `FAIL / observer_unknown`: the single daemon start failed closed with
+  `daemon failed: observer_unknown` before product socket publication. No app,
+  preflight, Start, local model, Run, Grant, Frame or Evidence path was entered,
+  and no retry occurred.
+
+Fresh independent Result Review over result lock
+`42f71716993d279fe96255812bfd309045cf099e5440d9ea1487500513d5e267`
+returned `PASS FOR EVIDENCE / PRODUCT FAIL / HUMAN_REQUIRED`. All manifest,
+result, source, authority and retained SQLite hashes matched; integrity passed;
+no raw secret, hidden retry, allowance violation, attempt process, socket/lock
+or isolation residue exists. The unrelated pre-existing `demo-resident` daemon
+remains visible and untouched.
+
+The final no-terminal walkthrough is ineligible. All replacement allowances are
+consumed; no additional canary, commit or P2A-W4 is authorized. Any correction
+requires fresh Product Owner authorization and a new reviewed governed P2A-W3
+boundary; it must not be a retry-only, wrapper-only or split single-point
+Amendment.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / CODEX PASS / MINIMAX PRODUCT DEFECT / PI OBSERVER UNKNOWN / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the Product Owner's fresh instruction to reprocess the two failed
+replacement outcomes has been applied only as governance authorization. A
+read-only causal diagnosis is recorded at
+`.loom-evidence/phase2a/P2A-W3/complete-live-failure-diagnosis.md`: the MiniMax
+terminal gap is confirmed at the pre-Provider Secret Store read boundary, while
+the retained Pi `observer_unknown` output is too lossy to recover its causal
+leaf. No live process, credential action, Runtime invocation, state mutation,
+staging or commit occurred during diagnosis.
+
+One complete vertical repair is frozen at
+`.loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-closure-contract.md`.
+It jointly requires an idempotent authoritative unavailable fact for an
+explicit MiniMax Test that fails before Provider observation and a complete
+typed, non-disclosing observer error taxonomy with copied-state Pi component
+proof. It reopens no Event schema, Keychain implementation, Provider verifier,
+Projection, StateWriter, Supervisor, Grant, Evidence, Rules, Scheduler or Pi
+RPC authority. Independent Contract Review is pending. The contract itself
+authorizes no live attempt.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / UNIFIED REPAIR CONTRACT REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the unique P2A-W3 Authoritative Terminal and Observer Closure
+Contract passed independent Contract Review with no P0/P1/P2. Causal REDs then
+proved both live defects before behavior changed. The implementation now records
+one idempotent authoritative unavailable verification fact when Secret Store
+access fails before Provider observation, and publishes a complete safe typed
+observer reason taxonomy while preserving exact timeout-only containment.
+
+Focused, repeated, real Swift-to-Go UDS, copied-state Pi 0.82.1, complete
+serialized Go, complete serialized Go race, vet, module, format, diff, secret,
+Swift normal, Swift ThreadSanitizer and arm64 Release gates all pass. Locked
+Event/StateWriter/Projection/Supervisor/Bridge authority hashes remain exact.
+The immutable implementation source lock and a fresh independent Implementation
+Review are next. No Provider, Keychain, Pi, native, live-canary, staging or
+commit action has occurred under this repair.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = UNIFIED REPAIR DETERMINISTIC PASS / IMPLEMENTATION REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: independent Implementation Review 1 correctly returned `FAIL` with
+two P1 findings: four observer reason families did not fail closed for every
+known-plus-unknown tree, and the copied-state Pi proof used a synthetic
+one-event database rather than the retained six-fact live SQLite. That source
+lock is superseded and authorized no live action.
+
+Repair 1 added causal RED for all four ambiguity exceptions, removed those
+exceptions, and now copies the exact retained Pi database with SHA-256
+`677624b6...e5461a2`. The fixture proves all six facts, saved-Team payloads,
+Pi 0.82.1 identity, qualified local model, no-write observation, complete public
+failure attribution and final database bytes remain unchanged. Focused,
+retained-state, complete serialized Go/race, Swift normal/ThreadSanitizer,
+Release, vet, module, format, diff and secret gates pass. A new immutable source
+lock and a fresh independent Implementation Re-review are next; live remains
+locked.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = REPAIR 1 DETERMINISTIC PASS / IMPLEMENTATION RE-REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: independent Implementation Re-review 2 returned `FAIL` with two
+remaining P1 findings: same-command incompatible Pi metadata failure leaves
+were not treated as ambiguous, and the retained six-fact SQLite proof was
+conditional on an environment variable. The Repair 1 source lock is superseded
+and authorized no live action.
+
+Repair 2 added a causal same-command conflict RED, now requires uniqueness of
+both metadata command and failure category, and removed the synthetic fallback.
+Every ordinary test decodes the reviewed compressed six-fact SQLite evidence,
+requires exact restored SHA-256 `677624b6...e5461a2`, and proves Runtime,
+saved-Team and complete Journal immutability across success and the full public
+failure matrix. Focused/full/race/Swift/TSan/Release/static/security gates pass.
+A fresh immutable Repair 2 lock and independent Re-review are next; live remains
+locked.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = REPAIR 2 DETERMINISTIC PASS / IMPLEMENTATION RE-REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the third fresh independent Implementation Re-review verified exact
+Repair 2 source lock `9ddf62b8...419430a8`, all locked authorities and the
+self-contained retained six-fact SQLite, then returned `PASS` with no P0/P1/P2.
+The authoritative MiniMax unavailable terminal, complete fail-closed observer
+taxonomy and retained Pi/saved-Team immutability are deterministically closed.
+
+No live action has yet occurred under the passing lock. The next permitted
+actions are to freeze, preflight and consume at most one new MiniMax explicit
+Test lineage and one new Pi saved-Team controlled-execution lineage. They remain
+separate, fresh, no-retry attempts and require independent Result Review before
+walkthrough or commit.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = IMPLEMENTATION REVIEW PASS / LIVE MANIFESTS PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`HUMAN_REQUIRED`: both newly frozen Authoritative Terminal/Observer live
+lineages were consumed and failed before product socket publication. MiniMax
+attempt `phase2a-w3-live-20260802-minimax-003` and Pi attempt
+`phase2a-w3-live-20260802-pi-003` each returned exit code `3` with the sole
+public line `daemon unavailable`. No native Test, Provider request, Pi RPC,
+local-model invocation, saved-Team preflight, Start, Run, Grant, Frame or
+Evidence path was entered. Both SQLite files are byte-identical to preflight,
+pass integrity, and have no Journal delta. No retry is permitted.
+
+Read-only diagnosis at
+`.loom-evidence/phase2a/P2A-W3/authoritative-live-construction-failure-diagnosis.md`
+identifies the common construction incompatibility: the frozen live manifests
+supplied the normal user-level npm Codex path, but that path is a symlink and
+the strict Codex native-auth constructor accepts only an executable regular
+file observed through `Lstat`. The failure occurs during setup construction,
+before execution composition and IPC publication, then `run()` masks every
+builder error as generic `daemon unavailable`.
+
+The required correction is one governed P2A-W3 vertical repair covering
+canonical executable identity binding, safe build-stage reason attribution,
+and a real live-shaped product construction test with local-model execution
+enabled. It must not weaken identity checks, expose raw paths/errors, split a
+new WorkItem, or reuse either consumed lineage. Result-evidence review is the
+current gate; no walkthrough, staging, commit, or P2A-W4 is permitted.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / BOTH LIVE CONSTRUCTION FAILED / RESULT REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Result Review over immutable result lock
+`64e5c53d...67ed94` returned `PASS WITH P2 LIMITATIONS` for evidence and
+`FAIL / HUMAN_REQUIRED` for the product. It independently reproduced the npm
+Codex symlink identity incompatibility and verified both unchanged SQLite
+databases, exact fact counts, integrity, source/authority hashes, process/socket
+cleanup, resident exclusion, and non-disclosure. The P2 limitation is that the
+retained attempt roots do not contain an independent raw stderr/start-counter
+transcript; it does not authorize reinterpretation or retry.
+
+The allowed next gate is a new reviewed P2A-W3 vertical repair covering
+canonical Codex launcher identity, safe build-stage attribution, and the full
+live-shaped construction path. Both old lineages remain consumed. No final
+walkthrough, live action, staging, commit or P2A-W4 is permitted.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / RESULT REVIEW PASS / VERTICAL REPAIR CONTRACT NEXT / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the unique P2A-W3 Native Launcher and Build Transaction Closure
+Contract is frozen at
+`.loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-closure-contract.md`.
+It closes official npm Codex launcher resolution to a canonical native binary,
+complete safe build-stage attribution, and real setup-only plus
+execution-enabled product construction through the Go IPC server in one
+vertical boundary. It creates no W4, reopens no Journal/Projection/Execution
+authority, and authorizes no live action. Fresh independent Contract Review is
+the current gate.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = NATIVE LAUNCHER AND BUILD TRANSACTION CONTRACT REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Contract Review verified exact contract hash
+`4493858a...d30b18` and returned `PASS` with no P0/P1/P2. Mandatory causal RED
+is now the gate. No live action, staging, commit or W4 is authorized.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = NATIVE LAUNCHER AND BUILD TRANSACTION CONTRACT PASS / CAUSAL RED NEXT / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`HUMAN_REQUIRED`: causal RED closed the npm launcher and safe build-attribution
+unit defects, but the mandatory execution-enabled product construction fixture
+proved a locked-boundary conflict. A non-nil `LocalModelCatalog` is validated
+inside the Pi adapter against the production-frozen 1.1GB model SHA before
+setup/execution/IPC, so a small deterministic fixture fails as
+`build_observer / invalid local runtime observation daemon`.
+
+The reviewed contract explicitly locks Pi adapter files and requires a stop if
+RED proves they are needed. The recommended repair is a reviewed, test-only
+expected-digest/binding injection seam that production cannot access; the
+alternative is a non-hermetic mandatory dependency on the installed 1.1GB
+model. No scope expansion, live action, staging or commit has occurred.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / CAUSAL RED PROVED LOCKED PI TEST-SEAM CONFLICT / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the blocker is resolved without reopening Pi authority by freezing
+the P2A-W3 Native Launcher Build Methodology Amendment. The ordinary matrix
+remains hermetic; one separate mandatory component gate opts into the exact
+already installed private model/server and validates their frozen hashes before
+crossing the real execution-enabled production builder. It is read/hash only,
+starts no model/Pi/Provider/UI process, creates no W4 and authorizes no live
+action. Independent Amendment Review is the current gate.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = METHODOLOGY AMENDMENT REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent review verified Native Launcher Build Methodology
+Amendment SHA-256 `78a57fda...be22bc` and returned `PASS` with no P0/P1/P2.
+The mandatory read/hash-only component gate then validated the exact installed
+model and server, crossed the production execution-enabled builder and real Go
+IPC path, and preserved the retained six-fact SQLite byte-for-byte without
+starting Pi, llama-server, Provider, UI or any live canary. Focused and complete
+Go normal/race plus static and Swift-normal gates pass. Swift ThreadSanitizer,
+arm64 Release, final scope/authority reconciliation, immutable source lock and
+fresh independent Implementation Review remain before any new live manifest.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = NATIVE LAUNCHER REPAIR VERIFICATION IN PROGRESS / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: final pre-lock audit added causal RED and repaired three same-contract
+fail-closed build-attribution gaps: nested different reasons now close to
+`build_unknown`, typed setup-native-auth attribution is preserved, and real IPC
+server construction failure is `build_ipc`. The focused/repeated/component,
+complete serialized Go normal/race, vet/module/format/diff/security and Swift
+normal/ThreadSanitizer/arm64 Release gates all pass after the final source
+change. Immutable source lock
+`.loom-evidence/phase2a/P2A-W3/native-launcher-and-build-transaction-source-lock.json`
+has SHA-256 `c28eacb6...71e6e7`; all enumerated files and locked authorities match.
+Fresh independent Implementation Review against that exact lock is the current
+gate. It authorizes no live action by itself.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = NATIVE LAUNCHER REPAIR SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: independent Implementation Review 1 verified source lock
+`c28eacb6...71e6e7` and found no P0/P1, but returned `FAIL` for one P2 contract
+evidence gap: setup-only MiniMax Test was not proven through real product
+construction and Go IPC with execution initialization absent. That lock is
+superseded and authorized no live action.
+
+Repair 1 added the exact real-IPC credential Test proof with `Execution: nil`
+and no local-model inputs. It produces one next-revision Journal terminal via a
+deterministic missing credential-store read, makes zero Provider requests,
+keeps the execution bundle nil, never creates the execution directory or any
+execution fact, and cleans the socket. The new proof passes at `-count=20`.
+Focused/component, complete serialized Go normal/race, static/security and
+Swift normal/ThreadSanitizer/arm64 Release gates pass after the final test-only
+change. New immutable source lock SHA-256 is
+`f6bb68656cd70b2c9d75861bc5a77325ea488bd78dcfa49fc0c1cc41dd64d772`.
+Fresh independent Implementation Re-review is the current gate; live remains
+locked.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = NATIVE LAUNCHER REPAIR 1 SOURCE LOCKED / IMPLEMENTATION RE-REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Implementation Re-review 2 verified exact source
+lock `f6bb6865...64d772` and returned `PASS` with no P0/P1/P2. The next permitted
+step is to freeze and preflight exactly one wholly new setup-only MiniMax
+lineage and one wholly new Pi saved-Team controlled-execution lineage. They
+must be sequential, each one start with no retry, and neither consumed `-003`
+lineage may be reused. No live process has started under the passing lock yet.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = IMPLEMENTATION RE-REVIEW PASS / NEW LIVE MANIFESTS PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: two wholly new `-004` live roots and manifests are materialized and
+preflighted under the passing implementation lock. MiniMax manifest SHA-256 is
+`889350d9...8c75d4`; Pi manifest SHA-256 is `0b76124d...0feaa`. Both roots,
+SQLite states, binaries, signed native bundles, source-lock/review copies,
+external identities, default socket/lock absence and resident exclusion pass.
+No `-004` process has started. MiniMax must run first with zero local-model
+flags; Pi remains locked until MiniMax is fully stopped.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = LIVE PREFLIGHT PASS / MINIMAX-004 UNCONSUMED / PI-004 LOCKED / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: MiniMax-004 consumed its one daemon start and one native `Test`.
+The exact product surface displayed `Unavailable` and the Event Journal
+authoritatively appended exactly one next-revision
+`ProviderCredentialVerified` fact: revision `5`, status `rejected`, reason
+`unavailable`. SQLite integrity, one-shot limits, no-execution boundary,
+process/socket cleanup and non-disclosure pass.
+
+Pi-004 was then consumed before product exercise by a Controller invocation
+error: an extra non-manifest `daemon` positional argument caused exact loomd to
+exit `2` with public stderr `invalid input`. SQLite remained byte-identical; no
+daemon, socket, Pi, local model, preflight, Start or Provider action began.
+Fresh independent Result Review reproduced result-lock SHA-256
+`0a66ec71...f1fbdd`, returned `PASS` for evidence integrity, classified
+MiniMax `PASS` and Pi `controller_invocation_error`, and correctly kept
+walkthrough/commit/additional-live gates closed under the parent contract.
+
+The bounded P2A-W3 Native Launcher Live Invocation Transaction Amendment is
+now frozen at SHA-256 `f1ab059b...deb6a42`. It changes no product source or
+authority and creates no W4. It proposes one wholly new Pi replacement only
+after independent Amendment Review PASS, with a canonical exact executable +
+32-element argv digest, no positional subcommand, one binary invocation and no
+retry. Amendment Review is the current gate; no replacement root or process
+has started.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = HUMAN_REQUIRED / MINIMAX PASS / PI CONTROLLER ERROR / INVOCATION AMENDMENT REVIEW PENDING / NO LIVE / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: MiniMax-004 remains a live product PASS. Pi-005 proved both source
+and independent Verifier Run/Grant/Evidence lineages but stopped before
+`WorkItemVerificationCommitted`, `TeamNodeAcceptanceCommitted` and
+`TeamExecutionTerminal`. Independent Result Review classified the retained
+evidence as trustworthy and the product `HUMAN_REQUIRED`.
+
+The single P2A-W3 Authoritative Acceptance and Recovery Time contract, Repairs
+1-3 and final independent Contract Review now close the complete time boundary
+without a W4. Causal RED reproduced the Pi-005 stop under a successive-call UTC
+clock. The implementation makes Work Authority own final acceptance and
+recovery decision times, preserves exact replay before clock reads, binds UI
+commands to stable time-independent intents, and keeps final timestamp-bearing
+digests in Journal facts. Accepted and rejected advancing-clock paths pass.
+
+Complete serialized Go normal/race, vet, Swift tests and Swift Release build
+pass. Immutable source lock
+`.loom-evidence/phase2a/P2A-W3/authoritative-acceptance-recovery-source-lock.json`
+is frozen; fresh independent Implementation Review is the current gate. No
+final live lineage, walkthrough, staging or commit is authorized yet.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ACCEPTANCE/RECOVERY SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the first Acceptance/Recovery Implementation Review returned one
+P1: recovery replay validated a genuine decision but not the complete recovery
+transaction. Repair 4 remained inside the same P2A-W3 and nine-file boundary.
+Its causal RED proved that missing `TeamNodeAttemptScheduled` and missing
+`TeamExecutionTerminal` facts were incorrectly accepted as exact replay.
+
+New writes and replay now share one transaction constructor and bind every
+recovery/downstream Event field, ordering edge and canonical payload. The two
+REDs plus a mismatched-causation fixture pass; existing retry, terminal,
+concurrency and idempotency tests remain green. Complete serialized Go
+normal/race, vet, Swift tests and Swift Release build pass.
+
+Repair 4 source lock SHA-256 is
+`70e7b380f7eb40d1b978dee393c6f4ed21efe63e3df2afb091c7ee322f8c9954`.
+Fresh independent Implementation Review is the only current gate. No live
+lineage, product process, walkthrough, staging or commit is authorized yet.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = REPAIR 4 SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 4's first re-review found that exact recovery replay still
+accepted an exact transaction followed by a duplicate scheduled-attempt or
+Team-terminal fact. Both histories were captured as causal REDs. Team replay
+now rejects duplicate logical node/attempt scheduling and every repeated Team
+terminal, while preserving legitimate progress after a single retry schedule.
+
+The full serialized Go normal/race matrix, vet, Swift tests and Swift Release
+build pass again. Final Repair 4 source lock SHA-256 is
+`3148271012989d1ebdd00d190587f730fb691444bfae9bd4f8f29fe861c981ea`.
+A fresh independent final Implementation Re-review is the only current gate.
+No live lineage, product process, walkthrough, staging or commit is authorized.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = REPAIR 4 FINAL SOURCE LOCKED / FINAL IMPLEMENTATION RE-REVIEW PENDING / NO LIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: final Repair 4 Implementation Re-review passed with no P0/P1/P2.
+The one authorized Pi-006 lineage then consumed exactly one daemon invocation,
+one native preflight and one Start through the ordinary New Mission surface.
+
+Attempt 1 completed source and independent Verifier Evidence, committed a real
+rejected acceptance, and entered one explicit Rules/Work-Authority bounded
+recovery. Attempt 2 used wholly new source/verifier WorkItem, Run, Grant and
+Evidence identities, committed an accepted outcome and exactly one
+`TeamExecutionTerminal(succeeded)`. The native surface rendered
+`Complete · Succeeded`, `1 node(s), 1 complete` and accepted Evidence
+availability.
+
+Final SQLite has `103` Events, integrity `ok`, one recovery, two acceptance
+transactions, four distinct terminal Run/Grant/Evidence lineages and one Team
+terminal. Read-only refresh appended zero facts. Socket/IPC lock/process/state
+holder cleanup and bounded non-disclosure scans pass. Result-lock SHA-256 is
+`d115c37db635b99879847f10169a59bbb872e80741b3c9b67329d533eb3ffeb8`.
+Fresh independent Result Review is the current gate; walkthrough, staging and
+commit remain locked until PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = PI-006 LIVE PASS / RESULT REVIEW PENDING / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the Pi-006 Result Review returned `PASS` with no blocking P0/P1/P2.
+The first authorized no-terminal walkthrough then exposed a product defect
+before acceptance: visible `Teams`, `Needs You`, and `Library` rail controls
+were empty Swift closures, so the frozen History/Compare/Attention walkthrough
+could not be completed. The diagnostic copy was stopped; it added only one
+Runtime discovery metadata fact to its copied SQLite and no execution or
+terminal fact. Pi-006 remains unchanged and is not retried.
+
+The repair stays inside the existing five-file Swift W3 boundary. It adds real
+Teams, Attention, and Library routes and renders Teams, authoritative Run
+History, accepted Evidence counts, and two-Run Compare from the existing
+snapshot only. Causal RED, focused rendering tests, complete Go normal/race,
+vet, Swift tests/Release build, and diff checks pass. History resolves Runtime
+display names and does not expose internal instance IDs. Source lock SHA-256 is
+`f1cde4c072fa47bd0c526d79851c91a94fd64a6fc40eccdc50770b3cd8bb36ba`.
+Fresh independent Implementation Review is the current gate. No replacement
+live canary, walkthrough, staging, commit, or P2A-W4 is permitted before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = WALKTHROUGH NAVIGATION REPAIR SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Navigation Repair Implementation Review 1 returned `FAIL` with one
+P1: partial, stale and offline-preserved snapshots could display a definite
+empty Attention state and authoritative History/Compare wording. No
+walkthrough or live action followed that review.
+
+Repair 2 adds a closed presentation state derived from connection status plus
+snapshot presence. Only an online snapshot can state `Nothing needs you`;
+partial/preserved views explicitly warn that items may be missing, missing
+snapshots are unavailable, and preserved Team records do not claim execution
+availability. Causal degraded-state RED, 63 XCTest tests plus 4 Swift Testing
+tests, Release build and diff checks pass. Existing complete Go normal/race/vet
+results remain valid because no Go source changed. Final navigation source lock
+SHA-256 is
+`52409c9f398d1653519fa9026acd7ae00a7a6324881f6a508e09e57235199f76`.
+Fresh independent Implementation Re-review is the current gate; walkthrough,
+staging, commit and P2A-W4 remain locked.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = WALKTHROUGH NAVIGATION REPAIR 2 SOURCE LOCKED / IMPLEMENTATION RE-REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Navigation Repair 2 Implementation Re-review
+reproduced source digest
+`52409c9f398d1653519fa9026acd7ae00a7a6324881f6a508e09e57235199f76`
+and returned `PASS` with no P0/P1/P2. Real rail routing, online-only definite
+Attention emptiness, partial/preserved/unavailable wording, stale-Team
+non-executability, neutral History/Compare headings, Runtime display-name
+privacy, Mission continuity and snapshot-only reads all pass.
+
+Exactly one wholly fresh no-terminal native/TUI walkthrough may now be
+materialized. It must not enter objective text, request preflight, Start,
+Provider Test, approval mutation, recovery mutation or any terminal command.
+Staging and commit remain locked until the walkthrough, source/evidence lock
+and final independent whole-Candidate review pass.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = WALKTHROUGH AUTHORIZED / NO TERMINAL ACTION / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the authorized walkthrough 002 completed every native read-only
+surface, but the TUI then exposed raw Mission/Team IDs on its Board and retained
+direct Run/Runtime/WorkItem/Evidence identifiers in Compare/Evidence rendering.
+The root was stopped and is diagnostic only. Its copied SQLite remains
+integrity `ok` with exactly `103` Events; no preflight, Start, Provider,
+approval, recovery, cancel, terminal, or other execution action occurred.
+
+A presentation-only safe-name repair is now in progress inside the existing
+P2A-W3 Swift UI and Go TUI owned files. Causal RED reproduced the raw Mission
+ID and missing reachable Compare surface; Swift RED proved the display-name
+resolver was absent. Authority IDs remain internal command bindings and are
+not rewritten. No new walkthrough, staging, commit, or P2A-W4 is authorized
+until full verification, source locking, and independent Implementation Review
+PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = WALKTHROUGH 002 DIAGNOSTIC FAIL / SAFE-NAME REPAIR IN PROGRESS / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the presentation-only safe-name repair passes focused Go TUI and
+Swift UI tests, complete serialized Go normal/race matrices, Go vet, all 63
+XCTest tests with one visual-export-only skip, all 4 Swift Testing tests, Swift
+Release build, and diff checks. TUI Compare is now reachable; primary Mission,
+Node, Team, Runtime, Evidence, Compare, Home, stale-view, and decision copy uses
+safe display names or non-identifying fallbacks while exact authority IDs stay
+inside command and fencing bindings.
+
+The four-file source lock combined SHA-256 is
+`b5d66e77a0e81f1b219afb4fb24dd3b801f109cb0582a878d86bb35c5446a730`.
+Fresh independent Implementation Review is the only current gate. No root003,
+staging, commit, or P2A-W4 is authorized before Review PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = SAFE-NAME SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Safe-Name Implementation Review 1 reproduced the lock but returned
+`FAIL` with one P1 and one P2. Team Builder still displayed setup Runtime names
+without comparing them to the Runtime instance ID, and the TUI fallback test
+did not use the exact diagnostic Mission-title-equals-ID input. No walkthrough
+followed that review.
+
+Repair 2 adds both exact regressions and a fail-closed setup Runtime display
+resolver. Focused TUI, complete serialized Go normal/race, vet, all Swift tests,
+Swift Release build and diff checks pass again. The four-file Repair 2 source
+lock combined SHA-256 is
+`5e34e5f9aca0cc4e314fb8b2180c574c197d98a7719b12721894d55a178d73fb`.
+Fresh independent Implementation Re-review is the only current gate; root003,
+staging, commit and P2A-W4 remain locked.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = SAFE-NAME REPAIR 2 SOURCE LOCKED / IMPLEMENTATION RE-REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Safe-Name Repair 2 Implementation Re-review
+reproduced source digest
+`5e34e5f9aca0cc4e314fb8b2180c574c197d98a7719b12721894d55a178d73fb`
+and returned `PASS` with no P0/P1/P2. Setup and snapshot Runtime fallbacks,
+exact Mission-title-equals-ID regression, primary safe-name surfaces, reachable
+read-only Compare, and unchanged internal command/fencing bindings all pass.
+
+Exactly one wholly fresh no-terminal root003 native/TUI walkthrough is now
+authorized. It must not enter objective text, request preflight, Start,
+Provider Test, approval/recovery/cancel mutation, or terminal action. Staging
+and commit remain locked until the walkthrough, final evidence lock, and fresh
+whole-Candidate Review PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ROOT003 WALKTHROUGH AUTHORIZED / NO TERMINAL ACTION / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: root003 was materialized fresh from the accepted 103-Event Pi-006
+SQLite and opened by Computer Use. The first native Board immediately exposed
+a third identifier shape: the read model populated Mission title with internal
+`team_definition_id`, which is neither `mission_id` nor `team_instance_id`.
+No click or product action followed. The app and daemon stopped; final SQLite
+is byte-identical, integrity `ok`, and still 103 Events. root003 is diagnostic
+only.
+
+Repair 3 reopens only the rebuildable LocalProduct Mission read-model title and
+its API tests in the same P2A-W3. Causal RED proves both matched-definition
+display name and missing-definition non-identifying fallback. Journal facts,
+authority IDs, schema, command/CAS/fencing behavior and client strict decoders
+remain unchanged. Focused API/TUI tests pass; the full matrix and fresh review
+are now required before any replacement walkthrough.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ROOT003 DIAGNOSTIC FAIL / SAFE-NAME REPAIR 3 IN PROGRESS / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Safe-Name Repair 3 moves the final classification to the rebuildable
+Mission read model. It resolves a matched TeamDefinition to the validated Team
+name, falls back to `Saved team` when the definition cannot be validated, and
+uses `Historical mission` when no Team exists. The real SQLite projection →
+LocalProductReadService → Go IPC server → TUI test asserts the safe rendered
+copy and explicitly rejects the internal TeamDefinition ID.
+
+Focused API/TUI/real-IPC checks, complete serialized Go normal/race matrices,
+vet, all Swift tests, Swift Release build, and diff checks pass. The eight-file
+Repair 3 source lock combined SHA-256 is
+`2a4f54fa1fb8758c76edded6e1f5ff1dbc9a23af4538182f3bdfb3261736b3df`.
+Fresh independent Implementation Review is the current gate. No replacement
+walkthrough, staging, commit, or P2A-W4 is authorized before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = SAFE-NAME REPAIR 3 SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Safe-Name Repair 3 Implementation Review
+reproduced source digest
+`2a4f54fa1fb8758c76edded6e1f5ff1dbc9a23af4538182f3bdfb3261736b3df`
+and returned `PASS` with no P0/P1/P2. Validated Team-name derivation,
+non-identifying fallbacks, real private-Go-IPC-to-TUI proof, client defenses,
+and unchanged authority/fencing boundaries all pass.
+
+Exactly one wholly fresh replacement no-terminal root004 native/TUI walkthrough
+is now authorized. It must not enter objective text, request preflight, Start,
+Provider Test, approval/recovery/cancel mutation, or terminal action. Staging
+and commit remain locked until walkthrough PASS, final evidence lock and fresh
+whole-Candidate Review PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ROOT004 WALKTHROUGH AUTHORIZED / NO TERMINAL ACTION / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: root004 passed native safe-name surfaces and TUI Board, New Mission,
+Team Builder, Runs / History, Compare, and Attention. Opening the selected
+completed Mission then failed read-only with `state_unavailable`; navigation
+stopped. The native app, TUI, and daemon were stopped. The final SQLite remains
+byte-identical to Pi-006, integrity `ok`, exactly 103 Events, with socket/lock,
+isolated processes, and open handles absent. root004 is consumed diagnostic
+evidence only.
+
+The cause was a Timeline reader contradiction: accepted `WorkItemRejected`
+Events carry an attempt number on an already-authoritative work-item stream but
+do not redundantly carry a logical-node ID. The reader incorrectly required
+both payload fields when either appeared. Repair 4 now independently
+corroborates every present field against stream + GlobalReadView lineage and
+continues to reject missing binding, node/attempt mismatch, zero, and malformed
+attempts.
+
+Focused regression, current-source read of the unchanged root004 SQLite,
+complete serialized Go normal/race matrices, vet, all Swift tests, Swift
+Release build, and diff checks pass. The two-file Repair 4 source lock combined
+SHA-256 is
+`a41f59f9ab90911c95c34cbf1d2496cc91575af94a6953398191a51ad77137dd`.
+Fresh independent Implementation Review is the current gate. No root005,
+staging, commit, or P2A-W4 is authorized before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ROOT004 DIAGNOSTIC FAIL / TIMELINE REPAIR 4 SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Timeline Repair 4 Implementation Review reproduced source lock
+`a41f59f9ab90911c95c34cbf1d2496cc91575af94a6953398191a51ad77137dd`
+but returned `FAIL` with one P1 and one P2. An explicitly present empty
+`logical_node_id` could be treated as omitted, and the permanent regression
+did not traverse the full safe-field → authoritative lineage → delivery mapper
+path. root005 was not authorized.
+
+Repair 5 remains inside the same P2A-W3 boundary. It must distinguish field
+presence from empty value, reject every malformed present field, add a durable
+authoritative mapping fixture for the real attempt-only rejection shape, and
+close the root004 Inspector tabs that selected Plan/Changes/Evidence without
+changing the rendered Team content. No schema, authority, mutation, live
+action, commit, or P2A-W4 is permitted before RED, complete verification,
+source lock, and fresh independent Re-review PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = TIMELINE/INSPECTOR REPAIR 5 IN PROGRESS / ROOT005 NOT AUTHORIZED / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Timeline/Inspector Repair 5 closes both independent Review findings
+and the native placeholder defect without widening authority. Payload lineage
+is still only corroborating metadata: an omitted field is allowed, while every
+present node or attempt field must be non-empty, valid and exactly match the
+lineage derived from the authoritative stream plus versioned GlobalReadView.
+The permanent regression traverses the complete safe-field → lineage resolver
+→ authoritative mapper path for the accepted attempt-only rejection and all
+malformed-presence cases.
+
+The native Team, Plan, Changes and Evidence Inspector tabs now render four
+distinct safe read-only sections. Changes and Evidence are limited to exact
+Team journal records, raw IDs and digests are not rendered, and unavailable
+Timeline data is explicit rather than invented. Focused checks, current-source
+read of the unchanged root004 SQLite, complete serialized Go normal/race
+matrices, vet, all Swift tests, Swift Release build and diff checks pass.
+
+The four-file Repair 5 combined source lock is
+`d616d7ac1e5b98db887a65fcdffd02a14222f185767cd63cd56ef448ce12c405`.
+Fresh independent Implementation Re-review is the only current gate. root005,
+staging, commit and P2A-W4 remain locked before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = TIMELINE/INSPECTOR REPAIR 5 SOURCE LOCKED / IMPLEMENTATION RE-REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 5 independent Re-review reproduced source lock
+`d616d7ac1e5b98db887a65fcdffd02a14222f185767cd63cd56ef448ce12c405`
+but returned `FAIL` with one P1. Changes and Evidence could treat a Timeline
+with an explicit stream gap or `has_more=true` as complete, presenting unknown
+or unread later history as an authoritative empty result. All lineage fixes,
+the real mapper fixture, read-only seam, safe complete-history sections and
+unchanged authority boundaries passed. root005 was not authorized.
+
+Repair 6 remains in the same P2A-W3 boundary. Strict negative fixtures now
+cover gap and incomplete-page states for both Changes and Evidence. Those
+sections render records or a truthful empty result only for the exact Team with
+`gap=nil` and `has_more=false`; every other state is explicitly unavailable
+with zero rows. No pagination, cursor mutation, schema, writer, command, CAS,
+Grant, generation, Evidence, Projection authority or P2A-W4 was introduced.
+
+Focused RED/GREEN, complete serialized Go normal/race matrices, vet, all Swift
+tests, Swift Release build and diff checks pass. The four-file Repair 6 source
+lock is
+`473b4b454fa02b6f63c0b4d33c356862b60d8c91b819b935000ce80b6a3ab1e2`.
+Fresh independent Implementation Re-review is the sole current gate. root005,
+staging and commit remain locked before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = INCOMPLETE TIMELINE REPAIR 6 SOURCE LOCKED / IMPLEMENTATION RE-REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Repair 6 Implementation Re-review reproduced
+source lock
+`473b4b454fa02b6f63c0b4d33c356862b60d8c91b819b935000ce80b6a3ab1e2`
+and returned `PASS` with no P0/P1/P2. Exact-Team complete history, stream-gap
+and incomplete-page failure states, complete positive rows, Repair 5 lineage
+guards and the read-only authority boundary all pass.
+
+Exactly one fresh isolated root005 replacement native/TUI walkthrough is now
+authorized. It is read-only and no-terminal: no objective entry, preflight,
+Start, Provider Test, approval/recovery/cancel mutation or terminal action.
+root004 stays consumed. Staging and commit remain locked until root005 passes,
+final evidence is locked and a fresh whole-Candidate Review passes.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ROOT005 WALKTHROUGH AUTHORIZED / NO TERMINAL ACTION / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh root005 replacement native/TUI walkthrough returned `PASS`.
+The native Board, New Mission, Teams, Needs You, Library, Runtime & Providers,
+completed Mission and all four Inspector tabs rendered distinct safe product
+copy. The real Timeline remained incomplete on its first bounded page, so
+Changes and Evidence truthfully rendered complete activity unavailable rather
+than false empty/complete history. The TUI opened the same Mission without the
+root004 `state_unavailable` failure and traversed Runs, Compare, Attention and
+both bounded Timeline reads with human-safe labels.
+
+No objective, preflight, Start, Provider Test, credential, approval, recovery,
+cancel, terminal or other authority mutation occurred. The daemon completed
+one no-write observation cycle. Final SQLite is byte-identical to Pi-006,
+integrity `ok`, exactly 103 Events; socket/lock, root005 processes, open state
+handles and isolation residue are absent. `demo-resident` remains untouched.
+root005 is consumed and never reusable.
+
+The final walkthrough result and result lock are now evidence-complete. A fresh
+whole-Candidate source/evidence lock and independent Review are the only
+remaining gates before staging and one atomic P2A-W3 commit.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ROOT005 WALKTHROUGH PASS / FINAL WHOLE-CANDIDATE REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent whole-Candidate Review 1 returned `FAIL` with two
+P1 blockers and one P2 evidence gap. Native Timeline loads only the first 64
+records, so the accepted 103-Event fixture cannot present complete Changes and
+Evidence. The proposed final inventory also includes contract-excluded user
+files and non-W3 evidence. root005 has native screenshots but no durable TUI
+transcript.
+
+Repair 7 remains inside the unique P2A-W3 and reopens only the already-owned
+strict Swift read path, its tests and the existing Go-to-Swift contract test. It
+freezes bounded eight-page/512-record aggregation, exact view/Team/Board/
+Attention identity, cursor and delivery de-duplication, gap/conflict closure,
+and cancellation/selection fencing. It introduces no writer, authority, schema,
+daemon mutation, durable cursor, second read model or P2A-W4. Contract Review is
+the current gate; no implementation, replacement walkthrough, staging or commit
+is authorized before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 CONTRACT REVIEW PENDING / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: independent Repair 7 Contract Review returned `FAIL` with two P1
+scope/identity blockers and one P2 proof ambiguity. The accepted Go cursor is a
+canonical unpadded base64url stream-head envelope up to 32 KiB, while the Swift
+client incorrectly applies the ordinary 256-byte identifier ceiling. The
+contract also did not bind first-page nested Board/Attention identities, and a
+static fixture handler could have satisfied its real-Go wording.
+
+Contract Repair 1 precisely reopens `LocalIPCClient.swift` and its tests plus
+the parent-owned daemon test. It freezes a cursor-specific 32 KiB grammar,
+first-page and cross-page nested identity checks, and an exact SQLite Journal ->
+LocalProductReadService/TeamExecutionStream -> localProductHandler -> Go IPC ->
+Swift Client -> Store proof using an authoritative cursor above 256 bytes. No
+production Go authority or protocol path is reopened. Repaired Contract Review
+is the current gate.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 CONTRACT REPAIR 1 REVIEW PENDING / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 7 Contract Repair 1 Review accepted its owned scope, nested
+identity rules and authoritative vertical proof, but returned `FAIL` with one
+P1 canonical-cursor ambiguity. Alphabet/length/no-padding checks alone do not
+reject invalid modulus or non-zero unused trailing bits that Go rejects by
+decode/re-encode equality.
+
+Contract Repair 2 freezes exact Go-equivalent transport validation: Swift may
+temporarily RawURL-decode and canonical RawURL-re-encode only to require
+byte-for-byte equality, while parsing no cursor contents and sending the
+original bytes unchanged. Mandatory RED now includes invalid modulus and
+re-encode mismatch. Repaired Contract Review is the current gate.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 CONTRACT REPAIR 2 REVIEW PENDING / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Contract Repair 2 Review returned `PASS` with no
+P0/P1/P2. Go-equivalent canonical RawURL validation, original-byte transport,
+ordinary-ID separation, nested page identity, bounded aggregation, fencing and
+the exact authoritative vertical test path are implementable inside the
+reviewed W3 boundary. Mandatory RED is now the current gate; no walkthrough,
+staging or commit is authorized.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 MANDATORY RED / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 7 Mandatory RED is causal. The current Store reproduced 24
+expected failures: one-page publication, gap and nested-identity acceptance,
+unseen duplicate/cursor replay, missing eight-page bound and late selection /
+cancellation publication. The cursor test separately fails only because the
+frozen canonical 32 KiB validator is absent. Existing focused Store tests
+remained green. Minimal implementation is now the current gate.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 IMPLEMENTATION / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 7 focused GREEN closes the first-page defect. Swift Store and
+cursor tests pass 33/33; strict Go IPC fixture aggregation passes; and the real
+SQLite Journal -> LocalProductReadService/TeamExecutionStream ->
+localProductHandler -> Go IPC -> Swift Client -> Store path passes with a
+greater-than-256-byte authoritative cursor returned byte-for-byte on page two.
+The complete aggregate contains two Evidence records and one succeeded terminal
+with no gap or remaining page. Full deterministic verification is the current
+gate; no walkthrough, staging or commit is authorized.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 FULL VERIFICATION / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 7 complete deterministic verification returned `PASS`. Go
+normal and race full-repository matrices, vet, module verification, Go format,
+Swift 72-test package suite (one visual-only skip), Swift Release build, diff
+and non-disclosure checks all pass. The exact eight-file source lock combined
+SHA-256 is
+`8520c8ab66cb4b85a4a06710db684a5452d037582d21231699c47123d0a0d040`.
+
+Fresh independent Repair 7 Implementation Review is the current gate. No
+replacement walkthrough, final inventory, staging or commit is authorized
+before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 SOURCE LOCKED / IMPLEMENTATION REVIEW PENDING / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 7 independent Implementation Review 1 returned `FAIL` with
+P0 `0`, P1 `2`, P2 `0`. Production behavior and the exact locked source were
+accepted, but the mandatory test matrix omitted several 512-record, nested
+identity and generation-fencing branches. The authoritative Go-to-Swift proof
+also did not compare Journal Events/heads before and after the Store probe or
+assert the complete ordered unique delivery IDs. Test-only pagination padding
+was explicitly found non-polluting.
+
+Test Proof Repair 1 is frozen inside the reviewed Repair 7 boundary and reopens
+only the Swift Store test, the Go product-daemon test, W3 evidence and this
+status file. Production source remains locked. Focused and full verification,
+an updated exact source lock, and independent Implementation Re-review are
+required before any replacement walkthrough.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 TEST PROOF REPAIR 1 / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Test Proof Repair 1 reproduced a real original-contract defect:
+Task cancellation fenced a late successful page but a late client error could
+reach the generic catch and publish `offline/unavailable`. The original Repair
+7 Store boundary is reopened only for the minimal `Task.isCancelled` fail-closed
+guard in every error branch. The strict wire decoder remains unchanged; Store
+schema defense is tested through an in-memory model. Focused verification is
+the current gate.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 CANCELLATION ERROR REPAIR / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: Repair 7 Test Proof Repair 1 focused and complete verification now
+passes. The 512/513 boundary, nested identities, cancellation late error,
+Team/Mission/same-selection generations, exact ordered unique deliveries and
+Journal Events/heads no-mutation proof are all executable. Full Go normal/race,
+vet/module/format/diff, Swift 75-XCTest plus four Swift-Testing, and Swift
+Release matrices pass. The refreshed exact eight-file combined SHA-256 is
+`db6cc1a2a2e89496960de661edcd01f5faa8477e553d646ba24d9eca0c47eb47`.
+
+Fresh independent Implementation Re-review is the only current gate. No
+replacement walkthrough, staging or commit is authorized before PASS.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 REPAIRED SOURCE LOCKED / IMPLEMENTATION REREVIEW PENDING / NO WALKTHROUGH / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent Repair 7 Implementation Re-review returned
+`PASS` with P0/P1/P2 all zero. It independently reproduced the exact lock and
+closed every 512-bound, nested identity, generation, cancellation-error,
+Journal no-mutation and ordered-delivery proof. Exactly one wholly fresh
+isolated root006 read-only replacement native/TUI walkthrough is now eligible.
+
+The walkthrough must use a private 0600 copy of accepted Pi-006 state, current
+signed binaries and the real private product socket. It may perform one
+no-write observation cycle and read-only navigation only; objective entry,
+preflight, Start, Provider Test, approval, recovery, cancel and terminal writes
+remain forbidden. It must preserve a durable TUI transcript, native Changes /
+Evidence screenshots, byte-identical 103-Event SQLite, cleanup and resident
+exclusion. Staging and commit remain locked pending Result Review and final
+whole-Candidate Review.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL NATIVE TIMELINE REPAIR 7 IMPLEMENTATION ACCEPTED / ROOT006 WALKTHROUGH ELIGIBLE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: root006 manifest and preflight are frozen and pass. The root was
+wholly absent, is private 0700 with no symlinks, and contains current locked
+loom/loomd/native artifacts plus a 0600 byte-identical Pi-006 SQLite copy.
+Integrity is `ok`, Event count `103`, product socket/lock/process/state handles
+are absent, isolation is empty and `demo-resident` remains excluded. The single
+read-only native/TUI walkthrough may now start.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL ROOT006 PREFLIGHT PASS / ONE READ-ONLY WALKTHROUGH ACTIVE / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: root006 single read-only walkthrough completed its product claim.
+Native shows the complete succeeded Mission, complete Changes across both
+Attempts and four Evidence rows; TUI durably records Board, Mission, Team
+Builder, four Runs, Compare, Attention, Timeline and next-page traversal. One
+daemon cycle was no-write. Final SQLite is byte-identical, integrity `ok`, 103
+Events, and root006 socket/process/handle/isolation cleanup passes.
+
+The unrelated demo-resident state was not targeted and remains old-mtime,
+integrity `ok`, one Event, but its preflight PID was independently absent at
+final cleanup. It was not restarted. Fresh independent root006 Result Review is
+the current gate and must judge this disclosed liveness note. root006 is
+consumed; no reuse, staging or commit is authorized.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL ROOT006 PRODUCT PASS / RESULT REVIEW PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: fresh independent root006 Result Review returned Evidence `PASS`
+and Product `PASS`, with P0/P1/P2 all zero. The Reviewer reproduced every
+locked hash, the native and TUI product surfaces, byte-identical 103-Event
+SQLite, one no-write daemon result, private permissions, cleanup and
+non-disclosure. The disclosed demo-resident liveness loss is not attributable
+to root006 and is not a Candidate boundary violation. root006 is consumed and
+must never be reused.
+
+No further live action is authorized or required. The only remaining gates are
+a corrected narrow final source/evidence inventory, fresh independent
+whole-Candidate Review, exact staging inspection and one atomic local commit.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = FINAL ROOT006 RESULT REVIEW PASS / FINAL INVENTORY PENDING / NO COMMIT
+P2A-W4 = DOES NOT EXIST
+```
+
+`CURRENT`: the corrected narrow final inventory locks exactly 48 P2A-W3
+source/test files and 177 prior P2A-W3 evidence files. It excludes every
+pre-existing Phase 1, plan, draft, Codex-config, root-document, generated-build
+and external-live-root path. Fresh independent whole-Candidate Review 2
+reproduced every source/evidence hash and returned `PASS` with P0/P1/P2 all
+zero. Review 1's native pagination, contaminated inventory and missing durable
+TUI-proof findings are all closed.
+
+The Reviewer independently reran serialized whole-repository Go tests, the
+full Swift package, the exact product/test diff check and the locked-source
+non-disclosure check. The bound race, vet, module and Release matrices remain
+applicable to the exact final source digest. Historical governance Markdown
+retains its locked CommonMark hard-line-break bytes.
+PX-01 through PX-18 are closed. P2A-W3 now satisfies its controlled execution
+product and governance Exit Contract; no further live action is justified.
+
+Final whole-Candidate Review 2 SHA-256 is
+`08693a2594536b7212d0b4d6d5ad225e2e0477a6fd738ac400eb0b9dde21667d`.
+Exact-path staging inspection passed with 228 Candidate paths, zero excluded
+paths and no index/hash drift. The unique P2A-W3 is accepted and locally
+committed as one atomic Candidate; no live action or P2A-W4 follows from this
+acceptance.
+
+```text
+P2A-W2 = ACCEPTED
+P2A-W3 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
 P2A-W4 = DOES NOT EXIST
 ```

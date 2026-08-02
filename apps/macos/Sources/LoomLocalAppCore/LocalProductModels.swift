@@ -2,6 +2,7 @@ import Foundation
 
 public enum LocalProductWireError: Error, Equatable {
     case invalidJSON
+    case invalidValue
     case unsupportedSchema
     case unknownField
 }
@@ -73,11 +74,13 @@ public struct LocalProductRuntimeSummary: Codable, Equatable, Sendable, Identifi
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "runtime_instance_id", "display_name", "adapter_type",
-            "executable_version", "status", "capacity", "model_ids",
-            "observed_capabilities",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "runtime_instance_id", "display_name", "adapter_type",
+                "executable_version", "status", "capacity", "model_ids",
+                "observed_capabilities",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         runtimeInstanceID = try values.decode(String.self, forKey: .runtimeInstanceID)
         displayName = try values.decode(String.self, forKey: .displayName)
@@ -112,10 +115,12 @@ public struct LocalProductTeamSummary: Codable, Equatable, Sendable, Identifiabl
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "team_instance_id", "display_name", "source_kind", "state",
-            "confirmed", "executable", "read_only",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "team_instance_id", "display_name", "source_kind", "state",
+                "confirmed", "executable", "read_only",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         teamInstanceID = try values.decode(String.self, forKey: .teamInstanceID)
         displayName = try values.decode(String.self, forKey: .displayName)
@@ -150,11 +155,13 @@ public struct LocalProductRunSummary: Codable, Equatable, Sendable, Identifiable
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "run_id", "work_item_id", "phase", "terminal_status",
-            "terminal_reason", "runtime_instance_id", "agent_instance_id",
-            "claim_generation",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "run_id", "work_item_id", "phase", "terminal_status",
+                "terminal_reason", "runtime_instance_id", "agent_instance_id",
+                "claim_generation",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         runID = try values.decode(String.self, forKey: .runID)
         workItemID = try values.decode(String.self, forKey: .workItemID)
@@ -221,12 +228,14 @@ public struct LocalProductAttention: Codable, Equatable, Sendable, Identifiable 
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "attention_id", "kind", "severity",
-            "team_instance_id", "logical_node_id", "work_item_id",
-            "approval_request_id", "runtime_instance_id", "status",
-            "occurred_at", "action_required",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "attention_id", "kind", "severity",
+                "team_instance_id", "logical_node_id", "work_item_id",
+                "approval_request_id", "runtime_instance_id", "status",
+                "occurred_at", "action_required",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         attentionID = try values.decode(String.self, forKey: .attentionID)
@@ -263,10 +272,12 @@ public struct LocalProductMissionPulse:
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "agent_instance_id", "runtime_instance_id", "role", "state",
-            "node_id", "attempt_number",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "agent_instance_id", "runtime_instance_id", "role", "state",
+                "node_id", "attempt_number",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         agentInstanceID = try values.decode(String.self, forKey: .agentInstanceID)
         runtimeInstanceID = try values.decode(
@@ -309,11 +320,13 @@ public struct LocalProductMissionNode:
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "logical_node_id", "title", "agent_instance_id",
-            "runtime_instance_id", "role", "depends_on", "max_attempts",
-            "status", "attempt_number", "ready",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "logical_node_id", "title", "agent_instance_id",
+                "runtime_instance_id", "role", "depends_on", "max_attempts",
+                "status", "attempt_number", "ready",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         logicalNodeID = try values.decode(String.self, forKey: .logicalNodeID)
         title = try values.decode(String.self, forKey: .title)
@@ -418,13 +431,15 @@ public struct LocalProductMissionSummary:
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "mission_id", "team_instance_id", "title",
-            "source_kind", "lane", "status", "priority", "plan_digest",
-            "simple", "node_count", "completed_node_count",
-            "active_node_count", "review_node_count", "attention_count",
-            "current_node_id", "last_milestone", "team_pulse", "topology",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "mission_id", "team_instance_id", "title",
+                "source_kind", "lane", "status", "priority", "plan_digest",
+                "simple", "node_count", "completed_node_count",
+                "active_node_count", "review_node_count", "attention_count",
+                "current_node_id", "last_milestone", "team_pulse", "topology",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         guard schemaVersion == 1 else {
@@ -435,8 +450,10 @@ public struct LocalProductMissionSummary:
         title = try values.decode(String.self, forKey: .title)
         sourceKind = try values.decode(String.self, forKey: .sourceKind)
         lane = try values.decode(String.self, forKey: .lane)
-        guard ["Proposed", "Ready", "Orchestrating", "Review", "Complete"]
-            .contains(lane) else {
+        guard
+            ["Proposed", "Ready", "Orchestrating", "Review", "Complete"]
+                .contains(lane)
+        else {
             throw LocalProductWireError.invalidJSON
         }
         status = try values.decode(String.self, forKey: .status)
@@ -461,12 +478,56 @@ public struct LocalProductMissionSummary:
     }
 }
 
+public struct LocalProductHealth: Codable, Equatable, Sendable {
+    public let daemon: String
+    public let journal: String
+    public let projection: String
+
+    enum CodingKeys: String, CodingKey {
+        case daemon, journal, projection
+    }
+
+    public init(
+        daemon: String,
+        journal: String,
+        projection: String
+    ) {
+        self.daemon = daemon
+        self.journal = journal
+        self.projection = projection
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: ["daemon", "journal", "projection"]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        daemon = try values.decode(String.self, forKey: .daemon)
+        journal = try values.decode(String.self, forKey: .journal)
+        projection = try values.decode(String.self, forKey: .projection)
+        guard daemon == "serving_request",
+            journal == "available",
+            projection == "current" || projection == "stale"
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+
+    public static let unknown = Self(
+        daemon: "unknown",
+        journal: "unknown",
+        projection: "unknown"
+    )
+}
+
 public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let viewVersion: String
     public let partial: Bool
     public let stale: Bool
     public let reason: String
+    public let health: LocalProductHealth
     public let runtimes: [LocalProductRuntimeSummary]
     public let teams: [LocalProductTeamSummary]
     public let missions: [LocalProductMissionSummary]
@@ -483,7 +544,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case viewVersion = "view_version"
-        case partial, stale, reason, runtimes, teams, missions, runs, evidence
+        case partial, stale, reason, health, runtimes, teams, missions, runs, evidence
         case attention
         case preparedDecisions = "prepared_decisions"
         case runtimePage = "runtime_page"
@@ -494,12 +555,14 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "view_version", "partial", "stale", "reason",
-            "runtimes", "teams", "missions", "runs", "evidence", "attention",
-            "prepared_decisions", "runtime_page", "team_page", "mission_page",
-            "run_page", "evidence_page",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "view_version", "partial", "stale", "reason",
+                "health", "runtimes", "teams", "missions", "runs", "evidence", "attention",
+                "prepared_decisions", "runtime_page", "team_page", "mission_page",
+                "run_page", "evidence_page",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         guard schemaVersion == 1 || schemaVersion == 2 else {
@@ -509,9 +572,18 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         partial = try values.decode(Bool.self, forKey: .partial)
         stale = try values.decode(Bool.self, forKey: .stale)
         reason = try values.decode(String.self, forKey: .reason)
+        if schemaVersion == 2 {
+            health =
+                try values.decodeIfPresent(
+                    LocalProductHealth.self,
+                    forKey: .health
+                ) ?? .unknown
+        } else {
+            health = .unknown
+        }
         runtimes = try values.decode([LocalProductRuntimeSummary].self, forKey: .runtimes)
         teams = try values.decode([LocalProductTeamSummary].self, forKey: .teams)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             missions = try values.decode(
                 [LocalProductMissionSummary].self,
                 forKey: .missions
@@ -522,7 +594,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         runs = try values.decode([LocalProductRunSummary].self, forKey: .runs)
         evidence = try values.decode([LocalProductEvidenceSummary].self, forKey: .evidence)
         attention = try values.decode([LocalProductAttention].self, forKey: .attention)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             preparedDecisions = try values.decode(
                 [LocalProductDecisionCommand].self,
                 forKey: .preparedDecisions
@@ -532,7 +604,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         }
         runtimePage = try values.decode(LocalProductPageCursor.self, forKey: .runtimePage)
         teamPage = try values.decode(LocalProductPageCursor.self, forKey: .teamPage)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             missionPage = try values.decode(
                 LocalProductPageCursor.self,
                 forKey: .missionPage
@@ -550,6 +622,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         partial: Bool = false,
         stale: Bool = false,
         reason: String = "",
+        health: LocalProductHealth = .unknown,
         runtimes: [LocalProductRuntimeSummary] = [],
         teams: [LocalProductTeamSummary] = [],
         missions: [LocalProductMissionSummary] = [],
@@ -568,6 +641,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         self.partial = partial
         self.stale = stale
         self.reason = reason
+        self.health = health
         self.runtimes = runtimes
         self.teams = teams
         self.missions = missions
@@ -589,20 +663,23 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         try values.encode(partial, forKey: .partial)
         try values.encode(stale, forKey: .stale)
         try values.encode(reason, forKey: .reason)
+        if schemaVersion == 2 {
+            try values.encode(health, forKey: .health)
+        }
         try values.encode(runtimes, forKey: .runtimes)
         try values.encode(teams, forKey: .teams)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             try values.encode(missions, forKey: .missions)
         }
         try values.encode(runs, forKey: .runs)
         try values.encode(evidence, forKey: .evidence)
         try values.encode(attention, forKey: .attention)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             try values.encode(preparedDecisions, forKey: .preparedDecisions)
         }
         try values.encode(runtimePage, forKey: .runtimePage)
         try values.encode(teamPage, forKey: .teamPage)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             try values.encode(missionPage, forKey: .missionPage)
         }
         try values.encode(runPage, forKey: .runPage)
@@ -677,12 +754,14 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "logical_node_id", "status", "dependency_satisfied",
-            "current_attempt", "work_item_id", "run_id",
-            "runtime_instance_id", "agent_instance_id",
-            "verification_status", "recovery_action", "retry_at",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "logical_node_id", "status", "dependency_satisfied",
+                "current_attempt", "work_item_id", "run_id",
+                "runtime_instance_id", "agent_instance_id",
+                "verification_status", "recovery_action", "retry_at",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         logicalNodeID = try values.decode(String.self, forKey: .logicalNodeID)
         status = try values.decode(String.self, forKey: .status)
@@ -717,10 +796,12 @@ public struct LocalProductBoard: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "team_instance_id", "plan_digest", "status",
-            "view_version", "nodes", "cost",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "team_instance_id", "plan_digest", "status",
+                "view_version", "nodes", "cost",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         teamInstanceID = try values.decode(String.self, forKey: .teamInstanceID)
@@ -754,10 +835,12 @@ public struct LocalProductTimelinePayload: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "status", "reason_code", "action", "warning_code", "retry_at",
-            "text_delta", "evidence_digest", "cost",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "status", "reason_code", "action", "warning_code", "retry_at",
+                "text_delta", "evidence_digest", "cost",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         status = try values.decode(String.self, forKey: .status)
         reasonCode = try values.decode(String.self, forKey: .reasonCode)
@@ -801,12 +884,14 @@ public struct LocalProductTimelineRecord: Codable, Equatable, Sendable, Identifi
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "delivery_id", "kind", "authority",
-            "team_instance_id", "logical_node_id", "attempt_number",
-            "source_stream_id", "source_sequence", "source_event_id",
-            "occurred_at", "cursor", "payload",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "delivery_id", "kind", "authority",
+                "team_instance_id", "logical_node_id", "attempt_number",
+                "source_stream_id", "source_sequence", "source_event_id",
+                "occurred_at", "cursor", "payload",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         deliveryID = try values.decode(String.self, forKey: .deliveryID)
@@ -852,12 +937,14 @@ public struct LocalProductStreamGap: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "delivery_id", "kind", "team_instance_id",
-            "reason", "previous_cursor_digest", "current_view_version",
-            "artifact_available", "artifact_digest", "recoverable",
-            "occurred_at",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "delivery_id", "kind", "team_instance_id",
+                "reason", "previous_cursor_digest", "current_view_version",
+                "artifact_available", "artifact_digest", "recoverable",
+                "occurred_at",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         deliveryID = try values.decode(String.self, forKey: .deliveryID)
@@ -893,12 +980,36 @@ public struct LocalProductTimelinePage: Codable, Equatable, Sendable {
         case gap, records, board, attention
     }
 
+    public init(
+        schemaVersion: Int,
+        teamInstanceID: String,
+        viewVersion: String,
+        nextCursor: String,
+        hasMore: Bool,
+        gap: LocalProductStreamGap?,
+        records: [LocalProductTimelineRecord],
+        board: LocalProductBoard,
+        attention: [LocalProductAttention]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.teamInstanceID = teamInstanceID
+        self.viewVersion = viewVersion
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+        self.gap = gap
+        self.records = records
+        self.board = board
+        self.attention = attention
+    }
+
     public init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: [
-            "schema_version", "team_instance_id", "view_version",
-            "next_cursor", "has_more", "gap", "records", "board",
-            "attention",
-        ])
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "schema_version", "team_instance_id", "view_version",
+                "next_cursor", "has_more", "gap", "records", "board",
+                "attention",
+            ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         guard schemaVersion == 1 else {
@@ -975,7 +1086,8 @@ enum StrictJSONScanner {
 
         mutating func skipWhitespace() {
             while index < bytes.count,
-                  [9, 10, 13, 32].contains(bytes[index]) {
+                [9, 10, 13, 32].contains(bytes[index])
+            {
                 index += 1
             }
         }
@@ -1047,10 +1159,12 @@ enum StrictJSONScanner {
                     escaped = true
                 } else if byte == 0x22 {
                     let encoded = Data(bytes[start..<index])
-                    guard let decoded = try JSONSerialization.jsonObject(
-                        with: Data("[\(String(decoding: encoded, as: UTF8.self))]".utf8)
-                    ) as? [String],
-                    let value = decoded.first else {
+                    guard
+                        let decoded = try JSONSerialization.jsonObject(
+                            with: Data("[\(String(decoding: encoded, as: UTF8.self))]".utf8)
+                        ) as? [String],
+                        let value = decoded.first
+                    else {
                         throw LocalProductWireError.invalidJSON
                     }
                     return value
@@ -1064,12 +1178,10 @@ enum StrictJSONScanner {
         mutating func parseNumber() throws {
             let start = index
             while index < bytes.count,
-                  bytes[index] == 0x2D ||
-                    bytes[index] == 0x2B ||
-                    bytes[index] == 0x2E ||
-                    bytes[index] == 0x65 ||
-                    bytes[index] == 0x45 ||
-                    (bytes[index] >= 0x30 && bytes[index] <= 0x39) {
+                bytes[index] == 0x2D || bytes[index] == 0x2B || bytes[index] == 0x2E
+                    || bytes[index] == 0x65 || bytes[index] == 0x45
+                    || (bytes[index] >= 0x30 && bytes[index] <= 0x39)
+            {
                 index += 1
             }
             guard index > start else { throw LocalProductWireError.invalidJSON }
@@ -1080,7 +1192,8 @@ enum StrictJSONScanner {
         mutating func consume(_ literal: String) throws {
             let expected = Array(literal.utf8)
             guard index + expected.count <= bytes.count,
-                  Array(bytes[index..<(index + expected.count)]) == expected else {
+                Array(bytes[index..<(index + expected.count)]) == expected
+            else {
                 throw LocalProductWireError.invalidJSON
             }
             index += expected.count

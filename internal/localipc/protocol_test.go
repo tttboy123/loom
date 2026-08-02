@@ -112,6 +112,34 @@ func TestMissionDecisionIsTheOnlyAcceptedMissionMutationMethod(t *testing.T) {
 	}
 }
 
+func TestMissionExecutionIsTheOnlyAcceptedExecutionMethod(t *testing.T) {
+	valid := []byte(
+		`{"version":1,"request_id":"execution-1","method":"mission_execution","params":{"operation":"preflight"}}`,
+	)
+	request, err := decodeRequest(valid)
+	if err != nil {
+		t.Fatalf("mission_execution decode error = %v", err)
+	}
+	if request.Method != "mission_execution" {
+		t.Fatalf("method = %q", request.Method)
+	}
+	for _, method := range []string{
+		"execution_preflight",
+		"execution_start",
+		"execution_control",
+		"mission_execute",
+		"mission_execution_v2",
+	} {
+		input := []byte(
+			`{"version":1,"request_id":"execution-1","method":"` +
+				method + `","params":{}}`,
+		)
+		if _, err := decodeRequest(input); err == nil {
+			t.Fatalf("decodeRequest accepted alias %q", method)
+		}
+	}
+}
+
 func TestProtocolErrorIsClosedAndNeverIncludesCause(t *testing.T) {
 	cause := errors.New("private /Users/name/state.db token=secret")
 	protocolErr := safeProtocolError("state_unavailable", cause)

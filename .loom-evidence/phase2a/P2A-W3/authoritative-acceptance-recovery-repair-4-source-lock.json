@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3 Controlled Execution Experience",
+  "boundary": "Authoritative Acceptance and Recovery Time Terminal Closure Repair 4",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "parent_source_lock_sha256": "29facd9ea623685795131202281afb8fa6cf9ee33676b930096ebc235f1c5098",
+  "implementation_review_1_sha256": "580a13eb824173233ca59fde1a8ac1dec5c428eb6c980b8fd2d386ec36e11de4",
+  "implementation_review_1_verdict": "FAIL",
+  "repair_4_sha256": "4d54af39b1e08b6b499775107cda4d8c88e74fe929cd4c08d6b81ff3885798d4",
+  "repair_4_red_sha256": "68f75db5a115babeaadbbf83a4e2850b773c32edcdd659f6a2af71b0b9faddc1",
+  "repair_4_verification_sha256": "85f1bb866060dc6ed446dce56a8e7f96ab2366849e7f982cd548ae0142921e37",
+  "combined_method": "sha256 of sha256sum output lines in the exact files array order",
+  "combined_sha256": "de0cbd193bd2b900d7d89397ec60361678403fa8095a1ada35b36744078ca261",
+  "files": [
+    {"path": "internal/work/verification_authority.go", "sha256": "748920a6a2a430ae323494de9ba35f124a592032aed4a6023ca134e9cef5637f"},
+    {"path": "internal/work/verification_authority_test.go", "sha256": "31302b5404a48d64133a7d425ba6ecb358b7ee81f4ccc391d3b56b6e3b0a29a4"},
+    {"path": "internal/work/team_execution_authority.go", "sha256": "f29b6552782130a8af29b084d65903e06d3d695f99a56b7bf8f6816149070b20"},
+    {"path": "internal/work/team_execution_authority_test.go", "sha256": "9391797cc2fbe20cf2b3f02d590443c52b3ae5ddf8dd07bab41a584560355506"},
+    {"path": "internal/app/team_execution.go", "sha256": "4d1c75883b625327b642bbdd220da2cd0057510c0d282b7d92727b27f85a1813"},
+    {"path": "internal/app/team_execution_test.go", "sha256": "5448bdc3600b3a721ae207857e43ce58f890668b7ed022476c24b030d004ce8b"},
+    {"path": "internal/app/local_product_decision.go", "sha256": "adcffde19e2256d7d5a441bc8f8ae62cc5bcbc4a943d336c5e8cdd2756af2ccb"},
+    {"path": "internal/app/local_product_decision_test.go", "sha256": "6db5b7313974f488ffc2affe0d614c4e921c4eedc96040c1532932f8bce4007c"},
+    {"path": "cmd/loomd/product_daemon_test.go", "sha256": "d96f9582a0faef49718deef6a572a403564d92476ba35d8844f1ef39baa15f5a"}
+  ],
+  "gates": {
+    "repair_4_causal_red": "PASS",
+    "focused_recovery_exact_transaction": "PASS",
+    "focused_acceptance_recovery_normal_and_race": "PASS",
+    "real_product_advancing_clock_vertical": "PASS",
+    "go_all_serial": "PASS",
+    "go_all_race_serial": "PASS",
+    "go_vet_all": "PASS",
+    "swift_test": "PASS: 60 XCTest, 1 visual-only skip, 4 Swift Testing",
+    "swift_release_build": "PASS",
+    "diff_check": "PASS",
+    "live": "LOCKED_PENDING_FRESH_IMPLEMENTATION_REVIEW"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "work_item": "P2A-W3",
+  "amendment": "Saved-Team Dormant Capacity Amendment",
+  "status": "contract_review_pass_implementation_unlocked_live_locked",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "branch": "codex/loom-platform-slice2",
+  "contract_sha256": "39824721399e2767fc7387202639e2829dcf0d1d65ee86b0bb9f71f806727e73",
+  "parent_contract_sha256": "80d947440c4f3d03e6922cd35a32cdf603dd446347423bb80f9c3fe383baca86",
+  "live_precondition_audit_sha256": "d719748ddaf811e9729eb5bf750a2b762f1968603ab664975d63e1c03c790025",
+  "accepted_dormancy_sources": {
+    "internal/teams/saved_team_instantiation.go": "e404fbee52deec03a561c336b794a400c8af5083133489e007c8400deef0207a",
+    "internal/teams/saved_team_instances.go": "491a268806168025a0fbfde95b6a2d453ac5d68d0eb573eefd066cd01fa89ac0"
+  },
+  "reopened_files_before_implementation": {
+    "internal/teams/saved_team_binding.go": "406e31133db71fd89bce6511ec66fe25c30f740687f26e2497cf615a48398560",
+    "internal/teams/saved_team_binding_test.go": "4e6c61b03ead0db1e7045c0fa5fb42fa76e162ba81756dcf87a3dde29be3312d"
+  },
+  "reopened_product_files": [
+    "internal/teams/saved_team_binding.go",
+    "internal/teams/saved_team_binding_test.go"
+  ],
+  "contract_review": {
+    "verdict": "PASS",
+    "review_file": ".loom-evidence/phase2a/P2A-W3/saved-team-dormant-capacity-amendment-contract-review.md"
+  },
+  "implementation_authorized": true,
+  "live_action_authorized": false,
+  "p2a_w4_exists": false
+}

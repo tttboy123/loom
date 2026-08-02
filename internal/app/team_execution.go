@@ -110,6 +110,61 @@ type TeamCoordinator struct {
 	evidenceStore  *evidence.Store
 }
 
+type teamRecoveryPolicyPort struct {
+	policy rules.RecoveryPolicy
+}
+
+func newTeamRecoveryPolicyPort(
+	policy rules.RecoveryPolicy,
+) teamRecoveryPolicyPort {
+	return teamRecoveryPolicyPort{policy: policy}
+}
+
+func (port teamRecoveryPolicyPort) Valid() bool {
+	return port.policy.Valid()
+}
+func (port teamRecoveryPolicyPort) Version() int {
+	return port.policy.Version()
+}
+func (port teamRecoveryPolicyPort) Digest() string {
+	return port.policy.Digest()
+}
+func (port teamRecoveryPolicyPort) AttemptCredits() int {
+	return port.policy.AttemptCredits()
+}
+func (port teamRecoveryPolicyPort) RetryDelay() time.Duration {
+	return port.policy.RetryDelay()
+}
+func (port teamRecoveryPolicyPort) RecoveryApprovalRequired() bool {
+	return port.policy.RecoveryApprovalRequired()
+}
+func (port teamRecoveryPolicyPort) Decide(
+	request work.TeamRecoveryDecisionRequest,
+) (work.TeamRecoveryDecision, error) {
+	return rules.DecideRecovery(
+		port.policy,
+		rules.RecoveryInput{
+			TeamInstanceID:           request.TeamInstanceID,
+			PlanDigest:               request.PlanDigest,
+			LogicalNodeID:            request.LogicalNodeID,
+			AttemptNumber:            request.AttemptNumber,
+			MaxAttempts:              request.MaxAttempts,
+			AgentInstanceID:          request.AgentInstanceID,
+			RuntimeInstanceID:        request.RuntimeInstanceID,
+			EvidenceID:               request.EvidenceID,
+			EvidenceDigest:           request.EvidenceDigest,
+			OutputSummaryDigest:      request.OutputSummaryDigest,
+			Classification:           request.Classification,
+			PriorClassifications:     request.PriorClassifications,
+			RemainingCredits:         request.RemainingCredits,
+			FallbackConsumed:         request.FallbackConsumed,
+			DecisionTime:             request.DecisionTime,
+			Trigger:                  rules.RecoveryTrigger(request.Trigger),
+			AcceptanceDecisionDigest: request.AcceptanceDecisionDigest,
+		},
+	)
+}
+
 func NewTeamCoordinator(
 	workAuthority *work.Authority,
 	grantAuthority *authorization.Authority,
@@ -207,11 +262,12 @@ func (coordinator *TeamCoordinator) Run(
 		if err != nil {
 			return TeamExecutionResult{}, err
 		}
+		readyTime := appReadyEvaluationTime(request, states)
 		ready, err := teams.ReadyExecutionNodes(
 			planningPlan,
 			states,
 			capacities,
-			request.AuthoritativeTime,
+			readyTime,
 		)
 		if err != nil {
 			return TeamExecutionResult{}, fmt.Errorf(
@@ -258,6 +314,8 @@ func (coordinator *TeamCoordinator) Run(
 			selections,
 			ready,
 		)
+		waveRequest := request
+		waveRequest.AuthoritativeTime = readyTime
 		dispatched, err := coordinator.workAuthority.DispatchTeamReadySet(
 			ctx,
 			work.TeamDispatchInput{
@@ -266,7 +324,7 @@ func (coordinator *TeamCoordinator) Run(
 				SemanticBindings:     appSemanticBindings(request),
 				ViewVersion:          view.Version(),
 				ExpectedHeads:        expectedHeads,
-				AuthoritativeTime:    request.AuthoritativeTime,
+				AuthoritativeTime:    waveRequest.AuthoritativeTime,
 				PrepareLeaseDuration: request.PrepareLeaseDuration,
 				CorrelationID:        request.CorrelationID,
 			},
@@ -282,7 +340,7 @@ func (coordinator *TeamCoordinator) Run(
 		}
 		tasks, err := coordinator.prepareTeamTasks(
 			ctx,
-			request,
+			waveRequest,
 			dispatched,
 			selectedExecutions,
 		)
@@ -295,7 +353,7 @@ func (coordinator *TeamCoordinator) Run(
 		}
 		if err := coordinator.commitTeamTaskOutcomes(
 			ctx,
-			request,
+			waveRequest,
 			outcomes,
 		); err != nil {
 			return TeamExecutionResult{}, err
@@ -547,17 +605,6 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 				return err
 			}
 		}
-		decision, err := verification.DecideAcceptance(
-			verification.AcceptanceDecisionInput{
-				Contract:            semantics.AcceptanceContract,
-				DeterministicResult: result,
-				VerifierCandidate:   verifierCandidate,
-				DecisionTime:        request.AuthoritativeTime,
-			},
-		)
-		if err != nil {
-			return err
-		}
 		planNode := appPlanNode(request.Plan, logicalNodeID)
 		if planNode.LogicalNodeID() == "" {
 			return ErrInvalidTeamCoordinator
@@ -579,7 +626,6 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 				DeterministicResult: result,
 				VerifierCandidate:   verifierCandidate,
 				VerifierReceipt:     verifierReceipt,
-				Decision:            decision,
 				RecoveryPolicy:      semantics.RecoveryPolicy,
 				MaxAttempts:         planNode.MaxAttempts(),
 				CreditsBefore:       remainingCredits,
@@ -589,8 +635,24 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 		if err != nil {
 			return err
 		}
-		if decision.Kind() == verification.AcceptanceAccepted {
+		var acceptedNode work.TeamNodeRecord
+		foundAcceptedNode := false
+		for _, node := range acceptedTeam.Nodes() {
+			if node.LogicalNodeID() == logicalNodeID {
+				acceptedNode = node
+				foundAcceptedNode = true
+				break
+			}
+		}
+		if !foundAcceptedNode {
+			return ErrTeamExecutionIncomplete
+		}
+		if acceptedNode.Status() == "succeeded" {
 			return nil
+		}
+		if acceptedNode.Status() != "awaiting_recovery" ||
+			acceptedNode.AcceptanceDecisionDigest() == "" {
+			return ErrTeamExecutionIncomplete
 		}
 		return coordinator.scheduleTeamRecoveryDecision(
 			ctx,
@@ -602,17 +664,7 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 			generation,
 			receipt,
 			classification,
-			rules.RecoveryTriggerVerificationRejected,
-			decision.Digest(),
 		)
-	}
-	recoveryTrigger := rules.RecoveryTriggerOutput
-	acceptanceDecisionDigest := ""
-	if current.RecoveryTrigger() ==
-		string(rules.RecoveryTriggerVerificationRejected) {
-		recoveryTrigger = rules.RecoveryTriggerVerificationRejected
-		acceptanceDecisionDigest =
-			current.AcceptanceDecisionDigest()
 	}
 	return coordinator.scheduleTeamRecoveryDecision(
 		ctx,
@@ -624,8 +676,6 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 		generation,
 		receipt,
 		classification,
-		recoveryTrigger,
-		acceptanceDecisionDigest,
 	)
 }
 
@@ -639,8 +689,6 @@ func (coordinator *TeamCoordinator) scheduleTeamRecoveryDecision(
 	generation work.RunGenerationInput,
 	receipt evidence.AttemptReceipt,
 	classification verification.Classification,
-	trigger rules.RecoveryTrigger,
-	acceptanceDecisionDigest string,
 ) error {
 	planNode := appPlanNode(request.Plan, logicalNodeID)
 	if planNode.LogicalNodeID() == "" {
@@ -658,56 +706,22 @@ func (coordinator *TeamCoordinator) scheduleTeamRecoveryDecision(
 	if !found || current.Status() != "awaiting_recovery" {
 		return work.ErrTeamAttemptRecoveryRequired
 	}
-	prior := make([]verification.OutputClassification, 0, attemptNumber-1)
-	fallbackConsumed := false
-	for _, attempt := range current.Attempts() {
-		if attempt.AttemptNumber() < attemptNumber {
-			prior = append(prior, attempt.OutputClassification())
-		}
-		if semantics.RecoveryPolicy.WorkflowFallbackKey() != "" &&
-			attempt.WorkflowPath() ==
-				semantics.RecoveryPolicy.WorkflowFallbackKey() {
-			fallbackConsumed = true
-		}
-	}
-	remainingCredits := semantics.RecoveryPolicy.AttemptCredits() -
-		(attemptNumber - 1)
-	if remainingCredits < 0 {
-		remainingCredits = 0
-	}
-	decision, err := rules.DecideRecovery(
-		semantics.RecoveryPolicy,
-		rules.RecoveryInput{
-			TeamInstanceID:           request.Plan.TeamInstanceID(),
-			PlanDigest:               request.Plan.Digest(),
-			LogicalNodeID:            logicalNodeID,
-			AttemptNumber:            attemptNumber,
-			MaxAttempts:              planNode.MaxAttempts(),
-			AgentInstanceID:          generation.AgentInstanceID,
-			RuntimeInstanceID:        generation.RuntimeInstanceID,
-			EvidenceID:               receipt.EvidenceID(),
-			EvidenceDigest:           receipt.Digest(),
-			OutputSummaryDigest:      receipt.OutputSummary().Digest(),
-			Classification:           classification,
-			PriorClassifications:     prior,
-			RemainingCredits:         remainingCredits,
-			FallbackConsumed:         fallbackConsumed,
-			DecisionTime:             request.AuthoritativeTime,
-			Trigger:                  trigger,
-			AcceptanceDecisionDigest: acceptanceDecisionDigest,
-		},
-	)
-	if err != nil {
-		return err
-	}
-	if decision.Action() == rules.RecoveryNone {
-		return ErrTeamExecutionIncomplete
-	}
-	_, err = coordinator.workAuthority.ScheduleTeamNodeRecovery(
+	_, err := coordinator.workAuthority.ScheduleTeamNodeRecovery(
 		ctx,
 		work.TeamRecoveryInput{
-			Decision:      decision,
-			CorrelationID: request.CorrelationID,
+			TeamInstanceID:      request.Plan.TeamInstanceID(),
+			PlanDigest:          request.Plan.Digest(),
+			LogicalNodeID:       logicalNodeID,
+			AttemptNumber:       attemptNumber,
+			MaxAttempts:         planNode.MaxAttempts(),
+			AgentInstanceID:     generation.AgentInstanceID,
+			RuntimeInstanceID:   generation.RuntimeInstanceID,
+			EvidenceID:          receipt.EvidenceID(),
+			EvidenceDigest:      receipt.Digest(),
+			OutputSummaryDigest: receipt.OutputSummary().Digest(),
+			Classification:      classification,
+			RecoveryPolicy:      newTeamRecoveryPolicyPort(semantics.RecoveryPolicy),
+			CorrelationID:       request.CorrelationID,
 		},
 	)
 	return err
@@ -1970,6 +1984,26 @@ func appExecutionStates(
 		}
 	}
 	return states
+}
+
+func appReadyEvaluationTime(
+	request TeamExecutionRequest,
+	states []teams.ExecutionNodeState,
+) time.Time {
+	readyTime := request.AuthoritativeTime
+	for _, state := range states {
+		if state.Status != "retry_scheduled" &&
+			state.Status != "fallback_scheduled" {
+			continue
+		}
+		semantics, ok := appNodeSemantics(request, state.LogicalNodeID)
+		if !ok || semantics.RecoveryPolicy.RetryDelay() != 0 ||
+			state.RetryAt.IsZero() || !state.RetryAt.After(readyTime) {
+			continue
+		}
+		readyTime = state.RetryAt
+	}
+	return readyTime
 }
 
 func appPlanningPlan(

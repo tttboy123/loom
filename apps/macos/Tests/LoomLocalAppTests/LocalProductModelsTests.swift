@@ -12,6 +12,27 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.viewVersion, "view-1")
         XCTAssertEqual(snapshot.runtimes.map(\.runtimeInstanceID), ["pi-local"])
         XCTAssertTrue(snapshot.teams.isEmpty)
+        XCTAssertEqual(snapshot.health.projection, "unknown")
+    }
+
+    func testStrictSnapshotV2RoundTripsBoundedServiceHealth() throws {
+        let snapshot = try LocalProductWire.decodeSnapshot(
+            Data(Self.snapshotV2JSON.utf8)
+        )
+
+        XCTAssertEqual(snapshot.schemaVersion, 2)
+        XCTAssertEqual(snapshot.health.daemon, "serving_request")
+        XCTAssertEqual(snapshot.health.journal, "available")
+        XCTAssertEqual(snapshot.health.projection, "current")
+
+        let missingHealth = Self.snapshotV2JSON.replacingOccurrences(
+            of: "\"health\":{\"daemon\":\"serving_request\",\"journal\":\"available\",\"projection\":\"current\"},",
+            with: ""
+        )
+        let legacy = try LocalProductWire.decodeSnapshot(
+            Data(missingHealth.utf8)
+        )
+        XCTAssertEqual(legacy.health, .unknown)
     }
 
     func testStrictSnapshotDecodingRejectsUnknownAndDuplicateKeys() {
@@ -83,6 +104,29 @@ final class LocalProductModelsTests: XCTestCase {
       "attention":[],
       "runtime_page":{"next_cursor":"pi-local","has_more":false},
       "team_page":{"next_cursor":"","has_more":false},
+      "run_page":{"next_cursor":"","has_more":false},
+      "evidence_page":{"next_cursor":"","has_more":false}
+    }
+    """
+
+    static let snapshotV2JSON = """
+    {
+      "schema_version":2,
+      "view_version":"view-3",
+      "partial":false,
+      "stale":false,
+      "reason":"",
+      "health":{"daemon":"serving_request","journal":"available","projection":"current"},
+      "runtimes":[],
+      "teams":[],
+      "missions":[],
+      "runs":[],
+      "evidence":[],
+      "attention":[],
+      "prepared_decisions":[],
+      "runtime_page":{"next_cursor":"","has_more":false},
+      "team_page":{"next_cursor":"","has_more":false},
+      "mission_page":{"next_cursor":"","has_more":false},
       "run_page":{"next_cursor":"","has_more":false},
       "evidence_page":{"next_cursor":"","has_more":false}
     }

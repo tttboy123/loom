@@ -169,6 +169,18 @@ func TestCommitTeamNodeAcceptanceLowRiskIsTerminalOnce(t *testing.T) {
 		CreditsBefore:       1,
 		CorrelationID:       testCorrelation,
 	}
+	authorityNow := testNow.Add(2 * time.Minute)
+	clock.Set(authorityNow)
+	authoritativeDecision, err := verification.DecideAcceptance(
+		verification.AcceptanceDecisionInput{
+			Contract:            contract,
+			DeterministicResult: result,
+			DecisionTime:        authorityNow,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wait sync.WaitGroup
 	wait.Add(2)
 	results := make(chan TeamExecutionRecord, 2)
@@ -223,6 +235,8 @@ func TestCommitTeamNodeAcceptanceLowRiskIsTerminalOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock.Set(authorityNow.Add(time.Minute))
+	input.Decision = verification.AcceptanceDecision{}
 	exact, err := authority.CommitTeamNodeAcceptance(
 		context.Background(),
 		input,
@@ -276,9 +290,9 @@ func TestCommitTeamNodeAcceptanceLowRiskIsTerminalOnce(t *testing.T) {
 				"verifier_candidate_kind":        "",
 				"verifier_reason_code":           "",
 				"verifier_candidate_digest":      "",
-				"acceptance_decision_kind":       string(decision.Kind()),
-				"acceptance_decision_digest":     decision.Digest(),
-				"decided_at":                     testNow.Format(time.RFC3339Nano),
+				"acceptance_decision_kind":       string(authoritativeDecision.Kind()),
+				"acceptance_decision_digest":     authoritativeDecision.Digest(),
+				"decided_at":                     authorityNow.Format(time.RFC3339Nano),
 			})
 		case "WorkItemDone":
 			doneFacts++
@@ -288,7 +302,7 @@ func TestCommitTeamNodeAcceptanceLowRiskIsTerminalOnce(t *testing.T) {
 				"claim_generation":           generation.ClaimGeneration,
 				"status":                     "done",
 				"verification_event_id":      event.CausationID,
-				"acceptance_decision_digest": decision.Digest(),
+				"acceptance_decision_digest": authoritativeDecision.Digest(),
 				"source_evidence_id":         receipt.EvidenceID(),
 				"source_evidence_digest":     receipt.Digest(),
 				"verifier_evidence_id":       "",
@@ -304,9 +318,9 @@ func TestCommitTeamNodeAcceptanceLowRiskIsTerminalOnce(t *testing.T) {
 				"work_outcome_event_id":       event.CausationID,
 				"acceptance_contract_version": contract.Version(),
 				"acceptance_contract_digest":  contract.Digest(),
-				"acceptance_decision_kind":    string(decision.Kind()),
-				"acceptance_decision_digest":  decision.Digest(),
-				"decided_at":                  testNow.Format(time.RFC3339Nano),
+				"acceptance_decision_kind":    string(authoritativeDecision.Kind()),
+				"acceptance_decision_digest":  authoritativeDecision.Digest(),
+				"decided_at":                  authorityNow.Format(time.RFC3339Nano),
 				"node_status":                 "succeeded",
 				"dependency_satisfied":        true,
 				"recovery_trigger":            "",

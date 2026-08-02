@@ -356,21 +356,10 @@ func (authority *Authority) CommitTeamNodeAcceptance(
 	if team.legacySemanticUnbound || team.legacyAcceptanceUnbound {
 		return TeamExecutionRecord{}, ErrLegacyAcceptanceUnbound
 	}
-	matched, existing := matchExistingTeamNodeAcceptance(
-		snapshot.Events(),
-		input,
-	)
-	if matched {
-		return cloneTeamExecutionRecord(team), nil
-	}
-	if existing {
-		return TeamExecutionRecord{}, ErrWorkItemAlreadyAccepted
-	}
 	node := teamNodeByID(&team, input.LogicalNodeID)
 	attempt := teamAttemptByNumber(node, input.AttemptNumber)
 	if node == nil || attempt == nil ||
 		node.currentAttempt != input.AttemptNumber ||
-		node.status != "ready_for_review" ||
 		attempt.workItemID != resultInput.WorkItemID ||
 		attempt.runID != resultInput.RunID ||
 		attempt.claimID != resultInput.ClaimID ||
@@ -417,19 +406,6 @@ func (authority *Authority) CommitTeamNodeAcceptance(
 	if err != nil {
 		return TeamExecutionRecord{}, ErrWorkItemAcceptanceConflict
 	}
-	if sourceWork.status == "done" {
-		if sourceWork.acceptanceDecisionDigest == input.Decision.Digest() {
-			return cloneTeamExecutionRecord(team), nil
-		}
-		return TeamExecutionRecord{}, ErrWorkItemAlreadyAccepted
-	}
-	if sourceWork.status != "ready_for_review" ||
-		sourceRun.phase != "terminal" ||
-		sourceRun.terminalStatus != "succeeded" ||
-		sourceRun.claimID != resultInput.ClaimID ||
-		sourceRun.claimGeneration != resultInput.ClaimGeneration {
-		return TeamExecutionRecord{}, ErrWorkItemAcceptanceConflict
-	}
 	if err := validateVerifierAcceptanceLineage(
 		ctx,
 		snapshot,
@@ -438,13 +414,40 @@ func (authority *Authority) CommitTeamNodeAcceptance(
 	); err != nil {
 		return TeamExecutionRecord{}, err
 	}
+	matched, existing := matchExistingTeamNodeAcceptance(
+		snapshot.Events(),
+		input,
+	)
+	if matched {
+		return cloneTeamExecutionRecord(team), nil
+	}
+	if existing || sourceWork.status == "done" {
+		return TeamExecutionRecord{}, ErrWorkItemAlreadyAccepted
+	}
+	if node.status != "ready_for_review" ||
+		sourceWork.status != "ready_for_review" ||
+		sourceRun.phase != "terminal" ||
+		sourceRun.terminalStatus != "succeeded" ||
+		sourceRun.claimID != resultInput.ClaimID ||
+		sourceRun.claimGeneration != resultInput.ClaimGeneration {
+		return TeamExecutionRecord{}, ErrWorkItemAcceptanceConflict
+	}
 	now, err := authority.operationTime()
 	if err != nil {
 		return TeamExecutionRecord{}, err
 	}
-	if !now.Equal(input.Decision.DecisionTime()) {
+	decision, err := verification.DecideAcceptance(
+		verification.AcceptanceDecisionInput{
+			Contract:            input.AcceptanceContract,
+			DeterministicResult: input.DeterministicResult,
+			VerifierCandidate:   input.VerifierCandidate,
+			DecisionTime:        now,
+		},
+	)
+	if err != nil {
 		return TeamExecutionRecord{}, ErrInvalidWorkItemAcceptance
 	}
+	input.Decision = decision
 	verificationPayload := newWorkItemVerificationPayload(input)
 	verificationID := deterministicEventID(
 		"WorkItemVerificationCommitted",
@@ -623,7 +626,6 @@ func validateTeamNodeAcceptanceInput(
 		input.AttemptNumber < 1 || input.AttemptNumber > 3 ||
 		!input.AcceptanceContract.Valid() ||
 		!input.DeterministicResult.Valid() ||
-		!input.Decision.Valid() ||
 		nilInterface(input.RecoveryPolicy) ||
 		!input.RecoveryPolicy.Valid() ||
 		input.MaxAttempts < input.AttemptNumber ||
@@ -646,10 +648,7 @@ func validateTeamNodeAcceptanceInput(
 		resultInput.OutputSummaryDigest !=
 			input.SourceReceipt.OutputSummary().Digest() ||
 		input.DeterministicResult.Risk() !=
-			input.AcceptanceContract.Risk() ||
-		input.Decision.ContractDigest() != input.AcceptanceContract.Digest() ||
-		input.Decision.DeterministicResultDigest() !=
-			input.DeterministicResult.Digest() {
+			input.AcceptanceContract.Risk() {
 		return ErrInvalidWorkItemAcceptance
 	}
 	if input.AcceptanceContract.IndependentVerifierRequired() {
@@ -660,9 +659,7 @@ func validateTeamNodeAcceptanceInput(
 			input.VerifierReceipt.Digest() !=
 				input.VerifierCandidate.Binding().EvidenceDigest ||
 			input.VerifierReceipt.OutputSummary().Digest() !=
-				input.VerifierCandidate.Binding().OutputSummaryDigest ||
-			input.Decision.VerifierCandidateDigest() !=
-				input.VerifierCandidate.Digest() {
+				input.VerifierCandidate.Binding().OutputSummaryDigest {
 			return ErrIndependentVerificationRequired
 		}
 	} else if input.VerifierCandidate.Digest() != "" ||
@@ -791,6 +788,53 @@ func writeVerifierLineageField(
 }
 
 func matchExistingTeamNodeAcceptance(
+	events []journal.Event,
+	input TeamNodeAcceptanceInput,
+) (bool, bool) {
+	source := input.DeterministicResult.Input()
+	existing := false
+	for _, event := range events {
+		if event.Type != "WorkItemVerificationCommitted" {
+			continue
+		}
+		var payload workItemVerificationPayload
+		if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+			payload.WorkItemID != source.WorkItemID ||
+			payload.TeamInstanceID != input.TeamInstanceID ||
+			payload.LogicalNodeID != input.LogicalNodeID ||
+			payload.AttemptNumber != input.AttemptNumber {
+			continue
+		}
+		existing = true
+		decidedAt, err := time.Parse(time.RFC3339Nano, payload.DecidedAt)
+		if err != nil || decidedAt.Location() != time.UTC {
+			continue
+		}
+		decision, err := verification.DecideAcceptance(
+			verification.AcceptanceDecisionInput{
+				Contract:            input.AcceptanceContract,
+				DeterministicResult: input.DeterministicResult,
+				VerifierCandidate:   input.VerifierCandidate,
+				DecisionTime:        decidedAt,
+			},
+		)
+		if err != nil {
+			continue
+		}
+		resolved := input
+		resolved.Decision = decision
+		matched, _ := matchExistingTeamNodeAcceptanceDecision(
+			events,
+			resolved,
+		)
+		if matched {
+			return true, true
+		}
+	}
+	return false, existing
+}
+
+func matchExistingTeamNodeAcceptanceDecision(
 	events []journal.Event,
 	input TeamNodeAcceptanceInput,
 ) (bool, bool) {

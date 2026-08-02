@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "attempt_id": "phase2a-w3-walkthrough-20260803-005",
+  "date": "2026-08-03",
+  "verdict": "PASS",
+  "source_lock_sha256": "473b4b454fa02b6f63c0b4d33c356862b60d8c91b819b935000ce80b6a3ab1e2",
+  "state": {
+    "initial_sha256": "3af352562fbc85cb47c9509096655f2cda4a05ddbb999702bc764ab90f77ed56",
+    "final_sha256": "3af352562fbc85cb47c9509096655f2cda4a05ddbb999702bc764ab90f77ed56",
+    "integrity": "ok",
+    "event_count": 103
+  },
+  "artifacts": {
+    "loom_sha256": "8091e12cff21d80a279c852b87f8afba328109471d9d6372dda612ca07785aa8",
+    "loomd_sha256": "9fd6998417b82903224fad27a2c7ac0d727ec67649f618e53602687081c40fda",
+    "native_executable_sha256": "301c4aec755433e47bbf4ce28a5ff8cafc57a8ab723ab273bc0f04916600ace4",
+    "bundle_id": "com.earendilworks.loom.local",
+    "lc_uuid": "280330BC-61AA-3FAA-BACF-9540DE6CE243",
+    "daemon_result_sha256": "16e83254742da5fe0bc665dfb61f6eb462f793621de2bb6128293535c0e5fb4d"
+  },
+  "screenshots": {
+    "native-board.png": "e94f5535e634e513ced1dadf9b7998a9a551eddc6ba8b8b28062fdf1998030d2",
+    "native-new-mission.png": "f9e60146a63c9c1528f220f2d67df410cb19134a9075fa7a809160f5b02d4c93",
+    "native-teams.png": "baa84fe70a750e95216cc272eea7ce21d1d7f22c916b0ad0fcdcdb1115ed69ed",
+    "native-needs-you.png": "3623f06d555db67646f8f529b627d91588812b127dbe6885836db6e4faefd80e",
+    "native-library.png": "eefa4d61e9e49be25db99ea77c7f37077037a4148c5bed132186148b5dca3f34",
+    "native-runtime-providers.png": "723c4fc35bcf4906cd4a2d03df29cf844c223aebab40f64c766a5a50238e116f",
+    "native-mission-team.png": "34c3530c067f5fc4eed67363d1ff10f7ba95af93002ebb70b8d7dcd341990d7b",
+    "native-mission-plan.png": "82589121e8e32b388644a7d962acafc9436346dd4daaa54c59e7813117b16ab7",
+    "native-mission-changes.png": "83ca069dbd68961a4c2a23995c828069f79cc72d4083158c49f4de6e00385a6f",
+    "native-mission-evidence.png": "3620ac9853a3b4d9f1143eb81ee64e098e0e0a6c5c14cc8fa441807927028b94"
+  },
+  "actions": {
+    "objective_entries": 0,
+    "preflights": 0,
+    "starts": 0,
+    "provider_tests": 0,
+    "authority_mutations": 0,
+    "observation_cycles": 1,
+    "observation_writes": 0
+  },
+  "cleanup": {
+    "product_socket_absent": true,
+    "product_socket_lock_absent": true,
+    "attempt_processes_absent": true,
+    "open_state_handles_absent": true,
+    "isolation_empty": true,
+    "resident_exclusion_preserved": true
+  },
+  "consumed": true
+}

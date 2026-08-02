@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "result": "product_fail_human_required",
+  "review_status": "pending_independent_result_review",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "implementation": {
+    "source_lock_path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-repair-2-source-lock.json",
+    "source_lock_sha256": "9ddf62b829760fa4c0b10f2488f40b008dc423ecee1cbea906e77292419430a8",
+    "review_path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-and-observer-implementation-rereview-3.md",
+    "review_sha256": "ba128d9d3ab0d7347eee00ab1e601877159c80ad688923ff48de60ded4946961",
+    "review_verdict": "PASS"
+  },
+  "minimax": {
+    "attempt_id": "phase2a-w3-live-20260802-minimax-003",
+    "manifest_path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-minimax-live-manifest.json",
+    "manifest_sha256": "f9d220345fa578dee316d5e30cc39178540a28941796e4cb342a018790b031d5",
+    "result_path": ".loom-evidence/phase2a/P2A-W3/authoritative-terminal-minimax-live-result.md",
+    "result_sha256": "693cf50a688b7fa64a7a8f0ac6cf8bbc4433a543373954069cc3ea0f4efd4953",
+    "initial_state_sha256": "b0312739ba7b24961b9e8a698e4cbf436e9cace8758a1d2a058e050aec475e22",
+    "final_state_sha256": "b0312739ba7b24961b9e8a698e4cbf436e9cace8758a1d2a058e050aec475e22",
+    "exit_code": 3,
+    "public_stderr": "daemon unavailable",
+    "daemon_starts": 1,
+    "provider_requests": 0,
+    "explicit_test_actions": 0,
+    "lineage_consumed": true,
+    "retry_permitted": false
+  },
+  "pi": {
+    "attempt_id": "phase2a-w3-live-20260802-pi-003",
+    "manifest_path": ".loom-evidence/phase2a/P2A-W3/authoritative-observer-pi-live-manifest.json",
+    "manifest_sha256": "4c8240e787c85ceb53bf5aeee957874d3040748f25ed2fbf30e8bb62d07e44ea",
+    "result_path": ".loom-evidence/phase2a/P2A-W3/authoritative-observer-pi-live-result.md",
+    "result_sha256": "f6c0450bc9b64cc92370513c7f24967fc10b6ebada80c18625312c1ee614995c",
+    "initial_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+    "final_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+    "exit_code": 3,
+    "public_stderr": "daemon unavailable",
+    "daemon_starts": 1,
+    "provider_requests": 0,
+    "preflight_actions": 0,
+    "mission_starts": 0,
+    "lineage_consumed": true,
+    "retry_permitted": false
+  },
+  "diagnosis": {
+    "path": ".loom-evidence/phase2a/P2A-W3/authoritative-live-construction-failure-diagnosis.md",
+    "sha256": "69f5220068f941080e2938935b06936a0cae516f18b094b421586a1009b5551b",
+    "classification": "product_defect",
+    "boundary": "codex_native_auth_symlink_identity_during_setup_construction",
+    "public_attribution_gap": true
+  },
+  "gates": {
+    "final_walkthrough_eligible": false,
+    "commit_eligible": false,
+    "p2a_w4_exists": false,
+    "additional_live_authorized": false
+  }
+}

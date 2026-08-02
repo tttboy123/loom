@@ -2,18 +2,23 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -23,16 +28,23 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
+	"loom-pi-rebuild/internal/rules"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/piadapter"
 	"loom-pi-rebuild/internal/state"
+	"loom-pi-rebuild/internal/supervisor"
+	"loom-pi-rebuild/internal/teams"
 	loomtui "loom-pi-rebuild/internal/tui"
+	"loom-pi-rebuild/internal/verification"
+	"loom-pi-rebuild/internal/work"
+	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 
 	_ "modernc.org/sqlite"
 )
@@ -62,6 +74,31 @@ type productDaemonRuntimeProbe struct {
 	id       string
 	instance loomruntime.RuntimeInstance
 	models   []string
+}
+
+type productExecutionServiceStub struct {
+	preflight app.MissionExecutionPreflight
+}
+
+func (stub *productExecutionServiceStub) PreflightMission(
+	context.Context,
+	app.MissionExecutionCommand,
+) (app.MissionExecutionPreflight, error) {
+	return stub.preflight, nil
+}
+
+func (stub *productExecutionServiceStub) StartMission(
+	context.Context,
+	app.MissionExecutionCommand,
+) (app.MissionExecutionResult, error) {
+	return app.MissionExecutionResult{}, app.ErrInvalidMissionExecution
+}
+
+func (stub *productExecutionServiceStub) ControlMission(
+	context.Context,
+	app.MissionExecutionCommand,
+) (app.MissionExecutionResult, error) {
+	return app.MissionExecutionResult{}, app.ErrInvalidMissionExecution
 }
 
 func (probe productDaemonRuntimeProbe) ID() string {
@@ -133,6 +170,605 @@ func TestProductDaemonClassifiesLifecycleFailureBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("observer_binding_integrity_remains_fatal", func(t *testing.T) {
+		root, statePath := productDaemonFailureState(t)
+		observer := &failingObserverRunner{err: testPiMetadataFailure{
+			command: loomruntime.PiMetadataVersion,
+			cause:   piadapter.ErrPiMetadataBindingChanged,
+		}}
+		runner, err := newProductDaemonRunner(
+			observer,
+			statePath,
+			filepath.Join(root, "loomd.sock"),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, runErr := runner.Run(context.Background())
+		assertDaemonFailureCode(t, runErr, "observer")
+		assertDaemonFailureReason(t, runErr, "observer_metadata_binding")
+		if err := runner.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestProductDaemonClassifiesConstructionIPCFailure(t *testing.T) {
+	root, statePath := productDaemonFailureState(t)
+	observer := &blockingObserverRunner{}
+	runner, err := newProductDaemonRunner(
+		observer,
+		statePath,
+		filepath.Join(root, "missing", "loomd.sock"),
+		productSetupRuntimeConfig{
+			CredentialStore: &productCredentialTestStore{},
+		},
+	)
+	if runner != nil {
+		t.Fatal("runner constructed for invalid IPC parent")
+	}
+	if got := daemonBuildFailureReason(err); got != "build_ipc" {
+		t.Fatalf("build reason = %q, want build_ipc; error=%v", got, err)
+	}
+	if !observer.closed {
+		t.Fatal("observer was not closed after IPC construction failure")
+	}
+}
+
+func TestProductDaemonPreservesSetupConstructionFailureReason(t *testing.T) {
+	root, statePath := productDaemonFailureState(t)
+	observer := &blockingObserverRunner{}
+	runner, err := newProductDaemonRunner(
+		observer,
+		statePath,
+		filepath.Join(root, "loomd.sock"),
+		productSetupRuntimeConfig{
+			CredentialStore: &productCredentialTestStore{},
+			CodexExecutable: "relative-codex",
+		},
+	)
+	if runner != nil {
+		t.Fatal("runner constructed for invalid Codex executable")
+	}
+	if got := daemonBuildFailureReason(err); got != "build_setup_native_auth" {
+		t.Fatalf(
+			"build reason = %q, want build_setup_native_auth; error=%v",
+			got,
+			err,
+		)
+	}
+	if !observer.closed {
+		t.Fatal("observer was not closed after setup construction failure")
+	}
+}
+
+func TestProductDaemonContainsExactPiMetadataTimeoutWithoutStoppingIPC(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	runtimePath := filepath.Join(root, "runtime")
+	isolationPath := filepath.Join(root, "isolation")
+	for _, directory := range []string{runtimePath, isolationPath} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	piPath := filepath.Join(runtimePath, "pi")
+	piScript := `#!/bin/sh
+set -eu
+counter="${0%/*}/list-models-count"
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf '0.82.1\n'
+  exit 0
+fi
+if [ "$#" -eq 8 ] && [ "$8" = "--list-models" ]; then
+  count=0
+  if [ -f "$counter" ]; then count=$(/bin/cat "$counter"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$counter"
+  /bin/sleep 30
+  exit 0
+fi
+exit 83
+`
+	if err := os.WriteFile(piPath, []byte(piScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codexPath := filepath.Join(root, "codex")
+	if err := os.WriteFile(
+		codexPath,
+		[]byte("#!/bin/sh\nprintf 'Logged in using ChatGPT\\n'\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := productionDaemonBuilder(daemonBuildConfig{
+		Observer: app.LocalRuntimeObservationDaemonConfig{
+			StatePath:           statePath,
+			IsolationRoot:       isolationPath,
+			RuntimeSearchPaths:  []string{runtimePath},
+			ProbeID:             "pi-timeout-probe",
+			RuntimeInstanceID:   "pi-timeout-runtime",
+			DeviceID:            "device-timeout",
+			DisplayName:         "Pi timeout fixture",
+			ObservationInterval: 10 * time.Millisecond,
+			ProcessTimeout:      2 * time.Second,
+			MaxCycles:           1,
+		},
+		SocketPath:      socketPath,
+		CodexExecutable: codexPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	counterPath := filepath.Join(runtimePath, "list-models-count")
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		select {
+		case runErr := <-done:
+			reason := ""
+			if classified, ok := runErr.(daemonFailureReasoner); ok {
+				reason = classified.DaemonFailureReason()
+			}
+			t.Fatalf(
+				"real Pi observer exited before list-models: %v reason=%s",
+				runErr,
+				reason,
+			)
+		default:
+		}
+		contents, readErr := os.ReadFile(counterPath)
+		if readErr == nil && string(contents) == "1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("real Pi list-models was not invoked once: %q %v", contents, readErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case runErr := <-done:
+		reason := ""
+		if classified, ok := runErr.(daemonFailureReasoner); ok {
+			reason = classified.DaemonFailureReason()
+		}
+		t.Fatalf("metadata timeout stopped product IPC: %v reason=%s", runErr, reason)
+	case <-time.After(3 * time.Second):
+	}
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("ping after real Pi timeout: %v", err)
+	}
+	var snapshot api.LocalProductSnapshot
+	if err := client.Call(
+		context.Background(),
+		"snapshot",
+		api.LocalProductSnapshotRequest{Limit: 64},
+		&snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Partial || snapshot.Reason != "observer_models_timeout" ||
+		snapshot.Health != (api.LocalProductHealth{
+			Daemon: "serving_request", Journal: "available", Projection: "current",
+		}) {
+		t.Fatalf("snapshot health = %#v", snapshot.Health)
+	}
+	setupClient, err := loomtui.NewDaemonReadClient(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := setupClient.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("setup/Codex read after real Pi timeout: %v", err)
+	}
+	if setup.Codex.Status != "available" || setup.Codex.AuthMode != "native_auth" ||
+		setup.MiniMax.Status != "unconfigured" || setup.SavedTeams == nil {
+		t.Fatalf("setup after real Pi timeout = %#v", setup)
+	}
+	time.Sleep(100 * time.Millisecond)
+	contents, err := os.ReadFile(counterPath)
+	if err != nil || string(contents) != "1" {
+		t.Fatalf("Pi metadata hidden retry count = %q error=%v", contents, err)
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("controlled stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("contained product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProductDaemonCopiedRuntimeStateObservesPi0821WithoutRewrite(
+	t *testing.T,
+) {
+	const retainedStateSHA256 = "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2"
+	root, statePath := productDaemonFailureState(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	runtimePath := filepath.Join(root, "runtime")
+	isolationPath := filepath.Join(root, "isolation")
+	for _, directory := range []string{runtimePath, isolationPath} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	contents := retainedPiSixFactStateFixture(t)
+	digest := sha256.Sum256(contents)
+	if hex.EncodeToString(digest[:]) != retainedStateSHA256 {
+		t.Fatalf("retained state digest=%x", digest)
+	}
+	if err := os.WriteFile(statePath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	beforeEvents, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := map[string]int{
+		"AgentGrantIdentityIndexInitialized": 1,
+		"WorkRunIdentityIndexInitialized":    1,
+		"RuntimeInstanceDiscovered":          1,
+		"TeamDefinitionSaved":                1,
+		"TeamInstanceCreated":                1,
+		"AgentInstanceCreated":               1,
+	}
+	gotTypes := make(map[string]int, len(wantTypes))
+	for _, event := range beforeEvents {
+		gotTypes[event.Type]++
+	}
+	if !reflect.DeepEqual(gotTypes, wantTypes) {
+		t.Fatalf("retained event types=%v", gotTypes)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	piPath := filepath.Join(runtimePath, "pi")
+	piScript := `#!/bin/sh
+set -eu
+counter="${0%/*}/metadata-count"
+count=0
+if [ -f "$counter" ]; then count=$(/bin/cat "$counter"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$counter"
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf '0.82.1\n'
+  exit 0
+fi
+if [ "$#" -eq 8 ] && [ "$8" = "--list-models" ]; then
+  printf 'provider model context max-out thinking images\nloom-local qwen2.5-coder-1.5b-instruct-q4-k-m 32K 256 no no\n'
+  exit 0
+fi
+exit 83
+`
+	if err := os.WriteFile(piPath, []byte(piScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	packageRoot := filepath.Join(root, "npm", "lib", "node_modules", "@openai", "codex")
+	wrapperPath := filepath.Join(packageRoot, "bin", "codex.js")
+	nativeCodexPath := filepath.Join(packageRoot, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex")
+	for _, directory := range []string{filepath.Dir(wrapperPath), filepath.Dir(nativeCodexPath)} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(wrapperPath, []byte("#!/usr/bin/env node\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nativeCodexPath, []byte("#!/bin/sh\nprintf 'Logged in using ChatGPT\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codexPath := filepath.Join(root, "npm", "bin", "codex")
+	if err := os.MkdirAll(filepath.Dir(codexPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(wrapperPath, codexPath); err != nil {
+		t.Fatal(err)
+	}
+	var localModelCatalog *piadapter.PiLocalModelCatalogConfig
+	lockedModelRoot := os.Getenv("LOOM_P2A_W3_LOCKED_MODEL_ROOT")
+	if lockedModelRoot != "" {
+		if !filepath.IsAbs(lockedModelRoot) || filepath.Clean(lockedModelRoot) != lockedModelRoot {
+			t.Fatalf("invalid locked model root %q", lockedModelRoot)
+		}
+		modelExecutable := filepath.Join(lockedModelRoot, "runtime", "llama-b10107", "llama-server")
+		modelPath := filepath.Join(lockedModelRoot, "models", "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf")
+		assertLockedProductComponent(t, modelExecutable, 0o700, 33472,
+			"a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b")
+		assertLockedProductComponent(t, modelPath, 0o600, 1117320768,
+			"cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046")
+		localModelCatalog = &piadapter.PiLocalModelCatalogConfig{
+			PrivateRoot: lockedModelRoot, ExecutablePath: modelExecutable, ModelPath: modelPath,
+		}
+	}
+	runner, err := productionDaemonBuilder(daemonBuildConfig{
+		Observer: app.LocalRuntimeObservationDaemonConfig{
+			StatePath: statePath, IsolationRoot: isolationPath,
+			RuntimeSearchPaths: []string{runtimePath},
+			ProbeID:            "p2a-w3-pi-probe", RuntimeInstanceID: "pi-0.82.1-p2a-w3-pi",
+			DeviceID:            "local-mac-p2a-w3",
+			DisplayName:         "Pi 0.82.1 P2A-W3 Execution Canary",
+			ObservationInterval: time.Hour, ProcessTimeout: 2 * time.Second,
+			MaxCycles:         0,
+			LocalModelCatalog: localModelCatalog,
+		},
+		SocketPath: socketPath, CodexExecutable: codexPath,
+	})
+	if err != nil {
+		t.Fatalf("build reason=%s leaf=%v", daemonBuildFailureReason(err), errors.Unwrap(err))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	counterPath := filepath.Join(runtimePath, "metadata-count")
+	metadataDeadline := 5 * time.Second
+	if lockedModelRoot != "" {
+		metadataDeadline = 45 * time.Second
+	}
+	deadline := time.Now().Add(metadataDeadline)
+	for {
+		contents, readErr := os.ReadFile(counterPath)
+		if readErr == nil && string(contents) == "2" {
+			break
+		}
+		select {
+		case runErr := <-done:
+			t.Fatalf("copied-state observer exited: %v", runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metadata calls=%q error=%v", contents, readErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath, Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot api.LocalProductSnapshot
+	if err := client.Call(
+		context.Background(), "snapshot",
+		api.LocalProductSnapshotRequest{Limit: 64}, &snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Partial || len(snapshot.Runtimes) != 1 ||
+		snapshot.Runtimes[0].RuntimeInstanceID != "pi-0.82.1-p2a-w3-pi" ||
+		snapshot.Runtimes[0].ExecutableVersion != "0.82.1" ||
+		!reflect.DeepEqual(snapshot.Runtimes[0].ModelIDs, []string{
+			"loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m",
+		}) || len(snapshot.Teams) != 1 {
+		t.Fatalf("copied-state snapshot=%#v", snapshot)
+	}
+	if lockedModelRoot != "" {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(statePath), "execution")); err != nil {
+			t.Fatalf("execution composition missing: %v", err)
+		}
+		workPackage, err := work.CodingWorkPackage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope api.MissionExecutionEnvelope
+		teamID := "team-instance-8f2f4f51416eac8a915927fde5da6420"
+		if err := client.Call(context.Background(), "mission_execution", app.MissionExecutionCommand{
+			SchemaVersion: app.MissionExecutionSchemaVersion,
+			Operation:     "preflight", MissionID: "mission/" + teamID,
+			TeamInstanceID: teamID,
+			WorkPackageID:  workPackage.ID(), WorkPackageDigest: workPackage.Digest(),
+			Objective:           "Prove zero-write product construction",
+			ExpectedViewVersion: snapshot.ViewVersion,
+			CorrelationID:       "77777777-7777-4777-8777-777777777777",
+		}, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Operation != "preflight" || envelope.Preflight == nil || envelope.Preflight.PreflightDigest == "" {
+			t.Fatalf("preflight envelope=%#v", envelope)
+		}
+	}
+	verifyDB, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := journal.NewStore(verifyDB).ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = verifyDB.Close()
+	if !reflect.DeepEqual(afterEvents, beforeEvents) {
+		t.Fatalf("copied authority changed: before=%#v after=%#v", beforeEvents, afterEvents)
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("controlled stop error=%v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("copied-state daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err = os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest = sha256.Sum256(contents)
+	if hex.EncodeToString(digest[:]) != retainedStateSHA256 {
+		t.Fatalf("post-observation state digest=%x", digest)
+	}
+	assertRetainedObserverFailureMatrixDoesNotWrite(t, statePath, beforeEvents)
+}
+
+func assertLockedProductComponent(t *testing.T, path string, mode os.FileMode, size int64, digest string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != mode || info.Size() != size {
+		t.Fatalf("locked component identity %q: info=%v err=%v", path, info, err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		t.Fatal(copyErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if got := hex.EncodeToString(hash.Sum(nil)); got != digest {
+		t.Fatalf("locked component digest %q=%s want %s", path, got, digest)
+	}
+}
+
+func retainedPiSixFactStateFixture(t *testing.T) []byte {
+	t.Helper()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve retained Pi fixture source")
+	}
+	fixturePath := filepath.Join(
+		filepath.Dir(currentFile),
+		"..", "..", ".loom-evidence", "phase2a", "P2A-W3",
+		"retained-pi-six-fact-state.sqlite.gz.b64",
+	)
+	encoded, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := base64.StdEncoding.DecodeString(
+		strings.TrimSpace(string(encoded)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	return contents
+}
+
+func assertRetainedObserverFailureMatrixDoesNotWrite(
+	t *testing.T,
+	statePath string,
+	wantEvents []journal.Event,
+) {
+	t.Helper()
+	private := errors.New("private observer detail")
+	cases := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"probe_factory", discoveryscan.ErrRuntimeProbeFactoryFailed, "observer_probe_factory"},
+		{"probe_candidate", piadapter.ErrPiLocalRuntimeCandidateInvalid, "observer_probe_candidate"},
+		{"probe_construction", piadapter.ErrPiLocalRuntimeProbeConstructionFailed, "observer_probe_construction"},
+		{"binding", testPiMetadataFailure{loomruntime.PiMetadataVersion, piadapter.ErrPiMetadataBindingChanged}, "observer_metadata_binding"},
+		{"version_process", testPiMetadataFailure{loomruntime.PiMetadataVersion, piadapter.ErrPiMetadataProcessFailed}, "observer_version_process"},
+		{"version_timeout", testPiMetadataFailure{loomruntime.PiMetadataVersion, piadapter.ErrPiMetadataProcessTimeout}, "observer_version_timeout"},
+		{"version_limit", testPiMetadataFailure{loomruntime.PiMetadataVersion, piadapter.ErrPiMetadataProcessOutputTooLarge}, "observer_version_output_limit"},
+		{"version_stderr", testPiMetadataFailure{loomruntime.PiMetadataVersion, loomruntime.ErrPiMetadataStderr}, "observer_version_stderr"},
+		{"version_output", testPiMetadataFailure{loomruntime.PiMetadataVersion, loomruntime.ErrInvalidPiMetadataOutput}, "observer_version_output"},
+		{"models_process", testPiMetadataFailure{loomruntime.PiMetadataListModels, piadapter.ErrPiMetadataProcessFailed}, "observer_models_process"},
+		{"models_timeout", testPiMetadataFailure{loomruntime.PiMetadataListModels, piadapter.ErrPiMetadataProcessTimeout}, "observer_models_timeout"},
+		{"models_limit", testPiMetadataFailure{loomruntime.PiMetadataListModels, piadapter.ErrPiMetadataProcessOutputTooLarge}, "observer_models_output_limit"},
+		{"models_stderr", testPiMetadataFailure{loomruntime.PiMetadataListModels, loomruntime.ErrPiMetadataStderr}, "observer_models_stderr"},
+		{"models_output", testPiMetadataFailure{loomruntime.PiMetadataListModels, loomruntime.ErrInvalidPiMetadataOutput}, "observer_models_output"},
+		{"models_duplicate", testPiMetadataFailure{loomruntime.PiMetadataListModels, loomruntime.ErrDuplicatePiRuntimeModel}, "observer_models_duplicate"},
+		{"inventory", loomruntime.ErrInvalidRuntimeInstance, "observer_inventory"},
+		{"projection", app.ErrRuntimeObservationProjectionRefresh, "observer_projection"},
+		{"plan", app.ErrInvalidRuntimeObservationWritePlan, "observer_plan"},
+		{"identity", app.ErrLocalRuntimeObservationDaemonMetadata, "observer_identity_metadata"},
+		{"write", journal.ErrPartialEventBatchConflict, "observer_write"},
+		{"known_plus_unknown", errors.Join(journal.ErrPartialEventBatchConflict, private), "observer_unknown"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			failure := classifyProductDaemonFailure("observer", test.err)
+			assertDaemonFailureReason(t, failure, test.reason)
+			if daemonFailureMessage(failure) != "daemon failed: "+test.reason {
+				t.Fatalf("public failure=%q", daemonFailureMessage(failure))
+			}
+			database, err := sql.Open("sqlite", statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotEvents, readErr := journal.NewStore(database).ReadAll(context.Background())
+			_ = database.Close()
+			if readErr != nil || !reflect.DeepEqual(gotEvents, wantEvents) {
+				t.Fatalf("failure attribution changed authority: events=%#v err=%v", gotEvents, readErr)
+			}
+		})
+	}
+}
+
+func TestContainableProductObserverTimeoutRejectsMixedFailureChains(
+	t *testing.T,
+) {
+	timeout := testPiMetadataFailure{
+		command: loomruntime.PiMetadataListModels,
+		cause:   piadapter.ErrPiMetadataProcessTimeout,
+	}
+	if !containableProductObserverTimeout(fmt.Errorf("observe: %w", timeout)) {
+		t.Fatal("pure typed metadata timeout was not containable")
+	}
+	for _, mixed := range []error{
+		errors.Join(timeout, piadapter.ErrPiMetadataBindingChanged),
+		errors.Join(timeout, piadapter.ErrPiMetadataProcessFailed),
+		errors.Join(timeout, errors.New("unknown cleanup failure")),
+	} {
+		if containableProductObserverTimeout(mixed) {
+			t.Fatalf("mixed observer chain was containable: %v", mixed)
+		}
+	}
 }
 
 func TestProductDaemonReclaimsAbandonedOwnedLockAndCleansOwnedPair(
@@ -184,12 +820,35 @@ func TestObserverFailureReasonIsClosedTypedAndNonDisclosing(t *testing.T) {
 	}{
 		{
 			name: "probe factory",
+			err:  discoveryscan.ErrRuntimeProbeFactoryFailed,
+			want: "observer_probe_factory",
+		},
+		{
+			name: "probe factory plus unknown",
 			err: fmt.Errorf(
 				"%w: %w",
 				discoveryscan.ErrRuntimeProbeFactoryFailed,
 				private,
 			),
-			want: "observer_probe_factory",
+			want: "observer_unknown",
+		},
+		{
+			name: "probe candidate",
+			err: fmt.Errorf(
+				"%w: %w",
+				discoveryscan.ErrRuntimeProbeFactoryFailed,
+				piadapter.ErrPiLocalRuntimeCandidateInvalid,
+			),
+			want: "observer_probe_candidate",
+		},
+		{
+			name: "probe construction",
+			err: fmt.Errorf(
+				"%w: %w",
+				discoveryscan.ErrRuntimeProbeFactoryFailed,
+				piadapter.ErrPiLocalRuntimeProbeConstructionFailed,
+			),
+			want: "observer_probe_construction",
 		},
 		{
 			name: "metadata binding",
@@ -289,20 +948,66 @@ func TestObserverFailureReasonIsClosedTypedAndNonDisclosing(t *testing.T) {
 		},
 		{
 			name: "projection",
+			err:  app.ErrRuntimeObservationProjectionRefresh,
+			want: "observer_projection",
+		},
+		{
+			name: "projection plus unknown",
 			err: fmt.Errorf(
 				"%w: %w",
 				app.ErrRuntimeObservationProjectionRefresh,
 				private,
 			),
-			want: "observer_projection",
+			want: "observer_unknown",
 		},
 		{
 			name: "write",
+			err:  app.ErrRuntimeDiscoveryCommitInputFailed,
+			want: "observer_write",
+		},
+		{
+			name: "write plus unknown",
 			err: fmt.Errorf(
 				"%w: %w",
 				app.ErrRuntimeDiscoveryCommitInputFailed,
 				private,
 			),
+			want: "observer_unknown",
+		},
+		{
+			name: "inventory",
+			err: fmt.Errorf(
+				"%w: %w",
+				loomruntime.ErrRuntimeDiscoveryFailed,
+				loomruntime.ErrInvalidRuntimeInstance,
+			),
+			want: "observer_inventory",
+		},
+		{
+			name: "plan",
+			err:  app.ErrInvalidRuntimeObservationWritePlan,
+			want: "observer_plan",
+		},
+		{
+			name: "identity metadata",
+			err: fmt.Errorf(
+				"%w: %w",
+				app.ErrRuntimeDiscoveryCommitInputFailed,
+				app.ErrLocalRuntimeObservationDaemonMetadata,
+			),
+			want: "observer_identity_metadata",
+		},
+		{
+			name: "identity metadata plus unknown",
+			err: errors.Join(
+				app.ErrLocalRuntimeObservationDaemonMetadata,
+				private,
+			),
+			want: "observer_unknown",
+		},
+		{
+			name: "journal write",
+			err:  journal.ErrPartialEventBatchConflict,
 			want: "observer_write",
 		},
 		{
@@ -321,6 +1026,53 @@ func TestObserverFailureReasonIsClosedTypedAndNonDisclosing(t *testing.T) {
 					command: loomruntime.PiMetadataListModels,
 					cause:   loomruntime.ErrPiMetadataStderr,
 				},
+			),
+			want: "observer_unknown",
+		},
+		{
+			name: "same command incompatible known leaves",
+			err: errors.Join(
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataVersion,
+					cause:   piadapter.ErrPiMetadataProcessFailed,
+				},
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataVersion,
+					cause:   loomruntime.ErrPiMetadataStderr,
+				},
+			),
+			want: "observer_unknown",
+		},
+		{
+			name: "repeated same typed leaf",
+			err: errors.Join(
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataVersion,
+					cause:   piadapter.ErrPiMetadataProcessFailed,
+				},
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataVersion,
+					cause:   piadapter.ErrPiMetadataProcessFailed,
+				},
+			),
+			want: "observer_version_process",
+		},
+		{
+			name: "known plus unknown",
+			err: errors.Join(
+				testPiMetadataFailure{
+					command: loomruntime.PiMetadataVersion,
+					cause:   piadapter.ErrPiMetadataProcessFailed,
+				},
+				private,
+			),
+			want: "observer_unknown",
+		},
+		{
+			name: "incompatible known leaves",
+			err: errors.Join(
+				piadapter.ErrPiLocalRuntimeCandidateInvalid,
+				piadapter.ErrPiLocalRuntimeProbeConstructionFailed,
 			),
 			want: "observer_unknown",
 		},
@@ -766,6 +1518,368 @@ func TestProductDaemonRealSetupServiceConfirmsCandidateOverPrivateUDS(
 	}
 }
 
+func TestProductDaemonSetupOnlyMiniMaxTestOverRealIPCDoesNotInitializeExecution(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const credentialReference = "credential-ref-setup-only"
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID:           "setup-only-minimax-configured",
+			ProviderID:          "minimax",
+			CredentialReference: credentialReference,
+			ExpectedRevision:    0,
+			OccurredAt:          time.Unix(750, 0).UTC(),
+			Status:              credentials.CredentialConfigured,
+			Reason:              credentials.VerificationReasonNone,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := productSetupExecutionFactCount(beforeEvents); got != 0 {
+		t.Fatalf("initial execution facts = %d", got)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	executionRoot := filepath.Join(filepath.Dir(statePath), "execution")
+	if _, err := os.Lstat(executionRoot); !os.IsNotExist(err) {
+		t.Fatalf("execution root exists before setup-only construction: %v", err)
+	}
+	socketPath := filepath.Join(root, "loomd.sock")
+	observer := &blockingObserverRunner{}
+	runner, err := newProductDaemonRunner(
+		observer,
+		statePath,
+		socketPath,
+		productSetupRuntimeConfig{
+			CredentialStore: &productCredentialTestStore{},
+			Execution:       nil,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.execution != nil {
+		t.Fatal("setup-only construction initialized execution bundle")
+	}
+	if _, err := os.Lstat(executionRoot); !os.IsNotExist(err) {
+		t.Fatalf("setup-only construction created execution root: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		runDone <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupClient, err := loomtui.NewDaemonReadClient(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := setupClient.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup.MiniMax.Status != "configured" ||
+		setup.MiniMax.Revision != 1 ||
+		setup.MiniMax.CredentialReference != credentialReference {
+		t.Fatalf("setup-only MiniMax snapshot = %#v", setup.MiniMax)
+	}
+
+	var result app.CredentialSetupResult
+	err = client.Call(
+		context.Background(),
+		"credential_verify",
+		struct {
+			ProviderID          string `json:"provider_id"`
+			CredentialReference string `json:"credential_reference"`
+			ExpectedRevision    int64  `json:"expected_revision"`
+			OperationID         string `json:"operation_id"`
+			Secret              string `json:"secret"`
+		}{
+			ProviderID:          "minimax",
+			CredentialReference: credentialReference,
+			ExpectedRevision:    1,
+			OperationID:         "22222222-2222-4222-8222-222222222222",
+			Secret:              "",
+		},
+		&result,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderID != "minimax" || result.Revision != 2 ||
+		result.Status != "rejected" || result.Reason != "unavailable" {
+		t.Fatalf("setup-only MiniMax terminal = %#v", result)
+	}
+	if _, err := os.Lstat(executionRoot); !os.IsNotExist(err) {
+		t.Fatalf("credential Test created execution root: %v", err)
+	}
+
+	cancel()
+	select {
+	case runErr := <-runDone:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("product socket remains after close: %v", err)
+	}
+
+	database, err = sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	afterEvents, err := journal.NewStore(database).ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEvents) != len(beforeEvents)+1 ||
+		afterEvents[len(afterEvents)-1].Type != "ProviderCredentialVerified" ||
+		productSetupExecutionFactCount(afterEvents) != 0 {
+		t.Fatalf("setup-only postflight events = %#v", afterEvents)
+	}
+	if _, err := os.Lstat(executionRoot); !os.IsNotExist(err) {
+		t.Fatalf("setup-only postflight execution root: %v", err)
+	}
+}
+
+func TestProductDaemonExecutionCompositionMaterializesConfirmedTeamForPreflight(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendProductExecutionRuntimeFixture(t, database)
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	privateRoot := filepath.Join(root, "local-model")
+	if err := os.Mkdir(privateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(root, "loomd.sock")
+	runner, err := newProductDaemonRunner(
+		&blockingObserverRunner{},
+		statePath,
+		socketPath,
+		productSetupRuntimeConfig{Execution: &productMissionExecutionRuntimeConfig{
+			RuntimeSearchPaths: []string{root},
+			RuntimeInstanceID:  "runtime-1",
+			LocalModelCatalog: &piadapter.PiLocalModelCatalogConfig{
+				PrivateRoot:    privateRoot,
+				ExecutablePath: filepath.Join(privateRoot, "not-started-llama"),
+				ModelPath:      filepath.Join(privateRoot, "not-read-model.gguf"),
+			},
+			Now: func() time.Time {
+				return time.Date(2026, 8, 1, 10, 5, 0, 0, time.UTC)
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupClient, err := loomtui.NewDaemonReadClient(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := setupClient.StartBuilder(
+		context.Background(),
+		app.BuilderStartCommand{Source: app.BuilderSourceBlank},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := map[string]string{
+		"team_name":     "Controlled Execution Team",
+		"purpose":       "Run one bounded verified Mission",
+		"main_role":     "coordinator",
+		"subagent_role": "bounded-worker",
+	}
+	for session.Question.ID != "" {
+		answer, ok := answers[session.Question.ID]
+		if !ok {
+			t.Fatalf("unexpected Builder question = %#v", session.Question)
+		}
+		session, err = setupClient.AnswerBuilder(
+			context.Background(),
+			app.BuilderAnswerCommand{
+				DraftID: session.DraftID, ExpectedRevision: session.Revision,
+				CatalogDigest: session.CatalogDigest,
+				ViewVersion:   session.ViewVersion,
+				QuestionID:    session.Question.ID,
+				Answer:        answer,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	confirmation, err := setupClient.ConfirmBuilder(
+		context.Background(),
+		app.BuilderConfirmCommand{
+			DraftID: session.DraftID, ExpectedRevision: session.Revision,
+			CatalogDigest: session.CatalogDigest,
+			ViewVersion:   session.ViewVersion,
+			BindingDigest: session.BindingDigest,
+			DefinitionID:  "team-controlled-execution",
+			Scope:         "reusable",
+			Confirm:       true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmation.TeamDefinitionID != "team-controlled-execution" ||
+		!confirmation.TeamInstanceCreated || confirmation.RunCreated {
+		t.Fatalf("confirmation = %#v", confirmation)
+	}
+	var snapshot api.LocalProductSnapshot
+	if err := client.Call(
+		context.Background(),
+		"snapshot",
+		api.LocalProductSnapshotRequest{Limit: 64},
+		&snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Teams) != 1 || !snapshot.Teams[0].Confirmed ||
+		!snapshot.Teams[0].Executable || snapshot.Teams[0].ReadOnly {
+		t.Fatalf("post-confirm snapshot Teams = %#v", snapshot.Teams)
+	}
+	teamID := snapshot.Teams[0].TeamInstanceID
+	diagnosticDB, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnosticProjection := projection.New(diagnosticDB)
+	if err := diagnosticProjection.Rebuild(context.Background()); err != nil {
+		_ = diagnosticDB.Close()
+		t.Fatal(err)
+	}
+	diagnosticBinding, err := app.NewProjectionMissionExecutionBindingSource(
+		diagnosticProjection,
+	)
+	if err != nil {
+		_ = diagnosticDB.Close()
+		t.Fatal(err)
+	}
+	if _, err := diagnosticBinding.ResolveMissionExecutionBinding(
+		context.Background(),
+		teamID,
+	); err != nil {
+		_ = diagnosticDB.Close()
+		t.Fatalf("materialized binding = %v snapshot=%#v", err, diagnosticProjection.Snapshot())
+	}
+	if err := diagnosticDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	workPackage, err := work.CodingWorkPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope api.MissionExecutionEnvelope
+	if err := client.Call(
+		context.Background(),
+		"mission_execution",
+		app.MissionExecutionCommand{
+			SchemaVersion:  app.MissionExecutionSchemaVersion,
+			Operation:      "preflight",
+			MissionID:      "mission/" + teamID,
+			TeamInstanceID: teamID,
+			WorkPackageID:  workPackage.ID(), WorkPackageDigest: workPackage.Digest(),
+			Objective:           "Produce one bounded verified result",
+			ExpectedViewVersion: snapshot.ViewVersion,
+			CorrelationID:       "33333333-3333-4333-8333-333333333333",
+		},
+		&envelope,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Operation != "preflight" || envelope.Preflight == nil ||
+		envelope.Preflight.TeamInstanceID != teamID {
+		t.Fatalf("preflight envelope = %#v", envelope)
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	events, err := journal.NewStore(database).ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, event := range events {
+		counts[event.Type]++
+	}
+	if counts["TeamDefinitionSaved"] != 1 ||
+		counts["TeamInstanceCreated"] != 1 ||
+		counts["AgentInstanceCreated"] != 1 ||
+		counts["WorkItemCreated"] != 0 || counts["RunCreated"] != 0 {
+		t.Fatalf("post-confirm authority facts = %#v", counts)
+	}
+}
+
 func TestProductSetupRemainsAvailableWhenNoRuntimeCanBuildATeam(t *testing.T) {
 	_, statePath := productDaemonFailureState(t)
 	database, err := sql.Open("sqlite", statePath)
@@ -840,9 +1954,10 @@ func TestProductSetupFailsClosedWhenProcessKeychainCannotBeConstructed(
 }
 
 type productCredentialTestSource struct {
-	result credentials.MetadataResult
-	err    error
-	calls  int
+	result    credentials.MetadataResult
+	commandID string
+	err       error
+	calls     int
 }
 
 type productCredentialTestStore struct{}
@@ -853,6 +1968,16 @@ func (*productCredentialTestStore) Put(
 	[]byte,
 ) error {
 	return credentials.ErrCredentialStoreUnavailable
+}
+
+func (source *productCredentialTestSource) CredentialOperationStatus(
+	_ context.Context,
+	_ string,
+) (productCredentialOperationStatus, error) {
+	source.calls++
+	return productCredentialOperationStatus{
+		metadata: source.result, commandID: source.commandID,
+	}, source.err
 }
 
 func (*productCredentialTestStore) Read(
@@ -921,7 +2046,9 @@ func TestProductCredentialVerifyRecoversLostTerminalResponseWithoutRetry(
 		Revision:            8,
 		Status:              credentials.CredentialVerified,
 	}
-	source := &productCredentialTestSource{result: terminal}
+	source := &productCredentialTestSource{
+		result: terminal, commandID: "verify-credential-recovery",
+	}
 	delegate := &productCredentialTestMutator{}
 	mutator := productCredentialMutator{
 		status:   source,
@@ -931,6 +2058,7 @@ func TestProductCredentialVerifyRecoversLostTerminalResponseWithoutRetry(
 	result, err := mutator.Verify(
 		context.Background(),
 		credentials.CredentialCommand{
+			CommandID:           "verify-credential-recovery",
 			ProviderID:          "minimax",
 			CredentialReference: "credential-ref-recovery",
 			ExpectedRevision:    7,
@@ -1070,6 +2198,7 @@ func TestProductCredentialVerifyRejectsEveryOtherStaleShapeBeforeBroker(
 type productConcurrentCredentialFixture struct {
 	mu          sync.Mutex
 	current     credentials.MetadataResult
+	commandID   string
 	verifyCalls int
 }
 
@@ -1080,6 +2209,17 @@ func (fixture *productConcurrentCredentialFixture) CredentialStatus(
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	return fixture.current, nil
+}
+
+func (fixture *productConcurrentCredentialFixture) CredentialOperationStatus(
+	_ context.Context,
+	_ string,
+) (productCredentialOperationStatus, error) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	return productCredentialOperationStatus{
+		metadata: fixture.current, commandID: fixture.commandID,
+	}, nil
 }
 
 func (fixture *productConcurrentCredentialFixture) Configure(
@@ -1096,6 +2236,7 @@ func (fixture *productConcurrentCredentialFixture) Verify(
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	fixture.verifyCalls++
+	fixture.commandID = command.CommandID
 	fixture.current = credentials.MetadataResult{
 		ProviderID:          command.ProviderID,
 		CredentialReference: command.CredentialReference,
@@ -1135,6 +2276,7 @@ func TestProductCredentialConcurrentLostResponseRecoveryObservesProviderOnce(
 		delegate: fixture,
 	}
 	command := credentials.CredentialCommand{
+		CommandID:           "verify-credential-operation-a",
 		ProviderID:          "minimax",
 		CredentialReference: "credential-ref-concurrent",
 		ExpectedRevision:    9,
@@ -1174,6 +2316,75 @@ func TestProductCredentialConcurrentLostResponseRecoveryObservesProviderOnce(
 	fixture.mu.Unlock()
 	if count != 2 || verifyCalls != 1 {
 		t.Fatalf("results=%d Provider observations=%d", count, verifyCalls)
+	}
+	_, err := mutator.Verify(context.Background(), credentials.CredentialCommand{
+		CommandID:           "verify-credential-operation-b",
+		ProviderID:          "minimax",
+		CredentialReference: "credential-ref-concurrent",
+		ExpectedRevision:    9,
+		OccurredAt:          time.Unix(704, 0).UTC(),
+	})
+	if !errors.Is(err, credentials.ErrCredentialMetadataConflict) {
+		t.Fatalf("different stale operation error = %v", err)
+	}
+	fixture.mu.Lock()
+	verifyCalls = fixture.verifyCalls
+	fixture.mu.Unlock()
+	if verifyCalls != 1 {
+		t.Fatalf("different stale operation observed Provider: %d", verifyCalls)
+	}
+}
+
+func TestProductCredentialOperationStatusBindsLatestJournalCommand(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "configure-credential-source", ProviderID: "minimax",
+			CredentialReference: "credential-ref-source", ExpectedRevision: 0,
+			OccurredAt: time.Unix(710, 0).UTC(),
+			Status:     credentials.CredentialConfigured,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	verifyCommandID := "verify-credential-11111111-1111-4111-8111-111111111111"
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: verifyCommandID, ProviderID: "minimax",
+			CredentialReference: "credential-ref-source", ExpectedRevision: 1,
+			OccurredAt: time.Unix(711, 0).UTC(),
+			Status:     credentials.CredentialVerified,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := productCredentialStatusSource{
+		projection: projection.New(database), store: store,
+	}
+	status, err := source.CredentialOperationStatus(
+		context.Background(),
+		"minimax",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.commandID != verifyCommandID || status.metadata.Revision != 2 ||
+		status.metadata.Status != credentials.CredentialVerified {
+		t.Fatalf("operation status = %#v", status)
 	}
 }
 
@@ -1348,6 +2559,7 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 		snapshot.ViewVersion == "" ||
 		len(snapshot.Teams) != 1 ||
 		len(snapshot.Missions) != 1 ||
+		snapshot.Missions[0].Title != "Saved team" ||
 		len(snapshot.Runtimes) != 1 ||
 		snapshot.Runtimes[0].ModelIDs == nil ||
 		snapshot.Runtimes[0].ObservedCapabilities == nil ||
@@ -1367,7 +2579,8 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	message := model.Init()()
 	updated, command := model.Update(message)
 	if command != nil ||
-		!strings.Contains(updated.View(), "team.delivery") ||
+		!strings.Contains(updated.View(), "Saved team") ||
+		strings.Contains(updated.View(), "team.delivery") ||
 		strings.Contains(updated.View(), snapshot.ViewVersion) {
 		t.Fatalf(
 			"headless TUI does not present the daemon view safely %q: %q",
@@ -1691,6 +2904,8 @@ func TestProductDaemonHelpersFailClosedWithSafeCodes(t *testing.T) {
 		{api.ErrTeamTimelineNotFound, "not_found"},
 		{api.ErrTimelineCursorConflict, "cursor_conflict"},
 		{api.ErrStreamGap, "stream_gap"},
+		{app.ErrMissionExecutionConflict, "conflict"},
+		{app.ErrMissionExecutionBusy, "busy"},
 		{context.DeadlineExceeded, "timeout"},
 		{errors.New("private database path"), "state_unavailable"},
 	} {
@@ -2097,6 +3312,1314 @@ func appendProductDaemonFixture(
 	}
 }
 
+func appendProductExecutionTeamFixture(t *testing.T, database *sql.DB) {
+	t.Helper()
+	const (
+		digestA       = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		digestB       = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+		runtimeDigest = "aec48c95126693e8303f204b591d4af3508d2670a9f658602231b319ce988b45"
+		correlation   = "22222222-2222-4222-8222-222222222222"
+	)
+	encode := func(value any) []byte {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	store := journal.NewStore(database)
+	for _, event := range []journal.Event{
+		{
+			ID:       "execution-team-created",
+			StreamID: "team_instance:team-execution-ready", Seq: 1,
+			IdempotencyKey: "idem-execution-team-created",
+			Type:           "TeamInstanceCreated", SchemaVersion: 1,
+			EmittedAt:     time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC),
+			CorrelationID: correlation,
+			PayloadJSON: encode(map[string]any{
+				"team": map[string]any{
+					"id":                      "team-execution-ready",
+					"work_request_id":         correlation,
+					"source_kind":             "saved_team",
+					"team_definition_id":      "team.delivery",
+					"team_definition_version": 1,
+					"team_definition_scope":   "project",
+					"scope_identity": map[string]any{
+						"project_id": "project.one", "generation_id": "",
+					},
+					"team_definition_digest": digestA,
+					"source_plan_digest":     digestB,
+					"state":                  "created", "created_at": int64(1_722_508_400),
+				},
+				"dormant_sub_agents":       []any{},
+				"source_plan_digest":       digestB,
+				"source_record_set_digest": digestA,
+				"team_instance_count":      1,
+				"agent_instance_count":     1,
+				"active_sub_agent_count":   0,
+				"work_item_count":          0,
+			}),
+		},
+		{
+			ID:       "execution-agent-created",
+			StreamID: "agent_instance:execution-agent-main", Seq: 1,
+			IdempotencyKey: "idem-execution-agent-created",
+			Type:           "AgentInstanceCreated", SchemaVersion: 1,
+			EmittedAt:     time.Date(2026, 8, 1, 10, 0, 1, 0, time.UTC),
+			CorrelationID: correlation,
+			CausationID:   "execution-team-created",
+			PayloadJSON: encode(map[string]any{
+				"main_agent": map[string]any{
+					"id":                       "execution-agent-main",
+					"team_instance_id":         "team-execution-ready",
+					"agent_definition_id":      "loom-main-coordinator",
+					"agent_definition_version": 1,
+					"agent_definition_scope":   "project",
+					"scope_identity": map[string]any{
+						"project_id": "project.one", "generation_id": "",
+					},
+					"runtime_profile_id":  "loom-main-native",
+					"runtime_instance_id": "runtime-1",
+					"is_main":             true, "state": "created",
+				},
+				"runtime_binding": map[string]any{
+					"accepted":    true,
+					"profile_id":  "loom-main-native",
+					"instance_id": "runtime-1",
+				},
+				"source_plan_digest":       digestB,
+				"source_record_set_digest": digestA,
+				"team_created_at":          int64(1_722_508_400),
+				"binding_digest":           digestB,
+				"runtime_discovery_digest": runtimeDigest,
+			}),
+		},
+	} {
+		if _, err := store.Append(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func appendProductExecutionRuntimeFixture(t *testing.T, database *sql.DB) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"discovery_digest": "aec48c95126693e8303f204b591d4af3508d2670a9f658602231b319ce988b45",
+		"source_probe_id":  "probe-1",
+		"instance": map[string]any{
+			"id":                    "runtime-1",
+			"device_id":             "device-1",
+			"adapter_type":          "pi-cli",
+			"display_name":          "Local Pi",
+			"executable_version":    "0.82.1",
+			"status":                "online",
+			"observed_capabilities": []string{"models"},
+			"capacity":              1,
+		},
+		"model_ids": []string{"loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	if _, err := store.Append(context.Background(), journal.Event{
+		ID:             "execution-runtime-discovery",
+		StreamID:       "runtime_instance:runtime-1",
+		Seq:            1,
+		IdempotencyKey: "idem-execution-runtime-discovery",
+		Type:           "RuntimeInstanceDiscovered",
+		SchemaVersion:  1,
+		EmittedAt: time.Date(
+			2026, 8, 1, 10, 0, 0, 0, time.UTC,
+		),
+		CorrelationID: "22222222-2222-4222-8222-222222222222",
+		PayloadJSON:   payload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProductMissionExecutionCompositionPreflightIsZeroWriteAndLazy(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	appendProductExecutionRuntimeFixture(t, database)
+	appendProductExecutionTeamFixture(t, database)
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	readService, err := api.NewLocalProductReadService(
+		api.LocalProductReadConfig{
+			Journal: store, Projection: readModel,
+			Now: func() time.Time { return time.Now().UTC() },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateRoot := t.TempDir()
+	executionAPI, closer, err := buildProductMissionExecutionAPI(
+		context.Background(),
+		store,
+		readModel,
+		readService,
+		statePath,
+		productMissionExecutionRuntimeConfig{
+			RuntimeSearchPaths: []string{t.TempDir()},
+			RuntimeInstanceID:  "runtime-1",
+			LocalModelCatalog: &piadapter.PiLocalModelCatalogConfig{
+				PrivateRoot:    privateRoot,
+				ExecutablePath: filepath.Join(privateRoot, "not-started-llama"),
+				ModelPath:      filepath.Join(privateRoot, "not-read-model.gguf"),
+			},
+			Now: func() time.Time {
+				return time.Date(2026, 8, 1, 10, 5, 0, 0, time.UTC)
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+	before, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workPackage, err := work.CodingWorkPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := app.MissionExecutionCommand{
+		SchemaVersion: app.MissionExecutionSchemaVersion,
+		Operation:     "preflight", MissionID: "mission/team-execution-ready",
+		TeamInstanceID:      "team-execution-ready",
+		WorkPackageID:       workPackage.ID(),
+		WorkPackageDigest:   workPackage.Digest(),
+		Objective:           "Produce one bounded verified result",
+		ExpectedViewVersion: readModel.GlobalReadView().Version(),
+		CorrelationID:       "33333333-3333-4333-8333-333333333333",
+	}
+	envelope, err := executionAPI.ExecuteMission(
+		context.Background(),
+		command,
+	)
+	if err != nil || envelope.Preflight == nil ||
+		envelope.Preflight.PreflightDigest == "" {
+		t.Fatalf("preflight = %#v, %v", envelope, err)
+	}
+	after, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("preflight wrote Journal facts: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	appendProductExecutionRuntimeFixture(t, database)
+	appendProductExecutionTeamFixture(t, database)
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	var clockMu sync.Mutex
+	clockValue := time.Date(2026, 8, 1, 10, 5, 0, 0, time.UTC)
+	now := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		current := clockValue
+		clockValue = clockValue.Add(time.Millisecond)
+		return current
+	}
+	readService, err := api.NewLocalProductReadService(
+		api.LocalProductReadConfig{
+			Journal: store, Projection: readModel, Now: now,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateRoot := t.TempDir()
+	sourceStarted := make(chan struct{}, 1)
+	releaseSource := make(chan struct{})
+	delegate := &productPiAdapterFixture{
+		verifierOutput: "criteria_satisfied",
+		sourceStarted:  sourceStarted,
+		releaseSource:  releaseSource,
+	}
+	executionAPI, closer, err := buildProductMissionExecutionAPI(
+		context.Background(),
+		store,
+		readModel,
+		readService,
+		statePath,
+		productMissionExecutionRuntimeConfig{
+			RuntimeSearchPaths: []string{t.TempDir()},
+			RuntimeInstanceID:  "runtime-1",
+			LocalModelCatalog: &piadapter.PiLocalModelCatalogConfig{
+				PrivateRoot:    privateRoot,
+				ExecutablePath: filepath.Join(privateRoot, "not-started-llama"),
+				ModelPath:      filepath.Join(privateRoot, "not-read-model.gguf"),
+			},
+			Now: now,
+			ExecutorFactory: func(
+				_ context.Context,
+				workspaceRoot string,
+				workAuthority *work.Authority,
+				grantAuthority *authorization.Authority,
+			) (productMissionExecutorPort, error) {
+				adapter, factoryErr := newProductPiRuntimeAdapter(delegate)
+				if factoryErr != nil {
+					return nil, factoryErr
+				}
+				managed, factoryErr := supervisor.New(
+					supervisor.Config{
+						WorkspaceRoot:  workspaceRoot,
+						CleanupTimeout: 5 * time.Second,
+					},
+					workAuthority,
+					grantAuthority,
+					adapter,
+				)
+				if factoryErr != nil {
+					return nil, factoryErr
+				}
+				return &productMissionExecutor{supervisor: managed}, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+
+	workPackage, err := work.CodingWorkPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflightCommand := app.MissionExecutionCommand{
+		SchemaVersion:       app.MissionExecutionSchemaVersion,
+		Operation:           "preflight",
+		MissionID:           "mission/team-execution-ready",
+		TeamInstanceID:      "team-execution-ready",
+		WorkPackageID:       workPackage.ID(),
+		WorkPackageDigest:   workPackage.Digest(),
+		Objective:           "Produce one bounded verified result",
+		ExpectedViewVersion: readModel.GlobalReadView().Version(),
+		CorrelationID:       "33333333-3333-4333-8333-333333333333",
+	}
+	preflightEnvelope, err := executionAPI.ExecuteMission(
+		context.Background(),
+		preflightCommand,
+	)
+	if err != nil || preflightEnvelope.Preflight == nil {
+		t.Fatalf("preflight = %#v, %v", preflightEnvelope, err)
+	}
+	startCommand := preflightCommand
+	startCommand.Operation = "start"
+	startCommand.PreflightDigest = preflightEnvelope.Preflight.PreflightDigest
+	startCommand.CorrelationID = "44444444-4444-4444-8444-444444444444"
+	startEnvelope, err := executionAPI.ExecuteMission(
+		context.Background(),
+		startCommand,
+	)
+	if err != nil || startEnvelope.Result == nil ||
+		startEnvelope.Result.Status != "running" {
+		t.Fatalf("start = %#v, %v", startEnvelope, err)
+	}
+	select {
+	case <-sourceStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("authorized source output was not observed")
+	}
+	activeTimeline, err := readService.ReadLocalProductTimeline(
+		context.Background(),
+		api.LocalProductTimelineRequest{
+			TeamInstanceID: "team-execution-ready", Limit: 64,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTentative := false
+	for _, record := range activeTimeline.Records {
+		if record.Kind == "node_output_delta" &&
+			record.Authority == "tentative" &&
+			record.Payload.TextDelta == "authorized source result" {
+			foundTentative = true
+		}
+	}
+	if !foundTentative || activeTimeline.Board.Status != "running" {
+		t.Fatalf("active timeline = %#v", activeTimeline)
+	}
+	close(releaseSource)
+
+	deadline := time.Now().Add(5 * time.Second)
+	terminalCommitted := false
+	for {
+		events, readErr := store.ReadAll(context.Background())
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		for _, event := range events {
+			if event.Type == "TeamExecutionTerminal" {
+				terminalCommitted = true
+				break
+			}
+		}
+		if terminalCommitted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("terminal Journal fact not committed: %v", events)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	terminal, err := readService.ReadLocalProductSnapshot(
+		context.Background(),
+		api.LocalProductSnapshotRequest{Limit: 64},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Stale || len(terminal.Missions) != 1 ||
+		terminal.Missions[0].Status != "succeeded" ||
+		terminal.Missions[0].MissionID != startEnvelope.Result.MissionID {
+		t.Fatalf("terminal snapshot = %#v", terminal)
+	}
+	if len(terminal.Runs) != 2 || len(terminal.Evidence) != 2 ||
+		terminal.Missions[0].CompletedNodeCount != 1 {
+		t.Fatalf("terminal lineage = %#v", terminal)
+	}
+	terminalTimeline, err := readService.ReadLocalProductTimeline(
+		context.Background(),
+		api.LocalProductTimelineRequest{
+			TeamInstanceID: "team-execution-ready", Limit: 64,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceRecords := 0
+	terminalRecords := 0
+	for _, record := range terminalTimeline.Records {
+		switch record.Kind {
+		case "evidence_available":
+			if record.Authority == "journal" &&
+				record.Payload.EvidenceDigest != "" {
+				evidenceRecords++
+			}
+		case "team_terminal":
+			if record.Authority == "journal" &&
+				record.Payload.Status == "succeeded" {
+				terminalRecords++
+			}
+		}
+	}
+	if evidenceRecords != 2 || terminalRecords != 1 ||
+		terminalTimeline.Board.Status != "succeeded" {
+		t.Fatalf("terminal timeline = %#v", terminalTimeline)
+	}
+
+	beforeReconnect, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int)
+	var plannedAt time.Time
+	acceptanceTimes := make([]time.Time, 0, 4)
+	for _, event := range beforeReconnect {
+		counts[event.Type]++
+		if event.Type == "TeamExecutionPlanned" {
+			plannedAt = event.EmittedAt
+		}
+		switch event.Type {
+		case "WorkItemVerificationCommitted", "WorkItemDone",
+			"TeamNodeAcceptanceCommitted", "TeamExecutionTerminal":
+			acceptanceTimes = append(acceptanceTimes, event.EmittedAt)
+		}
+	}
+	for eventType, want := range map[string]int{
+		"TeamExecutionPlanned":          1,
+		"TeamReadySetDispatched":        1,
+		"WorkItemCreated":               2,
+		"WorkItemAssigned":              2,
+		"RunStarted":                    2,
+		"RunTerminalCommitted":          2,
+		"AgentGrantIssued":              2,
+		"EvidenceSubmitted":             2,
+		"WorkItemVerificationCommitted": 1,
+		"WorkItemDone":                  1,
+		"TeamNodeAcceptanceCommitted":   1,
+		"TeamExecutionTerminal":         1,
+	} {
+		if counts[eventType] != want {
+			t.Fatalf("%s count = %d, want %d; all=%v", eventType, counts[eventType], want, counts)
+		}
+	}
+	if plannedAt.IsZero() || len(acceptanceTimes) != 4 ||
+		!acceptanceTimes[0].After(plannedAt) {
+		t.Fatalf(
+			"authority acceptance times planned=%s batch=%v",
+			plannedAt,
+			acceptanceTimes,
+		)
+	}
+	for _, current := range acceptanceTimes[1:] {
+		if !current.Equal(acceptanceTimes[0]) {
+			t.Fatalf("acceptance batch times = %v", acceptanceTimes)
+		}
+	}
+	if len(delegate.prompts) != 2 {
+		t.Fatalf("adapter prompts = %#v", delegate.prompts)
+	}
+	if _, err := readService.ReadLocalProductSnapshot(
+		context.Background(),
+		api.LocalProductSnapshotRequest{Limit: 64},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readService.ReadLocalProductTimeline(
+		context.Background(),
+		api.LocalProductTimelineRequest{
+			TeamInstanceID: "team-execution-ready", Limit: 64,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	afterReconnect, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterReconnect) != len(beforeReconnect) || len(delegate.prompts) != 2 {
+		t.Fatalf(
+			"read-only reconnect wrote events=%d prompts=%d",
+			len(afterReconnect)-len(beforeReconnect),
+			len(delegate.prompts),
+		)
+	}
+
+	if len(terminal.Evidence) < 1 {
+		t.Fatal("terminal Evidence is required for pagination fixture")
+	}
+	paddingStream := "evidence/" + terminal.Evidence[0].EvidenceID
+	paddingEvents, err := store.ReadStream(context.Background(), paddingStream)
+	if err != nil || len(paddingEvents) == 0 {
+		t.Fatalf("pagination Evidence stream = %v, %v", paddingEvents, err)
+	}
+	lastPaddingEvent := paddingEvents[len(paddingEvents)-1]
+	for index := 0; index < 70; index++ {
+		sequence := lastPaddingEvent.Seq + int64(index) + 1
+		if _, err := store.Append(context.Background(), journal.Event{
+			ID:       fmt.Sprintf("timeline-pagination-padding-%03d", index),
+			StreamID: paddingStream, Seq: sequence,
+			IdempotencyKey: fmt.Sprintf("idem-timeline-pagination-padding-%03d", index),
+			Type:           "TimelinePaginationFixtureObserved", SchemaVersion: 1,
+			EmittedAt:     time.Date(2026, 8, 1, 11, 0, index, 0, time.UTC),
+			CorrelationID: "77777777-7777-4777-8777-777777777777",
+			CausationID: func() string {
+				if index == 0 {
+					return lastPaddingEvent.ID
+				}
+				return fmt.Sprintf("timeline-pagination-padding-%03d", index-1)
+			}(),
+			PayloadJSON: []byte(`{"team_instance_id":"team-execution-ready"}`),
+		}); err != nil {
+			t.Fatalf("append pagination padding %d: %v", index, err)
+		}
+	}
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatalf("projection after ignored pagination fixture: %v", err)
+	}
+	journalHeads := func(events []journal.Event) []journal.StreamHead {
+		byStream := make(map[string]journal.StreamHead)
+		for _, event := range events {
+			byStream[event.StreamID] = journal.StreamHead{
+				StreamID: event.StreamID,
+				Sequence: event.Seq,
+				EventID:  event.ID,
+			}
+		}
+		heads := make([]journal.StreamHead, 0, len(byStream))
+		for _, head := range byStream {
+			heads = append(heads, head)
+		}
+		sort.Slice(heads, func(i, j int) bool {
+			return heads[i].StreamID < heads[j].StreamID
+		})
+		return heads
+	}
+	beforeProbeEvents, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatalf("read Journal before authoritative Swift Store probe: %v", err)
+	}
+	beforeProbeHeads := journalHeads(beforeProbeEvents)
+	firstAuthoritativePage, err := readService.ReadLocalProductTimeline(
+		context.Background(),
+		api.LocalProductTimelineRequest{
+			TeamInstanceID: "team-execution-ready", Limit: 64,
+		},
+	)
+	if err != nil || !firstAuthoritativePage.HasMore ||
+		len(firstAuthoritativePage.NextCursor) <= 256 {
+		t.Fatalf("authoritative first page = %#v, %v", firstAuthoritativePage, err)
+	}
+	secondAuthoritativePage, err := readService.ReadLocalProductTimeline(
+		context.Background(),
+		api.LocalProductTimelineRequest{
+			TeamInstanceID: "team-execution-ready",
+			Cursor:         firstAuthoritativePage.NextCursor,
+			Limit:          64,
+		},
+	)
+	if err != nil || secondAuthoritativePage.HasMore || secondAuthoritativePage.Gap != nil {
+		t.Fatalf("authoritative second page = %#v, %v", secondAuthoritativePage, err)
+	}
+	expectedDeliveryIDs := make([]string, 0,
+		len(firstAuthoritativePage.Records)+len(secondAuthoritativePage.Records))
+	for _, page := range []api.LocalProductTimelinePage{
+		firstAuthoritativePage, secondAuthoritativePage,
+	} {
+		for _, record := range page.Records {
+			expectedDeliveryIDs = append(expectedDeliveryIDs, record.DeliveryID)
+		}
+	}
+
+	baseHandler := localProductHandler(readService)
+	var cursorMu sync.Mutex
+	var requestedCursors []string
+	handler := localipc.HandlerFunc(func(
+		ctx context.Context,
+		request localipc.Request,
+	) localipc.Response {
+		if request.Method == "timeline_page" {
+			var input api.LocalProductTimelineRequest
+			if err := json.Unmarshal(request.Params, &input); err == nil {
+				cursorMu.Lock()
+				requestedCursors = append(requestedCursors, input.Cursor)
+				cursorMu.Unlock()
+			}
+		}
+		return baseHandler(ctx, request)
+	})
+	socketRoot, err := os.MkdirTemp("/private/tmp", "loom-pg-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketRoot)
+	if err := os.Chmod(socketRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(socketRoot, "loomd.sock")
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath: socketPath, EffectiveUID: os.Geteuid(),
+		BuildID: "authoritative-swift-store-pagination", Handler: handler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverContext, stopServer := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Serve(serverContext) }()
+	select {
+	case <-server.Ready():
+	case err := <-serverDone:
+		t.Fatalf("pagination server failed before ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("pagination server did not become ready")
+	}
+	probe := buildProductDaemonSwiftContractProbe(t, root)
+	probeCommand := exec.Command(
+		probe,
+		"--socket",
+		socketPath,
+		"--team-all",
+		"team-execution-ready",
+	)
+	probeCommand.Env = productCLITestEnvironment(t, root)
+	probeOutput, probeErr := probeCommand.CombinedOutput()
+	stopServer()
+	_ = server.Close()
+	if serveErr := <-serverDone; serveErr != nil {
+		t.Fatalf("pagination server close: %v", serveErr)
+	}
+	if probeErr != nil {
+		t.Fatalf("authoritative Swift Store probe = %v, %q", probeErr, probeOutput)
+	}
+	var strictOutput struct {
+		Timeline api.LocalProductTimelinePage `json:"timeline"`
+	}
+	if err := json.Unmarshal(probeOutput, &strictOutput); err != nil {
+		t.Fatalf("authoritative Swift Store output = %v, %q", err, probeOutput)
+	}
+	cursorMu.Lock()
+	cursors := append([]string(nil), requestedCursors...)
+	cursorMu.Unlock()
+	strictEvidence := 0
+	strictTerminal := 0
+	strictDeliveryIDs := make([]string, 0, len(strictOutput.Timeline.Records))
+	uniqueDeliveryIDs := make(map[string]struct{}, len(strictOutput.Timeline.Records))
+	for _, record := range strictOutput.Timeline.Records {
+		strictDeliveryIDs = append(strictDeliveryIDs, record.DeliveryID)
+		uniqueDeliveryIDs[record.DeliveryID] = struct{}{}
+		switch record.Kind {
+		case "evidence_available":
+			strictEvidence++
+		case "team_terminal":
+			strictTerminal++
+		}
+	}
+	if strictOutput.Timeline.HasMore || strictOutput.Timeline.Gap != nil ||
+		strictEvidence != 2 || strictTerminal != 1 ||
+		!reflect.DeepEqual(strictDeliveryIDs, expectedDeliveryIDs) ||
+		len(uniqueDeliveryIDs) != len(strictDeliveryIDs) ||
+		len(cursors) != 2 || cursors[0] != "" ||
+		cursors[1] != firstAuthoritativePage.NextCursor ||
+		len(cursors[1]) <= 256 {
+		t.Fatalf(
+			"strict timeline=%#v cursors=%#v first=%q",
+			strictOutput.Timeline,
+			cursors,
+			firstAuthoritativePage.NextCursor,
+		)
+	}
+	afterProbeEvents, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatalf("read Journal after authoritative Swift Store probe: %v", err)
+	}
+	if !reflect.DeepEqual(afterProbeEvents, beforeProbeEvents) ||
+		!reflect.DeepEqual(journalHeads(afterProbeEvents), beforeProbeHeads) {
+		t.Fatalf(
+			"authoritative Swift Store probe mutated Journal: events %d -> %d, heads %#v -> %#v",
+			len(beforeProbeEvents), len(afterProbeEvents),
+			beforeProbeHeads, journalHeads(afterProbeEvents),
+		)
+	}
+}
+
+func TestProductMissionExecutionCompositionReconcilesExactJournalLineageBeforeIPC(
+	t *testing.T,
+) {
+	now := time.Date(2026, 8, 1, 10, 5, 0, 0, time.UTC)
+	build := func(workflowPath string) (*productDaemonRunner, error) {
+		t.Helper()
+		root, statePath := productDaemonFailureState(t)
+		database, err := sql.Open("sqlite", statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendProductExecutionRuntimeFixture(t, database)
+		appendProductExecutionTeamFixture(t, database)
+		appendProductExecutionInFlightFixture(t, database, now, workflowPath)
+		if err := database.Close(); err != nil {
+			t.Fatal(err)
+		}
+		privateRoot := filepath.Join(root, "local-model")
+		if err := os.Mkdir(privateRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return newProductDaemonRunner(
+			&blockingObserverRunner{},
+			statePath,
+			filepath.Join(root, "loomd.sock"),
+			productSetupRuntimeConfig{
+				Execution: &productMissionExecutionRuntimeConfig{
+					RuntimeSearchPaths: []string{root},
+					RuntimeInstanceID:  "runtime-1",
+					LocalModelCatalog: &piadapter.PiLocalModelCatalogConfig{
+						PrivateRoot: privateRoot,
+						ExecutablePath: filepath.Join(
+							privateRoot,
+							"not-started-llama",
+						),
+						ModelPath: filepath.Join(
+							privateRoot,
+							"not-read-model.gguf",
+						),
+					},
+					Now: func() time.Time { return now },
+				},
+			},
+		)
+	}
+
+	runner, err := build("builtin/mission-primary-v1")
+	if err != nil {
+		t.Fatalf("exact Journal lineage did not reconcile: %v", err)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatalf("close reconciled daemon: %v", err)
+	}
+
+	unknown, err := build("unknown/mission-recipe")
+	if unknown != nil {
+		_ = unknown.Close()
+	}
+	if !errors.Is(err, app.ErrMissionExecutionConflict) {
+		t.Fatalf("unknown Journal recipe error = %v", err)
+	}
+}
+
+func appendProductExecutionInFlightFixture(
+	t *testing.T,
+	database *sql.DB,
+	now time.Time,
+	workflowPath string,
+) {
+	t.Helper()
+	store := journal.NewStore(database)
+	authority, err := work.NewAuthority(
+		store,
+		func() time.Time { return now },
+		bytes.NewReader(bytes.Repeat([]byte{0x42}, 4096)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := authority.InitializeRunIdentityIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-execution-ready",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID:     "main",
+			Title:             "Produce one bounded verified result",
+			AgentInstanceID:   "execution-agent-main",
+			RuntimeInstanceID: "runtime-1",
+			Role:              teams.ExecutionRoleMain,
+			DependsOn:         []string{},
+			MaxAttempts:       2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputContract, err := verification.NewOutputContract(
+		1,
+		verification.EmptyOutputTransient,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryPolicy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
+		Version: 1, RetryDelay: 0, AttemptCredits: 1,
+		ExhaustionAction: rules.ExhaustionBlocked,
+		RetryInvalid:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptanceContract, err := verification.NewAcceptanceContract(
+		1,
+		[]string{
+			"authorized output is non-empty",
+			"result satisfies the confirmed Mission objective",
+		},
+		verification.AcceptanceRiskMedium,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifierAgentID := productVerifierIdentity(
+		"mission-verifier-agent",
+		plan.TeamInstanceID(),
+		plan.Digest(),
+	)
+	view := readModel.GlobalReadView()
+	workItemID := productMissionAttemptIdentity("work", plan, "main", 1)
+	runID := productMissionAttemptIdentity("run", plan, "main", 1)
+	streamIDs := []string{
+		"team-execution/" + plan.TeamInstanceID(),
+		"work-run-identity/v1",
+		"work-item/" + workItemID,
+		"run/" + runID,
+		"runtime_instance:runtime-1",
+		"runtime_capacity:runtime-1",
+	}
+	sort.Strings(streamIDs)
+	heads := make([]journal.StreamHead, len(streamIDs))
+	for index, streamID := range streamIDs {
+		head, ok := view.Head(streamID)
+		if !ok {
+			head = journal.StreamHead{StreamID: streamID}
+		}
+		heads[index] = head
+	}
+	_, err = authority.DispatchTeamReadySet(ctx, work.TeamDispatchInput{
+		Plan: plan,
+		ReadyAttempts: []work.TeamAttemptSelection{{
+			LogicalNodeID: "main", AttemptNumber: 1,
+		}},
+		SemanticBindings: []work.TeamNodeSemanticBinding{{
+			LogicalNodeID:               "main",
+			OutputContractVersion:       outputContract.Version(),
+			OutputContractDigest:        outputContract.Digest(),
+			RecoveryPolicyVersion:       recoveryPolicy.Version(),
+			RecoveryPolicyDigest:        recoveryPolicy.Digest(),
+			AttemptCredits:              recoveryPolicy.AttemptCredits(),
+			PrimaryWorkflowPath:         workflowPath,
+			WorkflowFallbackKey:         recoveryPolicy.WorkflowFallbackKey(),
+			RecoveryApprovalRequired:    recoveryPolicy.RecoveryApprovalRequired(),
+			AcceptanceContractVersion:   acceptanceContract.Version(),
+			AcceptanceContractDigest:    acceptanceContract.Digest(),
+			AcceptanceRisk:              string(acceptanceContract.Risk()),
+			IndependentVerifierRequired: acceptanceContract.IndependentVerifierRequired(),
+			VerifierAgentInstanceID:     verifierAgentID,
+			VerifierRuntimeInstanceID:   "runtime-1",
+			VerifierWorkflowPath:        "builtin/mission-verifier-v1",
+		}},
+		ViewVersion:          view.Version(),
+		ExpectedHeads:        heads,
+		AuthoritativeTime:    now,
+		PrepareLeaseDuration: time.Minute,
+		CorrelationID:        "33333333-3333-4333-8333-333333333333",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := readModel.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	projected, ok := readModel.GlobalReadView().TeamExecution(plan.TeamInstanceID())
+	if !ok || projected.Status != "running" || projected.PlanDigest != plan.Digest() {
+		t.Fatalf("in-flight fixture projection = %#v", projected)
+	}
+}
+
+func productMissionAttemptIdentity(
+	label string,
+	plan teams.ExecutionPlan,
+	logicalNodeID string,
+	attemptNumber int,
+) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		label,
+		plan.TeamInstanceID(),
+		plan.Digest(),
+		logicalNodeID,
+		fmt.Sprint(attemptNumber),
+	}, "\x00")))
+	return "team-" + label + "-" + hex.EncodeToString(digest[:16])
+}
+
+func productVerifierIdentity(label string, fields ...string) string {
+	hash := sha256.New()
+	write := func(value string) {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(value))
+	}
+	write("loom." + label + ".v1")
+	for _, field := range fields {
+		write(field)
+	}
+	return label + "-" + hex.EncodeToString(hash.Sum(nil))
+}
+
+type productPiAdapterFixture struct {
+	verifierOutput string
+	prompts        []string
+	sourceStarted  chan<- struct{}
+	releaseSource  <-chan struct{}
+}
+
+func (*productPiAdapterFixture) AdapterType() string { return "pi-cli" }
+
+func (*productPiAdapterFixture) RuntimeInstanceID() string { return "runtime-1" }
+
+func (fixture *productPiAdapterFixture) Execute(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+) (supervisor.AdapterResult, error) {
+	var dispatch struct {
+		SchemaVersion int    `json:"schema_version"`
+		Kind          string `json:"kind"`
+		Prompt        string `json:"prompt"`
+	}
+	if err := json.Unmarshal(request.Dispatch.Payload(), &dispatch); err != nil ||
+		dispatch.SchemaVersion != 1 || dispatch.Kind != "pi_rpc_prompt" {
+		return supervisor.AdapterResult{}, errors.New("invalid fixture dispatch")
+	}
+	fixture.prompts = append(fixture.prompts, dispatch.Prompt)
+	output := "authorized source result"
+	if strings.Contains(dispatch.Prompt, "allowed verifier reason code") {
+		output = fixture.verifierOutput
+	}
+	frames := make([]bridgev1.Frame, 0, 4)
+	for index, record := range []struct {
+		typeName bridgev1.MessageType
+		payload  any
+	}{
+		{bridgev1.MessageAck, map[string]string{
+			"message_id": request.Dispatch.MessageID(),
+		}},
+		{bridgev1.MessageEvent, map[string]string{"delta": output}},
+		{bridgev1.MessageEvidence, map[string]any{
+			"kind": "assistant_text_digest", "sha256": strings.Repeat("a", 64),
+			"bytes": len(output),
+		}},
+		{bridgev1.MessageResult, struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		}{"succeeded", ""}},
+	} {
+		payload, err := json.Marshal(record.payload)
+		if err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+		frame, err := bridgev1.NewFrame(bridgev1.FrameInput{
+			MessageID: fmt.Sprintf(
+				"10000000-0000-4000-8000-%012d", index+2,
+			),
+			CorrelationID:         request.Dispatch.CorrelationID(),
+			WorkItemID:            request.Binding.WorkItemID,
+			RunID:                 request.Binding.RunID,
+			ClaimGeneration:       request.Binding.ClaimGeneration,
+			RuntimeInstanceID:     request.Binding.RuntimeInstanceID,
+			SenderAgentInstanceID: request.Binding.SenderAgentInstanceID,
+			Sequence:              int64(index + 2),
+			Type:                  record.typeName,
+			EmittedAt:             request.Dispatch.EmittedAt(),
+			Payload:               payload,
+		})
+		if err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+		if err := request.FrameSink.AcceptFrame(ctx, frame); err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+		if record.typeName == bridgev1.MessageEvent &&
+			!strings.Contains(dispatch.Prompt, "allowed verifier reason code") &&
+			fixture.releaseSource != nil {
+			if fixture.sourceStarted != nil {
+				select {
+				case fixture.sourceStarted <- struct{}{}:
+				default:
+				}
+			}
+			select {
+			case <-fixture.releaseSource:
+			case <-ctx.Done():
+				return supervisor.AdapterResult{}, ctx.Err()
+			}
+		}
+		frames = append(frames, frame)
+	}
+	return supervisor.NewAdapterResult(supervisor.AdapterResultInput{
+		InboundFrames: frames, ExitCode: 0,
+		DispatchAcknowledged: true, ResultAcknowledged: true,
+	})
+}
+
+type productRecordingFrameSink struct {
+	frames []bridgev1.Frame
+	err    error
+}
+
+func (sink *productRecordingFrameSink) AcceptFrame(
+	_ context.Context,
+	frame bridgev1.Frame,
+) error {
+	if sink.err != nil {
+		return sink.err
+	}
+	sink.frames = append(sink.frames, frame)
+	return nil
+}
+
+func productAdapterRequest(
+	t *testing.T,
+	runID string,
+	payload any,
+	sink supervisor.FrameSink,
+) supervisor.AdapterRequest {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := bridgev1.NewFrame(bridgev1.FrameInput{
+		MessageID:             "20000000-0000-4000-8000-000000000001",
+		CorrelationID:         "33333333-3333-4333-8333-333333333333",
+		WorkItemID:            "work-" + runID,
+		RunID:                 runID,
+		ClaimGeneration:       1,
+		RuntimeInstanceID:     "runtime-1",
+		SenderAgentInstanceID: "agent-1",
+		Sequence:              1,
+		Type:                  bridgev1.MessageDispatch,
+		EmittedAt: time.Date(
+			2026, 8, 1, 10, 0, 0, 0, time.UTC,
+		),
+		Payload: body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return supervisor.AdapterRequest{
+		Binding: bridgev1.RunStreamBinding{
+			WorkItemID:            dispatch.WorkItemID(),
+			RunID:                 dispatch.RunID(),
+			ClaimGeneration:       dispatch.ClaimGeneration(),
+			RuntimeInstanceID:     dispatch.RuntimeInstanceID(),
+			SenderAgentInstanceID: dispatch.SenderAgentInstanceID(),
+		},
+		Dispatch:  dispatch,
+		FrameSink: sink,
+	}
+}
+
+func productPromptFixture(prompt string) productPiPromptDispatch {
+	return productPiPromptDispatch{
+		SchemaVersion: 1,
+		Kind:          "pi_rpc_prompt",
+		Prompt:        prompt,
+	}
+}
+
+func productVerifierFixture(sourceRunID string) productPiVerifierDispatch {
+	return productPiVerifierDispatch{
+		TeamInstanceID:       "team-1",
+		PlanDigest:           strings.Repeat("a", 64),
+		LogicalNodeID:        "main",
+		SourceAttemptNumber:  1,
+		SourceWorkItemID:     "work-" + sourceRunID,
+		SourceRunID:          sourceRunID,
+		SourceEvidenceDigest: strings.Repeat("b", 64),
+		SourceOutputSummaryDigest: strings.Repeat(
+			"c", 64,
+		),
+		AcceptanceContractDigest: strings.Repeat("d", 64),
+		Risk:                     "medium",
+		Criteria:                 []string{"bounded result is present"},
+		AllowedReasonCodes: []string{
+			"criteria_satisfied",
+			"criteria_not_satisfied",
+			"insufficient_evidence",
+		},
+	}
+}
+
+func TestProductPiRuntimeAdapterAuthorizesSourceBeforeIndependentVerifier(
+	t *testing.T,
+) {
+	delegate := &productPiAdapterFixture{verifierOutput: "criteria_satisfied"}
+	adapter, err := newProductPiRuntimeAdapter(delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceSink := &productRecordingFrameSink{}
+	source := productAdapterRequest(
+		t, "source-run", productPromptFixture("bounded source task"), sourceSink,
+	)
+	if _, err := adapter.Execute(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	verifierSink := &productRecordingFrameSink{}
+	verifier := productAdapterRequest(
+		t, "verifier-run", productVerifierFixture("source-run"), verifierSink,
+	)
+	result, err := adapter.Execute(context.Background(), verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(delegate.prompts) != 2 ||
+		!strings.Contains(delegate.prompts[1], "authorized source result") ||
+		len(verifierSink.frames) != 4 ||
+		len(result.InboundFrames()) != 4 {
+		t.Fatalf(
+			"prompts=%#v frames=%d result=%d",
+			delegate.prompts,
+			len(verifierSink.frames),
+			len(result.InboundFrames()),
+		)
+	}
+	terminal := verifierSink.frames[3]
+	if terminal.Type() != bridgev1.MessageResult ||
+		string(terminal.Payload()) != `{"reason":"","status":"succeeded"}` {
+		t.Fatalf("verifier terminal = %s %s", terminal.Type(), terminal.Payload())
+	}
+}
+
+func TestProductPiRuntimeAdapterRejectsUnacceptedSourceAndFailsClosedVerifier(
+	t *testing.T,
+) {
+	delegate := &productPiAdapterFixture{verifierOutput: "unexpected prose"}
+	adapter, err := newProductPiRuntimeAdapter(delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := errors.New("frame rejected before authorization")
+	request := productAdapterRequest(
+		t,
+		"source-run",
+		productPromptFixture("bounded source task"),
+		&productRecordingFrameSink{err: rejected},
+	)
+	if _, err := adapter.Execute(context.Background(), request); !errors.Is(err, rejected) {
+		t.Fatalf("source rejection = %v", err)
+	}
+	verifier := productAdapterRequest(
+		t,
+		"verifier-run",
+		productVerifierFixture("source-run"),
+		&productRecordingFrameSink{},
+	)
+	if _, err := adapter.Execute(context.Background(), verifier); err == nil {
+		t.Fatal("verifier used output rejected by authoritative sink")
+	}
+
+	accepted := productAdapterRequest(
+		t,
+		"source-two",
+		productPromptFixture("bounded source task"),
+		&productRecordingFrameSink{},
+	)
+	if _, err := adapter.Execute(context.Background(), accepted); err != nil {
+		t.Fatal(err)
+	}
+	verifier = productAdapterRequest(
+		t,
+		"verifier-two",
+		productVerifierFixture("source-two"),
+		&productRecordingFrameSink{},
+	)
+	result, err := adapter.Execute(context.Background(), verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := result.InboundFrames()[3]
+	if string(terminal.Payload()) !=
+		`{"reason":"insufficient_evidence","status":"failed"}` {
+		t.Fatalf("fail-closed terminal = %s", terminal.Payload())
+	}
+}
+
+func TestProductDaemonProductionRunnerServesAuthoritativeMissionPreflight(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendProductExecutionRuntimeFixture(t, database)
+	appendProductExecutionTeamFixture(t, database)
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	privateRoot := filepath.Join(root, "local-model")
+	if err := os.Mkdir(privateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := newProductDaemonRunner(
+		&blockingObserverRunner{},
+		statePath,
+		filepath.Join(root, "loomd.sock"),
+		productSetupRuntimeConfig{Execution: &productMissionExecutionRuntimeConfig{
+			RuntimeSearchPaths: []string{root},
+			RuntimeInstanceID:  "runtime-1",
+			LocalModelCatalog: &piadapter.PiLocalModelCatalogConfig{
+				PrivateRoot:    privateRoot,
+				ExecutablePath: filepath.Join(privateRoot, "not-started-llama"),
+				ModelPath:      filepath.Join(privateRoot, "not-read-model.gguf"),
+			},
+			Now: func() time.Time {
+				return time.Date(2026, 8, 1, 10, 5, 0, 0, time.UTC)
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	socketPath := filepath.Join(root, "loomd.sock")
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot api.LocalProductSnapshot
+	if err := client.Call(
+		context.Background(),
+		"snapshot",
+		api.LocalProductSnapshotRequest{Limit: 64},
+		&snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	workPackage, err := work.CodingWorkPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope api.MissionExecutionEnvelope
+	if err := client.Call(
+		context.Background(),
+		"mission_execution",
+		app.MissionExecutionCommand{
+			SchemaVersion: app.MissionExecutionSchemaVersion,
+			Operation:     "preflight", MissionID: "mission/team-execution-ready",
+			TeamInstanceID:      "team-execution-ready",
+			WorkPackageID:       workPackage.ID(),
+			WorkPackageDigest:   workPackage.Digest(),
+			Objective:           "Produce one bounded verified result",
+			ExpectedViewVersion: snapshot.ViewVersion,
+			CorrelationID:       "33333333-3333-4333-8333-333333333333",
+		},
+		&envelope,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Operation != "preflight" || envelope.Preflight == nil ||
+		envelope.Preflight.PreflightDigest == "" {
+		t.Fatalf("preflight envelope = %#v", envelope)
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("product daemon stop error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func productDaemonHeadsDigest(t *testing.T, database *sql.DB) string {
 	t.Helper()
 	rows, err := database.Query(
@@ -2133,8 +4656,9 @@ func productDaemonHeadsDigest(t *testing.T, database *sql.DB) string {
 }
 
 type productSetupFixtureBackend struct {
-	closed     *bool
-	connectErr error
+	closed            *bool
+	connectErr        error
+	credentialCommand *app.CredentialSetupCommand
 }
 
 func (backend productSetupFixtureBackend) ConnectCodex(
@@ -2181,6 +4705,20 @@ func (productSetupFixtureBackend) StartBuilder(
 	app.BuilderStartCommand,
 ) (app.BuilderSessionView, error) {
 	return app.BuilderSessionView{}, errors.New("unexpected builder start")
+}
+
+func (backend productSetupFixtureBackend) VerifyCredential(
+	_ context.Context,
+	command app.CredentialSetupCommand,
+) (app.CredentialSetupResult, error) {
+	if backend.credentialCommand == nil {
+		return app.CredentialSetupResult{}, errors.New("unexpected credential verify")
+	}
+	*backend.credentialCommand = command
+	return app.CredentialSetupResult{
+		ProviderID: "minimax", Revision: command.ExpectedRevision + 1,
+		Status: "verified",
+	}, nil
 }
 
 func (backend productSetupFixtureBackend) Close() error {
@@ -2802,6 +5340,45 @@ func TestProductDaemonServesStrictSetupSnapshotWithoutCLIOrSQLiteClient(
 	}
 }
 
+func TestProductDaemonCredentialVerifyRequiresOneStrictOperationID(
+	t *testing.T,
+) {
+	var captured app.CredentialSetupCommand
+	setup, err := api.NewLocalProductSetupAPI(productSetupFixtureBackend{
+		credentialCommand: &captured,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := localProductHandler(nil, setup)
+	operationID := "11111111-1111-4111-8111-111111111111"
+	response := handler(context.Background(), localipc.Request{
+		Version: 1, RequestID: "verify-operation", Method: "credential_verify",
+		Params: json.RawMessage(`{"provider_id":"minimax","credential_reference":"credential-ref-1","expected_revision":1,"operation_id":"` + operationID + `","secret":""}`),
+	})
+	if !response.OK || response.Error != nil || captured.OperationID != operationID {
+		t.Fatalf("response=%#v command=%#v", response, captured)
+	}
+
+	invalid := []json.RawMessage{
+		json.RawMessage(`{"provider_id":"minimax","credential_reference":"credential-ref-1","expected_revision":1,"secret":""}`),
+		json.RawMessage(`{"provider_id":"minimax","credential_reference":"credential-ref-1","expected_revision":1,"operation_id":"INVALID","secret":""}`),
+		json.RawMessage(`{"provider_id":"minimax","credential_reference":"credential-ref-1","expected_revision":1,"operation_id":"` + operationID + `","operation_id":"` + operationID + `","secret":""}`),
+		json.RawMessage(`{"provider_id":"minimax","credential_reference":"credential-ref-1","expected_revision":1,"operation_id":"` + operationID + `","secret":"","extra":true}`),
+	}
+	for index, params := range invalid {
+		captured = app.CredentialSetupCommand{}
+		response := handler(context.Background(), localipc.Request{
+			Version: 1, RequestID: fmt.Sprintf("verify-invalid-%d", index),
+			Method: "credential_verify", Params: params,
+		})
+		if response.OK || response.Error == nil ||
+			response.Error.Code != "invalid_request" || captured.OperationID != "" {
+			t.Fatalf("case=%d response=%#v command=%#v", index, response, captured)
+		}
+	}
+}
+
 func TestProductDaemonRoutesOneStrictMissionDecisionMethod(t *testing.T) {
 	backend, err := app.NewPreparedMissionDecisionBackend(
 		app.PreparedMissionDecisions{},
@@ -2875,6 +5452,83 @@ func TestProductDaemonRoutesOneStrictMissionDecisionMethod(t *testing.T) {
 		submitted.Error == nil ||
 		submitted.Error.Code != "conflict" {
 		t.Fatalf("unprepared submit response=%#v", submitted)
+	}
+}
+
+func TestProductDaemonRoutesOneStrictMissionExecutionMethod(t *testing.T) {
+	workPackage, err := work.CodingWorkPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.MissionExecutionPreflight{
+		SchemaVersion:  app.MissionExecutionSchemaVersion,
+		MissionID:      "mission/team-1",
+		TeamInstanceID: "team-1",
+		Nodes:          []app.MissionExecutionNodePreview{},
+	}
+	executionAPI, err := api.NewLocalProductExecutionAPI(
+		&productExecutionServiceStub{preflight: want},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := localProductHandlerWithDecision(nil, nil, nil, executionAPI)
+	params, err := json.Marshal(app.MissionExecutionCommand{
+		SchemaVersion:       app.MissionExecutionSchemaVersion,
+		Operation:           "preflight",
+		MissionID:           "mission/team-1",
+		TeamInstanceID:      "team-1",
+		WorkPackageID:       workPackage.ID(),
+		WorkPackageDigest:   workPackage.Digest(),
+		Objective:           "bounded mission",
+		ExpectedViewVersion: strings.Repeat("b", 64),
+		CorrelationID:       "11111111-1111-4111-8111-111111111111",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "execution-1",
+		Method:    "mission_execution",
+		Params:    params,
+	})
+	if !response.OK || response.Error != nil {
+		t.Fatalf("execution response = %#v", response)
+	}
+	var envelope api.MissionExecutionEnvelope
+	if err := json.Unmarshal(response.Result, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Operation != "preflight" || envelope.Preflight == nil ||
+		!reflect.DeepEqual(*envelope.Preflight, want) || envelope.Result != nil {
+		t.Fatalf("execution envelope = %#v", envelope)
+	}
+
+	unavailable := localProductHandlerWithDecision(nil, nil, nil)(
+		context.Background(),
+		localipc.Request{
+			Version:   1,
+			RequestID: "execution-unavailable",
+			Method:    "mission_execution",
+			Params:    params,
+		},
+	)
+	if unavailable.OK || unavailable.Error == nil ||
+		unavailable.Error.Code != "state_unavailable" {
+		t.Fatalf("unavailable execution response = %#v", unavailable)
+	}
+
+	unknown := append([]byte(nil), params[:len(params)-1]...)
+	unknown = append(unknown, []byte(`,"unknown":true}`)...)
+	invalid := handler(context.Background(), localipc.Request{
+		Version:   1,
+		RequestID: "execution-invalid",
+		Method:    "mission_execution",
+		Params:    unknown,
+	})
+	if invalid.OK || invalid.Error == nil || invalid.Error.Code != "invalid_request" {
+		t.Fatalf("invalid execution response = %#v", invalid)
 	}
 }
 
@@ -3122,7 +5776,7 @@ func TestProductDaemonProductionRunnerWiresFailClosedDecisionRegistry(
 	waitForProductSocket(t, socketPath)
 	client, err := localipc.NewClient(localipc.ClientConfig{
 		SocketPath: socketPath,
-		Timeout:    time.Second,
+		Timeout:    5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

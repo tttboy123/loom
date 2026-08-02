@@ -103,8 +103,50 @@ type TeamAttemptRebindInput struct {
 }
 
 type TeamRecoveryInput struct {
-	Decision      TeamRecoveryDecision
-	CorrelationID string
+	TeamInstanceID      string
+	PlanDigest          string
+	LogicalNodeID       string
+	AttemptNumber       int
+	MaxAttempts         int
+	AgentInstanceID     string
+	RuntimeInstanceID   string
+	EvidenceID          string
+	EvidenceDigest      string
+	OutputSummaryDigest string
+	Classification      verification.Classification
+	RecoveryPolicy      TeamRecoveryPolicy
+	Decision            TeamRecoveryDecision
+	CorrelationID       string
+}
+
+type TeamRecoveryPolicy interface {
+	Valid() bool
+	Version() int
+	Digest() string
+	AttemptCredits() int
+	RetryDelay() time.Duration
+	RecoveryApprovalRequired() bool
+	Decide(TeamRecoveryDecisionRequest) (TeamRecoveryDecision, error)
+}
+
+type TeamRecoveryDecisionRequest struct {
+	TeamInstanceID           string
+	PlanDigest               string
+	LogicalNodeID            string
+	AttemptNumber            int
+	MaxAttempts              int
+	AgentInstanceID          string
+	RuntimeInstanceID        string
+	EvidenceID               string
+	EvidenceDigest           string
+	OutputSummaryDigest      string
+	Classification           verification.Classification
+	PriorClassifications     []verification.OutputClassification
+	RemainingCredits         int
+	FallbackConsumed         bool
+	DecisionTime             time.Time
+	Trigger                  string
+	AcceptanceDecisionDigest string
 }
 
 type TeamRecoveryDecision interface {
@@ -1105,15 +1147,40 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 	if err := validateTeamRecoveryInput(ctx, input); err != nil {
 		return TeamExecutionRecord{}, err
 	}
-	decision := input.Decision
-	streamID := teamExecutionStream(decision.TeamInstanceID())
+	streamID := teamExecutionStream(input.TeamInstanceID)
 	events, err := authority.store.ReadStream(ctx, streamID)
 	if err != nil {
 		return TeamExecutionRecord{}, err
 	}
-	team, err := replayTeamExecution(decision.TeamInstanceID(), events)
-	if err != nil || team.status == "" ||
-		team.planDigest != decision.PlanDigest() {
+	team, err := replayTeamExecution(input.TeamInstanceID, events)
+	if err != nil {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	if team.status == "" || team.planDigest != input.PlanDigest {
+		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+	}
+	if team.legacySemanticUnbound {
+		return TeamExecutionRecord{}, ErrTeamAttemptRecoveryRequired
+	}
+	node := teamNodeByID(&team, input.LogicalNodeID)
+	attempt := teamAttemptByNumber(node, input.AttemptNumber)
+	if node == nil || attempt == nil ||
+		input.MaxAttempts != node.maxAttempts ||
+		input.AgentInstanceID != attempt.agentInstanceID ||
+		input.RuntimeInstanceID != attempt.runtimeInstanceID ||
+		input.EvidenceID != attempt.evidenceID ||
+		input.EvidenceDigest != attempt.evidenceDigest ||
+		input.OutputSummaryDigest != attempt.outputSummaryDigest ||
+		input.Classification.Kind() != attempt.outputClassification ||
+		input.Classification.Digest() != attempt.outputClassificationDigest ||
+		input.RecoveryPolicy.Version() !=
+			node.semanticBinding.RecoveryPolicyVersion ||
+		input.RecoveryPolicy.Digest() !=
+			node.semanticBinding.RecoveryPolicyDigest ||
+		input.RecoveryPolicy.AttemptCredits() !=
+			node.semanticBinding.AttemptCredits ||
+		input.RecoveryPolicy.RecoveryApprovalRequired() !=
+			node.semanticBinding.RecoveryApprovalRequired {
 		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
 	}
 	matched, existingConflict, matchErr := matchExistingTeamRecovery(
@@ -1132,30 +1199,9 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 	if isTerminalTeamStatus(team.status) {
 		return TeamExecutionRecord{}, ErrTeamExecutionAlreadyTerminal
 	}
-	if team.legacySemanticUnbound {
-		return TeamExecutionRecord{}, ErrTeamAttemptRecoveryRequired
-	}
-	node := teamNodeByID(&team, decision.LogicalNodeID())
-	attempt := teamAttemptByNumber(node, decision.AttemptNumber())
 	if node == nil || attempt == nil ||
-		node.currentAttempt != decision.AttemptNumber() ||
-		node.status != "awaiting_recovery" ||
-		decision.MaxAttempts() != node.maxAttempts ||
-		decision.AgentInstanceID() != attempt.agentInstanceID ||
-		decision.RuntimeInstanceID() != attempt.runtimeInstanceID ||
-		decision.EvidenceID() != attempt.evidenceID ||
-		decision.EvidenceDigest() != attempt.evidenceDigest ||
-		decision.OutputSummaryDigest() != attempt.outputSummaryDigest ||
-		verification.OutputClassification(decision.ClassificationValue()) !=
-			attempt.outputClassification ||
-		decision.ClassificationDigest() !=
-			attempt.outputClassificationDigest ||
-		decision.PolicyVersion() !=
-			node.semanticBinding.RecoveryPolicyVersion ||
-		decision.PolicyDigest() !=
-			node.semanticBinding.RecoveryPolicyDigest ||
-		decision.RecoveryApprovalRequired() !=
-			node.semanticBinding.RecoveryApprovalRequired {
+		node.currentAttempt != input.AttemptNumber ||
+		node.status != "awaiting_recovery" {
 		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
 	}
 	expectedTrigger := teamRecoveryTriggerOutput
@@ -1164,54 +1210,133 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 		expectedTrigger = node.recoveryTrigger
 		expectedAcceptanceDecisionDigest = node.acceptanceDecisionDigest
 	}
-	if decision.TriggerValue() != expectedTrigger ||
-		decision.AcceptanceDecisionDigest() !=
-			expectedAcceptanceDecisionDigest ||
-		expectedTrigger ==
-			teamRecoveryTriggerVerificationRejected &&
-			decision.ActionValue() == "fallback" {
-		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
-	}
-	now, err := authority.operationTime()
-	if err != nil {
-		return TeamExecutionRecord{}, err
-	}
-	if !now.Equal(decision.DecisionTime()) {
-		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
-	}
-	expectedPrior := teamPriorClassifications(node, decision.AttemptNumber())
-	if !exactOutputClassificationStrings(
-		expectedPrior,
-		decision.PriorClassificationValues(),
-	) {
-		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
-	}
+	expectedPrior := teamPriorClassifications(node, input.AttemptNumber)
 	expectedCredits := node.semanticBinding.AttemptCredits -
-		(decision.AttemptNumber() - 1)
+		(input.AttemptNumber - 1)
 	if expectedCredits < 0 {
 		expectedCredits = 0
 	}
 	fallbackConsumed := teamFallbackConsumed(node)
-	if decision.RemainingCredits() != expectedCredits ||
-		decision.CreditsBefore() != expectedCredits ||
-		decision.FallbackConsumed() != fallbackConsumed {
+	now, err := authority.operationTime()
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	decision, err := input.RecoveryPolicy.Decide(
+		TeamRecoveryDecisionRequest{
+			TeamInstanceID:           input.TeamInstanceID,
+			PlanDigest:               input.PlanDigest,
+			LogicalNodeID:            input.LogicalNodeID,
+			AttemptNumber:            input.AttemptNumber,
+			MaxAttempts:              input.MaxAttempts,
+			AgentInstanceID:          input.AgentInstanceID,
+			RuntimeInstanceID:        input.RuntimeInstanceID,
+			EvidenceID:               input.EvidenceID,
+			EvidenceDigest:           input.EvidenceDigest,
+			OutputSummaryDigest:      input.OutputSummaryDigest,
+			Classification:           input.Classification,
+			PriorClassifications:     expectedPrior,
+			RemainingCredits:         expectedCredits,
+			FallbackConsumed:         fallbackConsumed,
+			DecisionTime:             now,
+			Trigger:                  expectedTrigger,
+			AcceptanceDecisionDigest: expectedAcceptanceDecisionDigest,
+		},
+	)
+	if err != nil || !validExactTeamRecoveryDecision(decision) ||
+		!decision.Valid() || !decision.DecisionTime().Equal(now) ||
+		!exactTeamRecoveryDecision(
+			decision,
+			input,
+			expectedPrior,
+			expectedCredits,
+			fallbackConsumed,
+			expectedTrigger,
+			expectedAcceptanceDecisionDigest,
+		) ||
+		expectedTrigger == teamRecoveryTriggerVerificationRejected &&
+			decision.ActionValue() == "fallback" {
 		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
 	}
-	dependencySatisfied := decision.ActionValue() == "degraded"
+	if decision.ActionValue() == "none" {
+		return TeamExecutionRecord{}, ErrTeamAttemptRecoveryRequired
+	}
+	toAppend, err := buildTeamRecoveryTransaction(team, input, decision)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		[]journal.StreamHeadExpectation{{
+			StreamID: streamID, Sequence: team.streamSequence,
+		}},
+		toAppend,
+	); err != nil {
+		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+	}
+	return authority.TeamExecution(ctx, decision.TeamInstanceID())
+}
+
+func buildTeamRecoveryTransaction(
+	team TeamExecutionRecord,
+	input TeamRecoveryInput,
+	decision TeamRecoveryDecision,
+) ([]journal.Event, error) {
+	team = cloneTeamExecutionRecord(team)
+	node := teamNodeByID(&team, input.LogicalNodeID)
+	attempt := teamAttemptByNumber(node, input.AttemptNumber)
+	if node == nil || attempt == nil ||
+		node.currentAttempt != input.AttemptNumber ||
+		node.status != "awaiting_recovery" {
+		return nil, ErrInvalidTeamRecovery
+	}
+	expectedPrior := teamPriorClassifications(node, input.AttemptNumber)
+	expectedCredits := node.semanticBinding.AttemptCredits -
+		(input.AttemptNumber - 1)
+	if expectedCredits < 0 {
+		expectedCredits = 0
+	}
+	fallbackConsumed := teamFallbackConsumed(node)
+	expectedTrigger := node.recoveryTrigger
+	if expectedTrigger == "" {
+		expectedTrigger = teamRecoveryTriggerOutput
+	}
+	if !validExactTeamRecoveryDecision(decision) ||
+		!decision.Valid() ||
+		!exactTeamRecoveryDecision(
+			decision,
+			input,
+			expectedPrior,
+			expectedCredits,
+			fallbackConsumed,
+			expectedTrigger,
+			node.acceptanceDecisionDigest,
+		) ||
+		expectedTrigger == teamRecoveryTriggerVerificationRejected &&
+			decision.ActionValue() == "fallback" {
+		return nil, ErrInvalidTeamRecovery
+	}
+	streamID := teamExecutionStream(input.TeamInstanceID)
 	sequence := team.streamSequence + 1
 	recoveryID := deterministicEventID(
-		"TeamNodeRecoveryRecorded", decision.TeamInstanceID(),
-		decision.LogicalNodeID(), fmt.Sprint(decision.AttemptNumber()),
+		"TeamNodeRecoveryRecorded",
+		decision.TeamInstanceID(),
+		decision.LogicalNodeID(),
+		fmt.Sprint(decision.AttemptNumber()),
 		decision.Digest(),
 	)
 	prior := make([]string, len(expectedPrior))
 	for index, classification := range expectedPrior {
 		prior[index] = string(classification)
 	}
+	dependencySatisfied := decision.ActionValue() == "degraded"
 	recoveryEvent := newEvent(
-		recoveryID, streamID, sequence,
-		"TeamNodeRecoveryRecorded", now,
-		input.CorrelationID, team.lastEventID,
+		recoveryID,
+		streamID,
+		sequence,
+		"TeamNodeRecoveryRecorded",
+		decision.DecisionTime(),
+		input.CorrelationID,
+		team.lastEventID,
 		teamRecoveryPayload{
 			LogicalNodeID:          decision.LogicalNodeID(),
 			AttemptNumber:          decision.AttemptNumber(),
@@ -1237,7 +1362,7 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 			AcceptanceDecisionDigest: decision.AcceptanceDecisionDigest(),
 		},
 	)
-	toAppend := []journal.Event{recoveryEvent}
+	transaction := []journal.Event{recoveryEvent}
 	switch decision.ActionValue() {
 	case "retry", "fallback":
 		if decision.AttemptNumber() >= node.maxAttempts ||
@@ -1246,7 +1371,7 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 			decision.NextAgentInstanceID() != attempt.agentInstanceID ||
 			decision.NextRuntimeInstanceID() != attempt.runtimeInstanceID ||
 			decision.RetryAt().IsZero() {
-			return TeamExecutionRecord{}, ErrTeamAttemptLimit
+			return nil, ErrTeamAttemptLimit
 		}
 		workflowPath := attempt.workflowPath
 		if decision.ActionValue() == "fallback" {
@@ -1254,23 +1379,29 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 				decision.WorkflowFallbackKey() == "" ||
 				decision.WorkflowFallbackKey() !=
 					node.semanticBinding.WorkflowFallbackKey {
-				return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+				return nil, ErrInvalidTeamRecovery
 			}
 			workflowPath = decision.WorkflowFallbackKey()
 		} else if decision.WorkflowFallbackKey() != "" {
-			return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+			return nil, ErrInvalidTeamRecovery
 		}
 		nextAttempt := decision.NextAttemptNumber()
 		sequence++
 		scheduled := TeamAttemptRecord{
 			attemptNumber: nextAttempt,
 			workItemID: teamAttemptIdentityFromValues(
-				"work", decision.TeamInstanceID(), decision.PlanDigest(),
-				decision.LogicalNodeID(), nextAttempt,
+				"work",
+				decision.TeamInstanceID(),
+				decision.PlanDigest(),
+				decision.LogicalNodeID(),
+				nextAttempt,
 			),
 			runID: teamAttemptIdentityFromValues(
-				"run", decision.TeamInstanceID(), decision.PlanDigest(),
-				decision.LogicalNodeID(), nextAttempt,
+				"run",
+				decision.TeamInstanceID(),
+				decision.PlanDigest(),
+				decision.LogicalNodeID(),
+				nextAttempt,
 			),
 			runtimeInstanceID: decision.NextRuntimeInstanceID(),
 			agentInstanceID:   decision.NextAgentInstanceID(),
@@ -1278,16 +1409,25 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 			status:            "scheduled",
 		}
 		scheduledID := deterministicEventID(
-			"TeamNodeAttemptScheduled", decision.TeamInstanceID(),
-			decision.PlanDigest(), decision.LogicalNodeID(),
-			fmt.Sprint(nextAttempt), workflowPath,
+			"TeamNodeAttemptScheduled",
+			decision.TeamInstanceID(),
+			decision.PlanDigest(),
+			decision.LogicalNodeID(),
+			fmt.Sprint(nextAttempt),
+			workflowPath,
 		)
-		toAppend = append(toAppend, newEvent(
-			scheduledID, streamID, sequence,
-			"TeamNodeAttemptScheduled", now, input.CorrelationID,
+		transaction = append(transaction, newEvent(
+			scheduledID,
+			streamID,
+			sequence,
+			"TeamNodeAttemptScheduled",
+			decision.DecisionTime(),
+			input.CorrelationID,
 			recoveryID,
 			teamAttemptScheduledPayload(
-				decision.LogicalNodeID(), scheduled, decision.RetryAt(),
+				decision.LogicalNodeID(),
+				scheduled,
+				decision.RetryAt(),
 			),
 		))
 	case "degraded", "blocked", "human_required":
@@ -1297,26 +1437,26 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 			decision.NextRuntimeInstanceID() != "" ||
 			decision.WorkflowFallbackKey() != "" ||
 			decision.CreditsAfter() != expectedCredits {
-			return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+			return nil, ErrInvalidTeamRecovery
 		}
 		node.status = decision.ActionValue()
 		node.dependencySatisfied = dependencySatisfied
 		if teamIsTerminal(team) {
 			status, reason := aggregateTeamTerminal(team)
 			sequence++
-			teamTerminalID := deterministicEventID(
+			terminalID := deterministicEventID(
 				"TeamExecutionTerminal",
 				decision.TeamInstanceID(),
 				decision.PlanDigest(),
 				status,
 				reason,
 			)
-			toAppend = append(toAppend, newEvent(
-				teamTerminalID,
+			transaction = append(transaction, newEvent(
+				terminalID,
 				streamID,
 				sequence,
 				"TeamExecutionTerminal",
-				now,
+				decision.DecisionTime(),
 				input.CorrelationID,
 				recoveryID,
 				struct {
@@ -1333,18 +1473,9 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 			))
 		}
 	default:
-		return TeamExecutionRecord{}, ErrInvalidTeamRecovery
+		return nil, ErrInvalidTeamRecovery
 	}
-	if _, err := authority.store.AppendBatchIfStreamHeads(
-		ctx,
-		[]journal.StreamHeadExpectation{{
-			StreamID: streamID, Sequence: team.streamSequence,
-		}},
-		toAppend,
-	); err != nil {
-		return TeamExecutionRecord{}, ErrTeamExecutionConflict
-	}
-	return authority.TeamExecution(ctx, decision.TeamInstanceID())
+	return transaction, nil
 }
 
 type teamPlanNodePayload struct {
@@ -1598,12 +1729,19 @@ func validateTeamRecoveryInput(ctx context.Context, input TeamRecoveryInput) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	decisionType := reflect.TypeOf(input.Decision)
-	if decisionType == nil ||
-		decisionType.Kind() != reflect.Struct ||
-		decisionType.PkgPath() != "loom-pi-rebuild/internal/rules" ||
-		decisionType.Name() != "RecoveryDecision" ||
-		!input.Decision.Valid() ||
+	if !validOpaqueID(input.TeamInstanceID) ||
+		!validSHA256Hex(input.PlanDigest) ||
+		!validOpaqueID(input.LogicalNodeID) ||
+		input.AttemptNumber < 1 || input.AttemptNumber > 3 ||
+		input.MaxAttempts < input.AttemptNumber || input.MaxAttempts > 3 ||
+		!validOpaqueID(input.AgentInstanceID) ||
+		!validOpaqueID(input.RuntimeInstanceID) ||
+		!validOpaqueID(input.EvidenceID) ||
+		!validSHA256Hex(input.EvidenceDigest) ||
+		!validSHA256Hex(input.OutputSummaryDigest) ||
+		!input.Classification.Valid() ||
+		nilInterface(input.RecoveryPolicy) ||
+		!input.RecoveryPolicy.Valid() ||
 		!validCanonicalUUID(input.CorrelationID) {
 		return ErrInvalidTeamRecovery
 	}
@@ -2283,6 +2421,9 @@ func replayTeamExecution(
 			if node == nil {
 				return TeamExecutionRecord{}, ErrTeamExecutionConflict
 			}
+			if teamAttemptByNumber(node, payload.AttemptNumber) != nil {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
 			if team.legacySemanticUnbound {
 				if payload.WorkflowPath != nil {
 					return TeamExecutionRecord{}, ErrTeamExecutionConflict
@@ -2666,6 +2807,7 @@ func replayTeamExecution(
 			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
 				payload.TeamInstanceID != team.teamInstanceID ||
 				payload.PlanDigest != team.planDigest ||
+				isTerminalTeamStatus(team.status) ||
 				!isTerminalTeamStatus(payload.Status) ||
 				!teamIsTerminal(team) ||
 				payload.Status != expectedStatus ||
@@ -2827,30 +2969,168 @@ func matchExistingTeamRecovery(
 	events []journal.Event,
 	input TeamRecoveryInput,
 ) (bool, bool, error) {
-	decision := input.Decision
-	for _, event := range events {
+	matchIndex := -1
+	var payload teamRecoveryPayload
+	for index, event := range events {
 		if event.Type != "TeamNodeRecoveryRecorded" {
 			continue
 		}
-		var payload teamRecoveryPayload
-		if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil {
+		var candidate teamRecoveryPayload
+		if err := decodeExactPayload(event.PayloadJSON, &candidate); err != nil {
 			return false, false, ErrTeamExecutionConflict
 		}
-		if payload.LogicalNodeID != decision.LogicalNodeID() ||
-			payload.AttemptNumber != decision.AttemptNumber() {
+		if candidate.LogicalNodeID != input.LogicalNodeID ||
+			candidate.AttemptNumber != input.AttemptNumber {
 			continue
 		}
-		matches := payload.RecoveryDecisionDigest == decision.Digest() &&
-			(payload.RecoveryTrigger == decision.TriggerValue() ||
-				payload.RecoveryTrigger == "" &&
-					decision.TriggerValue() ==
-						teamRecoveryTriggerOutput) &&
-			payload.AcceptanceDecisionDigest ==
-				decision.AcceptanceDecisionDigest() &&
-			event.CorrelationID == input.CorrelationID
-		return matches, !matches, nil
+		if matchIndex >= 0 {
+			return false, true, ErrTeamExecutionConflict
+		}
+		matchIndex = index
+		payload = candidate
 	}
-	return false, false, nil
+	if matchIndex < 0 {
+		return false, false, nil
+	}
+	decisionTime, err := time.Parse(time.RFC3339Nano, payload.DecisionTime)
+	if err != nil || decisionTime.Location() != time.UTC {
+		return false, true, ErrTeamExecutionConflict
+	}
+	priorTeam, err := replayTeamExecution(
+		input.TeamInstanceID,
+		events[:matchIndex],
+	)
+	if err != nil {
+		return false, true, ErrTeamExecutionConflict
+	}
+	node := teamNodeByID(&priorTeam, input.LogicalNodeID)
+	attempt := teamAttemptByNumber(node, input.AttemptNumber)
+	if node == nil || attempt == nil ||
+		node.currentAttempt != input.AttemptNumber ||
+		node.status != "awaiting_recovery" {
+		return false, true, ErrTeamExecutionConflict
+	}
+	prior := teamPriorClassifications(node, input.AttemptNumber)
+	credits := node.semanticBinding.AttemptCredits -
+		(input.AttemptNumber - 1)
+	if credits < 0 {
+		credits = 0
+	}
+	fallbackConsumed := teamFallbackConsumed(node)
+	trigger := node.recoveryTrigger
+	if trigger == "" {
+		trigger = teamRecoveryTriggerOutput
+	}
+	decision, decisionErr := input.RecoveryPolicy.Decide(
+		TeamRecoveryDecisionRequest{
+			TeamInstanceID:           input.TeamInstanceID,
+			PlanDigest:               input.PlanDigest,
+			LogicalNodeID:            input.LogicalNodeID,
+			AttemptNumber:            input.AttemptNumber,
+			MaxAttempts:              input.MaxAttempts,
+			AgentInstanceID:          input.AgentInstanceID,
+			RuntimeInstanceID:        input.RuntimeInstanceID,
+			EvidenceID:               input.EvidenceID,
+			EvidenceDigest:           input.EvidenceDigest,
+			OutputSummaryDigest:      input.OutputSummaryDigest,
+			Classification:           input.Classification,
+			PriorClassifications:     prior,
+			RemainingCredits:         credits,
+			FallbackConsumed:         fallbackConsumed,
+			DecisionTime:             decisionTime,
+			Trigger:                  trigger,
+			AcceptanceDecisionDigest: node.acceptanceDecisionDigest,
+		},
+	)
+	if decisionErr != nil ||
+		!validExactTeamRecoveryDecision(decision) ||
+		!decision.Valid() ||
+		!decision.DecisionTime().Equal(decisionTime) ||
+		!exactTeamRecoveryDecision(
+			decision,
+			input,
+			prior,
+			credits,
+			fallbackConsumed,
+			trigger,
+			node.acceptanceDecisionDigest,
+		) {
+		return false, true, nil
+	}
+	expected, err := buildTeamRecoveryTransaction(
+		priorTeam,
+		input,
+		decision,
+	)
+	if err != nil || len(events)-matchIndex < len(expected) {
+		return false, true, ErrTeamExecutionConflict
+	}
+	for offset := range expected {
+		if !exactJournalEvent(
+			events[matchIndex+offset],
+			expected[offset],
+		) {
+			return false, true, ErrTeamExecutionConflict
+		}
+	}
+	return true, true, nil
+}
+
+func exactJournalEvent(left, right journal.Event) bool {
+	return left.ID == right.ID &&
+		left.StreamID == right.StreamID &&
+		left.Seq == right.Seq &&
+		left.IdempotencyKey == right.IdempotencyKey &&
+		left.Type == right.Type &&
+		left.SchemaVersion == right.SchemaVersion &&
+		left.EmittedAt.Equal(right.EmittedAt) &&
+		left.CorrelationID == right.CorrelationID &&
+		left.CausationID == right.CausationID &&
+		string(left.PayloadJSON) == string(right.PayloadJSON)
+}
+
+func validExactTeamRecoveryDecision(decision TeamRecoveryDecision) bool {
+	decisionType := reflect.TypeOf(decision)
+	return decisionType != nil &&
+		decisionType.Kind() == reflect.Struct &&
+		decisionType.PkgPath() == "loom-pi-rebuild/internal/rules" &&
+		decisionType.Name() == "RecoveryDecision"
+}
+
+func exactTeamRecoveryDecision(
+	decision TeamRecoveryDecision,
+	input TeamRecoveryInput,
+	prior []verification.OutputClassification,
+	credits int,
+	fallbackConsumed bool,
+	trigger string,
+	acceptanceDecisionDigest string,
+) bool {
+	return decision.TeamInstanceID() == input.TeamInstanceID &&
+		decision.PlanDigest() == input.PlanDigest &&
+		decision.LogicalNodeID() == input.LogicalNodeID &&
+		decision.AttemptNumber() == input.AttemptNumber &&
+		decision.MaxAttempts() == input.MaxAttempts &&
+		decision.AgentInstanceID() == input.AgentInstanceID &&
+		decision.RuntimeInstanceID() == input.RuntimeInstanceID &&
+		decision.EvidenceID() == input.EvidenceID &&
+		decision.EvidenceDigest() == input.EvidenceDigest &&
+		decision.OutputSummaryDigest() == input.OutputSummaryDigest &&
+		decision.ClassificationValue() == string(input.Classification.Kind()) &&
+		decision.ClassificationDigest() == input.Classification.Digest() &&
+		exactOutputClassificationStrings(
+			prior,
+			decision.PriorClassificationValues(),
+		) &&
+		decision.RemainingCredits() == credits &&
+		decision.CreditsBefore() == credits &&
+		decision.FallbackConsumed() == fallbackConsumed &&
+		decision.PolicyVersion() == input.RecoveryPolicy.Version() &&
+		decision.PolicyDigest() == input.RecoveryPolicy.Digest() &&
+		decision.RecoveryApprovalRequired() ==
+			input.RecoveryPolicy.RecoveryApprovalRequired() &&
+		decision.TriggerValue() == trigger &&
+		decision.AcceptanceDecisionDigest() == acceptanceDecisionDigest
 }
 
 func teamPriorClassifications(

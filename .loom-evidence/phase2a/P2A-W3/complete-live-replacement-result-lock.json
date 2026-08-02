@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3 Controlled Execution Experience",
+  "reopen": "Complete Live Compatibility",
+  "status": "RESULT_REVIEW_PENDING_LIVE_FAILED",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "source_lock_sha256": "904b1ceec6b1cd11d27498382b221c734180e0817eff8b31360d98d0b3160ccd",
+  "implementation_review_sha256": "27c57555d7821e3a79a670e993fd2ef5c2b931aae87189d228eaa1472d9a9fc7",
+  "attempts": {
+    "codex": {
+      "attempt_id": "phase2a-w3-live-20260802-codex-002",
+      "manifest_sha256": "7f00efcf01f20c70f1aec5a9cda6e14e7581afd791a2d361c3b44596a7df5e87",
+      "result_sha256": "ec5a76d757e0c5b3afd23375e2fd2b6f61bcdf92b5d794edf9fc2db81c33cd18",
+      "verdict": "PASS"
+    },
+    "minimax": {
+      "attempt_id": "phase2a-w3-live-20260802-minimax-002",
+      "manifest_sha256": "244b6e043359f86057c1bd000731264227df83a2d3a569c0e3b935cccdad5b45",
+      "result_sha256": "5d198e860b26485f401dbf6e21c355b747eeabc7c568e378859d91589814e703",
+      "verdict": "FAIL"
+    },
+    "pi": {
+      "attempt_id": "phase2a-w3-live-20260802-pi-002",
+      "manifest_sha256": "f62114519efcfbe4a35d68be177d527ecbce980114e61f7aa220c3bb20068861",
+      "result_sha256": "3f36c3340b482edd1d8f889d8bcee0033c3f9cb1d1ef849e393d35db2340115b",
+      "verdict": "FAIL"
+    }
+  },
+  "live_allowances_consumed": true,
+  "additional_canary_authorized": false,
+  "final_walkthrough_authorized": false,
+  "commit_authorized": false
+}

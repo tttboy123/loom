@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "repair": "final-walkthrough-safe-name",
+  "created_at": "2026-08-03",
+  "combined_sha256": "b5d66e77a0e81f1b219afb4fb24dd3b801f109cb0582a878d86bb35c5446a730",
+  "combined_recipe": "sha256 of the exact ordered output of: shasum -a 256 <four files in listed order>",
+  "files": [
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+      "sha256": "328e5cb4b0ea73a1efdba9e4f298742a1e7410342c0511330a0ba196d8232e0d"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift",
+      "sha256": "9df648a31a876beb4e9ed17f3c385555a0c63fbcc6caa99335ce41f6e1975ab6"
+    },
+    {
+      "path": "internal/tui/model.go",
+      "sha256": "5b04362e8bdf64deceb833ded6a3e20d58e6093adfe0ce2e2f2a99d68e1427bf"
+    },
+    {
+      "path": "internal/tui/model_test.go",
+      "sha256": "2b1ab7208a247e93c5eee390412eb2c8dc06170bc217cdfb3756a19119e0b0bb"
+    }
+  ]
+}
+

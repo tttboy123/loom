@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "repair": "final-walkthrough-safe-name-3",
+  "created_at": "2026-08-03",
+  "combined_sha256": "2a4f54fa1fb8758c76edded6e1f5ff1dbc9a23af4538182f3bdfb3261736b3df",
+  "combined_recipe": "sha256 of the exact ordered output of: shasum -a 256 <eight files in listed order>",
+  "files": [
+    {
+      "path": "internal/api/local_product_mission.go",
+      "sha256": "ea38a00816f5d4c3608405ef749353bc91356e0d953c5744bd3019141da475bb"
+    },
+    {
+      "path": "internal/api/local_product_mission_test.go",
+      "sha256": "81299c5687eb2462149dc563d7025cb7ac9ad3240fe8fd7f09be1167d4ea49e3"
+    },
+    {
+      "path": "internal/api/local_product_read_test.go",
+      "sha256": "ad948a3759c7095f17280e48252530e3130cd9aef8c3be3cc76c96a71ec44134"
+    },
+    {
+      "path": "cmd/loomd/product_daemon_test.go",
+      "sha256": "c3b4490725bbcc9542aaa23221cf8a79292a5ca8b499f0aa0324674edcc212e2"
+    },
+    {
+      "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+      "sha256": "328e5cb4b0ea73a1efdba9e4f298742a1e7410342c0511330a0ba196d8232e0d"
+    },
+    {
+      "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift",
+      "sha256": "9df648a31a876beb4e9ed17f3c385555a0c63fbcc6caa99335ce41f6e1975ab6"
+    },
+    {
+      "path": "internal/tui/model.go",
+      "sha256": "1f74b475e25f1e35c4097124914a8de30e76866e9318c6ec59be302300549b85"
+    },
+    {
+      "path": "internal/tui/model_test.go",
+      "sha256": "34e221e7ef63f060b14d39d0d0d8ebb05c91ab09b8a4103cb513bafe38508056"
+    }
+  ]
+}
+

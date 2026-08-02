@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,20 +22,29 @@ import (
 	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/mode"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/piadapter"
 	"loom-pi-rebuild/internal/state"
+	"loom-pi-rebuild/internal/supervisor"
+	"loom-pi-rebuild/internal/teams"
+	"loom-pi-rebuild/internal/work"
+	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 
 	_ "modernc.org/sqlite"
 )
 
 const localProductBuildID = "loom-phase2a-w1"
+
+const productSavedTeamResolutionProjectID = "loom-local-product"
 
 const controlledMissionFixtureManifestEnvironment = "LOOM_CONTROLLED_MISSION_FIXTURE_MANIFEST"
 
@@ -52,7 +63,42 @@ type productSetupRuntimeConfig struct {
 	CodexExecutable string
 	SocketPath      string
 	CredentialStore credentials.SecretStore
+	Execution       *productMissionExecutionRuntimeConfig
 }
+
+type productMissionExecutionRuntimeConfig struct {
+	RuntimeSearchPaths []string
+	RuntimeInstanceID  string
+	LocalModelCatalog  *piadapter.PiLocalModelCatalogConfig
+	Now                func() time.Time
+	ExecutorFactory    productMissionExecutorFactory
+	Decisions          app.MissionExecutionDecisionRouter
+}
+
+type productSavedTeamMaterializer interface {
+	MaterializeConfirmedTeam(
+		context.Context,
+		app.BuilderConfirmation,
+	) (app.BuilderConfirmation, error)
+}
+
+type productSavedTeamMaterialization struct {
+	store      *journal.Store
+	projection *projection.Projection
+	now        func() time.Time
+}
+
+type productMissionExecutorPort interface {
+	Execute(context.Context, supervisor.ExecuteInput) (supervisor.Outcome, error)
+	Close(context.Context) error
+}
+
+type productMissionExecutorFactory func(
+	context.Context,
+	string,
+	*work.Authority,
+	*authorization.Authority,
+) (productMissionExecutorPort, error)
 
 type productDaemonFailure struct {
 	code   string
@@ -91,24 +137,131 @@ func observerFailureReason(err error) string {
 	if err == nil {
 		return "observer_unknown"
 	}
-	switch {
-	case errors.Is(err, app.ErrRuntimeObservationProjectionRefresh):
-		return "observer_projection"
-	case runtimeObservationWriteFailure(err):
-		return "observer_write"
-	case errors.Is(err, piadapter.ErrPiMetadataBindingChanged),
-		errors.Is(err, piadapter.ErrPiLocalRuntimeProbeBindingChanged):
-		return "observer_metadata_binding"
+
+	reasons := make(map[string]struct{}, 4)
+	add := func(reason string) {
+		if reason != "" && reason != "observer_unknown" {
+			reasons[reason] = struct{}{}
+		}
+	}
+
+	if errors.Is(err, app.ErrRuntimeObservationProjectionRefresh) {
+		add("observer_projection")
+	}
+	if errors.Is(err, app.ErrLocalRuntimeObservationDaemonMetadata) {
+		add("observer_identity_metadata")
+	} else if runtimeObservationWriteFailure(err) {
+		add("observer_write")
+	}
+	if runtimeObservationPlanFailure(err) {
+		add("observer_plan")
+	}
+	if runtimeObservationInventoryFailure(err) {
+		add("observer_inventory")
+	}
+	if errors.Is(err, piadapter.ErrPiMetadataBindingChanged) ||
+		errors.Is(err, piadapter.ErrPiLocalRuntimeProbeBindingChanged) {
+		add("observer_metadata_binding")
+	}
+
+	probeSpecific := false
+	if errors.Is(err, piadapter.ErrPiLocalRuntimeCandidateInvalid) {
+		add("observer_probe_candidate")
+		probeSpecific = true
+	}
+	if errors.Is(err, piadapter.ErrPiLocalRuntimeProbeConstructionFailed) {
+		add("observer_probe_construction")
+		probeSpecific = true
+	}
+	if !probeSpecific && errors.Is(err, discoveryscan.ErrRuntimeProbeFactoryFailed) {
+		add("observer_probe_factory")
 	}
 
 	command, commandFailure := uniquePiMetadataFailureCommand(err)
 	if commandFailure {
-		return piMetadataObserverFailureReason(command, err)
+		add(piMetadataObserverFailureReason(command, err))
+	} else if hasPiMetadataFailureCommand(err) {
+		return "observer_unknown"
 	}
-	if errors.Is(err, discoveryscan.ErrRuntimeProbeFactoryFailed) {
-		return "observer_probe_factory"
+
+	if len(reasons) != 1 {
+		return "observer_unknown"
+	}
+	for reason := range reasons {
+		if observerFailureHasUnknownLeaf(err) {
+			return "observer_unknown"
+		}
+		return reason
 	}
 	return "observer_unknown"
+}
+
+func observerFailureHasUnknownLeaf(err error) bool {
+	unknown := false
+	visitDaemonErrorLeaves(err, func(candidate error) {
+		if !knownObserverFailureLeaf(candidate) {
+			unknown = true
+		}
+	})
+	return unknown
+}
+
+func visitDaemonErrorLeaves(err error, visit func(error)) {
+	if err == nil {
+		return
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) != 0 {
+			for _, child := range children {
+				visitDaemonErrorLeaves(child, visit)
+			}
+			return
+		}
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if child := wrapped.Unwrap(); child != nil {
+			visitDaemonErrorLeaves(child, visit)
+			return
+		}
+	}
+	visit(err)
+}
+
+func knownObserverFailureLeaf(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, app.ErrLocalRuntimeObservationDaemonCycle) ||
+		errors.Is(err, discoveryscan.ErrRuntimeProbeFactoryFailed) ||
+		errors.Is(err, piadapter.ErrPiLocalRuntimeCandidateInvalid) ||
+		errors.Is(err, piadapter.ErrPiLocalRuntimeProbeConstructionFailed) ||
+		errors.Is(err, piadapter.ErrPiMetadataBindingChanged) ||
+		errors.Is(err, piadapter.ErrPiLocalRuntimeProbeBindingChanged) ||
+		errors.Is(err, piadapter.ErrPiMetadataProcessTimeout) ||
+		errors.Is(err, piadapter.ErrPiMetadataProcessOutputTooLarge) ||
+		errors.Is(err, piadapter.ErrPiMetadataProcessFailed) ||
+		errors.Is(err, loomruntime.ErrPiMetadataStderr) ||
+		errors.Is(err, loomruntime.ErrInvalidPiMetadataOutput) ||
+		errors.Is(err, loomruntime.ErrPiMetadataOutputTooLarge) ||
+		errors.Is(err, loomruntime.ErrDuplicatePiRuntimeModel) ||
+		errors.Is(err, loomruntime.ErrRuntimeDiscoveryFailed) ||
+		runtimeObservationInventoryFailure(err) ||
+		runtimeObservationPlanFailure(err) ||
+		errors.Is(err, app.ErrRuntimeObservationProjectionRefresh) ||
+		errors.Is(err, app.ErrLocalRuntimeObservationDaemonMetadata) ||
+		runtimeObservationWriteFailure(err)
+}
+
+func hasPiMetadataFailureCommand(err error) bool {
+	found := false
+	visitDaemonErrors(err, func(candidate error) {
+		if _, ok := candidate.(interface {
+			PiMetadataFailureCommand() loomruntime.PiMetadataCommand
+		}); ok {
+			found = true
+		}
+	})
+	return found
 }
 
 func uniquePiMetadataFailureCommand(
@@ -166,26 +319,34 @@ func piMetadataObserverFailureReason(
 	default:
 		return "observer_unknown"
 	}
-	switch {
-	case errors.Is(err, piadapter.ErrPiMetadataBindingChanged):
-		return "observer_metadata_binding"
-	case errors.Is(err, piadapter.ErrPiMetadataProcessTimeout):
-		return prefix + "timeout"
-	case errors.Is(err, piadapter.ErrPiMetadataProcessOutputTooLarge):
-		return prefix + "output_limit"
-	case errors.Is(err, piadapter.ErrPiMetadataProcessFailed):
-		return prefix + "process"
-	case errors.Is(err, loomruntime.ErrPiMetadataStderr):
-		return prefix + "stderr"
-	case errors.Is(err, loomruntime.ErrDuplicatePiRuntimeModel) &&
-		command == loomruntime.PiMetadataListModels:
-		return "observer_models_duplicate"
-	case errors.Is(err, loomruntime.ErrInvalidPiMetadataOutput),
-		errors.Is(err, loomruntime.ErrPiMetadataOutputTooLarge):
-		return prefix + "output"
-	default:
+	reasons := make(map[string]struct{}, 2)
+	add := func(matches bool, reason string) {
+		if matches {
+			reasons[reason] = struct{}{}
+		}
+	}
+	add(errors.Is(err, piadapter.ErrPiMetadataBindingChanged),
+		"observer_metadata_binding")
+	add(errors.Is(err, piadapter.ErrPiMetadataProcessTimeout),
+		prefix+"timeout")
+	add(errors.Is(err, piadapter.ErrPiMetadataProcessOutputTooLarge),
+		prefix+"output_limit")
+	add(errors.Is(err, piadapter.ErrPiMetadataProcessFailed),
+		prefix+"process")
+	add(errors.Is(err, loomruntime.ErrPiMetadataStderr), prefix+"stderr")
+	add(errors.Is(err, loomruntime.ErrDuplicatePiRuntimeModel) &&
+		command == loomruntime.PiMetadataListModels,
+		"observer_models_duplicate")
+	add(errors.Is(err, loomruntime.ErrInvalidPiMetadataOutput) ||
+		errors.Is(err, loomruntime.ErrPiMetadataOutputTooLarge),
+		prefix+"output")
+	if len(reasons) != 1 {
 		return "observer_unknown"
 	}
+	for reason := range reasons {
+		return reason
+	}
+	return "observer_unknown"
 }
 
 func runtimeObservationWriteFailure(err error) bool {
@@ -193,7 +354,104 @@ func runtimeObservationWriteFailure(err error) bool {
 		errors.Is(err, app.ErrRuntimeDiscoveryCommitResultMismatch) ||
 		errors.Is(err, app.ErrRuntimeStatusCommitInputFailed) ||
 		errors.Is(err, app.ErrRuntimeStatusCommitResultMismatch) ||
-		errors.Is(err, app.ErrInvalidRuntimeObservationWriteRun)
+		errors.Is(err, app.ErrInvalidRuntimeObservationWriteRun) ||
+		errors.Is(err, state.ErrInvalidRuntimeDiscoveryCommitInput) ||
+		errors.Is(err, state.ErrInvalidRuntimeDiscoveryCommitSource) ||
+		errors.Is(err, state.ErrRuntimeDiscoveryCommitResultMismatch) ||
+		errors.Is(err, state.ErrRuntimeDiscoveryCommitDigestMismatch) ||
+		errors.Is(err, state.ErrEmptyRuntimeDiscoveryCommit) ||
+		errors.Is(err, state.ErrInvalidRuntimeStatusCommitInput) ||
+		errors.Is(err, state.ErrInvalidRuntimeStatusCommitSource) ||
+		errors.Is(err, state.ErrRuntimeStatusCommitResultMismatch) ||
+		errors.Is(err, state.ErrRuntimeStatusCommitDigestMismatch) ||
+		errors.Is(err, state.ErrEmptyRuntimeStatusCommit) ||
+		runtimeObservationJournalWriteFailure(err)
+}
+
+func runtimeObservationJournalWriteFailure(err error) bool {
+	return errors.Is(err, journal.ErrInvalidEvent) ||
+		errors.Is(err, journal.ErrUnsupportedVersion) ||
+		errors.Is(err, journal.ErrIdempotencyConflict) ||
+		errors.Is(err, journal.ErrSequenceConflict) ||
+		errors.Is(err, journal.ErrInvalidEventBatch) ||
+		errors.Is(err, journal.ErrEventBatchTooLarge) ||
+		errors.Is(err, journal.ErrDuplicateBatchIdempotencyKey) ||
+		errors.Is(err, journal.ErrDuplicateBatchStreamSequence) ||
+		errors.Is(err, journal.ErrPartialEventBatchConflict) ||
+		errors.Is(err, journal.ErrStreamHeadConflict)
+}
+
+func runtimeObservationPlanFailure(err error) bool {
+	return errors.Is(err, app.ErrInvalidRuntimeObservationWritePlan) ||
+		errors.Is(err, app.ErrInvalidRuntimeObservationWriteRun) ||
+		errors.Is(err, app.ErrInvalidConfiguredRuntimeObservationRun) ||
+		errors.Is(err, app.ErrInvalidProjectedConfiguredRuntimeObservationRun) ||
+		errors.Is(err, app.ErrInvalidProjectionSynchronizedRuntimeObservationRun) ||
+		errors.Is(err, app.ErrInvalidTriggeredPreparedRuntimeObservationRun) ||
+		errors.Is(err, app.ErrInvalidPreparedProjectedRuntimeObserver) ||
+		errors.Is(err, app.ErrInvalidProjectedRuntimeStatusRun) ||
+		errors.Is(err, app.ErrInvalidRuntimeStatusRun)
+}
+
+func runtimeObservationInventoryFailure(err error) bool {
+	return errors.Is(err, loomruntime.ErrInvalidRuntimeProbe) ||
+		errors.Is(err, loomruntime.ErrDuplicateRuntimeProbe) ||
+		errors.Is(err, loomruntime.ErrInvalidRuntimeModel) ||
+		errors.Is(err, loomruntime.ErrDuplicateRuntimeModel) ||
+		errors.Is(err, loomruntime.ErrDuplicateRuntimeInstance) ||
+		errors.Is(err, loomruntime.ErrInvalidRuntimeInstance) ||
+		errors.Is(err, loomruntime.ErrInvalidRuntimeStatusReconciliation) ||
+		errors.Is(err, loomruntime.ErrInvalidRuntimeStatusBaseline) ||
+		errors.Is(err, loomruntime.ErrInvalidRuntimeStatusSource) ||
+		errors.Is(err, loomruntime.ErrRuntimeStatusIdentityDrift) ||
+		errors.Is(err, loomruntime.ErrRuntimeStatusCandidateDigest)
+}
+
+func containableProductObserverTimeout(err error) bool {
+	if !errors.Is(err, piadapter.ErrPiMetadataProcessTimeout) {
+		return false
+	}
+	_, ok := uniquePiMetadataFailureCommand(err)
+	return ok && daemonErrorLeavesMatch(
+		err,
+		piadapter.ErrPiMetadataProcessTimeout,
+		app.ErrLocalRuntimeObservationDaemonCycle,
+		loomruntime.ErrRuntimeDiscoveryFailed,
+	)
+}
+
+func daemonErrorLeavesMatch(err error, allowedTargets ...error) bool {
+	if err == nil || len(allowedTargets) == 0 {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return daemonErrorMatchesAny(err, allowedTargets)
+		}
+		for _, child := range children {
+			if !daemonErrorLeavesMatch(child, allowedTargets...) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		child := wrapped.Unwrap()
+		if child != nil {
+			return daemonErrorLeavesMatch(child, allowedTargets...)
+		}
+	}
+	return daemonErrorMatchesAny(err, allowedTargets)
+}
+
+func daemonErrorMatchesAny(err error, allowedTargets []error) bool {
+	for _, target := range allowedTargets {
+		if target != nil && errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func joinProductDaemonErrors(values ...error) error {
@@ -214,14 +472,47 @@ func joinProductDaemonErrors(values ...error) error {
 }
 
 type productDaemonRunner struct {
-	observer daemonRunner
-	server   productIPCServer
-	database io.Closer
-	setup    io.Closer
+	observer  daemonRunner
+	server    productIPCServer
+	database  io.Closer
+	setup     io.Closer
+	execution io.Closer
+	health    *productRuntimeObservationHealth
 
 	mu      sync.Mutex
 	running bool
 	closed  bool
+}
+
+type productRuntimeObservationHealth struct {
+	mu     sync.RWMutex
+	reason string
+}
+
+func (health *productRuntimeObservationHealth) RuntimeObservationHealth() (
+	string,
+	bool,
+) {
+	if health == nil {
+		return "", false
+	}
+	health.mu.RLock()
+	defer health.mu.RUnlock()
+	return health.reason, health.reason != ""
+}
+
+func (health *productRuntimeObservationHealth) recordTimeout(err error) {
+	if health == nil {
+		return
+	}
+	reason := observerFailureReason(err)
+	if reason != "observer_version_timeout" &&
+		reason != "observer_models_timeout" {
+		return
+	}
+	health.mu.Lock()
+	health.reason = reason
+	health.mu.Unlock()
 }
 
 type productIPCServer interface {
@@ -266,16 +557,20 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	setupConfigs ...productSetupRuntimeConfig,
 ) (_ *productDaemonRunner, resultErr error) {
 	if observer == nil {
-		return nil, errors.New("invalid product daemon")
+		return nil, newDaemonBuildFailure("build_observer", errors.New("invalid product daemon"))
 	}
 	database, err := openProductReadDatabase(statePath)
 	if err != nil {
 		_ = observer.Close()
-		return nil, err
+		return nil, newDaemonBuildFailure("build_state", err)
 	}
 	var setupService *api.LocalProductSetupAPI
+	var executionBundle io.Closer
 	defer func() {
 		if resultErr != nil {
+			if executionBundle != nil {
+				_ = executionBundle.Close()
+			}
 			if setupService != nil {
 				_ = setupService.Close()
 			}
@@ -285,7 +580,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	}()
 	readModel := projection.New(database)
 	if err := readModel.Rebuild(context.Background()); err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_state", err)
 	}
 	store := journal.NewStore(database)
 	prepared, err = controlledMissionFixtureFromEnvironment(
@@ -295,22 +590,24 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		prepared,
 	)
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_state", err)
 	}
 	decisionBackend, err := app.NewPreparedMissionDecisionBackend(prepared)
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_decision", err)
 	}
+	runtimeHealth := &productRuntimeObservationHealth{}
 	service, err := api.NewLocalProductReadService(api.LocalProductReadConfig{
 		Journal:    store,
 		Projection: readModel,
 		Now: func() time.Time {
 			return time.Now().UTC()
 		},
-		Decisions: decisionBackend,
+		Decisions:     decisionBackend,
+		RuntimeHealth: runtimeHealth,
 	})
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_state", err)
 	}
 	setupConfig := productSetupRuntimeConfig{}
 	if len(setupConfigs) == 1 {
@@ -330,33 +627,905 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		app.MissionDecisionConfig{Backend: decisionBackend},
 	)
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_decision", err)
+	}
+	decisionRouter, err := app.NewPreparedMissionExecutionDecisionRouter(
+		decisionBackend,
+		decisionService,
+		prepared,
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_decision", err)
 	}
 	decisionAPI, err := api.NewLocalProductDecisionAPI(decisionService)
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_ipc", err)
+	}
+	var executionAPI *api.LocalProductExecutionAPI
+	var savedTeamMaterializer productSavedTeamMaterializer
+	if setupConfig.Execution != nil {
+		setupConfig.Execution.Decisions = decisionRouter
+		executionAPI, executionBundle, err = buildProductMissionExecutionAPI(
+			context.Background(),
+			store,
+			readModel,
+			service,
+			statePath,
+			*setupConfig.Execution,
+		)
+		if err != nil {
+			return nil, newDaemonBuildFailure("build_execution", err)
+		}
+		savedTeamMaterializer = &productSavedTeamMaterialization{
+			store:      store,
+			projection: readModel,
+			now:        setupConfig.Execution.Now,
+		}
 	}
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
 		BuildID:      localProductBuildID,
 		Handler: localipc.HandlerFunc(
-			localProductHandlerWithDecision(
+			localProductHandlerWithComposition(
 				service,
 				setupService,
 				decisionAPI,
+				executionAPI,
+				savedTeamMaterializer,
 			),
 		),
 	})
 	if err != nil {
-		return nil, err
+		return nil, newDaemonBuildFailure("build_ipc", err)
 	}
 	return &productDaemonRunner{
-		observer: observer,
-		server:   server,
-		database: database,
-		setup:    setupService,
+		observer:  observer,
+		server:    server,
+		database:  database,
+		setup:     setupService,
+		execution: executionBundle,
+		health:    runtimeHealth,
 	}, nil
+}
+
+type productMissionExecutionBundle struct {
+	backend   *app.AuthoritativeMissionExecutionBackend
+	evidence  *evidence.Store
+	observers *api.LocalProductReadService
+
+	mu     sync.Mutex
+	closed bool
+}
+
+func (bundle *productMissionExecutionBundle) Close() error {
+	if bundle == nil {
+		return nil
+	}
+	bundle.mu.Lock()
+	if bundle.closed {
+		bundle.mu.Unlock()
+		return nil
+	}
+	bundle.closed = true
+	bundle.mu.Unlock()
+	var backendErr error
+	if bundle.backend != nil {
+		backendErr = bundle.backend.Close()
+	}
+	var evidenceErr error
+	if bundle.evidence != nil {
+		evidenceErr = bundle.evidence.Close()
+	}
+	var observerErr error
+	if bundle.observers != nil {
+		observerErr = bundle.observers.CloseMissionExecutionObservers()
+	}
+	return errors.Join(backendErr, observerErr, evidenceErr)
+}
+
+type productMissionExecutionRunner struct {
+	coordinator    *app.TeamCoordinator
+	workAuthority  *work.Authority
+	grantAuthority *authorization.Authority
+	config         productMissionExecutionRuntimeConfig
+	workspaceRoot  string
+}
+
+func (runner *productMissionExecutionRunner) Run(
+	ctx context.Context,
+	request app.TeamExecutionRequest,
+) (result app.TeamExecutionResult, resultErr error) {
+	if runner == nil || runner.coordinator == nil || ctx == nil {
+		return app.TeamExecutionResult{}, app.ErrInvalidMissionExecution
+	}
+	factory := runner.config.ExecutorFactory
+	if factory == nil {
+		factory = func(
+			factoryContext context.Context,
+			workspaceRoot string,
+			workAuthority *work.Authority,
+			grantAuthority *authorization.Authority,
+		) (productMissionExecutorPort, error) {
+			return newProductMissionExecutor(
+				factoryContext,
+				runner.config,
+				workspaceRoot,
+				workAuthority,
+				grantAuthority,
+			)
+		}
+	}
+	executor, err := factory(
+		ctx,
+		runner.workspaceRoot,
+		runner.workAuthority,
+		runner.grantAuthority,
+	)
+	if err != nil {
+		return app.TeamExecutionResult{}, err
+	}
+	defer func() {
+		closeContext, cancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cancel()
+		resultErr = errors.Join(resultErr, executor.Close(closeContext))
+	}()
+	prepared := request
+	prepared.Nodes = append([]app.TeamNodeExecution{}, request.Nodes...)
+	for index := range prepared.Nodes {
+		prepared.Nodes[index].Executor = executor
+	}
+	prepared.Semantics = append([]app.TeamNodeSemantics{}, request.Semantics...)
+	for index := range prepared.Semantics {
+		if request.Semantics[index].VerifierExecution == nil {
+			continue
+		}
+		verifier := *request.Semantics[index].VerifierExecution
+		verifier.Executor = executor
+		prepared.Semantics[index].VerifierExecution = &verifier
+	}
+	return runner.coordinator.Run(ctx, prepared)
+}
+
+type productMissionExecutor struct {
+	supervisor *supervisor.Supervisor
+	server     piadapter.PiLocalModelServer
+}
+
+const (
+	productPiSourceOutputLimit = 4096
+	productPiSourceRunLimit    = 16
+)
+
+type productPiRuntimeAdapter struct {
+	delegate supervisor.RuntimeAdapter
+
+	mu           sync.Mutex
+	sourceOutput map[string][]byte
+}
+
+type productPiPromptDispatch struct {
+	SchemaVersion int    `json:"schema_version"`
+	Kind          string `json:"kind"`
+	Prompt        string `json:"prompt"`
+}
+
+type productPiVerifierDispatch struct {
+	TeamInstanceID            string   `json:"team_instance_id"`
+	PlanDigest                string   `json:"plan_digest"`
+	LogicalNodeID             string   `json:"logical_node_id"`
+	SourceAttemptNumber       int      `json:"source_attempt_number"`
+	SourceWorkItemID          string   `json:"source_work_item_id"`
+	SourceRunID               string   `json:"source_run_id"`
+	SourceEvidenceDigest      string   `json:"source_evidence_digest"`
+	SourceOutputSummaryDigest string   `json:"source_output_summary_digest"`
+	AcceptanceContractDigest  string   `json:"acceptance_contract_digest"`
+	Risk                      string   `json:"risk"`
+	Criteria                  []string `json:"criteria"`
+	AllowedReasonCodes        []string `json:"allowed_reason_codes"`
+}
+
+func newProductPiRuntimeAdapter(
+	delegate supervisor.RuntimeAdapter,
+) (*productPiRuntimeAdapter, error) {
+	if delegate == nil || delegate.AdapterType() != "pi-cli" ||
+		delegate.RuntimeInstanceID() == "" {
+		return nil, app.ErrInvalidMissionExecution
+	}
+	return &productPiRuntimeAdapter{
+		delegate: delegate, sourceOutput: make(map[string][]byte),
+	}, nil
+}
+
+func (adapter *productPiRuntimeAdapter) AdapterType() string {
+	if adapter == nil || adapter.delegate == nil {
+		return ""
+	}
+	return adapter.delegate.AdapterType()
+}
+
+func (adapter *productPiRuntimeAdapter) RuntimeInstanceID() string {
+	if adapter == nil || adapter.delegate == nil {
+		return ""
+	}
+	return adapter.delegate.RuntimeInstanceID()
+}
+
+func (adapter *productPiRuntimeAdapter) Execute(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+) (supervisor.AdapterResult, error) {
+	if adapter == nil || adapter.delegate == nil || ctx == nil ||
+		request.FrameSink == nil {
+		return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
+	}
+	if _, ok := decodeProductPiPromptDispatch(request.Dispatch.Payload()); ok {
+		return adapter.executeSource(ctx, request)
+	}
+	verifier, ok := decodeProductPiVerifierDispatch(request.Dispatch.Payload())
+	if !ok {
+		return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
+	}
+	return adapter.executeVerifier(ctx, request, verifier)
+}
+
+func (adapter *productPiRuntimeAdapter) executeSource(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+) (supervisor.AdapterResult, error) {
+	sink, err := newProductSourceCaptureSink(request)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	prepared := request
+	prepared.FrameSink = sink
+	result, err := adapter.delegate.Execute(ctx, prepared)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	if result.ExitCode() != 0 || !result.DispatchAcknowledged() ||
+		!result.ResultAcknowledged() || !sink.succeeded ||
+		len(sink.output) == 0 {
+		return supervisor.AdapterResult{}, app.ErrMissionExecutionConflict
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if _, exists := adapter.sourceOutput[request.Binding.RunID]; exists ||
+		len(adapter.sourceOutput) >= productPiSourceRunLimit {
+		return supervisor.AdapterResult{}, app.ErrMissionExecutionBusy
+	}
+	adapter.sourceOutput[request.Binding.RunID] = bytes.Clone(sink.output)
+	return result, nil
+}
+
+func (adapter *productPiRuntimeAdapter) executeVerifier(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	verifier productPiVerifierDispatch,
+) (supervisor.AdapterResult, error) {
+	adapter.mu.Lock()
+	source := bytes.Clone(adapter.sourceOutput[verifier.SourceRunID])
+	adapter.mu.Unlock()
+	if len(source) == 0 {
+		return supervisor.AdapterResult{}, app.ErrMissionExecutionConflict
+	}
+	prompt, err := productPiVerifierPrompt(verifier, source)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	payload, err := json.Marshal(productPiPromptDispatch{
+		SchemaVersion: 1,
+		Kind:          "pi_rpc_prompt",
+		Prompt:        prompt,
+	})
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	dispatch, err := productFrameWithPayload(request.Dispatch, payload)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	buffer, err := newProductVerifierBuffer(request.Binding, dispatch.MessageID())
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	prepared := request
+	prepared.Dispatch = dispatch
+	prepared.FrameSink = buffer
+	delegateResult, err := adapter.delegate.Execute(ctx, prepared)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	if delegateResult.ExitCode() != 0 ||
+		!delegateResult.DispatchAcknowledged() ||
+		!delegateResult.ResultAcknowledged() || !buffer.succeeded {
+		return supervisor.AdapterResult{}, app.ErrMissionExecutionConflict
+	}
+	reasonCode := strings.TrimSpace(string(buffer.output))
+	if !productVerifierReasonAllowed(reasonCode) {
+		reasonCode = "insufficient_evidence"
+	}
+	return publishProductVerifierResult(
+		ctx,
+		request,
+		reasonCode,
+		delegateResult.Stderr(),
+	)
+}
+
+type productSourceCaptureSink struct {
+	delegate  supervisor.FrameSink
+	stream    bridgev1.BoundRunStream
+	dispatch  string
+	output    []byte
+	succeeded bool
+}
+
+func newProductSourceCaptureSink(
+	request supervisor.AdapterRequest,
+) (*productSourceCaptureSink, error) {
+	stream, err := bridgev1.NewBoundRunStream(request.Binding)
+	if err != nil {
+		return nil, err
+	}
+	return &productSourceCaptureSink{
+		delegate: request.FrameSink,
+		stream:   stream,
+		dispatch: request.Dispatch.MessageID(),
+	}, nil
+}
+
+func (sink *productSourceCaptureSink) AcceptFrame(
+	ctx context.Context,
+	frame bridgev1.Frame,
+) error {
+	if sink == nil || sink.delegate == nil || ctx == nil || sink.succeeded {
+		return app.ErrMissionExecutionConflict
+	}
+	candidate, err := bridgev1.AdvanceBoundRunStream(sink.stream, frame)
+	if err != nil || !productPiFramePayloadValid(
+		frame,
+		sink.dispatch,
+		&sink.output,
+		&sink.succeeded,
+	) {
+		return errors.Join(app.ErrMissionExecutionConflict, err)
+	}
+	if err := sink.delegate.AcceptFrame(ctx, frame); err != nil {
+		return err
+	}
+	sink.stream = candidate
+	return nil
+}
+
+type productVerifierBuffer struct {
+	stream    bridgev1.BoundRunStream
+	dispatch  string
+	output    []byte
+	succeeded bool
+}
+
+func newProductVerifierBuffer(
+	binding bridgev1.RunStreamBinding,
+	dispatch string,
+) (*productVerifierBuffer, error) {
+	stream, err := bridgev1.NewBoundRunStream(binding)
+	if err != nil {
+		return nil, err
+	}
+	return &productVerifierBuffer{stream: stream, dispatch: dispatch}, nil
+}
+
+func (sink *productVerifierBuffer) AcceptFrame(
+	ctx context.Context,
+	frame bridgev1.Frame,
+) error {
+	if sink == nil || ctx == nil || sink.succeeded {
+		return app.ErrMissionExecutionConflict
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	candidate, err := bridgev1.AdvanceBoundRunStream(sink.stream, frame)
+	if err != nil || !productPiFramePayloadValid(
+		frame,
+		sink.dispatch,
+		&sink.output,
+		&sink.succeeded,
+	) {
+		return errors.Join(app.ErrMissionExecutionConflict, err)
+	}
+	sink.stream = candidate
+	return nil
+}
+
+func productPiFramePayloadValid(
+	frame bridgev1.Frame,
+	dispatch string,
+	output *[]byte,
+	succeeded *bool,
+) bool {
+	switch frame.Type() {
+	case bridgev1.MessageAck:
+		body, err := json.Marshal(struct {
+			MessageID string `json:"message_id"`
+		}{dispatch})
+		return err == nil && bytes.Equal(body, frame.Payload())
+	case bridgev1.MessageEvent:
+		var event struct {
+			Delta string `json:"delta"`
+		}
+		if !decodeProductExactJSON(frame.Payload(), &event) ||
+			event.Delta == "" ||
+			len(*output)+len(event.Delta) > productPiSourceOutputLimit {
+			return false
+		}
+		*output = append(*output, event.Delta...)
+		return true
+	case bridgev1.MessageEvidence:
+		return len(frame.Payload()) > 0
+	case bridgev1.MessageResult:
+		var terminal struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		}
+		if !decodeProductExactJSON(frame.Payload(), &terminal) ||
+			terminal.Status != "succeeded" || terminal.Reason != "" {
+			return false
+		}
+		*succeeded = true
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeProductPiPromptDispatch(
+	payload []byte,
+) (productPiPromptDispatch, bool) {
+	var dispatch productPiPromptDispatch
+	return dispatch, decodeProductExactJSON(payload, &dispatch) &&
+		dispatch.SchemaVersion == 1 && dispatch.Kind == "pi_rpc_prompt" &&
+		dispatch.Prompt != ""
+}
+
+func decodeProductPiVerifierDispatch(
+	payload []byte,
+) (productPiVerifierDispatch, bool) {
+	var dispatch productPiVerifierDispatch
+	if !decodeProductExactJSON(payload, &dispatch) ||
+		dispatch.TeamInstanceID == "" || dispatch.LogicalNodeID == "" ||
+		dispatch.SourceAttemptNumber <= 0 ||
+		dispatch.SourceWorkItemID == "" || dispatch.SourceRunID == "" ||
+		!validProductHex(dispatch.PlanDigest, 64) ||
+		!validProductHex(dispatch.SourceEvidenceDigest, 64) ||
+		!validProductHex(dispatch.SourceOutputSummaryDigest, 64) ||
+		!validProductHex(dispatch.AcceptanceContractDigest, 64) ||
+		(dispatch.Risk != "low" && dispatch.Risk != "medium" &&
+			dispatch.Risk != "high") ||
+		len(dispatch.Criteria) == 0 || len(dispatch.Criteria) > 64 ||
+		len(dispatch.AllowedReasonCodes) != 3 ||
+		dispatch.AllowedReasonCodes[0] != "criteria_satisfied" ||
+		dispatch.AllowedReasonCodes[1] != "criteria_not_satisfied" ||
+		dispatch.AllowedReasonCodes[2] != "insufficient_evidence" {
+		return productPiVerifierDispatch{}, false
+	}
+	for _, criterion := range dispatch.Criteria {
+		if criterion == "" || len(criterion) > 512 {
+			return productPiVerifierDispatch{}, false
+		}
+	}
+	return dispatch, true
+}
+
+func decodeProductExactJSON(payload []byte, destination any) bool {
+	if len(payload) == 0 || destination == nil {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(destination) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return false
+	}
+	canonical, err := json.Marshal(destination)
+	return err == nil && bytes.Equal(canonical, payload)
+}
+
+func productPiVerifierPrompt(
+	dispatch productPiVerifierDispatch,
+	source []byte,
+) (string, error) {
+	var prompt strings.Builder
+	prompt.WriteString("Evaluate the authorized source result against every criterion.\n")
+	prompt.WriteString("Return exactly one allowed verifier reason code and no other text: criteria_satisfied, criteria_not_satisfied, or insufficient_evidence.\nCriteria:\n")
+	for _, criterion := range dispatch.Criteria {
+		prompt.WriteString("- ")
+		prompt.WriteString(criterion)
+		prompt.WriteByte('\n')
+	}
+	prompt.WriteString("Authorized source result:\n")
+	prompt.Write(source)
+	result := prompt.String()
+	if len(result) > 8192 {
+		return "", app.ErrMissionExecutionConflict
+	}
+	return result, nil
+}
+
+func productFrameWithPayload(
+	frame bridgev1.Frame,
+	payload []byte,
+) (bridgev1.Frame, error) {
+	return bridgev1.NewFrame(bridgev1.FrameInput{
+		MessageID: frame.MessageID(), CorrelationID: frame.CorrelationID(),
+		WorkItemID: frame.WorkItemID(), RunID: frame.RunID(),
+		ClaimGeneration:       frame.ClaimGeneration(),
+		RuntimeInstanceID:     frame.RuntimeInstanceID(),
+		SenderAgentInstanceID: frame.SenderAgentInstanceID(),
+		Sequence:              frame.Sequence(), Type: frame.Type(),
+		EmittedAt: frame.EmittedAt(), Payload: payload,
+	})
+}
+
+func productVerifierReasonAllowed(reason string) bool {
+	return reason == "criteria_satisfied" ||
+		reason == "criteria_not_satisfied" ||
+		reason == "insufficient_evidence"
+}
+
+func publishProductVerifierResult(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	reasonCode string,
+	stderr []byte,
+) (supervisor.AdapterResult, error) {
+	status := "failed"
+	reason := reasonCode
+	if reasonCode == "criteria_satisfied" {
+		status = "succeeded"
+		reason = ""
+	}
+	digest := sha256.Sum256([]byte(reasonCode))
+	records := []struct {
+		kind    bridgev1.MessageType
+		payload any
+	}{
+		{bridgev1.MessageAck, struct {
+			MessageID string `json:"message_id"`
+		}{request.Dispatch.MessageID()}},
+		{bridgev1.MessageEvent, struct {
+			Delta string `json:"delta"`
+		}{reasonCode}},
+		{bridgev1.MessageEvidence, struct {
+			Kind   string `json:"kind"`
+			SHA256 string `json:"sha256"`
+			Bytes  int    `json:"bytes"`
+		}{"verifier_reason_digest", hex.EncodeToString(digest[:]), len(reasonCode)}},
+		{bridgev1.MessageResult, struct {
+			Reason string `json:"reason"`
+			Status string `json:"status"`
+		}{reason, status}},
+	}
+	frames := make([]bridgev1.Frame, 0, len(records))
+	for index, record := range records {
+		payload, err := json.Marshal(record.payload)
+		if err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+		frame, err := bridgev1.NewFrame(bridgev1.FrameInput{
+			MessageID: productDeterministicUUID(
+				request.Dispatch.MessageID(),
+				string(record.kind),
+			),
+			CorrelationID:         request.Dispatch.CorrelationID(),
+			WorkItemID:            request.Binding.WorkItemID,
+			RunID:                 request.Binding.RunID,
+			ClaimGeneration:       request.Binding.ClaimGeneration,
+			RuntimeInstanceID:     request.Binding.RuntimeInstanceID,
+			SenderAgentInstanceID: request.Binding.SenderAgentInstanceID,
+			Sequence:              int64(index + 2),
+			Type:                  record.kind,
+			EmittedAt:             request.Dispatch.EmittedAt(),
+			Payload:               payload,
+		})
+		if err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+		if err := request.FrameSink.AcceptFrame(ctx, frame); err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+		frames = append(frames, frame)
+	}
+	return supervisor.NewAdapterResult(supervisor.AdapterResultInput{
+		InboundFrames: frames, Stderr: stderr, ExitCode: 0,
+		DispatchAcknowledged: true, ResultAcknowledged: true,
+	})
+}
+
+func productDeterministicUUID(parts ...string) string {
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	digest[6] = digest[6]&0x0f | 0x40
+	digest[8] = digest[8]&0x3f | 0x80
+	return fmt.Sprintf(
+		"%x-%x-%x-%x-%x",
+		digest[0:4], digest[4:6], digest[6:8], digest[8:10], digest[10:16],
+	)
+}
+
+func (executor *productMissionExecutor) Execute(
+	ctx context.Context,
+	input supervisor.ExecuteInput,
+) (supervisor.Outcome, error) {
+	if executor == nil || executor.supervisor == nil {
+		return supervisor.Outcome{}, app.ErrInvalidMissionExecution
+	}
+	return executor.supervisor.Execute(ctx, input)
+}
+
+func (executor *productMissionExecutor) Close(ctx context.Context) error {
+	if executor == nil || executor.server == nil {
+		return nil
+	}
+	return executor.server.Close(ctx)
+}
+
+func newProductMissionExecutor(
+	ctx context.Context,
+	config productMissionExecutionRuntimeConfig,
+	workspaceRoot string,
+	workAuthority *work.Authority,
+	grantAuthority *authorization.Authority,
+) (*productMissionExecutor, error) {
+	if ctx == nil || config.LocalModelCatalog == nil ||
+		workAuthority == nil || grantAuthority == nil {
+		return nil, app.ErrInvalidMissionExecution
+	}
+	server, err := piadapter.StartPiLocalModelServer(
+		ctx,
+		piadapter.PiLocalModelServerConfig{
+			PrivateRoot:    config.LocalModelCatalog.PrivateRoot,
+			ExecutablePath: config.LocalModelCatalog.ExecutablePath,
+			ModelPath:      config.LocalModelCatalog.ModelPath,
+			Host:           "127.0.0.1", Port: 18427,
+			StartupTimeout: 60 * time.Second,
+			CancelGrace:    3 * time.Second,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	closeServer := func(base error) (*productMissionExecutor, error) {
+		closeContext, cancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cancel()
+		return nil, errors.Join(base, server.Close(closeContext))
+	}
+	piExecutable, err := resolveProductPiExecutable(config.RuntimeSearchPaths)
+	if err != nil {
+		return closeServer(err)
+	}
+	now := config.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	adapter, err := piadapter.NewPiRPCBridgeAdapter(
+		piadapter.PiRPCBridgeAdapterConfig{
+			Execution: piadapter.PiExecutionAdapterConfig{
+				ExecutablePath:    piExecutable,
+				RuntimeInstanceID: config.RuntimeInstanceID,
+				RuntimeSearchPaths: append(
+					[]string{},
+					config.RuntimeSearchPaths...,
+				),
+				CancelGrace: 3 * time.Second,
+				Now:         now,
+				Random:      rand.Reader,
+			},
+			ProviderID:        "loom-local",
+			ModelID:           "qwen2.5-coder-1.5b-instruct-q4-k-m",
+			BaseURL:           server.BaseURL(),
+			MaxAssistantBytes: 16384,
+		},
+	)
+	if err != nil {
+		return closeServer(err)
+	}
+	productAdapter, err := newProductPiRuntimeAdapter(adapter)
+	if err != nil {
+		return closeServer(err)
+	}
+	managed, err := supervisor.New(
+		supervisor.Config{
+			WorkspaceRoot:  workspaceRoot,
+			CleanupTimeout: 5 * time.Second,
+		},
+		workAuthority,
+		grantAuthority,
+		productAdapter,
+	)
+	if err != nil {
+		return closeServer(err)
+	}
+	return &productMissionExecutor{supervisor: managed, server: server}, nil
+}
+
+func resolveProductPiExecutable(searchPaths []string) (string, error) {
+	for _, searchPath := range searchPaths {
+		if !filepath.IsAbs(searchPath) || filepath.Clean(searchPath) != searchPath {
+			return "", app.ErrInvalidMissionExecution
+		}
+		candidate := filepath.Join(searchPath, "pi")
+		if _, err := os.Lstat(candidate); err == nil {
+			return candidate, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", app.ErrInvalidMissionExecution
+}
+
+func buildProductMissionExecutionAPI(
+	ctx context.Context,
+	store *journal.Store,
+	readModel *projection.Projection,
+	readService *api.LocalProductReadService,
+	statePath string,
+	config productMissionExecutionRuntimeConfig,
+) (_ *api.LocalProductExecutionAPI, _ io.Closer, resultErr error) {
+	if ctx == nil || store == nil || readModel == nil || readService == nil ||
+		config.LocalModelCatalog == nil ||
+		config.RuntimeInstanceID == "" ||
+		len(config.RuntimeSearchPaths) == 0 ||
+		!filepath.IsAbs(statePath) {
+		return nil, nil, app.ErrInvalidMissionExecution
+	}
+	now := config.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	if current := now(); current.IsZero() || current.Location() != time.UTC {
+		return nil, nil, app.ErrInvalidMissionExecution
+	}
+	executionRoot := filepath.Join(filepath.Dir(statePath), "execution")
+	workspaceRoot := filepath.Join(executionRoot, "workspaces")
+	sourcePath := filepath.Join(executionRoot, "source")
+	evidenceRoot := filepath.Join(executionRoot, "evidence")
+	for _, path := range []string{
+		executionRoot,
+		workspaceRoot,
+		sourcePath,
+		evidenceRoot,
+	} {
+		if err := ensureProductExecutionDirectory(path); err != nil {
+			return nil, nil, err
+		}
+	}
+	evidenceStore, err := evidence.NewStore(evidenceRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			_ = evidenceStore.Close()
+		}
+	}()
+	workAuthority, err := work.NewAuthority(store, now, rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := workAuthority.InitializeRunIdentityIndex(ctx); err != nil {
+		return nil, nil, err
+	}
+	grantAuthority, err := authorization.NewAuthority(
+		store,
+		workAuthority,
+		now,
+		rand.Reader,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := grantAuthority.InitializeGrantIdentityIndex(ctx); err != nil {
+		return nil, nil, err
+	}
+	if err := readModel.Rebuild(ctx); err != nil {
+		return nil, nil, err
+	}
+	coordinator, err := app.NewTeamCoordinator(
+		workAuthority,
+		grantAuthority,
+		readModel,
+		evidenceStore,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	bindings, err := app.NewProjectionMissionExecutionBindingSource(readModel)
+	if err != nil {
+		return nil, nil, err
+	}
+	compiler, err := app.NewBuiltInMissionExecutionCompiler(
+		app.BuiltInMissionExecutionCompilerConfig{
+			Bindings: bindings, SourcePath: sourcePath,
+			ObserverFactory: readService,
+			Now:             now,
+		},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := app.NewProjectionMissionExecutionState(readModel)
+	if err != nil {
+		return nil, nil, err
+	}
+	runner := &productMissionExecutionRunner{
+		coordinator:    coordinator,
+		workAuthority:  workAuthority,
+		grantAuthority: grantAuthority,
+		config:         config,
+		workspaceRoot:  workspaceRoot,
+	}
+	backend, err := app.NewAuthoritativeMissionExecutionBackend(
+		app.AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler, Runner: runner,
+			Decisions:         config.Decisions,
+			VisibilityTimeout: 5 * time.Second,
+			Now:               now,
+		},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	bundle := &productMissionExecutionBundle{
+		backend:   backend,
+		evidence:  evidenceStore,
+		observers: readService,
+	}
+	if err := backend.ResumeProjectedMissions(ctx); err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	service, err := app.NewLocalProductExecutionService(
+		app.LocalProductExecutionConfig{Backend: backend},
+	)
+	if err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	executionAPI, err := api.NewLocalProductExecutionAPI(service)
+	if err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	return executionAPI, bundle, nil
+}
+
+func ensureProductExecutionDirectory(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return app.ErrInvalidMissionExecution
+	}
+	if err := os.Mkdir(path, 0o700); err != nil &&
+		!errors.Is(err, os.ErrExist) {
+		return err
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || canonical != path {
+		return app.ErrInvalidMissionExecution
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return app.ErrInvalidMissionExecution
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return app.ErrInvalidMissionExecution
+	}
+	return nil
 }
 
 func controlledMissionFixtureFromEnvironment(
@@ -552,6 +1721,7 @@ func validProductHex(value string, length int) bool {
 }
 
 type productSetupProjectionProbe struct {
+	id           string
 	observations []loomruntime.RuntimeObservation
 }
 
@@ -573,7 +1743,7 @@ func productSetupRuntimeStatus(
 }
 
 func (probe productSetupProjectionProbe) ID() string {
-	return "loom-product-projection"
+	return probe.id
 }
 
 func (probe productSetupProjectionProbe) ObserveRuntime(
@@ -654,6 +1824,7 @@ func (connector productNativeAuthConnector) Close() error {
 
 type productCredentialStatusSource struct {
 	projection *projection.Projection
+	store      *journal.Store
 }
 
 func (source productCredentialStatusSource) CredentialStatus(
@@ -684,9 +1855,56 @@ func (source productCredentialStatusSource) CredentialStatus(
 	}, nil
 }
 
+type productCredentialOperationStatus struct {
+	metadata  credentials.MetadataResult
+	commandID string
+}
+
+type productCredentialOperationStatusSource interface {
+	CredentialOperationStatus(
+		context.Context,
+		string,
+	) (productCredentialOperationStatus, error)
+}
+
+func (source productCredentialStatusSource) CredentialOperationStatus(
+	ctx context.Context,
+	providerID string,
+) (productCredentialOperationStatus, error) {
+	metadata, err := source.CredentialStatus(ctx, providerID)
+	if err != nil || source.store == nil {
+		return productCredentialOperationStatus{},
+			credentials.ErrCredentialStoreUnavailable
+	}
+	events, err := source.store.ReadStream(
+		ctx,
+		"provider-credential/"+providerID,
+	)
+	if err != nil || len(events) == 0 {
+		return productCredentialOperationStatus{},
+			credentials.ErrCredentialStoreUnavailable
+	}
+	event := events[len(events)-1]
+	const prefix = "local-product-setup/"
+	if event.StreamID != "provider-credential/"+providerID ||
+		event.Seq != metadata.Revision ||
+		!strings.HasPrefix(event.IdempotencyKey, prefix) ||
+		len(event.IdempotencyKey) <= len(prefix) {
+		return productCredentialOperationStatus{},
+			credentials.ErrCredentialStoreUnavailable
+	}
+	return productCredentialOperationStatus{
+		metadata: metadata,
+		commandID: strings.TrimPrefix(
+			event.IdempotencyKey,
+			prefix,
+		),
+	}, nil
+}
+
 type productCredentialMutator struct {
 	mu       sync.Mutex
-	status   app.CredentialStatusSource
+	status   productCredentialOperationStatusSource
 	delegate app.CredentialMutator
 }
 
@@ -716,23 +1934,24 @@ func (mutator *productCredentialMutator) Verify(
 	}
 	mutator.mu.Lock()
 	defer mutator.mu.Unlock()
-	current, err := mutator.status.CredentialStatus(
+	current, err := mutator.status.CredentialOperationStatus(
 		ctx,
 		command.ProviderID,
 	)
 	if err != nil ||
-		current.ProviderID != command.ProviderID ||
-		current.CredentialReference != command.CredentialReference {
+		current.metadata.ProviderID != command.ProviderID ||
+		current.metadata.CredentialReference != command.CredentialReference {
 		return credentials.MetadataResult{},
 			credentials.ErrCredentialMetadataConflict
 	}
-	if current.Revision == command.ExpectedRevision {
+	if current.metadata.Revision == command.ExpectedRevision {
 		return mutator.delegate.Verify(ctx, command)
 	}
-	if current.Revision == command.ExpectedRevision+1 &&
-		(current.Status == credentials.CredentialVerified ||
-			current.Status == credentials.CredentialRejected) {
-		return current, nil
+	if current.metadata.Revision == command.ExpectedRevision+1 &&
+		current.commandID == command.CommandID &&
+		(current.metadata.Status == credentials.CredentialVerified ||
+			current.metadata.Status == credentials.CredentialRejected) {
+		return current.metadata, nil
 	}
 	return credentials.MetadataResult{},
 		credentials.ErrCredentialMetadataConflict
@@ -771,24 +1990,24 @@ func buildProductSetupService(
 	config productSetupRuntimeConfig,
 ) (*api.LocalProductSetupAPI, error) {
 	if database == nil || store == nil || readModel == nil {
-		return nil, errors.New("setup state unavailable")
+		return nil, newDaemonBuildFailure("build_state", errors.New("setup state unavailable"))
 	}
 	catalog, err := productSetupCatalogForView(
 		context.Background(),
 		readModel.GlobalReadView(),
 	)
 	if err != nil {
-		return nil, errors.New("setup runtime unavailable")
+		return nil, newDaemonBuildFailure("build_setup_runtime", err)
 	}
 	writer, err := state.NewLocalProductSetupWriter(store)
 	if err != nil {
-		return nil, errors.New("setup state unavailable")
+		return nil, newDaemonBuildFailure("build_state", err)
 	}
 	keychain := config.CredentialStore
 	if keychain == nil {
 		executablePath, executableErr := os.Executable()
 		if executableErr != nil || config.SocketPath == "" {
-			return nil, errors.New("setup credential boundary unavailable")
+			return nil, newDaemonBuildFailure("build_setup_credential", errors.Join(executableErr, errors.New("setup credential boundary unavailable")))
 		}
 		keychain, err = credentials.NewProductKeychainStore(
 			executablePath,
@@ -796,14 +2015,14 @@ func buildProductSetupService(
 		)
 	}
 	if err != nil {
-		return nil, errors.New("setup credential boundary unavailable")
+		return nil, newDaemonBuildFailure("build_setup_credential", err)
 	}
 	verifier, err := provider.NewSystemMiniMaxCredentialVerifier(
 		5*time.Second,
 		64*1024,
 	)
 	if err != nil {
-		return nil, errors.New("setup Provider unavailable")
+		return nil, newDaemonBuildFailure("build_setup_provider", err)
 	}
 	broker, err := credentials.NewCredentialBroker(
 		credentials.CredentialBrokerConfig{
@@ -813,32 +2032,38 @@ func buildProductSetupService(
 		},
 	)
 	if err != nil {
-		return nil, errors.New("setup credential boundary unavailable")
+		return nil, newDaemonBuildFailure("build_setup_credential", err)
 	}
 	var (
 		native          *provider.CodexNativeAuthObserver
 		nativeConnector app.NativeAuthConnector
 	)
 	if config.CodexExecutable != "" {
+		resolvedCodexExecutable, resolveErr := provider.ResolveCodexNativeExecutable(
+			config.CodexExecutable,
+		)
+		if resolveErr != nil {
+			return nil, newDaemonBuildFailure("build_setup_native_auth", resolveErr)
+		}
 		native, err = provider.NewCodexNativeAuthObserver(
 			provider.CodexNativeAuthConfig{
-				ExecutablePath: config.CodexExecutable,
+				ExecutablePath: resolvedCodexExecutable,
 				Timeout:        5 * time.Second,
 				MaxOutputBytes: 4096,
 				Runner:         provider.NewSystemCodexStatusRunner(),
 			},
 		)
 		if err != nil {
-			return nil, errors.New("setup native auth unavailable")
+			return nil, newDaemonBuildFailure("build_setup_native_auth", err)
 		}
 		controller, controllerErr := provider.NewSystemCodexLoginController(
 			provider.CodexLoginControllerConfig{
-				ExecutablePath: config.CodexExecutable,
+				ExecutablePath: resolvedCodexExecutable,
 				Timeout:        10 * time.Minute,
 			},
 		)
 		if controllerErr != nil {
-			return nil, errors.New("setup native auth unavailable")
+			return nil, newDaemonBuildFailure("build_setup_native_auth", controllerErr)
 		}
 		nativeConnector = productNativeAuthConnector{
 			controller: controller,
@@ -846,6 +2071,7 @@ func buildProductSetupService(
 	}
 	credentialStatus := productCredentialStatusSource{
 		projection: readModel,
+		store:      store,
 	}
 	setup, err := app.NewLocalProductSetupService(
 		app.LocalProductSetupConfig{
@@ -869,12 +2095,12 @@ func buildProductSetupService(
 		if nativeConnector != nil {
 			_ = nativeConnector.Close()
 		}
-		return nil, errors.New("setup service unavailable")
+		return nil, newDaemonBuildFailure("build_setup_runtime", err)
 	}
 	setupAPI, err := api.NewLocalProductSetupAPI(setup)
 	if err != nil {
 		_ = setup.Close()
-		return nil, errors.New("setup API unavailable")
+		return nil, newDaemonBuildFailure("build_setup_runtime", err)
 	}
 	return setupAPI, nil
 }
@@ -900,34 +2126,46 @@ func productSetupCatalogForView(
 		return app.LocalProductSetupCatalog{}, err
 	}
 	runtimes, _ := view.RuntimeInstances("", 64)
-	observations := make([]loomruntime.RuntimeObservation, 0, len(runtimes))
+	observationsByProbe := make(map[string][]loomruntime.RuntimeObservation)
 	for _, runtime := range runtimes {
 		status, ok := productSetupRuntimeStatus(runtime.Status)
 		if !ok {
 			continue
 		}
-		observations = append(observations, loomruntime.RuntimeObservation{
-			Instance: loomruntime.RuntimeInstance{
-				ID:                runtime.ID,
-				DeviceID:          runtime.DeviceID,
-				AdapterType:       runtime.AdapterType,
-				DisplayName:       runtime.DisplayName,
-				ExecutableVersion: runtime.ExecutableVersion,
-				Status:            status,
-				ObservedCapabilities: append(
-					[]string{},
-					runtime.ObservedCapabilities...,
-				),
-				Capacity: runtime.Capacity,
+		if runtime.SourceProbeID == "" {
+			return app.LocalProductSetupCatalog{},
+				errors.New("setup runtime unavailable")
+		}
+		observationsByProbe[runtime.SourceProbeID] = append(
+			observationsByProbe[runtime.SourceProbeID],
+			loomruntime.RuntimeObservation{
+				Instance: loomruntime.RuntimeInstance{
+					ID:                runtime.ID,
+					DeviceID:          runtime.DeviceID,
+					AdapterType:       runtime.AdapterType,
+					DisplayName:       runtime.DisplayName,
+					ExecutableVersion: runtime.ExecutableVersion,
+					Status:            status,
+					ObservedCapabilities: append(
+						[]string{},
+						runtime.ObservedCapabilities...,
+					),
+					Capacity: runtime.Capacity,
+				},
+				ModelIDs: append([]string{}, runtime.ModelIDs...),
 			},
-			ModelIDs: append([]string{}, runtime.ModelIDs...),
+		)
+	}
+	probes := make([]loomruntime.RuntimeProbe, 0, len(observationsByProbe))
+	for probeID, observations := range observationsByProbe {
+		probes = append(probes, productSetupProjectionProbe{
+			id:           probeID,
+			observations: observations,
 		})
 	}
 	discovery, err := loomruntime.DiscoverRuntime(
 		ctx,
-		[]loomruntime.RuntimeProbe{
-			productSetupProjectionProbe{observations: observations},
-		},
+		probes,
 	)
 	if err != nil {
 		return app.LocalProductSetupCatalog{},
@@ -1023,6 +2261,257 @@ func productSetupCatalogForView(
 	}, nil
 }
 
+func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
+	ctx context.Context,
+	confirmation app.BuilderConfirmation,
+) (app.BuilderConfirmation, error) {
+	if materializer == nil || materializer.store == nil ||
+		materializer.projection == nil || ctx == nil ||
+		confirmation.TeamDefinitionID == "" ||
+		confirmation.TeamDefinitionVersion <= 0 ||
+		confirmation.TeamDefinitionDigest == "" ||
+		confirmation.Status != "active" ||
+		confirmation.TeamInstanceCreated || confirmation.RunCreated {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	if err := ctx.Err(); err != nil {
+		return app.BuilderConfirmation{}, err
+	}
+	now := materializer.now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	occurredAt := now()
+	if occurredAt.IsZero() || occurredAt.Location() != time.UTC ||
+		occurredAt.UnixNano() <= 0 {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	if err := materializer.projection.Rebuild(ctx); err != nil {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	view := materializer.projection.GlobalReadView()
+	record, ok := view.TeamDefinition(confirmation.TeamDefinitionID)
+	if !ok || record.Version != confirmation.TeamDefinitionVersion ||
+		record.DefinitionDigest != confirmation.TeamDefinitionDigest ||
+		record.Status != confirmation.Status {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	setupCatalog, err := productSetupCatalogForView(ctx, view)
+	if err != nil {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	definition, selections, err := productSavedTeamMaterializationInputs(
+		record,
+		setupCatalog,
+	)
+	if err != nil || definition.Digest() != confirmation.TeamDefinitionDigest {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	scope := agents.ScopeIdentity{ProjectID: productSavedTeamResolutionProjectID}
+	if definition.Scope() == teams.TeamDefinitionScopeProject {
+		scope = definition.ScopeIdentity()
+	}
+	binding, err := teams.BuildSavedTeamRuntimeBinding(
+		[]teams.TeamDefinition{definition},
+		definition.ID(),
+		scope,
+		setupCatalog.AgentDefinitions,
+		setupCatalog.RuntimeProfiles,
+		setupCatalog.RuntimeDiscovery,
+		selections,
+	)
+	if err != nil {
+		return app.BuilderConfirmation{}, fmt.Errorf(
+			"%w: saved-Team binding: %v",
+			app.ErrInvalidLocalProductSetup,
+			err,
+		)
+	}
+	resolutionCatalog := teams.TeamResolutionCatalogInput{
+		AgentDefinitions:       append([]agents.AgentDefinition{}, setupCatalog.AgentDefinitions...),
+		RuntimeProfiles:        append([]loomruntime.RuntimeProfile{}, setupCatalog.RuntimeProfiles...),
+		TeamDefinitions:        []teams.TeamDefinition{definition},
+		MainAgentDefinitionIDs: []string{definition.MainAgentDefinitionID()},
+		DefaultMainAgentID:     definition.MainAgentDefinitionID(),
+	}
+	if definition.Scope() == teams.TeamDefinitionScopeProject {
+		resolutionCatalog.ProjectDefaultTeamID = definition.ID()
+	} else {
+		resolutionCatalog.ReusableDefaultTeamID = definition.ID()
+	}
+	intent := mode.Intent{
+		Trigger:  mode.TriggerSelectTeam,
+		TargetID: definition.ID(),
+		Text:     "materialize confirmed saved Team",
+	}
+	plan, err := teams.BuildSavedTeamInstantiationPlan(
+		intent,
+		scope,
+		resolutionCatalog,
+		binding,
+		setupCatalog.RuntimeDiscovery,
+		selections,
+	)
+	if err != nil {
+		return app.BuilderConfirmation{}, fmt.Errorf(
+			"%w: saved-Team plan: %v",
+			app.ErrInvalidLocalProductSetup,
+			err,
+		)
+	}
+	identity, commit, err := newProductSavedTeamMaterializationIdentity(occurredAt)
+	if err != nil {
+		return app.BuilderConfirmation{}, err
+	}
+	records, err := teams.BuildSavedTeamInstanceRecordSet(
+		plan,
+		intent,
+		scope,
+		resolutionCatalog,
+		binding,
+		setupCatalog.RuntimeDiscovery,
+		selections,
+		identity,
+	)
+	if err != nil {
+		return app.BuilderConfirmation{}, fmt.Errorf(
+			"%w: saved-Team records: %v",
+			app.ErrInvalidLocalProductSetup,
+			err,
+		)
+	}
+	committed, err := state.CommitSavedTeamInstanceRecordSet(
+		ctx,
+		materializer.store,
+		records,
+		plan,
+		intent,
+		scope,
+		resolutionCatalog,
+		binding,
+		setupCatalog.RuntimeDiscovery,
+		selections,
+		identity,
+		commit,
+	)
+	if err != nil || !committed.Committed() || committed.EventCount() != 2 {
+		return app.BuilderConfirmation{}, fmt.Errorf(
+			"%w: saved-Team commit: %v",
+			app.ErrInvalidLocalProductSetup,
+			err,
+		)
+	}
+	if err := materializer.projection.Rebuild(ctx); err != nil {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	confirmation.TeamInstanceCreated = true
+	return confirmation, nil
+}
+
+func productSavedTeamMaterializationInputs(
+	record projection.TeamDefinitionRecord,
+	catalog app.LocalProductSetupCatalog,
+) (teams.TeamDefinition, []teams.SavedTeamRuntimeSelection, error) {
+	roles := make([]teams.TeamDefinitionRole, len(record.Roles))
+	for index, role := range record.Roles {
+		roles[index] = teams.TeamDefinitionRole{
+			Kind:              teams.TeamDefinitionRoleKind(role.Kind),
+			AgentDefinitionID: role.AgentDefinitionID,
+			RuntimeProfileID:  role.RuntimeProfileID,
+			Responsibility:    role.Responsibility,
+		}
+	}
+	definition, err := teams.BuildTeamDefinition(
+		teams.TeamDefinitionInput{
+			ID:      record.ID,
+			Version: record.Version,
+			Scope:   teams.TeamDefinitionScope(record.Scope),
+			ScopeIdentity: agents.ScopeIdentity{
+				ProjectID:    record.ScopeIdentity.ProjectID,
+				GenerationID: record.ScopeIdentity.GenerationID,
+			},
+			Name:   record.Name,
+			Status: teams.TeamDefinitionStatus(record.Status),
+			Roles:  roles,
+		},
+		catalog.AgentDefinitions,
+		catalog.RuntimeProfiles,
+	)
+	if err != nil || definition.Digest() != record.DefinitionDigest ||
+		len(record.Configuration.RoleBindings) != len(roles) {
+		return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+	}
+	bindings := make(map[string]projection.TeamConfigurationRoleBinding, len(roles))
+	for _, binding := range record.Configuration.RoleBindings {
+		if _, duplicate := bindings[binding.AgentDefinitionID]; duplicate {
+			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+		}
+		bindings[binding.AgentDefinitionID] = binding
+	}
+	profiles := make(map[string]loomruntime.RuntimeProfile, len(catalog.RuntimeProfiles))
+	for _, profile := range catalog.RuntimeProfiles {
+		profiles[profile.ID] = profile
+	}
+	selections := make([]teams.SavedTeamRuntimeSelection, len(roles))
+	for index, role := range roles {
+		binding, ok := bindings[role.AgentDefinitionID]
+		profile, profileOK := profiles[role.RuntimeProfileID]
+		if !ok || !profileOK ||
+			binding.Kind != string(role.Kind) ||
+			binding.RuntimeProfileID != role.RuntimeProfileID ||
+			binding.ModelID != profile.ModelID ||
+			binding.RuntimeInstanceID == "" {
+			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+		}
+		selections[index] = teams.SavedTeamRuntimeSelection{
+			AgentDefinitionID: role.AgentDefinitionID,
+			RuntimeInstanceID: binding.RuntimeInstanceID,
+		}
+	}
+	return definition, selections, nil
+}
+
+func newProductSavedTeamMaterializationIdentity(
+	occurredAt time.Time,
+) (teams.SavedTeamInstanceIdentityInput, state.SavedTeamCommitInput, error) {
+	identitySource := productSetupIdentity{}
+	next := func(kind string) (string, error) {
+		value, err := identitySource.NextSetupID(kind)
+		if err != nil {
+			return "", app.ErrInvalidLocalProductSetup
+		}
+		return value, nil
+	}
+	values := make([]string, 7)
+	for index, kind := range []string{
+		"saved-team-request",
+		"team-instance",
+		"agent-instance",
+		"team-event",
+		"team-idempotency",
+		"agent-event",
+		"agent-idempotency",
+	} {
+		value, err := next(kind)
+		if err != nil {
+			return teams.SavedTeamInstanceIdentityInput{}, state.SavedTeamCommitInput{}, err
+		}
+		values[index] = value
+	}
+	return teams.SavedTeamInstanceIdentityInput{
+			WorkRequestID:       values[0],
+			TeamInstanceID:      values[1],
+			MainAgentInstanceID: values[2],
+			CreatedAt:           occurredAt.UnixNano(),
+		}, state.SavedTeamCommitInput{
+			TeamEventID:             values[3],
+			TeamIdempotencyKey:      values[4],
+			MainAgentEventID:        values[5],
+			MainAgentIdempotencyKey: values[6],
+			EmittedAt:               occurredAt,
+		}, nil
+}
+
 func (runner *productDaemonRunner) Run(
 	ctx context.Context,
 ) (app.LocalRuntimeObservationDaemonResult, error) {
@@ -1080,6 +2569,27 @@ func (runner *productDaemonRunner) Run(
 
 	select {
 	case outcome := <-observerDone:
+		if containableProductObserverTimeout(outcome.err) {
+			runner.health.recordTimeout(outcome.err)
+			select {
+			case serverErr := <-serverDone:
+				return outcome.result, classifyProductDaemonFailure(
+					"local_ipc",
+					serverErr,
+				)
+			case <-ctx.Done():
+				cancel()
+				closeErr := runner.server.Close()
+				serverErr := <-serverDone
+				if serverErr != nil || closeErr != nil {
+					return outcome.result, classifyProductDaemonFailure(
+						"shutdown",
+						errors.Join(serverErr, closeErr),
+					)
+				}
+				return outcome.result, ctx.Err()
+			}
+		}
 		cancel()
 		closeErr := runner.server.Close()
 		serverErr := <-serverDone
@@ -1156,6 +2666,12 @@ func (runner *productDaemonRunner) Close() error {
 		closeErr,
 		closeProductDaemonStage("local_ipc", runner.server),
 	)
+	if runner.execution != nil {
+		closeErr = errors.Join(
+			closeErr,
+			closeProductDaemonStage("execution", runner.execution),
+		)
+	}
 	closeErr = errors.Join(
 		closeErr,
 		closeProductDaemonStage("observer", runner.observer),
@@ -1215,6 +2731,27 @@ func localProductHandlerWithDecision(
 	service *api.LocalProductReadService,
 	setup *api.LocalProductSetupAPI,
 	decision *api.LocalProductDecisionAPI,
+	executionServices ...*api.LocalProductExecutionAPI,
+) func(context.Context, localipc.Request) localipc.Response {
+	var execution *api.LocalProductExecutionAPI
+	if len(executionServices) == 1 {
+		execution = executionServices[0]
+	}
+	return localProductHandlerWithComposition(
+		service,
+		setup,
+		decision,
+		execution,
+		nil,
+	)
+}
+
+func localProductHandlerWithComposition(
+	service *api.LocalProductReadService,
+	setup *api.LocalProductSetupAPI,
+	decision *api.LocalProductDecisionAPI,
+	execution *api.LocalProductExecutionAPI,
+	savedTeamMaterializer productSavedTeamMaterializer,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
@@ -1230,6 +2767,12 @@ func localProductHandlerWithDecision(
 			return productErrorResponse(
 				"state_unavailable",
 				api.ErrInvalidLocalProductDecisionAPI,
+			)
+		}
+		if request.Method == "mission_execution" && execution == nil {
+			return productErrorResponse(
+				"state_unavailable",
+				api.ErrInvalidLocalProductExecutionAPI,
 			)
 		}
 		switch request.Method {
@@ -1290,6 +2833,19 @@ func localProductHandlerWithDecision(
 				return productResultResponse(result)
 			}
 			result, err := decision.DecideMission(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "mission_execution":
+			var input app.MissionExecutionCommand
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					app.ErrInvalidMissionExecution,
+				)
+			}
+			result, err := execution.ExecuteMission(ctx, input)
 			if err != nil {
 				return productServiceError(err)
 			}
@@ -1388,6 +2944,15 @@ func localProductHandlerWithDecision(
 			if err != nil {
 				return productServiceError(err)
 			}
+			if savedTeamMaterializer != nil {
+				result, err = savedTeamMaterializer.MaterializeConfirmedTeam(
+					ctx,
+					result,
+				)
+				if err != nil {
+					return productServiceError(err)
+				}
+			}
 			return productResultResponse(result)
 		case "team_archive", "team_restore":
 			var input app.TeamStatusCommand
@@ -1421,12 +2986,21 @@ func localProductHandlerWithDecision(
 					api.ErrInvalidLocalProductSetupAPI,
 				)
 			}
+			if request.Method == "credential_verify" &&
+				!validProductCredentialOperationID(input.OperationID) ||
+				request.Method != "credential_verify" && input.OperationID != "" {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductSetupAPI,
+				)
+			}
 			secret := []byte(input.Secret)
 			defer clearProductSecret(secret)
 			command := app.CredentialSetupCommand{
 				ProviderID:          input.ProviderID,
 				CredentialReference: input.CredentialReference,
 				ExpectedRevision:    input.ExpectedRevision,
+				OperationID:         input.OperationID,
 				Secret:              secret,
 			}
 			var (
@@ -1481,7 +3055,27 @@ type productCredentialParams struct {
 	ProviderID          string `json:"provider_id"`
 	CredentialReference string `json:"credential_reference"`
 	ExpectedRevision    int64  `json:"expected_revision"`
+	OperationID         string `json:"operation_id,omitempty"`
 	Secret              string `json:"secret"`
+}
+
+func validProductCredentialOperationID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' ||
+		value[18] != '-' || value[23] != '-' || value[14] != '4' ||
+		!strings.Contains("89ab", string(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func clearProductSecret(secret []byte) {
@@ -1491,6 +3085,11 @@ func clearProductSecret(secret []byte) {
 }
 
 func decodeExactProductParams(data []byte, output any) error {
+	if duplicate, err := scanProductJSONValue(
+		json.NewDecoder(bytes.NewReader(data)),
+	); err != nil || duplicate {
+		return errors.New("invalid product params")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
@@ -1500,6 +3099,57 @@ func decodeExactProductParams(data []byte, output any) error {
 		return errors.New("trailing product params")
 	}
 	return nil
+}
+
+func scanProductJSONValue(decoder *json.Decoder) (bool, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return false, err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return false, nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return false, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return false, errors.New("invalid product params")
+			}
+			if _, exists := seen[key]; exists {
+				return true, nil
+			}
+			seen[key] = struct{}{}
+			duplicate, err := scanProductJSONValue(decoder)
+			if err != nil || duplicate {
+				return duplicate, err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return false, errors.New("invalid product params")
+		}
+	case '[':
+		for decoder.More() {
+			duplicate, err := scanProductJSONValue(decoder)
+			if err != nil || duplicate {
+				return duplicate, err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return false, errors.New("invalid product params")
+		}
+	default:
+		return false, errors.New("invalid product params")
+	}
+	return false, nil
 }
 
 func productResultResponse(value any) localipc.Response {
@@ -1516,20 +3166,24 @@ func productServiceError(err error) localipc.Response {
 		errors.Is(err, api.ErrInvalidTimelineRequest),
 		errors.Is(err, api.ErrInvalidLocalProductSetupAPI),
 		errors.Is(err, api.ErrInvalidLocalProductDecisionAPI),
+		errors.Is(err, api.ErrInvalidLocalProductExecutionAPI),
 		errors.Is(err, app.ErrInvalidMissionDecision),
+		errors.Is(err, app.ErrInvalidMissionExecution),
 		errors.Is(err, app.ErrInvalidLocalProductSetup):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
 		errors.Is(err, app.ErrBuilderNotFound):
 		return productErrorResponse("not_found", err)
 	case errors.Is(err, app.ErrBuilderConflict),
-		errors.Is(err, app.ErrMissionDecisionConflict):
+		errors.Is(err, app.ErrMissionDecisionConflict),
+		errors.Is(err, app.ErrMissionExecutionConflict):
 		return productErrorResponse("conflict", err)
 	case errors.Is(err, app.ErrBuilderIncompatible):
 		return productErrorResponse("incompatible", err)
 	case errors.Is(err, app.ErrBuilderConfirmationRequired):
 		return productErrorResponse("denied", err)
-	case errors.Is(err, app.ErrNativeAuthConnectBusy):
+	case errors.Is(err, app.ErrNativeAuthConnectBusy),
+		errors.Is(err, app.ErrMissionExecutionBusy):
 		return productErrorResponse("busy", err)
 	case errors.Is(err, app.ErrNativeAuthConnectUnavailable):
 		return productErrorResponse("state_unavailable", err)

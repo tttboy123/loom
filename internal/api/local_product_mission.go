@@ -94,13 +94,11 @@ func buildLocalProductMission(
 ) LocalProductMissionSummary {
 	status := missionStatus(execution)
 	lane := missionLaneForStatus(status, execution.Status != "")
-	title := execution.TeamInstanceID
+	title := "Historical mission"
 	sourceKind := "historical_execution_only"
 	if team, ok := view.Team(execution.TeamInstanceID); ok {
 		sourceKind = team.SourceKind
-		if team.TeamDefinitionID != "" {
-			title = team.TeamDefinitionID
-		}
+		title = localProductSavedTeamDisplayName(view, team)
 	}
 	_, attention := deriveBoardAndAttention(view, execution.TeamInstanceID)
 	mission := LocalProductMissionSummary{

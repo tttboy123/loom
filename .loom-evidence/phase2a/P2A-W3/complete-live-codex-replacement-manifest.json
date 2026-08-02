@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "canary": "complete_live_codex_native_auth_and_preflight",
+  "attempt_id": "phase2a-w3-live-20260802-codex-002",
+  "status": "frozen_unconsumed",
+  "one_shot": true,
+  "hidden_retry": false,
+  "claim": "Codex native-auth/status and exact product preflight while one deterministic Pi metadata timeout is contained; no execution",
+  "source": {
+    "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+    "parent_source_lock_sha256": "03d213d9862ce1f7be95d4547bfaae67893e58a8c98018d6a6cd651bd251c3ce",
+    "closure_source_lock_sha256": "904b1ceec6b1cd11d27498382b221c734180e0817eff8b31360d98d0b3160ccd",
+    "implementation_review_sha256": "27c57555d7821e3a79a670e993fd2ef5c2b931aae87189d228eaa1472d9a9fc7",
+    "implementation_review_verdict": "PASS"
+  },
+  "attempt": {
+    "root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002",
+    "state_path": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002/state/loom.db",
+    "initial_state_source": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-001/state/loom.db",
+    "initial_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+    "initial_fact_count": 6,
+    "isolation_root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002/isolation",
+    "socket_path": "/Users/lune/Library/Application Support/Loom/run/loomd.sock",
+    "root_mode": "0700",
+    "state_mode": "0600",
+    "manifest_mode": "0600"
+  },
+  "artifacts": {
+    "loomd": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002/bin/loomd",
+    "loomd_sha256": "2fb244ccf981e8dc8db297ce89a9338cfa020ab480632e7d5c972a41fa500e3d",
+    "loom": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002/bin/loom",
+    "loom_sha256": "739023fcbd20068c5b77331c42e540888542a6d0406af60116ae9acac21bf80f",
+    "native_app": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002/native/Loom.app",
+    "native_executable_sha256": "f998eabe5320eb24b3f9668222aa08a28c803cf18ef861536d0fca529e2f01b8",
+    "bundle_id": "com.earendilworks.loom.local",
+    "architecture": "arm64",
+    "lc_uuid": "C63B9C7D-B0C7-3AB3-A2F4-7C86B8B89DE2"
+  },
+  "external": {
+    "codex_executable": "/Users/lune/Documents/Codex/devtools/npm/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+    "codex_sha256": "29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a",
+    "pi_timeout_fixture": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-codex-002/runtime-timeout/pi",
+    "pi_timeout_fixture_sha256": "6ea38472a19abbaa71aef906a238c47a626f198d22c550bc6dec964bae288522",
+    "local_model_executable_sha256": "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b",
+    "local_model_sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
+  },
+  "limits": {
+    "daemon_starts": 1,
+    "pi_metadata_invocations": 1,
+    "process_timeout_seconds": 2,
+    "mission_preflights": 1,
+    "mission_starts": 0,
+    "deadline_seconds": 180,
+    "max_cycles": 1
+  },
+  "live_consumed": false
+}

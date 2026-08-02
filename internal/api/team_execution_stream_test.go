@@ -28,6 +28,63 @@ type apiTestViewSource struct {
 	rebuilds   int
 }
 
+type apiTestTimelineLineageView struct {
+	version   string
+	execution projection.TeamExecution
+	workItems map[string]projection.WorkItem
+	runs      map[string]projection.Run
+	evidence  map[string]projection.Evidence
+	approvals map[string]projection.ProjectedApprovalRequest
+}
+
+func (view apiTestTimelineLineageView) Version() string { return view.version }
+
+func (view apiTestTimelineLineageView) TeamExecution(
+	id string,
+) (projection.TeamExecution, bool) {
+	return view.execution, view.execution.TeamInstanceID == id
+}
+
+func (view apiTestTimelineLineageView) WorkItem(
+	id string,
+) (projection.WorkItem, bool) {
+	record, ok := view.workItems[id]
+	return record, ok
+}
+
+func (view apiTestTimelineLineageView) WorkItemsForTeam(
+	teamID string,
+) []projection.WorkItem {
+	records := make([]projection.WorkItem, 0)
+	for _, record := range view.workItems {
+		if record.TeamInstanceID == teamID {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func (view apiTestTimelineLineageView) Run(
+	id string,
+) (projection.Run, bool) {
+	record, ok := view.runs[id]
+	return record, ok
+}
+
+func (view apiTestTimelineLineageView) Evidence(
+	id string,
+) (projection.Evidence, bool) {
+	record, ok := view.evidence[id]
+	return record, ok
+}
+
+func (view apiTestTimelineLineageView) ApprovalRequest(
+	id string,
+) (projection.ProjectedApprovalRequest, bool) {
+	record, ok := view.approvals[id]
+	return record, ok
+}
+
 func (source *apiTestViewSource) Rebuild(context.Context) error {
 	source.rebuilds++
 	return source.rebuildErr
@@ -817,6 +874,145 @@ func TestAuthoritativeSafeFieldsRejectAmbiguityAndIgnoreRawKeys(t *testing.T) {
 		); !errors.Is(err, ErrInvalidDeliveryRecord) {
 			t.Fatalf("case %d error = %v", index, err)
 		}
+	}
+}
+
+func TestDeliveryLineageFieldsAcceptOnlyIndependentlyCorroboratedPartialMetadata(
+	t *testing.T,
+) {
+	for name, fields := range map[string]map[string]string{
+		"logical node only": {"logical_node_id": "main"},
+		"attempt only":      {"attempt_number": "1"},
+		"both": {
+			"logical_node_id": "main",
+			"attempt_number":  "1",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateDeliveryLineageFields(
+				true,
+				"main",
+				1,
+				fields,
+			); err != nil {
+				t.Fatalf("matching partial lineage error = %v", err)
+			}
+		})
+	}
+
+	for name, fields := range map[string]map[string]string{
+		"logical node mismatch": {"logical_node_id": "other"},
+		"attempt mismatch":      {"attempt_number": "2"},
+		"zero attempt":          {"attempt_number": "0"},
+		"malformed attempt":     {"attempt_number": "one"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateDeliveryLineageFields(
+				true,
+				"main",
+				1,
+				fields,
+			); !errors.Is(err, ErrInvalidDeliveryRecord) {
+				t.Fatalf("mismatched partial lineage error = %v", err)
+			}
+		})
+	}
+
+	if err := validateDeliveryLineageFields(
+		false,
+		"",
+		0,
+		map[string]string{"attempt_number": "1"},
+	); !errors.Is(err, ErrInvalidDeliveryRecord) {
+		t.Fatalf("unbound partial lineage error = %v", err)
+	}
+}
+
+func TestAuthoritativeMappingAcceptsAttemptOnlyRejectionAndRejectsMalformedPresence(
+	t *testing.T,
+) {
+	teamID := "team-1"
+	workItemID := "work-1"
+	view := apiTestTimelineLineageView{
+		version: strings.Repeat("a", 64),
+		execution: projection.TeamExecution{
+			TeamInstanceID: teamID,
+			Nodes: []projection.TeamExecutionNode{{
+				LogicalNodeID: "main",
+				Attempts: []projection.TeamExecutionAttempt{{
+					AttemptNumber: 1,
+					WorkItemID:    workItemID,
+				}},
+			}},
+		},
+		workItems: map[string]projection.WorkItem{
+			workItemID: {
+				ID:             workItemID,
+				TeamInstanceID: teamID,
+				LogicalNodeID:  "main",
+				AttemptNumber:  1,
+			},
+		},
+	}
+	heads := []journal.StreamHead{{StreamID: "work-item/" + workItemID}}
+	mapPayload := func(payload string, selected apiTestTimelineLineageView) (
+		[]DeliveryRecord,
+		error,
+	) {
+		return mapAuthoritativeRecords(
+			teamID,
+			selected,
+			heads,
+			[]journal.Event{{
+				ID:             "event-rejected",
+				StreamID:       "work-item/" + workItemID,
+				Seq:            1,
+				IdempotencyKey: "event-rejected",
+				Type:           "WorkItemRejected",
+				SchemaVersion:  1,
+				EmittedAt: time.Date(
+					2026, 8, 3, 0, 0, 0, 0, time.UTC,
+				),
+				PayloadJSON: []byte(payload),
+			}},
+		)
+	}
+
+	records, err := mapPayload(
+		`{"attempt_number":1,"status":"rejected"}`,
+		view,
+	)
+	if err != nil || len(records) != 1 ||
+		records[0].kind != "verification_rejected" ||
+		records[0].logicalNodeID != "main" ||
+		records[0].attemptNumber != 1 {
+		t.Fatalf("attempt-only rejection records = %#v, %v", records, err)
+	}
+
+	for name, payload := range map[string]string{
+		"present empty node": `{"logical_node_id":"","attempt_number":1}`,
+		"node mismatch":      `{"logical_node_id":"other","attempt_number":1}`,
+		"attempt mismatch":   `{"attempt_number":2}`,
+		"zero attempt":       `{"attempt_number":0}`,
+		"malformed attempt":  `{"attempt_number":"one"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := mapPayload(payload, view); !errors.Is(
+				err,
+				ErrInvalidDeliveryRecord,
+			) {
+				t.Fatalf("malformed mapping error = %v", err)
+			}
+		})
+	}
+
+	unbound := view
+	unbound.workItems = map[string]projection.WorkItem{}
+	if _, err := mapPayload(
+		`{"attempt_number":1}`,
+		unbound,
+	); !errors.Is(err, ErrInvalidDeliveryRecord) {
+		t.Fatalf("unbound mapping error = %v", err)
 	}
 }
 

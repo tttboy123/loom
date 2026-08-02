@@ -218,7 +218,12 @@ func (broker *CredentialBroker) Verify(
 	defer broker.mu.Unlock()
 	secret, err := broker.store.Read(ctx, command.CredentialReference)
 	if err != nil {
-		return MetadataResult{}, closedStoreError(err)
+		return broker.commitVerificationMetadata(
+			ctx,
+			command,
+			CredentialRejected,
+			VerificationReasonUnavailable,
+		)
 	}
 	defer clearBytes(secret)
 	verification, verifyErr := broker.verifier.Verify(
@@ -236,6 +241,17 @@ func (broker *CredentialBroker) Verify(
 	if !validVerification(verification) {
 		return MetadataResult{}, ErrCredentialRejected
 	}
+	return broker.commitVerificationMetadata(
+		ctx, command, status, verification.Reason,
+	)
+}
+
+func (broker *CredentialBroker) commitVerificationMetadata(
+	ctx context.Context,
+	command CredentialCommand,
+	status CredentialStatus,
+	reason VerificationReason,
+) (MetadataResult, error) {
 	commitCtx, cancelCommit := context.WithTimeout(
 		context.WithoutCancel(ctx),
 		time.Second,
@@ -243,7 +259,7 @@ func (broker *CredentialBroker) Verify(
 	defer cancelCommit()
 	return broker.committer.CommitCredentialMetadata(
 		commitCtx,
-		metadataFor(command, status, verification.Reason),
+		metadataFor(command, status, reason),
 	)
 }
 

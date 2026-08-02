@@ -109,8 +109,9 @@ public struct LocalProductWorkspaceState: Equatable, Sendable {
     public mutating func mergeAuthoritativeTasks(
         _ authoritative: [LocalProductWorkspaceTask]
     ) {
-        let newTask = tasks.first(where: { $0.id == Self.newTaskID }) ??
-            LocalProductWorkspaceTask(
+        let newTask =
+            tasks.first(where: { $0.id == Self.newTaskID })
+            ?? LocalProductWorkspaceTask(
                 id: Self.newTaskID,
                 title: "New task",
                 subtitle: "Describe what you want to accomplish",
@@ -139,9 +140,8 @@ public struct LocalProductWorkspaceState: Equatable, Sendable {
         guard !normalized.isEmpty else { return tasks }
         let selected = selectedTaskID
         return tasks.filter { task in
-            task.id == selected ||
-                task.title.localizedCaseInsensitiveContains(normalized) ||
-                task.subtitle.localizedCaseInsensitiveContains(normalized)
+            task.id == selected || task.title.localizedCaseInsensitiveContains(normalized)
+                || task.subtitle.localizedCaseInsensitiveContains(normalized)
         }
     }
 
@@ -177,6 +177,37 @@ public enum LocalProductSetupState: Equatable, Sendable {
     case ready
     case unavailable(reason: String)
     case fatal(reason: String)
+}
+
+public enum LocalProductExecutionState: Equatable, Sendable {
+    case idle
+    case preflighting
+    case ready
+    case starting
+    case cancelling
+    case running
+    case awaitingRecovery
+    case succeeded
+    case cancelled
+    case failed(reason: String)
+}
+
+public struct LocalProductWorkPackageOption: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let digest: String
+
+    public static let coding = Self(
+        id: "work-package.coding",
+        title: "Coding",
+        digest: "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f"
+    )
+    public static let knowledge = Self(
+        id: "work-package.knowledge",
+        title: "Knowledge",
+        digest: "5a834baad4a0e4c557d96883f242860f4d136de208dd6721b85d8c2b8c5a0393"
+    )
+    public static let accepted = [coding, knowledge]
 }
 
 public enum LocalProductSection: String, CaseIterable, Identifiable, Sendable {
@@ -269,27 +300,221 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var setupState: LocalProductSetupState = .idle
     @Published public private(set) var lastConfirmation: LocalProductBuilderConfirmation?
     @Published public private(set) var credentialStatus: LocalProductCredentialSetupResult?
-    @Published public private(set) var providerConnectionStatus:
-        LocalProductProviderConnectResult?
+    @Published public private(set) var miniMaxVerificationStatus = "Idle"
+    @Published public private(set) var isVerifyingMiniMax = false
+    @Published public private(set) var providerConnectionStatus: LocalProductProviderConnectResult?
     @Published public private(set) var workspace = LocalProductWorkspaceState()
     @Published public private(set) var workbench = MissionWorkspaceState()
-    @Published public private(set) var activeDecisionSheet:
-        LocalProductDecisionSheet?
+    @Published public private(set) var activeDecisionSheet: LocalProductDecisionSheet?
+    @Published public private(set) var executionState: LocalProductExecutionState = .idle
+    @Published public private(set) var executionPreflight: LocalProductExecutionPreflight?
+    @Published public private(set) var executionResult: LocalProductExecutionResult?
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
     private let client: LocalProductClientProtocol
     private let setupClient: LocalProductSetupClientProtocol?
     private let decisionClient: LocalProductDecisionClientProtocol?
+    private let executionClient: LocalProductExecutionClientProtocol?
+    private var executionObjective = ""
+    private var timelineLoadGeneration: UInt64 = 0
+
+    private static let timelinePageLimit = 64
+    private static let maximumTimelinePages = 8
+    private static let maximumTimelineRecords = 512
+
+    private enum TimelineLoadSelection: Equatable {
+        case team(String)
+        case mission(id: String, teamID: String)
+    }
 
     public init(client: LocalProductClientProtocol) {
         self.client = client
         setupClient = client as? LocalProductSetupClientProtocol
         decisionClient = client as? LocalProductDecisionClientProtocol
+        executionClient = client as? LocalProductExecutionClientProtocol
     }
 
     public var providerManagementReachable: Bool {
         setupClient != nil
+    }
+
+    public var missionExecutionReachable: Bool { executionClient != nil }
+
+    public var missionCancelAvailable: Bool {
+        currentMissionCancelBinding() != nil
+    }
+
+    public func preflightMission(
+        objective: String,
+        team: LocalProductTeamSummary,
+        workPackage: LocalProductWorkPackageOption
+    ) async {
+        let bounded = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let executionClient,
+            let snapshot,
+            team.confirmed, team.executable, !team.readOnly,
+            snapshot.teams.contains(where: {
+                $0.teamInstanceID == team.teamInstanceID && $0.confirmed && $0.executable
+                    && !$0.readOnly
+            }),
+            (1...4_096).contains(bounded.utf8.count),
+            workPackage == .coding || workPackage == .knowledge
+        else {
+            executionState = .failed(reason: "preflight_unavailable")
+            return
+        }
+        executionState = .preflighting
+        executionPreflight = nil
+        executionResult = nil
+        let missionID = "mission/\(team.teamInstanceID)"
+        let command = LocalProductExecutionCommand.preflight(
+            missionID: missionID,
+            teamInstanceID: team.teamInstanceID,
+            workPackageID: workPackage.id,
+            workPackageDigest: workPackage.digest,
+            objective: bounded,
+            expectedViewVersion: snapshot.viewVersion,
+            correlationID: UUID().uuidString.lowercased()
+        )
+        do {
+            let envelope = try await executionClient.executeMission(command)
+            guard let preflight = envelope.preflight else {
+                throw LocalProductClientError.invalidResponse
+            }
+            executionObjective = bounded
+            executionPreflight = preflight
+            executionState = .ready
+        } catch {
+            executionState = .failed(reason: closedClientReason(error))
+        }
+    }
+
+    public func startPreflightedMission() async {
+        guard let executionClient,
+            let preflight = executionPreflight,
+            !executionObjective.isEmpty
+        else {
+            executionState = .failed(reason: "preflight_required")
+            return
+        }
+
+        executionState = .starting
+        do {
+            let command = LocalProductExecutionCommand.start(
+                preflight: preflight,
+                objective: executionObjective,
+                correlationID: UUID().uuidString.lowercased()
+            )
+            let envelope = try await executionClient.executeMission(command)
+            guard let result = envelope.result else {
+                throw LocalProductClientError.invalidResponse
+            }
+            executionResult = result
+            switch result.status {
+            case "running": executionState = .running
+            case "awaiting_recovery": executionState = .awaitingRecovery
+            case "succeeded": executionState = .succeeded
+            default: executionState = .failed(reason: result.status)
+            }
+            await refresh()
+            guard
+                snapshot?.missions.contains(where: {
+                    $0.missionID == result.missionID && $0.teamInstanceID == result.teamInstanceID
+                }) == true
+            else {
+                executionState = .failed(reason: "projection_visibility_failed")
+                return
+            }
+            await openMissionAndActivate(result.missionID)
+        } catch {
+            executionState = .failed(reason: closedClientReason(error))
+        }
+    }
+
+    public func cancelCurrentMission() async {
+        guard let executionClient,
+            let result = executionResult,
+            let binding = currentMissionCancelBinding()
+        else {
+            executionState = .failed(reason: "cancel_unavailable")
+            return
+        }
+        executionState = .cancelling
+        let command = LocalProductExecutionCommand.control(
+            missionID: result.missionID,
+            teamInstanceID: result.teamInstanceID,
+            expectedViewVersion: binding.viewVersion,
+            action: "cancel",
+            executionDigest: result.executionDigest,
+            logicalNodeID: binding.logicalNodeID,
+            attemptNumber: binding.attemptNumber,
+            claimGeneration: binding.claimGeneration,
+            correlationID: UUID().uuidString.lowercased()
+        )
+        do {
+            let envelope = try await executionClient.executeMission(command)
+            guard let cancelled = envelope.result,
+                cancelled.status == "cancelled",
+                cancelled.missionID == result.missionID,
+                cancelled.teamInstanceID == result.teamInstanceID,
+                cancelled.executionDigest == result.executionDigest
+            else {
+                throw LocalProductClientError.invalidResponse
+            }
+            executionResult = cancelled
+            await refreshMission(cancelled.missionID)
+            guard
+                snapshot?.missions.contains(where: {
+                    $0.missionID == cancelled.missionID && $0.status == "cancelled"
+                }) == true
+            else {
+                executionState = .failed(reason: "cancel_visibility_failed")
+                return
+            }
+            executionState = .cancelled
+        } catch {
+            executionState = .failed(reason: closedClientReason(error))
+        }
+    }
+
+    private struct MissionCancelBinding {
+        let viewVersion: String
+        let logicalNodeID: String
+        let attemptNumber: Int
+        let claimGeneration: Int64
+    }
+
+    private func currentMissionCancelBinding() -> MissionCancelBinding? {
+        guard let result = executionResult,
+            let snapshot,
+            let timeline,
+            case .mission(let selectedMissionID) = workbench.route,
+            selectedMissionID == result.missionID,
+            timeline.teamInstanceID == result.teamInstanceID,
+            timeline.board.teamInstanceID == result.teamInstanceID,
+            timeline.viewVersion == snapshot.viewVersion,
+            timeline.board.viewVersion == snapshot.viewVersion,
+            result.executionDigest.count == 64
+        else { return nil }
+        for node in timeline.board.nodes
+        where
+            node.currentAttempt > 0 && !node.runID.isEmpty
+            && !(["succeeded", "failed", "cancelled"].contains(node.status))
+        {
+            guard
+                let run = snapshot.runs.first(where: {
+                    $0.runID == node.runID && $0.claimGeneration > 0 && $0.terminalStatus.isEmpty
+                })
+            else { continue }
+            return MissionCancelBinding(
+                viewVersion: snapshot.viewVersion,
+                logicalNodeID: node.logicalNodeID,
+                attemptNumber: node.currentAttempt,
+                claimGeneration: run.claimGeneration
+            )
+        }
+        return nil
     }
 
     public var teamTimelineMessage: String {
@@ -330,13 +555,16 @@ public final class LocalProductStore: ObservableObject {
                 connectionState = .online
             }
             if let selectedTeamID,
-               !next.teams.contains(where: { $0.teamInstanceID == selectedTeamID }) {
+                !next.teams.contains(where: { $0.teamInstanceID == selectedTeamID })
+            {
+                invalidateTimelineLoad()
                 self.selectedTeamID = nil
                 timeline = nil
                 timelineState = .idle
             }
         } catch let remote as LocalIPCRemoteError {
-            connectionState = remote.recoverable
+            connectionState =
+                remote.recoverable
                 ? .offline(reason: remote.code.rawValue)
                 : .fatal(reason: remote.code.rawValue)
         } catch {
@@ -345,6 +573,7 @@ public final class LocalProductStore: ObservableObject {
     }
 
     public func selectTeam(_ team: LocalProductTeamSummary) {
+        invalidateTimelineLoad()
         selectedTeamID = team.teamInstanceID
         selectedSection = .teams
         timeline = nil
@@ -353,20 +582,105 @@ public final class LocalProductStore: ObservableObject {
 
     public func activateSelectedTeam() async {
         guard let selectedTeamID,
-              snapshot?.teams.contains(where: {
-                  $0.teamInstanceID == selectedTeamID
-              }) == true else {
+            snapshot?.teams.contains(where: {
+                $0.teamInstanceID == selectedTeamID
+            }) == true
+        else {
             timelineState = .idle
             return
         }
+        await loadTimeline(
+            teamInstanceID: selectedTeamID,
+            selection: .team(selectedTeamID)
+        )
+    }
+
+    private func loadTimeline(
+        teamInstanceID: String,
+        selection: TimelineLoadSelection
+    ) async {
+        let generation = beginTimelineLoad()
+        timeline = nil
+        timelineState = .loading
         do {
-            timeline = try await client.timeline(
-                teamInstanceID: selectedTeamID,
-                cursor: "",
-                limit: 64
-            )
-            timelineState = .loaded
+            var cursor = ""
+            var seenCursors = Set<String>()
+            var seenDeliveryIDs = Set<String>()
+            var records: [LocalProductTimelineRecord] = []
+            var firstPage: LocalProductTimelinePage?
+
+            for pageIndex in 0..<Self.maximumTimelinePages {
+                try Task.checkCancellation()
+                let page = try await client.timeline(
+                    teamInstanceID: teamInstanceID,
+                    cursor: cursor,
+                    limit: Self.timelinePageLimit
+                )
+                try Task.checkCancellation()
+                guard timelineLoadIsCurrent(
+                    generation: generation,
+                    selection: selection
+                ) else { return }
+                try Self.validateTimelinePage(
+                    page,
+                    teamInstanceID: teamInstanceID,
+                    firstPage: firstPage,
+                    seenDeliveryIDs: &seenDeliveryIDs
+                )
+                if firstPage == nil { firstPage = page }
+                records.append(contentsOf: page.records)
+                guard records.count <= Self.maximumTimelineRecords else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                if !page.hasMore {
+                    guard let firstPage else {
+                        throw LocalProductClientError.invalidResponse
+                    }
+                    timeline = LocalProductTimelinePage(
+                        schemaVersion: firstPage.schemaVersion,
+                        teamInstanceID: teamInstanceID,
+                        viewVersion: firstPage.viewVersion,
+                        nextCursor: page.nextCursor,
+                        hasMore: false,
+                        gap: nil,
+                        records: records,
+                        board: firstPage.board,
+                        attention: firstPage.attention
+                    )
+                    timelineState = .loaded
+                    return
+                }
+                guard pageIndex + 1 < Self.maximumTimelinePages,
+                      records.count < Self.maximumTimelineRecords,
+                      !page.nextCursor.isEmpty,
+                      page.nextCursor != cursor,
+                      seenCursors.insert(page.nextCursor).inserted else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                cursor = page.nextCursor
+            }
+            throw LocalProductClientError.invalidResponse
+        } catch is CancellationError {
+            guard timelineLoadIsCurrent(
+                generation: generation,
+                selection: selection
+            ) else { return }
+            timeline = nil
+            timelineState = .idle
         } catch let remote as LocalIPCRemoteError {
+            if Task.isCancelled {
+                guard timelineLoadIsCurrent(
+                    generation: generation,
+                    selection: selection
+                ) else { return }
+                timeline = nil
+                timelineState = .idle
+                return
+            }
+            guard timelineLoadIsCurrent(
+                generation: generation,
+                selection: selection
+            ) else { return }
             if remote.code == .cursorConflict || remote.code == .streamGap {
                 connectionState = .stale(reason: remote.code.rawValue)
                 timelineState = .unavailable
@@ -378,8 +692,90 @@ public final class LocalProductStore: ObservableObject {
                 timelineState = .unavailable
             }
         } catch {
+            if Task.isCancelled {
+                guard timelineLoadIsCurrent(
+                    generation: generation,
+                    selection: selection
+                ) else { return }
+                timeline = nil
+                timelineState = .idle
+                return
+            }
+            guard timelineLoadIsCurrent(
+                generation: generation,
+                selection: selection
+            ) else { return }
             connectionState = .offline(reason: closedClientReason(error))
             timelineState = .unavailable
+        }
+    }
+
+    private func beginTimelineLoad() -> UInt64 {
+        timelineLoadGeneration &+= 1
+        return timelineLoadGeneration
+    }
+
+    private func invalidateTimelineLoad() {
+        timelineLoadGeneration &+= 1
+    }
+
+    private func closeTimelineLoadPresentation() {
+        invalidateTimelineLoad()
+        timeline = nil
+        timelineState = .idle
+    }
+
+    private func timelineLoadIsCurrent(
+        generation: UInt64,
+        selection: TimelineLoadSelection
+    ) -> Bool {
+        guard generation == timelineLoadGeneration else { return false }
+        switch selection {
+        case .team(let teamID):
+            return selectedTeamID == teamID
+        case .mission(let missionID, _):
+            return workbench.route == .mission(missionID)
+        }
+    }
+
+    private static func validateTimelinePage(
+        _ page: LocalProductTimelinePage,
+        teamInstanceID: String,
+        firstPage: LocalProductTimelinePage?,
+        seenDeliveryIDs: inout Set<String>
+    ) throws {
+        guard page.schemaVersion == 1,
+              page.teamInstanceID == teamInstanceID,
+              !page.viewVersion.isEmpty,
+              page.gap == nil,
+              page.board.schemaVersion == 1,
+              page.board.teamInstanceID == teamInstanceID,
+              page.board.viewVersion == page.viewVersion else {
+            throw LocalProductClientError.invalidResponse
+        }
+        var attentionIDs = Set<String>()
+        for attention in page.attention {
+            guard attention.schemaVersion == 1,
+                  attention.teamInstanceID == teamInstanceID,
+                  !attention.attentionID.isEmpty,
+                  attentionIDs.insert(attention.attentionID).inserted else {
+                throw LocalProductClientError.invalidResponse
+            }
+        }
+        if let firstPage {
+            guard page.viewVersion == firstPage.viewVersion,
+                  page.board == firstPage.board,
+                  page.attention == firstPage.attention else {
+                throw LocalProductClientError.invalidResponse
+            }
+        }
+        for record in page.records {
+            guard record.schemaVersion == 1,
+                  record.teamInstanceID == teamInstanceID,
+                  !record.deliveryID.isEmpty,
+                  seenDeliveryIDs.insert(record.deliveryID).inserted else {
+                throw LocalProductClientError.invalidResponse
+            }
         }
     }
 
@@ -394,7 +790,8 @@ public final class LocalProductStore: ObservableObject {
             reconcileWorkspace()
             setupState = .ready
         } catch let remote as LocalIPCRemoteError {
-            setupState = remote.recoverable
+            setupState =
+                remote.recoverable
                 ? .unavailable(reason: remote.code.rawValue)
                 : .fatal(reason: remote.code.rawValue)
         } catch {
@@ -403,11 +800,46 @@ public final class LocalProductStore: ObservableObject {
     }
 
     public func openMission(_ id: String) {
+        invalidateTimelineLoad()
         workbench.openMission(id)
     }
 
+    public func openMissionAndActivate(_ id: String) async {
+        guard
+            let mission = snapshot?.missions.first(where: {
+                $0.missionID == id
+            })
+        else { return }
+        workbench.openMission(id)
+        await loadTimeline(
+            teamInstanceID: mission.teamInstanceID,
+            selection: .mission(id: id, teamID: mission.teamInstanceID)
+        )
+    }
+
+    public func refreshMission(_ id: String) async {
+        await refresh()
+        await openMissionAndActivate(id)
+    }
+
     public func showMissionBoard() {
+        closeTimelineLoadPresentation()
         workbench.showBoard()
+    }
+
+    public func showMissionTeams() {
+        closeTimelineLoadPresentation()
+        workbench.showTeams()
+    }
+
+    public func showMissionAttention() {
+        closeTimelineLoadPresentation()
+        workbench.showAttention()
+    }
+
+    public func showMissionLibrary() {
+        closeTimelineLoadPresentation()
+        workbench.showLibrary()
     }
 
     public func updateMissionBoardFilter(_ value: String) {
@@ -461,10 +893,11 @@ public final class LocalProductStore: ObservableObject {
         for mission: LocalProductMissionSummary
     ) {
         guard mission.lane == "Review",
-              preparedDecisionCommand(
+            preparedDecisionCommand(
                 for: mission.missionID,
                 kind: .review
-              ) == nil else {
+            ) == nil
+        else {
             activeDecisionSheet = nil
             return
         }
@@ -476,7 +909,8 @@ public final class LocalProductStore: ObservableObject {
             decisionID: "unprepared-review-\(mission.missionID)",
             decisionDigest: "",
             title: "Review Gate unavailable",
-            summary: "This Mission is waiting for review, but no authoritative acceptance command is prepared.",
+            summary:
+                "This Mission is waiting for review, but no authoritative acceptance command is prepared.",
             requester: "Loom authority",
             target: mission.title,
             commandType: "No terminal verification is available",
@@ -521,7 +955,8 @@ public final class LocalProductStore: ObservableObject {
             }
             return
         }
-        let operation = action == "not_now" || action == "edit_scope"
+        let operation =
+            action == "not_now" || action == "edit_scope"
             ? "defer"
             : "submit"
         let command = LocalProductDecisionCommand(
@@ -664,6 +1099,9 @@ public final class LocalProductStore: ObservableObject {
             self.builderSession = nil
             setupSnapshot = try await setupClient.setupSnapshot()
             reconcileWorkspace()
+            if lastConfirmation?.teamInstanceCreated == true {
+                await refresh()
+            }
             setupState = .ready
         } catch {
             handleSetupError(error)
@@ -672,8 +1110,8 @@ public final class LocalProductStore: ObservableObject {
 
     public func editBuilder(field: String, value: String) async {
         guard let setupClient, let builderSession,
-              Self.allowsBuilderEditField(field),
-              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            Self.allowsBuilderEditField(field),
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             setupState = .unavailable(reason: "invalid_request")
             return
@@ -702,15 +1140,17 @@ public final class LocalProductStore: ObservableObject {
     }
 
     public func selectWorkspaceTask(_ id: String) {
+        invalidateTimelineLoad()
         workspace.selectTask(id)
     }
 
     public func activateWorkspaceTask() async {
         let prefix = "team:"
         guard workspace.selectedTaskID.hasPrefix(prefix),
-              let team = snapshot?.teams.first(where: {
-                  "team:\($0.teamInstanceID)" == workspace.selectedTaskID
-              }) else {
+            let team = snapshot?.teams.first(where: {
+                "team:\($0.teamInstanceID)" == workspace.selectedTaskID
+            })
+        else {
             return
         }
         selectTeam(team)
@@ -786,31 +1226,77 @@ public final class LocalProductStore: ObservableObject {
 
     public func verifyMiniMax() async {
         guard let setupClient,
-              let provider = setupSnapshot?.miniMax,
-              !provider.credentialReference.isEmpty,
-              provider.revision > 0 else {
+            let provider = setupSnapshot?.miniMax,
+            !provider.credentialReference.isEmpty,
+            provider.revision > 0,
+            !isVerifyingMiniMax
+        else {
             setupState = .unavailable(reason: "credential_unavailable")
             return
         }
+        let expectedRevision = provider.revision + 1
+        isVerifyingMiniMax = true
+        miniMaxVerificationStatus = "Testing"
+        defer { isVerifyingMiniMax = false }
         setupState = .loading
         do {
-            credentialStatus = try await setupClient.verifyMiniMax(
+            let result = try await setupClient.verifyMiniMax(
                 reference: provider.credentialReference,
                 revision: provider.revision
             )
-            setupSnapshot = try await setupClient.setupSnapshot()
+            guard result.providerID == "minimax",
+                result.revision == expectedRevision,
+                let terminal = miniMaxTerminalStatus(result)
+            else {
+                throw LocalProductClientError.invalidResponse
+            }
+            let refreshed = try await setupClient.setupSnapshot()
+            guard refreshed.miniMax.providerID == "minimax",
+                refreshed.miniMax.credentialReference == provider.credentialReference,
+                refreshed.miniMax.revision == expectedRevision,
+                refreshed.miniMax.status == result.status,
+                refreshed.miniMax.reason == result.reason
+            else {
+                throw LocalProductClientError.invalidResponse
+            }
+            credentialStatus = result
+            setupSnapshot = refreshed
+            miniMaxVerificationStatus = terminal
             reconcileWorkspace()
             setupState = .ready
         } catch {
+            if let remote = error as? LocalIPCRemoteError,
+                remote.code == .conflict
+            {
+                miniMaxVerificationStatus = "Conflict"
+            } else {
+                miniMaxVerificationStatus = "Unavailable"
+            }
             handleSetupError(error)
+        }
+    }
+
+    private func miniMaxTerminalStatus(
+        _ result: LocalProductCredentialSetupResult
+    ) -> String? {
+        switch (result.status, result.reason) {
+        case ("verified", ""):
+            return "Verified"
+        case ("rejected", "provider_rejected"):
+            return "Rejected"
+        case ("rejected", "unavailable"), ("rejected", "timeout"):
+            return "Unavailable"
+        default:
+            return nil
         }
     }
 
     public func replaceMiniMax(secret: String) async {
         guard let setupClient,
-              let provider = setupSnapshot?.miniMax,
-              !provider.credentialReference.isEmpty,
-              provider.revision > 0 else {
+            let provider = setupSnapshot?.miniMax,
+            !provider.credentialReference.isEmpty,
+            provider.revision > 0
+        else {
             setupState = .unavailable(reason: "credential_unavailable")
             return
         }
@@ -831,9 +1317,10 @@ public final class LocalProductStore: ObservableObject {
 
     public func revokeMiniMax() async {
         guard let setupClient,
-              let provider = setupSnapshot?.miniMax,
-              !provider.credentialReference.isEmpty,
-              provider.revision > 0 else {
+            let provider = setupSnapshot?.miniMax,
+            !provider.credentialReference.isEmpty,
+            provider.revision > 0
+        else {
             setupState = .unavailable(reason: "credential_unavailable")
             return
         }
@@ -853,7 +1340,8 @@ public final class LocalProductStore: ObservableObject {
 
     private func handleSetupError(_ error: Error) {
         if let remote = error as? LocalIPCRemoteError {
-            setupState = remote.recoverable
+            setupState =
+                remote.recoverable
                 ? .unavailable(reason: remote.code.rawValue)
                 : .fatal(reason: remote.code.rawValue)
         } else {
@@ -920,8 +1408,8 @@ public final class LocalProductStore: ObservableObject {
     ) -> String {
         let bounded = String(candidate.prefix(96))
         let safe = bounded.unicodeScalars.filter { scalar in
-            !CharacterSet.controlCharacters.contains(scalar) &&
-                !Self.workspaceBidiOverrides.contains(scalar.value)
+            !CharacterSet.controlCharacters.contains(scalar)
+                && !Self.workspaceBidiOverrides.contains(scalar.value)
         }
         let visible = String(String.UnicodeScalarView(safe))
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -947,7 +1435,7 @@ public final class LocalProductStore: ObservableObject {
         if let wireError = error as? LocalProductWireError {
             switch wireError {
             case .unsupportedSchema: return "unsupported_schema"
-            case .invalidJSON, .unknownField: return "invalid_response"
+            case .invalidJSON, .invalidValue, .unknownField: return "invalid_response"
             }
         }
         return "unavailable"

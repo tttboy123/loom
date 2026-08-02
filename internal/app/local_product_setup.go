@@ -327,6 +327,7 @@ type CredentialSetupCommand struct {
 	ProviderID          string `json:"provider_id"`
 	CredentialReference string `json:"credential_reference"`
 	ExpectedRevision    int64  `json:"expected_revision"`
+	OperationID         string `json:"operation_id,omitempty"`
 	Secret              []byte `json:"secret"`
 }
 
@@ -994,6 +995,7 @@ func (service *LocalProductSetupService) ConfigureCredential(
 		ctx == nil ||
 		command.ProviderID != "minimax" ||
 		command.CredentialReference != "" ||
+		command.OperationID != "" ||
 		len(command.Secret) == 0 ||
 		len(command.Secret) > 8192 ||
 		service.credentialMutator == nil {
@@ -1061,9 +1063,21 @@ func (service *LocalProductSetupService) mutateCredential(
 			(len(command.Secret) == 0 || len(command.Secret) > 8192) {
 		return CredentialSetupResult{}, ErrCredentialSetupUnavailable
 	}
-	commandID, err := service.identity.NextSetupID(action + "-credential")
-	if err != nil {
-		return CredentialSetupResult{}, ErrCredentialSetupUnavailable
+	commandID := ""
+	var err error
+	if action == "verify" {
+		if !validSetupOperationID(command.OperationID) {
+			return CredentialSetupResult{}, ErrCredentialSetupUnavailable
+		}
+		commandID = "verify-credential-" + command.OperationID
+	} else {
+		if command.OperationID != "" {
+			return CredentialSetupResult{}, ErrCredentialSetupUnavailable
+		}
+		commandID, err = service.identity.NextSetupID(action + "-credential")
+		if err != nil {
+			return CredentialSetupResult{}, ErrCredentialSetupUnavailable
+		}
 	}
 	brokerCommand := credentials.CredentialCommand{
 		CommandID:           commandID,
@@ -2333,6 +2347,25 @@ func validSetupText(value string, maximum int) bool {
 	for _, character := range value {
 		if unicode.IsControl(character) {
 			return false
+		}
+	}
+	return true
+}
+
+func validSetupOperationID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' ||
+		value[18] != '-' || value[23] != '-' || value[14] != '4' ||
+		!strings.Contains("89ab", string(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				return false
+			}
 		}
 	}
 	return true

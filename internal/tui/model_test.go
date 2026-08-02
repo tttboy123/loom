@@ -22,6 +22,17 @@ type fakeReadClient struct {
 	timeline      api.LocalProductTimelinePage
 	err           error
 	timelineCalls int
+	execution     api.MissionExecutionEnvelope
+	executionErr  error
+	executions    []app.MissionExecutionCommand
+}
+
+func (client *fakeReadClient) ExecuteMission(
+	_ context.Context,
+	command app.MissionExecutionCommand,
+) (api.MissionExecutionEnvelope, error) {
+	client.executions = append(client.executions, command)
+	return client.execution, client.executionErr
 }
 
 func testMission(
@@ -55,23 +66,32 @@ func TestMissionWorkbenchStartsOnBoardAndUsesExactNavigation(t *testing.T) {
 	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
 		SchemaVersion: 2,
 		ViewVersion:   strings.Repeat("a", 64),
+		Teams: []api.LocalProductTeamSummary{{
+			TeamInstanceID: "team-1",
+			DisplayName:    "Release Team",
+		}},
 		Missions: []api.LocalProductMissionSummary{{
 			MissionID:      "mission/team-1",
 			TeamInstanceID: "team-1",
-			Title:          "Ship reviewed change",
+			Title:          "mission/team-1",
 			SourceKind:     "saved_team",
 			Lane:           api.MissionLaneOrchestrating,
 			Status:         "human_required",
 			Priority:       "normal",
 			NodeCount:      1,
 			AttentionCount: 1,
-			CurrentNodeID:  "main",
+			CurrentNodeID:  "node-internal-9",
 			LastMilestone:  "Human decision required",
 			TeamPulse: []api.LocalProductMissionPulse{{
 				Role:          "main",
 				State:         "waiting",
-				NodeID:        "main",
+				NodeID:        "node-internal-9",
 				AttemptNumber: 1,
+			}},
+			Topology: []api.LocalProductMissionNode{{
+				LogicalNodeID: "node-internal-9",
+				Title:         "Verify release",
+				Role:          "main",
 			}},
 		}},
 		PreparedDecisions: []app.MissionDecisionCommand{{
@@ -93,12 +113,14 @@ func TestMissionWorkbenchStartsOnBoardAndUsesExactNavigation(t *testing.T) {
 	model = updated.(Model)
 	if view := model.View(); !strings.Contains(view, "Proposed") ||
 		!strings.Contains(view, "Orchestrating") ||
-		!strings.Contains(view, "Mission Detail · mission/team-1") ||
+		!strings.Contains(view, "Mission Detail · Release Team") ||
 		!strings.Contains(view, "Team · Main · Waiting · Attempt 1") ||
-		!strings.Contains(view, "Current node · main") ||
+		!strings.Contains(view, "Current node · Verify release") ||
 		!strings.Contains(view, "Decision · Authorization prepared") ||
 		strings.Contains(view, "› New Mission") ||
-		strings.Contains(view, "Needs You lane") {
+		strings.Contains(view, "Needs You lane") ||
+		strings.Contains(view, "mission/team-1") ||
+		strings.Contains(view, "node-internal-9") {
 		t.Fatalf("Board lifecycle = %q", view)
 	}
 	exportTUISnapshotIfRequested(t, model.View())
@@ -121,6 +143,290 @@ func TestMissionWorkbenchStartsOnBoardAndUsesExactNavigation(t *testing.T) {
 	}
 	if model.Screen() != ScreenBoard {
 		t.Fatalf("g b screen = %q, want %q", model.Screen(), ScreenBoard)
+	}
+}
+
+func TestTeamBuilderRuntimeDisplayNameFailsClosed(t *testing.T) {
+	model, err := NewModel(&fakeSetupClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.setup = app.SetupSnapshot{Runtimes: []app.SetupRuntimePreview{{
+		RuntimeInstanceID: "runtime-internal-setup",
+		DisplayName:       "runtime-internal-setup",
+		ExecutableVersion: "0.82.1",
+		Status:            "online",
+	}}}
+	view := model.View()
+	if !strings.Contains(view, "Runtime · Runtime unavailable · Online · 0.82.1") ||
+		strings.Contains(view, "runtime-internal-setup") {
+		t.Fatalf("Team Builder exposed setup Runtime identity: %q", view)
+	}
+}
+
+func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
+	viewVersion := strings.Repeat("a", 64)
+	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 2,
+		ViewVersion:   viewVersion,
+		Teams: []api.LocalProductTeamSummary{{
+			TeamInstanceID: "team-internal-1",
+			DisplayName:    "Release Crew",
+			SourceKind:     "saved_team",
+			State:          "created",
+			Confirmed:      true,
+			Executable:     true,
+		}},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if command != nil || model.Screen() != ScreenNewMission {
+		t.Fatalf("new Mission screen=%q command=%v", model.Screen(), command)
+	}
+	view := model.View()
+	for _, want := range []string{
+		"New Mission", "Release Crew", "Coding", "Nothing runs before Start",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("new Mission missing %q: %q", want, view)
+		}
+	}
+	if strings.Contains(view, "team-internal-1") {
+		t.Fatalf("new Mission exposed internal Team ID: %q", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.entryMode != entryMissionObjective {
+		t.Fatalf("objective entry mode = %q", model.entryMode)
+	}
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("Ship the reviewed release")},
+		{Type: tea.KeyEnter},
+	} {
+		updated, _ = model.Update(key)
+		model = updated.(Model)
+	}
+	if model.missionObjective != "Ship the reviewed release" {
+		t.Fatalf("objective = %q", model.missionObjective)
+	}
+
+	updated, command = model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("p"),
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("preflight did not call mission_execution")
+	}
+	message := command()
+	if len(client.executions) != 1 {
+		t.Fatalf("execution calls = %d, want 1", len(client.executions))
+	}
+	preflightCommand := client.executions[0]
+	if preflightCommand.Operation != "preflight" ||
+		preflightCommand.MissionID != "mission/team-internal-1" ||
+		preflightCommand.TeamInstanceID != "team-internal-1" ||
+		preflightCommand.ExpectedViewVersion != viewVersion ||
+		preflightCommand.Objective != "Ship the reviewed release" ||
+		preflightCommand.PreflightDigest != "" ||
+		preflightCommand.WorkPackageID != "work-package.coding" ||
+		len(preflightCommand.WorkPackageDigest) != 64 {
+		t.Fatalf("preflight command = %#v", preflightCommand)
+	}
+	if len(preflightCommand.CorrelationID) != 36 {
+		t.Fatalf("preflight correlation = %q", preflightCommand.CorrelationID)
+	}
+	client.execution = api.MissionExecutionEnvelope{}
+	preflight := app.MissionExecutionPreflight{
+		SchemaVersion:     1,
+		MissionID:         preflightCommand.MissionID,
+		TeamInstanceID:    preflightCommand.TeamInstanceID,
+		WorkPackageID:     preflightCommand.WorkPackageID,
+		WorkPackageDigest: preflightCommand.WorkPackageDigest,
+		ViewVersion:       viewVersion,
+		PlanDigest:        strings.Repeat("b", 64),
+		PreflightDigest:   strings.Repeat("c", 64),
+		RuntimeInstanceID: "runtime-internal-1",
+		RuntimeProfileID:  "profile-internal-1",
+		ModelID:           "model-1",
+		AuthMode:          "native_auth",
+		CapacityAvailable: 1,
+		BudgetStatus:      "unavailable",
+		PermissionScopes:  []string{"repo.read"},
+		ApprovalPoints:    []string{"terminal_review"},
+		Nodes: []app.MissionExecutionNodePreview{{
+			LogicalNodeID: "main",
+			Title:         "Ship the reviewed release",
+			Role:          "main",
+			DependsOn:     []string{},
+			MaxAttempts:   2,
+		}},
+	}
+	message = missionPreflightedMsg{preflight: preflight}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	view = model.View()
+	for _, want := range []string{
+		"Preflight ready", "model-1", "Native auth", "1 available",
+		"Repo read", "Terminal review", "s Start",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("preflight missing %q: %q", want, view)
+		}
+	}
+
+	client.execution = api.MissionExecutionEnvelope{
+		SchemaVersion: 1,
+		Operation:     "start",
+		Result: &app.MissionExecutionResult{
+			SchemaVersion:   1,
+			MissionID:       preflight.MissionID,
+			TeamInstanceID:  preflight.TeamInstanceID,
+			Status:          "running",
+			ViewVersion:     strings.Repeat("d", 64),
+			ExecutionDigest: strings.Repeat("e", 64),
+		},
+	}
+	updated, command = model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("s"),
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("explicit Start did not call mission_execution")
+	}
+	message = command()
+	if len(client.executions) != 2 {
+		t.Fatalf("execution calls = %d, want 2", len(client.executions))
+	}
+	startCommand := client.executions[1]
+	if startCommand.Operation != "start" ||
+		startCommand.MissionID != preflight.MissionID ||
+		startCommand.PreflightDigest != preflight.PreflightDigest ||
+		startCommand.CorrelationID == preflightCommand.CorrelationID {
+		t.Fatalf("start command = %#v", startCommand)
+	}
+	updated, refresh := model.Update(message)
+	model = updated.(Model)
+	if refresh == nil || model.currentMission != preflight.MissionID ||
+		model.currentTeam != preflight.TeamInstanceID {
+		t.Fatalf("started model = %#v refresh=%v", model, refresh)
+	}
+}
+
+func TestMissionTimelineLabelsTentativeOutputAndMilestones(t *testing.T) {
+	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 2,
+		ViewVersion:   strings.Repeat("a", 64),
+		Missions: []api.LocalProductMissionSummary{
+			testMission("team-1", "Release", api.MissionLaneOrchestrating, "running"),
+		},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.currentMission = "mission/team-1"
+	model.currentTeam = "team-1"
+	model.screenIndex = indexOfScreen(ScreenMission)
+	model.loading = false
+	model.snapshot = client.snapshot
+	model.timeline = api.LocalProductTimelinePage{Records: []api.LocalProductTimelineRecord{
+		{Kind: "tentative_output", Payload: api.LocalProductTimelinePayload{TextDelta: "Compiling checks"}},
+		{Kind: "retry", Payload: api.LocalProductTimelinePayload{Status: "retry_scheduled"}},
+		{Kind: "terminal", Payload: api.LocalProductTimelinePayload{Status: "succeeded"}},
+	}}
+	view := model.View()
+	for _, want := range []string{
+		"Tentative output · Compiling checks", "Retry scheduled", "Succeeded",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Mission timeline missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestMissionCancelUsesOnlyCurrentAuthoritativeLineage(t *testing.T) {
+	viewVersion := strings.Repeat("a", 64)
+	mission := testMission(
+		"team-1", "Release", api.MissionLaneOrchestrating, "running",
+	)
+	mission.CurrentNodeID = "main"
+	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 2, ViewVersion: viewVersion,
+		Missions: []api.LocalProductMissionSummary{mission},
+		Runs: []api.LocalProductRunSummary{{
+			RunID: "run-1", ClaimGeneration: 3,
+		}},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.snapshot = client.snapshot
+	model.currentMission = mission.MissionID
+	model.currentTeam = mission.TeamInstanceID
+	model.screenIndex = indexOfScreen(ScreenMission)
+	model.missionResult = app.MissionExecutionResult{
+		SchemaVersion: 1, MissionID: mission.MissionID,
+		TeamInstanceID: mission.TeamInstanceID, Status: "running",
+		ViewVersion: viewVersion, ExecutionDigest: strings.Repeat("e", 64),
+	}
+	model.timeline = api.LocalProductTimelinePage{
+		SchemaVersion: 1, TeamInstanceID: mission.TeamInstanceID,
+		ViewVersion: viewVersion,
+		Board: api.LocalProductTeamBoard{
+			SchemaVersion: 1, TeamInstanceID: mission.TeamInstanceID,
+			Status: "running", ViewVersion: viewVersion,
+			Nodes: []api.NodeBoardRow{{
+				LogicalNodeID: "main", Status: "running",
+				CurrentAttempt: 2, RunID: "run-1",
+			}},
+		},
+	}
+	if view := model.View(); !strings.Contains(view, "c Cancel Mission") {
+		t.Fatalf("cancel control unavailable: %q", view)
+	}
+	client.execution = api.MissionExecutionEnvelope{
+		SchemaVersion: 1, Operation: "control",
+		Result: &app.MissionExecutionResult{
+			SchemaVersion: 1, MissionID: mission.MissionID,
+			TeamInstanceID: mission.TeamInstanceID, Status: "cancelled",
+			ViewVersion: viewVersion, ExecutionDigest: strings.Repeat("e", 64),
+		},
+	}
+	updated, command := model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("c"),
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("cancel did not call mission_execution")
+	}
+	message := command()
+	if len(client.executions) != 1 {
+		t.Fatalf("control calls = %d", len(client.executions))
+	}
+	control := client.executions[0]
+	if control.Operation != "control" || control.ControlAction != "cancel" ||
+		control.MissionID != mission.MissionID ||
+		control.TeamInstanceID != mission.TeamInstanceID ||
+		control.ExpectedViewVersion != viewVersion ||
+		control.ExecutionDigest != model.missionResult.ExecutionDigest ||
+		control.LogicalNodeID != "main" || control.AttemptNumber != 2 ||
+		control.ClaimGeneration != 3 {
+		t.Fatalf("cancel command = %#v", control)
+	}
+	updated, refresh := model.Update(message)
+	if refresh == nil || updated.(Model).missionResult.Status != "cancelled" {
+		t.Fatalf("cancel response = %#v refresh=%v", updated, refresh)
 	}
 }
 
@@ -205,7 +511,10 @@ func TestMissionApprovalKeyOpensReadOnlyDecisionWhenCommandIsNotPrepared(
 	}
 	if view := model.View(); !strings.Contains(
 		view,
-		"Team Pulse · Main · main · Attempt 1 · Waiting",
+		"Team Pulse · Main · Attempt 1 · Waiting",
+	) || strings.Contains(
+		view,
+		"approval-1",
 	) {
 		t.Fatalf("Mission semantic view = %q", view)
 	}
@@ -783,6 +1092,10 @@ func TestModelPresentsRecentWorkWithoutRawInternalIdentifiers(t *testing.T) {
 				"ready",
 			),
 		},
+		Runtimes: []api.LocalProductRuntimeSummary{
+			{RuntimeInstanceID: "runtime-1", DisplayName: "Pi source"},
+			{RuntimeInstanceID: "runtime-2", DisplayName: "Pi verifier"},
+		},
 		Runs: []api.LocalProductRunSummary{
 			{
 				RunID:             "run-1",
@@ -839,6 +1152,23 @@ func TestModelPresentsRecentWorkWithoutRawInternalIdentifiers(t *testing.T) {
 	} {
 		if strings.Contains(view, forbidden) {
 			t.Fatalf("Recent work exposed %q: %q", forbidden, view)
+		}
+	}
+
+	model.compareRuns = []string{"run-1", "run-2"}
+	model.screenIndex = indexOfScreen(ScreenCompare)
+	view = model.View()
+	for _, want := range []string{"Compare", "Pi source", "Pi verifier", "Evidence · 1"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Compare view missing %q: %q", want, view)
+		}
+	}
+	for _, forbidden := range []string{
+		"run-1", "run-2", "runtime-1", "runtime-2",
+		"evidence-1", "evidence-2", "work-1", "work-2",
+	} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("Compare exposed %q: %q", forbidden, view)
 		}
 	}
 }
@@ -980,9 +1310,11 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	}
 
 	wantScreens := []Screen{
+		ScreenNewMission,
 		ScreenMission,
 		ScreenTeamBuilder,
 		ScreenRuns,
+		ScreenCompare,
 		ScreenAttention,
 		ScreenTimeline,
 		ScreenBoard,
@@ -1173,6 +1505,80 @@ func (client *fakeSetupClient) RevokeCredential(
 		Revision:   2,
 		Status:     "revoked",
 	}, client.err
+}
+
+func TestModelConfirmedExecutableTeamRefreshesSetupAndAuthoritativeSnapshot(
+	t *testing.T,
+) {
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("a", 64),
+			Runtimes:      []app.SetupRuntimePreview{},
+			SavedTeams:    []app.SetupSavedTeamPreview{},
+			Templates:     []app.SetupTeamTemplatePreview{},
+			RoleOptions:   []app.SetupRoleOptionPreview{},
+			Skills:        []app.SetupSkillRevision{},
+			Permissions:   []string{},
+			Resources:     []app.SetupResourcePointer{},
+		},
+		fakeReadClient: fakeReadClient{snapshot: api.LocalProductSnapshot{
+			SchemaVersion: 2,
+			ViewVersion:   strings.Repeat("b", 64),
+			Teams: []api.LocalProductTeamSummary{{
+				TeamInstanceID: "team-instance-fixture",
+				DisplayName:    "Controlled Team",
+				SourceKind:     "saved_team",
+				State:          "created",
+				Confirmed:      true,
+				Executable:     true,
+			}},
+		}},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, command := model.Update(builderConfirmedMsg{
+		confirmation: app.BuilderConfirmation{
+			TeamDefinitionID:    "team-fixture",
+			Status:              "active",
+			TeamInstanceCreated: true,
+		},
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("confirmed executable Team did not refresh product state")
+	}
+	batch, ok := command().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("post-confirm command = %#v, want setup + snapshot batch", command())
+	}
+	seenSetup := false
+	seenSnapshot := false
+	for _, next := range batch {
+		switch message := next().(type) {
+		case setupLoadedMsg:
+			seenSetup = true
+			updated, _ = model.Update(message)
+			model = updated.(Model)
+		case snapshotLoadedMsg:
+			seenSnapshot = true
+			updated, _ = model.Update(message)
+			model = updated.(Model)
+		default:
+			t.Fatalf("unexpected post-confirm message = %#v", message)
+		}
+	}
+	if !seenSetup || !seenSnapshot || len(model.snapshot.Teams) != 1 ||
+		model.snapshot.Teams[0].TeamInstanceID != "team-instance-fixture" {
+		t.Fatalf(
+			"post-confirm setup=%t snapshot=%t state=%#v",
+			seenSetup,
+			seenSnapshot,
+			model.snapshot,
+		)
+	}
 }
 
 func TestModelTeamBuilderOpensSavedAndTemplateCandidatesAndArchivesByHead(

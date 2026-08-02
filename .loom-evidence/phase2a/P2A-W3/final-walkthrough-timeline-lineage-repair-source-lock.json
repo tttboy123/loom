@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "boundary": "final-walkthrough-timeline-lineage-repair",
+  "date": "2026-08-03",
+  "files": [
+    {
+      "path": "internal/api/team_execution_stream.go",
+      "sha256": "c988635ae85944f4c637c89d772f2492aa8a7258e54d75cd19631c634dbc5dcb"
+    },
+    {
+      "path": "internal/api/team_execution_stream_test.go",
+      "sha256": "219a1b8d1b622f4fd751bbf284151443f10806dcc71404420bd3067662708143"
+    }
+  ],
+  "combined_sha256": "a41f59f9ab90911c95c34cbf1d2496cc91575af94a6953398191a51ad77137dd",
+  "walkthrough_root": "root004-consumed-diagnostic-only",
+  "next_gate": "fresh-independent-implementation-review"
+}
+

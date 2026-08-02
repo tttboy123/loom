@@ -660,7 +660,10 @@ func TestPreparedReviewDelegatesExactWorkAcceptanceInput(t *testing.T) {
 		input.DeterministicResult.Input().ClaimGeneration,
 		[]string{"not_now", "request_changes", "accept_result"},
 	)
-	sheet.DecisionDigest = input.Decision.Digest()
+	sheet.DecisionDigest = reviewAcceptanceIntentDigest(
+		input,
+		input.Decision.Kind(),
+	)
 	refresh := projectionMissionDecisionRefresh(fixture.readModel)
 	backend, err := NewPreparedMissionDecisionBackend(
 		PreparedMissionDecisions{
@@ -697,6 +700,8 @@ func TestPreparedReviewDelegatesExactWorkAcceptanceInput(t *testing.T) {
 		"submit",
 		"accept_result",
 	)
+	authorityTime := input.Decision.DecisionTime().Add(time.Hour)
+	fixture.clock.Set(authorityTime)
 	result, err := service.DecideMission(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
@@ -710,7 +715,9 @@ func TestPreparedReviewDelegatesExactWorkAcceptanceInput(t *testing.T) {
 		context.Background(),
 		fixture.plan.TeamInstanceID(),
 	)
-	if err != nil || team.Status() != "succeeded" {
+	if err != nil || team.Status() != "succeeded" ||
+		!team.Nodes()[0].AcceptanceDecisionTime().Equal(authorityTime) ||
+		team.Nodes()[0].AcceptanceDecisionDigest() == input.Decision.Digest() {
 		t.Fatalf("accepted Team = %#v, %v", team, err)
 	}
 }
@@ -744,6 +751,37 @@ func TestPreparedReviewRejectsUnboundDecisionDigest(t *testing.T) {
 	}
 }
 
+func TestPreparedReviewIntentDigestExcludesProposalTime(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	input := prepareAcceptedTeamNodeInput(t, fixture)
+	later, err := verification.DecideAcceptance(
+		verification.AcceptanceDecisionInput{
+			Contract:            input.AcceptanceContract,
+			DeterministicResult: input.DeterministicResult,
+			VerifierCandidate:   input.VerifierCandidate,
+			DecisionTime: input.Decision.DecisionTime().Add(
+				time.Hour,
+			),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shifted := input
+	shifted.Decision = later
+	first := reviewAcceptanceIntentDigest(input, input.Decision.Kind())
+	second := reviewAcceptanceIntentDigest(shifted, later.Kind())
+	if first != second || input.Decision.Digest() == later.Digest() {
+		t.Fatalf(
+			"review intent/final digests = %s/%s %s/%s",
+			first,
+			second,
+			input.Decision.Digest(),
+			later.Digest(),
+		)
+	}
+}
+
 func TestPreparedRecoveryDelegatesExactWorkRecoveryInput(t *testing.T) {
 	fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
 	policy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
@@ -766,7 +804,7 @@ func TestPreparedRecoveryDelegatesExactWorkRecoveryInput(t *testing.T) {
 		1,
 		[]string{"not_now", "stop_mission", "edit_scope", "start_new_attempt"},
 	)
-	sheet.DecisionDigest = input.Decision.Digest()
+	sheet.DecisionDigest = recoveryIntentDigest(input)
 	attempt := currentTeamAttempt(t, fixture, "main")
 	refresh := projectionMissionDecisionRefresh(fixture.readModel)
 	backend, err := NewPreparedMissionDecisionBackend(
@@ -794,6 +832,8 @@ func TestPreparedRecoveryDelegatesExactWorkRecoveryInput(t *testing.T) {
 		"submit",
 		"start_new_attempt",
 	)
+	authorityTime := input.Decision.DecisionTime().Add(time.Hour)
+	fixture.clock.Set(authorityTime)
 	result, err := service.DecideMission(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
@@ -808,7 +848,10 @@ func TestPreparedRecoveryDelegatesExactWorkRecoveryInput(t *testing.T) {
 		fixture.plan.TeamInstanceID(),
 	)
 	if err != nil ||
-		team.Nodes()[0].Status() != "retry_scheduled" {
+		team.Nodes()[0].Status() != "retry_scheduled" ||
+		!team.Nodes()[0].RetryAt().Equal(
+			authorityTime.Add(input.RecoveryPolicy.RetryDelay()),
+		) {
 		t.Fatalf("recovered Team = %#v, %v", team, err)
 	}
 }
@@ -849,7 +892,7 @@ func TestPreparedRecoveryRejectsUnboundDecisionAndClaim(t *testing.T) {
 		{
 			name: "stale claim generation",
 			mutate: func(sheet *MissionDecisionSheet) {
-				sheet.DecisionDigest = input.Decision.Digest()
+				sheet.DecisionDigest = recoveryIntentDigest(input)
 				sheet.ClaimGeneration++
 			},
 		},
@@ -874,6 +917,63 @@ func TestPreparedRecoveryRejectsUnboundDecisionAndClaim(t *testing.T) {
 				t.Fatalf("unbound recovery error = %v", err)
 			}
 		})
+	}
+}
+
+func TestPreparedRecoveryIntentDigestExcludesProposalTime(t *testing.T) {
+	fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
+	policy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
+		Version:          1,
+		AttemptCredits:   1,
+		ExhaustionAction: rules.ExhaustionBlocked,
+		RetryInvalid:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.Semantics[0].RecoveryPolicy = policy
+	input := prepareFailedTeamRecoveryInput(t, fixture)
+	proposal := input.Decision
+	prior := make([]verification.OutputClassification, 0)
+	for _, value := range proposal.PriorClassificationValues() {
+		prior = append(prior, verification.OutputClassification(value))
+	}
+	later, err := input.RecoveryPolicy.Decide(
+		work.TeamRecoveryDecisionRequest{
+			TeamInstanceID:           input.TeamInstanceID,
+			PlanDigest:               input.PlanDigest,
+			LogicalNodeID:            input.LogicalNodeID,
+			AttemptNumber:            input.AttemptNumber,
+			MaxAttempts:              input.MaxAttempts,
+			AgentInstanceID:          input.AgentInstanceID,
+			RuntimeInstanceID:        input.RuntimeInstanceID,
+			EvidenceID:               input.EvidenceID,
+			EvidenceDigest:           input.EvidenceDigest,
+			OutputSummaryDigest:      input.OutputSummaryDigest,
+			Classification:           input.Classification,
+			PriorClassifications:     prior,
+			RemainingCredits:         proposal.RemainingCredits(),
+			FallbackConsumed:         proposal.FallbackConsumed(),
+			DecisionTime:             proposal.DecisionTime().Add(time.Hour),
+			Trigger:                  proposal.TriggerValue(),
+			AcceptanceDecisionDigest: proposal.AcceptanceDecisionDigest(),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shifted := input
+	shifted.Decision = later
+	first := recoveryIntentDigest(input)
+	second := recoveryIntentDigest(shifted)
+	if first != second || proposal.Digest() == later.Digest() {
+		t.Fatalf(
+			"recovery intent/final digests = %s/%s %s/%s",
+			first,
+			second,
+			proposal.Digest(),
+			later.Digest(),
+		)
 	}
 }
 
@@ -1013,6 +1113,20 @@ func prepareFailedTeamRecoveryInput(
 		t.Fatalf("DecideRecovery() node=%#v classification=%s error=%v", node, classification.Kind(), err)
 	}
 	return work.TeamRecoveryInput{
+		TeamInstanceID:      fixture.plan.TeamInstanceID(),
+		PlanDigest:          fixture.plan.Digest(),
+		LogicalNodeID:       outcome.task.logicalNodeID,
+		AttemptNumber:       outcome.task.attemptNumber,
+		MaxAttempts:         fixture.plan.Nodes()[0].MaxAttempts(),
+		AgentInstanceID:     outcome.task.generation.AgentInstanceID,
+		RuntimeInstanceID:   outcome.task.generation.RuntimeInstanceID,
+		EvidenceID:          receipt.EvidenceID(),
+		EvidenceDigest:      receipt.Digest(),
+		OutputSummaryDigest: receipt.OutputSummary().Digest(),
+		Classification:      classification,
+		RecoveryPolicy: newTeamRecoveryPolicyPort(
+			fixture.request.Semantics[0].RecoveryPolicy,
+		),
 		Decision:      decision,
 		CorrelationID: fixture.request.CorrelationID,
 	}

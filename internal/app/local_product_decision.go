@@ -437,7 +437,10 @@ func BuildControlledMissionDecisionFixture(
 		"review",
 		reviewReady,
 		viewVersion,
-		reviewInput.Decision.Digest(),
+		reviewAcceptanceIntentDigest(
+			reviewInput,
+			reviewInput.Decision.Kind(),
+		),
 		[]string{"not_now", "request_changes", "accept_result"},
 		[]string{"accept_result"},
 	)
@@ -445,7 +448,7 @@ func BuildControlledMissionDecisionFixture(
 		"recovery",
 		recoveryReady,
 		viewVersion,
-		recoveryInput.Decision.Digest(),
+		recoveryIntentDigest(recoveryInput),
 		[]string{
 			"not_now",
 			"stop_mission",
@@ -1130,6 +1133,20 @@ func controlledRecoveryInput(
 		return work.TeamRecoveryInput{}, err
 	}
 	return work.TeamRecoveryInput{
+		TeamInstanceID:      scenario.plan.TeamInstanceID(),
+		PlanDigest:          scenario.plan.Digest(),
+		LogicalNodeID:       "main",
+		AttemptNumber:       scenario.attempt.AttemptNumber(),
+		MaxAttempts:         scenario.plan.Nodes()[0].MaxAttempts(),
+		AgentInstanceID:     scenario.attempt.AgentInstanceID(),
+		RuntimeInstanceID:   scenario.attempt.RuntimeInstanceID(),
+		EvidenceID:          scenario.receipt.EvidenceID(),
+		EvidenceDigest:      scenario.receipt.Digest(),
+		OutputSummaryDigest: scenario.receipt.OutputSummary().Digest(),
+		Classification:      scenario.classification,
+		RecoveryPolicy: newTeamRecoveryPolicyPort(
+			scenario.semantics.RecoveryPolicy,
+		),
 		Decision: decision,
 		CorrelationID: appVerifierUUID(
 			"mission-recovery-correlation",
@@ -1536,6 +1553,71 @@ func missionDecisionDigestFields(fields ...string) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
+func reviewAcceptanceIntentDigest(
+	input work.TeamNodeAcceptanceInput,
+	kind verification.AcceptanceDecisionKind,
+) string {
+	result := input.DeterministicResult.Input()
+	action := "accept_result"
+	if kind == verification.AcceptanceRejected {
+		action = "request_changes"
+	}
+	return missionDecisionDigestFields(
+		"loom.review-acceptance-intent.v1",
+		input.TeamInstanceID,
+		input.PlanDigest,
+		input.LogicalNodeID,
+		fmt.Sprint(input.AttemptNumber),
+		result.WorkItemID,
+		result.RunID,
+		result.ClaimID,
+		fmt.Sprint(result.ClaimGeneration),
+		input.SourceReceipt.EvidenceID(),
+		input.SourceReceipt.Digest(),
+		input.SourceReceipt.OutputSummary().Digest(),
+		input.AcceptanceContract.Digest(),
+		input.DeterministicResult.Digest(),
+		input.VerifierCandidate.Digest(),
+		input.VerifierReceipt.EvidenceID(),
+		input.VerifierReceipt.Digest(),
+		string(kind),
+		input.RecoveryPolicy.Digest(),
+		fmt.Sprint(input.MaxAttempts),
+		fmt.Sprint(input.CreditsBefore),
+		action,
+	)
+}
+
+func recoveryIntentDigest(input work.TeamRecoveryInput) string {
+	if input.Decision == nil {
+		return ""
+	}
+	fields := []string{
+		"loom.recovery-intent.v1",
+		input.TeamInstanceID,
+		input.PlanDigest,
+		input.LogicalNodeID,
+		fmt.Sprint(input.AttemptNumber),
+		fmt.Sprint(input.MaxAttempts),
+		input.AgentInstanceID,
+		input.RuntimeInstanceID,
+		input.EvidenceID,
+		input.EvidenceDigest,
+		input.OutputSummaryDigest,
+		string(input.Classification.Kind()),
+		input.Classification.Digest(),
+		input.RecoveryPolicy.Digest(),
+		input.Decision.ActionValue(),
+		input.Decision.TriggerValue(),
+		input.Decision.AcceptanceDecisionDigest(),
+		fmt.Sprint(input.Decision.CreditsBefore()),
+		fmt.Sprint(input.Decision.CreditsAfter()),
+		fmt.Sprint(input.Decision.FallbackConsumed()),
+	}
+	fields = append(fields, input.Decision.PriorClassificationValues()...)
+	return missionDecisionDigestFields(fields...)
+}
+
 func validPreparedReviewDecision(candidate PreparedReviewDecision) bool {
 	if candidate.Sheet.Kind != "review" ||
 		!candidate.Sheet.Prepared ||
@@ -1577,7 +1659,7 @@ func validReviewAcceptanceBinding(
 	result := input.DeterministicResult.Input()
 	return input.Decision.Valid() &&
 		input.DeterministicResult.Valid() &&
-		input.Decision.Digest() == sheet.DecisionDigest &&
+		reviewAcceptanceIntentDigest(input, kind) == sheet.DecisionDigest &&
 		input.Decision.DeterministicResultDigest() ==
 			input.DeterministicResult.Digest() &&
 		input.TeamInstanceID == sheet.TeamInstanceID &&
@@ -1636,7 +1718,7 @@ func validRecoveryBinding(
 ) bool {
 	if input.Decision == nil ||
 		!input.Decision.Valid() ||
-		input.Decision.Digest() != sheet.DecisionDigest ||
+		recoveryIntentDigest(input) != sheet.DecisionDigest ||
 		input.Decision.TeamInstanceID() != sheet.TeamInstanceID ||
 		input.Decision.LogicalNodeID() != sheet.LogicalNodeID ||
 		input.Decision.AttemptNumber() != sheet.AttemptNumber ||
@@ -1657,19 +1739,16 @@ func recoveryAttemptMismatch(
 	attempt work.TeamAttemptRecord,
 	input work.TeamRecoveryInput,
 ) bool {
-	decision := input.Decision
-	return decision == nil ||
+	return input.Decision == nil ||
 		attempt.AttemptNumber() != sheet.AttemptNumber ||
 		attempt.ClaimGeneration() != sheet.ClaimGeneration ||
-		attempt.AgentInstanceID() != decision.AgentInstanceID() ||
-		attempt.RuntimeInstanceID() != decision.RuntimeInstanceID() ||
-		attempt.EvidenceID() != decision.EvidenceID() ||
-		attempt.EvidenceDigest() != decision.EvidenceDigest() ||
-		attempt.OutputSummaryDigest() != decision.OutputSummaryDigest() ||
-		string(attempt.OutputClassification()) !=
-			decision.ClassificationValue() ||
-		attempt.OutputClassificationDigest() !=
-			decision.ClassificationDigest()
+		attempt.AgentInstanceID() != input.AgentInstanceID ||
+		attempt.RuntimeInstanceID() != input.RuntimeInstanceID ||
+		attempt.EvidenceID() != input.EvidenceID ||
+		attempt.EvidenceDigest() != input.EvidenceDigest ||
+		attempt.OutputSummaryDigest() != input.OutputSummaryDigest ||
+		attempt.OutputClassification() != input.Classification.Kind() ||
+		attempt.OutputClassificationDigest() != input.Classification.Digest()
 }
 
 func executePreparedAuthorization(

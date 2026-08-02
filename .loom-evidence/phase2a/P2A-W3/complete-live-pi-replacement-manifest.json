@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "canary": "complete_live_pi_controlled_execution",
+  "attempt_id": "phase2a-w3-live-20260802-pi-002",
+  "status": "frozen_unconsumed",
+  "one_shot": true,
+  "hidden_retry": false,
+  "claim": "one exact saved-Team Pi preflight and explicit controlled DAG execution through Supervisor, Grant, authorized frames, source and Verifier Evidence, terminal and read-only reconnect",
+  "source": {
+    "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+    "parent_source_lock_sha256": "03d213d9862ce1f7be95d4547bfaae67893e58a8c98018d6a6cd651bd251c3ce",
+    "closure_source_lock_sha256": "904b1ceec6b1cd11d27498382b221c734180e0817eff8b31360d98d0b3160ccd",
+    "implementation_review_sha256": "27c57555d7821e3a79a670e993fd2ef5c2b931aae87189d228eaa1472d9a9fc7",
+    "implementation_review_verdict": "PASS"
+  },
+  "attempt": {
+    "root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-002",
+    "state_path": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-002/state/loom.db",
+    "initial_state_source": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-001/state/loom.db",
+    "initial_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+    "initial_fact_count": 6,
+    "isolation_root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-002/isolation",
+    "socket_path": "/Users/lune/Library/Application Support/Loom/run/loomd.sock",
+    "root_mode": "0700",
+    "state_mode": "0600",
+    "manifest_mode": "0600"
+  },
+  "artifacts": {
+    "loomd": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-002/bin/loomd",
+    "loomd_sha256": "2fb244ccf981e8dc8db297ce89a9338cfa020ab480632e7d5c972a41fa500e3d",
+    "loom": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-002/bin/loom",
+    "loom_sha256": "739023fcbd20068c5b77331c42e540888542a6d0406af60116ae9acac21bf80f",
+    "native_app": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260802-pi-002/native/Loom.app",
+    "native_executable_sha256": "f998eabe5320eb24b3f9668222aa08a28c803cf18ef861536d0fca529e2f01b8",
+    "bundle_id": "com.earendilworks.loom.local",
+    "architecture": "arm64",
+    "lc_uuid": "C63B9C7D-B0C7-3AB3-A2F4-7C86B8B89DE2"
+  },
+  "external": {
+    "pi_search_path": "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/.bin",
+    "pi_target": "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+    "pi_target_sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca",
+    "node_search_path": "/Users/lune/Documents/Codex/devtools/node/bin",
+    "node_sha256": "1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8",
+    "local_model_private_root": "/Users/lune/Library/Application Support/Loom/phase1-live",
+    "local_model_executable": "/Users/lune/Library/Application Support/Loom/phase1-live/runtime/llama-b10107/llama-server",
+    "local_model_executable_sha256": "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b",
+    "local_model_path": "/Users/lune/Library/Application Support/Loom/phase1-live/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "local_model_sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
+  },
+  "limits": {
+    "daemon_starts": 1,
+    "mission_preflights": 1,
+    "mission_starts": 1,
+    "provider_requests": 0,
+    "process_timeout_seconds": 30,
+    "deadline_seconds": 600,
+    "max_cycles": 0,
+    "retry": false,
+    "compaction": false
+  },
+  "required_terminal": {
+    "team_execution_planned": 1,
+    "ready_set_dispatched": 1,
+    "runs": 2,
+    "grants": 2,
+    "evidence": 2,
+    "team_terminal": 1,
+    "reconnect_writes": 0
+  },
+  "live_consumed": false
+}

@@ -13,6 +13,9 @@ public enum MissionLane:
 public enum MissionWorkbenchRoute: Equatable, Sendable {
     case board
     case mission(String)
+    case teams
+    case attention
+    case library
 }
 
 public enum MissionInspectorTab:
@@ -130,6 +133,18 @@ public struct MissionWorkspaceState: Equatable, Sendable {
 
     public mutating func showBoard() {
         route = .board
+    }
+
+    public mutating func showTeams() {
+        route = .teams
+    }
+
+    public mutating func showAttention() {
+        route = .attention
+    }
+
+    public mutating func showLibrary() {
+        route = .library
     }
 
     public mutating func selectBoardLane(_ lane: MissionLane?) {

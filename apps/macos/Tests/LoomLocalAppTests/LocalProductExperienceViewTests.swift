@@ -107,6 +107,275 @@ final class LocalProductExperienceViewTests: XCTestCase {
         )
     }
 
+    func testMissionRailRendersTeamsAttentionAndHistoryComparePages()
+        async throws
+    {
+        let snapshot = try ExperienceFixtures.populatedSnapshot()
+        XCTAssertEqual(
+            missionDisplayTitle(
+                candidate: "team-first",
+                missionID: "mission/team-first",
+                teamInstanceID: "team-first",
+                teams: snapshot.teams
+            ),
+            "Release Team"
+        )
+        for run in snapshot.runs {
+            XCTAssertNotEqual(
+                missionRuntimeDisplayName(run: run, snapshot: snapshot),
+                run.runtimeInstanceID
+            )
+        }
+        let store = LocalProductStore(
+            client: ExperienceViewStubClient(results: [.success(snapshot)])
+        )
+        await store.refresh()
+
+        store.showMissionTeams()
+        let teams = try XCTUnwrap(render(
+            ContentView(store: store, refreshOnAppear: false),
+            colorScheme: .light,
+            dynamicTypeSize: .large
+        ))
+        store.showMissionAttention()
+        let attention = try XCTUnwrap(render(
+            ContentView(store: store, refreshOnAppear: false),
+            colorScheme: .light,
+            dynamicTypeSize: .large
+        ))
+        store.showMissionLibrary()
+        let library = try XCTUnwrap(render(
+            ContentView(store: store, refreshOnAppear: false),
+            colorScheme: .light,
+            dynamicTypeSize: .large
+        ))
+
+        XCTAssertEqual(teams.pixelWidth, 1_100)
+        XCTAssertEqual(attention.pixelWidth, 1_100)
+        XCTAssertEqual(library.pixelWidth, 1_100)
+        XCTAssertEqual(Set([teams.digest, attention.digest, library.digest]).count, 3)
+        XCTAssertGreaterThan(teams.png.count, 20_000)
+        XCTAssertGreaterThan(attention.png.count, 20_000)
+        XCTAssertGreaterThan(library.png.count, 20_000)
+    }
+
+    func testMissionInspectorTabsExposeDistinctSafeReadOnlyContent() throws {
+        let snapshot = try LocalProductWire.decodeSnapshot(
+            Data(MissionOrchestrationTests.snapshotJSON.utf8)
+        )
+        let mission = try XCTUnwrap(snapshot.missions.first)
+        let timeline = try LocalProductWire.decodeTimeline(Data("""
+        {
+          "schema_version":1,
+          "team_instance_id":"team-1",
+          "view_version":"view-1",
+          "next_cursor":"",
+          "has_more":false,
+          "gap":null,
+          "records":[
+            {
+              "schema_version":1,
+              "delivery_id":"delivery-evidence",
+              "kind":"evidence_available",
+              "authority":"journal",
+              "team_instance_id":"team-1",
+              "logical_node_id":"main",
+              "attempt_number":1,
+              "source_stream_id":"evidence/internal-evidence-id",
+              "source_sequence":1,
+              "source_event_id":"internal-event-id",
+              "occurred_at":"2026-08-03T00:00:00Z",
+              "cursor":"cursor-1",
+              "payload":{
+                "status":"",
+                "reason_code":"",
+                "action":"",
+                "warning_code":"",
+                "retry_at":"",
+                "text_delta":"",
+                "evidence_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "cost":{"observed":false,"amount_microunits":null,"currency":""}
+              }
+            },
+            {
+              "schema_version":1,
+              "delivery_id":"delivery-verification",
+              "kind":"verification_recorded",
+              "authority":"journal",
+              "team_instance_id":"team-1",
+              "logical_node_id":"main",
+              "attempt_number":1,
+              "source_stream_id":"work-item/internal-work-id",
+              "source_sequence":1,
+              "source_event_id":"internal-verification-event",
+              "occurred_at":"2026-08-03T00:00:01Z",
+              "cursor":"cursor-2",
+              "payload":{
+                "status":"accepted",
+                "reason_code":"",
+                "action":"",
+                "warning_code":"",
+                "retry_at":"",
+                "text_delta":"",
+                "evidence_digest":"",
+                "cost":{"observed":false,"amount_microunits":null,"currency":""}
+              }
+            }
+          ],
+          "board":{
+            "schema_version":1,
+            "team_instance_id":"team-1",
+            "plan_digest":"",
+            "status":"succeeded",
+            "view_version":"view-1",
+            "nodes":[],
+            "cost":{"observed":false,"amount_microunits":null,"currency":""}
+          },
+          "attention":[]
+        }
+        """.utf8))
+
+        let sections = MissionInspectorTab.allCases.map {
+            missionInspectorSection(
+                tab: $0,
+                record: mission,
+                timeline: timeline
+            )
+        }
+        XCTAssertEqual(
+            sections.map(\.heading),
+            ["Team Pulse", "Plan", "Changes", "Evidence"]
+        )
+        XCTAssertEqual(Set(sections.map(\.rows)).count, 4)
+        XCTAssertTrue(sections[0].rows.joined().contains("Attempt 1"))
+        XCTAssertTrue(sections[1].rows.joined().contains("Main"))
+        XCTAssertEqual(
+            sections[2].rows,
+            ["Verification recorded · Main · Attempt 1"]
+        )
+        XCTAssertEqual(
+            sections[3].rows,
+            ["Evidence 1 · Main · Attempt 1"]
+        )
+        for section in sections {
+            let visible = section.rows.joined(separator: " ")
+            XCTAssertFalse(visible.contains("internal-"))
+            XCTAssertFalse(visible.contains(String(repeating: "a", count: 64)))
+        }
+
+        let unavailable = missionInspectorSection(
+            tab: .evidence,
+            record: mission,
+            timeline: nil
+        )
+        XCTAssertEqual(unavailable.rows, [])
+        XCTAssertEqual(
+            unavailable.emptyMessage,
+            "Evidence is unavailable until complete authoritative activity loads."
+        )
+
+        let encodedTimeline = try XCTUnwrap(
+            String(
+                data: JSONEncoder().encode(timeline),
+                encoding: .utf8
+            )
+        )
+        let incompleteTimeline = try LocalProductWire.decodeTimeline(
+            Data(encodedTimeline.replacingOccurrences(
+                of: "\"has_more\":false",
+                with: "\"has_more\":true"
+            ).utf8)
+        )
+        let gapTimeline = try LocalProductWire.decodeTimeline(
+            Data(encodedTimeline.replacingOccurrences(
+                of: "\"gap\":null",
+                with: """
+                \"gap\":{
+                  \"schema_version\":1,
+                  \"delivery_id\":\"stream-gap\",
+                  \"kind\":\"stream_gap\",
+                  \"team_instance_id\":\"team-1\",
+                  \"reason\":\"cursor_stale\",
+                  \"previous_cursor_digest\":\"\",
+                  \"current_view_version\":\"view-1\",
+                  \"artifact_available\":false,
+                  \"artifact_digest\":\"\",
+                  \"recoverable\":true,
+                  \"occurred_at\":\"2026-08-03T00:00:02Z\"
+                }
+                """
+            ).utf8)
+        )
+        for partialTimeline in [incompleteTimeline, gapTimeline] {
+            for tab in [MissionInspectorTab.changes, .evidence] {
+                let partial = missionInspectorSection(
+                    tab: tab,
+                    record: mission,
+                    timeline: partialTimeline
+                )
+                XCTAssertEqual(partial.rows, [])
+                XCTAssertTrue(
+                    partial.emptyMessage.contains("unavailable"),
+                    "\(tab) must not present incomplete history as empty"
+                )
+            }
+        }
+    }
+
+    func testMissionWorkspaceSnapshotPresentationFailsClosed() {
+        XCTAssertEqual(
+            missionSnapshotPresentation(
+                connection: .online,
+                hasSnapshot: true
+            ),
+            .current
+        )
+        XCTAssertEqual(
+            missionSnapshotPresentation(
+                connection: .partial(reason: "partial_view"),
+                hasSnapshot: true
+            ),
+            .partial("partial_view")
+        )
+        XCTAssertEqual(
+            missionSnapshotPresentation(
+                connection: .stale(reason: "stale_view"),
+                hasSnapshot: true
+            ),
+            .preserved("stale_view")
+        )
+        XCTAssertEqual(
+            missionSnapshotPresentation(
+                connection: .offline(reason: "state_unavailable"),
+                hasSnapshot: true
+            ),
+            .preserved("state_unavailable")
+        )
+        XCTAssertEqual(
+            missionSnapshotPresentation(
+                connection: .online,
+                hasSnapshot: false
+            ),
+            .unavailable("state_unavailable")
+        )
+
+        let current = missionAttentionEmptyCopy(presentation: .current)
+        XCTAssertEqual(current.title, "Nothing needs you")
+        let partial = missionAttentionEmptyCopy(
+            presentation: .partial("partial_view")
+        )
+        XCTAssertEqual(partial.title, "No recorded attention in this view")
+        XCTAssertTrue(partial.detail.contains("Some items may be missing"))
+        let preserved = missionAttentionEmptyCopy(
+            presentation: .preserved("state_unavailable")
+        )
+        XCTAssertEqual(
+            preserved.title,
+            "No recorded attention in this view"
+        )
+        XCTAssertTrue(preserved.detail.contains("New items may be missing"))
+    }
+
     func testMinimumLayoutHasNoRequiredMotion() async throws {
         let snapshot = try ExperienceFixtures.populatedSnapshot()
         let store = LocalProductStore(

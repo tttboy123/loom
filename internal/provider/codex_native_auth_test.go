@@ -518,3 +518,97 @@ func TestSystemCodexStatusRunnerRevalidatesExecutableIdentityAfterRun(
 		t.Fatalf("identity change error = %v", err)
 	}
 }
+
+func TestResolveCodexNativeExecutableFromOfficialNPMLauncher(t *testing.T) {
+	root := t.TempDir()
+	packageRoot := filepath.Join(root, "lib", "node_modules", "@openai", "codex")
+	wrapper := filepath.Join(packageRoot, "bin", "codex.js")
+	native := filepath.Join(
+		packageRoot, "node_modules", "@openai", "codex-darwin-arm64",
+		"vendor", "aarch64-apple-darwin", "bin", "codex",
+	)
+	for _, path := range []string{filepath.Dir(wrapper), filepath.Dir(native)} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(wrapper, []byte("#!/usr/bin/env node\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(native, []byte("native"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(root, "bin", "codex")
+	if err := os.MkdirAll(filepath.Dir(launcher), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(wrapper, launcher); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveCodexNativeExecutable(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != want {
+		t.Fatalf("resolved = %q, want %q", resolved, want)
+	}
+}
+
+func TestResolveCodexNativeExecutableRejectsArbitrarySymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(root, "codex")
+	if err := os.Symlink(target, launcher); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveCodexNativeExecutable(launcher); !errors.Is(err, ErrInvalidCodexNativeAuthConfig) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveCodexNativeExecutableAcceptsDirectRegularBinary(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(executable, []byte("native"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveCodexNativeExecutable(executable)
+	if err != nil || resolved != executable {
+		t.Fatalf("resolved=%q error=%v", resolved, err)
+	}
+}
+
+func TestResolveCodexNativeExecutableRejectsSymlinkedNativeTarget(t *testing.T) {
+	root := t.TempDir()
+	packageRoot := filepath.Join(root, "node_modules", "@openai", "codex")
+	wrapper := filepath.Join(packageRoot, "bin", "codex.js")
+	native := filepath.Join(packageRoot, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex")
+	for _, directory := range []string{filepath.Dir(wrapper), filepath.Dir(native)} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(wrapper, []byte("#!/usr/bin/env node\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realNative := filepath.Join(root, "real-codex")
+	if err := os.WriteFile(realNative, []byte("native"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realNative, native); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(root, "codex")
+	if err := os.Symlink(wrapper, launcher); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveCodexNativeExecutable(launcher); !errors.Is(err, ErrInvalidCodexNativeAuthConfig) {
+		t.Fatalf("error=%v", err)
+	}
+}

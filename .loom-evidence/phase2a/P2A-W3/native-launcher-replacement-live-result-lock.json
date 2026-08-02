@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "closure": "native_launcher_and_build_transaction_with_invocation_replacement",
+  "result": "minimax_pass_pi_terminal_aggregation_fail_human_required",
+  "review_status": "pending_independent_result_review",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "implementation": {
+    "source_lock_sha256": "f6bb68656cd70b2c9d75861bc5a77325ea488bd78dcfa49fc0c1cc41dd64d772",
+    "implementation_review_sha256": "fa524c201f97a1629dc03f25c047f718e4ed3f724b0c82b64dcc20cbc09d99eb",
+    "implementation_review_verdict": "PASS"
+  },
+  "invocation_amendment": {
+    "path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-invocation-transaction-amendment.md",
+    "sha256": "f1ab059b5cafd89a56267c9211794a84633827e1f2857069a9720504ddeb6a42",
+    "review_path": ".loom-evidence/phase2a/P2A-W3/native-launcher-live-invocation-transaction-amendment-review.md",
+    "review_sha256": "a12484ed252f086bba353a215bf8877db092a112df5d6f89335cd227f2bd268f",
+    "review_verdict": "PASS"
+  },
+  "minimax": {
+    "attempt_id": "phase2a-w3-live-20260802-minimax-004",
+    "manifest_sha256": "889350d951fd9f7b3285a5500df9ddb5d78a7b1cf5701934b5d0d17b778c75d4",
+    "result_path": ".loom-evidence/phase2a/P2A-W3/native-launcher-minimax-live-result.md",
+    "result_sha256": "e129ec8acc2b19b77af615a32c95634287cdaca632d4251eb5c5e9671c06dc33",
+    "final_state_sha256": "8c1f1031d4aaefb23c3bed890ae2ae92ce5ee2115f0c9a024587538d7434fe59",
+    "provider_credential_verified_delta": 1,
+    "terminal_revision": 5,
+    "terminal_status": "rejected",
+    "terminal_reason": "unavailable",
+    "verdict": "PASS",
+    "lineage_consumed": true
+  },
+  "pi": {
+    "attempt_id": "phase2a-w3-live-20260802-pi-005",
+    "manifest_path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-replacement-live-manifest.json",
+    "manifest_sha256": "6eb40813739faff661b3e93dfd7b5dea395bc11d903a0a118186494b479a4d92",
+    "preflight_path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-replacement-live-preflight.md",
+    "preflight_sha256": "a1522d02aebfd1f8ea0d66cfe5c576299a439efa1543b2a273c566b241f85195",
+    "result_path": ".loom-evidence/phase2a/P2A-W3/native-launcher-pi-replacement-live-result.md",
+    "result_sha256": "8b8f53c1937664a9ad6c1e66f714bf8cb150a5cb1360c77a84d3ab845aaa952a",
+    "canonical_invocation_sha256": "d91c670f9e0be2695e26c6175a34acb44d2c60e92d92d62bc55fde386a115a65",
+    "initial_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+    "final_state_sha256": "ddf6ddf10280d2d37b9aff26c1b58bb462ab7033466883f2b87e9330d07dca75",
+    "daemon_stdout_sha256": "16e83254742da5fe0bc665dfb61f6eb462f793621de2bb6128293535c0e5fb4d",
+    "daemon_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "daemon_exit_code": 0,
+    "binary_invocations": 1,
+    "mission_preflights": 1,
+    "mission_starts": 1,
+    "provider_requests": 0,
+    "total_events": 44,
+    "team_execution_planned": 1,
+    "ready_set_dispatched": 1,
+    "runs": 2,
+    "grants": 2,
+    "evidence": 2,
+    "team_node_attempt_terminal": 1,
+    "team_node_acceptance_committed": 0,
+    "team_execution_terminal": 0,
+    "classification": "product_defect_terminal_aggregation_absent_after_verifier_evidence",
+    "verdict": "FAIL",
+    "lineage_consumed": true,
+    "retry_permitted": false
+  },
+  "gates": {
+    "both_live_results_pass": false,
+    "final_walkthrough_eligible": false,
+    "commit_eligible": false,
+    "p2a_w4_exists": false,
+    "additional_live_authorized": false
+  }
+}

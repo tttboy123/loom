@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3",
+  "walkthrough": "final_native_timeline_pagination_replacement",
+  "attempt_id": "phase2a-w3-walkthrough-20260803-006",
+  "status": "frozen_unconsumed",
+  "one_shot": true,
+  "source": {
+    "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+    "repair_source_lock_sha256": "6d258b302c800b7d484ec1e20771e77a3543ff18d55ab84d43102b06047b83cb",
+    "source_combined_sha256": "db6cc1a2a2e89496960de661edcd01f5faa8477e553d646ba24d9eca0c47eb47",
+    "implementation_rereview_sha256": "92d89911143a8c5f63ed6d4ca72cec9c14ae4fe386472340fd766cda060a2f0f",
+    "implementation_rereview_verdict": "PASS"
+  },
+  "attempt": {
+    "root": "/Users/lune/Library/Application Support/Loom/phase2a-w3-walkthrough-20260803-006",
+    "state_path": "/Users/lune/Library/Application Support/Loom/phase2a-w3-walkthrough-20260803-006/state/loom.db",
+    "state_source": "/Users/lune/Library/Application Support/Loom/phase2a-w3-live-20260803-pi-006/state/loom.db",
+    "state_sha256": "3af352562fbc85cb47c9509096655f2cda4a05ddbb999702bc764ab90f77ed56",
+    "event_count": 103,
+    "root_mode": "0700",
+    "state_mode": "0600",
+    "socket_path": "/Users/lune/Library/Application Support/Loom/run/loomd.sock"
+  },
+  "artifacts": {
+    "loom": "/Users/lune/Library/Application Support/Loom/phase2a-w3-walkthrough-20260803-006/bin/loom",
+    "loomd": "/Users/lune/Library/Application Support/Loom/phase2a-w3-walkthrough-20260803-006/bin/loomd",
+    "native_app": "/Users/lune/Library/Application Support/Loom/phase2a-w3-walkthrough-20260803-006/native/Loom.app",
+    "tui_transcript": "/Users/lune/Library/Application Support/Loom/phase2a-w3-walkthrough-20260803-006/evidence/tui-transcript.txt"
+  },
+  "allowed_actions": {
+    "daemon_starts": 1,
+    "observation_cycles": 1,
+    "native_launches": 1,
+    "tui_launches": 1,
+    "read_only_navigation": true
+  },
+  "forbidden_actions": {
+    "objective_entries": 0,
+    "mission_preflights": 0,
+    "mission_starts": 0,
+    "provider_tests": 0,
+    "approvals": 0,
+    "recoveries": 0,
+    "cancels": 0,
+    "terminal_mutations": 0,
+    "credential_access": 0,
+    "provider_requests": 0,
+    "retries": 0
+  },
+  "required_proof": {
+    "native_complete_changes": true,
+    "native_source_and_verifier_evidence": true,
+    "native_terminal": "succeeded",
+    "tui_durable_transcript": true,
+    "state_byte_identical": true,
+    "socket_cleanup": true,
+    "attempt_process_cleanup": true,
+    "open_state_handle_cleanup": true,
+    "isolation_empty": true,
+    "resident_exclusion": "demo-resident"
+  },
+  "consumed": false
+}

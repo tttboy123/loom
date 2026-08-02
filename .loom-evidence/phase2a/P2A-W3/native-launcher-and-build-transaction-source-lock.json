@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "work_item": "P2A-W3 Controlled Execution Experience",
+  "reopen": "Native Launcher and Build Transaction Closure",
+  "status": "REVIEW_1_REPAIR_PASS_IMPLEMENTATION_REREVIEW_PENDING",
+  "baseline_commit": "848f068cbc0307f14473f6a71961db949a8734ca",
+  "branch": "codex/loom-platform-slice2",
+  "superseded_source_lock_sha256": "c28eacb6a97ba11fce493c808c5e141df96174a467ccd2cef532e6f20571e6e7",
+  "prior_closure_source_lock_sha256": "9ddf62b829760fa4c0b10f2488f40b008dc423ecee1cbea906e77292419430a8",
+  "prior_result_review_sha256": "4b7fd47018fa65a1db0b6ad8c4c0d147158913356ef4c73472a4623a882809aa",
+  "contract_sha256": "4493858a9be2411ba6cac1594df7bfdc0e4e7be062f5ec528b7c3746c7d30b18",
+  "contract_review_sha256": "0d1e62500f97fbaa99e869ec37affeaeef9b75621db297cd4c843937d82286d5",
+  "causal_red_sha256": "9cc338f1a88da81299a41b99f8209f9404a9d6968117744ab3bebbf7c49bc2db",
+  "methodology_amendment_sha256": "78a57fdad99e97daa629db16910986be6570cc402f7ced894111123ae0be22bc",
+  "methodology_amendment_review_sha256": "f866bb2fa4691f3e74efe6d4067a9ade4b4878bbfb978c995b0066dad40a7eee",
+  "repair_red_sha256": "9ad52188f18449cc568588b9cadda2bc08785e34054bd0c37435e1d71b4db679",
+  "implementation_review_1_sha256": "5b38553e911cb2d124e64ff5a7fbe00308fba1a94a17de3f2fc89bfb33e4c7b4",
+  "review_1_repair_sha256": "f822dcda8d89eb6d82874c8e1ab8b8f583bd57ab6d53099b80710e5ca46a7b39",
+  "verification_sha256": "ef017fd8d7373c82c4f6bc44fd67c5432a6c88924438afe0d886ade69ef6df65",
+  "retained_pi_fixture_sha256": "a091fafa218efef0f701894a49343df2775f744aaf5b058e2a8cc6505202a2c0",
+  "retained_pi_state_sha256": "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2",
+  "live_canary_authorized": false,
+  "p2a_w4_exists": false,
+  "files": {
+    "internal/provider/codex_native_auth.go": "ed06a2dc86a809442afcd7c16284388df27fec3b40abb58719e440bfa63e3c83",
+    "internal/provider/codex_native_auth_test.go": "8c868d1370981acf37735ec3e6de424adf7b2c23762a7b8878a366ceacd9d839",
+    "cmd/loomd/product_daemon.go": "88894f5622b1099d6d33489ed35945b40dc70a2f2450abd67f2b736b6fc65312",
+    "cmd/loomd/product_daemon_test.go": "f4c0b325e349dca5c8ff2ed3ab60bc93369d1a87fc8ffde025549625b1f88bd9",
+    "cmd/loomd/run.go": "715232fbbe0e606475181fe9d0c46bb19be56682e05e66b656c384fe662f8e19",
+    "cmd/loomd/run_test.go": "e7733b53cf1a4e0816d72219b52ce3248af99912e1aa942393e0f00b7db6c44c"
+  },
+  "locked_files": {
+    "internal/credentials/credential_broker.go": "742be016dfebf50206af0d96b700308c0459dcc838e8ecf0512f0826e653c4b1",
+    "internal/credentials/credential_broker_test.go": "fdaf8ea629aa344f04e3dda026bc9c5b180e31d7f056aff25c6005315ceb4b61",
+    "internal/localipc/swift_contract_test.go": "3e2a3e80f38f6a4efe1e76c9eb30be1d2e0a78e4d74dfb01a6c069f7af242c13",
+    "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift": "8d054bb636b424a7ba9d66dc3db4c249e7f0288c5ab616511e3b2c098700b02a",
+    "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift": "d884b86087012ce7241e532ffda9edf33dff62a3b046e62c7211190b7158f92d",
+    ".loom-evidence/phase2a/P2A-W3/retained-pi-six-fact-state.sqlite.gz.b64": "a091fafa218efef0f701894a49343df2775f744aaf5b058e2a8cc6505202a2c0"
+  },
+  "locked_authority_hashes": {
+    "internal/localipc/protocol.go": "496fa5d51f790c3b4289c84cfd31ec9c89c9aa064f72a660085f6992f67160dc",
+    "internal/state/local_product_setup_writer.go": "5a453e1b219d409054a3153423f9a4084c85f02eb413be34b0648d331739bf37",
+    "internal/projection/local_product_setup.go": "7ea7dfd1b270b0166e64e3a8753818464411692ba671d5afae00962311c37673",
+    "internal/supervisor/managed_execution.go": "968005d032ff6c0d8fedbaf28e7c3789ab084ea5fbcd660a060a0043a337d637",
+    "protocol/bridge/v1/frame.go": "1c40aa90d1be2012ff6f0ea637f152722c2153dc2ace8b877dc8bacff9938365"
+  },
+  "external_components": {
+    "model_relative_path": "models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "model_size": 1117320768,
+    "model_sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
+    "server_relative_path": "runtime/llama-b10107/llama-server",
+    "server_sha256": "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b"
+  }
+}
