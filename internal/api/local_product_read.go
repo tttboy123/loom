@@ -17,7 +17,7 @@ import (
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
 
-const localProductSchemaVersion = 2
+const localProductSchemaVersion = 3
 
 const (
 	maxMissionExecutionObservers = 64
@@ -37,6 +37,7 @@ type LocalProductReadConfig struct {
 	Now           func() time.Time
 	Decisions     MissionDecisionCommandSource
 	RuntimeHealth RuntimeObservationHealthSource
+	SideTasks     SideTaskSnapshotSource
 }
 
 type LocalProductReadService struct {
@@ -45,10 +46,12 @@ type LocalProductReadService struct {
 	now           func() time.Time
 	decisions     MissionDecisionCommandSource
 	runtimeHealth RuntimeObservationHealthSource
+	sideTasks     SideTaskSnapshotSource
 
 	mu                    sync.Mutex
 	lastView              *projection.GlobalReadView
 	lastPreparedDecisions []app.MissionDecisionCommand
+	lastSideTasks         []LocalProductSideTaskSummary
 
 	executionMu        sync.Mutex
 	executionObservers map[string]*localProductMissionObserver
@@ -77,6 +80,10 @@ type RuntimeObservationHealthSource interface {
 	RuntimeObservationHealth() (reason string, partial bool)
 }
 
+type SideTaskSnapshotSource interface {
+	ListSideTasks(context.Context, projection.GlobalReadView, int) ([]app.SideTaskReadResult, bool, error)
+}
+
 func NewLocalProductReadService(
 	config LocalProductReadConfig,
 ) (*LocalProductReadService, error) {
@@ -89,10 +96,24 @@ func NewLocalProductReadService(
 		now:                config.Now,
 		decisions:          config.Decisions,
 		runtimeHealth:      config.RuntimeHealth,
+		sideTasks:          config.SideTasks,
 		executionObservers: make(map[string]*localProductMissionObserver),
 		tentativeRecords:   make(map[string][]LocalProductTimelineRecord),
 		tentativeGaps:      make(map[string]*LocalProductStreamGap),
 	}, nil
+}
+
+func (service *LocalProductReadService) SetSideTaskSnapshotSource(source SideTaskSnapshotSource) error {
+	if service == nil || source == nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.sideTasks != nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.sideTasks = source
+	return nil
 }
 
 type LocalProductSnapshotRequest struct {
@@ -141,6 +162,41 @@ type LocalProductEvidenceSummary struct {
 	Digest     string `json:"digest"`
 }
 
+type LocalProductSideTaskSummary struct {
+	SideTaskID                  string                          `json:"side_task_id"`
+	ParentMissionID             string                          `json:"parent_mission_id"`
+	ParentTeamInstanceID        string                          `json:"parent_team_instance_id"`
+	ParentTaskID                string                          `json:"parent_task_id"`
+	ParentRunID                 string                          `json:"parent_run_id"`
+	ParentClaimGeneration       int64                           `json:"parent_claim_generation"`
+	ParentExecutionDigest       string                          `json:"parent_execution_digest"`
+	SideExecutionTeamInstanceID string                          `json:"side_execution_team_instance_id"`
+	Purpose                     string                          `json:"purpose"`
+	Mode                        string                          `json:"mode"`
+	Title                       string                          `json:"title"`
+	Status                      string                          `json:"status"`
+	SourceGeneration            int64                           `json:"source_generation"`
+	HandoffVersion              int                             `json:"handoff_version"`
+	HandoffDigest               string                          `json:"handoff_digest"`
+	SummaryArtifactDigest       string                          `json:"summary_artifact_digest"`
+	WhatHappened                string                          `json:"what_happened"`
+	AuthorizedFindings          []string                        `json:"authorized_findings"`
+	EvidenceReferences          []app.SideTaskEvidenceReference `json:"evidence_references"`
+	ArtifactReferences          []app.SideTaskArtifactReference `json:"artifact_references"`
+	Risk                        string                          `json:"risk"`
+	Uncertainties               []string                        `json:"uncertainties"`
+	ScopeDelta                  []string                        `json:"scope_delta"`
+	DecisionOptions             []string                        `json:"decision_options"`
+	RecommendedOption           string                          `json:"recommended_option"`
+	RecommendationAuthority     string                          `json:"recommendation_authority"`
+	UsageObserved               bool                            `json:"usage_observed"`
+	UsageMicrounits             int64                           `json:"usage_microunits"`
+	UsageCurrency               string                          `json:"usage_currency"`
+	DecisionDeadline            string                          `json:"decision_deadline"`
+	AvailableDecisions          []string                        `json:"available_decisions"`
+	EffectStatus                string                          `json:"effect_status"`
+}
+
 type LocalProductPageCursor struct {
 	NextCursor string `json:"next_cursor"`
 	HasMore    bool   `json:"has_more"`
@@ -167,6 +223,7 @@ type LocalProductSnapshot struct {
 	Evidence          []LocalProductEvidenceSummary `json:"evidence"`
 	Attention         []AttentionItem               `json:"attention"`
 	PreparedDecisions []app.MissionDecisionCommand  `json:"prepared_decisions"`
+	SideTasks         []LocalProductSideTaskSummary `json:"side_tasks"`
 
 	RuntimePage  LocalProductPageCursor `json:"runtime_page"`
 	TeamPage     LocalProductPageCursor `json:"team_page"`
@@ -213,6 +270,7 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 		stale.PreparedDecisions = cloneLocalProductSlice(
 			service.lastPreparedDecisions,
 		)
+		stale.SideTasks = cloneLocalProductSlice(service.lastSideTasks)
 		stale.Stale = true
 		stale.Reason = "projection_refresh_failed"
 		stale.Health.Projection = "stale"
@@ -220,6 +278,17 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 	}
 	view := service.projection.GlobalReadView()
 	snapshot := buildLocalProductSnapshot(view, request)
+	sideTasks, sideTaskMore, err := service.readSideTasks(ctx, view)
+	if err != nil {
+		return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
+	}
+	snapshot.SideTasks = sideTasks
+	if sideTaskMore {
+		snapshot.Partial = true
+		if snapshot.Reason == "" {
+			snapshot.Reason = "side_tasks_limit_reached"
+		}
+	}
 	prepared, err := service.preparedMissionDecisionCommands(
 		ctx,
 		app.MissionDecisionCommandQuery{
@@ -237,7 +306,27 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 	}
 	service.lastView = &view
 	service.lastPreparedDecisions = cloneLocalProductSlice(prepared)
+	service.lastSideTasks = cloneLocalProductSlice(sideTasks)
 	return cloneLocalProductSnapshot(snapshot), nil
+}
+
+func (service *LocalProductReadService) readSideTasks(ctx context.Context, view projection.GlobalReadView) ([]LocalProductSideTaskSummary, bool, error) {
+	if service.sideTasks == nil {
+		return []LocalProductSideTaskSummary{}, false, nil
+	}
+	items, more, err := service.sideTasks.ListSideTasks(ctx, view, 64)
+	if err != nil {
+		return nil, false, err
+	}
+	result := make([]LocalProductSideTaskSummary, len(items))
+	for index, item := range items {
+		result[index] = localProductSideTaskSummary(item)
+	}
+	return result, more, nil
+}
+
+func localProductSideTaskSummary(item app.SideTaskReadResult) LocalProductSideTaskSummary {
+	return LocalProductSideTaskSummary{SideTaskID: item.SideTaskID, ParentMissionID: item.ParentMissionID, ParentTeamInstanceID: item.ParentTeamInstanceID, ParentTaskID: item.ParentTaskID, ParentRunID: item.ParentRunID, ParentClaimGeneration: item.ParentClaimGeneration, ParentExecutionDigest: item.ParentExecutionDigest, SideExecutionTeamInstanceID: item.SideExecutionTeamInstanceID, Purpose: item.Purpose, Mode: item.Mode, Title: item.Title, Status: item.Status, SourceGeneration: item.SourceGeneration, HandoffVersion: item.HandoffVersion, HandoffDigest: item.HandoffDigest, SummaryArtifactDigest: item.SummaryArtifactDigest, WhatHappened: item.WhatHappened, AuthorizedFindings: cloneLocalProductSlice(item.AuthorizedFindings), EvidenceReferences: cloneLocalProductSlice(item.EvidenceReferences), ArtifactReferences: cloneLocalProductSlice(item.ArtifactReferences), Risk: item.Risk, Uncertainties: cloneLocalProductSlice(item.Uncertainties), ScopeDelta: cloneLocalProductSlice(item.ScopeDelta), DecisionOptions: cloneLocalProductSlice(item.DecisionOptions), RecommendedOption: item.RecommendedOption, RecommendationAuthority: item.RecommendationAuthority, UsageObserved: item.UsageObserved, UsageMicrounits: item.UsageMicrounits, UsageCurrency: item.UsageCurrency, DecisionDeadline: item.DecisionDeadline, AvailableDecisions: cloneLocalProductSlice(item.AvailableDecisions), EffectStatus: item.EffectStatus}
 }
 
 func (service *LocalProductReadService) applyRuntimeObservationHealth(
@@ -311,6 +400,20 @@ func buildLocalProductSnapshot(
 		request.AfterTeamID,
 		request.Limit,
 	)
+	projectedSideTasks, sideTaskExecutionMore := view.SideTaskHandoffs("", 64)
+	sideExecutionIDs := make(map[string]struct{}, len(projectedSideTasks))
+	for _, sideTask := range projectedSideTasks {
+		sideExecutionIDs[sideTask.SideExecutionTeamInstanceID] = struct{}{}
+		sideExecutionIDs[sideTask.ContinuationExecutionTeamInstanceID] = struct{}{}
+	}
+	filteredExecutions := executions[:0]
+	for _, execution := range executions {
+		if _, isSideTask := sideExecutionIDs[execution.TeamInstanceID]; !isSideTask {
+			filteredExecutions = append(filteredExecutions, execution)
+		}
+	}
+	executions = filteredExecutions
+	executionTeamMore = executionTeamMore || sideTaskExecutionMore
 
 	teamSummaries, teamPage := buildLocalProductTeamPage(
 		view,
@@ -412,6 +515,7 @@ func buildLocalProductSnapshot(
 		Runs:      runSummaries,
 		Evidence:  evidenceSummaries,
 		Attention: attention,
+		SideTasks: []LocalProductSideTaskSummary{},
 		RuntimePage: localProductPageCursor(
 			runtimeSummaries,
 			runtimeMore,
@@ -1032,6 +1136,16 @@ func cloneLocalProductSnapshot(
 	snapshot.PreparedDecisions = cloneLocalProductSlice(
 		snapshot.PreparedDecisions,
 	)
+	snapshot.SideTasks = cloneLocalProductSlice(snapshot.SideTasks)
+	for index := range snapshot.SideTasks {
+		snapshot.SideTasks[index].AuthorizedFindings = cloneLocalProductSlice(snapshot.SideTasks[index].AuthorizedFindings)
+		snapshot.SideTasks[index].EvidenceReferences = cloneLocalProductSlice(snapshot.SideTasks[index].EvidenceReferences)
+		snapshot.SideTasks[index].ArtifactReferences = cloneLocalProductSlice(snapshot.SideTasks[index].ArtifactReferences)
+		snapshot.SideTasks[index].Uncertainties = cloneLocalProductSlice(snapshot.SideTasks[index].Uncertainties)
+		snapshot.SideTasks[index].ScopeDelta = cloneLocalProductSlice(snapshot.SideTasks[index].ScopeDelta)
+		snapshot.SideTasks[index].DecisionOptions = cloneLocalProductSlice(snapshot.SideTasks[index].DecisionOptions)
+		snapshot.SideTasks[index].AvailableDecisions = cloneLocalProductSlice(snapshot.SideTasks[index].AvailableDecisions)
+	}
 	return snapshot
 }
 

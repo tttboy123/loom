@@ -25,6 +25,31 @@ type fakeReadClient struct {
 	execution     api.MissionExecutionEnvelope
 	executionErr  error
 	executions    []app.MissionExecutionCommand
+	proposals     []app.SideTaskProposalRequest
+	creates       []app.SideTaskCreateRequest
+	decisions     []app.SideTaskDecisionRequest
+	proposal      app.SideTaskProposalResult
+	created       app.SideTaskCreateResult
+	decided       app.SideTaskDecisionResult
+}
+
+func (client *fakeReadClient) ProposeSideTask(_ context.Context, request app.SideTaskProposalRequest) (app.SideTaskProposalResult, error) {
+	client.proposals = append(client.proposals, request)
+	return client.proposal, nil
+}
+
+func (client *fakeReadClient) CreateSideTask(_ context.Context, request app.SideTaskCreateRequest) (app.SideTaskCreateResult, error) {
+	client.creates = append(client.creates, request)
+	return client.created, nil
+}
+
+func (client *fakeReadClient) ReadSideTask(context.Context, app.SideTaskReadRequest) (app.SideTaskReadResult, error) {
+	return app.SideTaskReadResult{}, nil
+}
+
+func (client *fakeReadClient) DecideSideTask(_ context.Context, request app.SideTaskDecisionRequest) (app.SideTaskDecisionResult, error) {
+	client.decisions = append(client.decisions, request)
+	return client.decided, nil
 }
 
 func (client *fakeReadClient) ExecuteMission(
@@ -143,6 +168,86 @@ func TestMissionWorkbenchStartsOnBoardAndUsesExactNavigation(t *testing.T) {
 	}
 	if model.Screen() != ScreenBoard {
 		t.Fatalf("g b screen = %q, want %q", model.Screen(), ScreenBoard)
+	}
+}
+
+func TestMissionSideTaskUsesZeroWriteProposalExplicitConfirmAndTypedDecision(t *testing.T) {
+	viewVersion := strings.Repeat("a", 64)
+	handoffDigest := strings.Repeat("b", 64)
+	client := &fakeReadClient{
+		snapshot: api.LocalProductSnapshot{
+			SchemaVersion: 3, ViewVersion: viewVersion,
+			Missions: []api.LocalProductMissionSummary{testMission("team-1", "Release", api.MissionLaneComplete, "succeeded")},
+			Runs:     []api.LocalProductRunSummary{{RunID: "run-1", WorkItemID: "work-1", ClaimGeneration: 2}},
+			SideTasks: []api.LocalProductSideTaskSummary{{
+				SideTaskID: "side-1", ParentMissionID: "mission/team-1",
+				ParentTeamInstanceID: "team-1", ParentTaskID: "work-1", ParentRunID: "run-1",
+				ParentClaimGeneration: 2, ParentExecutionDigest: strings.Repeat("f", 64),
+				Purpose: "research", Mode: "decision_required",
+				Title: "Check release", Status: "decision_required", SourceGeneration: 1,
+				HandoffVersion: 1, HandoffDigest: handoffDigest,
+				AvailableDecisions: []string{"discard"}, EffectStatus: "none",
+			}},
+		},
+		timeline: api.LocalProductTimelinePage{
+			TeamInstanceID: "team-1", ViewVersion: viewVersion,
+			Board: api.LocalProductTeamBoard{SchemaVersion: 1, TeamInstanceID: "team-1", PlanDigest: strings.Repeat("c", 64), Status: "succeeded", ViewVersion: viewVersion, Nodes: []api.NodeBoardRow{{LogicalNodeID: "main", Status: "succeeded", CurrentAttempt: 1, WorkItemID: "work-1", RunID: "run-1"}}},
+		},
+		proposal: app.SideTaskProposalResult{SchemaVersion: 1, Status: "proposal", ProposalDigest: strings.Repeat("d", 64), ViewVersion: viewVersion, Purpose: "research", Mode: "report_only", Title: "Side task", PermissionScopes: []string{}, RequiresConfirmation: true},
+		created:  app.SideTaskCreateResult{SchemaVersion: 1, SideTaskID: "side-created", Status: "report_delivered", ViewVersion: viewVersion, SideExecutionTeamInstanceID: "team-side", ProposalDigest: strings.Repeat("d", 64), HandoffVersion: 1, HandoffDigest: strings.Repeat("e", 64)},
+		decided:  app.SideTaskDecisionResult{SchemaVersion: 1, SideTaskID: "side-1", Decision: "discard", Status: "decided", EffectStatus: "none", ViewVersion: viewVersion},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.snapshot = client.snapshot
+	model.timeline = client.timeline
+	model.currentMission = "mission/team-1"
+	model.currentTeam = "team-1"
+	model.missionResult = app.MissionExecutionResult{MissionID: "mission/team-1", TeamInstanceID: "team-1", ExecutionDigest: strings.Repeat("f", 64)}
+	model.switchScreen(indexOfScreen(ScreenMission))
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Check one bounded fact")})
+	model = updated.(Model)
+	updated, proposalCommand := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if proposalCommand == nil {
+		t.Fatal("missing zero-write proposal command")
+	}
+	proposalMessage := proposalCommand()
+	if len(client.proposals) != 1 || client.proposals[0].Operation != "propose" ||
+		client.proposals[0].ParentTaskID != "work-1" ||
+		client.proposals[0].ParentExecutionDigest != strings.Repeat("f", 64) {
+		t.Fatalf("proposal calls=%#v", client.proposals)
+	}
+	updated, _ = model.Update(proposalMessage)
+	model = updated.(Model)
+	updated, createCommand := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = updated.(Model)
+	if createCommand == nil {
+		t.Fatal("explicit confirm did not create")
+	}
+	createdMessage := createCommand()
+	if len(client.creates) != 1 || !client.creates[0].Confirmed || client.creates[0].ProposalDigest != strings.Repeat("d", 64) {
+		t.Fatalf("create=%#v", client.creates)
+	}
+	updated, _ = model.Update(createdMessage)
+	model = updated.(Model)
+	model.snapshot = client.snapshot
+	// A reconnected TUI has the authoritative Side-task projection and current
+	// Run/board, but no transient start envelope in memory.
+	model.missionResult = app.MissionExecutionResult{}
+	updated, decisionCommand := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if decisionCommand == nil {
+		t.Fatal("typed decision unavailable")
+	}
+	_ = updated
+	_ = decisionCommand()
+	if len(client.decisions) != 1 || client.decisions[0].Decision != "discard" || client.decisions[0].ParentExecutionDigest != strings.Repeat("f", 64) {
+		t.Fatalf("decision=%#v", client.decisions)
 	}
 }
 

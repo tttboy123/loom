@@ -5,6 +5,28 @@ import XCTest
 
 @MainActor
 final class LocalProductStoreTests: XCTestCase {
+    func testRestartedStoreDecidesFromAuthoritativeSideTaskExecutionBinding() async throws {
+        let fixture = try restartedSideTaskFixture()
+        let client = RestartedSideTaskStubClient(
+            snapshot: fixture.snapshot,
+            timeline: fixture.timeline
+        )
+        let store = LocalProductStore(client: client)
+
+        await store.refresh()
+        await store.openMissionAndActivate("mission/team-1")
+        XCTAssertNil(store.executionResult)
+        let sideTask = try XCTUnwrap(store.snapshot?.sideTasks.first)
+
+        await store.decideSideTask(sideTask, decision: "discard")
+
+        let request = try XCTUnwrap(client.decisions.first)
+        XCTAssertEqual(request.parentExecutionDigest, fixture.parentExecutionDigest)
+        XCTAssertEqual(request.sideTaskID, sideTask.sideTaskID)
+        XCTAssertEqual(request.parentClaimGeneration, 2)
+        XCTAssertEqual(request.effectDigest.count, 64)
+    }
+
     func testEmptyTeamActivationDoesNotRequestTimeline() async {
         let client = StubLocalProductClient(
             snapshots: [.success(.empty(viewVersion: "view-1"))]
@@ -696,7 +718,7 @@ final class LocalProductStoreTests: XCTestCase {
 
             store.selectTeam(snapshot.teams[1])
             await store.activateSelectedTeam()
-            client.resolveSuspended(with: lateResult)
+            await client.resolveSuspended(with: lateResult)
             await staleLoad.value
 
             XCTAssertEqual(store.selectedTeamID, "team-2")
@@ -723,7 +745,7 @@ final class LocalProductStoreTests: XCTestCase {
             await client.waitForSuspendedRequest()
 
             load.cancel()
-            client.resolveSuspended(with: lateResult)
+            await client.resolveSuspended(with: lateResult)
             await load.value
 
             XCTAssertNil(store.timeline)
@@ -745,7 +767,7 @@ final class LocalProductStoreTests: XCTestCase {
         await client.waitForSuspendedRequest()
 
         store.showMissionBoard()
-        client.resolveSuspended(
+        await client.resolveSuspended(
             with: .success(
                 try timelinePage(teamID: "team-1", hasMore: false, records: [])
             )
@@ -789,7 +811,7 @@ final class LocalProductStoreTests: XCTestCase {
             await client.waitForSuspendedRequest()
 
             await store.openMissionAndActivate("mission/team-2")
-            client.resolveSuspended(with: lateResult)
+            await client.resolveSuspended(with: lateResult)
             await staleLoad.value
 
             XCTAssertEqual(store.workbench.route, .mission("mission/team-2"))
@@ -817,7 +839,7 @@ final class LocalProductStoreTests: XCTestCase {
             let currentLoad = Task { await store.activateSelectedTeam() }
             await client.waitForRequestCount(2)
 
-            client.resolveRequest(
+            await client.resolveRequest(
                 at: 1,
                 with: .success(
                     try timelinePage(
@@ -833,7 +855,7 @@ final class LocalProductStoreTests: XCTestCase {
                 )
             )
             await currentLoad.value
-            client.resolveRequest(at: 0, with: staleResult)
+            await client.resolveRequest(at: 0, with: staleResult)
             await staleLoad.value
 
             XCTAssertEqual(store.timeline?.records.map(\.deliveryID), ["delivery-current"])
@@ -1091,6 +1113,97 @@ final class LocalProductStoreTests: XCTestCase {
     }
 }
 
+private func restartedSideTaskFixture() throws -> (
+    snapshot: LocalProductSnapshot,
+    timeline: LocalProductTimelinePage,
+    parentExecutionDigest: String
+) {
+    let view = String(repeating: "a", count: 64)
+    let parentExecution = String(repeating: "b", count: 64)
+    let handoff = String(repeating: "c", count: 64)
+    let artifact = String(repeating: "d", count: 64)
+    let snapshotJSON = """
+    {"schema_version":3,"view_version":"\(view)","partial":false,"stale":false,"reason":"",
+     "health":{"daemon":"serving_request","journal":"available","projection":"current"},
+     "runtimes":[],"teams":[{"team_instance_id":"team-1","display_name":"Parent Team",
+      "source_kind":"saved","state":"ready","confirmed":true,"executable":true,"read_only":false}],
+     "missions":[{"schema_version":1,"mission_id":"mission/team-1","team_instance_id":"team-1",
+      "title":"Parent Mission","source_kind":"saved_team","lane":"Review","status":"human_required",
+      "priority":"normal","plan_digest":"\(String(repeating: "e", count: 64))","simple":true,
+      "node_count":1,"completed_node_count":1,"active_node_count":0,"review_node_count":0,
+      "attention_count":1,"current_node_id":"main","last_milestone":"Side-task decision required",
+      "team_pulse":[],"topology":[]}],
+     "runs":[{"run_id":"run-1","work_item_id":"work-1","phase":"terminal","terminal_status":"succeeded",
+      "terminal_reason":"","runtime_instance_id":"runtime-1","agent_instance_id":"agent-1","claim_generation":2}],
+     "evidence":[],"attention":[],"prepared_decisions":[],
+     "side_tasks":[{"side_task_id":"side-1","parent_mission_id":"mission/team-1",
+      "parent_team_instance_id":"team-1","parent_task_id":"work-1","parent_run_id":"run-1",
+      "parent_claim_generation":2,"parent_execution_digest":"\(parentExecution)",
+      "side_execution_team_instance_id":"team-side-1","purpose":"research","mode":"decision_required",
+      "title":"Bounded research","status":"decision_required","source_generation":1,"handoff_version":1,
+      "handoff_digest":"\(handoff)","summary_artifact_digest":"\(artifact)","what_happened":"Authorized result",
+      "authorized_findings":[],"evidence_references":[],"artifact_references":[],"risk":"low",
+      "uncertainties":[],"scope_delta":[],"decision_options":["discard"],"recommended_option":"discard",
+      "recommendation_authority":"proposal_only","usage_observed":false,"usage_microunits":0,
+      "usage_currency":"","decision_deadline":"2026-08-03T16:00:00Z","available_decisions":["discard"],
+      "effect_status":"none"}],
+     "runtime_page":{"next_cursor":"","has_more":false},"team_page":{"next_cursor":"","has_more":false},
+     "mission_page":{"next_cursor":"","has_more":false},"run_page":{"next_cursor":"","has_more":false},
+     "evidence_page":{"next_cursor":"","has_more":false}}
+    """
+    let timelineJSON = """
+    {"schema_version":1,"team_instance_id":"team-1","view_version":"\(view)","next_cursor":"",
+     "has_more":false,"gap":null,"records":[],"board":{"schema_version":1,"team_instance_id":"team-1",
+      "plan_digest":"\(String(repeating: "e", count: 64))","status":"succeeded","view_version":"\(view)",
+      "nodes":[{"logical_node_id":"main","status":"succeeded","dependency_satisfied":true,
+       "current_attempt":1,"work_item_id":"work-1","run_id":"run-1","runtime_instance_id":"runtime-1",
+       "agent_instance_id":"agent-1","verification_status":"accepted","recovery_action":"","retry_at":""}],
+      "cost":{"observed":false,"amount_microunits":null,"currency":""}},"attention":[]}
+    """
+    return (
+        try LocalProductWire.decodeSnapshot(Data(snapshotJSON.utf8)),
+        try LocalProductWire.decodeTimeline(Data(timelineJSON.utf8)),
+        parentExecution
+    )
+}
+
+private final class RestartedSideTaskStubClient:
+    LocalProductClientProtocol,
+    LocalProductHandoffClientProtocol
+{
+    private let fixedSnapshot: LocalProductSnapshot
+    private let fixedTimeline: LocalProductTimelinePage
+    private(set) var decisions: [LocalProductSideTaskDecisionRequest] = []
+
+    init(snapshot: LocalProductSnapshot, timeline: LocalProductTimelinePage) {
+        fixedSnapshot = snapshot
+        fixedTimeline = timeline
+    }
+
+    func snapshot(limit: Int) async throws -> LocalProductSnapshot { fixedSnapshot }
+    func timeline(teamInstanceID: String, cursor: String, limit: Int) async throws -> LocalProductTimelinePage {
+        fixedTimeline
+    }
+    func proposeSideTask(_ request: LocalProductSideTaskProposalRequest) async throws -> LocalProductSideTaskProposalResult {
+        throw LocalProductClientError.unavailable
+    }
+    func createSideTask(_ request: LocalProductSideTaskCreateRequest) async throws -> LocalProductSideTaskCreateResult {
+        throw LocalProductClientError.unavailable
+    }
+    func readSideTask(_ request: LocalProductSideTaskReadRequest) async throws -> LocalProductSideTaskReadResult {
+        throw LocalProductClientError.unavailable
+    }
+    func decideSideTask(_ request: LocalProductSideTaskDecisionRequest) async throws -> LocalProductSideTaskDecisionResult {
+        decisions.append(request)
+        let body = """
+        {"schema_version":1,"side_task_id":"\(request.sideTaskID)","decision":"\(request.decision)",
+         "status":"decided","effect_status":"none","context_packet_digest":"",
+         "continuation_execution_team_instance_id":"","view_version":"\(fixedSnapshot.viewVersion)"}
+        """
+        return try LocalProductHandoffWire.decodeDecision(Data(body.utf8))
+    }
+}
+
 private struct TimelineRequest: Equatable {
     let teamID: String
     let cursor: String
@@ -1122,7 +1235,7 @@ private final class TimelinePagingStubClient: LocalProductClientProtocol {
     }
 }
 
-private final class SuspendedTimelineStubClient: LocalProductClientProtocol {
+private actor SuspendedTimelineStubClient: LocalProductClientProtocol {
     private let fixedSnapshot: LocalProductSnapshot
     private let immediatePages: [String: LocalProductTimelinePage]
     private var suspendedContinuation:
@@ -1160,7 +1273,7 @@ private final class SuspendedTimelineStubClient: LocalProductClientProtocol {
     }
 }
 
-private final class SequencedSuspendedTimelineStubClient: LocalProductClientProtocol {
+private actor SequencedSuspendedTimelineStubClient: LocalProductClientProtocol {
     private let fixedSnapshot: LocalProductSnapshot
     private var continuations: [CheckedContinuation<LocalProductTimelinePage, Error>?] = []
 

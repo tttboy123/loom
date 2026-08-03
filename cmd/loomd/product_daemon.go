@@ -642,6 +642,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		return nil, newDaemonBuildFailure("build_ipc", err)
 	}
 	var executionAPI *api.LocalProductExecutionAPI
+	var handoffAPI *api.LocalProductHandoffAPI
 	var savedTeamMaterializer productSavedTeamMaterializer
 	if setupConfig.Execution != nil {
 		setupConfig.Execution.Decisions = decisionRouter
@@ -655,6 +656,9 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		)
 		if err != nil {
 			return nil, newDaemonBuildFailure("build_execution", err)
+		}
+		if bundle, ok := executionBundle.(*productMissionExecutionBundle); ok {
+			handoffAPI = bundle.handoff
 		}
 		savedTeamMaterializer = &productSavedTeamMaterialization{
 			store:      store,
@@ -672,6 +676,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 				setupService,
 				decisionAPI,
 				executionAPI,
+				handoffAPI,
 				savedTeamMaterializer,
 			),
 		),
@@ -690,9 +695,12 @@ func newProductDaemonRunnerWithPreparedDecisions(
 }
 
 type productMissionExecutionBundle struct {
-	backend   *app.AuthoritativeMissionExecutionBackend
-	evidence  *evidence.Store
-	observers *api.LocalProductReadService
+	backend        *app.AuthoritativeMissionExecutionBackend
+	evidence       *evidence.Store
+	observers      *api.LocalProductReadService
+	handoff        *api.LocalProductHandoffAPI
+	handoffService *app.LocalProductHandoffService
+	workAuthority  *work.Authority
 
 	mu     sync.Mutex
 	closed bool
@@ -1470,10 +1478,15 @@ func buildProductMissionExecutionAPI(
 		config:         config,
 		workspaceRoot:  workspaceRoot,
 	}
+	parentGate, err := app.NewProjectionParentContinuationGate(readModel)
+	if err != nil {
+		return nil, nil, err
+	}
 	backend, err := app.NewAuthoritativeMissionExecutionBackend(
 		app.AuthoritativeMissionExecutionConfig{
 			State: state, Compiler: compiler, Runner: runner,
 			Decisions:         config.Decisions,
+			ParentGate:        parentGate,
 			VisibilityTimeout: 5 * time.Second,
 			Now:               now,
 		},
@@ -1482,11 +1495,45 @@ func buildProductMissionExecutionAPI(
 		return nil, nil, err
 	}
 	bundle := &productMissionExecutionBundle{
-		backend:   backend,
-		evidence:  evidenceStore,
-		observers: readService,
+		backend:       backend,
+		evidence:      evidenceStore,
+		observers:     readService,
+		workAuthority: workAuthority,
 	}
 	if err := backend.ResumeProjectedMissions(ctx); err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	sideBindings, err := app.NewProjectionSideTaskExecutionBindingSource(bindings)
+	if err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	sideCompiler, err := app.NewBuiltInSideTaskExecutionCompiler(sideBindings, sourcePath, now)
+	if err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	handoffService, err := app.NewLocalProductHandoffService(app.LocalProductHandoffConfig{
+		Authority: workAuthority, Projection: readModel, Artifacts: evidenceStore,
+		Compiler: sideCompiler, Runner: runner, ParentCanceller: backend,
+		ParentExecution: backend, Now: now,
+	})
+	if err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	if err := handoffService.ReconcileSideTasks(ctx); err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	bundle.handoffService = handoffService
+	if err := readService.SetSideTaskSnapshotSource(handoffService); err != nil {
+		_ = bundle.Close()
+		return nil, nil, err
+	}
+	bundle.handoff, err = api.NewLocalProductHandoffAPI(handoffService)
+	if err != nil {
 		_ = bundle.Close()
 		return nil, nil, err
 	}
@@ -2743,6 +2790,7 @@ func localProductHandlerWithDecision(
 		decision,
 		execution,
 		nil,
+		nil,
 	)
 }
 
@@ -2751,6 +2799,7 @@ func localProductHandlerWithComposition(
 	setup *api.LocalProductSetupAPI,
 	decision *api.LocalProductDecisionAPI,
 	execution *api.LocalProductExecutionAPI,
+	handoff *api.LocalProductHandoffAPI,
 	savedTeamMaterializer productSavedTeamMaterializer,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
@@ -2774,6 +2823,9 @@ func localProductHandlerWithComposition(
 				"state_unavailable",
 				api.ErrInvalidLocalProductExecutionAPI,
 			)
+		}
+		if request.Method == "side_task_handoff" && handoff == nil {
+			return productErrorResponse("internal", api.ErrInvalidLocalProductHandoffAPI)
 		}
 		switch request.Method {
 		case "snapshot":
@@ -2850,6 +2902,55 @@ func localProductHandlerWithComposition(
 				return productServiceError(err)
 			}
 			return productResultResponse(result)
+		case "side_task_handoff":
+			operation, err := productOperation(request.Params)
+			if err != nil {
+				return productErrorResponse("invalid_request", app.ErrInvalidSideTaskProduct)
+			}
+			switch operation {
+			case "propose":
+				var input app.SideTaskProposalRequest
+				if decodeExactProductParams(request.Params, &input) != nil {
+					return productErrorResponse("invalid_request", app.ErrInvalidSideTaskProduct)
+				}
+				result, err := handoff.ProposeSideTask(ctx, input)
+				if err != nil {
+					return sideTaskServiceError(err)
+				}
+				return productResultResponse(result)
+			case "create":
+				var input app.SideTaskCreateRequest
+				if decodeExactProductParams(request.Params, &input) != nil {
+					return productErrorResponse("invalid_request", app.ErrInvalidSideTaskProduct)
+				}
+				result, err := handoff.CreateSideTask(ctx, input)
+				if err != nil {
+					return sideTaskServiceError(err)
+				}
+				return productResultResponse(result)
+			case "read":
+				var input app.SideTaskReadRequest
+				if decodeExactProductParams(request.Params, &input) != nil {
+					return productErrorResponse("invalid_request", app.ErrInvalidSideTaskProduct)
+				}
+				result, err := handoff.ReadSideTask(ctx, input)
+				if err != nil {
+					return sideTaskServiceError(err)
+				}
+				return productResultResponse(result)
+			case "decide":
+				var input app.SideTaskDecisionRequest
+				if decodeExactProductParams(request.Params, &input) != nil {
+					return productErrorResponse("invalid_request", app.ErrInvalidSideTaskProduct)
+				}
+				result, err := handoff.DecideSideTask(ctx, input)
+				if err != nil {
+					return sideTaskServiceError(err)
+				}
+				return productResultResponse(result)
+			default:
+				return productErrorResponse("invalid_request", app.ErrInvalidSideTaskProduct)
+			}
 		case "setup_snapshot":
 			if decodeExactProductParams(
 				request.Params,
@@ -3101,6 +3202,22 @@ func decodeExactProductParams(data []byte, output any) error {
 	return nil
 }
 
+func productOperation(data []byte) (string, error) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return "", errors.New("invalid product params")
+	}
+	raw, ok := fields["operation"]
+	if !ok {
+		return "", errors.New("invalid product params")
+	}
+	var operation string
+	if json.Unmarshal(raw, &operation) != nil || operation == "" {
+		return "", errors.New("invalid product params")
+	}
+	return operation, nil
+}
+
 func scanProductJSONValue(decoder *json.Decoder) (bool, error) {
 	token, err := decoder.Token()
 	if err != nil {
@@ -3167,17 +3284,31 @@ func productServiceError(err error) localipc.Response {
 		errors.Is(err, api.ErrInvalidLocalProductSetupAPI),
 		errors.Is(err, api.ErrInvalidLocalProductDecisionAPI),
 		errors.Is(err, api.ErrInvalidLocalProductExecutionAPI),
+		errors.Is(err, api.ErrInvalidLocalProductHandoffAPI),
+		errors.Is(err, app.ErrInvalidSideTaskProduct),
 		errors.Is(err, app.ErrInvalidMissionDecision),
 		errors.Is(err, app.ErrInvalidMissionExecution),
 		errors.Is(err, app.ErrInvalidLocalProductSetup):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
-		errors.Is(err, app.ErrBuilderNotFound):
+		errors.Is(err, app.ErrBuilderNotFound),
+		errors.Is(err, work.ErrSideTaskNotFound):
 		return productErrorResponse("not_found", err)
 	case errors.Is(err, app.ErrBuilderConflict),
 		errors.Is(err, app.ErrMissionDecisionConflict),
-		errors.Is(err, app.ErrMissionExecutionConflict):
+		errors.Is(err, app.ErrMissionExecutionConflict),
+		errors.Is(err, app.ErrSideTaskProductConflict):
 		return productErrorResponse("conflict", err)
+	case errors.Is(err, app.ErrSideTaskProductCapabilityGap):
+		return productErrorResponse("capability_gap", err)
+	case errors.Is(err, app.ErrSideTaskProductStaleView):
+		return productErrorResponse("stale_view", err)
+	case errors.Is(err, app.ErrSideTaskProductStaleGeneration):
+		return productErrorResponse("stale_generation", err)
+	case errors.Is(err, app.ErrSideTaskProductDigestMismatch):
+		return productErrorResponse("digest_mismatch", err)
+	case errors.Is(err, app.ErrSideTaskProductHumanRequired):
+		return productErrorResponse("human_required", err)
 	case errors.Is(err, app.ErrBuilderIncompatible):
 		return productErrorResponse("incompatible", err)
 	case errors.Is(err, app.ErrBuilderConfirmationRequired):
@@ -3207,6 +3338,21 @@ func productServiceError(err error) localipc.Response {
 	}
 }
 
+func sideTaskServiceError(err error) localipc.Response {
+	response := productServiceError(err)
+	if response.Error == nil {
+		return productErrorResponse("internal", err)
+	}
+	switch response.Error.Code {
+	case "invalid_request", "capability_gap", "not_found", "conflict",
+		"stale_view", "stale_generation", "digest_mismatch", "human_required",
+		"internal":
+		return response
+	default:
+		return productErrorResponse("internal", err)
+	}
+}
+
 func productErrorResponse(code string, cause error) localipc.Response {
 	return localipc.Response{
 		OK:    false,
@@ -3219,13 +3365,18 @@ func localipcSafeError(code string, _ error) *localipc.ProtocolError {
 		message     string
 		recoverable bool
 	}{
-		"invalid_request": {"invalid request", false},
-		"unknown_method":  {"unknown method", false},
-		"not_found":       {"not found", false},
-		"conflict":        {"conflict", true},
-		"busy":            {"busy", true},
-		"incompatible":    {"incompatible", false},
-		"denied":          {"denied", false},
+		"invalid_request":  {"invalid request", false},
+		"unknown_method":   {"unknown method", false},
+		"not_found":        {"not found", false},
+		"conflict":         {"conflict", true},
+		"capability_gap":   {"capability gap", false},
+		"stale_view":       {"stale view", true},
+		"stale_generation": {"stale generation", false},
+		"digest_mismatch":  {"digest mismatch", false},
+		"human_required":   {"human action required", false},
+		"busy":             {"busy", true},
+		"incompatible":     {"incompatible", false},
+		"denied":           {"denied", false},
 		"credential_unavailable": {
 			"credential unavailable",
 			true,

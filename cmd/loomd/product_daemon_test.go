@@ -53,6 +53,80 @@ type blockingObserverRunner struct {
 	closed bool
 }
 
+type productHandoffStub struct{ proposed bool }
+
+func (stub *productHandoffStub) ProposeSideTask(_ context.Context, request app.SideTaskProposalRequest) (app.SideTaskProposalResult, error) {
+	stub.proposed = true
+	return app.SideTaskProposalResult{SchemaVersion: 1, Status: "proposal", ProposalDigest: strings.Repeat("a", 64), ViewVersion: request.ExpectedViewVersion, Purpose: request.Purpose, Mode: request.Mode, Title: request.Title, PermissionScopes: []string{}, RequiresConfirmation: true}, nil
+}
+func (*productHandoffStub) CreateSideTask(context.Context, app.SideTaskCreateRequest) (app.SideTaskCreateResult, error) {
+	return app.SideTaskCreateResult{}, nil
+}
+func (*productHandoffStub) ReadSideTask(context.Context, app.SideTaskReadRequest) (app.SideTaskReadResult, error) {
+	return app.SideTaskReadResult{}, nil
+}
+func (*productHandoffStub) DecideSideTask(context.Context, app.SideTaskDecisionRequest) (app.SideTaskDecisionResult, error) {
+	return app.SideTaskDecisionResult{}, nil
+}
+
+func TestProductHandlerDispatchesStrictSideTaskOperation(t *testing.T) {
+	stub := &productHandoffStub{}
+	handoff, err := api.NewLocalProductHandoffAPI(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := localProductHandlerWithComposition(nil, nil, nil, nil, handoff, nil)
+	params, err := json.Marshal(app.SideTaskProposalRequest{SchemaVersion: 1, Operation: "propose", ParentMissionID: "mission/team-1", ParentTeamInstanceID: "team-1", ParentTaskID: "work-1", ParentRunID: "run-1", ParentClaimGeneration: 1, ParentExecutionDigest: strings.Repeat("a", 64), Purpose: "research", Mode: "report_only", Title: "Research", AuthorizedRequest: "Find facts", PermissionScopes: []string{}, ExpectedViewVersion: strings.Repeat("b", 64), CorrelationID: "11111111-1111-4111-8111-111111111111"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := handler(context.Background(), localipc.Request{Method: "side_task_handoff", Params: params})
+	if !response.OK || !stub.proposed {
+		t.Fatalf("response=%#v proposed=%v", response, stub.proposed)
+	}
+	bad := handler(context.Background(), localipc.Request{Method: "side_task_handoff", Params: json.RawMessage(`{"operation":"unknown"}`)})
+	if bad.OK || bad.Error == nil || bad.Error.Code != "invalid_request" {
+		t.Fatalf("bad=%#v", bad)
+	}
+	unavailable := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil)(
+		context.Background(), localipc.Request{Method: "side_task_handoff", Params: params},
+	)
+	if unavailable.OK || unavailable.Error == nil || unavailable.Error.Code != "internal" {
+		t.Fatalf("unavailable=%#v", unavailable)
+	}
+}
+
+func TestSideTaskHandlerErrorsStayInsideClosedCodeSet(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{app.ErrInvalidSideTaskProduct, "invalid_request"},
+		{app.ErrSideTaskProductCapabilityGap, "capability_gap"},
+		{work.ErrSideTaskNotFound, "not_found"},
+		{app.ErrSideTaskProductConflict, "conflict"},
+		{app.ErrSideTaskProductStaleView, "stale_view"},
+		{app.ErrSideTaskProductStaleGeneration, "stale_generation"},
+		{app.ErrSideTaskProductDigestMismatch, "digest_mismatch"},
+		{app.ErrSideTaskProductHumanRequired, "human_required"},
+		{context.DeadlineExceeded, "internal"},
+		{app.ErrMissionExecutionBusy, "internal"},
+		{errors.New("unexpected unavailable failure"), "internal"},
+	}
+	closed := map[string]bool{
+		"invalid_request": true, "capability_gap": true, "not_found": true,
+		"conflict": true, "stale_view": true, "stale_generation": true,
+		"digest_mismatch": true, "human_required": true, "internal": true,
+	}
+	for _, test := range tests {
+		response := sideTaskServiceError(test.err)
+		if response.OK || response.Error == nil || response.Error.Code != test.want ||
+			!closed[response.Error.Code] {
+			t.Fatalf("err=%v response=%#v want=%q", test.err, response, test.want)
+		}
+	}
+}
+
 func (runner *blockingObserverRunner) Run(
 	ctx context.Context,
 ) (app.LocalRuntimeObservationDaemonResult, error) {
@@ -1094,15 +1168,27 @@ func TestObserverFailureReasonIsClosedTypedAndNonDisclosing(t *testing.T) {
 
 func productDaemonFailureState(t *testing.T) (string, string) {
 	t.Helper()
-	root, err := os.MkdirTemp("", "loom-p2a-failure-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(root); err != nil {
-			t.Errorf("remove failure-state root: %v", err)
+	root := ""
+	var err error
+	if canaryRoot := os.Getenv("LOOM_P2B_CANARY_ROOT"); canaryRoot != "" {
+		if !filepath.IsAbs(canaryRoot) {
+			t.Fatal("LOOM_P2B_CANARY_ROOT must be absolute")
 		}
-	})
+		root = filepath.Join(canaryRoot, "vertical-fixture")
+		if err = os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		root, err = os.MkdirTemp("", "loom-p2a-failure-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Errorf("remove failure-state root: %v", err)
+			}
+		})
+	}
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -2555,7 +2641,7 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SchemaVersion != 2 ||
+	if snapshot.SchemaVersion != 3 ||
 		snapshot.ViewVersion == "" ||
 		len(snapshot.Teams) != 1 ||
 		len(snapshot.Missions) != 1 ||
@@ -2565,7 +2651,7 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 		snapshot.Runtimes[0].ObservedCapabilities == nil ||
 		len(snapshot.Runs) != 1 ||
 		len(snapshot.Evidence) != 1 ||
-		snapshot.Attention == nil {
+		snapshot.Attention == nil || snapshot.SideTasks == nil {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 	readClient, err := loomtui.NewDaemonReadClient(client)
@@ -2902,6 +2988,7 @@ func TestProductDaemonHelpersFailClosedWithSafeCodes(t *testing.T) {
 		{api.ErrInvalidLocalProductRequest, "invalid_request"},
 		{api.ErrInvalidTimelineRequest, "invalid_request"},
 		{api.ErrTeamTimelineNotFound, "not_found"},
+		{work.ErrSideTaskNotFound, "not_found"},
 		{api.ErrTimelineCursorConflict, "cursor_conflict"},
 		{api.ErrStreamGap, "stream_gap"},
 		{app.ErrMissionExecutionConflict, "conflict"},
@@ -3610,6 +3697,10 @@ func TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage(
 		t.Fatal(err)
 	}
 	defer closer.Close()
+	bundle, ok := closer.(*productMissionExecutionBundle)
+	if !ok || bundle.handoff == nil {
+		t.Fatalf("handoff composition = %#v", closer)
+	}
 
 	workPackage, err := work.CodingWorkPackage()
 	if err != nil {
@@ -4012,6 +4103,336 @@ func TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage(
 			len(beforeProbeEvents), len(afterProbeEvents),
 			beforeProbeHeads, journalHeads(afterProbeEvents),
 		)
+	}
+	currentSnapshot, err := readService.ReadLocalProductSnapshot(context.Background(), api.LocalProductSnapshotRequest{Limit: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentRun := currentSnapshot.Runs[0]
+	proposalRequest := app.SideTaskProposalRequest{SchemaVersion: 1, Operation: "propose", ParentMissionID: "mission/team-execution-ready", ParentTeamInstanceID: "team-execution-ready", ParentTaskID: parentRun.WorkItemID, ParentRunID: parentRun.RunID, ParentClaimGeneration: parentRun.ClaimGeneration, ParentExecutionDigest: startEnvelope.Result.ExecutionDigest, Purpose: "verification", Mode: "report_only", Title: "Verify the completed Mission", AuthorizedRequest: "Return one bounded authorized verification result", PermissionScopes: []string{}, DecisionTimeoutSeconds: 0, ExpectedViewVersion: currentSnapshot.ViewVersion, CorrelationID: "88888888-8888-4888-8888-888888888888"}
+	beforeBadParentDigest, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	badParentDigest := proposalRequest
+	badParentDigest.ParentExecutionDigest = strings.Repeat("f", 64)
+	if _, err = bundle.handoff.ProposeSideTask(context.Background(), badParentDigest); !errors.Is(err, app.ErrSideTaskProductDigestMismatch) {
+		t.Fatalf("bad parent execution proposal error = %v", err)
+	}
+	badProposalBytes, err := json.Marshal(badParentDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badProposalSum := sha256.Sum256(badProposalBytes)
+	badParentDigest.Operation = "create"
+	if _, err = bundle.handoff.CreateSideTask(context.Background(), app.SideTaskCreateRequest{
+		SideTaskProposalRequest: badParentDigest,
+		ProposalDigest:          hex.EncodeToString(badProposalSum[:]),
+		Confirmed:               true,
+	}); !errors.Is(err, app.ErrSideTaskProductDigestMismatch) {
+		t.Fatalf("bad parent execution create error = %v", err)
+	}
+	afterBadParentDigest, err := store.ReadAll(context.Background())
+	if err != nil || len(afterBadParentDigest) != len(beforeBadParentDigest) {
+		t.Fatalf("bad parent execution digest wrote Events: %d -> %d err=%v",
+			len(beforeBadParentDigest), len(afterBadParentDigest), err)
+	}
+	proposal, err := bundle.handoff.ProposeSideTask(context.Background(), proposalRequest)
+	if err != nil || !proposal.RequiresConfirmation || proposal.PolicyAvailable {
+		t.Fatalf("proposal=%#v err=%v", proposal, err)
+	}
+	proposalRequest.Operation = "create"
+	created, err := bundle.handoff.CreateSideTask(context.Background(), app.SideTaskCreateRequest{SideTaskProposalRequest: proposalRequest, ProposalDigest: proposal.ProposalDigest, Confirmed: true})
+	if err != nil || created.Status != "report_delivered" || created.SideExecutionTeamInstanceID == "team-execution-ready" {
+		t.Fatalf("created=%#v err=%v", created, err)
+	}
+	withSideTask, err := readService.ReadLocalProductSnapshot(context.Background(), api.LocalProductSnapshotRequest{Limit: 64})
+	if err != nil || len(withSideTask.SideTasks) != 1 || withSideTask.SideTasks[0].ParentMissionID != "mission/team-execution-ready" || len(withSideTask.Missions) != 1 || withSideTask.Missions[0].Status != "succeeded" {
+		t.Fatalf("side-task snapshot=%#v err=%v", withSideTask, err)
+	}
+	decisionProposal := proposalRequest
+	decisionProposal.Operation = "propose"
+	decisionProposal.Mode = "decision_required"
+	decisionProposal.Title = "Decide how to use verified context"
+	decisionProposal.DecisionTimeoutSeconds = 60
+	decisionProposal.ExpectedViewVersion = withSideTask.ViewVersion
+	decisionProposal.CorrelationID = "99999999-9999-4999-8999-999999999999"
+	proposedDecision, err := bundle.handoff.ProposeSideTask(context.Background(), decisionProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionProposal.Operation = "create"
+	createdDecision, err := bundle.handoff.CreateSideTask(context.Background(), app.SideTaskCreateRequest{SideTaskProposalRequest: decisionProposal, ProposalDigest: proposedDecision.ProposalDigest, Confirmed: true})
+	if err != nil || createdDecision.Status != "decision_required" {
+		t.Fatalf("decision handoff=%#v err=%v", createdDecision, err)
+	}
+	decisionSnapshot, err := readService.ReadLocalProductSnapshot(context.Background(), api.LocalProductSnapshotRequest{Limit: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending api.LocalProductSideTaskSummary
+	for _, sideTask := range decisionSnapshot.SideTasks {
+		if sideTask.SideTaskID == createdDecision.SideTaskID {
+			pending = sideTask
+		}
+	}
+	effectBytes := sha256.Sum256([]byte(strings.Join([]string{
+		"parent-effect-v1", pending.SideTaskID, pending.ParentTeamInstanceID,
+		pending.ParentTaskID, pending.ParentRunID,
+		fmt.Sprint(pending.ParentClaimGeneration), startEnvelope.Result.ExecutionDigest,
+		pending.HandoffDigest, "absorb",
+	}, "\x00")))
+	beforeStaleDigest, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bundle.handoff.DecideSideTask(context.Background(), app.SideTaskDecisionRequest{SchemaVersion: 1, Operation: "decide", SideTaskID: pending.SideTaskID, ParentMissionID: pending.ParentMissionID, ParentTeamInstanceID: pending.ParentTeamInstanceID, ParentTaskID: pending.ParentTaskID, ParentRunID: pending.ParentRunID, ParentLogicalNodeID: "main", ParentAttemptNumber: 1, ParentClaimGeneration: pending.ParentClaimGeneration, ParentExecutionDigest: strings.Repeat("f", 64), SideTaskGeneration: pending.SourceGeneration, HandoffVersion: pending.HandoffVersion, HandoffDigest: pending.HandoffDigest, Decision: "absorb", EffectDigest: hex.EncodeToString(effectBytes[:]), ExpectedViewVersion: decisionSnapshot.ViewVersion, CorrelationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}); !errors.Is(err, app.ErrSideTaskProductDigestMismatch) {
+		t.Fatalf("stale parent execution digest error = %v", err)
+	}
+	afterStaleDigest, err := store.ReadAll(context.Background())
+	if err != nil || len(afterStaleDigest) != len(beforeStaleDigest) {
+		t.Fatalf("stale digest wrote Events: %d -> %d err=%v", len(beforeStaleDigest), len(afterStaleDigest), err)
+	}
+	decisionResult, err := bundle.handoff.DecideSideTask(context.Background(), app.SideTaskDecisionRequest{SchemaVersion: 1, Operation: "decide", SideTaskID: pending.SideTaskID, ParentMissionID: pending.ParentMissionID, ParentTeamInstanceID: pending.ParentTeamInstanceID, ParentTaskID: pending.ParentTaskID, ParentRunID: pending.ParentRunID, ParentLogicalNodeID: "main", ParentAttemptNumber: 1, ParentClaimGeneration: pending.ParentClaimGeneration, ParentExecutionDigest: startEnvelope.Result.ExecutionDigest, SideTaskGeneration: pending.SourceGeneration, HandoffVersion: pending.HandoffVersion, HandoffDigest: pending.HandoffDigest, Decision: "absorb", EffectDigest: hex.EncodeToString(effectBytes[:]), ExpectedViewVersion: decisionSnapshot.ViewVersion, CorrelationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
+	if err != nil || decisionResult.EffectStatus != "completed" || decisionResult.ContextPacketDigest == "" {
+		t.Fatalf("absorb=%#v err=%v", decisionResult, err)
+	}
+	afterDecision, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	packets, continuations, completed := 0, 0, 0
+	for _, event := range afterDecision {
+		switch event.Type {
+		case "ContextPacketCommitted":
+			packets++
+		case "ParentContinuationAuthorized":
+			continuations++
+		case "ParentHandoffEffectCompleted":
+			completed++
+		}
+	}
+	if packets != 1 || continuations != 1 || completed != 1 {
+		t.Fatalf("parent effects packet=%d continuation=%d completed=%d", packets, continuations, completed)
+	}
+
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recoveryProposalRequest := app.SideTaskProposalRequest{
+		SchemaVersion: 1, Operation: "propose",
+		ParentMissionID:      decisionProposal.ParentMissionID,
+		ParentTeamInstanceID: decisionProposal.ParentTeamInstanceID,
+		ParentTaskID:         decisionProposal.ParentTaskID, ParentRunID: decisionProposal.ParentRunID,
+		ParentClaimGeneration: decisionProposal.ParentClaimGeneration,
+		ParentExecutionDigest: decisionProposal.ParentExecutionDigest,
+		Purpose:               "diagnosis", Mode: "decision_required", Title: "Recover admitted child",
+		AuthorizedRequest: "Return the exact recovered child result", PermissionScopes: []string{},
+		DecisionTimeoutSeconds: 900, ExpectedViewVersion: readModel.GlobalReadView().Version(),
+		CorrelationID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}
+	recoveryProposal, err := bundle.handoff.ProposeSideTask(context.Background(), recoveryProposalRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deterministicID := func(parts ...string) string {
+		sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+		encoded := hex.EncodeToString(sum[:16])
+		return encoded[:8] + "-" + encoded[8:12] + "-4" + encoded[13:16] + "-8" + encoded[17:20] + "-" + encoded[20:32]
+	}
+	recoverySideTaskID := deterministicID("side-task", recoveryProposalRequest.ParentMissionID, recoveryProposal.ProposalDigest)
+	recoveryInput := app.SideTaskInputArtifact{
+		SchemaVersion: 2, SideTaskID: recoverySideTaskID,
+		ParentMissionID: recoveryProposalRequest.ParentMissionID,
+		ParentTaskID:    recoveryProposalRequest.ParentTaskID, ParentRunID: recoveryProposalRequest.ParentRunID,
+		ParentClaimGeneration: recoveryProposalRequest.ParentClaimGeneration,
+		ParentExecutionDigest: recoveryProposalRequest.ParentExecutionDigest,
+		Purpose:               recoveryProposalRequest.Purpose, Mode: recoveryProposalRequest.Mode,
+		Title: recoveryProposalRequest.Title, AuthorizedRequest: recoveryProposalRequest.AuthorizedRequest,
+		PermissionScopes: []string{}, ProposalDigest: recoveryProposal.ProposalDigest,
+		DecisionTimeoutSeconds: 900, CreatedAt: now().Format(time.RFC3339Nano),
+	}
+	recoveryInputBytes, err := json.Marshal(recoveryInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryInputHash := sha256.Sum256(recoveryInputBytes)
+	recoveryInputDigest := hex.EncodeToString(recoveryInputHash[:])
+	if _, err := bundle.evidence.Publish(context.Background(), bytes.NewReader(recoveryInputBytes), recoveryInputDigest); err != nil {
+		t.Fatal(err)
+	}
+	recoveryChildID := deterministicID("side-execution", recoverySideTaskID, recoveryProposal.ProposalDigest, recoveryInputDigest)
+	if _, err := bundle.workAuthority.AdmitSideTask(context.Background(), work.SideTaskAdmissionInput{
+		SideTaskID: recoverySideTaskID, ParentMissionID: recoveryProposalRequest.ParentMissionID,
+		ParentTeamInstanceID: recoveryProposalRequest.ParentTeamInstanceID,
+		ParentTaskID:         recoveryProposalRequest.ParentTaskID, ParentRunID: recoveryProposalRequest.ParentRunID,
+		ParentClaimGeneration:       recoveryProposalRequest.ParentClaimGeneration,
+		ParentExecutionDigest:       recoveryProposalRequest.ParentExecutionDigest,
+		SideExecutionTeamInstanceID: recoveryChildID,
+		Purpose:                     recoveryProposalRequest.Purpose, Mode: recoveryProposalRequest.Mode,
+		Title: recoveryProposalRequest.Title, ProposalDigest: recoveryProposal.ProposalDigest,
+		InputArtifactDigest: recoveryInputDigest, ExpectedViewVersion: recoveryProposalRequest.ExpectedViewVersion,
+		PermissionScopes: []string{}, Confirmed: true, CorrelationID: recoveryProposalRequest.CorrelationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	promptsBeforeRecovery := len(delegate.prompts)
+	if err := bundle.handoffService.ReconcileSideTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	eventsAfterRecovery, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptsAfterRecovery := len(delegate.prompts)
+	if promptsAfterRecovery <= promptsBeforeRecovery {
+		t.Fatalf("admitted recovery did not execute child: prompts %d -> %d", promptsBeforeRecovery, promptsAfterRecovery)
+	}
+	if err := bundle.handoffService.ReconcileSideTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	eventsAfterReplay, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventsAfterReplay) != len(eventsAfterRecovery) || len(delegate.prompts) != promptsAfterRecovery {
+		t.Fatalf("recovered terminal redispatched: events %d -> %d prompts %d -> %d", len(eventsAfterRecovery), len(eventsAfterReplay), promptsAfterRecovery, len(delegate.prompts))
+	}
+	timeoutBound := false
+	for _, event := range eventsAfterRecovery {
+		if event.StreamID != "side-task/"+recoverySideTaskID || event.Type != "SideTaskHandoffCommitted" {
+			continue
+		}
+		var payload struct {
+			DecisionTimeoutSeconds int64 `json:"decision_timeout_seconds"`
+		}
+		if err := json.Unmarshal(event.PayloadJSON, &payload); err == nil && payload.DecisionTimeoutSeconds == 900 {
+			timeoutBound = true
+		}
+	}
+	if !timeoutBound {
+		t.Fatal("recovered handoff did not preserve the exact 900 second timeout")
+	}
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	strictReadViewVersion := readModel.GlobalReadView().Version()
+
+	handoffServer, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath: socketPath, EffectiveUID: os.Geteuid(),
+		BuildID: "side-task-strict-swift-read",
+		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
+			readService, nil, nil, executionAPI, bundle.handoff, nil,
+		)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoffContext, stopHandoffServer := context.WithCancel(context.Background())
+	handoffDone := make(chan error, 1)
+	go func() { handoffDone <- handoffServer.Serve(handoffContext) }()
+	select {
+	case <-handoffServer.Ready():
+	case err := <-handoffDone:
+		t.Fatalf("handoff Swift server failed before ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("handoff Swift server did not become ready")
+	}
+	strictRead := exec.Command(
+		probe, "--socket", socketPath, "--side-task-read",
+		pending.SideTaskID, strictReadViewVersion,
+	)
+	strictRead.Env = productCLITestEnvironment(t, root)
+	strictReadOutput, strictReadErr := strictRead.CombinedOutput()
+	stopHandoffServer()
+	_ = handoffServer.Close()
+	if serveErr := <-handoffDone; serveErr != nil {
+		t.Fatalf("handoff Swift server close: %v", serveErr)
+	}
+	if strictReadErr != nil {
+		t.Fatalf("strict Swift Side-task read = %v, %q", strictReadErr, strictReadOutput)
+	}
+	var strictSideTask struct {
+		SideTaskID         string   `json:"sideTaskID"`
+		Status             string   `json:"status"`
+		ViewVersion        string   `json:"viewVersion"`
+		AvailableDecisions []string `json:"availableDecisions"`
+	}
+	if err := json.Unmarshal(strictReadOutput, &strictSideTask); err != nil ||
+		strictSideTask.SideTaskID != pending.SideTaskID ||
+		strictSideTask.Status != "decided" ||
+		strictSideTask.ViewVersion != strictReadViewVersion ||
+		strictSideTask.AvailableDecisions == nil {
+		t.Fatalf("strict Swift Side-task output=%q decoded=%#v err=%v", strictReadOutput, strictSideTask, err)
+	}
+
+	legacyProposalRequest := recoveryProposalRequest
+	legacyProposalRequest.Title = "Reject legacy restart input"
+	legacyProposalRequest.AuthorizedRequest = "This legacy input must not dispatch"
+	legacyProposalRequest.ExpectedViewVersion = strictReadViewVersion
+	legacyProposalRequest.CorrelationID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	legacyProposal, err := bundle.handoff.ProposeSideTask(context.Background(), legacyProposalRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySideTaskID := deterministicID("side-task", legacyProposalRequest.ParentMissionID, legacyProposal.ProposalDigest)
+	legacyInput := struct {
+		SchemaVersion         int      `json:"schema_version"`
+		SideTaskID            string   `json:"side_task_id"`
+		ParentMissionID       string   `json:"parent_mission_id"`
+		ParentTaskID          string   `json:"parent_task_id"`
+		ParentRunID           string   `json:"parent_run_id"`
+		ParentClaimGeneration int64    `json:"parent_claim_generation"`
+		Purpose               string   `json:"purpose"`
+		Mode                  string   `json:"mode"`
+		Title                 string   `json:"title"`
+		AuthorizedRequest     string   `json:"authorized_request"`
+		PermissionScopes      []string `json:"permission_scopes"`
+		ProposalDigest        string   `json:"proposal_digest"`
+		CreatedAt             string   `json:"created_at"`
+	}{1, legacySideTaskID, legacyProposalRequest.ParentMissionID,
+		legacyProposalRequest.ParentTaskID, legacyProposalRequest.ParentRunID,
+		legacyProposalRequest.ParentClaimGeneration, legacyProposalRequest.Purpose,
+		legacyProposalRequest.Mode, legacyProposalRequest.Title,
+		legacyProposalRequest.AuthorizedRequest, []string{}, legacyProposal.ProposalDigest,
+		now().Format(time.RFC3339Nano)}
+	legacyBytes, err := json.Marshal(legacyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHash := sha256.Sum256(legacyBytes)
+	legacyDigest := hex.EncodeToString(legacyHash[:])
+	if _, err := bundle.evidence.Publish(context.Background(), bytes.NewReader(legacyBytes), legacyDigest); err != nil {
+		t.Fatal(err)
+	}
+	legacyChildID := deterministicID("side-execution", legacySideTaskID, legacyProposal.ProposalDigest, legacyDigest)
+	if _, err := bundle.workAuthority.AdmitSideTask(context.Background(), work.SideTaskAdmissionInput{
+		SideTaskID: legacySideTaskID, ParentMissionID: legacyProposalRequest.ParentMissionID,
+		ParentTeamInstanceID: legacyProposalRequest.ParentTeamInstanceID,
+		ParentTaskID:         legacyProposalRequest.ParentTaskID, ParentRunID: legacyProposalRequest.ParentRunID,
+		ParentClaimGeneration:       legacyProposalRequest.ParentClaimGeneration,
+		ParentExecutionDigest:       legacyProposalRequest.ParentExecutionDigest,
+		SideExecutionTeamInstanceID: legacyChildID, Purpose: legacyProposalRequest.Purpose,
+		Mode: legacyProposalRequest.Mode, Title: legacyProposalRequest.Title,
+		ProposalDigest: legacyProposal.ProposalDigest, InputArtifactDigest: legacyDigest,
+		ExpectedViewVersion: legacyProposalRequest.ExpectedViewVersion,
+		PermissionScopes:    []string{}, Confirmed: true, CorrelationID: legacyProposalRequest.CorrelationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacyPrompts := len(delegate.prompts)
+	if err := bundle.handoffService.ReconcileSideTasks(context.Background()); !errors.Is(err, app.ErrSideTaskProductUnavailable) {
+		t.Fatalf("legacy recovery error=%v", err)
+	}
+	if len(delegate.prompts) != legacyPrompts {
+		t.Fatal("legacy input dispatched a child")
+	}
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	legacyRecord, ok := readModel.GlobalReadView().SideTaskHandoff(legacySideTaskID)
+	if !ok || legacyRecord.Status != "admitted" || legacyRecord.HandoffVersion != 0 {
+		t.Fatalf("legacy durable state=%#v found=%v", legacyRecord, ok)
 	}
 }
 

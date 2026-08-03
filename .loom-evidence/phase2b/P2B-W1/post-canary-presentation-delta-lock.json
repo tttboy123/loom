@@ -1,0 +1,40 @@
+{
+  "schema": "loom.phase2b.p2b-w1.post-canary-presentation-delta-lock.v1",
+  "generated_at": "2026-08-03T13:21:15Z",
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "branch": "codex/loom-platform-slice2",
+  "baseline_head": "7a27149b31db7ffeefefb86c449ba448c3250fca",
+  "gate_state": "IMPLEMENTATION_REREVIEW_PASS_VISUAL_ONLY_AUTHORIZED",
+  "consumed_authority_canary_source_lock": {
+    "path": ".loom-evidence/phase2b/P2B-W1/source-lock.json",
+    "sha256": "411593c724dfc78424dbaf99c4936b2367b92dd65b402b6841220d5e738ef97c",
+    "immutable": true,
+    "authority_canary_rerun_authorized": false
+  },
+  "presentation_delta": {
+    "count": 2,
+    "files": {
+      "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift": "4f6edec07e42f9fdad802dcff914721f890dfd54bc92e80f6d707e0e470f5e35",
+      "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceViewTests.swift": "1b2de1e6b5c6cb41d6f38279ac94e37a10c7393432425c9142b1a0a0971ef95b"
+    }
+  },
+  "review_and_verification_evidence": {
+    ".loom-evidence/phase2b/P2B-W1/native-drawer-presentation-repair.md": "c5884dcc03a9a7527f74604b208a78ae7063add2fb558eeaec77e5a04b09398f",
+    ".loom-evidence/phase2b/P2B-W1/native-drawer-presentation-implementation-rereview.md": "1b2ec4d32e735fe281ebbb7e7a23006e602c66008fc63ab57041e97fc516e968",
+    ".loom-evidence/phase2b/P2B-W1/exact-candidate-boundary.md": "b204fdf5e8a46ea9b150e9c3633e71d7f49130861bd3e56ab364a762b1537ae4"
+  },
+  "implementation_review": {
+    "verdict": "PASS",
+    "p0": 0,
+    "p1": 0,
+    "p2": 0
+  },
+  "replacement_visual_only": {
+    "authorized": true,
+    "retained_canary_root": "/Users/lune/Library/Application Support/Loom/phase2b-live/canary-001",
+    "network": false,
+    "provider_credentials": false,
+    "authority_write": false,
+    "dispatch": false
+  }
+}

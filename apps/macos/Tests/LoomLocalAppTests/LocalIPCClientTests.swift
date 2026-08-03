@@ -10,6 +10,7 @@ final class LocalIPCClientTests: XCTestCase {
 
         XCTAssertNotNil(client as? LocalProductDecisionClientProtocol)
         XCTAssertNotNil(client as? LocalProductExecutionClientProtocol)
+        XCTAssertNotNil(client as? LocalProductHandoffClientProtocol)
     }
 
     func testFrameUsesFourByteBigEndianLength() throws {
@@ -80,6 +81,11 @@ final class LocalIPCClientTests: XCTestCase {
             "cursor_conflict",
             "stream_gap",
             "conflict",
+			"capability_gap",
+			"stale_view",
+			"stale_generation",
+			"digest_mismatch",
+			"human_required",
             "incompatible",
             "denied",
             "credential_unavailable",

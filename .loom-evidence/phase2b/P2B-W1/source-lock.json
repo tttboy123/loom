@@ -1,0 +1,56 @@
+{
+  "schema": "loom.phase2b.p2b-w1.source-lock.v1",
+  "generated_at": "2026-08-03T08:21:41Z",
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "branch": "codex/loom-platform-slice2",
+  "baseline_head": "7a27149b31db7ffeefefb86c449ba448c3250fca",
+  "gate_state": "IMPLEMENTATION_REVIEW_PASS_CANARY_AUTHORIZED",
+  "implementation_review": {
+    "verdict": "PASS",
+    "p0": 0,
+    "p1": 0,
+    "p2": 0,
+    "evidence_sha256": "c4b508b8adcbdaddb322e43707577c8e3fa2a40b87cbac8625e417a9c8af3665"
+  },
+  "source_inventory": {
+    "count": 37,
+    "ordered_digest_method": "sha256 of lexicographically path-sorted lines formatted as '<file_sha256>  <relative_path>\\n'",
+    "ordered_sha256_lines_digest": "7357879a89979d9094022760fdca64ef82c9b3f1ef35688304b2c2a1ad197fa0",
+    "selection": "exact changed product, application, authority, projection, IPC, TUI, Swift and test paths listed by exact-candidate-boundary.md"
+  },
+  "governance_evidence_inventory": {
+    "count": 18,
+    "ordered_digest_method": "sha256 of lexicographically path-sorted lines formatted as '<file_sha256>  <relative_path>\\n'",
+    "ordered_sha256_lines_digest": "0443520ed3076b1121212762f23e06478b9a2977dbdeea4e07e9c92216e7ed8f",
+    "selection": "four reviewed Phase 2B roadmap amendment files plus all pre-source-lock P2B-W1 evidence files"
+  },
+  "non_recursive_artifacts": {
+    ".loom-evidence/phase2b/P2B-W1/contract.md": "2bc98c99c301a014d8dabe7491bd53287148c10803537b6de9d420492c22a866",
+    ".loom-evidence/phase2b/P2B-W1/implementation-rereview-3.md": "c4b508b8adcbdaddb322e43707577c8e3fa2a40b87cbac8625e417a9c8af3665",
+    ".loom-evidence/phase2b/P2B-W1/exact-candidate-boundary.md": "2a4ee184c0ac359fe2832ef1670cd211aeeebfa6d3741f85d935adaca66fde7d",
+    "cmd/loomd/product_daemon_test.go": "65b3b4cc25332a7f89d62d8618bd82d9e8996a4e5b1233208a0c5c8f7c2b0516"
+  },
+  "shared_module_inputs": {
+    "go.mod": "5661fd814744d16f893969ea7e1987bf2a6552a9112dc73f04cf9a5eeefb7648",
+    "go.sum": "93eca99624544b76837539ccf81463513f62b7017d9ff006fc8095ef3c5bf873",
+    "apps/macos/Package.swift": "712b3d671ad121097137d76c5ed1f9a75b6034605583345e9100d3f24d77455d"
+  },
+  "intentionally_excluded": [
+    "internal/projection/team_execution_test.go",
+    ".loom-evidence/phase1-final-live-gate/**",
+    "AGENTS.md",
+    "PROGRESS.md",
+    "README.md",
+    ".codex/**",
+    ".loom-drafts/**",
+    "apps/macos/.build/**",
+    "/Users/lune/Library/Application Support/Loom/**"
+  ],
+  "canary_budget": {
+    "authorized_runs": 1,
+    "consumed_runs": 0,
+    "network": false,
+    "provider_credentials": false,
+    "replacement_without_reviewed_reopen": false
+  }
+}

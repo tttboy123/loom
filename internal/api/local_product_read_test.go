@@ -128,7 +128,7 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SchemaVersion != 2 ||
+	if snapshot.SchemaVersion != 3 ||
 		snapshot.Health != (LocalProductHealth{
 			Daemon: "serving_request", Journal: "available", Projection: "current",
 		}) ||
@@ -141,6 +141,13 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 		len(snapshot.Missions) != 1 ||
 		snapshot.Missions[0].Title != "Release Crew" {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	encodedSnapshot, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encodedSnapshot, []byte(`"side_tasks":[]`)) {
+		t.Fatalf("snapshot missing required empty side_tasks array: %s", encodedSnapshot)
 	}
 	health.reason = "observer_models_timeout"
 	health.partial = true

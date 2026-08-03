@@ -1,0 +1,49 @@
+{
+  "schema": "loom.phase2b.p2b-w1.final-candidate-lock.v1",
+  "generated_at": "2026-08-03T13:45:44Z",
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "branch": "codex/loom-platform-slice2",
+  "baseline_head": "7a27149b31db7ffeefefb86c449ba448c3250fca",
+  "gate_state": "WHOLE_CANDIDATE_REVIEW_PASS_ATOMIC_COMMIT_AUTHORIZED",
+  "locked_candidate_excluding_this_lock": {
+    "path_count": 71,
+    "canonical_manifest_algorithm": "sha256 over UTF-8 lines sorted by path: <sha256><two spaces><path><newline>",
+    "canonical_manifest_sha256": "89512d4b0298fdcaf023bb1e93276e87b76249a03579b81aaf69fc981ac8bd74"
+  },
+  "boundary_and_reviews": {
+    ".loom-evidence/phase2b/P2B-W1/exact-candidate-boundary.md": "b204fdf5e8a46ea9b150e9c3633e71d7f49130861bd3e56ab364a762b1537ae4",
+    ".loom-evidence/phase2b/P2B-W1/result-review.md": "f22f294964e8b46e6f4d6e338444960026de56f752e1a820b4eee8d3671e1685",
+    ".loom-evidence/phase2b/P2B-W1/whole-candidate-review.md": "f3d5305dac1af691a6a6f9d24468274b3384c77cdee87c2f17c4a51d61ceea1e",
+    ".loom-evidence/phase2b/P2B-W1/whole-candidate-review-clarification-rereview.md": "2dcdfe1ae4de4bb761c921831f8fc1973d23ec1c4c952ca097c4a2975e10c119",
+    ".loom-evidence/phase2a/PHASE2A-PRODUCT-OWNER-SIGNOFF.md": "10d093c770919edff7e5e3a436604886cd8a4b8f480b99b51a560aebe28b73b9",
+    "docs/CURRENT.md": "5d5a11c0b03dae73ac43faa406810f6e140868c48b71a9c445e897c9f6722306"
+  },
+  "canary_source_binding": {
+    "original_source_lock_sha256": "411593c724dfc78424dbaf99c4936b2367b92dd65b402b6841220d5e738ef97c",
+    "post_canary_presentation_delta_lock_sha256": "8e19132d75d4ae10da25f07d11f1e211a4b12ee40eee764961adf610ea75e970",
+    "authority_canary_attempts_consumed": 1,
+    "authority_canary_rerun": false
+  },
+  "retained_result_evidence": {
+    "sqlite_sha256": "f47e4095ad8da5799ce07ca6ceb8fe0ac29e13dc491b5c3ab3854adc996d037a",
+    "manifest_sha256": "ece9b16eeab8738013f04d36db96d3b5011ddba54e5d91ef5af3f0cb1bbeede2",
+    "native_screenshot_sha256": "39fbb354bff36997283a0cd96a3bfc2a1092a633accaf279fc5580ef136832e6",
+    "native_accessibility_transcript_sha256": "54c5e888507fff82a2a30bd4f6124ee8b9a8a3bac851223fd9bc02a1317f5f08"
+  },
+  "reviews": {
+    "implementation": "PASS",
+    "presentation_implementation": "PASS",
+    "result": "PASS",
+    "whole_candidate": "PASS",
+    "whole_candidate_clarification": "PASS",
+    "p0": 0,
+    "p1": 0,
+    "p2": 0
+  },
+  "index_policy": {
+    "excluded_path_matches": 0,
+    "product_source_diff_check": "PASS",
+    "known_governance_markdown_hard_breaks_preserved": true,
+    "push_or_merge_authorized": false
+  }
+}

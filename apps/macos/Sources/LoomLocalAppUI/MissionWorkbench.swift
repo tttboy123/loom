@@ -72,6 +72,46 @@ func missionHumanStatus(_ value: String) -> String {
     value.replacingOccurrences(of: "_", with: " ").capitalized
 }
 
+struct SideTaskDrawerPresentation: Equatable {
+    let purpose: String
+    let uncertainty: String
+    let scopeDelta: String
+    let nextAction: String
+}
+
+func sideTaskDrawerPresentation(
+    _ sideTask: LocalProductSideTaskSummary
+) -> SideTaskDrawerPresentation {
+    let uncertainty = sideTask.uncertainties.isEmpty
+        ? "None recorded"
+        : sideTask.uncertainties.joined(separator: "; ")
+    let scopeDelta = sideTask.scopeDelta.isEmpty
+        ? "No parent scope expansion"
+        : sideTask.scopeDelta.joined(separator: "; ")
+    let nextAction: String
+    if !sideTask.availableDecisions.isEmpty {
+        nextAction = "Choose an explicit parent decision"
+    } else if sideTask.status == "report_delivered" {
+        nextAction = "Review the authorized report"
+    } else if sideTask.effectStatus == "pending" {
+        nextAction = "Wait for the authorized parent effect"
+    } else if sideTask.effectStatus == "completed" {
+        nextAction = "Parent effect completed"
+    } else if sideTask.status == "decided" {
+        nextAction = "Parent decision recorded; no parent effect required"
+    } else if sideTask.status == "admitted" || sideTask.status == "running" {
+        nextAction = "Wait for the authorized handoff"
+    } else {
+        nextAction = "Review the authoritative Side-task status"
+    }
+    return SideTaskDrawerPresentation(
+        purpose: "Purpose · \(missionHumanStatus(sideTask.purpose))",
+        uncertainty: "Uncertainty · \(uncertainty)",
+        scopeDelta: "Scope · \(scopeDelta)",
+        nextAction: "Next action · \(nextAction)"
+    )
+}
+
 enum MissionSnapshotPresentation: Equatable {
     case current
     case partial(String)
@@ -261,10 +301,15 @@ public struct MissionWorkbench: View {
     @ObservedObject private var store: LocalProductStore
     @State private var showProviders = false
     @State private var showNewMission = false
+    @State private var showNewSideTask = false
     @State private var newMissionObjective = ""
     @State private var newMissionTeamID = ""
     @State private var newMissionWorkPackageID =
         LocalProductWorkPackageOption.coding.id
+    @State private var sideTaskPurpose = "research"
+    @State private var sideTaskMode = "report_only"
+    @State private var sideTaskTitle = ""
+    @State private var sideTaskRequest = ""
 
     public init(store: LocalProductStore) {
         self.store = store
@@ -304,6 +349,12 @@ public struct MissionWorkbench: View {
         .sheet(isPresented: $showNewMission) {
             newMissionSheet
                 .frame(minWidth: 620, minHeight: 520)
+        }
+        .sheet(isPresented: $showNewSideTask) {
+            if case .mission(let missionID) = store.workbench.route {
+                newSideTaskSheet(missionID)
+                    .frame(minWidth: 560, minHeight: 500)
+            }
         }
         .sheet(
             item: Binding(
@@ -966,6 +1017,95 @@ public struct MissionWorkbench: View {
                 }
             }
             Divider()
+            Text("Side-tasks")
+                .font(.subheadline.weight(.semibold))
+            Button("New side task", systemImage: "plus.bubble") {
+                store.discardSideTaskProposal()
+                showNewSideTask = true
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!store.canCreateSideTask(for: id))
+            .help(
+                store.canCreateSideTask(for: id)
+                    ? "Propose a bounded child task, then confirm it explicitly."
+                    : "Open the current authoritative Mission timeline before creating a side task."
+            )
+            let sideTasks = (store.snapshot?.sideTasks ?? []).filter {
+                $0.parentMissionID == id
+            }
+            if sideTasks.isEmpty {
+                Text("No Side-task handoff is recorded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(sideTasks, id: \.sideTaskID) { sideTask in
+                    let presentation = sideTaskDrawerPresentation(sideTask)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(sideTask.title)
+                            .font(.caption.weight(.semibold))
+                        Text(presentation.purpose)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("\(missionHumanStatus(sideTask.mode)) · \(missionHumanStatus(sideTask.status))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if !sideTask.whatHappened.isEmpty {
+                            Text(sideTask.whatHappened)
+                                .font(.caption)
+                                .lineLimit(3)
+                        }
+                        ForEach(Array(sideTask.authorizedFindings.prefix(3)), id: \.self) { finding in
+                            Text("Finding · \(finding)")
+                                .font(.caption2)
+                                .lineLimit(2)
+                        }
+                        Text("Risk · \(missionHumanStatus(sideTask.risk)) · Evidence \(sideTask.evidenceReferences.count) · Artifacts \(sideTask.artifactReferences.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let evidence = sideTask.evidenceReferences.first {
+                            Text("Evidence ref · \(missionHumanStatus(evidence.kind)) · \(evidence.evidenceID)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        if let artifact = sideTask.artifactReferences.first {
+                            Text("Artifact ref · \(missionHumanStatus(artifact.kind)) · \(String(artifact.digest.prefix(12)))…")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(
+                            sideTask.usageObserved
+                                ? "Usage · \(sideTask.usageMicrounits) microunits \(sideTask.usageCurrency)"
+                                : "Usage · Not observed"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        Text(presentation.uncertainty)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(presentation.scopeDelta)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(presentation.nextAction)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if !sideTask.availableDecisions.isEmpty {
+                            Menu("Choose next action") {
+                                ForEach(sideTask.availableDecisions, id: \.self) { decision in
+                                    Button(missionHumanStatus(decision)) {
+                                        Task { await store.decideSideTask(sideTask, decision: decision) }
+                                    }
+                                }
+                            }
+                            .disabled(!store.canCreateSideTask(for: id))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(LoomGraphite.surface, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            Divider()
             Text("Decision availability")
                 .font(.subheadline.weight(.semibold))
             if let command = store.preparedDecisionCommand(for: id) {
@@ -1001,6 +1141,63 @@ public struct MissionWorkbench: View {
         }
         .padding(14)
         .background(LoomGraphite.surface)
+    }
+
+    private func newSideTaskSheet(_ missionID: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("New side task").font(.title2.weight(.semibold))
+                    Text("Review the zero-write proposal before Loom starts an independent child run.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close") { showNewSideTask = false }
+            }
+            Picker("Purpose", selection: $sideTaskPurpose) {
+                ForEach(["research", "comparison", "diagnosis", "verification", "read_only_review"], id: \.self) {
+                    Text(missionHumanStatus($0)).tag($0)
+                }
+            }
+            Picker("Mode", selection: $sideTaskMode) {
+                ForEach(["report_only", "decision_required", "merge_candidate"], id: \.self) {
+                    Text(missionHumanStatus($0)).tag($0)
+                }
+            }
+            TextField("Short title", text: $sideTaskTitle)
+                .textFieldStyle(.roundedBorder)
+            TextEditor(text: $sideTaskRequest)
+                .frame(minHeight: 150)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(LoomGraphite.separator))
+            Text(store.sideTaskOperationStatus)
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                if store.sideTaskProposal == nil {
+                    Button("Review proposal") {
+                        Task {
+                            await store.proposeSideTask(
+                                missionID: missionID,
+                                purpose: sideTaskPurpose,
+                                mode: sideTaskMode,
+                                title: sideTaskTitle,
+                                authorizedRequest: sideTaskRequest
+                            )
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(sideTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sideTaskRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else {
+                    Button("Back") { store.discardSideTaskProposal() }
+                    Button("Confirm and run") {
+                        Task { await store.confirmSideTaskProposal() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .padding(24)
+        .accessibilityLabel("Side-task proposal and confirmation")
     }
 
     private var inspectorSectionIcon: String {

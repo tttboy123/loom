@@ -43,7 +43,7 @@ func TestLocalProductMissionFacadeUsesRealProjectionAndPreservesStaleView(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SchemaVersion != 2 || len(snapshot.Missions) != 1 {
+	if snapshot.SchemaVersion != 3 || len(snapshot.Missions) != 1 {
 		t.Fatalf("mission snapshot = %#v", snapshot)
 	}
 	mission := snapshot.Missions[0]

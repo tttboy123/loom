@@ -17,6 +17,20 @@ type errorEventSource struct {
 	err error
 }
 
+func mustBuildGlobalReadView(
+	t *testing.T,
+	snapshot Snapshot,
+	events []journal.Event,
+	teamExecutions map[string]TeamExecution,
+) GlobalReadView {
+	t.Helper()
+	view, err := buildGlobalReadView(snapshot, events, teamExecutions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return view
+}
+
 func (source errorEventSource) Events(context.Context) ([]journal.Event, error) {
 	return nil, source.err
 }
@@ -133,7 +147,7 @@ func TestGlobalReadViewReturnsLatestAgentGrantForRunBySequence(t *testing.T) {
 			issuePayload("grant-new", issuedAt.Add(time.Second)),
 		),
 	}
-	view := buildGlobalReadView(snapshot, events, nil)
+	view := mustBuildGlobalReadView(t, snapshot, events, nil)
 	latest, ok := view.LatestAgentGrantForRun("run-1")
 	if !ok || latest.ID != "grant-new" ||
 		latest.RevocationReason != "operator" {
@@ -196,7 +210,7 @@ func TestGlobalReadViewReturnsOnlyRequestedTeamRecordsAsStableCopies(t *testing.
 		IssuedAt: issuedAt.Add(-time.Second),
 	}
 
-	view := buildGlobalReadView(snapshot, nil, nil)
+	view := mustBuildGlobalReadView(t, snapshot, nil, nil)
 	workItems := view.WorkItemsForTeam("team-1")
 	if got, want := []string{workItems[0].ID, workItems[1].ID},
 		[]string{"work-a", "work-b"}; !reflect.DeepEqual(got, want) {
@@ -273,7 +287,7 @@ func TestGlobalReadViewReturnsBoundedStableProductPages(t *testing.T) {
 		},
 		"team-a": {TeamInstanceID: "team-a", Status: "planned"},
 	}
-	view := buildGlobalReadView(snapshot, nil, executions)
+	view := mustBuildGlobalReadView(t, snapshot, nil, executions)
 
 	teams, more := view.Teams("", 2)
 	if got, want := []string{teams[0].ID, teams[1].ID},
@@ -354,7 +368,7 @@ func TestGlobalReadViewTeamTimelineAnchorIsExactReadOnlyAndTerminal(t *testing.T
 		StreamID: "team-execution/team-legacy",
 		Seq:      1,
 	}}
-	view := buildGlobalReadView(
+	view := mustBuildGlobalReadView(t,
 		snapshot,
 		events,
 		map[string]TeamExecution{
@@ -416,7 +430,7 @@ func TestGlobalReadViewTeamTimelineAnchorIsExactReadOnlyAndTerminal(t *testing.T
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			candidate := buildGlobalReadView(
+			candidate := mustBuildGlobalReadView(t,
 				emptySnapshot(),
 				test.events,
 				map[string]TeamExecution{"team-legacy": test.execution},

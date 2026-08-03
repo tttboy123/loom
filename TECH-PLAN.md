@@ -849,10 +849,60 @@ source Run/Evidence digest、脱敏摘要、scope diff、预期收益和风险�
 Sidecar 继续通过受限 command/API 提交 Candidate，不能直接写 SQLite/Artifact Store 或修改运行中
 团队。Pattern extraction 不保存 raw Grant、凭据、隐藏推理或完整敏感 prompt。
 
-### 12.3 Phase 3A/3B 技术进入条件
+### 12.3 Phase 2B Side-task Handoff 技术边界
+
+Phase 2B 只有一个纵向合同：`P2B-W1 Side-task Handoff and Parent Decision`。它复用
+`TeamCoordinator`、`work.Authority.DispatchTeamReadySet`、现有 generation/CAS、Event
+Journal、Evidence Store、Projection 与 immutable `GlobalReadView`；不新增第二 Journal、
+StateWriter、Projection、Scheduler、队列数据库、resident worker pool 或 dispatch lane。
+
+准入前 Planner Proposal 对 Side-task lifecycle、WorkItem、Run、Grant、Evidence、容量和 dispatch
+保持零写入。Phase 2B v1 只接受用户显式确认。现有 Rules/Approval 事实不能完整表达可撤销、可过期、
+带预算的 standing `report_only` policy，所以任何 policy reference 都返回 `capability_gap` 且零写入；
+accepted policy success path 必须等待独立评审的 Rules capability。确认后才能建立独立的
+WorkItem/Run/Attempt/generation/least-privilege Grant/Evidence/capacity lineage；父任务 Grant、凭证、
+预算、generation 和更大资源 scope 不可继承。
+
+完整授权摘要使用严格版本化、大小有界、规范编码的内容寻址 Artifact。提交顺序固定为：
+
+```text
+canonicalize + bound authorized fields
+→ Evidence Store publish
+→ read-back + digest verify
+→ Journal AppendBatchIfStreamHeads CAS reference
+→ Projection / GlobalReadView
+```
+
+发布但未被 Journal 引用的 Artifact 只是 non-authoritative orphan；Journal 不得引用未验证字节。
+缺失或损坏的引用必须 fail closed，不能生成 ContextPacket 或继续父任务。重启测试覆盖 publish、
+CAS 和 response 前后的每个崩溃点。
+
+`SideTaskHandoff` 记录 side/parent identity、purpose、status、source generation、summary version、
+Artifact/Evidence digest、risk、uncertainty、scope delta、usage/cost、closed decision options 和
+proposal-only recommendation。Journal 只保留 lifecycle、lineage、version、digest 和决定，不保存
+完整摘要。父任务只能通过 allowlist 派生的 versioned bounded `ContextPacket` 吸收授权字段。
+
+所有决定绑定 exact GlobalReadView version、parent/Side-task generation、handoff version/digest 和
+stream heads。`absorb`、`continue`、`request_followup`、`pivot`、`discard`、`archive`、
+`cancel_parent` 的 effect 由一个 reviewed writer/Event set 和 multi-stream CAS 完成；并发只有一个
+winner，loser 零父任务写入。`decision_required` 仅门控未来 continuation；timeout 保持 paused 或
+进入 `human_required`。`merge_candidate` 必须有 accepted source Evidence 与独立验证，且从不自行
+apply/merge source 或 originals。
+
+Go/Swift/IPC schema 必须拒绝 unknown/duplicate/null-required/oversized/non-canonical/digest-mismatch；
+raw transcript、hidden reasoning、credential、raw Grant、完整敏感 prompt 和逐 token Journal 写入均
+禁止。Native GUI 与 TUI 只通过同一 Go service/strict IPC 读取和决定。
+
+最低验证包含 Proposal zero-write、显式确认成功、policy-reference capability-gap zero-write、独立 lineage、全部七种 decision、并发 CAS、Artifact
+crash recovery、stale view/generation、wrong digest、Projection old-view preservation、daemon restart/
+rebuild、real Go IPC → Swift/TUI journey、non-disclosure 与零重复副作用。Contract Review PASS 与
+Mandatory RED 前不得实施。
+
+### 12.4 Phase 3A/3B 技术进入条件
 
 Phase 3A 承载计划中的 `v0.2.0` Versioned Evolution Assets and Runtime Materialization，
-但不得在 Phase 2A 内扩项。进入 Phase 3A 前必须满足：
+但不得在 Phase 2A 内扩项。Phase 2B 与 Phase 3A 可分别治理，但 Phase 2B 不成为 Phase 3A 的
+新进入前置；共享文件不得由两个并行实施 Candidate 同时写。进入 Phase 3A 前必须满足：
 
 1. Phase 2A 的 P2A-W1、P2A-W2、P2A-W3、whole-Phase Review 和用户 sign-off 全部通过；
 2. Phase 2 的 Runtime Capability Matrix、凭证边界和 exact Skill revision 绑定入口已接受；

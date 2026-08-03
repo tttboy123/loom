@@ -19,6 +19,11 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case unsupportedPlatform = "unsupported_platform"
         case notFound = "not_found"
         case conflict
+        case capabilityGap = "capability_gap"
+        case staleView = "stale_view"
+        case staleGeneration = "stale_generation"
+        case digestMismatch = "digest_mismatch"
+        case humanRequired = "human_required"
         case incompatible
         case denied
         case credentialUnavailable = "credential_unavailable"
@@ -386,7 +391,8 @@ public final class LocalIPCClient:
     LocalProductClientProtocol,
     LocalProductDecisionClientProtocol,
     LocalProductSetupClientProtocol,
-    LocalProductExecutionClientProtocol
+    LocalProductExecutionClientProtocol,
+    LocalProductHandoffClientProtocol
 {
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
@@ -500,6 +506,34 @@ public final class LocalIPCClient:
             }
         }
         return envelope
+    }
+
+    public func proposeSideTask(
+        _ request: LocalProductSideTaskProposalRequest
+    ) async throws -> LocalProductSideTaskProposalResult {
+        let result = try await call(method: "side_task_handoff", params: request)
+        return try LocalProductHandoffWire.decodeProposal(result)
+    }
+
+    public func createSideTask(
+        _ request: LocalProductSideTaskCreateRequest
+    ) async throws -> LocalProductSideTaskCreateResult {
+        let result = try await call(method: "side_task_handoff", params: request)
+        return try LocalProductHandoffWire.decodeCreate(result)
+    }
+
+    public func readSideTask(
+        _ request: LocalProductSideTaskReadRequest
+    ) async throws -> LocalProductSideTaskReadResult {
+        let result = try await call(method: "side_task_handoff", params: request)
+        return try LocalProductHandoffWire.decodeRead(result)
+    }
+
+    public func decideSideTask(
+        _ request: LocalProductSideTaskDecisionRequest
+    ) async throws -> LocalProductSideTaskDecisionResult {
+        let result = try await call(method: "side_task_handoff", params: request)
+        return try LocalProductHandoffWire.decodeDecision(result)
     }
 
     public func setupSnapshot() async throws -> LocalProductSetupSnapshot {
@@ -733,6 +767,7 @@ public final class LocalIPCClient:
             "team_restore", "credential_configure", "credential_verify",
             "credential_replace", "credential_revoke", "mission_decision",
             "mission_execution",
+            "side_task_handoff",
         ])
         guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
             throw LocalProductClientError.invalidRequest

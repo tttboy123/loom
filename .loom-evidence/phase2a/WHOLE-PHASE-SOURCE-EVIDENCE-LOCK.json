@@ -1,0 +1,58 @@
+{
+  "schema": "loom.phase2a.whole-phase-source-evidence-lock.v1",
+  "generated_at": "2026-08-03T10:20:31+08:00",
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "branch": "codex/loom-platform-slice2",
+  "accepted_head": "7a27149b31db7ffeefefb86c449ba448c3250fca",
+  "gate_state": "PRODUCT_OWNER_SIGNOFF_ACCEPTED_PHASE2B_CONTRACT_GOVERNANCE_AUTHORIZED",
+  "source_inventory": {
+    "count": 120,
+    "ordered_digest_method": "sha256 of lexicographically path-sorted lines formatted as '<file_sha256>  <relative_path>\\n'",
+    "ordered_sha256_lines_digest": "b2e22696590c40be5a79d4d4c33d6d9bd5a9799dfaad342d9f80be057591b81d",
+    "selection": "ordered union of product/test/script paths changed by Phase 2A commits after c30a9bc through 7a27149b, excluding the four cloud MCP commits, internal/mcp, governance/evidence, generated Swift output and external live roots"
+  },
+  "accepted_evidence_inventory": {
+    "count": 464,
+    "ordered_digest_method": "sha256 of lexicographically path-sorted lines formatted as '<file_sha256>  <relative_path>\\n'",
+    "ordered_sha256_lines_digest": "777dd1fc6415e1b4a606cfdf92a8e044294d382ff7f7a41b9026b8a1125f8023",
+    "selection": "all 462 tracked .loom-evidence/phase2a paths at 7a27149b plus whole-phase-swift-timeline-fixture-race-repair.md and PHASE2A-PRODUCT-OWNER-SIGNOFF.md"
+  },
+  "non_recursive_artifacts": {
+    ".loom-evidence/phase2a/WHOLE-PHASE-EXIT-MATRIX.md": "cae9609edad9d67c19443cad50300198e4072385f58d1d8d30ecd0a737692997",
+    ".loom-evidence/phase2a/WHOLE-PHASE-REVIEW.md": "b5541b588b4c801846855d09602cade459d82d7c3a820d0da4408991700fc662",
+    ".loom-evidence/phase2a/WHOLE-PHASE-VERIFICATION.md": "8d3ea5c27cba8e28a5fbc83c8e9093abc1118154fbead0e3e326ad670cebe3fd",
+    ".loom-evidence/phase2a/whole-phase-swift-timeline-fixture-race-repair.md": "cffa9807ee5a6a4074a498b6de0c324dbc3c333fd927fea53fc8c3cfffc93559",
+    ".loom-evidence/phase2a/PHASE2A-PRODUCT-OWNER-SIGNOFF.md": "10d093c770919edff7e5e3a436604886cd8a4b8f480b99b51a560aebe28b73b9",
+    "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift": "c217727912104dd06281e9c0fc8c702e41839422d0de3eae53e3d302df3464fd",
+    "docs/CURRENT.md": "49bf9a43c2e9626a60c6ab4219435c52300a58fb4348a1e910c5dcc0f4b3cbaf"
+  },
+  "shared_module_inputs": {
+    "go.mod": "5661fd814744d16f893969ea7e1987bf2a6552a9112dc73f04cf9a5eeefb7648",
+    "go.sum": "93eca99624544b76837539ccf81463513f62b7017d9ff006fc8095ef3c5bf873"
+  },
+  "excluded_commits": [
+    "6473f80c40d2b3ddbda3dde7e4b58dc33b005616",
+    "ee1d5cb6a42c33b58cdb22dde679e0a4fac1680d",
+    "fe4b8c925e779b21fae0fde8e8472fd7a668ab1b",
+    "848f068cbc0307f14473f6a71961db949a8734ca"
+  ],
+  "intentionally_excluded": [
+    "internal/mcp/**",
+    ".loom-drafts/**",
+    ".codex/**",
+    ".loom-evidence/phase1-final-live-gate/**",
+    ".loom-evidence/phase1-slice3/**",
+    ".loom-evidence/plan-amendments/**",
+    "AGENTS.md",
+    "README.md",
+    "PROGRESS.md",
+    "apps/macos/.build/**",
+    "/Users/lune/Library/Application Support/Loom/**"
+  ],
+  "product_owner_signoff": {
+    "date": "2026-08-03",
+    "decision": "APPROVED",
+    "authority_text": "批准 Phase 2A 整体签署，授权进入 Phase 2B 合同治理。"
+  },
+  "claim_boundary": "Independent Whole-Phase Review PASS and explicit Product Owner sign-off are recorded. Phase 2A is closed and the unique P2B-W1 may enter roadmap and contract governance. No P2B product write, live canary, production activation, P2A-W4, P2B-W2, push or merge is represented by this lock."
+}

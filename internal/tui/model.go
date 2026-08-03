@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -108,6 +109,13 @@ type ExecutionClient interface {
 	) (api.MissionExecutionEnvelope, error)
 }
 
+type HandoffClient interface {
+	ProposeSideTask(context.Context, app.SideTaskProposalRequest) (app.SideTaskProposalResult, error)
+	CreateSideTask(context.Context, app.SideTaskCreateRequest) (app.SideTaskCreateResult, error)
+	ReadSideTask(context.Context, app.SideTaskReadRequest) (app.SideTaskReadResult, error)
+	DecideSideTask(context.Context, app.SideTaskDecisionRequest) (app.SideTaskDecisionResult, error)
+}
+
 type DaemonReadClient struct {
 	client *localipc.Client
 }
@@ -144,6 +152,27 @@ func (client *DaemonReadClient) ExecuteMission(
 	var envelope api.MissionExecutionEnvelope
 	err := client.client.Call(ctx, "mission_execution", command, &envelope)
 	return envelope, err
+}
+
+func (client *DaemonReadClient) ProposeSideTask(ctx context.Context, request app.SideTaskProposalRequest) (app.SideTaskProposalResult, error) {
+	var result app.SideTaskProposalResult
+	err := client.client.Call(ctx, "side_task_handoff", request, &result)
+	return result, err
+}
+func (client *DaemonReadClient) CreateSideTask(ctx context.Context, request app.SideTaskCreateRequest) (app.SideTaskCreateResult, error) {
+	var result app.SideTaskCreateResult
+	err := client.client.Call(ctx, "side_task_handoff", request, &result)
+	return result, err
+}
+func (client *DaemonReadClient) ReadSideTask(ctx context.Context, request app.SideTaskReadRequest) (app.SideTaskReadResult, error) {
+	var result app.SideTaskReadResult
+	err := client.client.Call(ctx, "side_task_handoff", request, &result)
+	return result, err
+}
+func (client *DaemonReadClient) DecideSideTask(ctx context.Context, request app.SideTaskDecisionRequest) (app.SideTaskDecisionResult, error) {
+	var result app.SideTaskDecisionResult
+	err := client.client.Call(ctx, "side_task_handoff", request, &result)
+	return result, err
 }
 
 func (client *DaemonReadClient) SetupSnapshot(
@@ -318,6 +347,15 @@ type missionExecutionFailedMsg struct {
 	err error
 }
 
+type sideTaskProposedMsg struct {
+	request app.SideTaskProposalRequest
+	result  app.SideTaskProposalResult
+}
+
+type sideTaskCreatedMsg struct{ result app.SideTaskCreateResult }
+type sideTaskDecidedMsg struct{ result app.SideTaskDecisionResult }
+type sideTaskFailedMsg struct{ err error }
+
 const (
 	entryBuilderAnswer    = "builder_answer"
 	entryEditName         = "edit_name"
@@ -326,12 +364,14 @@ const (
 	entryCredentialSwap   = "credential_swap"
 	entryTaskSearch       = "task_search"
 	entryMissionObjective = "mission_objective"
+	entrySideTaskRequest  = "side_task_request"
 )
 
 type Model struct {
 	client          ReadClient
 	setupClient     SetupClient
 	executionClient ExecutionClient
+	handoffClient   HandoffClient
 	ctx             context.Context
 	cancel          context.CancelFunc
 
@@ -361,6 +401,13 @@ type Model struct {
 	missionPackageIndex int
 	missionPreflight    app.MissionExecutionPreflight
 	missionResult       app.MissionExecutionResult
+	sideTaskPurpose     string
+	sideTaskMode        string
+	sideTaskTitle       string
+	sideTaskRequest     string
+	sideTaskProposalReq app.SideTaskProposalRequest
+	sideTaskProposal    app.SideTaskProposalResult
+	sideTaskDecision    int
 	decisionOpen        bool
 	taskFilter          string
 	navigationPrefix    bool
@@ -383,15 +430,19 @@ func newModelWithContext(
 	ctx, cancel := context.WithCancel(parent)
 	setupClient, _ := client.(SetupClient)
 	executionClient, _ := client.(ExecutionClient)
+	handoffClient, _ := client.(HandoffClient)
 	return Model{
 		client:          client,
 		setupClient:     setupClient,
 		executionClient: executionClient,
+		handoffClient:   handoffClient,
 		ctx:             ctx,
 		cancel:          cancel,
 		width:           80,
 		height:          24,
 		loading:         true,
+		sideTaskPurpose: "research",
+		sideTaskMode:    "report_only",
 	}, nil
 }
 
@@ -520,6 +571,28 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 		model.lastError = safeClientState(message.err)
 		return model, nil
+	case sideTaskProposedMsg:
+		model.loading = false
+		model.lastError = ""
+		model.sideTaskProposalReq = message.request
+		model.sideTaskProposal = message.result
+		return model, nil
+	case sideTaskCreatedMsg:
+		model.loading = false
+		model.lastError = ""
+		model.sideTaskProposalReq = app.SideTaskProposalRequest{}
+		model.sideTaskProposal = app.SideTaskProposalResult{}
+		model.sideTaskRequest = ""
+		model.sideTaskTitle = ""
+		return model, model.loadSnapshot()
+	case sideTaskDecidedMsg:
+		model.loading = false
+		model.lastError = ""
+		return model, model.loadSnapshot()
+	case sideTaskFailedMsg:
+		model.loading = false
+		model.lastError = safeClientState(message.err)
+		return model, nil
 	case setupFailedMsg:
 		model.loading = false
 		model.offline = errors.Is(
@@ -617,6 +690,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.help = !model.help
 			return model, nil
 		case "esc":
+			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest != "" {
+				model.sideTaskProposalReq = app.SideTaskProposalRequest{}
+				model.sideTaskProposal = app.SideTaskProposalResult{}
+				return model, nil
+			}
 			if model.Screen() == ScreenMission && model.decisionOpen {
 				model.decisionOpen = false
 				return model, nil
@@ -699,6 +777,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "n":
+			if model.Screen() == ScreenMission && model.handoffClient != nil &&
+				model.sideTaskProposal.ProposalDigest == "" {
+				model.entryMode = entrySideTaskRequest
+				model.entry = []byte(model.sideTaskRequest)
+				return model, nil
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.setupClient != nil &&
 				model.builder.DraftID == "" {
@@ -807,11 +891,51 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.verifyCredential()
 			}
 		case "x":
+			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest != "" {
+				model.sideTaskProposalReq = app.SideTaskProposalRequest{}
+				model.sideTaskProposal = app.SideTaskProposalResult{}
+				return model, nil
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.setup.MiniMax.CredentialReference != "" &&
 				model.setup.MiniMax.Revision > 0 {
 				model.loading = true
 				return model, model.revokeCredential()
+			}
+		case "y":
+			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest == "" {
+				model.cycleSideTaskPurpose()
+				return model, nil
+			}
+		case "o":
+			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest == "" {
+				model.cycleSideTaskMode()
+				return model, nil
+			}
+		case "f":
+			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest != "" {
+				model.loading = true
+				return model, model.createSideTask()
+			}
+		case "[":
+			if model.Screen() == ScreenMission && model.sideTaskDecision > 0 {
+				model.sideTaskDecision--
+				return model, nil
+			}
+		case "]":
+			if model.Screen() == ScreenMission {
+				if sideTask, ok := model.currentDecisionSideTask(); ok && len(sideTask.AvailableDecisions) > 0 {
+					model.sideTaskDecision = (model.sideTaskDecision + 1) % len(sideTask.AvailableDecisions)
+				}
+				return model, nil
+			}
+		case "d":
+			if model.Screen() == ScreenMission {
+				if _, ok := model.currentDecisionSideTask(); ok {
+					model.loading = true
+					return model, model.decideSideTask()
+				}
+				return model, nil
 			}
 		}
 	}
@@ -1002,6 +1126,24 @@ func (model Model) screenBody() string {
 				mission.ActiveNodeCount,
 			),
 		}
+		if model.handoffClient != nil {
+			if model.entryMode == entrySideTaskRequest {
+				lines = append(lines,
+					"Side-task request · "+sanitizeCell(string(model.entry), 72),
+					"enter review zero-write proposal · esc clear",
+				)
+			}
+			if model.sideTaskProposal.ProposalDigest == "" {
+				lines = append(lines, fmt.Sprintf(
+					"New Side-task · n request · y purpose %s · o mode %s",
+					humanizeStatus(model.sideTaskPurpose), humanizeStatus(model.sideTaskMode),
+				))
+			} else {
+				lines = append(lines,
+					"Side-task proposal ready · zero writes so far · f Confirm and run · x Discard",
+				)
+			}
+		}
 		if mission.AttentionCount > 0 {
 			lines = append(
 				lines,
@@ -1024,6 +1166,66 @@ func (model Model) screenBody() string {
 				"Plan · %s waits for %s",
 				model.missionNodeDisplayTitle(mission, node.LogicalNodeID),
 				model.missionDependencyDisplayTitles(mission, node.DependsOn),
+			))
+		}
+		sideTaskCount := 0
+		for _, sideTask := range model.snapshot.SideTasks {
+			if sideTask.ParentMissionID != mission.MissionID {
+				continue
+			}
+			if sideTaskCount == 0 {
+				lines = append(lines, "Side-tasks")
+			}
+			sideTaskCount++
+			lines = append(lines, fmt.Sprintf(
+				"  %s · %s · %s",
+				sanitizeCell(sideTask.Title, 48),
+				humanizeStatus(sideTask.Mode),
+				humanizeStatus(sideTask.Status),
+			))
+			if sideTask.WhatHappened != "" {
+				lines = append(lines, "    "+sanitizeCell(sideTask.WhatHappened, 72))
+			}
+			if sideTask.Risk != "" || len(sideTask.Uncertainties) > 0 {
+				lines = append(lines, fmt.Sprintf(
+					"    Risk %s · Uncertainty %d · Evidence %d · Artifacts %d",
+					humanizeStatus(sideTask.Risk), len(sideTask.Uncertainties),
+					len(sideTask.EvidenceReferences), len(sideTask.ArtifactReferences),
+				))
+			}
+			for _, finding := range sideTask.AuthorizedFindings {
+				lines = append(lines, "    Finding · "+sanitizeCell(finding, 64))
+			}
+			if len(sideTask.EvidenceReferences) > 0 {
+				reference := sideTask.EvidenceReferences[0]
+				lines = append(lines, "    Evidence ref · "+
+					sanitizeCell(reference.Kind+" · "+reference.EvidenceID, 68))
+			}
+			if len(sideTask.ArtifactReferences) > 0 {
+				reference := sideTask.ArtifactReferences[0]
+				digest := reference.Digest
+				if len(digest) > 12 {
+					digest = digest[:12] + "…"
+				}
+				lines = append(lines, "    Artifact ref · "+reference.Kind+" · "+digest)
+			}
+			if sideTask.UsageObserved {
+				lines = append(lines, fmt.Sprintf(
+					"    Usage · %d microunits %s",
+					sideTask.UsageMicrounits, sideTask.UsageCurrency,
+				))
+			} else {
+				lines = append(lines, "    Usage · Not observed")
+			}
+		}
+		if sideTask, ok := model.currentDecisionSideTask(); ok {
+			index := model.sideTaskDecision
+			if index >= len(sideTask.AvailableDecisions) {
+				index = 0
+			}
+			lines = append(lines, fmt.Sprintf(
+				"Side-task next action · %s · [ ] choose · d Apply exact action",
+				humanizeStatus(sideTask.AvailableDecisions[index]),
 			))
 		}
 		for _, record := range model.timeline.Records {
@@ -1550,6 +1752,210 @@ type missionCancelBinding struct {
 	claimGeneration int64
 }
 
+type sideTaskParentBinding struct {
+	teamInstanceID  string
+	logicalNodeID   string
+	attemptNumber   int
+	workItemID      string
+	runID           string
+	claimGeneration int64
+	executionDigest string
+}
+
+func (model Model) currentSideTaskParentBinding(expectedWorkItemID, expectedRunID string) (sideTaskParentBinding, bool) {
+	result := model.missionResult
+	if result.MissionID == "" || result.MissionID != model.currentMission ||
+		result.TeamInstanceID == "" || result.TeamInstanceID != model.currentTeam ||
+		len(result.ExecutionDigest) != 64 {
+		return sideTaskParentBinding{}, false
+	}
+	return model.projectedSideTaskParentBinding(
+		result.MissionID, result.TeamInstanceID, expectedWorkItemID, expectedRunID,
+		result.ExecutionDigest,
+	)
+}
+
+func (model Model) projectedSideTaskParentBinding(
+	missionID, teamInstanceID, expectedWorkItemID, expectedRunID, executionDigest string,
+) (sideTaskParentBinding, bool) {
+	if missionID == "" || missionID != model.currentMission ||
+		teamInstanceID == "" || teamInstanceID != model.currentTeam ||
+		len(executionDigest) != 64 || len(model.snapshot.ViewVersion) != 64 ||
+		model.timeline.ViewVersion != model.snapshot.ViewVersion ||
+		model.timeline.Board.ViewVersion != model.snapshot.ViewVersion ||
+		model.timeline.TeamInstanceID != teamInstanceID ||
+		model.timeline.Board.TeamInstanceID != teamInstanceID {
+		return sideTaskParentBinding{}, false
+	}
+	missionFound := false
+	for _, mission := range model.snapshot.Missions {
+		if mission.MissionID == missionID && mission.TeamInstanceID == teamInstanceID {
+			missionFound = true
+			break
+		}
+	}
+	if !missionFound {
+		return sideTaskParentBinding{}, false
+	}
+	for _, node := range model.timeline.Board.Nodes {
+		if node.CurrentAttempt < 1 || node.RunID == "" || node.WorkItemID == "" {
+			continue
+		}
+		if (expectedWorkItemID != "" && node.WorkItemID != expectedWorkItemID) ||
+			(expectedRunID != "" && node.RunID != expectedRunID) {
+			continue
+		}
+		for _, run := range model.snapshot.Runs {
+			if run.RunID == node.RunID && run.WorkItemID == node.WorkItemID {
+				return sideTaskParentBinding{
+					teamInstanceID: teamInstanceID, logicalNodeID: node.LogicalNodeID,
+					attemptNumber: node.CurrentAttempt, workItemID: node.WorkItemID,
+					runID: node.RunID, claimGeneration: run.ClaimGeneration,
+					executionDigest: executionDigest,
+				}, true
+			}
+		}
+	}
+	return sideTaskParentBinding{}, false
+}
+
+func (model *Model) cycleSideTaskPurpose() {
+	values := []string{"research", "comparison", "diagnosis", "verification", "read_only_review"}
+	for index, value := range values {
+		if value == model.sideTaskPurpose {
+			model.sideTaskPurpose = values[(index+1)%len(values)]
+			return
+		}
+	}
+	model.sideTaskPurpose = values[0]
+}
+
+func (model *Model) cycleSideTaskMode() {
+	values := []string{"report_only", "decision_required", "merge_candidate"}
+	for index, value := range values {
+		if value == model.sideTaskMode {
+			model.sideTaskMode = values[(index+1)%len(values)]
+			return
+		}
+	}
+	model.sideTaskMode = values[0]
+}
+
+func (model Model) proposeSideTask() tea.Cmd {
+	client := model.handoffClient
+	ctx := model.ctx
+	binding, ok := model.currentSideTaskParentBinding("", "")
+	requestText := strings.TrimSpace(model.sideTaskRequest)
+	title := strings.TrimSpace(model.sideTaskTitle)
+	if title == "" {
+		title = "Side task"
+	}
+	correlationID, correlationErr := newTUICorrelationID()
+	request := app.SideTaskProposalRequest{
+		SchemaVersion: 1, Operation: "propose", ParentMissionID: model.currentMission,
+		ParentTeamInstanceID: binding.teamInstanceID, ParentTaskID: binding.workItemID,
+		ParentRunID: binding.runID, ParentClaimGeneration: binding.claimGeneration,
+		ParentExecutionDigest: binding.executionDigest,
+		Purpose:               model.sideTaskPurpose, Mode: model.sideTaskMode, Title: title,
+		AuthorizedRequest: requestText, PermissionScopes: []string{},
+		ExpectedViewVersion: model.snapshot.ViewVersion, CorrelationID: correlationID,
+	}
+	if request.Mode != "report_only" {
+		request.DecisionTimeoutSeconds = 900
+	}
+	return func() tea.Msg {
+		if client == nil || !ok || correlationErr != nil || requestText == "" {
+			return sideTaskFailedMsg{err: app.ErrInvalidSideTaskProduct}
+		}
+		result, err := client.ProposeSideTask(ctx, request)
+		if err != nil {
+			return sideTaskFailedMsg{err: err}
+		}
+		return sideTaskProposedMsg{request: request, result: result}
+	}
+}
+
+func (model Model) createSideTask() tea.Cmd {
+	client := model.handoffClient
+	ctx := model.ctx
+	request := model.sideTaskProposalReq
+	proposal := model.sideTaskProposal
+	request.Operation = "create"
+	return func() tea.Msg {
+		if client == nil || proposal.ProposalDigest == "" {
+			return sideTaskFailedMsg{err: app.ErrInvalidSideTaskProduct}
+		}
+		result, err := client.CreateSideTask(ctx, app.SideTaskCreateRequest{
+			SideTaskProposalRequest: request, ProposalDigest: proposal.ProposalDigest,
+			Confirmed: true,
+		})
+		if err != nil {
+			return sideTaskFailedMsg{err: err}
+		}
+		return sideTaskCreatedMsg{result: result}
+	}
+}
+
+func (model Model) currentDecisionSideTask() (api.LocalProductSideTaskSummary, bool) {
+	for _, sideTask := range model.snapshot.SideTasks {
+		if sideTask.ParentMissionID == model.currentMission && len(sideTask.AvailableDecisions) > 0 {
+			return sideTask, true
+		}
+	}
+	return api.LocalProductSideTaskSummary{}, false
+}
+
+func (model Model) decideSideTask() tea.Cmd {
+	client := model.handoffClient
+	ctx := model.ctx
+	sideTask, sideOK := model.currentDecisionSideTask()
+	binding, bindingOK := model.projectedSideTaskParentBinding(
+		sideTask.ParentMissionID, sideTask.ParentTeamInstanceID,
+		sideTask.ParentTaskID, sideTask.ParentRunID, sideTask.ParentExecutionDigest,
+	)
+	index := model.sideTaskDecision
+	if index >= len(sideTask.AvailableDecisions) {
+		index = 0
+	}
+	decision := ""
+	if len(sideTask.AvailableDecisions) > 0 {
+		decision = sideTask.AvailableDecisions[index]
+	}
+	effect := sha256.Sum256([]byte(strings.Join(
+		[]string{
+			"parent-effect-v1", sideTask.SideTaskID, sideTask.ParentTeamInstanceID,
+			sideTask.ParentTaskID, sideTask.ParentRunID,
+			fmt.Sprint(sideTask.ParentClaimGeneration), sideTask.ParentExecutionDigest,
+			sideTask.HandoffDigest, decision,
+		}, "\x00",
+	)))
+	correlationID, correlationErr := newTUICorrelationID()
+	request := app.SideTaskDecisionRequest{
+		SchemaVersion: 1, Operation: "decide", SideTaskID: sideTask.SideTaskID,
+		ParentMissionID: sideTask.ParentMissionID, ParentTeamInstanceID: sideTask.ParentTeamInstanceID,
+		ParentTaskID: sideTask.ParentTaskID, ParentRunID: sideTask.ParentRunID,
+		ParentLogicalNodeID: binding.logicalNodeID, ParentAttemptNumber: binding.attemptNumber,
+		ParentClaimGeneration: sideTask.ParentClaimGeneration,
+		ParentExecutionDigest: sideTask.ParentExecutionDigest, SideTaskGeneration: sideTask.SourceGeneration,
+		HandoffVersion: sideTask.HandoffVersion, HandoffDigest: sideTask.HandoffDigest,
+		Decision: decision, EffectDigest: hex.EncodeToString(effect[:]),
+		ExpectedViewVersion: model.snapshot.ViewVersion, CorrelationID: correlationID,
+	}
+	return func() tea.Msg {
+		if client == nil || !sideOK || !bindingOK || correlationErr != nil ||
+			binding.workItemID != sideTask.ParentTaskID || binding.runID != sideTask.ParentRunID ||
+			binding.claimGeneration != sideTask.ParentClaimGeneration ||
+			binding.executionDigest != sideTask.ParentExecutionDigest {
+			return sideTaskFailedMsg{err: app.ErrSideTaskProductConflict}
+		}
+		result, err := client.DecideSideTask(ctx, request)
+		if err != nil {
+			return sideTaskFailedMsg{err: err}
+		}
+		return sideTaskDecidedMsg{result: result}
+	}
+}
+
 func (model Model) currentMissionCancelBinding() (missionCancelBinding, bool) {
 	result := model.missionResult
 	if result.MissionID == "" || result.MissionID != model.currentMission ||
@@ -1794,6 +2200,18 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.invalidateMissionPreflight()
 			return model, nil
 		}
+		if model.entryMode == entrySideTaskRequest {
+			request := strings.TrimSpace(sanitizeCell(string(model.entry), 4096))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if request == "" {
+				return model, nil
+			}
+			model.sideTaskRequest = request
+			model.loading = true
+			return model, model.proposeSideTask()
+		}
 		if len(model.entry) == 0 {
 			return model, nil
 		}
@@ -1827,7 +2245,7 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return model, nil
 	}
 	maximum := 2048
-	if model.entryMode == entryMissionObjective {
+	if model.entryMode == entryMissionObjective || model.entryMode == entrySideTaskRequest {
 		maximum = 4096
 	}
 	if model.entryMode == entryCredentialPut ||

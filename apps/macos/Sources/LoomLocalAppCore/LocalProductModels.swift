@@ -20,7 +20,7 @@ private struct AnyCodingKey: CodingKey {
     }
 }
 
-private func rejectUnknownKeys(
+func rejectUnknownKeys(
     _ decoder: Decoder,
     allowed: Set<String>
 ) throws {
@@ -535,6 +535,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
     public let evidence: [LocalProductEvidenceSummary]
     public let attention: [LocalProductAttention]
     public let preparedDecisions: [LocalProductDecisionCommand]
+    public let sideTasks: [LocalProductSideTaskSummary]
     public let runtimePage: LocalProductPageCursor
     public let teamPage: LocalProductPageCursor
     public let missionPage: LocalProductPageCursor
@@ -547,6 +548,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         case partial, stale, reason, health, runtimes, teams, missions, runs, evidence
         case attention
         case preparedDecisions = "prepared_decisions"
+        case sideTasks = "side_tasks"
         case runtimePage = "runtime_page"
         case teamPage = "team_page"
         case missionPage = "mission_page"
@@ -561,18 +563,18 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
                 "schema_version", "view_version", "partial", "stale", "reason",
                 "health", "runtimes", "teams", "missions", "runs", "evidence", "attention",
                 "prepared_decisions", "runtime_page", "team_page", "mission_page",
-                "run_page", "evidence_page",
+                "run_page", "evidence_page", "side_tasks",
             ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
-        guard schemaVersion == 1 || schemaVersion == 2 else {
+        guard schemaVersion == 1 || schemaVersion == 2 || schemaVersion == 3 else {
             throw LocalProductWireError.unsupportedSchema
         }
         viewVersion = try values.decode(String.self, forKey: .viewVersion)
         partial = try values.decode(Bool.self, forKey: .partial)
         stale = try values.decode(Bool.self, forKey: .stale)
         reason = try values.decode(String.self, forKey: .reason)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             health =
                 try values.decodeIfPresent(
                     LocalProductHealth.self,
@@ -602,6 +604,11 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         } else {
             preparedDecisions = []
         }
+        if schemaVersion >= 3 {
+            sideTasks = try values.decode([LocalProductSideTaskSummary].self, forKey: .sideTasks)
+        } else {
+            sideTasks = []
+        }
         runtimePage = try values.decode(LocalProductPageCursor.self, forKey: .runtimePage)
         teamPage = try values.decode(LocalProductPageCursor.self, forKey: .teamPage)
         if schemaVersion >= 2 {
@@ -630,6 +637,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         evidence: [LocalProductEvidenceSummary] = [],
         attention: [LocalProductAttention] = [],
         preparedDecisions: [LocalProductDecisionCommand] = [],
+        sideTasks: [LocalProductSideTaskSummary] = [],
         runtimePage: LocalProductPageCursor = .init(),
         teamPage: LocalProductPageCursor = .init(),
         missionPage: LocalProductPageCursor = .init(),
@@ -649,6 +657,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         self.evidence = evidence
         self.attention = attention
         self.preparedDecisions = preparedDecisions
+        self.sideTasks = sideTasks
         self.runtimePage = runtimePage
         self.teamPage = teamPage
         self.missionPage = missionPage
@@ -663,7 +672,7 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         try values.encode(partial, forKey: .partial)
         try values.encode(stale, forKey: .stale)
         try values.encode(reason, forKey: .reason)
-        if schemaVersion == 2 {
+        if schemaVersion >= 2 {
             try values.encode(health, forKey: .health)
         }
         try values.encode(runtimes, forKey: .runtimes)
@@ -676,6 +685,9 @@ public struct LocalProductSnapshot: Codable, Equatable, Sendable {
         try values.encode(attention, forKey: .attention)
         if schemaVersion >= 2 {
             try values.encode(preparedDecisions, forKey: .preparedDecisions)
+        }
+        if schemaVersion >= 3 {
+            try values.encode(sideTasks, forKey: .sideTasks)
         }
         try values.encode(runtimePage, forKey: .runtimePage)
         try values.encode(teamPage, forKey: .teamPage)

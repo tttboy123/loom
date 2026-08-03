@@ -106,6 +106,7 @@ type GlobalReadView struct {
 	teamDefinitions     map[string]TeamDefinitionRecord
 	providerCredentials map[string]ProviderCredentialRecord
 	teamExecutions      map[string]TeamExecution
+	sideTaskHandoffs    map[string]SideTaskHandoff
 	activeRunCount      map[string]int
 }
 
@@ -264,6 +265,34 @@ func (view GlobalReadView) TeamDefinitions(
 func (view GlobalReadView) TeamExecution(id string) (TeamExecution, bool) {
 	record, ok := view.teamExecutions[id]
 	return cloneGlobalTeamExecution(record), ok
+}
+
+func (view GlobalReadView) SideTaskHandoff(id string) (SideTaskHandoff, bool) {
+	record, ok := view.sideTaskHandoffs[id]
+	return cloneGlobalSideTaskHandoff(record), ok
+}
+
+func (view GlobalReadView) SideTaskHandoffs(
+	parentMissionID string,
+	limit int,
+) ([]SideTaskHandoff, bool) {
+	if limit <= 0 {
+		return []SideTaskHandoff{}, len(view.sideTaskHandoffs) > 0
+	}
+	records := make([]SideTaskHandoff, 0, len(view.sideTaskHandoffs))
+	for _, record := range view.sideTaskHandoffs {
+		if parentMissionID == "" || record.ParentMissionID == parentMissionID {
+			records = append(records, cloneGlobalSideTaskHandoff(record))
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].SideTaskID < records[j].SideTaskID
+	})
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
+	return records, hasMore
 }
 
 func (view GlobalReadView) Teams(
@@ -439,7 +468,7 @@ func buildGlobalReadView(
 	snapshot Snapshot,
 	events []journal.Event,
 	teamExecutions map[string]TeamExecution,
-) GlobalReadView {
+) (GlobalReadView, error) {
 	heads := make(map[string]journal.StreamHead)
 	for _, event := range events {
 		head, exists := heads[event.StreamID]
@@ -504,6 +533,10 @@ func buildGlobalReadView(
 		latestGrantByRun[*payload.RunID] = grant
 		latestGrantSequence[*payload.RunID] = event.Seq
 	}
+	sideTaskHandoffs, err := projectSideTaskHandoffs(events)
+	if err != nil {
+		return GlobalReadView{}, err
+	}
 	view := GlobalReadView{
 		version:             hex.EncodeToString(sum[:]),
 		heads:               heads,
@@ -520,12 +553,13 @@ func buildGlobalReadView(
 		teamDefinitions:     cloned.TeamDefinitions,
 		providerCredentials: cloned.ProviderCredentials,
 		teamExecutions:      make(map[string]TeamExecution, len(teamExecutions)),
+		sideTaskHandoffs:    sideTaskHandoffs,
 		activeRunCount:      active,
 	}
 	for id, record := range teamExecutions {
 		view.teamExecutions[id] = cloneGlobalTeamExecution(record)
 	}
-	return view
+	return view, nil
 }
 
 func cloneGlobalTeamExecution(record TeamExecution) TeamExecution {

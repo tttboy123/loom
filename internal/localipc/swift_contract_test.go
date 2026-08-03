@@ -1599,6 +1599,7 @@ struct SetupContractProbe {
 		"-O",
 		"-parse-as-library",
 		filepath.Join(sourceRoot, "LocalProductModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductHandoffModels.swift"),
 		filepath.Join(sourceRoot, "MissionOrchestration.swift"),
 		filepath.Join(sourceRoot, "LocalProductDecisionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductSetupModels.swift"),

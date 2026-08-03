@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CryptoKit
 
 public enum LocalProductWorkspaceTaskKind: String, Equatable, Sendable {
     case draft
@@ -238,6 +239,21 @@ public protocol LocalProductDecisionClientProtocol {
     ) async throws -> LocalProductDecisionResult
 }
 
+public protocol LocalProductHandoffClientProtocol {
+    func proposeSideTask(
+        _ request: LocalProductSideTaskProposalRequest
+    ) async throws -> LocalProductSideTaskProposalResult
+    func createSideTask(
+        _ request: LocalProductSideTaskCreateRequest
+    ) async throws -> LocalProductSideTaskCreateResult
+    func readSideTask(
+        _ request: LocalProductSideTaskReadRequest
+    ) async throws -> LocalProductSideTaskReadResult
+    func decideSideTask(
+        _ request: LocalProductSideTaskDecisionRequest
+    ) async throws -> LocalProductSideTaskDecisionResult
+}
+
 public protocol LocalProductSetupClientProtocol {
     func setupSnapshot() async throws -> LocalProductSetupSnapshot
     func connectCodex() async throws -> LocalProductProviderConnectResult
@@ -309,6 +325,8 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var executionState: LocalProductExecutionState = .idle
     @Published public private(set) var executionPreflight: LocalProductExecutionPreflight?
     @Published public private(set) var executionResult: LocalProductExecutionResult?
+    @Published public private(set) var sideTaskProposal: LocalProductSideTaskProposalResult?
+    @Published public private(set) var sideTaskOperationStatus = "Idle"
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
@@ -316,7 +334,9 @@ public final class LocalProductStore: ObservableObject {
     private let setupClient: LocalProductSetupClientProtocol?
     private let decisionClient: LocalProductDecisionClientProtocol?
     private let executionClient: LocalProductExecutionClientProtocol?
+    private let handoffClient: LocalProductHandoffClientProtocol?
     private var executionObjective = ""
+    private var pendingSideTaskProposalRequest: LocalProductSideTaskProposalRequest?
     private var timelineLoadGeneration: UInt64 = 0
 
     private static let timelinePageLimit = 64
@@ -333,6 +353,7 @@ public final class LocalProductStore: ObservableObject {
         setupClient = client as? LocalProductSetupClientProtocol
         decisionClient = client as? LocalProductDecisionClientProtocol
         executionClient = client as? LocalProductExecutionClientProtocol
+        handoffClient = client as? LocalProductHandoffClientProtocol
     }
 
     public var providerManagementReachable: Bool {
@@ -340,6 +361,222 @@ public final class LocalProductStore: ObservableObject {
     }
 
     public var missionExecutionReachable: Bool { executionClient != nil }
+
+    public var sideTaskHandoffReachable: Bool { handoffClient != nil }
+
+    public func canCreateSideTask(for missionID: String) -> Bool {
+        sideTaskParentBinding(missionID: missionID) != nil
+    }
+
+    public func proposeSideTask(
+        missionID: String,
+        purpose: String,
+        mode: String,
+        title: String,
+        authorizedRequest: String
+    ) async {
+        let boundedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boundedRequest = authorizedRequest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let handoffClient, let snapshot,
+              let binding = sideTaskParentBinding(missionID: missionID),
+              (1...128).contains(boundedTitle.utf8.count),
+              (1...4_096).contains(boundedRequest.utf8.count),
+              ["research", "comparison", "diagnosis", "verification", "read_only_review"].contains(purpose),
+              ["report_only", "decision_required", "merge_candidate"].contains(mode)
+        else {
+            sideTaskOperationStatus = "proposal_unavailable"
+            return
+        }
+        let request = LocalProductSideTaskProposalRequest(
+            parentMissionID: missionID,
+            parentTeamInstanceID: binding.teamInstanceID,
+            parentTaskID: binding.workItemID,
+            parentRunID: binding.runID,
+            parentClaimGeneration: binding.claimGeneration,
+            parentExecutionDigest: binding.executionDigest,
+            purpose: purpose,
+            mode: mode,
+            title: boundedTitle,
+            authorizedRequest: boundedRequest,
+            permissionScopes: [],
+            decisionTimeoutSeconds: mode == "report_only" ? 0 : 900,
+            expectedViewVersion: snapshot.viewVersion,
+            correlationID: UUID().uuidString.lowercased()
+        )
+        sideTaskOperationStatus = "Proposing"
+        do {
+            let proposal = try await handoffClient.proposeSideTask(request)
+            guard proposal.viewVersion == snapshot.viewVersion,
+                  proposal.purpose == purpose, proposal.mode == mode,
+                  proposal.title == boundedTitle else {
+                throw LocalProductClientError.invalidResponse
+            }
+            pendingSideTaskProposalRequest = request
+            sideTaskProposal = proposal
+            sideTaskOperationStatus = "Confirmation required"
+        } catch {
+            pendingSideTaskProposalRequest = nil
+            sideTaskProposal = nil
+            sideTaskOperationStatus = closedClientReason(error)
+        }
+    }
+
+    public func confirmSideTaskProposal() async {
+        guard let handoffClient, let proposal = sideTaskProposal,
+              let request = pendingSideTaskProposalRequest else {
+            sideTaskOperationStatus = "proposal_required"
+            return
+        }
+        sideTaskOperationStatus = "Creating"
+        do {
+            let result = try await handoffClient.createSideTask(
+                LocalProductSideTaskCreateRequest(
+                    proposal: request,
+                    proposalDigest: proposal.proposalDigest,
+                    confirmed: true
+                )
+            )
+            guard result.proposalDigest == proposal.proposalDigest else {
+                throw LocalProductClientError.invalidResponse
+            }
+            pendingSideTaskProposalRequest = nil
+            sideTaskProposal = nil
+            sideTaskOperationStatus = missionHumanSideTaskStatus(result.status)
+            await refresh()
+        } catch {
+            sideTaskOperationStatus = closedClientReason(error)
+        }
+    }
+
+    public func discardSideTaskProposal() {
+        pendingSideTaskProposalRequest = nil
+        sideTaskProposal = nil
+        sideTaskOperationStatus = "Idle"
+    }
+
+    public func decideSideTask(
+        _ sideTask: LocalProductSideTaskSummary,
+        decision: String
+    ) async {
+        guard let handoffClient, let snapshot,
+              sideTask.availableDecisions.contains(decision),
+              let binding = projectedSideTaskParentBinding(
+                  missionID: sideTask.parentMissionID,
+                  teamInstanceID: sideTask.parentTeamInstanceID,
+                  workItemID: sideTask.parentTaskID,
+                  runID: sideTask.parentRunID,
+                  executionDigest: sideTask.parentExecutionDigest
+              ),
+              binding.workItemID == sideTask.parentTaskID,
+              binding.runID == sideTask.parentRunID,
+              binding.claimGeneration == sideTask.parentClaimGeneration,
+              binding.executionDigest == sideTask.parentExecutionDigest
+        else {
+            sideTaskOperationStatus = "decision_unavailable"
+            return
+        }
+        let effectDigest = sideTaskDigest(
+            [
+                "parent-effect-v1", sideTask.sideTaskID, sideTask.parentTeamInstanceID,
+                sideTask.parentTaskID, sideTask.parentRunID,
+                String(sideTask.parentClaimGeneration), sideTask.parentExecutionDigest,
+                sideTask.handoffDigest, decision,
+            ]
+        )
+        let request = LocalProductSideTaskDecisionRequest(
+            sideTask: sideTask,
+            parentLogicalNodeID: binding.logicalNodeID,
+            parentAttemptNumber: binding.attemptNumber,
+            parentExecutionDigest: sideTask.parentExecutionDigest,
+            decision: decision,
+            effectDigest: effectDigest,
+            expectedViewVersion: snapshot.viewVersion,
+            correlationID: UUID().uuidString.lowercased()
+        )
+        sideTaskOperationStatus = "Applying decision"
+        do {
+            let result = try await handoffClient.decideSideTask(request)
+            guard result.sideTaskID == sideTask.sideTaskID,
+                  result.decision == decision else {
+                throw LocalProductClientError.invalidResponse
+            }
+            sideTaskOperationStatus = missionHumanSideTaskStatus(result.status)
+            await refresh()
+        } catch {
+            sideTaskOperationStatus = closedClientReason(error)
+        }
+    }
+
+    private struct SideTaskParentBinding {
+        let teamInstanceID: String
+        let logicalNodeID: String
+        let attemptNumber: Int
+        let workItemID: String
+        let runID: String
+        let claimGeneration: Int64
+        let executionDigest: String
+    }
+
+    private func sideTaskParentBinding(
+        missionID: String,
+        workItemID: String = "",
+        runID: String = ""
+    ) -> SideTaskParentBinding? {
+        guard let executionResult,
+              executionResult.missionID == missionID,
+              let mission = snapshot?.missions.first(where: { $0.missionID == missionID }),
+              executionResult.teamInstanceID == mission.teamInstanceID
+        else { return nil }
+        return projectedSideTaskParentBinding(
+            missionID: missionID,
+            teamInstanceID: mission.teamInstanceID,
+            workItemID: workItemID,
+            runID: runID,
+            executionDigest: executionResult.executionDigest
+        )
+    }
+
+    private func projectedSideTaskParentBinding(
+        missionID: String,
+        teamInstanceID: String,
+        workItemID: String,
+        runID: String,
+        executionDigest: String
+    ) -> SideTaskParentBinding? {
+        guard let snapshot, let timeline,
+              executionDigest.count == 64,
+              let mission = snapshot.missions.first(where: { $0.missionID == missionID }),
+              mission.teamInstanceID == teamInstanceID,
+              timeline.teamInstanceID == teamInstanceID,
+              timeline.board.teamInstanceID == teamInstanceID,
+              timeline.viewVersion == snapshot.viewVersion,
+              let node = timeline.board.nodes.first(where: {
+                  !$0.workItemID.isEmpty && !$0.runID.isEmpty && $0.currentAttempt > 0
+                      && (workItemID.isEmpty || $0.workItemID == workItemID)
+                      && (runID.isEmpty || $0.runID == runID)
+              }),
+              let run = snapshot.runs.first(where: {
+                  $0.runID == node.runID && $0.workItemID == node.workItemID
+              }) else { return nil }
+        return SideTaskParentBinding(
+            teamInstanceID: teamInstanceID,
+            logicalNodeID: node.logicalNodeID,
+            attemptNumber: node.currentAttempt,
+            workItemID: node.workItemID,
+            runID: node.runID,
+            claimGeneration: run.claimGeneration,
+            executionDigest: executionDigest
+        )
+    }
+
+    private func sideTaskDigest(_ fields: [String]) -> String {
+        SHA256.hash(data: Data(fields.joined(separator: "\0").utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func missionHumanSideTaskStatus(_ value: String) -> String {
+        value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
 
     public var missionCancelAvailable: Bool {
         currentMissionCancelBinding() != nil

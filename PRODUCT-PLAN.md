@@ -391,6 +391,35 @@ Phase 2 只铺设后续资产绑定所需的产品入口和兼容性预览。它
 不把 Team、WorkItem 或 AgentGrant 替换为 Squad、Issue/Task 或另一套 Token，也不在
 Phase 2A 的三个冻结 WorkItem 中加入 Skill Library、SandboxBackend 或新的薄包装 WorkItem。
 
+### Phase 2B：Side-task Handoff 与父任务决定
+
+Phase 2B 在已接受并经 Product Owner 签署的 Phase 2A 之后，以唯一的纵向 WorkItem
+`P2B-W1 Side-task Handoff and Parent Decision` 加入 `v0.2.0` release train。不存在
+P2A-W4 或 P2B-W2，也不得把 Summary、Artifact、ContextPacket、Drawer、IPC、客户端或
+恢复拆成薄包装 WorkItem。
+
+用户可从 Mission 显式创建 research、comparison、diagnosis、verification 或 read-only
+review Side-task。Planner 只能提出零写入 Proposal。Phase 2B v1 只有用户明确确认这一条准入成功
+路径；现有 Rules/Approval 事实不能完整表达可撤销、可过期且带预算的 standing policy，因此所有
+policy reference 都以 `capability_gap` 零写入失败，直至独立评审的 Rules 能力补齐。Side-task 拥有独立的
+WorkItem、Run、Attempt、generation、最小权限 AgentGrant、Evidence 和容量 lineage，
+不得继承父任务的 Grant、凭证、预算、generation 或更大资源范围。
+
+完成后，完整授权摘要先成为不可变的内容寻址 Artifact，再由 Journal CAS 记录 versioned
+`SideTaskHandoff` 的 lifecycle、lineage 与 digest。父任务只接收 allowlist 派生、大小有界、
+版本化的 `ContextPacket`；不得拼接 raw transcript、隐藏推理、凭据、raw Grant、完整敏感
+prompt 或逐 token 输出。
+
+支持 `report_only`、`decision_required`、`merge_candidate` 三种模式，以及 `absorb`、
+`continue`、`request_followup`、`pivot`、`discard`、`archive`、`cancel_parent` 七种 typed
+decision。`decision_required` 只门控未来 dispatch/continuation，不是进程暂停或 checkpoint；
+超时保持 paused 或进入 `human_required`。`merge_candidate` 只产生通过 Evidence/独立验证的
+Candidate 或有界输入，不自动应用、合并或修改 source/originals。
+
+Native GUI 与 Bubble Tea TUI 使用同一 Go application service 和 strict local IPC，展示
+Side-task Drawer、Evidence、风险/不确定性、scope delta、usage/cost 和可用下一步。Journal
+仍是唯一权威；Projection、GlobalReadView 与客户端均可重建且不是第二权威。
+
 ### Phase 3A：版本化资产与 Runtime 物化
 
 - 项目 Agent 和个人复用 Agent 库；
@@ -400,7 +429,8 @@ Phase 2A 的三个冻结 WorkItem 中加入 Skill Library、SandboxBackend 或�
 - 离线评测、基线比较、版本、显式激活和回滚；
 - 多 WorkPackage。
 
-Phase 3A 是计划中的 `v0.2.0` 核心交付边界。它必须复用现有 TeamDefinition、WorkItem、
+Phase 3A 仍是计划中的 `v0.2.0` 核心资产交付边界；Phase 2B 加入同一 release train 但不成为
+Phase 3A 的新进入前置，也不缩减其资产范围。Phase 3A 必须复用现有 TeamDefinition、WorkItem、
 Run、Attempt、AgentGrant、Evidence 和 Event Journal 权威。Squad 可以是团队模板或产品
 呈现名称，Issue/Mission 可以是用户意图父层或界面 facade，RunToken 可以是 AgentGrant
 的传输凭证；三者都不能在本阶段替换既有权威模型。
@@ -434,7 +464,7 @@ Phase 3B 在 Phase 3A 接受后单独治理，建议作为 `v0.2.1 experimental`
 |---|---|---|
 | `v0.1.x` | Phase 1 + Phase 2A | 本地执行内核与普通用户可操作的受控产品链 |
 | `v0.2.0-alpha` | Phase 2 | 第二 Runtime、凭证、能力矩阵与资产绑定入口 |
-| `v0.2.0` | Phase 3A | Versioned Skill Library 与 exact Runtime materialization |
+| `v0.2.0` | Phase 2B + Phase 3A | Side-task Handoff/Parent Decision，以及 Versioned Skill Library 与 exact Runtime materialization |
 | `v0.2.1 experimental` | Phase 3B | 一个默认关闭、可替换的受治理 sandbox backend |
 | `v0.3+` | Phase 4 及独立后续合同 | 协作平台互通、可选 Web、更多 Runtime 和共享能力 |
 

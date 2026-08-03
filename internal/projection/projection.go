@@ -213,10 +213,14 @@ type Projection struct {
 
 func New(db *sql.DB) *Projection {
 	snapshot := emptySnapshot()
+	view, err := buildGlobalReadView(snapshot, nil, nil)
+	if err != nil {
+		panic(err)
+	}
 	return &Projection{
 		source:      newJournalSource(db),
 		snapshot:    snapshot,
-		view:        buildGlobalReadView(snapshot, nil, nil),
+		view:        view,
 		rebuildGate: make(chan struct{}, 1),
 	}
 }
@@ -244,7 +248,13 @@ func (p *Projection) Rebuild(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	candidateView := buildGlobalReadView(candidate, events, teamExecutions)
+	if _, err := projectSideTaskHandoffs(events); err != nil {
+		return err
+	}
+	candidateView, err := buildGlobalReadView(candidate, events, teamExecutions)
+	if err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

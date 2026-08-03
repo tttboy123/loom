@@ -982,8 +982,13 @@ type AuthoritativeMissionExecutionConfig struct {
 	Compiler          MissionExecutionCompiler
 	Runner            MissionExecutionRunner
 	Decisions         MissionExecutionDecisionRouter
+	ParentGate        ParentContinuationGate
 	VisibilityTimeout time.Duration
 	Now               func() time.Time
+}
+
+type ParentContinuationGate interface {
+	AllowParentContinuation(context.Context, string, int64) error
 }
 
 type missionExecutionRecoveryState interface {
@@ -1013,6 +1018,7 @@ type AuthoritativeMissionExecutionBackend struct {
 	compiler          MissionExecutionCompiler
 	runner            MissionExecutionRunner
 	decisions         MissionExecutionDecisionRouter
+	parentGate        ParentContinuationGate
 	visibilityTimeout time.Duration
 	now               func() time.Time
 	ctx               context.Context
@@ -1022,6 +1028,27 @@ type AuthoritativeMissionExecutionBackend struct {
 	closed     bool
 	flights    map[string]*authoritativeMissionFlight
 	preflights map[string]missionExecutionPreflightLease
+}
+
+func (backend *AuthoritativeMissionExecutionBackend) ValidateParentExecutionDigest(
+	ctx context.Context,
+	teamInstanceID string,
+	executionDigest string,
+) error {
+	if backend == nil || ctx == nil || teamInstanceID == "" ||
+		!validSHA256(executionDigest) {
+		return ErrInvalidSideTaskProduct
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.closed {
+		return ErrSideTaskProductUnavailable
+	}
+	flight := backend.flights[teamInstanceID]
+	if flight == nil || flight.executionDigest != executionDigest {
+		return ErrSideTaskProductDigestMismatch
+	}
+	return nil
 }
 
 func NewAuthoritativeMissionExecutionBackend(
@@ -1047,6 +1074,7 @@ func NewAuthoritativeMissionExecutionBackend(
 	return &AuthoritativeMissionExecutionBackend{
 		state: config.State, compiler: config.Compiler, runner: config.Runner,
 		decisions:         config.Decisions,
+		parentGate:        config.ParentGate,
 		visibilityTimeout: config.VisibilityTimeout, now: now,
 		ctx: ctx, cancel: cancel,
 		flights:    make(map[string]*authoritativeMissionFlight),
@@ -1081,6 +1109,22 @@ func (backend *AuthoritativeMissionExecutionBackend) ResumeProjectedMissions(
 	for _, projected := range executions {
 		if appTerminalTeamStatus(projected.Status) {
 			continue
+		}
+		if backend.parentGate != nil {
+			generation := int64(0)
+			for _, node := range projected.Nodes {
+				for _, attempt := range node.Attempts {
+					if attempt.ClaimGeneration > generation {
+						generation = attempt.ClaimGeneration
+					}
+				}
+			}
+			if err := backend.parentGate.AllowParentContinuation(ctx, projected.TeamInstanceID, generation); err != nil {
+				if errors.Is(err, ErrSideTaskProductConflict) {
+					continue
+				}
+				return err
+			}
 		}
 		if projected.Status != "running" &&
 			projected.Status != "awaiting_recovery" {
@@ -1209,6 +1253,11 @@ func (backend *AuthoritativeMissionExecutionBackend) StartMission(
 	ctx context.Context,
 	command MissionExecutionCommand,
 ) (MissionExecutionResult, error) {
+	if backend.parentGate != nil {
+		if err := backend.parentGate.AllowParentContinuation(ctx, command.TeamInstanceID, 0); err != nil {
+			return MissionExecutionResult{}, err
+		}
+	}
 	compilation, err := backend.compileCurrent(ctx, command)
 	if err != nil {
 		return MissionExecutionResult{}, err
@@ -1310,6 +1359,28 @@ func (backend *AuthoritativeMissionExecutionBackend) ControlMission(
 		Status: status, ViewVersion: backend.state.Version(),
 		ExecutionDigest: flight.executionDigest,
 	}, nil
+}
+
+func (backend *AuthoritativeMissionExecutionBackend) CancelRecoveredOrActiveMissionExecution(
+	ctx context.Context,
+	input ParentMissionCancellation,
+) (MissionExecutionResult, error) {
+	if backend == nil || ctx == nil || input.MissionID == "" ||
+		input.TeamInstanceID == "" || !validSHA256(input.ExpectedViewVersion) ||
+		!validSHA256(input.ExecutionDigest) || input.LogicalNodeID == "" ||
+		input.AttemptNumber <= 0 || input.ClaimGeneration <= 0 ||
+		input.CorrelationID == "" {
+		return MissionExecutionResult{}, ErrInvalidMissionExecution
+	}
+	return backend.ControlMission(ctx, MissionExecutionCommand{
+		SchemaVersion: MissionExecutionSchemaVersion,
+		Operation:     missionExecutionControl,
+		MissionID:     input.MissionID, TeamInstanceID: input.TeamInstanceID,
+		ExpectedViewVersion: input.ExpectedViewVersion,
+		ControlAction:       "cancel", ExecutionDigest: input.ExecutionDigest,
+		LogicalNodeID: input.LogicalNodeID, AttemptNumber: input.AttemptNumber,
+		ClaimGeneration: input.ClaimGeneration, CorrelationID: input.CorrelationID,
+	})
 }
 
 func validProjectedMissionControl(

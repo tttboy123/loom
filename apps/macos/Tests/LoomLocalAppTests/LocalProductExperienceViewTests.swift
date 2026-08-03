@@ -322,6 +322,102 @@ final class LocalProductExperienceViewTests: XCTestCase {
         }
     }
 
+    func testSideTaskDrawerAlwaysPresentsEveryContractField() throws {
+        let digest = String(repeating: "a", count: 64)
+        let sideTask = try JSONDecoder().decode(
+            LocalProductSideTaskSummary.self,
+            from: Data("""
+            {
+              "side_task_id":"side-1",
+              "parent_mission_id":"mission/team-1",
+              "parent_team_instance_id":"team-1",
+              "parent_task_id":"work-1",
+              "parent_run_id":"run-1",
+              "parent_claim_generation":1,
+              "parent_execution_digest":"\(digest)",
+              "side_execution_team_instance_id":"team-side-1",
+              "purpose":"diagnosis",
+              "mode":"decision_required",
+              "title":"Diagnose the failure",
+              "status":"decision_required",
+              "source_generation":1,
+              "handoff_version":1,
+              "handoff_digest":"\(digest)",
+              "summary_artifact_digest":"\(digest)",
+              "what_happened":"Authorized result",
+              "authorized_findings":[],
+              "evidence_references":[],
+              "artifact_references":[],
+              "risk":"medium",
+              "uncertainties":[],
+              "scope_delta":[],
+              "decision_options":["absorb","discard"],
+              "recommended_option":"",
+              "recommendation_authority":"proposal_only",
+              "usage_observed":false,
+              "usage_microunits":0,
+              "usage_currency":"",
+              "decision_deadline":"2026-08-03T16:00:00Z",
+              "available_decisions":["absorb","discard"],
+              "effect_status":"none"
+            }
+            """.utf8)
+        )
+
+        let presentation = sideTaskDrawerPresentation(sideTask)
+        XCTAssertEqual(presentation.purpose, "Purpose · Diagnosis")
+        XCTAssertEqual(
+            presentation.uncertainty,
+            "Uncertainty · None recorded"
+        )
+        XCTAssertEqual(
+            presentation.scopeDelta,
+            "Scope · No parent scope expansion"
+        )
+        XCTAssertEqual(
+            presentation.nextAction,
+            "Next action · Choose an explicit parent decision"
+        )
+
+        var decidedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(sideTask)
+            ) as? [String: Any]
+        )
+        decidedObject["status"] = "decided"
+        decidedObject["available_decisions"] = []
+
+        decidedObject["effect_status"] = "pending"
+        let pending = try JSONDecoder().decode(
+            LocalProductSideTaskSummary.self,
+            from: JSONSerialization.data(withJSONObject: decidedObject)
+        )
+        XCTAssertEqual(
+            sideTaskDrawerPresentation(pending).nextAction,
+            "Next action · Wait for the authorized parent effect"
+        )
+
+        decidedObject["effect_status"] = "completed"
+        let completed = try JSONDecoder().decode(
+            LocalProductSideTaskSummary.self,
+            from: JSONSerialization.data(withJSONObject: decidedObject)
+        )
+        XCTAssertEqual(
+            sideTaskDrawerPresentation(completed).nextAction,
+            "Next action · Parent effect completed"
+        )
+
+        decidedObject["effect_status"] = "none"
+        let noEffect = try JSONDecoder().decode(
+            LocalProductSideTaskSummary.self,
+            from: JSONSerialization.data(withJSONObject: decidedObject)
+        )
+        XCTAssertEqual(
+            sideTaskDrawerPresentation(noEffect).nextAction,
+            "Next action · Parent decision recorded; no parent effect required"
+        )
+    }
+
     func testMissionWorkspaceSnapshotPresentationFailsClosed() {
         XCTAssertEqual(
             missionSnapshotPresentation(

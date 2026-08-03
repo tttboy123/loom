@@ -21,16 +21,25 @@ private struct ProbeExecutionOutput: Encodable {
     let executionDigest: String
 }
 
+private struct ProbeSideTaskOutput: Encodable {
+    let sideTaskID: String
+    let status: String
+    let viewVersion: String
+    let availableDecisions: [String]
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
         do {
             let arguments = CommandLine.arguments
-            guard arguments.count == 3 || arguments.count == 4 || arguments.count == 5,
+            guard arguments.count == 3 || arguments.count == 4 || arguments.count == 5
+                    || arguments.count == 6,
                 arguments[1] == "--socket",
                 arguments.count == 3 || arguments.count == 4 && arguments[3] == "--execution"
                     || arguments[3] == "--team" || arguments[3] == "--team-all"
                     || arguments[3] == "--decision"
+                    || arguments.count == 6 && arguments[3] == "--side-task-read"
             else {
                 throw LocalProductClientError.invalidRequest
             }
@@ -40,6 +49,28 @@ enum LoomLocalAppContractProbe {
             )
             guard try await client.ping() else {
                 throw LocalProductClientError.invalidResponse
+            }
+            if arguments.count == 6 && arguments[3] == "--side-task-read" {
+                let result = try await client.readSideTask(
+                    LocalProductSideTaskReadRequest(
+                        sideTaskID: arguments[4],
+                        expectedViewVersion: arguments[5],
+                        correlationID: "33333333-3333-4333-8333-333333333333"
+                    )
+                )
+                let encoded = try JSONEncoder().encode(
+                    ProbeSideTaskOutput(
+                        sideTaskID: result.summary.sideTaskID,
+                        status: result.summary.status,
+                        viewVersion: result.viewVersion,
+                        availableDecisions: result.summary.availableDecisions
+                    )
+                )
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
             }
             if arguments.count == 4 {
                 let preflightEnvelope = try await client.executeMission(

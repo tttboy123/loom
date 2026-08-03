@@ -140,6 +140,33 @@ func TestMissionExecutionIsTheOnlyAcceptedExecutionMethod(t *testing.T) {
 	}
 }
 
+func TestSideTaskHandoffIsTheOnlyAcceptedSideTaskMethod(t *testing.T) {
+	valid := []byte(
+		`{"version":1,"request_id":"side-task-1","method":"side_task_handoff","params":{"schema_version":1,"operation":"read"}}`,
+	)
+	request, err := decodeRequest(valid)
+	if err != nil {
+		t.Fatalf("side_task_handoff decode error = %v", err)
+	}
+	if request.Method != "side_task_handoff" {
+		t.Fatalf("method = %q", request.Method)
+	}
+	for _, method := range []string{
+		"side_task",
+		"side_task_create",
+		"side_task_decide",
+		"side_task_handoff_v2",
+	} {
+		input := []byte(
+			`{"version":1,"request_id":"side-task-1","method":"` +
+				method + `","params":{}}`,
+		)
+		if _, err := decodeRequest(input); err == nil {
+			t.Fatalf("decodeRequest accepted alias %q", method)
+		}
+	}
+}
+
 func TestProtocolErrorIsClosedAndNeverIncludesCause(t *testing.T) {
 	cause := errors.New("private /Users/name/state.db token=secret")
 	protocolErr := safeProtocolError("state_unavailable", cause)

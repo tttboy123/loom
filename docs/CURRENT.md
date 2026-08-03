@@ -5712,3 +5712,198 @@ P2A-W2 = ACCEPTED
 P2A-W3 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
 P2A-W4 = DOES NOT EXIST
 ```
+
+`CURRENT`: the post-W3 Whole-Phase Controller reconciliation preserves every
+historical failed canary and independently maps the current accepted product
+to PX-01 through PX-18. PX-01 through PX-17 are Controller-classified `DONE`;
+PX-18 has a complete root006 no-terminal journey but remains
+`REVIEW_PENDING` until fresh independent Whole-Phase Review and explicit
+Product Owner sign-off.
+
+Fresh verification passed full serialized Go normal/race, vet, module/tidy,
+projection/GlobalReadView/strict IPC, Swift normal/Release, installer,
+reproducible native bundle and launch-smoke matrices. The first fresh Swift
+TSAN run found a race in a W3-only suspended Timeline test fixture. It was not
+waived: both test clients are now actor-isolated, focused/normal/full-TSAN
+reruns pass with zero sanitizer warnings. No product authority, protocol,
+Journal, Projection, Provider, Runtime or live allowance changed.
+
+The four repository-wide gofmt findings belong only to the explicitly excluded
+Cloud MCP commits `6473f80c..848f068c`; all 120 Phase 2A source/test/script
+paths are clean and locked separately. No live canary was rerun. The next gate
+is one fresh independent read-only Whole-Phase Review; Phase 2B remains locked.
+
+```text
+P2A-W1 = ACCEPTED CURRENT PRODUCT / HISTORICAL FAILED LIVE EVIDENCE PRESERVED
+P2A-W2 = ACCEPTED
+P2A-W3 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
+PHASE2A = WHOLE-PHASE CONTROLLER PASS / INDEPENDENT REVIEW PENDING
+P2A-W4 = DOES NOT EXIST
+PHASE2B = LOCKED
+```
+
+`CURRENT`: fresh independent Whole-Phase Review returned `PASS` with
+P0/P1/P2 all zero. The Reviewer reproduced the 120-source and 463-evidence
+digests, current shared module hashes, full Go and Swift matrices, zero-warning
+Swift TSAN repair, historical failure preservation and the distinct PX-17
+Codex/MiniMax/Pi product roles. PX-01 through PX-17 are independently `DONE`.
+PX-18's root006 journey and review are `PASS`; only explicit Product Owner
+sign-off remains.
+
+No live action, staging, commit or Phase 2B contract freeze is permitted before
+that sign-off. P2A-W4 does not exist.
+
+```text
+PHASE2A = INDEPENDENT WHOLE-PHASE REVIEW PASS / PRODUCT OWNER SIGN-OFF REQUIRED
+P2A-W4 = DOES NOT EXIST
+PHASE2B = LOCKED UNTIL SIGN-OFF
+```
+
+`CURRENT`: on 2026-08-03 the Product Owner explicitly approved the complete
+Phase 2A sign-off after the fresh independent Whole-Phase Review PASS. PX-01
+through PX-18 are now `DONE`; Phase 2A is closed and no P2A-W4 exists.
+
+The Product Owner also authorized entry into Phase 2B contract governance.
+Only the single vertical P2B-W1 `Side-task Handoff and Parent Decision` may be
+frozen. Product implementation, Event/authority/schema changes and any
+controlled canary remain locked until the roadmap amendment and P2B-W1
+contract pass independent review and Mandatory RED is recorded.
+
+```text
+PHASE2A = ACCEPTED / PRODUCT OWNER SIGN-OFF COMPLETE
+P2A-W4 = DOES NOT EXIST
+PHASE2B = CONTRACT GOVERNANCE AUTHORIZED / PRODUCT WRITES LOCKED
+P2B-W2 = DOES NOT EXIST
+```
+
+`CURRENT`: the Phase 2B Side-task Handoff Roadmap Amendment Repair 1 received
+a fresh independent Plan Re-review `PASS` with P0/P1/P2 all zero. The accepted
+planning boundary adds the single P2B-W1 to the `v0.2.0` release train without
+making it a Phase 3A prerequisite or changing Phase 3A assets, Phase 3B
+sandbox, v0.3 routing or v0.4 scheduling.
+
+`PRODUCT-PLAN.md` and `TECH-PLAN.md` now record this target only. No product,
+Event/schema, authority, Runtime/Provider, daemon or canary change has been
+authorized by the plan edit. The next gate is a single exact P2B-W1 Contract
+Review; implementation remains locked until that Review passes and Mandatory
+RED is recorded.
+
+```text
+PHASE2B = ROADMAP AMENDMENT REVIEW PASS / P2B-W1 CONTRACT PENDING
+P2B-W2 = DOES NOT EXIST
+PRODUCT WRITES = LOCKED
+```
+
+`CURRENT`: P2B-W1 Contract Review 1 returned `FAIL` with no P0 and four P1
+implementability gaps: reviewed-roadmap hash drift, synthetic child-Team
+binding/reconstruction ambiguity, non-restart-closed parent continuation/
+cancellation, and incomplete exact Event/IPC/deadline schemas. One P2
+platform-ownership gap also affected Artifact read support.
+
+Contract Repair 1 restores the exact reviewed roadmap bytes, freezes a
+parent-binding/child-execution adapter and deterministic reconstruction,
+defines a Journal-authorized parent-effect reconciler with explicit
+ContextPacket consumption and recovered-flight cancellation, makes the wire
+and Event schemas exact, and owns the Windows plus Mission snapshot tests.
+Product code remains untouched. Fresh independent Contract Repair 1 Re-review
+is the current gate; RED and implementation remain locked.
+
+```text
+PHASE2B = P2B-W1 CONTRACT REPAIR 1 RE-REVIEW PENDING
+P2B-W2 = DOES NOT EXIST
+PRODUCT WRITES = LOCKED
+```
+
+`CURRENT`: Contract Repair 1 Re-review found one remaining P1: its fail-closed
+policy-reference behavior reduced the previously reviewed roadmap's claimed
+standing-policy success path. Plan Repair 2 resolved the mismatch from current
+code truth: Phase 2B v1 is explicit-confirmation-only, every policy reference
+returns zero-write `capability_gap`, and a success path requires a separately
+reviewed Rules capability with revocation, expiry and budget semantics.
+
+Fresh independent Plan Repair 2 Review and Contract Repair 2 Re-review both
+returned `PASS` with P0/P1/P2 all zero. The immutable P2B-W1 contract SHA-256 is
+`2bc98c99c301a014d8dabe7491bd53287148c10803537b6de9d420492c22a866`.
+The next gate is behavior-level Mandatory RED inside its exact owned files; no
+live canary is authorized before Implementation Review PASS.
+
+```text
+PHASE2B = P2B-W1 CONTRACT REVIEW PASS / MANDATORY RED NEXT
+P2B-W2 = DOES NOT EXIST
+PRODUCT WRITES = TESTS-FIRST ONLY
+```
+
+`CURRENT`: P2B-W1 completed Mandatory RED, its single vertical implementation,
+focused and whole-repository verification, and fresh independent Implementation
+Re-review with P0/P1/P2 all zero. The one source-locked deterministic offline
+authority canary passed and is consumed: it produced 296 Events with zero
+duplicate Event IDs or idempotency keys, exactly one ContextPacket, parent
+continuation, parent-effect completion and typed decision, plus 18 verified
+content-addressed Artifacts. The real Go IPC-to-Swift read and TUI typed-decision
+journey passed without Provider, credential or network use.
+
+After manual Mac unlock, read-only native inspection exposed a same-boundary
+presentation completeness defect. Mandatory RED, full verification and a
+separate independent presentation Implementation Re-review closed it without
+changing Journal, IPC, authority or schema. A supplemental source lock binds
+the two Swift files while preserving the consumed-canary source lock. A
+replacement visual-only Computer Use inspection then showed purpose, status,
+summary, finding, Evidence/Artifact references, risk, usage, explicit empty
+uncertainty and scope, next action and decision availability. It did not rerun
+authority, dispatch work, open the product writer, use a Provider or access the
+network.
+
+Fresh independent Result Review returned `PASS` with P0/P1/P2 all zero and
+reproduced the retained database/manifest/source hashes, SQLite invariants,
+0600 screenshot/accessibility evidence and complete process cleanup. No further
+live action is authorized or required. The only remaining gates are fresh
+independent whole-P2B Candidate Review, exact-path staging inspection and one
+atomic local commit.
+
+```text
+PHASE2A = ACCEPTED / PRODUCT OWNER SIGN-OFF COMPLETE
+P2A-W4 = DOES NOT EXIST
+P2B-W1 = RESULT REVIEW PASS / WHOLE-CANDIDATE REVIEW PENDING / NO COMMIT
+P2B-W2 = DOES NOT EXIST
+LIVE ACTION = COMPLETE / NO RERUN
+```
+
+`CURRENT`: fresh independent whole-P2B Candidate Review returned `PASS` with
+P0/P1/P2 all zero. It reproduced the exact owned boundary, original and
+supplemental locks, current Swift bytes, retained authority database and
+manifest, Event uniqueness/cardinality, visual evidence and all explicit
+exclusions. Focused Go, race, vet, strict IPC, restart, projection and TUI
+checks passed. One older Pi metadata timeout seen only in a broader concurrent
+package run passed in isolated reproduction and is not a P2B Candidate defect.
+
+No further implementation, review repair or live execution is justified. The
+only remaining actions are exact-path staging inspection and one atomic local
+commit. `internal/projection/team_execution_test.go`, Phase 1 evidence, root
+documents, Codex configuration, drafts and generated builds remain excluded.
+
+```text
+PHASE2A = ACCEPTED / PRODUCT OWNER SIGN-OFF COMPLETE
+P2A-W4 = DOES NOT EXIST
+P2B-W1 = WHOLE-CANDIDATE REVIEW PASS / EXACT STAGING NEXT
+P2B-W2 = DOES NOT EXIST
+LIVE ACTION = COMPLETE / NO RERUN
+```
+
+`CURRENT`: exact-path staging inspection passed with 72 Candidate paths, zero
+excluded paths, a clean Go/Swift/JSON source check and no secret sentinel
+matches. The final self-describing Candidate lock binds the other 71 sorted
+path hashes, both canary-era source locks, independent Result and whole-
+Candidate Reviews, retained authority hashes and native visual evidence.
+
+The unique P2B-W1 is accepted by the atomic local commit containing this
+record. No P2B-W2, further canary, Provider action, push or merge follows from
+this acceptance. Unrelated dirty and untracked user files remain outside the
+commit.
+
+```text
+PHASE2A = ACCEPTED / PRODUCT OWNER SIGN-OFF COMPLETE
+P2A-W4 = DOES NOT EXIST
+P2B-W1 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
+P2B-W2 = DOES NOT EXIST
+LIVE ACTION = COMPLETE / NO RERUN
+```
