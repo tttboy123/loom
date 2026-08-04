@@ -929,6 +929,7 @@ public final class LocalIPCClient:
         let methods: Set<String> = [
             "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
             "queue_snapshot", "queue_command",
+            "workers_snapshot", "workers_command",
         ]
         guard LocalIPCWire.validRequestID(id), Self.validJourneyID(journeyID),
               methods.contains(method) else {
@@ -937,6 +938,41 @@ public final class LocalIPCClient:
         let body = try JSONEncoder().encode(
             IPCRequest(requestID: id, journeyID: journeyID, method: method, params: params)
         )
+        try StrictJSONScanner.validate(body)
+        let response = try await Task.detached {
+            try Self.exchange(
+                path: self.socketPath,
+                request: try LocalIPCWire.frame(body, maximum: Self.requestMaximum),
+                timeoutSeconds: Self.requestTimeoutSeconds(for: method)
+            )
+        }.value
+        return try LocalIPCWire.decodeResponse(
+            response,
+            expectedRequestID: id,
+            expectedJourneyID: journeyID
+        )
+    }
+
+    func callJourneyRaw(
+        journeyID: String,
+        method: String,
+        params: [String: Any]
+    ) async throws -> Data {
+        let id = requestID()
+        let methods: Set<String> = [
+            "workers_snapshot", "workers_command",
+        ]
+        guard LocalIPCWire.validRequestID(id), Self.validJourneyID(journeyID),
+              methods.contains(method) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let body = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "request_id": id,
+            "journey_id": journeyID,
+            "method": method,
+            "params": params,
+        ])
         try StrictJSONScanner.validate(body)
         let response = try await Task.detached {
             try Self.exchange(

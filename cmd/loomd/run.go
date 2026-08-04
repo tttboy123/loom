@@ -53,7 +53,7 @@ func validDaemonBuildFailureReason(reason string) bool {
 	case "build_observer", "build_state", "build_setup_runtime",
 		"build_setup_credential", "build_setup_provider",
 		"build_setup_native_auth", "build_decision", "build_execution",
-		"build_assets", "build_queue", "build_ipc", "build_unknown":
+		"build_assets", "build_queue", "build_workers", "build_ipc", "build_unknown":
 		return true
 	default:
 		return false

@@ -193,7 +193,8 @@ func encodeResponse(response Response) ([]byte, error) {
 func requiresJourney(method string) bool {
 	switch method {
 	case "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
-		"queue_snapshot", "queue_command":
+		"queue_snapshot", "queue_command",
+		"workers_snapshot", "workers_command":
 		return true
 	default:
 		return false
@@ -314,7 +315,9 @@ func validMethod(method string) bool {
 		"evolution_asset_diff",
 		"evolution_asset_command",
 		"queue_snapshot",
-		"queue_command":
+		"queue_command",
+		"workers_snapshot",
+		"workers_command":
 		return true
 	default:
 		return false
