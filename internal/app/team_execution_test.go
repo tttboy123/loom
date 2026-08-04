@@ -38,6 +38,60 @@ type teamCanaryClock struct {
 	step time.Duration
 }
 
+type p3aCleanupRecordingMaterializer struct {
+	values []TeamAssetMaterialization
+}
+
+func (*p3aCleanupRecordingMaterializer) PrepareTeamAttemptMaterialization(
+	context.Context,
+	TeamAssetMaterializationRequest,
+) (TeamAssetMaterialization, error) {
+	return TeamAssetMaterialization{}, ErrInvalidTeamCoordinator
+}
+
+func (materializer *p3aCleanupRecordingMaterializer) CleanupTeamAttemptMaterialization(
+	_ context.Context,
+	value TeamAssetMaterialization,
+) error {
+	materializer.values = append(materializer.values, value)
+	return nil
+}
+
+func TestP3ATerminalMaterializationCleanupIsExplicitlyAuthoritative(t *testing.T) {
+	recorder := &p3aCleanupRecordingMaterializer{}
+	coordinator := &TeamCoordinator{assetMaterializer: recorder}
+	value := TeamAssetMaterialization{
+		RunID: "run-1", AttemptNumber: 1, Generation: 1,
+		JourneyID:      "123e4567-e89b-42d3-a456-426614174000",
+		ManifestDigest: strings.Repeat("a", 64), RootDigest: strings.Repeat("b", 64),
+		Authoritative: true,
+	}
+	if err := coordinator.cleanupCommittedTeamAssetMaterializations(
+		context.Background(), []TeamAssetMaterialization{value},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.values) != 1 || !recorder.values[0].Authoritative ||
+		recorder.values[0].RunID != value.RunID {
+		t.Fatalf("cleanup values = %#v", recorder.values)
+	}
+}
+
+func TestP3ADispatchFailureCleanupPreservesAlreadyAuthoritativeRoot(t *testing.T) {
+	recorder := &p3aCleanupRecordingMaterializer{}
+	coordinator := &TeamCoordinator{assetMaterializer: recorder}
+	coordinator.cleanupTeamAssetMaterializations(
+		context.Background(),
+		[]TeamAssetMaterialization{
+			{RunID: "run-authoritative", Authoritative: true},
+			{RunID: "run-uncommitted", Authoritative: false},
+		},
+	)
+	if len(recorder.values) != 1 || recorder.values[0].RunID != "run-uncommitted" {
+		t.Fatalf("dispatch cleanup touched authoritative root: %#v", recorder.values)
+	}
+}
+
 func (clock *teamCanaryClock) Now() time.Time {
 	clock.mu.Lock()
 	defer clock.mu.Unlock()
@@ -1887,6 +1941,7 @@ func (fixture *teamRecoveryFixture) dispatch(
 				fixture.plan,
 				selections,
 				[]teams.ExecutionNode{node},
+				nil,
 			),
 			AuthoritativeTime:    fixture.request.AuthoritativeTime,
 			PrepareLeaseDuration: fixture.request.PrepareLeaseDuration,

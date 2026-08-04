@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -15,6 +18,8 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/assets"
+	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/work"
 )
@@ -34,6 +39,7 @@ const (
 	ScreenCompare     Screen = "Compare"
 	ScreenAttention   Screen = "Attention"
 	ScreenTimeline    Screen = "Team Timeline"
+	ScreenAssets      Screen = "Evolution Assets"
 )
 
 var screens = []Screen{
@@ -45,6 +51,7 @@ var screens = []Screen{
 	ScreenCompare,
 	ScreenAttention,
 	ScreenTimeline,
+	ScreenAssets,
 }
 
 type ReadClient interface {
@@ -109,6 +116,12 @@ type ExecutionClient interface {
 	) (api.MissionExecutionEnvelope, error)
 }
 
+type EvolutionAssetClient interface {
+	EvolutionAssetSnapshot(context.Context, api.EvolutionAssetSnapshotRequest) (api.EvolutionAssetSnapshot, error)
+	EvolutionAssetDiff(context.Context, api.EvolutionAssetDiffRequest) (api.EvolutionAssetDiff, error)
+	EvolutionAssetCommand(context.Context, api.EvolutionAssetCommandRequest) (api.EvolutionAssetCommandResult, error)
+}
+
 type HandoffClient interface {
 	ProposeSideTask(context.Context, app.SideTaskProposalRequest) (app.SideTaskProposalResult, error)
 	CreateSideTask(context.Context, app.SideTaskCreateRequest) (app.SideTaskCreateResult, error)
@@ -143,6 +156,24 @@ func (client *DaemonReadClient) TimelinePage(
 	var page api.LocalProductTimelinePage
 	err := client.client.Call(ctx, "timeline_page", request, &page)
 	return page, err
+}
+
+func (client *DaemonReadClient) EvolutionAssetSnapshot(ctx context.Context, request api.EvolutionAssetSnapshotRequest) (api.EvolutionAssetSnapshot, error) {
+	var snapshot api.EvolutionAssetSnapshot
+	err := client.client.CallJourney(ctx, request.JourneyID, "evolution_asset_snapshot", request, &snapshot)
+	return snapshot, err
+}
+
+func (client *DaemonReadClient) EvolutionAssetDiff(ctx context.Context, request api.EvolutionAssetDiffRequest) (api.EvolutionAssetDiff, error) {
+	var diff api.EvolutionAssetDiff
+	err := client.client.CallJourney(ctx, request.JourneyID, "evolution_asset_diff", request, &diff)
+	return diff, err
+}
+
+func (client *DaemonReadClient) EvolutionAssetCommand(ctx context.Context, request api.EvolutionAssetCommandRequest) (api.EvolutionAssetCommandResult, error) {
+	var result api.EvolutionAssetCommandResult
+	err := client.client.CallJourney(ctx, request.JourneyID, "evolution_asset_command", request, &result)
+	return result, err
 }
 
 func (client *DaemonReadClient) ExecuteMission(
@@ -315,6 +346,13 @@ type setupFailedMsg struct {
 	err error
 }
 
+type evolutionAssetsLoadedMsg struct{ snapshot api.EvolutionAssetSnapshot }
+type evolutionAssetsFailedMsg struct{ err error }
+type evolutionAssetDiffLoadedMsg struct{ diff api.EvolutionAssetDiff }
+type evolutionAssetCommittedMsg struct {
+	result api.EvolutionAssetCommandResult
+}
+
 type builderStartedMsg struct {
 	session app.BuilderSessionView
 }
@@ -337,6 +375,7 @@ type credentialUpdatedMsg struct {
 
 type missionPreflightedMsg struct {
 	preflight app.MissionExecutionPreflight
+	snapshot  api.LocalProductSnapshot
 }
 
 type missionStartedMsg struct {
@@ -365,6 +404,8 @@ const (
 	entryTaskSearch       = "task_search"
 	entryMissionObjective = "mission_objective"
 	entrySideTaskRequest  = "side_task_request"
+	entryEvolutionAsset   = "evolution_asset_name"
+	entryEvolutionSearch  = "evolution_asset_search"
 )
 
 type Model struct {
@@ -372,45 +413,52 @@ type Model struct {
 	setupClient     SetupClient
 	executionClient ExecutionClient
 	handoffClient   HandoffClient
+	assetClient     EvolutionAssetClient
 	ctx             context.Context
 	cancel          context.CancelFunc
 
-	screenIndex         int
-	selections          [16]int
-	width               int
-	height              int
-	selected            int
-	help                bool
-	loading             bool
-	offline             bool
-	lastError           string
-	snapshot            api.LocalProductSnapshot
-	timeline            api.LocalProductTimelinePage
-	setup               app.SetupSnapshot
-	builder             app.BuilderSessionView
-	confirmation        app.BuilderConfirmation
-	credential          app.CredentialSetupResult
-	entryMode           string
-	entry               []byte
-	compareRuns         []string
-	currentTeam         string
-	currentMission      string
-	missionID           string
-	missionObjective    string
-	missionTeamIndex    int
-	missionPackageIndex int
-	missionPreflight    app.MissionExecutionPreflight
-	missionResult       app.MissionExecutionResult
-	sideTaskPurpose     string
-	sideTaskMode        string
-	sideTaskTitle       string
-	sideTaskRequest     string
-	sideTaskProposalReq app.SideTaskProposalRequest
-	sideTaskProposal    app.SideTaskProposalResult
-	sideTaskDecision    int
-	decisionOpen        bool
-	taskFilter          string
-	navigationPrefix    bool
+	screenIndex            int
+	selections             [16]int
+	width                  int
+	height                 int
+	selected               int
+	help                   bool
+	loading                bool
+	offline                bool
+	lastError              string
+	snapshot               api.LocalProductSnapshot
+	timeline               api.LocalProductTimelinePage
+	setup                  app.SetupSnapshot
+	builder                app.BuilderSessionView
+	confirmation           app.BuilderConfirmation
+	credential             app.CredentialSetupResult
+	entryMode              string
+	entry                  []byte
+	compareRuns            []string
+	currentTeam            string
+	currentMission         string
+	missionID              string
+	missionObjective       string
+	missionTeamIndex       int
+	missionPackageIndex    int
+	missionPreflight       app.MissionExecutionPreflight
+	missionResult          app.MissionExecutionResult
+	sideTaskPurpose        string
+	sideTaskMode           string
+	sideTaskTitle          string
+	sideTaskRequest        string
+	sideTaskProposalReq    app.SideTaskProposalRequest
+	sideTaskProposal       app.SideTaskProposalResult
+	sideTaskDecision       int
+	decisionOpen           bool
+	taskFilter             string
+	navigationPrefix       bool
+	evolutionAssets        api.EvolutionAssetSnapshot
+	evolutionAssetDiff     api.EvolutionAssetDiff
+	evolutionSearch        string
+	evolutionJourneyID     string
+	pendingEvolutionAction string
+	evolutionCreateMode    string
 }
 
 func NewModel(client ReadClient) (Model, error) {
@@ -431,18 +479,26 @@ func newModelWithContext(
 	setupClient, _ := client.(SetupClient)
 	executionClient, _ := client.(ExecutionClient)
 	handoffClient, _ := client.(HandoffClient)
+	assetClient, _ := client.(EvolutionAssetClient)
+	journeyID, err := newTUIJourneyID()
+	if err != nil {
+		cancel()
+		return Model{}, err
+	}
 	return Model{
-		client:          client,
-		setupClient:     setupClient,
-		executionClient: executionClient,
-		handoffClient:   handoffClient,
-		ctx:             ctx,
-		cancel:          cancel,
-		width:           80,
-		height:          24,
-		loading:         true,
-		sideTaskPurpose: "research",
-		sideTaskMode:    "report_only",
+		client:             client,
+		setupClient:        setupClient,
+		executionClient:    executionClient,
+		handoffClient:      handoffClient,
+		assetClient:        assetClient,
+		ctx:                ctx,
+		cancel:             cancel,
+		width:              80,
+		height:             24,
+		loading:            true,
+		sideTaskPurpose:    "research",
+		sideTaskMode:       "report_only",
+		evolutionJourneyID: journeyID,
 	}, nil
 }
 
@@ -552,6 +608,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.offline = false
 		model.lastError = ""
+		model.snapshot = message.snapshot
 		model.missionPreflight = message.preflight
 		model.missionResult = app.MissionExecutionResult{}
 		return model, nil
@@ -601,6 +658,26 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 		model.lastError = safeClientState(message.err)
 		return model, nil
+	case evolutionAssetsLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.evolutionAssets = message.snapshot
+		model.clampSelection()
+		return model, nil
+	case evolutionAssetCommittedMsg:
+		model.loading = true
+		model.lastError = ""
+		return model, tea.Batch(model.loadSnapshot(), model.loadEvolutionAssets(""))
+	case evolutionAssetsFailedMsg:
+		model.loading = false
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case evolutionAssetDiffLoadedMsg:
+		model.loading = false
+		model.lastError = ""
+		model.evolutionAssetDiff = message.diff
+		return model, nil
 	case tea.KeyMsg:
 		if model.entryMode != "" {
 			return model.updateEntry(message)
@@ -644,6 +721,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.switchScreen(
 				(model.screenIndex + 1) % len(screens),
 			)
+			if model.Screen() == ScreenAssets {
+				model.loading = true
+				return model, model.loadEvolutionAssets("")
+			}
 			return model, nil
 		case "shift+tab", "left":
 			next := model.screenIndex - 1
@@ -651,6 +732,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				next = len(screens) - 1
 			}
 			model.switchScreen(next)
+			if model.Screen() == ScreenAssets {
+				model.loading = true
+				return model, model.loadEvolutionAssets("")
+			}
 			return model, nil
 		case "down", "j":
 			if model.Screen() == ScreenBoard {
@@ -671,6 +756,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		case "r":
 			model.loading = true
+			if model.Screen() == ScreenAssets {
+				return model, model.loadEvolutionAssets("")
+			}
 			if model.Screen() == ScreenTeamBuilder {
 				return model, model.loadSetup()
 			}
@@ -690,6 +778,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.help = !model.help
 			return model, nil
 		case "esc":
+			if model.Screen() == ScreenAssets && model.pendingEvolutionAction != "" {
+				model.pendingEvolutionAction = ""
+				return model, nil
+			}
 			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest != "" {
 				model.sideTaskProposalReq = app.SideTaskProposalRequest{}
 				model.sideTaskProposal = app.SideTaskProposalResult{}
@@ -777,6 +869,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "n":
+			if model.Screen() == ScreenAssets && model.assetClient != nil {
+				model.evolutionCreateMode = "create_skill"
+				model.entryMode = entryEvolutionAsset
+				model.entry = []byte{}
+				return model, nil
+			}
 			if model.Screen() == ScreenMission && model.handoffClient != nil &&
 				model.sideTaskProposal.ProposalDigest == "" {
 				model.entryMode = entrySideTaskRequest
@@ -795,6 +893,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.entry = []byte(model.taskFilter)
 				return model, nil
 			}
+			if model.Screen() == ScreenAssets {
+				model.entryMode = entryEvolutionSearch
+				model.entry = []byte(model.evolutionSearch)
+				return model, nil
+			}
 		case "c":
 			if model.Screen() == ScreenMission {
 				if _, ok := model.currentMissionCancelBinding(); ok {
@@ -809,6 +912,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.confirmBuilder()
 			}
 		case "a":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "activate"
+				return model, nil
+			}
 			if model.Screen() == ScreenMission {
 				if _, ok := model.currentMissionAttention(); ok {
 					model.decisionOpen = true
@@ -823,6 +930,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.setSelectedTeamStatus(false)
 			}
 		case "u":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "rollback"
+				return model, nil
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.builder.DraftID == "" &&
 				model.selected < len(model.setup.SavedTeams) &&
@@ -831,6 +942,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.setSelectedTeamStatus(true)
 			}
 		case "e":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "evaluate"
+				return model, nil
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.builder.CanConfirm {
 				model.entryMode = entryEditName
@@ -838,6 +953,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "p":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.PromotionSources) > 0 {
+				model.pendingEvolutionAction = "promote"
+				return model, nil
+			}
 			if model.Screen() == ScreenNewMission &&
 				model.canPreflightMission() {
 				model.loading = true
@@ -873,6 +992,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "t":
+			if model.Screen() == ScreenAssets && model.assetClient != nil {
+				model.evolutionCreateMode = "team_template"
+				model.entryMode = entryEvolutionAsset
+				model.entry = []byte{}
+				return model, nil
+			}
 			if model.Screen() == ScreenNewMission {
 				model.cycleMissionTeam()
 				return model, nil
@@ -884,6 +1009,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "v":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.loading = true
+				return model, model.compareSelectedEvolutionRevisions()
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.setup.MiniMax.CredentialReference != "" &&
 				model.setup.MiniMax.Revision > 0 {
@@ -891,6 +1020,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.verifyCredential()
 			}
 		case "x":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "reject"
+				return model, nil
+			}
 			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest != "" {
 				model.sideTaskProposalReq = app.SideTaskProposalRequest{}
 				model.sideTaskProposal = app.SideTaskProposalResult{}
@@ -903,8 +1036,22 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.revokeCredential()
 			}
 		case "y":
+			if model.Screen() == ScreenAssets && model.pendingEvolutionAction != "" {
+				action := model.pendingEvolutionAction
+				model.pendingEvolutionAction = ""
+				model.loading = true
+				if action == "promote" {
+					return model, model.commitEvolutionPromotion()
+				}
+				return model, model.commitSelectedEvolutionAction(action)
+			}
 			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest == "" {
 				model.cycleSideTaskPurpose()
+				return model, nil
+			}
+		case "z":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "instantiate"
 				return model, nil
 			}
 		case "o":
@@ -923,6 +1070,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "]":
+			if model.Screen() == ScreenAssets && model.evolutionAssets.NextCursor != "" {
+				model.loading = true
+				return model, model.loadEvolutionAssets(model.evolutionAssets.NextCursor)
+			}
 			if model.Screen() == ScreenMission {
 				if sideTask, ok := model.currentDecisionSideTask(); ok && len(sideTask.AvailableDecisions) > 0 {
 					model.sideTaskDecision = (model.sideTaskDecision + 1) % len(sideTask.AvailableDecisions)
@@ -930,11 +1081,43 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "d":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "archive_toggle"
+				return model, nil
+			}
 			if model.Screen() == ScreenMission {
 				if _, ok := model.currentDecisionSideTask(); ok {
 					model.loading = true
 					return model, model.decideSideTask()
 				}
+				return model, nil
+			}
+		case "h":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "retain"
+				return model, nil
+			}
+		case "b":
+			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
+				model.pendingEvolutionAction = "bind"
+				return model, nil
+			}
+		case "i":
+			if model.Screen() == ScreenAssets && model.assetClient != nil {
+				model.evolutionCreateMode = "import_skill"
+				model.entryMode = entryEvolutionAsset
+				model.entry = []byte{}
+				return model, nil
+			}
+		case "1", "2", "3", "4":
+			if model.Screen() == ScreenAssets && model.assetClient != nil {
+				modes := map[string]string{
+					"1": "agent_template", "2": "team_template",
+					"3": "work_package_template", "4": "recovery_strategy_template",
+				}
+				model.evolutionCreateMode = modes[key]
+				model.entryMode = entryEvolutionAsset
+				model.entry = []byte{}
 				return model, nil
 			}
 		}
@@ -1273,6 +1456,77 @@ func (model Model) screenBody() string {
 		return emptyOrLines(lines, len(model.snapshot.Runtimes))
 	case ScreenTeamBuilder:
 		return model.renderTeamBuilder()
+	case ScreenAssets:
+		lines := []string{
+			"Evolution Assets · exact revision lineage",
+			"Journey · " + model.evolutionJourneyID,
+			"/ search · n local Skill · i import Skill · 1-4 templates · p promote Run",
+			"e evaluate · a activate · t Team template · z instantiate · b bind Coding · v diff",
+			"x reject · h keep · d archive/restore · u rollback · ] next page · r refresh",
+		}
+		if model.evolutionSearch != "" {
+			lines = append(lines, "Filter · "+sanitizeCell(model.evolutionSearch, 48))
+		}
+		if model.pendingEvolutionAction != "" {
+			lines = append(lines, "Confirm "+model.pendingEvolutionAction+"? y confirm · esc cancel")
+		}
+		if len(model.evolutionAssets.Definitions) == 0 {
+			lines = append(lines, "No Evolution Assets. Create a Candidate to begin.")
+		}
+		for _, source := range model.evolutionAssets.PromotionSources {
+			lines = append(lines, fmt.Sprintf(
+				"Promotion source · %s · generation %d · %s · Evidence %s",
+				source.RunID, source.RunGeneration, shortTUIDigest(source.RunDigest),
+				strings.Join(source.EvidenceIDs, ","),
+			))
+		}
+		for index, definition := range model.evolutionAssets.Definitions {
+			marker := " "
+			if index == model.selected {
+				marker = "›"
+			}
+			lines = append(lines, fmt.Sprintf("%s %s · %s", marker,
+				sanitizeCell(definition.Name, 40),
+				humanizeStatus(string(definition.Lifecycle))))
+			for _, revision := range model.evolutionAssets.Revisions {
+				if revision.DefinitionID != definition.DefinitionID {
+					continue
+				}
+				digest := revision.ArtifactDigest
+				if len(digest) > 12 {
+					digest = digest[:12] + "…"
+				}
+				lines = append(lines, "    Exact revision · "+revision.RevisionID+" · "+digest,
+					"    Risk · "+string(revision.Risk)+" · Materialization · not published")
+			}
+		}
+		for _, evaluation := range model.evolutionAssets.Evaluations {
+			usage, cost := "unknown", "unknown"
+			if evaluation.UsageObserved {
+				usage = "observed"
+			}
+			if evaluation.CostObserved {
+				cost = "observed"
+			}
+			lines = append(lines, "Eval · "+evaluation.EvaluationID+" · "+evaluation.QualityResult+" · usage "+usage+" · cost "+cost)
+		}
+		for _, binding := range model.evolutionAssets.Bindings {
+			lines = append(lines, "Binding · "+binding.SubjectKind+"/"+binding.SubjectID+" · "+shortTUIDigest(binding.AssetRevisionSetDigest))
+		}
+		for _, materialization := range model.evolutionAssets.Materializations {
+			state := "published"
+			if materialization.Cleaned {
+				state = "cleaned"
+			}
+			lines = append(lines, fmt.Sprintf("Run pin · %s · attempt %d · generation %d · %s", materialization.RunID, materialization.AttemptNumber, materialization.Generation, state))
+		}
+		if model.evolutionAssetDiff.DefinitionID != "" {
+			lines = append(lines, "Diff · "+model.evolutionAssetDiff.LeftRevisionID+" → "+model.evolutionAssetDiff.RightRevisionID)
+			for _, change := range model.evolutionAssetDiff.Changes {
+				lines = append(lines, "    "+change.Kind+" · "+change.RelativePath)
+			}
+		}
+		return strings.Join(lines, "\n") + "\n"
 	case ScreenTeams:
 		lines := []string{"Confirmed and historical Teams"}
 		if len(model.snapshot.Teams) == 0 {
@@ -1530,6 +1784,8 @@ func (model Model) renderTeamBuilder() string {
 			)
 		case entryTaskSearch:
 			prompt = "Task filter"
+		case entryEvolutionSearch:
+			prompt = "Asset search"
 		}
 		lines = append(
 			lines,
@@ -1675,19 +1931,31 @@ func (model Model) missionWorkPackage() (work.WorkPackage, error) {
 
 func (model Model) preflightMission() tea.Cmd {
 	client := model.executionClient
+	readClient := model.client
 	ctx := model.ctx
 	team, teamOK := model.selectedMissionTeam()
 	workPackage, packageErr := model.missionWorkPackage()
 	missionID := "mission/" + team.TeamInstanceID
 	objective := strings.TrimSpace(model.missionObjective)
-	viewVersion := model.snapshot.ViewVersion
 	return func() tea.Msg {
-		if client == nil || !teamOK || packageErr != nil {
+		correlationID, correlationErr := newTUICorrelationID()
+		if client == nil || !teamOK || packageErr != nil || correlationErr != nil {
 			return missionExecutionFailedMsg{err: app.ErrInvalidMissionExecution}
 		}
-		correlationID, err := newTUICorrelationID()
+		snapshot, err := readClient.Snapshot(ctx, api.LocalProductSnapshotRequest{Limit: 64})
 		if err != nil {
 			return missionExecutionFailedMsg{err: err}
+		}
+		freshTeamFound := false
+		for _, candidate := range snapshot.Teams {
+			if candidate.TeamInstanceID == team.TeamInstanceID && candidate.Confirmed &&
+				candidate.Executable && !candidate.ReadOnly {
+				freshTeamFound = true
+				break
+			}
+		}
+		if !freshTeamFound {
+			return missionExecutionFailedMsg{err: app.ErrMissionExecutionConflict}
 		}
 		envelope, err := client.ExecuteMission(ctx, app.MissionExecutionCommand{
 			SchemaVersion:       app.MissionExecutionSchemaVersion,
@@ -1697,7 +1965,7 @@ func (model Model) preflightMission() tea.Cmd {
 			WorkPackageID:       workPackage.ID(),
 			WorkPackageDigest:   workPackage.Digest(),
 			Objective:           objective,
-			ExpectedViewVersion: viewVersion,
+			ExpectedViewVersion: snapshot.ViewVersion,
 			CorrelationID:       correlationID,
 		})
 		if err != nil {
@@ -1706,7 +1974,7 @@ func (model Model) preflightMission() tea.Cmd {
 		if envelope.Operation != "preflight" || envelope.Preflight == nil {
 			return missionExecutionFailedMsg{err: localipc.ErrInvalidProtocol}
 		}
-		return missionPreflightedMsg{preflight: *envelope.Preflight}
+		return missionPreflightedMsg{preflight: *envelope.Preflight, snapshot: snapshot}
 	}
 }
 
@@ -1719,10 +1987,6 @@ func (model Model) startMission() tea.Cmd {
 		if client == nil || preflight.PreflightDigest == "" {
 			return missionExecutionFailedMsg{err: app.ErrInvalidMissionExecution}
 		}
-		correlationID, err := newTUICorrelationID()
-		if err != nil {
-			return missionExecutionFailedMsg{err: err}
-		}
 		envelope, err := client.ExecuteMission(ctx, app.MissionExecutionCommand{
 			SchemaVersion:       app.MissionExecutionSchemaVersion,
 			Operation:           "start",
@@ -1733,7 +1997,7 @@ func (model Model) startMission() tea.Cmd {
 			Objective:           objective,
 			ExpectedViewVersion: preflight.ViewVersion,
 			PreflightDigest:     preflight.PreflightDigest,
-			CorrelationID:       correlationID,
+			CorrelationID:       model.evolutionJourneyID,
 		})
 		if err != nil {
 			return missionExecutionFailedMsg{err: err}
@@ -2057,6 +2321,478 @@ func (model Model) loadTimeline(teamID, cursor string) tea.Cmd {
 	}
 }
 
+func (model Model) loadEvolutionAssets(cursor string) tea.Cmd {
+	client, ctx, journeyID := model.assetClient, model.ctx, model.evolutionJourneyID
+	searchText := model.evolutionSearch
+	return func() tea.Msg {
+		if client == nil {
+			return evolutionAssetsFailedMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		snapshot, err := client.EvolutionAssetSnapshot(ctx, api.EvolutionAssetSnapshotRequest{
+			JourneyID: journeyID, Cursor: cursor, Limit: 64, SearchText: searchText,
+		})
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		return evolutionAssetsLoadedMsg{snapshot: snapshot}
+	}
+}
+
+func (model Model) createEvolutionAsset(sourcePath string) tea.Cmd {
+	client, ctx, journeyID := model.assetClient, model.ctx, model.evolutionJourneyID
+	viewVersion := model.evolutionAssets.ViewVersion
+	createMode := model.evolutionCreateMode
+	return func() tea.Msg {
+		if client == nil || viewVersion == "" {
+			return evolutionAssetsFailedMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		if !filepath.IsAbs(sourcePath) {
+			return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+		}
+		data, readErr := os.ReadFile(sourcePath)
+		if readErr != nil || len(data) == 0 || len(data) > 1<<20 {
+			return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+		}
+		name := strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath))
+		sum := sha256.Sum256(data)
+		identity := hex.EncodeToString(sum[:])[:16]
+		if createMode == "" {
+			createMode = "create_skill"
+		}
+		action := createMode
+		definitionID := "skill-" + identity
+		revisionID := "revision-1"
+		var input []byte
+		var err error
+		if createMode == "create_skill" || createMode == "import_skill" {
+			_, artifactDigest, contentDigest, readErr := app.CanonicalEvolutionAssetArtifact(
+				assets.AssetKindSkill, definitionID, revisionID, sourcePath,
+			)
+			if readErr != nil {
+				return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+			}
+			if createMode == "create_skill" {
+				input, err = json.Marshal(struct {
+					DefinitionID                  string   `json:"definition_id"`
+					RevisionID                    string   `json:"revision_id"`
+					Name                          string   `json:"name"`
+					Description                   string   `json:"description"`
+					SubjectScope                  string   `json:"subject_scope"`
+					SourcePath                    string   `json:"source_path"`
+					SuppliedArtifactDigest        string   `json:"supplied_artifact_digest"`
+					SuppliedContentDigest         string   `json:"supplied_content_digest"`
+					Dependencies                  []string `json:"dependencies"`
+					CompatibleRuntimeCapabilities []string `json:"compatible_runtime_capabilities"`
+					Risk                          string   `json:"risk"`
+				}{definitionID, revisionID, name, "Reviewed local Candidate", "project", sourcePath, artifactDigest, contentDigest, []string{}, []string{}, string(assets.RiskLow)})
+			} else {
+				input, err = json.Marshal(struct {
+					CandidateID                   string   `json:"candidate_id"`
+					DefinitionID                  string   `json:"definition_id"`
+					RevisionID                    string   `json:"revision_id"`
+					Name                          string   `json:"name"`
+					Description                   string   `json:"description"`
+					SubjectScope                  string   `json:"subject_scope"`
+					SourcePath                    string   `json:"source_path"`
+					SuppliedArtifactDigest        string   `json:"supplied_artifact_digest"`
+					SuppliedContentDigest         string   `json:"supplied_content_digest"`
+					ExternalSourceDigest          string   `json:"external_source_digest"`
+					ProvenanceDigest              string   `json:"provenance_digest"`
+					Dependencies                  []string `json:"dependencies"`
+					CompatibleRuntimeCapabilities []string `json:"compatible_runtime_capabilities"`
+					Risk                          string   `json:"risk"`
+				}{"candidate-import-" + identity, definitionID, revisionID, name, "Reviewed import Candidate", "project", sourcePath, artifactDigest, contentDigest, artifactDigest, artifactDigest, []string{}, []string{}, string(assets.RiskMedium)})
+			}
+		} else {
+			config, found := tuiTemplateConfig(createMode)
+			if !found {
+				return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+			}
+			definitionID = createMode + "-" + identity
+			parameterDigest := tuiSHA256(`{"schema_version":1,"parameters":[]}`)
+			permissionDigest := tuiSHA256("loom.template.permission.none.v1")
+			scopeDigest := tuiSHA256("loom.template.scope.project.v1")
+			_, artifactDigest, contentDigest, readErr := app.CanonicalEvolutionTemplateArtifact(
+				config.kind, definitionID, revisionID, sourcePath, config.output,
+				parameterDigest, permissionDigest, scopeDigest,
+			)
+			if readErr != nil {
+				return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+			}
+			action = "create_template"
+			input, err = json.Marshal(struct {
+				AssetKind                     assets.AssetKind      `json:"asset_kind"`
+				DefinitionID                  string                `json:"definition_id"`
+				RevisionID                    string                `json:"revision_id"`
+				Name                          string                `json:"name"`
+				Description                   string                `json:"description"`
+				SubjectScope                  string                `json:"subject_scope"`
+				SourcePath                    string                `json:"source_path"`
+				SuppliedArtifactDigest        string                `json:"supplied_artifact_digest"`
+				SuppliedContentDigest         string                `json:"supplied_content_digest"`
+				TemplateOutput                assets.TemplateOutput `json:"template_output"`
+				ParameterSchemaDigest         string                `json:"parameter_schema_digest"`
+				PermissionCeilingDigest       string                `json:"permission_ceiling_digest"`
+				ScopeCeilingDigest            string                `json:"scope_ceiling_digest"`
+				CompatibleRuntimeCapabilities []string              `json:"compatible_runtime_capabilities"`
+				Risk                          string                `json:"risk"`
+			}{config.kind, definitionID, revisionID, name, "Candidate-only template", "project", sourcePath, artifactDigest, contentDigest, config.output, parameterDigest, permissionDigest, scopeDigest, []string{}, string(assets.RiskMedium)})
+		}
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		operationID := "asset-" + action + "-" + identity
+		result, err := client.EvolutionAssetCommand(ctx, api.EvolutionAssetCommandRequest{
+			JourneyID: journeyID, OperationID: operationID, Action: action,
+			ExpectedViewVersion: viewVersion,
+			ExpectedStreamHeads: []journal.StreamHead{}, Input: input,
+		})
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		if result.OperationID != operationID || result.Action != action || len(result.EventIDs) == 0 {
+			return evolutionAssetsFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return evolutionAssetCommittedMsg{result: result}
+	}
+}
+
+type tuiEvolutionTemplateConfig struct {
+	kind   assets.AssetKind
+	output assets.TemplateOutput
+}
+
+func tuiTemplateConfig(mode string) (tuiEvolutionTemplateConfig, bool) {
+	values := map[string]tuiEvolutionTemplateConfig{
+		"agent_template":             {assets.AssetKindAgentTemplate, assets.TemplateOutputAgentCandidate},
+		"team_template":              {assets.AssetKindTeamTemplate, assets.TemplateOutputTeamDraft},
+		"work_package_template":      {assets.AssetKindWorkPackageTemplate, assets.TemplateOutputWorkPackageCandidate},
+		"recovery_strategy_template": {assets.AssetKindRecoveryStrategyTemplate, assets.TemplateOutputRecoveryStrategyCandidate},
+	}
+	value, ok := values[mode]
+	return value, ok
+}
+
+func tuiSHA256(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
+}
+
+func (model Model) commitSelectedEvolutionAction(action string) tea.Cmd {
+	client, ctx, journeyID := model.assetClient, model.ctx, model.evolutionJourneyID
+	snapshot, selected := model.evolutionAssets, model.selected
+	return func() tea.Msg {
+		if client == nil || selected < 0 || selected >= len(snapshot.Definitions) {
+			return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+		}
+		definition := snapshot.Definitions[selected]
+		findRevision := func(id string) (assets.SkillRevision, bool) {
+			for _, revision := range snapshot.Revisions {
+				if revision.DefinitionID == definition.DefinitionID && revision.RevisionID == id {
+					return revision, true
+				}
+			}
+			return assets.SkillRevision{}, false
+		}
+		var input []byte
+		var err error
+		operationID, operationErr := newTUICorrelationID()
+		if operationErr != nil {
+			return evolutionAssetsFailedMsg{err: operationErr}
+		}
+		switch action {
+		case "instantiate":
+			revision, found := findRevision(definition.LatestRevisionID)
+			if !found || revision.AssetKind == assets.AssetKindSkill || revision.Lifecycle == assets.LifecycleArchived {
+				return evolutionAssetsFailedMsg{err: assets.ErrDenied}
+			}
+			parameterDigest := tuiSHA256("[]")
+			input, err = json.Marshal(struct {
+				AssetKind       assets.AssetKind `json:"asset_kind"`
+				DefinitionID    string           `json:"definition_id"`
+				RevisionID      string           `json:"revision_id"`
+				RevisionDigest  string           `json:"revision_digest"`
+				ParameterValues []struct{}       `json:"parameter_values"`
+				ParameterDigest string           `json:"parameter_digest"`
+			}{revision.AssetKind, revision.DefinitionID, revision.RevisionID, revision.ArtifactDigest, []struct{}{}, parameterDigest})
+			action = "instantiate_template"
+		case "evaluate":
+			var candidate assets.EvolutionCandidate
+			found := false
+			for _, value := range snapshot.Candidates {
+				if value.DefinitionID == definition.DefinitionID && value.Decision == "" {
+					candidate, found = value, true
+					break
+				}
+			}
+			revision, revisionFound := findRevision(candidate.RevisionID)
+			if !found || !revisionFound {
+				return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+			}
+			baseline := revision
+			if active, ok := findRevision(definition.ActiveRevisionID); ok {
+				baseline = active
+			}
+			caseIDs := []string{"artifact_digest", "runtime_compatibility", "security_boundary"}
+			fixture, fixtureErr := app.CanonicalEvolutionEvaluationFixture("synthetic", caseIDs)
+			if fixtureErr != nil {
+				return evolutionAssetsFailedMsg{err: fixtureErr}
+			}
+			fixtureSum := sha256.Sum256(fixture)
+			evaluationID, idErr := newTUICorrelationID()
+			if idErr != nil {
+				return evolutionAssetsFailedMsg{err: idErr}
+			}
+			input, err = json.Marshal(struct {
+				EvaluationID       string   `json:"evaluation_id"`
+				CandidateID        string   `json:"candidate_id"`
+				FixtureKind        string   `json:"fixture_kind"`
+				FixtureDigest      string   `json:"fixture_digest"`
+				BaselineRevisionID string   `json:"baseline_revision_id"`
+				BaselineDigest     string   `json:"baseline_digest"`
+				CandidateRevision  string   `json:"candidate_revision_id"`
+				CandidateDigest    string   `json:"candidate_digest"`
+				RequestedCaseIDs   []string `json:"requested_case_ids"`
+			}{evaluationID, candidate.CandidateID, "synthetic", hex.EncodeToString(fixtureSum[:]), baseline.RevisionID, baseline.ArtifactDigest, revision.RevisionID, revision.ArtifactDigest, caseIDs})
+			action = "record_evaluation"
+		case "bind":
+			revision, found := findRevision(definition.ActiveRevisionID)
+			if !found || revision.Lifecycle != assets.LifecycleActive {
+				return evolutionAssetsFailedMsg{err: assets.ErrDenied}
+			}
+			var subject app.EvolutionAssetBindingSubject
+			for _, value := range snapshot.BindingSubjects {
+				if value.SubjectKind == "work_package" && value.SubjectID == "work-package.coding" {
+					subject = value
+					break
+				}
+			}
+			if subject.SubjectID == "" {
+				return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+			}
+			binding := assets.ExactAssetRevisionBinding{
+				AssetKind: revision.AssetKind, DefinitionID: revision.DefinitionID,
+				RevisionID: revision.RevisionID, SHA256Digest: revision.ArtifactDigest,
+				SourceScope: revision.SourceScope,
+			}
+			setDigest, digestErr := assets.CanonicalAssetRevisionSetDigest([]assets.ExactAssetRevisionBinding{binding})
+			if digestErr != nil {
+				return evolutionAssetsFailedMsg{err: digestErr}
+			}
+			input, err = json.Marshal(struct {
+				SubjectKind            string                             `json:"subject_kind"`
+				SubjectID              string                             `json:"subject_id"`
+				SubjectVersion         int64                              `json:"subject_version"`
+				SubjectDigest          string                             `json:"subject_digest"`
+				SubjectScope           string                             `json:"subject_scope"`
+				SubjectProjectID       string                             `json:"subject_project_id"`
+				SubjectGenerationID    string                             `json:"subject_generation_id"`
+				SubjectIdentityDigest  string                             `json:"subject_identity_digest"`
+				AssetRevisionBindings  []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+				AssetRevisionSetDigest string                             `json:"asset_revision_set_digest"`
+			}{subject.SubjectKind, subject.SubjectID, subject.SubjectVersion, subject.SubjectDigest, subject.Scope, subject.ProjectID, subject.GenerationID, subject.SubjectIdentityDigest, []assets.ExactAssetRevisionBinding{binding}, setDigest})
+			action = "set_binding"
+		case "activate", "reject", "retain":
+			var candidate assets.EvolutionCandidate
+			found := false
+			for _, value := range snapshot.Candidates {
+				if value.DefinitionID == definition.DefinitionID && value.Decision == "" {
+					candidate, found = value, true
+					break
+				}
+			}
+			revision, revisionFound := findRevision(candidate.RevisionID)
+			if !found || !revisionFound {
+				return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+			}
+			if action == "activate" {
+				input, err = json.Marshal(struct {
+					CandidateID                string           `json:"candidate_id"`
+					AssetKind                  assets.AssetKind `json:"asset_kind"`
+					DefinitionID               string           `json:"definition_id"`
+					RevisionID                 string           `json:"revision_id"`
+					RevisionDigest             string           `json:"revision_digest"`
+					ExpectedPreviousRevisionID string           `json:"expected_previous_revision_id"`
+					EvaluationIDs              []string         `json:"evaluation_ids"`
+				}{candidate.CandidateID, candidate.AssetKind, candidate.DefinitionID, candidate.RevisionID, revision.ArtifactDigest, definition.ActiveRevisionID, nonNilTUIStrings(candidate.RequiredEvaluationIDs)})
+			} else {
+				reason := "user_rejected"
+				if action == "retain" {
+					reason = "keep_for_later"
+				}
+				input, err = json.Marshal(struct {
+					CandidateID    string           `json:"candidate_id"`
+					AssetKind      assets.AssetKind `json:"asset_kind"`
+					DefinitionID   string           `json:"definition_id"`
+					RevisionID     string           `json:"revision_id"`
+					RevisionDigest string           `json:"revision_digest"`
+					ReasonCode     string           `json:"reason_code"`
+				}{candidate.CandidateID, candidate.AssetKind, candidate.DefinitionID, candidate.RevisionID, revision.ArtifactDigest, reason})
+			}
+		case "archive_toggle":
+			revision, found := findRevision(definition.LatestRevisionID)
+			if !found {
+				return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+			}
+			action = "archive"
+			reason := "archive_requested"
+			if revision.Lifecycle == assets.LifecycleArchived {
+				action, reason = "restore", "restore_requested"
+			}
+			input, err = json.Marshal(struct {
+				AssetKind      assets.AssetKind `json:"asset_kind"`
+				DefinitionID   string           `json:"definition_id"`
+				RevisionID     string           `json:"revision_id"`
+				RevisionDigest string           `json:"revision_digest"`
+				ReasonCode     string           `json:"reason_code"`
+			}{revision.AssetKind, revision.DefinitionID, revision.RevisionID, revision.ArtifactDigest, reason})
+		case "rollback":
+			from, found := findRevision(definition.ActiveRevisionID)
+			if !found {
+				return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+			}
+			var target assets.SkillRevision
+			for _, revision := range snapshot.Revisions {
+				if revision.DefinitionID == definition.DefinitionID && revision.RevisionID != from.RevisionID && revision.Lifecycle != assets.LifecycleArchived {
+					target = revision
+					break
+				}
+			}
+			if target.RevisionID == "" {
+				return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+			}
+			input, err = json.Marshal(struct {
+				AssetKind      assets.AssetKind `json:"asset_kind"`
+				DefinitionID   string           `json:"definition_id"`
+				FromRevisionID string           `json:"from_revision_id"`
+				FromDigest     string           `json:"from_digest"`
+				ToRevisionID   string           `json:"to_revision_id"`
+				ToDigest       string           `json:"to_digest"`
+				EvaluationIDs  []string         `json:"evaluation_ids"`
+				ReasonCode     string           `json:"reason_code"`
+			}{target.AssetKind, definition.DefinitionID, from.RevisionID, from.ArtifactDigest, target.RevisionID, target.ArtifactDigest, []string{}, "rollback_requested"})
+		default:
+			return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+		}
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		result, err := client.EvolutionAssetCommand(ctx, api.EvolutionAssetCommandRequest{JourneyID: journeyID, OperationID: operationID, Action: action, ExpectedViewVersion: snapshot.ViewVersion, ExpectedStreamHeads: []journal.StreamHead{}, Input: input})
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		if result.OperationID != operationID || result.Action != action || len(result.EventIDs) == 0 {
+			return evolutionAssetsFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return evolutionAssetCommittedMsg{result: result}
+	}
+}
+
+func (model Model) commitEvolutionPromotion() tea.Cmd {
+	client, ctx, journeyID := model.assetClient, model.ctx, model.evolutionJourneyID
+	snapshot := model.evolutionAssets
+	return func() tea.Msg {
+		if client == nil || len(snapshot.PromotionSources) == 0 {
+			return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+		}
+		source := snapshot.PromotionSources[0]
+		if source.RunGeneration < 1 || len(source.RunDigest) != 64 ||
+			len(source.EvidenceIDs) == 0 || len(source.EvidenceIDs) != len(source.EvidenceDigests) {
+			return evolutionAssetsFailedMsg{err: assets.ErrDenied}
+		}
+		operationID, err := newTUICorrelationID()
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		candidateID, err := newTUICorrelationID()
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		summary := "Accepted terminal Run " + source.RunID + " promoted by explicit user action."
+		summaryDigest := sha256.Sum256([]byte(summary))
+		input, err := json.Marshal(struct {
+			CandidateID           string           `json:"candidate_id"`
+			AssetKind             assets.AssetKind `json:"asset_kind"`
+			DefinitionID          string           `json:"definition_id"`
+			RevisionID            string           `json:"revision_id"`
+			SourceRunID           string           `json:"source_run_id"`
+			SourceRunGeneration   int64            `json:"source_run_generation"`
+			SourceRunDigest       string           `json:"source_run_digest"`
+			SourceEvidenceIDs     []string         `json:"source_evidence_ids"`
+			SourceEvidenceDigests []string         `json:"source_evidence_digests"`
+			RedactedSummary       string           `json:"redacted_summary"`
+			RedactedSummaryDigest string           `json:"redacted_summary_digest"`
+			ScopeDifference       string           `json:"scope_difference"`
+			ExpectedBenefit       string           `json:"expected_benefit"`
+			Risk                  assets.Risk      `json:"risk"`
+		}{
+			candidateID, assets.AssetKindSkill, "skill.promoted." + source.RunDigest[:16],
+			"revision.1", source.RunID, source.RunGeneration, source.RunDigest,
+			nonNilTUIStrings(source.EvidenceIDs), nonNilTUIStrings(source.EvidenceDigests),
+			summary, hex.EncodeToString(summaryDigest[:]), "new project-scoped Candidate",
+			"reuse accepted terminal behavior", assets.RiskMedium,
+		})
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		result, err := client.EvolutionAssetCommand(ctx, api.EvolutionAssetCommandRequest{
+			JourneyID: journeyID, OperationID: operationID, Action: "promote_run",
+			ExpectedViewVersion: snapshot.ViewVersion,
+			ExpectedStreamHeads: []journal.StreamHead{}, Input: input,
+		})
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		if result.OperationID != operationID || result.Action != "promote_run" || len(result.EventIDs) == 0 {
+			return evolutionAssetsFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return evolutionAssetCommittedMsg{result: result}
+	}
+}
+
+func (model Model) compareSelectedEvolutionRevisions() tea.Cmd {
+	client, ctx, journeyID := model.assetClient, model.ctx, model.evolutionJourneyID
+	snapshot, selected := model.evolutionAssets, model.selected
+	return func() tea.Msg {
+		if client == nil || selected < 0 || selected >= len(snapshot.Definitions) {
+			return evolutionAssetsFailedMsg{err: app.ErrInvalidLocalProductAsset}
+		}
+		definition := snapshot.Definitions[selected]
+		revisions := make([]assets.SkillRevision, 0)
+		for _, revision := range snapshot.Revisions {
+			if revision.DefinitionID == definition.DefinitionID {
+				revisions = append(revisions, revision)
+			}
+		}
+		if len(revisions) < 2 {
+			return evolutionAssetsFailedMsg{err: assets.ErrNotFound}
+		}
+		diff, err := client.EvolutionAssetDiff(ctx, api.EvolutionAssetDiffRequest{
+			JourneyID: journeyID, DefinitionID: definition.DefinitionID,
+			LeftRevisionID: revisions[0].RevisionID, LeftDigest: revisions[0].ArtifactDigest,
+			RightRevisionID: revisions[1].RevisionID, RightDigest: revisions[1].ArtifactDigest,
+		})
+		if err != nil {
+			return evolutionAssetsFailedMsg{err: err}
+		}
+		return evolutionAssetDiffLoadedMsg{diff: diff}
+	}
+}
+
+func shortTUIDigest(value string) string {
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12] + "…"
+}
+
+func nonNilTUIStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return append([]string{}, values...)
+}
+
 func (model Model) loadSetup() tea.Cmd {
 	client := model.setupClient
 	ctx := model.ctx
@@ -2188,6 +2924,14 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.clampTaskSelection()
 			return model, nil
 		}
+		if model.entryMode == entryEvolutionSearch {
+			model.evolutionSearch = sanitizeCell(string(model.entry), 96)
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			model.loading = true
+			return model, model.loadEvolutionAssets("")
+		}
 		if model.entryMode == entryMissionObjective {
 			objective := strings.TrimSpace(sanitizeCell(string(model.entry), 4096))
 			clearTUIBytes(model.entry)
@@ -2211,6 +2955,17 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.sideTaskRequest = request
 			model.loading = true
 			return model, model.proposeSideTask()
+		}
+		if model.entryMode == entryEvolutionAsset {
+			name := strings.TrimSpace(sanitizeCell(string(model.entry), 128))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if name == "" {
+				return model, nil
+			}
+			model.loading = true
+			return model, model.createEvolutionAsset(name)
 		}
 		if len(model.entry) == 0 {
 			return model, nil
@@ -2455,6 +3210,30 @@ func newTUICorrelationID() (string, error) {
 		encoded[20:32], nil
 }
 
+func newTUIJourneyID() (string, error) {
+	if supplied := os.Getenv("LOOM_JOURNEY_ID"); validTUIJourneyID(supplied) {
+		return supplied, nil
+	}
+	return newTUICorrelationID()
+}
+
+func validTUIJourneyID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' ||
+		value[18] != '-' || value[23] != '-' || value[14] != '4' ||
+		!strings.ContainsRune("89ab", rune(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if character < '0' || character > '9' && character < 'a' || character > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
 func clearTUIBytes(value []byte) {
 	for index := range value {
 		value[index] = 0
@@ -2554,6 +3333,8 @@ func (model *Model) clampSelection() {
 		} else {
 			maximum = model.setupSelectableCount()
 		}
+	case ScreenAssets:
+		maximum = len(model.evolutionAssets.Definitions)
 	}
 	if maximum == 0 {
 		model.selected = 0

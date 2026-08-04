@@ -17,6 +17,23 @@ type errorEventSource struct {
 	err error
 }
 
+func TestP3AGlobalReadViewExposesTypedEvolutionAssetCopies(t *testing.T) {
+	viewType := reflect.TypeOf(GlobalReadView{})
+	for _, method := range []string{
+		"EvolutionAssetDefinition",
+		"EvolutionAssetDefinitions",
+		"EvolutionAssetRevision",
+		"EvolutionAssetCandidate",
+		"EvolutionAssetEvaluation",
+		"EvolutionAssetBinding",
+		"RuntimeSkillMaterialization",
+	} {
+		if _, found := viewType.MethodByName(method); !found {
+			t.Fatalf("GlobalReadView.%s is missing", method)
+		}
+	}
+}
+
 func mustBuildGlobalReadView(
 	t *testing.T,
 	snapshot Snapshot,

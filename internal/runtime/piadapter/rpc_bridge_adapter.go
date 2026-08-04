@@ -267,7 +267,11 @@ func (adapter *piRPCBridgeAdapter) Execute(
 		return supervisor.AdapterResult{}, err
 	}
 
-	command := exec.Command(adapter.execution.executable.path, adapter.arguments()...)
+	arguments, err := adapter.arguments(request)
+	if err != nil {
+		return supervisor.AdapterResult{}, errors.Join(ErrPiRPCProtocol, err)
+	}
+	command := exec.Command(adapter.execution.executable.path, arguments...)
 	command.Dir = request.WorkspacePath
 	command.Env = []string{
 		"HOME=" + request.HomePath,
@@ -472,8 +476,10 @@ func publishPiRPCTranscriptAudit(
 	}
 }
 
-func (adapter *piRPCBridgeAdapter) arguments() []string {
-	return []string{
+func (adapter *piRPCBridgeAdapter) arguments(
+	request supervisor.AdapterRequest,
+) ([]string, error) {
+	arguments := []string{
 		"--mode", "rpc",
 		"--offline",
 		"--no-approve",
@@ -489,6 +495,19 @@ func (adapter *piRPCBridgeAdapter) arguments() []string {
 		"--thinking", "off",
 		"--system-prompt", piRPCSystemPrompt,
 	}
+	skillRoot, err := executionMaterializationSkillRoot(
+		request.WorkspacePath,
+		request.Binding.RunID,
+		request.Binding.ClaimGeneration,
+		request.Binding.RuntimeInstanceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if skillRoot != "" {
+		arguments = append(arguments, "--skill", skillRoot)
+	}
+	return arguments, nil
 }
 
 func (adapter *piRPCBridgeAdapter) preparePrivatePiHome(

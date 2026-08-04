@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -33,6 +34,7 @@ func (err *requestDecodeError) Error() string {
 type Request struct {
 	Version   int             `json:"version"`
 	RequestID string          `json:"request_id"`
+	JourneyID string          `json:"journey_id,omitempty"`
 	Method    string          `json:"method"`
 	Params    json.RawMessage `json:"params"`
 }
@@ -46,6 +48,7 @@ type ProtocolError struct {
 type Response struct {
 	Version   int             `json:"version"`
 	RequestID string          `json:"request_id"`
+	JourneyID string          `json:"journey_id,omitempty"`
 	OK        bool            `json:"ok"`
 	Result    json.RawMessage `json:"result"`
 	Error     *ProtocolError  `json:"error"`
@@ -145,6 +148,13 @@ func decodeRequest(data []byte) (Request, error) {
 	if !validMethod(request.Method) {
 		return request, &requestDecodeError{code: "unknown_method"}
 	}
+	if requiresJourney(request.Method) {
+		if !validJourneyID(request.JourneyID) {
+			return Request{}, ErrInvalidProtocol
+		}
+	} else if request.JourneyID != "" && !validJourneyID(request.JourneyID) {
+		return Request{}, ErrInvalidProtocol
+	}
 	var params map[string]json.RawMessage
 	paramsDecoder := json.NewDecoder(bytes.NewReader(request.Params))
 	paramsDecoder.UseNumber()
@@ -167,6 +177,7 @@ func requestErrorCode(err error) string {
 func encodeResponse(response Response) ([]byte, error) {
 	if response.Version != protocolVersion ||
 		!validRequestID(response.RequestID) ||
+		response.JourneyID != "" && !validJourneyID(response.JourneyID) ||
 		response.OK == (response.Error != nil) ||
 		response.OK && len(response.Result) == 0 ||
 		!response.OK && len(response.Result) != 0 {
@@ -177,6 +188,32 @@ func encodeResponse(response Response) ([]byte, error) {
 		return nil, ErrInvalidProtocol
 	}
 	return data, nil
+}
+
+func requiresJourney(method string) bool {
+	switch method {
+	case "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command":
+		return true
+	default:
+		return false
+	}
+}
+
+func validJourneyID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' ||
+		value[18] != '-' || value[23] != '-' || value[14] != '4' ||
+		!strings.ContainsRune("89ab", rune(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if character < '0' || character > '9' && character < 'a' || character > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 func safeProtocolError(code string, _ error) *ProtocolError {
@@ -271,7 +308,10 @@ func validMethod(method string) bool {
 		"credential_configure",
 		"credential_verify",
 		"credential_replace",
-		"credential_revoke":
+		"credential_revoke",
+		"evolution_asset_snapshot",
+		"evolution_asset_diff",
+		"evolution_asset_command":
 		return true
 	default:
 		return false

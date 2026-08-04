@@ -22,7 +22,9 @@ import (
 	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 	loomruntime "loom-pi-rebuild/internal/runtime"
@@ -56,6 +58,141 @@ const swiftSnapshotFixture = `{
   "run_page":{"next_cursor":"","has_more":false},
   "evidence_page":{"next_cursor":"","has_more":false}
 }`
+
+func TestP3ASwiftProductionClientHasStrictJourneyAndAssetSurface(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", "..", "apps", "macos", "Sources"))
+	files := map[string][]string{
+		filepath.Join(root, "LoomLocalAppCore", "LocalProductAssetModels.swift"): {
+			"EvolutionAssetSnapshot", "EvolutionAssetCommand", "journeyID",
+		},
+		filepath.Join(root, "LoomLocalAppCore", "LocalIPCClient.swift"): {
+			"journey_id", "evolution_asset_snapshot", "evolution_asset_diff",
+			"evolution_asset_command",
+		},
+		filepath.Join(root, "LoomLocalAppUI", "MissionWorkbench.swift"): {
+			"Assets", "Activate", "Rollback", "Materialization",
+		},
+	}
+	for file, tokens := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read required Swift product source %s: %v", file, err)
+		}
+		for _, token := range tokens {
+			if !bytes.Contains(content, []byte(token)) {
+				t.Fatalf("Swift source %s missing %q", file, token)
+			}
+		}
+	}
+}
+
+type swiftP3AAssetHandler struct{ service *api.LocalProductAssetAPI }
+
+func (handler swiftP3AAssetHandler) Handle(ctx context.Context, request Request) Response {
+	if request.Method != "evolution_asset_snapshot" || request.JourneyID == "" {
+		return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("method"))}
+	}
+	var input api.EvolutionAssetSnapshotRequest
+	decoder := json.NewDecoder(bytes.NewReader(request.Params))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil {
+		return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("params"))}
+	}
+	input.JourneyID = request.JourneyID
+	result, err := handler.service.EvolutionAssetSnapshot(ctx, input)
+	if err != nil {
+		return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+	}
+	return Response{JourneyID: request.JourneyID, OK: true, Result: encoded}
+}
+
+func TestP3ARealGoAssetServiceAndIPCDecodeInStrictSwiftClient(t *testing.T) {
+	probe := buildSwiftContractProbe(t)
+	root, socketPath := swiftPrivateSocketRoot(t)
+	defer os.RemoveAll(root)
+	database, err := sql.Open("sqlite", filepath.Join(root, "p3a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := journal.Migrate(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := assets.NewAuthority(assets.AuthorityConfig{Store: journal.NewStore(database), Now: func() time.Time { return time.Unix(2_000, 0).UTC() }, ViewVersion: func() string { return readModel.GlobalReadView().Version() }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactStore, err := evidence.NewStore(filepath.Join(root, "evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifactStore.Close()
+	service, err := app.NewLocalProductAssetService(readModel, authority, artifactStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("a", 64)
+	if _, err := authority.CreateSkill(context.Background(), assets.Command{
+		OperationID:         "p3a-swift-nil-collection-fixture",
+		JourneyID:           "123e4567-e89b-42d3-a456-426614174000",
+		ExpectedViewVersion: readModel.GlobalReadView().Version(),
+		AssetKind:           assets.AssetKindSkill,
+		DefinitionID:        "skill-swift-wire", RevisionID: "revision-1",
+		CandidateID: "candidate-swift-wire", Name: "Swift Wire Skill",
+		Description: "strict production wire fixture", Scope: "project",
+		ArtifactDigest: digest, ContentDigest: digest,
+		SourceScope: assets.SourceScopeLocal, SourceReferenceDigest: digest,
+		ProvenanceDigest: digest, Dependencies: []string{},
+		CompatibleCapabilities: []string{}, SourceEvidenceIDs: []string{},
+		SourceEvidenceDigests: []string{}, RequiredEvaluationIDs: []string{},
+		Risk: assets.RiskLow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assetAPI, err := api.NewLocalProductAssetAPI(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(ServerConfig{SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "p3a-swift-fixture", Handler: swiftP3AAssetHandler{service: assetAPI}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("server not ready")
+	}
+	journeyID := "123e4567-e89b-42d3-a456-426614174000"
+	output, runErr := exec.Command(probe, "--socket", socketPath, "--assets", journeyID).CombinedOutput()
+	cancel()
+	_ = server.Close()
+	<-done
+	if runErr != nil {
+		t.Fatalf("Swift P3A probe: %v output=%q", runErr, output)
+	}
+	var actual struct {
+		ViewVersion string `json:"viewVersion"`
+		Definitions int    `json:"definitions"`
+		Revisions   int    `json:"revisions"`
+	}
+	if err := json.Unmarshal(output, &actual); err != nil || actual.ViewVersion == "" || actual.Definitions != 1 || actual.Revisions != 1 {
+		t.Fatalf("Swift P3A output=%q actual=%#v err=%v", output, actual, err)
+	}
+}
 
 const swiftPartialSnapshotFixture = `{
   "schema_version":2,
@@ -1604,6 +1741,7 @@ struct SetupContractProbe {
 		filepath.Join(sourceRoot, "LocalProductDecisionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductSetupModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductExecutionModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductAssetModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductStore.swift"),
 		filepath.Join(sourceRoot, "LocalIPCClient.swift"),
 		mainPath,

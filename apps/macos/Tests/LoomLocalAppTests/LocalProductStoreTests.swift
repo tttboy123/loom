@@ -1075,6 +1075,18 @@ final class LocalProductStoreTests: XCTestCase {
         let store = LocalProductStore(client: client)
         await store.refresh()
 
+		let freshViewVersion = String(repeating: "f", count: 64)
+		client.replaceSnapshot(
+			try LocalProductWire.decodeSnapshot(
+				Data(
+					json.replacingOccurrences(
+						of: "\"view_version\":\"\(String(repeating: "b", count: 64))\"",
+						with: "\"view_version\":\"\(freshViewVersion)\""
+					).utf8
+				)
+			)
+		)
+
         await store.preflightMission(
             objective: "Implement the bounded change",
             team: snapshot.teams[0],
@@ -1086,6 +1098,8 @@ final class LocalProductStoreTests: XCTestCase {
         XCTAssertEqual(client.commands.map(\.operation), ["preflight"])
         XCTAssertEqual(client.commands[0].missionID, "mission/team-1")
         XCTAssertEqual(client.commands[0].workPackageID, "work-package.coding")
+		XCTAssertEqual(client.commands[0].expectedViewVersion, freshViewVersion)
+		XCTAssertEqual(client.snapshotRequestCount, 2)
 
         await store.startPreflightedMission()
 
@@ -1428,10 +1442,16 @@ private final class ExecutionStubClient:
     private(set) var fixedSnapshot: LocalProductSnapshot
     private(set) var commands: [LocalProductExecutionCommand] = []
     private(set) var timelineRequestCount = 0
+	private(set) var snapshotRequestCount = 0
 
     init(snapshot: LocalProductSnapshot) { fixedSnapshot = snapshot }
 
-    func snapshot(limit: Int) async throws -> LocalProductSnapshot { fixedSnapshot }
+	func replaceSnapshot(_ snapshot: LocalProductSnapshot) { fixedSnapshot = snapshot }
+
+	func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+		snapshotRequestCount += 1
+		return fixedSnapshot
+	}
 
     func timeline(
         teamInstanceID: String,

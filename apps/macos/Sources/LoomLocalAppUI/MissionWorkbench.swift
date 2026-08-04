@@ -297,6 +297,13 @@ func missionInspectorSection(
     }
 }
 
+private struct PendingEvolutionAssetMutation {
+    let action: String
+    let candidateID: String
+    let definitionID: String
+    let revisionID: String
+}
+
 public struct MissionWorkbench: View {
     @ObservedObject private var store: LocalProductStore
     @State private var showProviders = false
@@ -310,6 +317,15 @@ public struct MissionWorkbench: View {
     @State private var sideTaskMode = "report_only"
     @State private var sideTaskTitle = ""
     @State private var sideTaskRequest = ""
+    @State private var showCreateAsset = false
+    @State private var assetDefinitionID = "skill.local"
+    @State private var assetRevisionID = "revision.1"
+    @State private var assetName = "Local Skill"
+    @State private var assetDescription = "Reviewed local evolution Candidate"
+    @State private var assetSourcePath = ""
+    @State private var assetCreationKind = "create_skill"
+    @State private var assetSearchText = ""
+    @State private var pendingAssetMutation: PendingEvolutionAssetMutation?
 
     public init(store: LocalProductStore) {
         self.store = store
@@ -355,6 +371,25 @@ public struct MissionWorkbench: View {
                 newSideTaskSheet(missionID)
                     .frame(minWidth: 560, minHeight: 500)
             }
+        }
+        .sheet(isPresented: $showCreateAsset) {
+            createEvolutionAssetSheet
+                .frame(minWidth: 620, minHeight: 520)
+        }
+        .confirmationDialog(
+            pendingAssetMutation.map { "Confirm \($0.action)?" } ?? "Confirm asset change?",
+            isPresented: Binding(
+                get: { pendingAssetMutation != nil },
+                set: { if !$0 { pendingAssetMutation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(pendingAssetMutation?.action ?? "Confirm", role: pendingAssetMutation?.action == "Reject" ? .destructive : nil) {
+                confirmEvolutionAssetMutation()
+            }
+            Button("Cancel", role: .cancel) { pendingAssetMutation = nil }
+        } message: {
+            Text("This explicit action writes authoritative Journal facts. Cancel writes nothing.")
         }
         .sheet(
             item: Binding(
@@ -1496,12 +1531,253 @@ public struct MissionWorkbench: View {
         VStack(spacing: 0) {
             workbenchToolbar(
                 title: "Library",
-                subtitle: "History and Compare"
+                subtitle: "Evolution Assets, History and Compare"
             )
             workspaceReadBanner
             if let snapshot = store.snapshot {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Assets")
+                                    .font(.title3.weight(.semibold))
+                                Text("Exact revision lineage · Candidate-only until explicit activation")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Refresh") { Task { await store.loadEvolutionAssets() } }
+                            Button("Create Candidate") { showCreateAsset = true }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!store.evolutionAssetReachable)
+                        }
+                        Text("Journey · \(store.evolutionAssetJourneyID) · \(store.evolutionAssetStatus)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                        if let assets = store.evolutionAssets, !assets.promotionSources.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Accepted Run promotion sources").font(.headline)
+                                ForEach(assets.promotionSources) { source in
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("\(source.runID) · generation \(source.runGeneration)")
+                                                .font(.caption.monospaced())
+                                            Text("Run digest \(source.runDigest) · Evidence \(source.evidenceIDs.joined(separator: ", "))")
+                                                .font(.caption2.monospaced())
+                                                .foregroundStyle(.secondary)
+                                                .textSelection(.enabled)
+                                        }
+                                        Spacer()
+                                        Button("Promote to Candidate") {
+                                            pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                action: "Promote", candidateID: source.runID,
+                                                definitionID: "", revisionID: ""
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        TextField("Search assets", text: $assetSearchText)
+                            .textFieldStyle(.roundedBorder)
+                        if let assets = store.evolutionAssets, !assets.records.isEmpty {
+                            ForEach(assets.records.filter {
+                                assetSearchText.isEmpty ||
+                                    $0.definition.name.localizedCaseInsensitiveContains(assetSearchText) ||
+                                    $0.definition.description.localizedCaseInsensitiveContains(assetSearchText) ||
+                                    $0.definition.definitionID.localizedCaseInsensitiveContains(assetSearchText)
+                            }) { asset in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text(asset.definition.name.isEmpty ? asset.definition.definitionID : asset.definition.name)
+                                            .font(.headline)
+                                        Spacer()
+                                        Text(asset.definition.lifecycle.rawValue.capitalized)
+                                            .font(.caption.weight(.semibold))
+                                    }
+                                    Text(asset.definition.description)
+                                        .foregroundStyle(.secondary)
+                                    ForEach(asset.revisions) { revision in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("Exact revision · \(revision.revisionID)")
+                                                .font(.callout.weight(.medium))
+                                            Text("Digest · \(revision.artifactDigest)")
+                                                .font(.caption2.monospaced())
+                                                .textSelection(.enabled)
+                                            Text("Risk · \(revision.risk) · Runtime compatibility · \(revision.compatibleRuntimeCapabilities.joined(separator: ", "))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    let undecidedCandidate = assets.candidates.first {
+                                        $0.definitionID == asset.definition.definitionID &&
+                                            $0.decision.isEmpty
+                                    }
+                                    let latestRevision = asset.revisions.first {
+                                        $0.revisionID == asset.definition.latestRevisionID
+                                    }
+                                    let rollbackTarget = asset.revisions.first {
+                                        $0.revisionID != asset.definition.activeRevisionID &&
+                                            $0.lifecycle != .archived
+                                    }
+                                    HStack {
+                                        Button("Evaluate") {
+                                            if let candidate = undecidedCandidate {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: "Evaluate", candidateID: candidate.candidateID,
+                                                    definitionID: candidate.definitionID, revisionID: candidate.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(undecidedCandidate == nil)
+                                        Button("Activate") {
+                                            if let candidate = undecidedCandidate {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: "Activate", candidateID: candidate.candidateID,
+                                                    definitionID: candidate.definitionID, revisionID: candidate.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(undecidedCandidate == nil)
+                                        .help("Explicitly activate the exact Candidate revision.")
+                                        Button("Keep") {
+                                            if let candidate = undecidedCandidate {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: "Keep", candidateID: candidate.candidateID,
+                                                    definitionID: candidate.definitionID, revisionID: candidate.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(undecidedCandidate == nil)
+                                        Button("Reject", role: .destructive) {
+                                            if let candidate = undecidedCandidate {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: "Reject", candidateID: candidate.candidateID,
+                                                    definitionID: candidate.definitionID, revisionID: candidate.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(undecidedCandidate == nil)
+                                        Button(latestRevision?.lifecycle == .archived ? "Restore" : "Archive") {
+                                            if let revision = latestRevision {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: revision.lifecycle == .archived ? "Restore" : "Archive",
+                                                    candidateID: "", definitionID: revision.definitionID,
+                                                    revisionID: revision.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(latestRevision == nil)
+                                        Button("Rollback") {
+                                            if let target = rollbackTarget {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: "Rollback", candidateID: "",
+                                                    definitionID: asset.definition.definitionID,
+                                                    revisionID: target.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(asset.definition.activeRevisionID.isEmpty || rollbackTarget == nil)
+                                        .help("Rollback uses the exact prior revision digest.")
+                                        Button("Bind to Coding") {
+                                            if let active = asset.revisions.first(where: {
+                                                $0.revisionID == asset.definition.activeRevisionID
+                                            }) {
+                                                pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                    action: "Bind", candidateID: "",
+                                                    definitionID: active.definitionID,
+                                                    revisionID: active.revisionID
+                                                )
+                                            }
+                                        }
+                                        .disabled(
+                                            asset.definition.activeRevisionID.isEmpty ||
+                                                !assets.bindingSubjects.contains(where: {
+                                                    $0.subjectKind == "work_package" &&
+                                                        $0.subjectID == "work-package.coding"
+                                                })
+                                        )
+                                        if latestRevision?.assetKind != .skill {
+                                            Button("Instantiate") {
+                                                if let revision = latestRevision {
+                                                    pendingAssetMutation = PendingEvolutionAssetMutation(
+                                                        action: "Instantiate", candidateID: "",
+                                                        definitionID: revision.definitionID,
+                                                        revisionID: revision.revisionID
+                                                    )
+                                                }
+                                            }
+                                            .disabled(latestRevision == nil || latestRevision?.lifecycle == .archived)
+                                        }
+                                        if asset.revisions.count > 1 {
+                                            Button("Compare") {
+                                                Task {
+                                                    await store.compareEvolutionRevisions(
+                                                        definitionID: asset.definition.definitionID,
+                                                        left: asset.revisions[0], right: asset.revisions[1]
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer()
+                                        Label("Materialization", systemImage: "shippingbox")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(14)
+                                .background(
+                                    LoomGraphite.surface,
+                                    in: RoundedRectangle(cornerRadius: LoomGraphite.cardRadius, style: .continuous)
+                                )
+                            }
+                            if assets.hasMore {
+                                Button("Next page") {
+                                    Task { await store.loadEvolutionAssets(cursor: assets.nextCursor) }
+                                }
+                            }
+                            if let diff = store.evolutionAssetDiff {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Revision diff · \(diff.leftRevisionID) → \(diff.rightRevisionID)")
+                                        .font(.headline)
+                                    ForEach(Array(diff.changes.enumerated()), id: \.offset) { _, change in
+                                        Text("\(change.kind) · \(change.relativePath)")
+                                            .font(.caption.monospaced())
+                                    }
+                                }
+                            }
+                            if !assets.evaluations.isEmpty {
+                                Text("Evaluations").font(.headline)
+                                ForEach(assets.evaluations) { evaluation in
+                                    let usageText = evaluation.usageObserved ? "observed" : "unknown"
+                                    let costText = evaluation.costObserved ? "observed" : "unknown"
+                                    Text("\(evaluation.evaluationID) · \(evaluation.fixtureKind) · \(evaluation.qualityResult) · usage \(usageText) · cost \(costText)")
+                                        .font(.caption)
+                                }
+                            }
+                            if !assets.bindings.isEmpty {
+                                Text("Exact bindings").font(.headline)
+                                ForEach(assets.bindings) { binding in
+                                    Text("\(binding.subjectKind) · \(binding.subjectID) · \(binding.assetRevisionSetDigest)")
+                                        .font(.caption2.monospaced())
+                                }
+                            }
+                            if !assets.materializations.isEmpty {
+                                Text("Run materialization lineage").font(.headline)
+                                ForEach(assets.materializations) { materialization in
+                                    let state = materialization.cleaned ? "cleaned" : "published"
+                                    Text("\(materialization.runID) · attempt \(materialization.attemptNumber) · generation \(materialization.generation) · \(state)")
+                                        .font(.caption2.monospaced())
+                                }
+                            }
+                        } else {
+                            Text(store.evolutionAssetReachable
+                                ? "No Evolution Assets yet. Create a reviewed Candidate to begin."
+                                : "Evolution Assets are unavailable from this client connection.")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Divider()
                         Text("History")
                             .font(.title3.weight(.semibold))
                         if snapshot.runs.isEmpty {
@@ -1546,6 +1822,134 @@ public struct MissionWorkbench: View {
             }
         }
         .background(LoomGraphite.canvas)
+    }
+
+    private var createEvolutionAssetSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Create Evolution Asset Candidate").font(.title2.weight(.semibold))
+                    Text("This writes a versioned Candidate. It does not activate or run it.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { showCreateAsset = false }
+            }
+            Picker("Asset type", selection: $assetCreationKind) {
+                Text("Local Skill").tag("create_skill")
+                Text("Reviewed Skill Import").tag("import_skill")
+                Text("Agent Template").tag("agent_template")
+                Text("Team Template").tag("team_template")
+                Text("Work Package Template").tag("work_package_template")
+                Text("Recovery Strategy Template").tag("recovery_strategy_template")
+            }
+            TextField("Definition ID", text: $assetDefinitionID)
+            TextField("Revision ID", text: $assetRevisionID)
+            TextField("Name", text: $assetName)
+            TextField("Description", text: $assetDescription, axis: .vertical)
+                .lineLimit(3...6)
+            TextField("Absolute local source path", text: $assetSourcePath)
+                .font(.body.monospaced())
+            Spacer()
+            HStack {
+                Text("Back or Cancel never writes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Create Candidate") {
+                    Task {
+                        if assetCreationKind == "create_skill" {
+                            await store.createEvolutionSkill(
+                                definitionID: assetDefinitionID, revisionID: assetRevisionID,
+                                name: assetName, description: assetDescription,
+                                sourcePath: assetSourcePath
+                            )
+                        } else if assetCreationKind == "import_skill" {
+                            await store.importEvolutionSkill(
+                                definitionID: assetDefinitionID, revisionID: assetRevisionID,
+                                name: assetName, description: assetDescription,
+                                sourcePath: assetSourcePath
+                            )
+                        } else if let kind = EvolutionAssetKind(rawValue: assetCreationKind) {
+                            let outputs: [EvolutionAssetKind: String] = [
+                                .agentTemplate: "agent_candidate",
+                                .teamTemplate: "team_draft",
+                                .workPackageTemplate: "work_package_candidate",
+                                .recoveryStrategyTemplate: "recovery_strategy_candidate",
+                            ]
+                            if let output = outputs[kind] {
+                                await store.createEvolutionTemplate(
+                                    kind: kind, output: output,
+                                    definitionID: assetDefinitionID, revisionID: assetRevisionID,
+                                    name: assetName, description: assetDescription,
+                                    sourcePath: assetSourcePath
+                                )
+                            }
+                        }
+                        if store.evolutionAssetStatus == "Current" {
+                            showCreateAsset = false
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(assetName.isEmpty || !assetSourcePath.hasPrefix("/"))
+            }
+        }
+        .padding(24)
+        .accessibilityLabel("Evolution Asset Candidate creation")
+    }
+
+    private func confirmEvolutionAssetMutation() {
+        guard let mutation = pendingAssetMutation, let snapshot = store.evolutionAssets else { return }
+        pendingAssetMutation = nil
+        Task {
+            switch mutation.action {
+            case "Activate", "Keep", "Reject", "Evaluate":
+                guard let candidate = snapshot.candidates.first(where: {
+                    $0.candidateID == mutation.candidateID &&
+                        $0.definitionID == mutation.definitionID &&
+                        $0.revisionID == mutation.revisionID
+                }) else { return }
+                if mutation.action == "Evaluate" {
+                    await store.evaluateEvolutionCandidate(candidate)
+                } else if mutation.action == "Activate" {
+                    await store.activateEvolutionCandidate(candidate)
+                } else {
+                    await store.decideEvolutionCandidate(candidate, retain: mutation.action == "Keep")
+                }
+            case "Archive", "Restore":
+                guard let revision = snapshot.revisions.first(where: {
+                    $0.definitionID == mutation.definitionID && $0.revisionID == mutation.revisionID
+                }) else { return }
+                await store.setEvolutionRevisionArchived(revision, archived: mutation.action == "Archive")
+            case "Rollback":
+                guard let definition = snapshot.definitions.first(where: {
+                    $0.definitionID == mutation.definitionID
+                }), let revision = snapshot.revisions.first(where: {
+                    $0.definitionID == mutation.definitionID && $0.revisionID == mutation.revisionID
+                }) else { return }
+                await store.rollbackEvolutionAsset(definition: definition, target: revision)
+            case "Bind":
+                guard let revision = snapshot.revisions.first(where: {
+                    $0.definitionID == mutation.definitionID && $0.revisionID == mutation.revisionID
+                }), let subject = snapshot.bindingSubjects.first(where: {
+                    $0.subjectKind == "work_package" && $0.subjectID == "work-package.coding"
+                }) else { return }
+                await store.bindEvolutionRevision(revision, to: subject)
+            case "Promote":
+                guard let source = snapshot.promotionSources.first(where: {
+                    $0.runID == mutation.candidateID
+                }) else { return }
+                await store.promoteEvolutionRun(source)
+            case "Instantiate":
+                guard let revision = snapshot.revisions.first(where: {
+                    $0.definitionID == mutation.definitionID && $0.revisionID == mutation.revisionID
+                }) else { return }
+                await store.instantiateEvolutionTemplate(revision)
+            default:
+                return
+            }
+        }
     }
 
     private func historyRunCard(

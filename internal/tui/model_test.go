@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,8 +16,22 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/localipc"
 )
+
+func TestP3ATUIProductionClientExposesAssetJourneyMethods(t *testing.T) {
+	clientType := reflect.TypeOf(&DaemonReadClient{})
+	for _, method := range []string{
+		"EvolutionAssetSnapshot",
+		"EvolutionAssetDiff",
+		"EvolutionAssetCommand",
+	} {
+		if _, found := clientType.MethodByName(method); !found {
+			t.Fatalf("DaemonReadClient.%s is missing", method)
+		}
+	}
+}
 
 type fakeReadClient struct {
 	snapshot      api.LocalProductSnapshot
@@ -31,6 +47,222 @@ type fakeReadClient struct {
 	proposal      app.SideTaskProposalResult
 	created       app.SideTaskCreateResult
 	decided       app.SideTaskDecisionResult
+}
+
+type fakeAssetReadClient struct {
+	fakeReadClient
+	assetSnapshot api.EvolutionAssetSnapshot
+	assetCommands []api.EvolutionAssetCommandRequest
+}
+
+func (client *fakeAssetReadClient) EvolutionAssetSnapshot(context.Context, api.EvolutionAssetSnapshotRequest) (api.EvolutionAssetSnapshot, error) {
+	return client.assetSnapshot, nil
+}
+func (client *fakeAssetReadClient) EvolutionAssetDiff(context.Context, api.EvolutionAssetDiffRequest) (api.EvolutionAssetDiff, error) {
+	return api.EvolutionAssetDiff{}, nil
+}
+func (client *fakeAssetReadClient) EvolutionAssetCommand(_ context.Context, request api.EvolutionAssetCommandRequest) (api.EvolutionAssetCommandResult, error) {
+	client.assetCommands = append(client.assetCommands, request)
+	return api.EvolutionAssetCommandResult{OperationID: request.OperationID, Action: request.Action, ViewVersion: strings.Repeat("b", 64), EventIDs: []string{"event-1"}}, nil
+}
+
+func TestP3ATUIAssetMutationRequiresExplicitConfirmationAndCancelWritesNothing(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	client := &fakeAssetReadClient{assetSnapshot: api.EvolutionAssetSnapshot{
+		ViewVersion: digest, Definitions: []assets.SkillDefinition{{DefinitionID: "skill-1", Name: "Skill", LatestRevisionID: "revision-1", Lifecycle: assets.LifecycleCandidate}},
+		Revisions:   []assets.SkillRevision{{AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1", RevisionID: "revision-1", ArtifactDigest: digest, Lifecycle: assets.LifecycleCandidate}},
+		Candidates:  []assets.EvolutionCandidate{{CandidateID: "candidate-1", AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1", RevisionID: "revision-1", RequiredEvaluationIDs: []string{}}},
+		Evaluations: []assets.EvaluationRecord{}, Bindings: []assets.EvolutionAssetBindingRecord{}, Materializations: []assets.RuntimeSkillMaterializationRecord{},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.switchScreen(indexOfScreen(ScreenAssets))
+	updated, _ := model.Update(evolutionAssetsLoadedMsg{snapshot: client.assetSnapshot})
+	model = updated.(Model)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = updated.(Model)
+	if command != nil || model.pendingEvolutionAction != "activate" || len(client.assetCommands) != 0 {
+		t.Fatalf("unconfirmed state=%q calls=%d", model.pendingEvolutionAction, len(client.assetCommands))
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if model.pendingEvolutionAction != "" || len(client.assetCommands) != 0 {
+		t.Fatalf("cancel wrote: pending=%q calls=%d", model.pendingEvolutionAction, len(client.assetCommands))
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = updated.(Model)
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("confirmed activation command = nil")
+	}
+	message := command()
+	if _, ok := message.(evolutionAssetCommittedMsg); !ok {
+		t.Fatalf("confirmed message = %#v", message)
+	}
+	if len(client.assetCommands) != 1 || client.assetCommands[0].Action != "activate" || client.assetCommands[0].ExpectedStreamHeads == nil {
+		t.Fatalf("asset commands = %#v", client.assetCommands)
+	}
+	var input struct {
+		EvaluationIDs []string `json:"evaluation_ids"`
+	}
+	if err := json.Unmarshal(client.assetCommands[0].Input, &input); err != nil || input.EvaluationIDs == nil {
+		t.Fatalf("activation input=%s err=%v", client.assetCommands[0].Input, err)
+	}
+}
+
+func TestP3ATUIEvaluationAndBindingUseClosedAuthoritativeCommands(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	subject := app.EvolutionAssetBindingSubject{
+		SubjectIdentity: assets.SubjectIdentity{
+			SubjectKind: "work_package", SubjectID: "work-package.coding",
+			SubjectVersion: 1, SubjectDigest: digest, Scope: "builtin",
+		},
+		SubjectIdentityDigest: strings.Repeat("b", 64),
+	}
+	client := &fakeAssetReadClient{assetSnapshot: api.EvolutionAssetSnapshot{
+		ViewVersion: digest,
+		Definitions: []assets.SkillDefinition{{
+			DefinitionID: "skill-1", Name: "Skill", LatestRevisionID: "revision-1",
+			ActiveRevisionID: "revision-1", Lifecycle: assets.LifecycleActive,
+		}},
+		Revisions: []assets.SkillRevision{{
+			AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1",
+			RevisionID: "revision-1", ArtifactDigest: digest,
+			SourceScope: assets.SourceScopeLocal, Lifecycle: assets.LifecycleActive,
+		}},
+		Candidates: []assets.EvolutionCandidate{{
+			CandidateID: "candidate-1", AssetKind: assets.AssetKindSkill,
+			DefinitionID: "skill-1", RevisionID: "revision-1",
+			RequiredEvaluationIDs: []string{},
+		}},
+		Evaluations: []assets.EvaluationRecord{}, Bindings: []assets.EvolutionAssetBindingRecord{},
+		Materializations: []assets.RuntimeSkillMaterializationRecord{},
+		BindingSubjects:  []app.EvolutionAssetBindingSubject{subject},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.evolutionAssets = client.assetSnapshot
+	if message := model.commitSelectedEvolutionAction("evaluate")(); message == nil {
+		t.Fatal("evaluate message = nil")
+	}
+	if len(client.assetCommands) != 1 || client.assetCommands[0].Action != "record_evaluation" {
+		t.Fatalf("evaluation command = %#v", client.assetCommands)
+	}
+	var evaluation map[string]any
+	if err := json.Unmarshal(client.assetCommands[0].Input, &evaluation); err != nil ||
+		evaluation["fixture_digest"] == "" || evaluation["requested_case_ids"] == nil {
+		t.Fatalf("evaluation input = %s, %v", client.assetCommands[0].Input, err)
+	}
+	if message := model.commitSelectedEvolutionAction("bind")(); message == nil {
+		t.Fatal("bind message = nil")
+	}
+	if len(client.assetCommands) != 2 || client.assetCommands[1].Action != "set_binding" {
+		t.Fatalf("binding command = %#v", client.assetCommands)
+	}
+	var binding map[string]any
+	if err := json.Unmarshal(client.assetCommands[1].Input, &binding); err != nil ||
+		binding["subject_identity_digest"] != subject.SubjectIdentityDigest ||
+		binding["asset_revision_set_digest"] == "" {
+		t.Fatalf("binding input = %s, %v", client.assetCommands[1].Input, err)
+	}
+}
+
+func TestP3ATUIPromotionUsesExactAcceptedRunLineage(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	evidenceDigest := strings.Repeat("b", 64)
+	client := &fakeAssetReadClient{assetSnapshot: api.EvolutionAssetSnapshot{
+		ViewVersion: digest,
+		Definitions: []assets.SkillDefinition{}, Revisions: []assets.SkillRevision{},
+		Candidates: []assets.EvolutionCandidate{}, Evaluations: []assets.EvaluationRecord{},
+		Bindings:         []assets.EvolutionAssetBindingRecord{},
+		Materializations: []assets.RuntimeSkillMaterializationRecord{},
+		BindingSubjects:  []app.EvolutionAssetBindingSubject{},
+		PromotionSources: []app.EvolutionAssetPromotionSource{{
+			RunID: "run-accepted", RunGeneration: 3, RunDigest: digest,
+			EvidenceIDs: []string{"evidence-1"}, EvidenceDigests: []string{evidenceDigest},
+		}},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.evolutionAssets = client.assetSnapshot
+	message := model.commitEvolutionPromotion()()
+	if _, ok := message.(evolutionAssetCommittedMsg); !ok {
+		t.Fatalf("promotion message = %#v", message)
+	}
+	if len(client.assetCommands) != 1 || client.assetCommands[0].Action != "promote_run" {
+		t.Fatalf("promotion command = %#v", client.assetCommands)
+	}
+	var input map[string]any
+	if err := json.Unmarshal(client.assetCommands[0].Input, &input); err != nil {
+		t.Fatal(err)
+	}
+	if input["source_run_id"] != "run-accepted" || input["source_run_digest"] != digest ||
+		input["redacted_summary_digest"] == "" || input["candidate_id"] == "" {
+		t.Fatalf("promotion input = %s", client.assetCommands[0].Input)
+	}
+}
+
+func TestP3ATUICreatesReviewedImportAndAllTemplateKindsThroughClosedIPC(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	client := &fakeAssetReadClient{assetSnapshot: api.EvolutionAssetSnapshot{
+		ViewVersion: digest, Definitions: []assets.SkillDefinition{}, Revisions: []assets.SkillRevision{},
+		Candidates: []assets.EvolutionCandidate{}, Evaluations: []assets.EvaluationRecord{},
+		Bindings: []assets.EvolutionAssetBindingRecord{}, Materializations: []assets.RuntimeSkillMaterializationRecord{},
+		BindingSubjects: []app.EvolutionAssetBindingSubject{}, PromotionSources: []app.EvolutionAssetPromotionSource{},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.evolutionAssets = client.assetSnapshot
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(root, "template.md")
+	if err := os.WriteFile(sourcePath, []byte("# Reviewed source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		mode       string
+		wantAction string
+		wantKind   string
+	}{
+		{"import_skill", "import_skill", ""},
+		{"agent_template", "create_template", "agent_template"},
+		{"team_template", "create_template", "team_template"},
+		{"work_package_template", "create_template", "work_package_template"},
+		{"recovery_strategy_template", "create_template", "recovery_strategy_template"},
+	} {
+		model.evolutionCreateMode = test.mode
+		message := model.createEvolutionAsset(sourcePath)()
+		if _, ok := message.(evolutionAssetCommittedMsg); !ok {
+			t.Fatalf("mode %s message = %#v", test.mode, message)
+		}
+		request := client.assetCommands[len(client.assetCommands)-1]
+		if request.Action != test.wantAction {
+			t.Fatalf("mode %s action = %s", test.mode, request.Action)
+		}
+		var input map[string]any
+		if err := json.Unmarshal(request.Input, &input); err != nil {
+			t.Fatal(err)
+		}
+		if test.wantKind == "" {
+			if input["candidate_id"] == "" || input["external_source_digest"] == "" {
+				t.Fatalf("import input = %s", request.Input)
+			}
+		} else if input["asset_kind"] != test.wantKind || input["template_output"] == "" ||
+			input["parameter_schema_digest"] == "" {
+			t.Fatalf("template input = %s", request.Input)
+		}
+	}
 }
 
 func (client *fakeReadClient) ProposeSideTask(_ context.Context, request app.SideTaskProposalRequest) (app.SideTaskProposalResult, error) {
@@ -273,6 +505,7 @@ func TestTeamBuilderRuntimeDisplayNameFailsClosed(t *testing.T) {
 
 func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
 	viewVersion := strings.Repeat("a", 64)
+	freshViewVersion := strings.Repeat("f", 64)
 	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
 		SchemaVersion: 2,
 		ViewVersion:   viewVersion,
@@ -323,6 +556,7 @@ func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
 	if model.missionObjective != "Ship the reviewed release" {
 		t.Fatalf("objective = %q", model.missionObjective)
 	}
+	client.snapshot.ViewVersion = freshViewVersion
 
 	updated, command = model.Update(tea.KeyMsg{
 		Type: tea.KeyRunes, Runes: []rune("p"),
@@ -339,7 +573,7 @@ func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
 	if preflightCommand.Operation != "preflight" ||
 		preflightCommand.MissionID != "mission/team-internal-1" ||
 		preflightCommand.TeamInstanceID != "team-internal-1" ||
-		preflightCommand.ExpectedViewVersion != viewVersion ||
+		preflightCommand.ExpectedViewVersion != freshViewVersion ||
 		preflightCommand.Objective != "Ship the reviewed release" ||
 		preflightCommand.PreflightDigest != "" ||
 		preflightCommand.WorkPackageID != "work-package.coding" ||
@@ -356,7 +590,7 @@ func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
 		TeamInstanceID:    preflightCommand.TeamInstanceID,
 		WorkPackageID:     preflightCommand.WorkPackageID,
 		WorkPackageDigest: preflightCommand.WorkPackageDigest,
-		ViewVersion:       viewVersion,
+		ViewVersion:       freshViewVersion,
 		PlanDigest:        strings.Repeat("b", 64),
 		PreflightDigest:   strings.Repeat("c", 64),
 		RuntimeInstanceID: "runtime-internal-1",
@@ -1422,12 +1656,16 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenCompare,
 		ScreenAttention,
 		ScreenTimeline,
+		ScreenAssets,
 		ScreenBoard,
 	}
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
-		if cmd != nil {
+		if cmd != nil && want != ScreenAssets {
 			t.Fatalf("screen navigation produced command for %s", want)
+		}
+		if cmd == nil && want == ScreenAssets {
+			t.Fatal("Evolution Assets navigation omitted production IPC refresh")
 		}
 		model = updated.(Model)
 		if model.Screen() != want {

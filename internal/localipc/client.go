@@ -52,6 +52,16 @@ func (client *Client) Call(
 	params any,
 	result any,
 ) error {
+	return client.call(ctx, "", method, params, result)
+}
+
+func (client *Client) call(
+	ctx context.Context,
+	journeyID string,
+	method string,
+	params any,
+	result any,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -66,8 +76,9 @@ func (client *Client) Call(
 		Version: protocolVersion,
 		RequestID: "loom-client-" +
 			decimalRequestID(client.nextID.Add(1)),
-		Method: method,
-		Params: paramsBytes,
+		Method:    method,
+		Params:    paramsBytes,
+		JourneyID: journeyID,
 	}
 	body, err := json.Marshal(request)
 	if err != nil || hasDuplicateJSONKeys(body) {
@@ -138,6 +149,7 @@ func (client *Client) Call(
 		decoder.Decode(&struct{}{}) != io.EOF ||
 		response.Version != protocolVersion ||
 		response.RequestID != request.RequestID ||
+		response.JourneyID != journeyID ||
 		response.OK == (response.Error != nil) {
 		return ErrInvalidProtocol
 	}
@@ -152,6 +164,19 @@ func (client *Client) Call(
 		return ErrInvalidProtocol
 	}
 	return nil
+}
+
+func (client *Client) CallJourney(
+	ctx context.Context,
+	journeyID string,
+	method string,
+	params any,
+	result any,
+) error {
+	if !requiresJourney(method) || !validJourneyID(journeyID) {
+		return ErrInvalidProtocol
+	}
+	return client.call(ctx, journeyID, method, params, result)
 }
 
 var ErrLocalProductUnavailable = errors.New("local product unavailable")

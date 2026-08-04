@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"io"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,19 @@ const (
 )
 
 var testNow = time.Date(2026, 7, 26, 1, 2, 3, 0, time.UTC)
+
+func TestP3ARunRecordCarriesImmutableAssetAndMaterializationLineage(t *testing.T) {
+	recordType := reflect.TypeOf(RunRecord{})
+	for _, field := range []string{
+		"AssetRevisionBindings",
+		"AssetRevisionSetDigest",
+		"MaterializationManifestDigest",
+	} {
+		if _, found := recordType.FieldByName(field); !found {
+			t.Fatalf("RunRecord field %s is missing", field)
+		}
+	}
+}
 
 type mutableClock struct {
 	mu  sync.Mutex

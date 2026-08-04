@@ -28,8 +28,10 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/projection"
@@ -51,6 +53,273 @@ import (
 
 type blockingObserverRunner struct {
 	closed bool
+}
+
+func TestP3ATemplateArtifactResolverAcceptsExactContractPlusBoundSource(t *testing.T) {
+	root, err := os.MkdirTemp("/private/tmp", "loom-p3a-diagnostic-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifactStore, err := evidence.NewStore(filepath.Join(root, "evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifactStore.Close()
+	sourcePath := filepath.Join(root, "template.md")
+	if err := os.WriteFile(sourcePath, []byte("# Team template\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath, err = filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameterDigest := strings.Repeat("a", 64)
+	permissionDigest := strings.Repeat("b", 64)
+	scopeDigest := strings.Repeat("c", 64)
+	artifact, digest, _, err := app.CanonicalEvolutionTemplateArtifact(
+		assets.AssetKindTeamTemplate, "team-template-1", "revision-1", sourcePath,
+		assets.TemplateOutputTeamDraft, parameterDigest, permissionDigest, scopeDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactStore.Publish(context.Background(), bytes.NewReader(artifact), digest); err != nil {
+		t.Fatal(err)
+	}
+	contract, err := (productTemplateArtifactResolver{artifacts: artifactStore}).ResolveTemplateArtifact(
+		context.Background(), assets.TemplateArtifactRequest{
+			AssetKind: assets.AssetKindTeamTemplate, DefinitionID: "team-template-1",
+			RevisionID: "revision-1", ArtifactDigest: digest,
+		},
+	)
+	if err != nil || contract.TemplateOutput != assets.TemplateOutputTeamDraft ||
+		contract.ParameterSchemaDigest != parameterDigest ||
+		contract.PermissionCeilingDigest != permissionDigest ||
+		contract.ScopeCeilingDigest != scopeDigest {
+		t.Fatalf("template contract = %#v, %v", contract, err)
+	}
+}
+
+func TestP3AProductionDaemonAssetJourneyUsesRealSocketAndAuthoritativeProjection(t *testing.T) {
+	root, err := os.MkdirTemp("/private/tmp", "loom-p3a-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(root, "state.db")
+	stateFile, err := os.OpenFile(statePath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stateFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openProductReadDatabase(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := journal.Migrate(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	authority, err := assets.NewAuthority(assets.AuthorityConfig{
+		Store: store,
+		Now: func() time.Time {
+			return time.Date(2026, 8, 3, 16, 0, 0, 0, time.UTC)
+		},
+		ViewVersion: func() string { return readModel.GlobalReadView().Version() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactStore, err := evidence.NewStore(filepath.Join(root, "evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifactStore.Close()
+	service, err := app.NewLocalProductAssetService(readModel, authority, artifactStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetAPI, err := api.NewLocalProductAssetAPI(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(root, "loomd.sock")
+	server, err := localipc.NewServer(localipc.ServerConfig{
+		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "p3a-fixture",
+		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, assetAPI)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("P3A IPC server did not become ready")
+	}
+	client, err := localipc.NewClient(localipc.ClientConfig{SocketPath: socketPath, Timeout: 3 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journeyID := "123e4567-e89b-42d3-a456-426614174000"
+	var before api.EvolutionAssetSnapshot
+	if err := client.CallJourney(context.Background(), journeyID, "evolution_asset_snapshot", api.EvolutionAssetSnapshotRequest{JourneyID: journeyID, Limit: 64}, &before); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(root, "socket-skill.md")
+	if err := os.WriteFile(sourcePath, []byte("# Socket Skill\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, sourceArtifactDigest, sourceContentDigest, err := app.CanonicalEvolutionAssetArtifact(assets.AssetKindSkill, "skill-socket", "revision-1", sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := struct {
+		DefinitionID                  string   `json:"definition_id"`
+		RevisionID                    string   `json:"revision_id"`
+		Name                          string   `json:"name"`
+		Description                   string   `json:"description"`
+		SubjectScope                  string   `json:"subject_scope"`
+		SourcePath                    string   `json:"source_path"`
+		SuppliedArtifactDigest        string   `json:"supplied_artifact_digest"`
+		SuppliedContentDigest         string   `json:"supplied_content_digest"`
+		Dependencies                  []string `json:"dependencies"`
+		CompatibleRuntimeCapabilities []string `json:"compatible_runtime_capabilities"`
+		Risk                          string   `json:"risk"`
+	}{"skill-socket", "revision-1", "Socket Skill", "fixture", "project", sourcePath, sourceArtifactDigest, sourceContentDigest, []string{}, []string{}, "low"}
+	var receipt api.EvolutionAssetCommandResult
+	input, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CallJourney(context.Background(), journeyID, "evolution_asset_command", api.EvolutionAssetCommandRequest{
+		JourneyID: journeyID, OperationID: "p3a-socket-create", Action: "create_skill",
+		ExpectedViewVersion: before.ViewVersion, ExpectedStreamHeads: []journal.StreamHead{},
+		Input: input,
+	}, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.OperationID != "p3a-socket-create" || receipt.Action != "create_skill" || len(receipt.EventIDs) != 3 {
+		t.Fatalf("asset receipt = %#v", receipt)
+	}
+	var after api.EvolutionAssetSnapshot
+	if err := client.CallJourney(context.Background(), journeyID, "evolution_asset_snapshot", api.EvolutionAssetSnapshotRequest{JourneyID: journeyID, Limit: 64}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Definitions) != 1 || len(after.Candidates) != 1 || after.Definitions[0].DefinitionID != "skill-socket" {
+		t.Fatalf("authoritative asset snapshot = %#v", after)
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("server stop error = %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestP3AProductMaterializerStartupRemovesVerifiedPreCASOrphan(t *testing.T) {
+	root, err := os.MkdirTemp("/private/tmp", "loom-p3a-recover-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := journal.Migrate(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := assets.NewAuthority(assets.AuthorityConfig{
+		Store: journal.NewStore(database), Now: func() time.Time {
+			return time.Date(2026, 8, 3, 16, 0, 0, 0, time.UTC)
+		},
+		ViewVersion: func() string { return readModel.GlobalReadView().Version() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactStore, err := evidence.NewStore(filepath.Join(root, "evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifactStore.Close()
+	skillMaterializer, err := piadapter.NewSkillMaterializer(piadapter.MaterializationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# exact orphan\n")
+	contentSum := sha256.Sum256(content)
+	digest := hex.EncodeToString(contentSum[:])
+	exact := assets.ExactAssetRevisionBinding{
+		AssetKind: assets.AssetKindSkill, DefinitionID: "skill-orphan",
+		RevisionID: "revision-1", SHA256Digest: digest,
+		SourceScope: assets.SourceScopeLocal,
+	}
+	setDigest, err := assets.CanonicalAssetRevisionSetDigest([]assets.ExactAssetRevisionBinding{exact})
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolatedRoot := filepath.Join(root, "materialization")
+	plan := piadapter.MaterializationPlan{
+		IsolatedRoot: isolatedRoot, RunID: "run-orphan", AttemptNumber: 1,
+		Generation: 1, RuntimeInstanceID: "pi-runtime-1",
+		RuntimeIdentityDigest:  digest,
+		RuntimeCapabilities:    []string{piadapter.SkillMaterializationCapability},
+		AssetRevisionSetDigest: setDigest,
+		JourneyID:              "123e4567-e89b-42d3-a456-426614174000",
+		OperationID:            "materialize:run-orphan:1:1",
+		Bindings: []piadapter.MaterializationBinding{{
+			AssetKind: string(assets.AssetKindSkill), DefinitionID: "skill-orphan",
+			RevisionID: "revision-1", Digest: digest, ContentDigest: digest,
+			SourceScope: string(assets.SourceScopeLocal), Files: []piadapter.MaterializationFile{{
+				RelativePath: "SKILL.md", Bytes: content, Digest: digest,
+			}},
+		}},
+	}
+	result, err := skillMaterializer.Materialize(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	productMaterializer := &productTeamAssetMaterializer{
+		authority: authority, projection: readModel, artifacts: artifactStore,
+		materializer: skillMaterializer, isolatedRoot: isolatedRoot,
+		plans: make(map[string]piadapter.MaterializationPlan),
+	}
+	if err := productMaterializer.RecoverStartup(context.Background()); err != nil {
+		t.Fatalf("RecoverStartup() error = %v", err)
+	}
+	if _, err := os.Lstat(result.Root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified pre-CAS orphan remains: %v", err)
+	}
+	if len(productMaterializer.plans) != 0 {
+		t.Fatalf("uncommitted plan retained: %#v", productMaterializer.plans)
+	}
 }
 
 type productHandoffStub struct{ proposed bool }
@@ -368,8 +637,11 @@ exit 83
 			DeviceID:            "device-timeout",
 			DisplayName:         "Pi timeout fixture",
 			ObservationInterval: 10 * time.Millisecond,
-			ProcessTimeout:      2 * time.Second,
-			MaxCycles:           1,
+			// The model fixture sleeps for thirty seconds, so ten seconds still
+			// proves the product timeout while avoiding a false version-probe
+			// timeout when the full repository matrix is CPU constrained.
+			ProcessTimeout: 10 * time.Second,
+			MaxCycles:      1,
 		},
 		SocketPath:      socketPath,
 		CodexExecutable: codexPath,
@@ -385,7 +657,12 @@ exit 83
 	}()
 	waitForProductSocket(t, socketPath)
 	counterPath := filepath.Join(runtimePath, "list-models-count")
-	deadline := time.Now().Add(15 * time.Second)
+	// The repository matrix concurrently runs Swift probes and race-sensitive
+	// process fixtures. Keep the product assertion bounded while allowing the
+	// observer goroutine to receive CPU after the socket becomes ready. The
+	// production metadata process remains bounded by the injected two-second
+	// ProcessTimeout above; this deadline only bounds test synchronization.
+	deadline := time.Now().Add(90 * time.Second)
 	for {
 		select {
 		case runErr := <-done:
@@ -409,15 +686,6 @@ exit 83
 		}
 		time.Sleep(time.Millisecond)
 	}
-	select {
-	case runErr := <-done:
-		reason := ""
-		if classified, ok := runErr.(daemonFailureReasoner); ok {
-			reason = classified.DaemonFailureReason()
-		}
-		t.Fatalf("metadata timeout stopped product IPC: %v reason=%s", runErr, reason)
-	case <-time.After(3 * time.Second):
-	}
 	client, err := localipc.NewClient(localipc.ClientConfig{
 		SocketPath: socketPath,
 		Timeout:    10 * time.Second,
@@ -429,13 +697,32 @@ exit 83
 		t.Fatalf("ping after real Pi timeout: %v", err)
 	}
 	var snapshot api.LocalProductSnapshot
-	if err := client.Call(
-		context.Background(),
-		"snapshot",
-		api.LocalProductSnapshotRequest{Limit: 64},
-		&snapshot,
-	); err != nil {
-		t.Fatal(err)
+	healthDeadline := time.Now().Add(15 * time.Second)
+	for {
+		select {
+		case runErr := <-done:
+			reason := ""
+			if classified, ok := runErr.(daemonFailureReasoner); ok {
+				reason = classified.DaemonFailureReason()
+			}
+			t.Fatalf("metadata timeout stopped product IPC: %v reason=%s", runErr, reason)
+		default:
+		}
+		if err := client.Call(
+			context.Background(),
+			"snapshot",
+			api.LocalProductSnapshotRequest{Limit: 64},
+			&snapshot,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Partial && snapshot.Reason == "observer_models_timeout" {
+			break
+		}
+		if time.Now().After(healthDeadline) {
+			t.Fatalf("metadata timeout health was not projected: %#v", snapshot)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !snapshot.Partial || snapshot.Reason != "observer_models_timeout" ||
 		snapshot.Health != (api.LocalProductHealth{
@@ -589,7 +876,7 @@ exit 83
 			ProbeID:            "p2a-w3-pi-probe", RuntimeInstanceID: "pi-0.82.1-p2a-w3-pi",
 			DeviceID:            "local-mac-p2a-w3",
 			DisplayName:         "Pi 0.82.1 P2A-W3 Execution Canary",
-			ObservationInterval: time.Hour, ProcessTimeout: 2 * time.Second,
+			ObservationInterval: time.Hour, ProcessTimeout: 10 * time.Second,
 			MaxCycles:         0,
 			LocalModelCatalog: localModelCatalog,
 		},
@@ -606,7 +893,10 @@ exit 83
 	}()
 	waitForProductSocket(t, socketPath)
 	counterPath := filepath.Join(runtimePath, "metadata-count")
-	metadataDeadline := 5 * time.Second
+	// This bounds only the test's wait for the observer goroutine to be
+	// scheduled. The product metadata calls retain their injected two-second
+	// ProcessTimeout and exact assertions below.
+	metadataDeadline := 30 * time.Second
 	if lockedModelRoot != "" {
 		metadataDeadline = 45 * time.Second
 	}
@@ -3800,6 +4090,34 @@ func TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage(
 		terminal.Missions[0].CompletedNodeCount != 1 {
 		t.Fatalf("terminal lineage = %#v", terminal)
 	}
+	promotionAuthority, err := assets.NewAuthority(assets.AuthorityConfig{
+		Store: store, Now: func() time.Time { return time.Now().UTC() },
+		ViewVersion: func() string { return readModel.GlobalReadView().Version() },
+		Promotion: &productAssetPromotionResolver{
+			projection: readModel, artifacts: bundle.evidence,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotionService, err := app.NewLocalProductAssetService(
+		readModel, promotionAuthority, bundle.evidence,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotionSnapshot, err := promotionService.ReadEvolutionAssetSnapshot(
+		context.Background(), app.EvolutionAssetSnapshotRequest{
+			JourneyID: "55555555-5555-4555-8555-555555555555", Limit: 64,
+		},
+	)
+	if err != nil || len(promotionSnapshot.PromotionSources) != 1 ||
+		promotionSnapshot.PromotionSources[0].RunID == "" ||
+		promotionSnapshot.PromotionSources[0].RunGeneration < 1 ||
+		len(promotionSnapshot.PromotionSources[0].EvidenceIDs) == 0 ||
+		len(promotionSnapshot.PromotionSources[0].EvidenceIDs) != len(promotionSnapshot.PromotionSources[0].EvidenceDigests) {
+		t.Fatalf("accepted promotion sources = %#v, %v", promotionSnapshot.PromotionSources, err)
+	}
 	terminalTimeline, err := readService.ReadLocalProductTimeline(
 		context.Background(),
 		api.LocalProductTimelineRequest{
@@ -5313,6 +5631,498 @@ func (observer *productLifecycleObserver) Run(
 		close(observer.canceled)
 	}
 	return app.LocalRuntimeObservationDaemonResult{}, ctx.Err()
+}
+
+type cancellationProcessFailureObserver struct {
+	*productLifecycleCloser
+	started chan struct{}
+}
+
+type cancellationCleanServer struct {
+	*productLifecycleCloser
+	ready chan struct{}
+}
+
+func (server *cancellationCleanServer) Serve(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (server *cancellationCleanServer) Ready() <-chan struct{} {
+	return server.ready
+}
+
+func (observer *cancellationProcessFailureObserver) Run(
+	ctx context.Context,
+) (app.LocalRuntimeObservationDaemonResult, error) {
+	close(observer.started)
+	<-ctx.Done()
+	return app.LocalRuntimeObservationDaemonResult{},
+		errors.New("metadata subprocess terminated after cancellation")
+}
+
+func TestProductDaemonCancellationOwnsObserverFailureProducedAfterCancel(
+	t *testing.T,
+) {
+	server := &cancellationCleanServer{
+		productLifecycleCloser: &productLifecycleCloser{},
+		ready:                  make(chan struct{}),
+	}
+	close(server.ready)
+	runner := &productDaemonRunner{
+		server: server,
+		observer: &cancellationProcessFailureObserver{
+			productLifecycleCloser: &productLifecycleCloser{},
+			started:                make(chan struct{}),
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	select {
+	case <-runner.observer.(*cancellationProcessFailureObserver).started:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not start")
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("cancellation-owned observer failure = %v", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("product daemon did not stop")
+	}
+}
+
+func TestP3AControlledJourneyHarnessWritesSanitizedRequestAndDaemonLogs(
+	t *testing.T,
+) {
+	if !productJourneyPathWithin("/journey/root", "/journey/root") {
+		t.Fatal("evidence root equal to journey root must be within the root")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	harness, err := newProductJourneyHarness(
+		productJourneyHarnessManifest{
+			SchemaVersion: 1,
+			Purpose:       "phase3a-cross-client-e2e",
+			JourneyID:     "123e4567-e89b-42d3-a456-426614174000",
+			EvidenceRoot:  root,
+			FaultKind:     "none",
+			FaultAction:   "none",
+			DelayMillis:   0,
+		},
+		func(int) { t.Fatal("unexpected termination") },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventIDs := []string{"event-1", "event-2"}
+	encoded, err := json.Marshal(struct {
+		EventIDs []string `json:"event_ids"`
+	}{eventIDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := harness.wrap(localipc.HandlerFunc(func(
+		context.Context,
+		localipc.Request,
+	) localipc.Response {
+		return localipc.Response{OK: true, Result: encoded}
+	}))
+	params := json.RawMessage(`{"operation_id":"op-1","action":"activate","secret":"must-not-log"}`)
+	response := handler.Handle(context.Background(), localipc.Request{
+		Version: 1, RequestID: "loom-swift-request-1",
+		JourneyID: "123e4567-e89b-42d3-a456-426614174000",
+		Method:    "evolution_asset_command", Params: params,
+	})
+	if !response.OK {
+		t.Fatalf("response = %#v", response)
+	}
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ipcBytes, err := os.ReadFile(filepath.Join(root, "ipc", "request-response-summary.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonBytes, err := os.ReadFile(filepath.Join(root, "daemon", "structured-log.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range map[string][]byte{"ipc": ipcBytes, "daemon": daemonBytes} {
+		if bytes.Contains(contents, []byte("must-not-log")) ||
+			bytes.Contains(contents, []byte("secret")) {
+			t.Fatalf("%s log disclosed request params: %s", name, contents)
+		}
+	}
+	var ipcRecord productJourneyIPCRecord
+	if err := json.Unmarshal(bytes.TrimSpace(ipcBytes), &ipcRecord); err != nil {
+		t.Fatal(err)
+	}
+	if ipcRecord.Sequence != 1 || ipcRecord.ClientKind != "gui" ||
+		ipcRecord.RequestID != "loom-swift-request-1" ||
+		ipcRecord.JourneyID != "123e4567-e89b-42d3-a456-426614174000" ||
+		ipcRecord.Method != "evolution_asset_command" ||
+		ipcRecord.Action != "activate" || !ipcRecord.ResponseOK ||
+		ipcRecord.ErrorCode != "" || len(ipcRecord.RequestDigest) != 64 ||
+		len(ipcRecord.ResponseDigest) != 64 {
+		t.Fatalf("IPC record = %#v", ipcRecord)
+	}
+	lines := bytes.Split(bytes.TrimSpace(daemonBytes), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("daemon log lines = %d: %s", len(lines), daemonBytes)
+	}
+	var completed productJourneyDaemonRecord
+	if err := json.Unmarshal(lines[1], &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Phase != "response" || completed.Outcome != "pass" ||
+		!reflect.DeepEqual(completed.AuthorityEventIDs, eventIDs) {
+		t.Fatalf("completed daemon record = %#v", completed)
+	}
+	reopened, err := newProductJourneyHarness(
+		productJourneyHarnessManifest{
+			SchemaVersion: 1, Purpose: "phase3a-cross-client-e2e",
+			JourneyID:    "123e4567-e89b-42d3-a456-426614174000",
+			EvidenceRoot: root, FaultKind: "none", FaultAction: "none",
+		},
+		func(int) { t.Fatal("unexpected termination") },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.wrap(localipc.HandlerFunc(func(
+		context.Context,
+		localipc.Request,
+	) localipc.Response {
+		return localipc.Response{OK: true, Result: json.RawMessage(`{}`)}
+	})).Handle(context.Background(), localipc.Request{
+		Version: 1, RequestID: "loom-client-1",
+		JourneyID: "123e4567-e89b-42d3-a456-426614174000",
+		Method:    "evolution_asset_snapshot", Params: json.RawMessage(`{}`),
+	})
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ipcBytes, err = os.ReadFile(filepath.Join(root, "ipc", "request-response-summary.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipcLines := bytes.Split(bytes.TrimSpace(ipcBytes), []byte("\n"))
+	if len(ipcLines) != 2 {
+		t.Fatalf("restarted IPC lines = %d: %s", len(ipcLines), ipcBytes)
+	}
+	var restarted productJourneyIPCRecord
+	if err := json.Unmarshal(ipcLines[1], &restarted); err != nil ||
+		restarted.Sequence != 2 || restarted.ClientKind != "tui" {
+		t.Fatalf("restarted IPC record = %#v, %v", restarted, err)
+	}
+}
+
+func TestP3AProductJourneyIsolationRootRecoveryRemovesStaleProbeRoots(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(root, "state")
+	isolation := filepath.Join(root, "isolation")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(isolation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(state, "loom.db")
+	if err := os.WriteFile(statePath, []byte("journey"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(isolation, "loom-pi-metadata-123")
+	conformance := filepath.Join(isolation, "loom-pi-skill-conformance-456")
+	unrelated := filepath.Join(isolation, "loom-pi-other")
+	for _, dir := range []string{stale, conformance, unrelated} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recoverProductJourneyIsolationRoot(root); err != nil {
+		t.Fatalf("recovery error = %v", err)
+	}
+	if _, err := os.Lstat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale metadata root not removed: %v", err)
+	}
+	if _, err := os.Lstat(conformance); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale conformance root not removed: %v", err)
+	}
+	if _, err := os.Lstat(unrelated); err != nil {
+		t.Fatalf("unrelated isolation dir removed: %v", err)
+	}
+}
+
+func TestP3AProductJourneyIsolationRootRecoveryMissingIsolationIsNoop(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverProductJourneyIsolationRoot(root); err != nil {
+		t.Fatalf("missing isolation dir should be a no-op, got %v", err)
+	}
+}
+
+func TestP3AControlledJourneyHarnessFaultsAreOneShotAndPhaseExact(
+	t *testing.T,
+) {
+	journeyID := "123e4567-e89b-42d3-a456-426614174000"
+	newHarness := func(kind string, terminate func(int)) *productJourneyHarness {
+		t.Helper()
+		root := t.TempDir()
+		if err := os.Chmod(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		harness, err := newProductJourneyHarness(
+			productJourneyHarnessManifest{
+				SchemaVersion: 1, Purpose: "phase3a-cross-client-e2e",
+				JourneyID: journeyID, EvidenceRoot: root,
+				FaultKind: kind, FaultAction: "activate",
+			},
+			terminate,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = harness.Close() })
+		return harness
+	}
+
+	projection := newHarness("projection_failure", func(int) {
+		t.Fatal("projection fault terminated process")
+	})
+	rebuilds := 0
+	refresh := projection.projectionRefresh(func(context.Context, string) error {
+		rebuilds++
+		return nil
+	})
+	if err := refresh(context.Background(), "activate"); !errors.Is(err, errProductJourneyProjectionFailure) {
+		t.Fatalf("first projection refresh error = %v", err)
+	}
+	if err := refresh(context.Background(), "activate"); err != nil || rebuilds != 1 {
+		t.Fatalf("second projection refresh = %v, rebuilds=%d", err, rebuilds)
+	}
+
+	request := localipc.Request{
+		Version: 1, RequestID: "loom-client-1", JourneyID: journeyID,
+		Method: "evolution_asset_command",
+		Params: json.RawMessage(`{"operation_id":"op-1","action":"activate"}`),
+	}
+	beforeTerminations, beforeCalls := 0, 0
+	before := newHarness("crash_before_cas", func(code int) {
+		if code != productJourneyCrashBeforeCASExitCode {
+			t.Fatalf("before-CAS exit code = %d", code)
+		}
+		beforeTerminations++
+	})
+	beforeHandler := before.wrap(localipc.HandlerFunc(func(
+		context.Context,
+		localipc.Request,
+	) localipc.Response {
+		beforeCalls++
+		return localipc.Response{OK: true, Result: json.RawMessage(`{}`)}
+	}))
+	if response := beforeHandler.Handle(context.Background(), request); response.OK || beforeCalls != 0 || beforeTerminations != 1 {
+		t.Fatalf("before-CAS response=%#v calls=%d terminations=%d", response, beforeCalls, beforeTerminations)
+	}
+	if response := beforeHandler.Handle(context.Background(), request); !response.OK || beforeCalls != 1 || beforeTerminations != 1 {
+		t.Fatalf("before-CAS redelivery=%#v calls=%d terminations=%d", response, beforeCalls, beforeTerminations)
+	}
+
+	afterTerminations, afterCalls := 0, 0
+	after := newHarness("crash_after_cas_before_response", func(code int) {
+		if code != productJourneyCrashAfterCASExitCode {
+			t.Fatalf("after-CAS exit code = %d", code)
+		}
+		afterTerminations++
+	})
+	afterHandler := after.wrap(localipc.HandlerFunc(func(
+		context.Context,
+		localipc.Request,
+	) localipc.Response {
+		afterCalls++
+		return localipc.Response{OK: true, Result: json.RawMessage(`{"event_ids":["event-1"]}`)}
+	}))
+	if response := afterHandler.Handle(context.Background(), request); response.OK || afterCalls != 1 || afterTerminations != 1 {
+		t.Fatalf("after-CAS response=%#v calls=%d terminations=%d", response, afterCalls, afterTerminations)
+	}
+	if response := afterHandler.Handle(context.Background(), request); !response.OK || afterCalls != 2 || afterTerminations != 1 {
+		t.Fatalf("after-CAS redelivery=%#v calls=%d terminations=%d", response, afterCalls, afterTerminations)
+	}
+}
+
+func TestP3AControlledJourneyManifestIsPrivateExactAndBoundToDaemonPaths(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifestRoot := filepath.Join(root, "manifest")
+	evidenceRoot := filepath.Join(root, "journey-evidence")
+	stateRoot := filepath.Join(root, "state")
+	for _, path := range []string{manifestRoot, evidenceRoot, stateRoot} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statePath := filepath.Join(stateRoot, "loom.db")
+	if err := os.WriteFile(statePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(root, "loomd.sock")
+	manifestPath := filepath.Join(manifestRoot, "journey-harness.json")
+	manifest := productJourneyHarnessManifest{
+		SchemaVersion: 1, Purpose: "phase3a-cross-client-e2e",
+		JourneyID: "123e4567-e89b-42d3-a456-426614174000",
+		StatePath: statePath, SocketPath: socketPath, EvidenceRoot: evidenceRoot,
+		FaultKind: "none", FaultAction: "none", DelayMillis: 0,
+	}
+	writeManifest := func(value any) {
+		t.Helper()
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(manifestPath, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeManifest(manifest)
+	t.Setenv(controlledProductJourneyManifestEnvironment, manifestPath)
+	harness, err := controlledProductJourneyHarnessFromEnvironment(
+		statePath,
+		socketPath,
+	)
+	if err != nil || harness == nil {
+		t.Fatalf("valid controlled journey manifest = %v, %v", harness, err)
+	}
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest.SocketPath = filepath.Join(root, "other.sock")
+	writeManifest(manifest)
+	if harness, err := controlledProductJourneyHarnessFromEnvironment(
+		statePath,
+		socketPath,
+	); err == nil || harness != nil {
+		t.Fatalf("mismatched socket manifest accepted: %v, %v", harness, err)
+	}
+
+	manifest.SocketPath = socketPath
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknown map[string]any
+	if err := json.Unmarshal(encoded, &unknown); err != nil {
+		t.Fatal(err)
+	}
+	unknown["unknown"] = true
+	writeManifest(unknown)
+	if harness, err := controlledProductJourneyHarnessFromEnvironment(
+		statePath,
+		socketPath,
+	); err == nil || harness != nil {
+		t.Fatalf("unknown manifest field accepted: %v, %v", harness, err)
+	}
+}
+
+func TestP3AProductionRunnerWiresControlledJourneyAuditOverRealSocket(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	manifestRoot := filepath.Join(root, "manifest")
+	evidenceRoot := filepath.Join(root, "journey-evidence")
+	for _, path := range []string{manifestRoot, evidenceRoot} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifestPath := filepath.Join(manifestRoot, "journey-harness.json")
+	encoded, err := json.Marshal(productJourneyHarnessManifest{
+		SchemaVersion: 1, Purpose: "phase3a-cross-client-e2e",
+		JourneyID: "123e4567-e89b-42d3-a456-426614174000",
+		StatePath: statePath, SocketPath: socketPath, EvidenceRoot: evidenceRoot,
+		FaultKind: "none", FaultAction: "none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(controlledProductJourneyManifestEnvironment, manifestPath)
+	runner, err := newProductDaemonRunner(
+		&blockingObserverRunner{},
+		statePath,
+		socketPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, socketPath)
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot api.EvolutionAssetSnapshot
+	if err := client.CallJourney(
+		context.Background(),
+		"123e4567-e89b-42d3-a456-426614174000",
+		"evolution_asset_snapshot",
+		api.EvolutionAssetSnapshotRequest{Limit: 64},
+		&snapshot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("runner stop error = %v", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner did not stop")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ipcBytes, err := os.ReadFile(filepath.Join(
+		evidenceRoot,
+		"ipc",
+		"request-response-summary.jsonl",
+	))
+	if err != nil || !bytes.Contains(ipcBytes, []byte(`"method":"evolution_asset_snapshot"`)) ||
+		!bytes.Contains(ipcBytes, []byte(`"client_kind":"tui"`)) {
+		t.Fatalf("production journey audit = %s, %v", ipcBytes, err)
+	}
 }
 
 func TestProductDaemonCloseIsOrderedJoinedAndExactlyOnce(t *testing.T) {

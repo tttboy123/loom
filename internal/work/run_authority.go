@@ -93,18 +93,33 @@ type WorkItemRecord struct {
 }
 
 type RunRecord struct {
-	id                    string
-	workItemID            string
-	phase                 string
-	claimID               string
-	claimGeneration       int64
-	runtimeInstanceID     string
-	agentInstanceID       string
-	prepareLeaseExpiresAt time.Time
-	terminalStatus        string
-	terminalReason        string
-	lastEventID           string
-	streamSequence        int64
+	id                            string
+	workItemID                    string
+	phase                         string
+	claimID                       string
+	claimGeneration               int64
+	runtimeInstanceID             string
+	agentInstanceID               string
+	prepareLeaseExpiresAt         time.Time
+	terminalStatus                string
+	terminalReason                string
+	lastEventID                   string
+	streamSequence                int64
+	AssetRevisionBindings         []AssetRevisionBinding
+	AssetRevisionSetDigest        string
+	MaterializationManifestDigest string
+	MaterializationRootDigest     string
+}
+
+// AssetRevisionBinding is the execution authority's immutable wire copy. The
+// asset package owns lifecycle policy; the Run authority stores only exact
+// lineage and therefore does not import or call that higher-level authority.
+type AssetRevisionBinding struct {
+	AssetKind    string `json:"asset_kind"`
+	DefinitionID string `json:"definition_id"`
+	RevisionID   string `json:"revision_id"`
+	SHA256Digest string `json:"sha256_digest"`
+	SourceScope  string `json:"source_scope"`
 }
 
 type AuthoritySnapshot struct {
@@ -1467,11 +1482,14 @@ func replayRunStream(
 		switch event.Type {
 		case "RunClaimed":
 			var payload runClaimedPayload
-			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
-				!payload.valid(run, runID) ||
-				payload.ClaimGeneration == nil ||
-				*payload.ClaimGeneration != run.claimGeneration+1 {
-				return ErrRunAuthorityConflict
+			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil {
+				return fmt.Errorf("%w: decode RunClaimed %s: %v", ErrRunAuthorityConflict, event.ID, err)
+			}
+			if !payload.valid(run, runID) {
+				return fmt.Errorf("%w: invalid RunClaimed %s", ErrRunAuthorityConflict, event.ID)
+			}
+			if payload.ClaimGeneration == nil || *payload.ClaimGeneration != run.claimGeneration+1 {
+				return fmt.Errorf("%w: RunClaimed generation %s", ErrRunAuthorityConflict, event.ID)
 			}
 			expiresAt, err := parseUTC(*payload.PrepareLeaseExpiresAt)
 			if err != nil || run.phase == "running" || run.phase == "terminal" ||
@@ -1496,6 +1514,12 @@ func replayRunStream(
 			run.runtimeInstanceID = *payload.RuntimeInstanceID
 			run.agentInstanceID = *payload.AgentInstanceID
 			run.prepareLeaseExpiresAt = expiresAt
+			if payload.AssetRevisionBindings != nil {
+				run.AssetRevisionBindings = append([]AssetRevisionBinding(nil), (*payload.AssetRevisionBindings)...)
+				run.AssetRevisionSetDigest = *payload.AssetRevisionSetDigest
+				run.MaterializationManifestDigest = *payload.MaterializationManifestDigest
+				run.MaterializationRootDigest = *payload.MaterializationRootDigest
+			}
 			run.lastEventID = event.ID
 			run.streamSequence = event.Seq
 			claims[event.ID] = &claimReplay{
@@ -1716,13 +1740,17 @@ type runtimeStatusPayload struct {
 }
 
 type runClaimedPayload struct {
-	WorkItemID            *string `json:"work_item_id"`
-	RunID                 *string `json:"run_id"`
-	ClaimID               *string `json:"claim_id"`
-	ClaimGeneration       *int64  `json:"claim_generation"`
-	RuntimeInstanceID     *string `json:"runtime_instance_id"`
-	AgentInstanceID       *string `json:"agent_instance_id"`
-	PrepareLeaseExpiresAt *string `json:"prepare_lease_expires_at"`
+	WorkItemID                    *string                 `json:"work_item_id"`
+	RunID                         *string                 `json:"run_id"`
+	ClaimID                       *string                 `json:"claim_id"`
+	ClaimGeneration               *int64                  `json:"claim_generation"`
+	RuntimeInstanceID             *string                 `json:"runtime_instance_id"`
+	AgentInstanceID               *string                 `json:"agent_instance_id"`
+	PrepareLeaseExpiresAt         *string                 `json:"prepare_lease_expires_at"`
+	AssetRevisionBindings         *[]AssetRevisionBinding `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest        *string                 `json:"asset_revision_set_digest"`
+	MaterializationManifestDigest *string                 `json:"materialization_manifest_digest"`
+	MaterializationRootDigest     *string                 `json:"materialization_root_digest"`
 	runtimeStatusReferenceFields
 }
 
@@ -1782,6 +1810,16 @@ type capacityEventPayload struct {
 }
 
 func (payload runClaimedPayload) valid(run RunRecord, runID string) bool {
+	lineagePresent := payload.AssetRevisionBindings != nil ||
+		payload.AssetRevisionSetDigest != nil ||
+		payload.MaterializationManifestDigest != nil ||
+		payload.MaterializationRootDigest != nil
+	if lineagePresent && (payload.AssetRevisionBindings == nil ||
+		payload.AssetRevisionSetDigest == nil ||
+		payload.MaterializationManifestDigest == nil ||
+		payload.MaterializationRootDigest == nil) {
+		return false
+	}
 	return payload.WorkItemID != nil && payload.RunID != nil &&
 		payload.ClaimID != nil && payload.ClaimGeneration != nil &&
 		payload.RuntimeInstanceID != nil && payload.AgentInstanceID != nil &&
@@ -2355,4 +2393,7 @@ func nilInterface(value any) bool {
 }
 
 func (record WorkItemRecord) public() WorkItemRecord { return record }
-func (record RunRecord) public() RunRecord           { return record }
+func (record RunRecord) public() RunRecord {
+	record.AssetRevisionBindings = append([]AssetRevisionBinding(nil), record.AssetRevisionBindings...)
+	return record
+}

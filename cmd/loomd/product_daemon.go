@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +24,7 @@ import (
 	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/evidence"
@@ -48,6 +51,590 @@ const productSavedTeamResolutionProjectID = "loom-local-product"
 
 const controlledMissionFixtureManifestEnvironment = "LOOM_CONTROLLED_MISSION_FIXTURE_MANIFEST"
 
+const controlledProductJourneyManifestEnvironment = "LOOM_P3A_CONTROLLED_JOURNEY_MANIFEST"
+
+const (
+	productJourneyCrashBeforeCASExitCode = 92
+	productJourneyCrashAfterCASExitCode  = 93
+)
+
+var errProductJourneyProjectionFailure = errors.New("controlled journey projection refresh failed")
+
+type productJourneyHarnessManifest struct {
+	SchemaVersion int    `json:"schema_version"`
+	Purpose       string `json:"purpose"`
+	JourneyID     string `json:"journey_id"`
+	StatePath     string `json:"state_path"`
+	SocketPath    string `json:"socket_path"`
+	EvidenceRoot  string `json:"evidence_root"`
+	FaultKind     string `json:"fault_kind"`
+	FaultAction   string `json:"fault_action"`
+	DelayMillis   int    `json:"delay_millis"`
+}
+
+type productJourneyIPCRecord struct {
+	Sequence              int64  `json:"sequence"`
+	MonotonicOffsetMicros int64  `json:"monotonic_offset_micros"`
+	ClientKind            string `json:"client_kind"`
+	RequestID             string `json:"request_id"`
+	JourneyID             string `json:"journey_id"`
+	Method                string `json:"method"`
+	Action                string `json:"action"`
+	RequestDigest         string `json:"request_digest"`
+	ResponseOK            bool   `json:"response_ok"`
+	ErrorCode             string `json:"error_code"`
+	ResponseDigest        string `json:"response_digest"`
+}
+
+type productJourneyDaemonRecord struct {
+	Sequence              int64    `json:"sequence"`
+	MonotonicOffsetMicros int64    `json:"monotonic_offset_micros"`
+	JourneyID             string   `json:"journey_id"`
+	RequestID             string   `json:"request_id"`
+	Component             string   `json:"component"`
+	Operation             string   `json:"operation"`
+	Phase                 string   `json:"phase"`
+	Outcome               string   `json:"outcome"`
+	ErrorCode             string   `json:"error_code"`
+	AuthorityEventIDs     []string `json:"authority_event_ids"`
+}
+
+type productJourneyHarness struct {
+	manifest    productJourneyHarnessManifest
+	journeyRoot string
+	ipcLog      *os.File
+	daemonLog   *os.File
+	terminate   func(int)
+	startedAt   time.Time
+
+	mu        sync.Mutex
+	ipcSeq    int64
+	daemonSeq int64
+	faultUsed bool
+	closed    bool
+	writeErr  error
+}
+
+func newProductJourneyHarness(
+	manifest productJourneyHarnessManifest,
+	terminate func(int),
+) (_ *productJourneyHarness, resultErr error) {
+	if !validProductJourneyHarnessManifest(manifest) {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	for _, name := range []string{"ipc", "daemon"} {
+		if err := ensurePrivateProductJourneyDirectory(
+			filepath.Join(manifest.EvidenceRoot, name),
+		); err != nil {
+			return nil, err
+		}
+	}
+	ipcLog, err := openProductJourneyLog(filepath.Join(
+		manifest.EvidenceRoot,
+		"ipc",
+		"request-response-summary.jsonl",
+	))
+	if err != nil {
+		return nil, err
+	}
+	ipcSequence, err := readProductJourneyLastSequence(ipcLog)
+	if err != nil {
+		_ = ipcLog.Close()
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			_ = ipcLog.Close()
+		}
+	}()
+	daemonLog, err := openProductJourneyLog(filepath.Join(
+		manifest.EvidenceRoot,
+		"daemon",
+		"structured-log.jsonl",
+	))
+	if err != nil {
+		return nil, err
+	}
+	daemonSequence, err := readProductJourneyLastSequence(daemonLog)
+	if err != nil {
+		_ = daemonLog.Close()
+		return nil, err
+	}
+	if terminate == nil {
+		terminate = os.Exit
+	}
+	return &productJourneyHarness{
+		manifest: manifest, ipcLog: ipcLog, daemonLog: daemonLog,
+		terminate: terminate, startedAt: time.Now(), ipcSeq: ipcSequence,
+		daemonSeq: daemonSequence,
+	}, nil
+}
+
+func controlledProductJourneyHarnessFromEnvironment(
+	statePath,
+	socketPath string,
+) (*productJourneyHarness, error) {
+	manifestPath := os.Getenv(controlledProductJourneyManifestEnvironment)
+	if manifestPath == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(manifestPath) || !filepath.IsAbs(statePath) ||
+		!filepath.IsAbs(socketPath) ||
+		filepath.Base(filepath.Dir(manifestPath)) != "manifest" {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	file, err := os.OpenFile(manifestPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, 16385))
+	if err != nil || len(contents) == 0 || len(contents) > 16384 {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	var manifest productJourneyHarnessManifest
+	if decodeExactProductParams(contents, &manifest) != nil ||
+		manifest.StatePath != statePath || manifest.SocketPath != socketPath {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	journeyRoot := filepath.Dir(filepath.Dir(manifestPath))
+	if !privateProductJourneyDirectory(journeyRoot) ||
+		!productJourneyPathWithin(journeyRoot, statePath) ||
+		!productJourneyPathWithin(journeyRoot, socketPath) ||
+		!productJourneyPathWithin(journeyRoot, manifest.EvidenceRoot) ||
+		!privateProductJourneyStateFile(statePath) {
+		return nil, errors.New("invalid controlled journey manifest")
+	}
+	harness, err := newProductJourneyHarness(manifest, nil)
+	if err != nil {
+		return nil, err
+	}
+	harness.journeyRoot = journeyRoot
+	return harness, nil
+}
+
+func productJourneyPathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != "" &&
+		!filepath.IsAbs(relative) && relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func privateProductJourneyStateFile(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() ||
+		info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
+}
+
+func validProductJourneyHarnessManifest(
+	manifest productJourneyHarnessManifest,
+) bool {
+	if manifest.SchemaVersion != 1 ||
+		manifest.Purpose != "phase3a-cross-client-e2e" ||
+		!validProductJourneyID(manifest.JourneyID) ||
+		!filepath.IsAbs(manifest.EvidenceRoot) ||
+		!privateProductJourneyDirectory(manifest.EvidenceRoot) {
+		return false
+	}
+	switch manifest.FaultKind {
+	case "none":
+		return manifest.FaultAction == "none" && manifest.DelayMillis == 0
+	case "crash_before_cas", "crash_after_cas_before_response", "projection_failure":
+		return validProductJourneyFaultAction(manifest.FaultAction) &&
+			manifest.DelayMillis == 0
+	case "slow_response":
+		return validProductJourneyFaultAction(manifest.FaultAction) &&
+			manifest.DelayMillis >= 1000 && manifest.DelayMillis <= 15000
+	default:
+		return false
+	}
+}
+
+func validProductJourneyID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' ||
+		value[18] != '-' || value[23] != '-' || value[14] != '4' ||
+		!strings.ContainsRune("89ab", rune(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return false
+		}
+	}
+	return true
+}
+
+func validProductJourneyFaultAction(value string) bool {
+	switch value {
+	case "create_skill", "import_skill", "create_template",
+		"instantiate_template", "promote_run", "record_evaluation",
+		"set_binding", "activate", "reject", "retain", "archive",
+		"restore", "rollback":
+		return true
+	default:
+		return false
+	}
+}
+
+func privateProductJourneyDirectory(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o700 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
+}
+
+func ensurePrivateProductJourneyDirectory(path string) error {
+	if !filepath.IsAbs(path) {
+		return errors.New("invalid controlled journey directory")
+	}
+	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if !privateProductJourneyDirectory(path) {
+		return errors.New("invalid controlled journey directory")
+	}
+	return nil
+}
+
+func openProductJourneyLog(path string) (*os.File, error) {
+	file, err := os.OpenFile(
+		path,
+		os.O_CREATE|os.O_APPEND|os.O_RDWR|syscall.O_NOFOLLOW,
+		0o600,
+	)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		_ = file.Close()
+		return nil, errors.New("invalid controlled journey log")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		_ = file.Close()
+		return nil, errors.New("invalid controlled journey log")
+	}
+	return file, nil
+}
+
+func readProductJourneyLastSequence(file *os.File) (int64, error) {
+	if file == nil {
+		return 0, errors.New("invalid controlled journey log")
+	}
+	info, err := file.Stat()
+	if err != nil || info.Size() < 0 || info.Size() > 8<<20 {
+		return 0, errors.New("invalid controlled journey log")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil || int64(len(contents)) != info.Size() {
+		return 0, errors.New("invalid controlled journey log")
+	}
+	trimmed := bytes.TrimSpace(contents)
+	if len(trimmed) == 0 {
+		_, err = file.Seek(0, io.SeekEnd)
+		return 0, err
+	}
+	lines := bytes.Split(trimmed, []byte{'\n'})
+	for index, line := range lines {
+		if duplicate, scanErr := scanProductJSONValue(
+			json.NewDecoder(bytes.NewReader(line)),
+		); scanErr != nil || duplicate {
+			return 0, errors.New("invalid controlled journey log")
+		}
+		var record struct {
+			Sequence int64 `json:"sequence"`
+		}
+		if json.Unmarshal(line, &record) != nil || record.Sequence != int64(index+1) {
+			return 0, errors.New("invalid controlled journey log")
+		}
+	}
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		return 0, err
+	}
+	return int64(len(lines)), nil
+}
+
+func (harness *productJourneyHarness) Close() error {
+	if harness == nil {
+		return nil
+	}
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	if harness.closed {
+		return nil
+	}
+	harness.closed = true
+	closeErr := harness.writeErr
+	if harness.ipcLog != nil {
+		closeErr = errors.Join(closeErr, harness.ipcLog.Sync(), harness.ipcLog.Close())
+	}
+	if harness.daemonLog != nil {
+		closeErr = errors.Join(closeErr, harness.daemonLog.Sync(), harness.daemonLog.Close())
+	}
+	return closeErr
+}
+
+func (harness *productJourneyHarness) wrap(next localipc.Handler) localipc.Handler {
+	return localipc.HandlerFunc(func(
+		ctx context.Context,
+		request localipc.Request,
+	) localipc.Response {
+		action := productJourneyRequestAction(request)
+		journeyID := request.JourneyID
+		if journeyID == "" {
+			journeyID = harness.manifest.JourneyID
+		}
+		harness.writeDaemonRecord(productJourneyDaemonRecord{
+			JourneyID: journeyID, RequestID: request.RequestID,
+			Component: "local_ipc", Operation: request.Method,
+			Phase: "request", Outcome: "received", ErrorCode: "",
+			AuthorityEventIDs: []string{},
+		})
+		if harness.takeFault("crash_before_cas", request, action) {
+			harness.writeDaemonRecord(productJourneyDaemonRecord{
+				JourneyID: journeyID, RequestID: request.RequestID,
+				Component: "local_ipc", Operation: action,
+				Phase: "before_cas", Outcome: "crash", ErrorCode: "unavailable",
+				AuthorityEventIDs: []string{},
+			})
+			harness.terminate(productJourneyCrashBeforeCASExitCode)
+			response := productJourneyErrorResponse(journeyID, "state_unavailable", errors.New("controlled journey unavailable"))
+			harness.writeIPCRecord(request, action, response)
+			return response
+		}
+		response := next.Handle(ctx, request)
+		eventIDs := productJourneyResponseEventIDs(response)
+		if response.OK && harness.takeFault(
+			"crash_after_cas_before_response",
+			request,
+			action,
+		) {
+			harness.writeDaemonRecord(productJourneyDaemonRecord{
+				JourneyID: journeyID, RequestID: request.RequestID,
+				Component: "local_ipc", Operation: action,
+				Phase: "after_cas_before_response", Outcome: "crash",
+				ErrorCode: "unavailable", AuthorityEventIDs: eventIDs,
+			})
+			harness.terminate(productJourneyCrashAfterCASExitCode)
+			response = productJourneyErrorResponse(journeyID, "state_unavailable", errors.New("controlled journey unavailable"))
+		}
+		if response.OK && harness.takeFault("slow_response", request, action) {
+			timer := time.NewTimer(time.Duration(harness.manifest.DelayMillis) * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
+		harness.writeIPCRecord(request, action, response)
+		outcome := "pass"
+		errorCode := ""
+		if !response.OK {
+			outcome = "fail"
+			if response.Error != nil {
+				errorCode = response.Error.Code
+			}
+		}
+		harness.writeDaemonRecord(productJourneyDaemonRecord{
+			JourneyID: journeyID, RequestID: request.RequestID,
+			Component: "local_ipc", Operation: request.Method,
+			Phase: "response", Outcome: outcome, ErrorCode: errorCode,
+			AuthorityEventIDs: eventIDs,
+		})
+		return response
+	})
+}
+
+func (harness *productJourneyHarness) projectionRefresh(
+	next app.EvolutionAssetProjectionRefresh,
+) app.EvolutionAssetProjectionRefresh {
+	return func(ctx context.Context, action string) error {
+		if harness.takeProjectionFault(action) {
+			harness.writeDaemonRecord(productJourneyDaemonRecord{
+				JourneyID: harness.manifest.JourneyID, RequestID: "projection-refresh",
+				Component: "projection", Operation: action,
+				Phase: "post_commit_refresh", Outcome: "fail",
+				ErrorCode: "state_unavailable", AuthorityEventIDs: []string{},
+			})
+			return errProductJourneyProjectionFailure
+		}
+		return next(ctx, action)
+	}
+}
+
+func (harness *productJourneyHarness) takeProjectionFault(action string) bool {
+	if harness == nil || harness.manifest.FaultKind != "projection_failure" ||
+		harness.manifest.FaultAction != action {
+		return false
+	}
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	if harness.faultUsed {
+		return false
+	}
+	harness.faultUsed = true
+	return true
+}
+
+func (harness *productJourneyHarness) takeFault(
+	kind string,
+	request localipc.Request,
+	action string,
+) bool {
+	if harness == nil || harness.manifest.FaultKind != kind ||
+		harness.manifest.FaultAction != action ||
+		request.JourneyID != harness.manifest.JourneyID {
+		return false
+	}
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	if harness.faultUsed {
+		return false
+	}
+	harness.faultUsed = true
+	return true
+}
+
+func (harness *productJourneyHarness) writeIPCRecord(
+	request localipc.Request,
+	action string,
+	response localipc.Response,
+) {
+	requestBytes, _ := json.Marshal(request)
+	auditResponse := response
+	auditResponse.Version = 1
+	auditResponse.RequestID = request.RequestID
+	responseBytes, _ := json.Marshal(auditResponse)
+	journeyID := request.JourneyID
+	if journeyID == "" {
+		journeyID = harness.manifest.JourneyID
+	}
+	errorCode := ""
+	if response.Error != nil {
+		errorCode = response.Error.Code
+	}
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	if harness.closed {
+		return
+	}
+	harness.ipcSeq++
+	record := productJourneyIPCRecord{
+		Sequence: harness.ipcSeq, MonotonicOffsetMicros: time.Since(harness.startedAt).Microseconds(),
+		ClientKind: productJourneyClientKind(request.RequestID), RequestID: request.RequestID,
+		JourneyID: journeyID, Method: request.Method, Action: action,
+		RequestDigest: productJourneySHA256Hex(requestBytes), ResponseOK: response.OK,
+		ErrorCode: errorCode, ResponseDigest: productJourneySHA256Hex(responseBytes),
+	}
+	if err := writeProductJourneyJSONLine(harness.ipcLog, record); err != nil {
+		harness.writeErr = errors.Join(harness.writeErr, err)
+	}
+}
+
+func (harness *productJourneyHarness) writeDaemonRecord(
+	record productJourneyDaemonRecord,
+) {
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	if harness.closed {
+		return
+	}
+	harness.daemonSeq++
+	record.Sequence = harness.daemonSeq
+	record.MonotonicOffsetMicros = time.Since(harness.startedAt).Microseconds()
+	if record.AuthorityEventIDs == nil {
+		record.AuthorityEventIDs = []string{}
+	}
+	if err := writeProductJourneyJSONLine(harness.daemonLog, record); err != nil {
+		harness.writeErr = errors.Join(harness.writeErr, err)
+	}
+}
+
+func writeProductJourneyJSONLine(writer *os.File, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if _, err := writer.Write(encoded); err != nil {
+		return err
+	}
+	return writer.Sync()
+}
+
+func productJourneyRequestAction(request localipc.Request) string {
+	var value struct {
+		Action    string `json:"action"`
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(request.Params, &value) != nil {
+		return ""
+	}
+	if validProductJourneyFaultAction(value.Action) {
+		return value.Action
+	}
+	switch value.Operation {
+	case "preflight", "start", "control", "read", "commit":
+		return value.Operation
+	default:
+		return ""
+	}
+}
+
+func productJourneyClientKind(requestID string) string {
+	switch {
+	case strings.HasPrefix(requestID, "loom-swift-"):
+		return "gui"
+	case strings.HasPrefix(requestID, "loom-client-"):
+		return "tui"
+	default:
+		return "unknown"
+	}
+}
+
+func productJourneyResponseEventIDs(response localipc.Response) []string {
+	var result struct {
+		EventIDs []string `json:"event_ids"`
+	}
+	if !response.OK || json.Unmarshal(response.Result, &result) != nil ||
+		result.EventIDs == nil {
+		return []string{}
+	}
+	return append([]string(nil), result.EventIDs...)
+}
+
+func productJourneySHA256Hex(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
 type controlledMissionFixtureManifest struct {
 	SchemaVersion     int    `json:"schema_version"`
 	Purpose           string `json:"purpose"`
@@ -73,6 +660,439 @@ type productMissionExecutionRuntimeConfig struct {
 	Now                func() time.Time
 	ExecutorFactory    productMissionExecutorFactory
 	Decisions          app.MissionExecutionDecisionRouter
+}
+
+type productMissionAssetExecutionConfig struct {
+	Authority *assets.Authority
+	Artifacts *evidence.Store
+}
+
+type productTeamAssetMaterializer struct {
+	authority    *assets.Authority
+	projection   *projection.Projection
+	artifacts    *evidence.Store
+	materializer *piadapter.SkillMaterializer
+	isolatedRoot string
+	mu           sync.Mutex
+	plans        map[string]piadapter.MaterializationPlan
+}
+
+func (materializer *productTeamAssetMaterializer) PrepareTeamAttemptMaterialization(
+	ctx context.Context,
+	request app.TeamAssetMaterializationRequest,
+) (app.TeamAssetMaterialization, error) {
+	if materializer == nil || materializer.authority == nil ||
+		materializer.projection == nil || materializer.artifacts == nil ||
+		materializer.materializer == nil || !filepath.IsAbs(materializer.isolatedRoot) {
+		return app.TeamAssetMaterialization{}, app.ErrInvalidTeamCoordinator
+	}
+	runtimeIdentityBytes, err := productCanonicalJSON(struct {
+		ID                string   `json:"id"`
+		DeviceID          string   `json:"device_id"`
+		AdapterType       string   `json:"adapter_type"`
+		ExecutableVersion string   `json:"executable_version"`
+		Capabilities      []string `json:"capabilities"`
+	}{request.Instance.ID, request.Instance.DeviceID, request.Instance.AdapterType,
+		request.Instance.ExecutableVersion,
+		append([]string(nil), request.Instance.ObservedCapabilities...)})
+	if err != nil {
+		return app.TeamAssetMaterialization{}, err
+	}
+	runtimeIdentitySum := sha256.Sum256(runtimeIdentityBytes)
+	runtimeIdentityDigest := hex.EncodeToString(runtimeIdentitySum[:])
+	bindings, err := materializer.materializationBindings(ctx, request.Bindings)
+	if err != nil {
+		return app.TeamAssetMaterialization{}, err
+	}
+	operationID := fmt.Sprintf(
+		"materialize:%s:%d:%d",
+		request.RunID,
+		request.AttemptNumber,
+		request.Generation,
+	)
+	plan := piadapter.MaterializationPlan{
+		IsolatedRoot: materializer.isolatedRoot, RunID: request.RunID,
+		AttemptNumber: request.AttemptNumber, Generation: request.Generation,
+		RuntimeInstanceID:      request.Instance.ID,
+		RuntimeIdentityDigest:  runtimeIdentityDigest,
+		RuntimeCapabilities:    append([]string(nil), request.Instance.ObservedCapabilities...),
+		AssetRevisionSetDigest: request.RevisionSetDigest,
+		JourneyID:              request.JourneyID, OperationID: operationID, Bindings: bindings,
+	}
+	result, err := materializer.materializer.Recover(ctx, plan)
+	if err != nil {
+		return app.TeamAssetMaterialization{}, err
+	}
+	manifest, err := os.Open(result.ManifestPath)
+	if err != nil {
+		_ = materializer.materializer.Cleanup(ctx, plan)
+		return app.TeamAssetMaterialization{}, err
+	}
+	_, publishErr := materializer.artifacts.Publish(ctx, manifest, result.ManifestArtifactDigest)
+	closeErr := manifest.Close()
+	if publishErr != nil || closeErr != nil {
+		_ = materializer.materializer.Cleanup(ctx, plan)
+		return app.TeamAssetMaterialization{}, errors.Join(publishErr, closeErr)
+	}
+	prepared, err := materializer.authority.PrepareMaterialization(ctx, assets.Command{
+		OperationID: operationID, JourneyID: request.JourneyID,
+		ExpectedViewVersion: request.ExpectedView,
+		TeamExecutionID:     request.TeamExecutionID,
+		LogicalNodeID:       request.LogicalNodeID, RunID: request.RunID,
+		AttemptNumber: request.AttemptNumber, Generation: request.Generation,
+		RuntimeInstanceID:         request.Instance.ID,
+		RuntimeIdentityDigest:     runtimeIdentityDigest,
+		Capability:                piadapter.SkillMaterializationCapability,
+		Bindings:                  append([]assets.ExactAssetRevisionBinding(nil), request.Bindings...),
+		AssetRevisionSetDigest:    request.RevisionSetDigest,
+		ManifestArtifactDigest:    result.ManifestArtifactDigest,
+		MaterializationRootDigest: result.MaterializationRootDigest,
+	})
+	if err != nil {
+		_ = materializer.materializer.Cleanup(ctx, plan)
+		return app.TeamAssetMaterialization{}, err
+	}
+	token := productMaterializationToken(request.RunID, request.AttemptNumber, request.Generation)
+	materializer.mu.Lock()
+	materializer.plans[token] = plan
+	materializer.mu.Unlock()
+	return app.TeamAssetMaterialization{
+		SourcePath: result.Root, RunID: request.RunID,
+		AttemptNumber: request.AttemptNumber, Generation: request.Generation,
+		JourneyID:      request.JourneyID,
+		ManifestDigest: result.ManifestArtifactDigest,
+		RootDigest:     result.MaterializationRootDigest,
+		Authoritative:  prepared.AlreadyCommitted(),
+		AttemptLineage: work.TeamAttemptMaterialization{
+			LogicalNodeID: request.LogicalNodeID, AttemptNumber: request.AttemptNumber,
+			AssetRevisionBindings:         append([]assets.ExactAssetRevisionBinding(nil), request.Bindings...),
+			AssetRevisionSetDigest:        request.RevisionSetDigest,
+			MaterializationManifestDigest: result.ManifestArtifactDigest,
+			MaterializationRootDigest:     result.MaterializationRootDigest,
+			Prepared:                      prepared,
+		},
+	}, nil
+}
+
+func (materializer *productTeamAssetMaterializer) materializationBindings(
+	ctx context.Context,
+	exact []assets.ExactAssetRevisionBinding,
+) ([]piadapter.MaterializationBinding, error) {
+	bindings := make([]piadapter.MaterializationBinding, 0, len(exact))
+	view := materializer.projection.GlobalReadView()
+	for _, binding := range exact {
+		if binding.AssetKind != assets.AssetKindSkill {
+			return nil, assets.ErrIncompatible
+		}
+		revision, ok := view.EvolutionAssetRevision(
+			string(binding.AssetKind) + "/" + binding.DefinitionID + "/" + binding.RevisionID,
+		)
+		if !ok || revision.ArtifactDigest != binding.SHA256Digest ||
+			revision.SourceScope != binding.SourceScope {
+			return nil, assets.ErrDigestMismatch
+		}
+		artifactBytes, readErr := materializer.artifacts.ReadArtifact(
+			ctx, revision.ArtifactDigest, 1572864,
+		)
+		if readErr != nil {
+			return nil, readErr
+		}
+		artifact, decodeErr := decodeProductEvolutionAssetArtifact(artifactBytes)
+		if decodeErr != nil || artifact.SchemaVersion != 1 ||
+			artifact.AssetKind != binding.AssetKind ||
+			artifact.DefinitionID != binding.DefinitionID ||
+			artifact.RevisionID != binding.RevisionID ||
+			artifact.ContentDigest != revision.ContentDigest {
+			return nil, assets.ErrDigestMismatch
+		}
+		files := make([]piadapter.MaterializationFile, len(artifact.Entries))
+		for index, entry := range artifact.Entries {
+			content, decodeErr := base64.StdEncoding.Strict().DecodeString(entry.ContentBase64)
+			if decodeErr != nil || len(content) != entry.FileSize || entry.FileMode != 0o600 {
+				return nil, assets.ErrDigestMismatch
+			}
+			sum := sha256.Sum256(content)
+			if hex.EncodeToString(sum[:]) != entry.FileSHA256 {
+				return nil, assets.ErrDigestMismatch
+			}
+			files[index] = piadapter.MaterializationFile{
+				RelativePath: entry.RelativePath, Bytes: content, Digest: entry.FileSHA256,
+			}
+		}
+		bindings = append(bindings, piadapter.MaterializationBinding{
+			AssetKind: string(binding.AssetKind), DefinitionID: binding.DefinitionID,
+			RevisionID: binding.RevisionID, Digest: binding.SHA256Digest,
+			ContentDigest: revision.ContentDigest, SourceScope: string(binding.SourceScope),
+			Files: files,
+		})
+	}
+	return bindings, nil
+}
+
+func (materializer *productTeamAssetMaterializer) CleanupTeamAttemptMaterialization(
+	ctx context.Context,
+	value app.TeamAssetMaterialization,
+) error {
+	lineage := value.AttemptLineage
+	token := productMaterializationToken(value.RunID, value.AttemptNumber, value.Generation)
+	materializer.mu.Lock()
+	plan, ok := materializer.plans[token]
+	if ok {
+		delete(materializer.plans, token)
+	}
+	materializer.mu.Unlock()
+	if !ok {
+		return piadapter.ErrMaterializationIdentityDrift
+	}
+	if value.RunID != plan.RunID || value.AttemptNumber != plan.AttemptNumber ||
+		value.Generation != plan.Generation ||
+		value.ManifestDigest != lineage.MaterializationManifestDigest ||
+		value.RootDigest != lineage.MaterializationRootDigest {
+		return piadapter.ErrMaterializationIdentityDrift
+	}
+	if err := materializer.materializer.Cleanup(ctx, plan); err != nil {
+		return err
+	}
+	if !value.Authoritative {
+		return nil
+	}
+	if err := materializer.projection.Rebuild(ctx); err != nil {
+		return err
+	}
+	operationID := fmt.Sprintf(
+		"cleanup:%s:%d:%d", value.RunID, value.AttemptNumber, value.Generation,
+	)
+	_, err := materializer.authority.CleanMaterialization(ctx, assets.Command{
+		OperationID: operationID, JourneyID: value.JourneyID,
+		ExpectedViewVersion: materializer.projection.GlobalReadView().Version(),
+		RunID:               value.RunID, AttemptNumber: value.AttemptNumber,
+		Generation:                value.Generation,
+		ManifestArtifactDigest:    value.ManifestDigest,
+		MaterializationRootDigest: value.RootDigest,
+		CleanupResult:             "removed",
+	})
+	if err != nil {
+		return err
+	}
+	return materializer.projection.Rebuild(ctx)
+}
+
+func productMaterializationToken(runID string, attemptNumber int, generation int64) string {
+	return runID + "\x00" + strconv.Itoa(attemptNumber) + "\x00" + strconv.FormatInt(generation, 10)
+}
+
+func (materializer *productTeamAssetMaterializer) RecoverStartup(
+	ctx context.Context,
+) error {
+	if materializer == nil || materializer.projection == nil ||
+		materializer.materializer == nil || materializer.plans == nil {
+		return app.ErrInvalidTeamCoordinator
+	}
+	view := materializer.projection.GlobalReadView()
+	records := make([]assets.RuntimeSkillMaterializationRecord, 0)
+	afterID := ""
+	for {
+		page, more := view.RuntimeSkillMaterializations(afterID, 64)
+		if len(page) == 0 {
+			if more {
+				return piadapter.ErrMaterializationIdentityDrift
+			}
+			break
+		}
+		records = append(records, page...)
+		afterID = page[len(page)-1].RunID + "/" +
+			strconv.Itoa(page[len(page)-1].AttemptNumber) + "/" +
+			strconv.FormatInt(page[len(page)-1].Generation, 10)
+		if !more {
+			break
+		}
+	}
+	plans := make([]piadapter.MaterializationPlan, 0, len(records))
+	activeRecords := make([]assets.RuntimeSkillMaterializationRecord, 0, len(records))
+	for _, record := range records {
+		if record.Cleaned {
+			continue
+		}
+		bindings, err := materializer.materializationBindings(ctx, record.AssetRevisionBindings)
+		if err != nil {
+			return err
+		}
+		plans = append(plans, piadapter.MaterializationPlan{
+			IsolatedRoot: materializer.isolatedRoot,
+			RunID:        record.RunID, AttemptNumber: record.AttemptNumber,
+			Generation: record.Generation, RuntimeInstanceID: record.RuntimeInstanceID,
+			RuntimeIdentityDigest:  record.RuntimeIdentityDigest,
+			RuntimeCapabilities:    []string{record.Capability},
+			AssetRevisionSetDigest: record.AssetRevisionSetDigest,
+			JourneyID:              record.JourneyID,
+			OperationID: fmt.Sprintf(
+				"materialize:%s:%d:%d",
+				record.RunID, record.AttemptNumber, record.Generation,
+			),
+			Bindings: bindings,
+		})
+		activeRecords = append(activeRecords, record)
+	}
+	results, err := materializer.materializer.Reconcile(ctx, materializer.isolatedRoot, plans)
+	if err != nil {
+		return err
+	}
+	if len(results) != len(activeRecords) {
+		return piadapter.ErrMaterializationIdentityDrift
+	}
+	terminal := make([]app.TeamAssetMaterialization, 0)
+	for index, record := range activeRecords {
+		result, plan := results[index], plans[index]
+		if result.ManifestArtifactDigest != record.ManifestArtifactDigest ||
+			result.MaterializationRootDigest != record.MaterializationRootDigest {
+			return piadapter.ErrMaterializationDigestMismatch
+		}
+		token := productMaterializationToken(record.RunID, record.AttemptNumber, record.Generation)
+		materializer.plans[token] = plan
+		team, ok := view.TeamExecution(record.TeamExecutionID)
+		if !ok {
+			return piadapter.ErrMaterializationIdentityDrift
+		}
+		if productTerminalTeamExecutionStatus(team.Status) {
+			terminal = append(terminal, app.TeamAssetMaterialization{
+				SourcePath: result.Root, RunID: record.RunID,
+				AttemptNumber: record.AttemptNumber, Generation: record.Generation,
+				JourneyID: record.JourneyID, ManifestDigest: record.ManifestArtifactDigest,
+				RootDigest: record.MaterializationRootDigest, Authoritative: true,
+				AttemptLineage: work.TeamAttemptMaterialization{
+					LogicalNodeID: record.LogicalNodeID, AttemptNumber: record.AttemptNumber,
+					AssetRevisionBindings:         append([]assets.ExactAssetRevisionBinding(nil), record.AssetRevisionBindings...),
+					AssetRevisionSetDigest:        record.AssetRevisionSetDigest,
+					MaterializationManifestDigest: record.ManifestArtifactDigest,
+					MaterializationRootDigest:     record.MaterializationRootDigest,
+				},
+			})
+		}
+	}
+	for _, value := range terminal {
+		if err := materializer.CleanupTeamAttemptMaterialization(ctx, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func productTerminalTeamExecutionStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "degraded", "blocked", "human_required", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeProductEvolutionAssetArtifact(data []byte) (productEvolutionAssetArtifact, error) {
+	var artifact productEvolutionAssetArtifact
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&artifact); err != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		len(artifact.Entries) == 0 {
+		return productEvolutionAssetArtifact{}, assets.ErrDigestMismatch
+	}
+	return artifact, nil
+}
+
+type productEvolutionAssetArtifact struct {
+	SchemaVersion int              `json:"schema_version"`
+	AssetKind     assets.AssetKind `json:"asset_kind"`
+	DefinitionID  string           `json:"definition_id"`
+	RevisionID    string           `json:"revision_id"`
+	Entries       []struct {
+		RelativePath  string `json:"relative_path"`
+		FileMode      int    `json:"file_mode"`
+		FileSize      int    `json:"file_size"`
+		FileSHA256    string `json:"file_sha256"`
+		ContentBase64 string `json:"content_base64"`
+	} `json:"entries"`
+	ContentDigest string `json:"content_digest"`
+}
+
+type productTemplateArtifactResolver struct{ artifacts *evidence.Store }
+
+func (resolver productTemplateArtifactResolver) ResolveTemplateArtifact(
+	ctx context.Context,
+	request assets.TemplateArtifactRequest,
+) (assets.TemplateArtifactContract, error) {
+	if resolver.artifacts == nil {
+		return assets.TemplateArtifactContract{}, assets.ErrDenied
+	}
+	data, err := resolver.artifacts.ReadArtifact(ctx, request.ArtifactDigest, 1572864)
+	if err != nil {
+		return assets.TemplateArtifactContract{}, err
+	}
+	artifact, err := decodeProductEvolutionAssetArtifact(data)
+	if err != nil || artifact.SchemaVersion != 1 ||
+		artifact.AssetKind != request.AssetKind || artifact.DefinitionID != request.DefinitionID ||
+		artifact.RevisionID != request.RevisionID || len(artifact.Entries) != 2 ||
+		artifact.Entries[0].RelativePath != "template-contract.json" {
+		return assets.TemplateArtifactContract{}, assets.ErrDigestMismatch
+	}
+	entriesBytes, err := productCanonicalJSON(artifact.Entries)
+	if err != nil {
+		return assets.TemplateArtifactContract{}, assets.ErrDigestMismatch
+	}
+	entriesDigest := sha256.Sum256(entriesBytes)
+	if hex.EncodeToString(entriesDigest[:]) != artifact.ContentDigest {
+		return assets.TemplateArtifactContract{}, assets.ErrDigestMismatch
+	}
+	decodedEntries := make([][]byte, len(artifact.Entries))
+	for index, entry := range artifact.Entries {
+		content, decodeErr := base64.StdEncoding.Strict().DecodeString(entry.ContentBase64)
+		if decodeErr != nil || entry.FileMode != 384 || entry.FileSize != len(content) {
+			return assets.TemplateArtifactContract{}, assets.ErrDigestMismatch
+		}
+		contentDigest := sha256.Sum256(content)
+		if hex.EncodeToString(contentDigest[:]) != entry.FileSHA256 {
+			return assets.TemplateArtifactContract{}, assets.ErrDigestMismatch
+		}
+		decodedEntries[index] = content
+	}
+	contractBytes := decodedEntries[0]
+	var contract struct {
+		SchemaVersion           int                   `json:"schema_version"`
+		AssetKind               assets.AssetKind      `json:"asset_kind"`
+		TemplateOutput          assets.TemplateOutput `json:"template_output"`
+		ParameterSchemaDigest   string                `json:"parameter_schema_digest"`
+		PermissionCeilingDigest string                `json:"permission_ceiling_digest"`
+		ScopeCeilingDigest      string                `json:"scope_ceiling_digest"`
+		SourceFileSHA256        string                `json:"source_file_sha256"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(contractBytes))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&contract) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		contract.SchemaVersion != 1 || contract.AssetKind != request.AssetKind ||
+		contract.SourceFileSHA256 != artifact.Entries[1].FileSHA256 {
+		return assets.TemplateArtifactContract{}, assets.ErrDigestMismatch
+	}
+	return assets.TemplateArtifactContract{
+		AssetKind: contract.AssetKind, DefinitionID: request.DefinitionID,
+		RevisionID: request.RevisionID, TemplateOutput: contract.TemplateOutput,
+		ParameterSchemaDigest:   contract.ParameterSchemaDigest,
+		PermissionCeilingDigest: contract.PermissionCeilingDigest,
+		ScopeCeilingDigest:      contract.ScopeCeilingDigest,
+	}, nil
+}
+
+type productTemplateOutputSink struct{}
+
+func (productTemplateOutputSink) CreateTemplateOutput(
+	_ context.Context,
+	output assets.TemplateInstantiation,
+) error {
+	switch output.TemplateOutput {
+	case assets.TemplateOutputAgentCandidate,
+		assets.TemplateOutputTeamDraft,
+		assets.TemplateOutputWorkPackageCandidate,
+		assets.TemplateOutputRecoveryStrategyCandidate:
+		return nil
+	default:
+		return assets.ErrDenied
+	}
 }
 
 type productSavedTeamMaterializer interface {
@@ -477,6 +1497,8 @@ type productDaemonRunner struct {
 	database  io.Closer
 	setup     io.Closer
 	execution io.Closer
+	assets    io.Closer
+	journey   io.Closer
 	health    *productRuntimeObservationHealth
 
 	mu      sync.Mutex
@@ -566,6 +1588,25 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	}
 	var setupService *api.LocalProductSetupAPI
 	var executionBundle io.Closer
+	var assetEvidenceStore *evidence.Store
+	journeyHarness, err := controlledProductJourneyHarnessFromEnvironment(
+		statePath,
+		socketPath,
+	)
+	if err != nil {
+		_ = database.Close()
+		_ = observer.Close()
+		return nil, newDaemonBuildFailure("build_ipc", err)
+	}
+	if journeyHarness != nil {
+		if err := recoverProductJourneyIsolationRoot(
+			journeyHarness.journeyRoot,
+		); err != nil {
+			_ = database.Close()
+			_ = observer.Close()
+			return nil, newDaemonBuildFailure("build_state", err)
+		}
+	}
 	defer func() {
 		if resultErr != nil {
 			if executionBundle != nil {
@@ -573,6 +1614,12 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			}
 			if setupService != nil {
 				_ = setupService.Close()
+			}
+			if assetEvidenceStore != nil {
+				_ = assetEvidenceStore.Close()
+			}
+			if journeyHarness != nil {
+				_ = journeyHarness.Close()
 			}
 			_ = database.Close()
 			_ = observer.Close()
@@ -641,6 +1688,53 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_ipc", err)
 	}
+	assetEvidenceRoot := filepath.Join(filepath.Dir(statePath), "evidence")
+	if err := ensureProductExecutionDirectory(assetEvidenceRoot); err != nil {
+		return nil, newDaemonBuildFailure("build_assets", err)
+	}
+	assetEvidenceStore, err = evidence.NewStore(assetEvidenceRoot)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_assets", err)
+	}
+	assetAuthority, err := assets.NewAuthority(assets.AuthorityConfig{
+		Store: store,
+		Now:   func() time.Time { return time.Now().UTC() },
+		ViewVersion: func() string {
+			return readModel.GlobalReadView().Version()
+		},
+		Subjects: &productAssetSubjectResolver{projection: readModel},
+		Promotion: &productAssetPromotionResolver{
+			projection: readModel,
+			artifacts:  assetEvidenceStore,
+		},
+		TemplateArtifacts: productTemplateArtifactResolver{artifacts: assetEvidenceStore},
+		TemplateOutputs:   productTemplateOutputSink{},
+	})
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_assets", err)
+	}
+	var assetRefresh app.EvolutionAssetProjectionRefresh
+	if journeyHarness != nil {
+		assetRefresh = journeyHarness.projectionRefresh(func(
+			ctx context.Context,
+			_ string,
+		) error {
+			return readModel.Rebuild(ctx)
+		})
+	}
+	assetService, err := app.NewLocalProductAssetService(
+		readModel,
+		assetAuthority,
+		assetEvidenceStore,
+		assetRefresh,
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_assets", err)
+	}
+	assetAPI, err := api.NewLocalProductAssetAPI(assetService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_assets", err)
+	}
 	var executionAPI *api.LocalProductExecutionAPI
 	var handoffAPI *api.LocalProductHandoffAPI
 	var savedTeamMaterializer productSavedTeamMaterializer
@@ -653,6 +1747,9 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			service,
 			statePath,
 			*setupConfig.Execution,
+			productMissionAssetExecutionConfig{
+				Authority: assetAuthority, Artifacts: assetEvidenceStore,
+			},
 		)
 		if err != nil {
 			return nil, newDaemonBuildFailure("build_execution", err)
@@ -666,20 +1763,25 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			now:        setupConfig.Execution.Now,
 		}
 	}
+	productHandler := localipc.Handler(localipc.HandlerFunc(
+		localProductHandlerWithComposition(
+			service,
+			setupService,
+			decisionAPI,
+			executionAPI,
+			handoffAPI,
+			savedTeamMaterializer,
+			assetAPI,
+		),
+	))
+	if journeyHarness != nil {
+		productHandler = journeyHarness.wrap(productHandler)
+	}
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
 		BuildID:      localProductBuildID,
-		Handler: localipc.HandlerFunc(
-			localProductHandlerWithComposition(
-				service,
-				setupService,
-				decisionAPI,
-				executionAPI,
-				handoffAPI,
-				savedTeamMaterializer,
-			),
-		),
+		Handler:      productHandler,
 	})
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_ipc", err)
@@ -690,8 +1792,264 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		database:  database,
 		setup:     setupService,
 		execution: executionBundle,
+		assets:    assetEvidenceStore,
+		journey:   journeyHarness,
 		health:    runtimeHealth,
 	}, nil
+}
+
+// recoverProductJourneyIsolationRoot removes verified stale Pi probe temp
+// roots left by a previous controlled-journey daemon that crashed before its
+// cleanup (Exit Contract restart rule: uncommitted temp roots are verified
+// then removed). It touches only private, current-owner, 0700 directories
+// under <journey-root>/isolation with the exact probe prefixes; anything
+// foreign, non-directory or symlinked fails closed. A missing isolation
+// directory means there is nothing stale to recover and is not an error.
+func recoverProductJourneyIsolationRoot(journeyRoot string) error {
+	isolationRoot := filepath.Join(journeyRoot, "isolation")
+	entries, err := os.ReadDir(isolationRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("journey isolation scan: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "loom-pi-metadata-") &&
+			!strings.HasPrefix(name, "loom-pi-skill-conformance-") {
+			continue
+		}
+		target := filepath.Join(isolationRoot, name)
+		info, err := os.Lstat(target)
+		if err != nil {
+			return fmt.Errorf("journey isolation entry: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() ||
+			info.Mode().Perm() != 0o700 {
+			return fmt.Errorf("journey isolation foreign entry: %s", name)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(stat.Uid) != os.Geteuid() {
+			return fmt.Errorf("journey isolation foreign owner: %s", name)
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("journey isolation cleanup: %w", err)
+		}
+	}
+	return nil
+}
+
+type productAssetSubjectResolver struct {
+	projection *projection.Projection
+}
+
+type productAssetPromotionResolver struct {
+	projection *projection.Projection
+	artifacts  *evidence.Store
+}
+
+func (resolver *productAssetPromotionResolver) ResolvePromotion(
+	ctx context.Context,
+	request assets.PromotionRequest,
+) (assets.PromotionSource, error) {
+	if resolver == nil || resolver.projection == nil || resolver.artifacts == nil ||
+		ctx == nil || request.RunID == "" || request.RunGeneration < 1 ||
+		len(request.EvidenceIDs) == 0 || len(request.EvidenceIDs) > 2 ||
+		request.RedactedSummary == "" {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	if err := ctx.Err(); err != nil {
+		return assets.PromotionSource{}, err
+	}
+	view := resolver.projection.GlobalReadView()
+	run, ok := view.Run(request.RunID)
+	if !ok || run.ID != request.RunID || run.ClaimGeneration != request.RunGeneration ||
+		run.Phase != "terminal" || run.TerminalStatus != "succeeded" {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	item, ok := view.WorkItem(run.WorkItemID)
+	if !ok || item.RunID != run.ID || item.Status != "done" ||
+		item.AcceptanceDecisionKind != "accepted" ||
+		item.SourceEvidenceID == "" || item.SourceEvidenceDigest == "" {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	required := map[string]string{item.SourceEvidenceID: item.SourceEvidenceDigest}
+	if item.VerifierRequired {
+		if item.VerifierEvidenceID == "" || item.VerifierEvidenceDigest == "" {
+			return assets.PromotionSource{}, assets.ErrDenied
+		}
+		required[item.VerifierEvidenceID] = item.VerifierEvidenceDigest
+	}
+	if len(required) != len(request.EvidenceIDs) {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	digests := make([]string, len(request.EvidenceIDs))
+	seen := make(map[string]struct{}, len(request.EvidenceIDs))
+	for index, evidenceID := range request.EvidenceIDs {
+		expected, requiredEvidence := required[evidenceID]
+		projected, found := view.Evidence(evidenceID)
+		if !requiredEvidence || !found || projected.Digest != expected {
+			return assets.PromotionSource{}, assets.ErrDenied
+		}
+		if _, duplicate := seen[evidenceID]; duplicate {
+			return assets.PromotionSource{}, assets.ErrDenied
+		}
+		seen[evidenceID] = struct{}{}
+		if _, err := resolver.artifacts.ReadArtifact(ctx, expected, 16<<20); err != nil {
+			return assets.PromotionSource{}, assets.ErrDenied
+		}
+		digests[index] = expected
+	}
+	runBytes, err := productCanonicalJSON(struct {
+		SchemaVersion    int      `json:"schema_version"`
+		RunID            string   `json:"run_id"`
+		RunGeneration    int64    `json:"run_generation"`
+		WorkItemID       string   `json:"work_item_id"`
+		TerminalStatus   string   `json:"terminal_status"`
+		AcceptanceDigest string   `json:"acceptance_decision_digest"`
+		EvidenceIDs      []string `json:"evidence_ids"`
+		EvidenceDigests  []string `json:"evidence_digests"`
+	}{1, run.ID, run.ClaimGeneration, run.WorkItemID, run.TerminalStatus,
+		item.AcceptanceDecisionDigest, append([]string{}, request.EvidenceIDs...),
+		append([]string{}, digests...)})
+	if err != nil {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	runDigestBytes := sha256.Sum256(runBytes)
+	runDigest := hex.EncodeToString(runDigestBytes[:])
+	artifactBytes, artifactDigest, contentDigest, err :=
+		app.CanonicalEvolutionAssetArtifactBytes(
+			request.AssetKind, request.DefinitionID, request.RevisionID,
+			"SUMMARY.md", []byte(request.RedactedSummary),
+		)
+	if err != nil {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	if _, err := resolver.artifacts.Publish(
+		ctx, bytes.NewReader(artifactBytes), artifactDigest,
+	); err != nil {
+		return assets.PromotionSource{}, err
+	}
+	provenanceBytes, err := productCanonicalJSON(struct {
+		SchemaVersion   int      `json:"schema_version"`
+		RunDigest       string   `json:"run_digest"`
+		EvidenceIDs     []string `json:"evidence_ids"`
+		EvidenceDigests []string `json:"evidence_digests"`
+		ArtifactDigest  string   `json:"artifact_digest"`
+	}{1, runDigest, append([]string{}, request.EvidenceIDs...),
+		append([]string{}, digests...), artifactDigest})
+	if err != nil {
+		return assets.PromotionSource{}, assets.ErrDenied
+	}
+	provenanceDigestBytes := sha256.Sum256(provenanceBytes)
+	return assets.PromotionSource{
+		RunID: run.ID, RunGeneration: run.ClaimGeneration, RunDigest: runDigest,
+		Terminal: true, Accepted: true, EvidenceAccepted: true,
+		EvidenceIDs:     append([]string{}, request.EvidenceIDs...),
+		EvidenceDigests: digests, ArtifactDigest: artifactDigest,
+		ContentDigest:                 contentDigest,
+		ProvenanceDigest:              hex.EncodeToString(provenanceDigestBytes[:]),
+		Dependencies:                  []string{},
+		CompatibleRuntimeCapabilities: []string{piadapter.SkillMaterializationCapability},
+		Name:                          "Promoted " + request.RunID, Description: request.RedactedSummary,
+		Scope: "project",
+	}, nil
+}
+
+func productCanonicalJSON(value any) ([]byte, error) {
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(output.Bytes(), []byte("\n")), nil
+}
+
+func (resolver *productAssetSubjectResolver) ResolveBindingSubject(
+	ctx context.Context,
+	requested assets.SubjectIdentity,
+) (assets.SubjectIdentity, error) {
+	if resolver == nil || resolver.projection == nil || ctx == nil {
+		return assets.SubjectIdentity{}, assets.ErrNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		return assets.SubjectIdentity{}, err
+	}
+	view := resolver.projection.GlobalReadView()
+	switch requested.SubjectKind {
+	case "agent_definition":
+		catalog, err := productSetupCatalogForView(ctx, view)
+		if err != nil {
+			return assets.SubjectIdentity{}, assets.ErrNotFound
+		}
+		for _, definition := range catalog.AgentDefinitions {
+			if definition.ID != requested.SubjectID ||
+				int64(definition.Version) != requested.SubjectVersion {
+				continue
+			}
+			digest, digestErr := productAgentDefinitionDigest(definition)
+			if digestErr != nil {
+				return assets.SubjectIdentity{}, assets.ErrNotFound
+			}
+			return assets.SubjectIdentity{
+				SubjectKind: "agent_definition", SubjectID: definition.ID,
+				SubjectVersion: int64(definition.Version), SubjectDigest: digest,
+				Scope:        string(definition.Scope),
+				ProjectID:    definition.ScopeIdentity.ProjectID,
+				GenerationID: definition.ScopeIdentity.GenerationID,
+			}, nil
+		}
+	case "team_definition":
+		record, ok := view.TeamDefinition(requested.SubjectID)
+		if ok && int64(record.Version) == requested.SubjectVersion {
+			return assets.SubjectIdentity{
+				SubjectKind: "team_definition", SubjectID: record.ID,
+				SubjectVersion: int64(record.Version), SubjectDigest: record.DefinitionDigest,
+				Scope: record.Scope, ProjectID: record.ScopeIdentity.ProjectID,
+				GenerationID: record.ScopeIdentity.GenerationID,
+			}, nil
+		}
+	case "work_package":
+		for _, build := range []func() (work.WorkPackage, error){
+			work.CodingWorkPackage,
+			work.KnowledgeWorkPackage,
+		} {
+			value, err := build()
+			if err != nil {
+				return assets.SubjectIdentity{}, assets.ErrNotFound
+			}
+			if value.ID() == requested.SubjectID &&
+				int64(value.Version()) == requested.SubjectVersion {
+				return assets.SubjectIdentity{
+					SubjectKind: "work_package", SubjectID: value.ID(),
+					SubjectVersion: int64(value.Version()), SubjectDigest: value.Digest(),
+					Scope: "builtin",
+				}, nil
+			}
+		}
+	}
+	return assets.SubjectIdentity{}, assets.ErrNotFound
+}
+
+func productAgentDefinitionDigest(definition agents.AgentDefinition) (string, error) {
+	canonical, err := json.Marshal(struct {
+		SchemaVersion int                     `json:"schema_version"`
+		ID            string                  `json:"id"`
+		Version       int                     `json:"version"`
+		Scope         agents.Scope            `json:"scope"`
+		ScopeIdentity agents.ScopeIdentity    `json:"scope_identity"`
+		Name          string                  `json:"name"`
+		RoleSpec      string                  `json:"role_spec"`
+		Status        agents.DefinitionStatus `json:"status"`
+	}{1, definition.ID, definition.Version, definition.Scope,
+		definition.ScopeIdentity, definition.Name, definition.RoleSpec, definition.Status})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 type productMissionExecutionBundle struct {
@@ -1384,6 +2742,7 @@ func buildProductMissionExecutionAPI(
 	readService *api.LocalProductReadService,
 	statePath string,
 	config productMissionExecutionRuntimeConfig,
+	assetDependencies ...productMissionAssetExecutionConfig,
 ) (_ *api.LocalProductExecutionAPI, _ io.Closer, resultErr error) {
 	if ctx == nil || store == nil || readModel == nil || readService == nil ||
 		config.LocalModelCatalog == nil ||
@@ -1402,16 +2761,18 @@ func buildProductMissionExecutionAPI(
 	executionRoot := filepath.Join(filepath.Dir(statePath), "execution")
 	workspaceRoot := filepath.Join(executionRoot, "workspaces")
 	sourcePath := filepath.Join(executionRoot, "source")
-	evidenceRoot := filepath.Join(executionRoot, "evidence")
+	evidenceRoot := filepath.Join(filepath.Dir(statePath), "evidence")
 	for _, path := range []string{
 		executionRoot,
 		workspaceRoot,
 		sourcePath,
-		evidenceRoot,
 	} {
 		if err := ensureProductExecutionDirectory(path); err != nil {
 			return nil, nil, err
 		}
+	}
+	if err := ensureProductExecutionDirectory(evidenceRoot); err != nil {
+		return nil, nil, err
 	}
 	evidenceStore, err := evidence.NewStore(evidenceRoot)
 	if err != nil {
@@ -1452,6 +2813,32 @@ func buildProductMissionExecutionAPI(
 	)
 	if err != nil {
 		return nil, nil, err
+	}
+	var assetDependency productMissionAssetExecutionConfig
+	if len(assetDependencies) == 1 {
+		assetDependency = assetDependencies[0]
+	}
+	if assetDependency.Authority != nil && assetDependency.Artifacts != nil {
+		skillMaterializer, materializerErr := piadapter.NewSkillMaterializer(
+			piadapter.MaterializationHooks{},
+		)
+		if materializerErr != nil {
+			return nil, nil, materializerErr
+		}
+		teamAssetMaterializer := &productTeamAssetMaterializer{
+			authority: assetDependency.Authority, projection: readModel,
+			artifacts: assetDependency.Artifacts, materializer: skillMaterializer,
+			isolatedRoot: filepath.Join(filepath.Dir(statePath), "materialization"),
+			plans:        make(map[string]piadapter.MaterializationPlan),
+		}
+		if materializerErr := teamAssetMaterializer.RecoverStartup(ctx); materializerErr != nil {
+			return nil, nil, materializerErr
+		}
+		if materializerErr := coordinator.SetAssetMaterializer(
+			teamAssetMaterializer,
+		); materializerErr != nil {
+			return nil, nil, materializerErr
+		}
 	}
 	bindings, err := app.NewProjectionMissionExecutionBindingSource(readModel)
 	if err != nil {
@@ -2580,7 +3967,7 @@ func (runner *productDaemonRunner) Run(
 		runner.mu.Unlock()
 	}()
 
-	runContext, cancel := context.WithCancel(ctx)
+	runContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	serverDone := make(chan error, 1)
 	go func() {
@@ -2667,13 +4054,24 @@ func (runner *productDaemonRunner) Run(
 			errors.Join(serverErr, outcome.err),
 		)
 	case <-ctx.Done():
+		var outcome observerOutcome
+		observerCompletedBeforeCancel := false
+		select {
+		case outcome = <-observerDone:
+			observerCompletedBeforeCancel = true
+		default:
+		}
 		cancel()
 		closeErr := runner.server.Close()
-		outcome := <-observerDone
+		if !observerCompletedBeforeCancel {
+			outcome = <-observerDone
+		}
 		serverErr := <-serverDone
-		if outcome.err != nil &&
+		if observerCompletedBeforeCancel &&
+			outcome.err != nil &&
 			!errors.Is(outcome.err, context.Canceled) &&
-			!errors.Is(outcome.err, context.DeadlineExceeded) {
+			!errors.Is(outcome.err, context.DeadlineExceeded) &&
+			!containableProductObserverTimeout(outcome.err) {
 			return outcome.result, classifyProductDaemonFailure(
 				"observer",
 				joinProductDaemonErrors(
@@ -2713,10 +4111,22 @@ func (runner *productDaemonRunner) Close() error {
 		closeErr,
 		closeProductDaemonStage("local_ipc", runner.server),
 	)
+	if runner.journey != nil {
+		closeErr = errors.Join(
+			closeErr,
+			closeProductDaemonStage("journey", runner.journey),
+		)
+	}
 	if runner.execution != nil {
 		closeErr = errors.Join(
 			closeErr,
 			closeProductDaemonStage("execution", runner.execution),
+		)
+	}
+	if runner.assets != nil {
+		closeErr = errors.Join(
+			closeErr,
+			closeProductDaemonStage("assets", runner.assets),
 		)
 	}
 	closeErr = errors.Join(
@@ -2801,7 +4211,12 @@ func localProductHandlerWithComposition(
 	execution *api.LocalProductExecutionAPI,
 	handoff *api.LocalProductHandoffAPI,
 	savedTeamMaterializer productSavedTeamMaterializer,
+	assetServices ...*api.LocalProductAssetAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
+	var assetService *api.LocalProductAssetAPI
+	if len(assetServices) == 1 {
+		assetService = assetServices[0]
+	}
 	return func(
 		ctx context.Context,
 		request localipc.Request,
@@ -2826,6 +4241,9 @@ func localProductHandlerWithComposition(
 		}
 		if request.Method == "side_task_handoff" && handoff == nil {
 			return productErrorResponse("internal", api.ErrInvalidLocalProductHandoffAPI)
+		}
+		if productAssetMethod(request.Method) && assetService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalProductAssetAPI)
 		}
 		switch request.Method {
 		case "snapshot":
@@ -2869,6 +4287,39 @@ func localProductHandlerWithComposition(
 				}
 			}
 			return productResultResponse(result)
+		case "evolution_asset_snapshot":
+			var input api.EvolutionAssetSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidLocalProductAsset)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := assetService.EvolutionAssetSnapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "evolution_asset_diff":
+			var input api.EvolutionAssetDiffRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidLocalProductAsset)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := assetService.EvolutionAssetDiff(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "evolution_asset_command":
+			var input api.EvolutionAssetCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidLocalProductAsset)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := assetService.EvolutionAssetCommand(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
 		case "mission_decision":
 			var input app.MissionDecisionCommand
 			if decodeExactProductParams(request.Params, &input) != nil {
@@ -3152,6 +4603,10 @@ func productSetupMethod(method string) bool {
 	}
 }
 
+func productAssetMethod(method string) bool {
+	return method == "evolution_asset_snapshot" || method == "evolution_asset_diff" || method == "evolution_asset_command"
+}
+
 type productCredentialParams struct {
 	ProviderID          string `json:"provider_id"`
 	CredentialReference string `json:"credential_reference"`
@@ -3277,6 +4732,24 @@ func productResultResponse(value any) localipc.Response {
 	return localipc.Response{OK: true, Result: result}
 }
 
+func productJourneyResultResponse(journeyID string, value any) localipc.Response {
+	response := productResultResponse(value)
+	response.JourneyID = journeyID
+	return response
+}
+
+func productJourneyErrorResponse(journeyID, code string, err error) localipc.Response {
+	response := productErrorResponse(code, err)
+	response.JourneyID = journeyID
+	return response
+}
+
+func productJourneyServiceError(journeyID string, err error) localipc.Response {
+	response := productServiceError(err)
+	response.JourneyID = journeyID
+	return response
+}
+
 func productServiceError(err error) localipc.Response {
 	switch {
 	case errors.Is(err, api.ErrInvalidLocalProductRequest),
@@ -3288,30 +4761,32 @@ func productServiceError(err error) localipc.Response {
 		errors.Is(err, app.ErrInvalidSideTaskProduct),
 		errors.Is(err, app.ErrInvalidMissionDecision),
 		errors.Is(err, app.ErrInvalidMissionExecution),
-		errors.Is(err, app.ErrInvalidLocalProductSetup):
+		errors.Is(err, app.ErrInvalidLocalProductSetup),
+		errors.Is(err, app.ErrInvalidLocalProductAsset),
+		errors.Is(err, assets.ErrInvalidInput):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
 		errors.Is(err, app.ErrBuilderNotFound),
-		errors.Is(err, work.ErrSideTaskNotFound):
+		errors.Is(err, work.ErrSideTaskNotFound), errors.Is(err, assets.ErrNotFound):
 		return productErrorResponse("not_found", err)
 	case errors.Is(err, app.ErrBuilderConflict),
 		errors.Is(err, app.ErrMissionDecisionConflict),
 		errors.Is(err, app.ErrMissionExecutionConflict),
-		errors.Is(err, app.ErrSideTaskProductConflict):
+		errors.Is(err, app.ErrSideTaskProductConflict), errors.Is(err, assets.ErrConflict):
 		return productErrorResponse("conflict", err)
 	case errors.Is(err, app.ErrSideTaskProductCapabilityGap):
 		return productErrorResponse("capability_gap", err)
-	case errors.Is(err, app.ErrSideTaskProductStaleView):
+	case errors.Is(err, app.ErrSideTaskProductStaleView), errors.Is(err, assets.ErrStaleView):
 		return productErrorResponse("stale_view", err)
-	case errors.Is(err, app.ErrSideTaskProductStaleGeneration):
+	case errors.Is(err, app.ErrSideTaskProductStaleGeneration), errors.Is(err, assets.ErrStaleGeneration):
 		return productErrorResponse("stale_generation", err)
-	case errors.Is(err, app.ErrSideTaskProductDigestMismatch):
+	case errors.Is(err, app.ErrSideTaskProductDigestMismatch), errors.Is(err, assets.ErrDigestMismatch):
 		return productErrorResponse("digest_mismatch", err)
 	case errors.Is(err, app.ErrSideTaskProductHumanRequired):
 		return productErrorResponse("human_required", err)
-	case errors.Is(err, app.ErrBuilderIncompatible):
+	case errors.Is(err, app.ErrBuilderIncompatible), errors.Is(err, assets.ErrIncompatible):
 		return productErrorResponse("incompatible", err)
-	case errors.Is(err, app.ErrBuilderConfirmationRequired):
+	case errors.Is(err, app.ErrBuilderConfirmationRequired), errors.Is(err, assets.ErrDenied):
 		return productErrorResponse("denied", err)
 	case errors.Is(err, app.ErrNativeAuthConnectBusy),
 		errors.Is(err, app.ErrMissionExecutionBusy):

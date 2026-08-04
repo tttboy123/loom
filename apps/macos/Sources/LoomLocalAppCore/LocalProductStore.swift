@@ -327,6 +327,10 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var executionResult: LocalProductExecutionResult?
     @Published public private(set) var sideTaskProposal: LocalProductSideTaskProposalResult?
     @Published public private(set) var sideTaskOperationStatus = "Idle"
+    @Published public private(set) var evolutionAssets: EvolutionAssetSnapshot?
+    @Published public private(set) var evolutionAssetDiff: EvolutionAssetDiff?
+    @Published public private(set) var evolutionAssetStatus = "Idle"
+    @Published public private(set) var evolutionAssetJourneyID = LocalProductStore.initialJourneyID()
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
@@ -335,6 +339,7 @@ public final class LocalProductStore: ObservableObject {
     private let decisionClient: LocalProductDecisionClientProtocol?
     private let executionClient: LocalProductExecutionClientProtocol?
     private let handoffClient: LocalProductHandoffClientProtocol?
+    private let assetClient: LocalProductAssetClientProtocol?
     private var executionObjective = ""
     private var pendingSideTaskProposalRequest: LocalProductSideTaskProposalRequest?
     private var timelineLoadGeneration: UInt64 = 0
@@ -354,6 +359,7 @@ public final class LocalProductStore: ObservableObject {
         decisionClient = client as? LocalProductDecisionClientProtocol
         executionClient = client as? LocalProductExecutionClientProtocol
         handoffClient = client as? LocalProductHandoffClientProtocol
+        assetClient = client as? LocalProductAssetClientProtocol
     }
 
     public var providerManagementReachable: Bool {
@@ -401,7 +407,7 @@ public final class LocalProductStore: ObservableObject {
             permissionScopes: [],
             decisionTimeoutSeconds: mode == "report_only" ? 0 : 900,
             expectedViewVersion: snapshot.viewVersion,
-            correlationID: UUID().uuidString.lowercased()
+            correlationID: evolutionAssetJourneyID
         )
         sideTaskOperationStatus = "Proposing"
         do {
@@ -491,7 +497,7 @@ public final class LocalProductStore: ObservableObject {
             decision: decision,
             effectDigest: effectDigest,
             expectedViewVersion: snapshot.viewVersion,
-            correlationID: UUID().uuidString.lowercased()
+            correlationID: evolutionAssetJourneyID
         )
         sideTaskOperationStatus = "Applying decision"
         do {
@@ -588,8 +594,10 @@ public final class LocalProductStore: ObservableObject {
         workPackage: LocalProductWorkPackageOption
     ) async {
         let bounded = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+		await refresh()
         guard let executionClient,
             let snapshot,
+			connectionState == .online,
             team.confirmed, team.executable, !team.readOnly,
             snapshot.teams.contains(where: {
                 $0.teamInstanceID == team.teamInstanceID && $0.confirmed && $0.executable
@@ -622,7 +630,9 @@ public final class LocalProductStore: ObservableObject {
             executionObjective = bounded
             executionPreflight = preflight
             executionState = .ready
-        } catch {
+		} catch let remote as LocalIPCRemoteError {
+			executionState = .failed(reason: remote.code.rawValue)
+		} catch {
             executionState = .failed(reason: closedClientReason(error))
         }
     }
@@ -641,7 +651,7 @@ public final class LocalProductStore: ObservableObject {
             let command = LocalProductExecutionCommand.start(
                 preflight: preflight,
                 objective: executionObjective,
-                correlationID: UUID().uuidString.lowercased()
+                correlationID: evolutionAssetJourneyID
             )
             let envelope = try await executionClient.executeMission(command)
             guard let result = envelope.result else {
@@ -1077,6 +1087,498 @@ public final class LocalProductStore: ObservableObject {
     public func showMissionLibrary() {
         closeTimelineLoadPresentation()
         workbench.showLibrary()
+        Task { await loadEvolutionAssets() }
+    }
+
+    public var evolutionAssetReachable: Bool { assetClient != nil }
+
+    public func loadEvolutionAssets(cursor: String = "") async {
+        guard let assetClient else {
+            evolutionAssetStatus = "Assets unavailable"
+            return
+        }
+        evolutionAssetStatus = "Loading"
+        do {
+            let snapshot = try await assetClient.evolutionAssetSnapshot(
+                journeyID: evolutionAssetJourneyID,
+                cursor: cursor,
+                limit: 64
+            )
+            evolutionAssets = snapshot
+            evolutionAssetStatus = snapshot.hasMore ? "More assets available" : "Current"
+        } catch {
+            evolutionAssetStatus = closedClientReason(error)
+        }
+    }
+
+    public func createEvolutionSkill(
+        definitionID: String,
+        revisionID: String,
+        name: String,
+        description: String,
+        sourcePath: String
+    ) async {
+        guard let assetClient, let viewVersion = evolutionAssets?.viewVersion else {
+            evolutionAssetStatus = "Refresh assets first"
+            return
+        }
+        let digests: (artifact: String, content: String)
+        do {
+            digests = try Self.canonicalEvolutionAssetDigests(
+                kind: "skill", definitionID: definitionID,
+                revisionID: revisionID, sourcePath: sourcePath
+            )
+        } catch {
+            evolutionAssetStatus = "Invalid local source"
+            return
+        }
+        let command = EvolutionAssetCommand(
+            action: "create_skill",
+            operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID,
+            expectedViewVersion: viewVersion,
+            assetKind: .skill,
+            definitionID: definitionID,
+            revisionID: revisionID,
+            candidateID: "",
+            name: name,
+            description: description,
+            scope: "project",
+            sourcePath: sourcePath,
+            artifactDigest: digests.artifact,
+            contentDigest: digests.content,
+            sourceScope: "local",
+            sourceReferenceDigest: digests.artifact,
+            provenanceDigest: digests.artifact,
+            risk: "low"
+        )
+        evolutionAssetStatus = "Creating Candidate"
+        do {
+            let receipt = try await assetClient.evolutionAssetCommand(command)
+            guard receipt.operationID == command.operationID,
+                  receipt.action == command.action, !receipt.eventIDs.isEmpty else {
+                throw LocalProductClientError.invalidResponse
+            }
+            evolutionAssetStatus = "Candidate created"
+            await loadEvolutionAssets()
+			await refresh()
+        } catch {
+            evolutionAssetStatus = closedClientReason(error)
+        }
+    }
+
+    public func importEvolutionSkill(
+        definitionID: String,
+        revisionID: String,
+        name: String,
+        description: String,
+        sourcePath: String
+    ) async {
+        guard let snapshot = evolutionAssets else {
+            evolutionAssetStatus = "Refresh assets first"
+            return
+        }
+        do {
+            let digests = try Self.canonicalEvolutionAssetDigests(
+                kind: "skill", definitionID: definitionID,
+                revisionID: revisionID, sourcePath: sourcePath
+            )
+            let command = EvolutionAssetCommand(
+                action: "import_skill", operationID: UUID().uuidString.lowercased(),
+                journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+                definitionID: definitionID, revisionID: revisionID,
+                candidateID: UUID().uuidString.lowercased(), name: name,
+                description: description, scope: "project", sourcePath: sourcePath,
+                artifactDigest: digests.artifact, contentDigest: digests.content,
+                sourceReferenceDigest: digests.artifact,
+                provenanceDigest: digests.artifact, risk: "medium"
+            )
+            await commitEvolutionAsset(command, progress: "Importing reviewed Candidate")
+        } catch {
+            evolutionAssetStatus = "Invalid local source"
+        }
+    }
+
+    public func createEvolutionTemplate(
+        kind: EvolutionAssetKind,
+        output: String,
+        definitionID: String,
+        revisionID: String,
+        name: String,
+        description: String,
+        sourcePath: String
+    ) async {
+        guard let snapshot = evolutionAssets else {
+            evolutionAssetStatus = "Refresh assets first"
+            return
+        }
+        let parameterSchema = Self.sha256Text("{\"schema_version\":1,\"parameters\":[]}")
+        let permissionCeiling = Self.sha256Text("loom.template.permission.none.v1")
+        let scopeCeiling = Self.sha256Text("loom.template.scope.project.v1")
+        do {
+            let digests = try Self.canonicalEvolutionTemplateDigests(
+                kind: kind.rawValue, definitionID: definitionID, revisionID: revisionID,
+                sourcePath: sourcePath, templateOutput: output,
+                parameterSchemaDigest: parameterSchema,
+                permissionCeilingDigest: permissionCeiling,
+                scopeCeilingDigest: scopeCeiling
+            )
+            let command = EvolutionAssetCommand(
+                action: "create_template", operationID: UUID().uuidString.lowercased(),
+                journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+                assetKind: kind, definitionID: definitionID, revisionID: revisionID,
+                name: name, description: description, scope: "project",
+                sourcePath: sourcePath, artifactDigest: digests.artifact,
+                contentDigest: digests.content, risk: "medium", templateOutput: output,
+                parameterSchemaDigest: parameterSchema,
+                permissionCeilingDigest: permissionCeiling,
+                scopeCeilingDigest: scopeCeiling
+            )
+            await commitEvolutionAsset(command, progress: "Creating template Candidate")
+        } catch {
+            evolutionAssetStatus = "Invalid template source"
+        }
+    }
+
+    public func instantiateEvolutionTemplate(_ revision: EvolutionAssetRevision) async {
+        guard let snapshot = evolutionAssets, revision.assetKind != .skill,
+              revision.lifecycle != .archived else {
+            evolutionAssetStatus = "Template revision unavailable"
+            return
+        }
+        let parameterDigest = Self.sha256Text("[]")
+        let command = EvolutionAssetCommand(
+            action: "instantiate_template", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            assetKind: revision.assetKind, definitionID: revision.definitionID,
+            revisionID: revision.revisionID, artifactDigest: revision.artifactDigest,
+            parameterValues: [], parameterDigest: parameterDigest
+        )
+        await commitEvolutionAsset(command, progress: "Instantiating Candidate-only template")
+    }
+
+    public func activateEvolutionCandidate(_ candidate: EvolutionAssetCandidate) async {
+        guard assetClient != nil, let snapshot = evolutionAssets,
+              candidate.decision.isEmpty,
+              let revision = snapshot.records
+                .first(where: { $0.definition.definitionID == candidate.definitionID })?
+                .revisions.first(where: { $0.revisionID == candidate.revisionID }) else {
+            evolutionAssetStatus = "Exact Candidate unavailable"
+            return
+        }
+        let command = EvolutionAssetCommand(
+            action: "activate", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            decisionSource: "user_explicit",
+            assetKind: candidate.assetKind, definitionID: candidate.definitionID,
+            revisionID: candidate.revisionID, candidateID: candidate.candidateID,
+            artifactDigest: revision.artifactDigest,
+            expectedPreviousRevisionID: snapshot.definitions.first(where: {
+                $0.definitionID == candidate.definitionID
+            })?.activeRevisionID ?? "",
+            evaluationIDs: candidate.requiredEvaluationIDs
+        )
+        await commitEvolutionAsset(command, progress: "Activating exact revision")
+    }
+
+    public func decideEvolutionCandidate(_ candidate: EvolutionAssetCandidate, retain: Bool) async {
+        guard let snapshot = evolutionAssets,
+              candidate.decision.isEmpty,
+              let revision = snapshot.revisions.first(where: {
+                  $0.definitionID == candidate.definitionID && $0.revisionID == candidate.revisionID
+              }) else {
+            evolutionAssetStatus = "Exact Candidate unavailable"
+            return
+        }
+        let command = EvolutionAssetCommand(
+            action: retain ? "retain" : "reject", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            decisionSource: "user_explicit",
+            assetKind: candidate.assetKind, definitionID: candidate.definitionID,
+            revisionID: candidate.revisionID, candidateID: candidate.candidateID,
+            artifactDigest: revision.artifactDigest,
+            reasonCode: retain ? "keep_for_later" : "user_rejected"
+        )
+        await commitEvolutionAsset(command, progress: retain ? "Keeping Candidate" : "Rejecting Candidate")
+    }
+
+    public func setEvolutionRevisionArchived(
+        _ revision: EvolutionAssetRevision,
+        archived: Bool
+    ) async {
+        guard let snapshot = evolutionAssets else {
+            evolutionAssetStatus = "Refresh assets first"
+            return
+        }
+        let command = EvolutionAssetCommand(
+            action: archived ? "archive" : "restore",
+            operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            assetKind: revision.assetKind,
+            definitionID: revision.definitionID, revisionID: revision.revisionID,
+            artifactDigest: revision.artifactDigest,
+            reasonCode: archived ? "archive_requested" : "restore_requested"
+        )
+        await commitEvolutionAsset(command, progress: archived ? "Archiving" : "Restoring")
+    }
+
+    public func rollbackEvolutionAsset(
+        definition: EvolutionAssetDefinition,
+        target: EvolutionAssetRevision
+    ) async {
+        guard let snapshot = evolutionAssets else {
+            evolutionAssetStatus = "Refresh assets first"
+            return
+        }
+        let command = EvolutionAssetCommand(
+            action: "rollback", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            assetKind: target.assetKind,
+            definitionID: definition.definitionID,
+            reasonCode: "rollback_requested", targetRevisionID: target.revisionID,
+            targetRevisionDigest: target.artifactDigest,
+            fromRevisionID: definition.activeRevisionID,
+            fromDigest: snapshot.revisions.first(where: {
+                $0.definitionID == definition.definitionID && $0.revisionID == definition.activeRevisionID
+            })?.artifactDigest
+        )
+        await commitEvolutionAsset(command, progress: "Rolling back exact revision")
+    }
+
+    public func evaluateEvolutionCandidate(_ candidate: EvolutionAssetCandidate) async {
+        guard let snapshot = evolutionAssets,
+              candidate.decision.isEmpty,
+              let revision = snapshot.revisions.first(where: {
+                  $0.definitionID == candidate.definitionID && $0.revisionID == candidate.revisionID
+              }) else {
+            evolutionAssetStatus = "Exact Candidate unavailable"
+            return
+        }
+        let baseline = snapshot.revisions.first(where: {
+            $0.definitionID == candidate.definitionID &&
+                $0.revisionID == snapshot.definitions.first(where: {
+                    $0.definitionID == candidate.definitionID
+                })?.activeRevisionID
+        }) ?? revision
+        let caseIDs = ["artifact_digest", "runtime_compatibility", "security_boundary"]
+        // Canonical content-addressed evaluation fixture, byte-identical to
+        // app.CanonicalEvolutionEvaluationFixture (Implementation Repair §4).
+        let fixture = "{\"schema_version\":1,\"fixture_kind\":\"synthetic\",\"case_ids\":[\"artifact_digest\",\"runtime_compatibility\",\"security_boundary\"],\"expected\":{\"quality_result\":\"pass\",\"failure_count\":0,\"usage_observed\":true,\"usage_microunits\":250,\"cost_observed\":true,\"cost_microunits\":1250,\"cost_currency\":\"USD\",\"compatibility_result\":\"compatible\",\"applicable_scope\":\"bounded_fixture\",\"regression_result\":\"equivalent\",\"security_result\":\"pass\"}}"
+        let fixtureDigest = SHA256.hash(data: Data(fixture.utf8)).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let command = EvolutionAssetCommand(
+            action: "record_evaluation", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            candidateID: candidate.candidateID,
+            evaluationID: UUID().uuidString.lowercased(), fixtureKind: "synthetic",
+            fixtureDigest: fixtureDigest, baselineRevisionID: baseline.revisionID,
+            baselineDigest: baseline.artifactDigest, candidateRevisionID: revision.revisionID,
+            candidateDigest: revision.artifactDigest, requestedCaseIDs: caseIDs
+        )
+        await commitEvolutionAsset(command, progress: "Evaluating exact Candidate")
+    }
+
+    public func bindEvolutionRevision(
+        _ revision: EvolutionAssetRevision,
+        to subject: EvolutionAssetBindingSubject
+    ) async {
+        guard let snapshot = evolutionAssets,
+              revision.lifecycle == .active,
+              let digest = try? Self.canonicalEvolutionBindingDigest(revision) else {
+            evolutionAssetStatus = "Activate exact revision before binding"
+            return
+        }
+        let binding = EvolutionAssetExactBinding(
+            assetKind: revision.assetKind, definitionID: revision.definitionID,
+            revisionID: revision.revisionID, sha256Digest: revision.artifactDigest,
+            sourceScope: revision.sourceScope
+        )
+        let command = EvolutionAssetCommand(
+            action: "set_binding", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            subject: subject, bindings: [binding], assetRevisionSetDigest: digest
+        )
+        await commitEvolutionAsset(command, progress: "Binding exact revision")
+    }
+
+    public func promoteEvolutionRun(_ source: EvolutionAssetPromotionSource) async {
+        guard let snapshot = evolutionAssets,
+              source.runGeneration > 0,
+              !source.evidenceIDs.isEmpty,
+              source.evidenceIDs.count == source.evidenceDigests.count else {
+            evolutionAssetStatus = "Accepted Run lineage unavailable"
+            return
+        }
+        let suffix = String(source.runDigest.prefix(16))
+        let summary = "Accepted terminal Run \(source.runID) promoted by explicit user action."
+        let summaryDigest = SHA256.hash(data: Data(summary.utf8)).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let command = EvolutionAssetCommand(
+            action: "promote_run", operationID: UUID().uuidString.lowercased(),
+            journeyID: evolutionAssetJourneyID, expectedViewVersion: snapshot.viewVersion,
+            assetKind: .skill, definitionID: "skill.promoted.\(suffix)",
+            revisionID: "revision.1", candidateID: UUID().uuidString.lowercased(),
+            risk: "medium", sourceRunID: source.runID,
+            sourceRunGeneration: source.runGeneration, sourceRunDigest: source.runDigest,
+            sourceEvidenceIDs: source.evidenceIDs,
+            sourceEvidenceDigests: source.evidenceDigests,
+            redactedSummary: summary, redactedSummaryDigest: summaryDigest,
+            scopeDifference: "new project-scoped Candidate",
+            expectedBenefit: "reuse accepted terminal behavior"
+        )
+        await commitEvolutionAsset(command, progress: "Promoting accepted Run to Candidate")
+    }
+
+    public func compareEvolutionRevisions(
+        definitionID: String,
+        left: EvolutionAssetRevision,
+        right: EvolutionAssetRevision
+    ) async {
+        guard let assetClient else {
+            evolutionAssetStatus = "Assets unavailable"
+            return
+        }
+        evolutionAssetStatus = "Comparing exact revisions"
+        do {
+            evolutionAssetDiff = try await assetClient.evolutionAssetDiff(
+                journeyID: evolutionAssetJourneyID, definitionID: definitionID,
+                left: left, right: right
+            )
+            evolutionAssetStatus = "Current"
+        } catch {
+            evolutionAssetStatus = closedClientReason(error)
+        }
+    }
+
+    private func commitEvolutionAsset(_ command: EvolutionAssetCommand, progress: String) async {
+        guard let assetClient else {
+            evolutionAssetStatus = "Assets unavailable"
+            return
+        }
+        evolutionAssetStatus = progress
+        do {
+            let receipt = try await assetClient.evolutionAssetCommand(command)
+            guard receipt.operationID == command.operationID,
+                  receipt.action == command.action, !receipt.eventIDs.isEmpty else {
+                throw LocalProductClientError.invalidResponse
+            }
+            await loadEvolutionAssets()
+			await refresh()
+        } catch {
+            evolutionAssetStatus = closedClientReason(error)
+        }
+    }
+
+    nonisolated public static func canonicalEvolutionAssetDigests(
+        kind: String, definitionID: String, revisionID: String, sourcePath: String
+    ) throws -> (artifact: String, content: String) {
+        let url = URL(fileURLWithPath: sourcePath)
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard !data.isEmpty, data.count <= 1_048_576,
+              url.path == sourcePath, !url.lastPathComponent.isEmpty,
+              !url.lastPathComponent.contains("/"), !url.lastPathComponent.contains("\\")
+        else { throw LocalProductClientError.invalidRequest }
+        func digest(_ bytes: Data) -> String {
+            SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }
+        func quoted(_ value: String) throws -> String {
+            let encoded = try JSONEncoder().encode(value)
+            guard let text = String(data: encoded, encoding: .utf8) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            return text
+        }
+        let fileDigest = digest(data)
+        let entry = "{\"relative_path\":\(try quoted(url.lastPathComponent)),\"file_mode\":384,\"file_size\":\(data.count),\"file_sha256\":\(try quoted(fileDigest)),\"content_base64\":\(try quoted(data.base64EncodedString()))}"
+        let entries = "[\(entry)]"
+        guard let entriesData = entries.data(using: .utf8) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let contentDigest = digest(entriesData)
+        let artifact = "{\"schema_version\":1,\"asset_kind\":\(try quoted(kind)),\"definition_id\":\(try quoted(definitionID)),\"revision_id\":\(try quoted(revisionID)),\"entries\":\(entries),\"content_digest\":\(try quoted(contentDigest))}"
+        guard let artifactData = artifact.data(using: .utf8), artifactData.count <= 1_572_864 else {
+            throw LocalProductClientError.invalidRequest
+        }
+        return (digest(artifactData), contentDigest)
+    }
+
+    static func canonicalEvolutionTemplateDigests(
+        kind: String, definitionID: String, revisionID: String, sourcePath: String,
+        templateOutput: String, parameterSchemaDigest: String,
+        permissionCeilingDigest: String, scopeCeilingDigest: String
+    ) throws -> (artifact: String, content: String) {
+        let url = URL(fileURLWithPath: sourcePath)
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard !data.isEmpty, data.count <= 1_048_576, url.path == sourcePath,
+              url.lastPathComponent != "template-contract.json" else {
+            throw LocalProductClientError.invalidRequest
+        }
+        func quoted(_ value: String) throws -> String {
+            let encoded = try JSONEncoder().encode(value)
+            guard let text = String(data: encoded, encoding: .utf8) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            return text
+        }
+        func digest(_ data: Data) -> String {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        let sourceDigest = digest(data)
+        let contract = "{\"schema_version\":1,\"asset_kind\":\(try quoted(kind)),\"template_output\":\(try quoted(templateOutput)),\"parameter_schema_digest\":\(try quoted(parameterSchemaDigest)),\"permission_ceiling_digest\":\(try quoted(permissionCeilingDigest)),\"scope_ceiling_digest\":\(try quoted(scopeCeilingDigest)),\"source_file_sha256\":\(try quoted(sourceDigest))}"
+        let contractData = Data(contract.utf8)
+        let contractEntry = "{\"relative_path\":\"template-contract.json\",\"file_mode\":384,\"file_size\":\(contractData.count),\"file_sha256\":\(try quoted(digest(contractData))),\"content_base64\":\(try quoted(contractData.base64EncodedString()))}"
+        let sourceEntry = "{\"relative_path\":\(try quoted(url.lastPathComponent)),\"file_mode\":384,\"file_size\":\(data.count),\"file_sha256\":\(try quoted(sourceDigest)),\"content_base64\":\(try quoted(data.base64EncodedString()))}"
+        let entries = "[\(contractEntry),\(sourceEntry)]"
+        let contentDigest = digest(Data(entries.utf8))
+        let artifact = "{\"schema_version\":1,\"asset_kind\":\(try quoted(kind)),\"definition_id\":\(try quoted(definitionID)),\"revision_id\":\(try quoted(revisionID)),\"entries\":\(entries),\"content_digest\":\(try quoted(contentDigest))}"
+        let artifactData = Data(artifact.utf8)
+        guard artifactData.count <= 1_572_864 else { throw LocalProductClientError.invalidRequest }
+        return (digest(artifactData), contentDigest)
+    }
+
+    nonisolated public static func sha256Text(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func initialJourneyID() -> String {
+        let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--journey-id"),
+           index + 1 < arguments.count,
+           validJourneyID(arguments[index + 1]) {
+            return arguments[index + 1]
+        }
+        return UUID().uuidString.lowercased()
+    }
+
+    private static func validJourneyID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 36, bytes[8] == 45, bytes[13] == 45,
+              bytes[18] == 45, bytes[23] == 45, bytes[14] == 52,
+              ["8", "9", "a", "b"].contains(String(UnicodeScalar(bytes[19]))) else {
+            return false
+        }
+        for (index, byte) in bytes.enumerated() where ![8, 13, 18, 23].contains(index) {
+            guard (48...57).contains(byte) || (97...102).contains(byte) else { return false }
+        }
+        return true
+    }
+
+    static func canonicalEvolutionBindingDigest(
+        _ revision: EvolutionAssetRevision
+    ) throws -> String {
+        func quoted(_ value: String) throws -> String {
+            let encoded = try JSONEncoder().encode(value)
+            guard let text = String(data: encoded, encoding: .utf8) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            return text
+        }
+        let value = "[{\"asset_kind\":\(try quoted(revision.assetKind.rawValue)),\"definition_id\":\(try quoted(revision.definitionID)),\"revision_id\":\(try quoted(revision.revisionID)),\"sha256_digest\":\(try quoted(revision.artifactDigest)),\"source_scope\":\(try quoted(revision.sourceScope))}]"
+        return SHA256.hash(data: Data(value.utf8)).map {
+            String(format: "%02x", $0)
+        }.joined()
     }
 
     public func updateMissionBoardFilter(_ value: String) {

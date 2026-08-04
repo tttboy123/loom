@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
 )
 
@@ -77,31 +78,35 @@ func projectTeamExecutionStream(
 				PlanDigest     string `json:"plan_digest"`
 				ViewVersion    string `json:"view_version"`
 				Nodes          []struct {
-					LogicalNodeID     string   `json:"logical_node_id"`
-					Title             string   `json:"title"`
-					AgentInstanceID   string   `json:"agent_instance_id"`
-					RuntimeInstanceID string   `json:"runtime_instance_id"`
-					Role              string   `json:"role"`
-					DependsOn         []string `json:"depends_on"`
-					MaxAttempts       int      `json:"max_attempts"`
+					LogicalNodeID          string                              `json:"logical_node_id"`
+					Title                  string                              `json:"title"`
+					AgentInstanceID        string                              `json:"agent_instance_id"`
+					RuntimeInstanceID      string                              `json:"runtime_instance_id"`
+					Role                   string                              `json:"role"`
+					DependsOn              []string                            `json:"depends_on"`
+					MaxAttempts            int                                 `json:"max_attempts"`
+					AssetRevisionBindings  *[]assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+					AssetRevisionSetDigest *string                             `json:"asset_revision_set_digest"`
 				} `json:"nodes"`
 				SemanticBindings *[]struct {
-					LogicalNodeID               string  `json:"logical_node_id"`
-					OutputContractVersion       int     `json:"output_contract_version"`
-					OutputContractDigest        string  `json:"output_contract_digest"`
-					RecoveryPolicyVersion       int     `json:"recovery_policy_version"`
-					RecoveryPolicyDigest        string  `json:"recovery_policy_digest"`
-					AttemptCredits              int     `json:"attempt_credits"`
-					PrimaryWorkflowPath         string  `json:"primary_workflow_path"`
-					WorkflowFallbackKey         string  `json:"workflow_fallback_key"`
-					RecoveryApprovalRequired    bool    `json:"recovery_approval_required"`
-					AcceptanceContractVersion   *int    `json:"acceptance_contract_version,omitempty"`
-					AcceptanceContractDigest    *string `json:"acceptance_contract_digest,omitempty"`
-					AcceptanceRisk              *string `json:"risk,omitempty"`
-					IndependentVerifierRequired *bool   `json:"independent_verifier_required,omitempty"`
-					VerifierAgentInstanceID     *string `json:"verifier_agent_instance_id,omitempty"`
-					VerifierRuntimeInstanceID   *string `json:"verifier_runtime_instance_id,omitempty"`
-					VerifierWorkflowPath        *string `json:"verifier_workflow_path,omitempty"`
+					LogicalNodeID               string                              `json:"logical_node_id"`
+					OutputContractVersion       int                                 `json:"output_contract_version"`
+					OutputContractDigest        string                              `json:"output_contract_digest"`
+					RecoveryPolicyVersion       int                                 `json:"recovery_policy_version"`
+					RecoveryPolicyDigest        string                              `json:"recovery_policy_digest"`
+					AttemptCredits              int                                 `json:"attempt_credits"`
+					PrimaryWorkflowPath         string                              `json:"primary_workflow_path"`
+					WorkflowFallbackKey         string                              `json:"workflow_fallback_key"`
+					RecoveryApprovalRequired    bool                                `json:"recovery_approval_required"`
+					AcceptanceContractVersion   *int                                `json:"acceptance_contract_version,omitempty"`
+					AcceptanceContractDigest    *string                             `json:"acceptance_contract_digest,omitempty"`
+					AcceptanceRisk              *string                             `json:"risk,omitempty"`
+					IndependentVerifierRequired *bool                               `json:"independent_verifier_required,omitempty"`
+					VerifierAgentInstanceID     *string                             `json:"verifier_agent_instance_id,omitempty"`
+					VerifierRuntimeInstanceID   *string                             `json:"verifier_runtime_instance_id,omitempty"`
+					VerifierWorkflowPath        *string                             `json:"verifier_workflow_path,omitempty"`
+					AssetRevisionBindings       *[]assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+					AssetRevisionSetDigest      *string                             `json:"asset_revision_set_digest"`
 				} `json:"semantic_bindings"`
 			}
 			if record.TeamInstanceID != "" ||
@@ -120,11 +125,19 @@ func projectTeamExecutionStream(
 				LegacySemanticUnbound: payload.SemanticBindings == nil,
 			}
 			semanticIndexes := make(map[string]int)
+			semanticAssetLineage := make(map[string]projectedAssetLineage)
 			if payload.SemanticBindings != nil {
 				if len(*payload.SemanticBindings) != len(payload.Nodes) {
 					return TeamExecution{}, ErrInvalidProjectionEvent
 				}
 				for index, binding := range *payload.SemanticBindings {
+					assetLineage, valid := decodeProjectedAssetLineage(
+						binding.AssetRevisionBindings,
+						binding.AssetRevisionSetDigest,
+						nil,
+						nil,
+						false,
+					)
 					acceptancePresent, complete := completeProjectedAcceptanceBinding(
 						binding.AcceptanceContractVersion,
 						binding.AcceptanceContractDigest,
@@ -134,7 +147,7 @@ func projectTeamExecutionStream(
 						binding.VerifierRuntimeInstanceID,
 						binding.VerifierWorkflowPath,
 					)
-					if binding.LogicalNodeID == "" ||
+					if !valid || binding.LogicalNodeID == "" ||
 						index > 0 &&
 							(*payload.SemanticBindings)[index-1].
 								LogicalNodeID >= binding.LogicalNodeID ||
@@ -158,23 +171,39 @@ func projectTeamExecutionStream(
 						record.LegacyAcceptanceUnbound = !acceptancePresent
 					}
 					semanticIndexes[binding.LogicalNodeID] = index
+					semanticAssetLineage[binding.LogicalNodeID] = assetLineage
 				}
 			}
 			for index, node := range payload.Nodes {
+				nodeAssetLineage, valid := decodeProjectedAssetLineage(
+					node.AssetRevisionBindings,
+					node.AssetRevisionSetDigest,
+					nil,
+					nil,
+					false,
+				)
 				if node.LogicalNodeID == "" ||
-					node.MaxAttempts < 1 || node.MaxAttempts > 3 {
+					node.MaxAttempts < 1 || node.MaxAttempts > 3 || !valid {
 					return TeamExecution{}, ErrInvalidProjectionEvent
 				}
 				record.Nodes[index] = TeamExecutionNode{
-					LogicalNodeID:     node.LogicalNodeID,
-					Title:             node.Title,
-					AgentInstanceID:   node.AgentInstanceID,
-					RuntimeInstanceID: node.RuntimeInstanceID,
-					Role:              node.Role,
-					DependsOn:         append([]string(nil), node.DependsOn...),
-					MaxAttempts:       node.MaxAttempts,
-					Status:            "pending",
-					Attempts:          []TeamExecutionAttempt{},
+					LogicalNodeID:          node.LogicalNodeID,
+					Title:                  node.Title,
+					AgentInstanceID:        node.AgentInstanceID,
+					RuntimeInstanceID:      node.RuntimeInstanceID,
+					Role:                   node.Role,
+					DependsOn:              append([]string(nil), node.DependsOn...),
+					MaxAttempts:            node.MaxAttempts,
+					Status:                 "pending",
+					Attempts:               []TeamExecutionAttempt{},
+					AssetLineageAvailable:  nodeAssetLineage.available,
+					AssetRevisionBindings:  nodeAssetLineage.bindings,
+					AssetRevisionSetDigest: nodeAssetLineage.setDigest,
+				}
+				if index == 0 {
+					record.AssetLineageAvailable = nodeAssetLineage.available
+				} else if record.AssetLineageAvailable != nodeAssetLineage.available {
+					return TeamExecution{}, ErrInvalidProjectionEvent
 				}
 				if payload.SemanticBindings != nil {
 					bindingIndex, ok := semanticIndexes[node.LogicalNodeID]
@@ -182,6 +211,12 @@ func projectTeamExecutionStream(
 						return TeamExecution{}, ErrInvalidProjectionEvent
 					}
 					binding := (*payload.SemanticBindings)[bindingIndex]
+					semanticLineage := semanticAssetLineage[node.LogicalNodeID]
+					if semanticLineage.available != nodeAssetLineage.available ||
+						semanticLineage.setDigest != nodeAssetLineage.setDigest ||
+						!equalProjectedAssetBindings(semanticLineage.bindings, nodeAssetLineage.bindings) {
+						return TeamExecution{}, ErrInvalidProjectionEvent
+					}
 					if binding.AttemptCredits > node.MaxAttempts-1 {
 						return TeamExecution{}, ErrInvalidProjectionEvent
 					}
@@ -314,14 +349,18 @@ func projectTeamExecutionStream(
 				PlanDigest     string `json:"plan_digest"`
 				ViewVersion    string `json:"view_version"`
 				Attempts       []struct {
-					LogicalNodeID     string `json:"logical_node_id"`
-					AttemptNumber     int    `json:"attempt_number"`
-					WorkItemID        string `json:"work_item_id"`
-					RunID             string `json:"run_id"`
-					ClaimID           string `json:"claim_id"`
-					ClaimGeneration   int64  `json:"claim_generation"`
-					RuntimeInstanceID string `json:"runtime_instance_id"`
-					AgentInstanceID   string `json:"agent_instance_id"`
+					LogicalNodeID                 string                              `json:"logical_node_id"`
+					AttemptNumber                 int                                 `json:"attempt_number"`
+					WorkItemID                    string                              `json:"work_item_id"`
+					RunID                         string                              `json:"run_id"`
+					ClaimID                       string                              `json:"claim_id"`
+					ClaimGeneration               int64                               `json:"claim_generation"`
+					RuntimeInstanceID             string                              `json:"runtime_instance_id"`
+					AgentInstanceID               string                              `json:"agent_instance_id"`
+					AssetRevisionBindings         *[]assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+					AssetRevisionSetDigest        *string                             `json:"asset_revision_set_digest"`
+					MaterializationManifestDigest *string                             `json:"materialization_manifest_digest"`
+					MaterializationRootDigest     *string                             `json:"materialization_root_digest"`
 				} `json:"attempts"`
 			}
 			if decodeExactProjectionPayload(event, &payload) != nil ||
@@ -334,18 +373,33 @@ func projectTeamExecutionStream(
 			for _, dispatched := range payload.Attempts {
 				node := projectedTeamNode(&record, dispatched.LogicalNodeID)
 				attempt := projectedTeamAttempt(node, dispatched.AttemptNumber)
+				dispatchedLineage, validLineage := decodeProjectedAssetLineage(
+					dispatched.AssetRevisionBindings,
+					dispatched.AssetRevisionSetDigest,
+					dispatched.MaterializationManifestDigest,
+					dispatched.MaterializationRootDigest,
+					true,
+				)
 				if attempt == nil ||
 					attempt.WorkItemID != dispatched.WorkItemID ||
 					attempt.RunID != dispatched.RunID ||
 					attempt.RuntimeInstanceID != dispatched.RuntimeInstanceID ||
 					attempt.AgentInstanceID != dispatched.AgentInstanceID ||
 					dispatched.ClaimID == "" ||
-					dispatched.ClaimGeneration <= 0 {
+					dispatched.ClaimGeneration <= 0 || !validLineage ||
+					dispatchedLineage.available != node.AssetLineageAvailable ||
+					dispatchedLineage.setDigest != node.AssetRevisionSetDigest ||
+					!equalProjectedAssetBindings(dispatchedLineage.bindings, node.AssetRevisionBindings) {
 					return TeamExecution{}, ErrInvalidProjectionEvent
 				}
 				attempt.ClaimID = dispatched.ClaimID
 				attempt.ClaimGeneration = dispatched.ClaimGeneration
 				attempt.Status = "dispatched"
+				attempt.AssetLineageAvailable = dispatchedLineage.available
+				attempt.AssetRevisionBindings = dispatchedLineage.bindings
+				attempt.AssetRevisionSetDigest = dispatchedLineage.setDigest
+				attempt.MaterializationManifestDigest = dispatchedLineage.manifestDigest
+				attempt.MaterializationRootDigest = dispatchedLineage.rootDigest
 				node.Status = "running"
 				node.RetryAt = time.Time{}
 			}
@@ -831,6 +885,77 @@ func projectTeamExecutionStream(
 		lastEventID = event.ID
 	}
 	return cloneGlobalTeamExecution(record), nil
+}
+
+type projectedAssetLineage struct {
+	available      bool
+	bindings       []assets.ExactAssetRevisionBinding
+	setDigest      string
+	manifestDigest string
+	rootDigest     string
+}
+
+func decodeProjectedAssetLineage(
+	bindings *[]assets.ExactAssetRevisionBinding,
+	setDigest *string,
+	manifestDigest *string,
+	rootDigest *string,
+	requireManifestField bool,
+) (projectedAssetLineage, bool) {
+	present := bindings != nil || setDigest != nil ||
+		manifestDigest != nil || rootDigest != nil
+	if !present {
+		return projectedAssetLineage{bindings: []assets.ExactAssetRevisionBinding{}}, true
+	}
+	if bindings == nil || setDigest == nil ||
+		requireManifestField && (manifestDigest == nil || rootDigest == nil) ||
+		!requireManifestField && (manifestDigest != nil || rootDigest != nil) {
+		return projectedAssetLineage{}, false
+	}
+	manifest := ""
+	root := ""
+	if manifestDigest != nil {
+		manifest = *manifestDigest
+	}
+	if rootDigest != nil {
+		root = *rootDigest
+	}
+	if len(*bindings) == 0 {
+		if *setDigest != "" || manifest != "" || root != "" {
+			return projectedAssetLineage{}, false
+		}
+		return projectedAssetLineage{
+			bindings: []assets.ExactAssetRevisionBinding{},
+		}, true
+	}
+	digest, err := assets.CanonicalAssetRevisionSetDigest(*bindings)
+	if err != nil || digest != *setDigest ||
+		requireManifestField && (!validSHA256Digest(manifest) ||
+			!validSHA256Digest(root)) {
+		return projectedAssetLineage{}, false
+	}
+	return projectedAssetLineage{
+		available:      true,
+		bindings:       append([]assets.ExactAssetRevisionBinding{}, (*bindings)...),
+		setDigest:      *setDigest,
+		manifestDigest: manifest,
+		rootDigest:     root,
+	}, true
+}
+
+func equalProjectedAssetBindings(
+	left []assets.ExactAssetRevisionBinding,
+	right []assets.ExactAssetRevisionBinding,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func projectedTeamTerminal(record TeamExecution) (string, string) {

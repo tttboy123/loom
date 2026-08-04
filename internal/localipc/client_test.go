@@ -81,6 +81,51 @@ func TestClientAndServerRoundTripOneBoundedRequestAndCloseCleanly(t *testing.T) 
 	}
 }
 
+func TestP3ACallJourneyUsesProductionSocketAndRejectsResponseIdentityDrift(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	journeyID := "123e4567-e89b-42d3-a456-426614174000"
+	drift := false
+	server, err := NewServer(ServerConfig{
+		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "fixture-build",
+		Handler: HandlerFunc(func(_ context.Context, request Request) Response {
+			result, _ := json.Marshal(map[string]any{"schema_version": 1, "records": []any{}})
+			responseJourney := request.JourneyID
+			if drift {
+				responseJourney = "223e4567-e89b-42d3-a456-426614174000"
+			}
+			return Response{OK: true, JourneyID: responseJourney, Result: result}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForSocket(t, socketPath)
+	client, err := NewClient(ClientConfig{SocketPath: socketPath, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := client.CallJourney(
+		context.Background(), journeyID, "evolution_asset_snapshot", struct{}{}, &result,
+	); err != nil {
+		t.Fatalf("CallJourney(valid) error = %v", err)
+	}
+	drift = true
+	if err := client.CallJourney(
+		context.Background(), journeyID, "evolution_asset_snapshot", struct{}{}, &result,
+	); !errors.Is(err, ErrInvalidProtocol) {
+		t.Fatalf("CallJourney(drift) error = %v, want invalid protocol", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 	if _, err := NewClient(ClientConfig{}); err == nil {
 		t.Fatal("NewClient(invalid) error = nil")

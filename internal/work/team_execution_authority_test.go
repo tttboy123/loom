@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/rules"
@@ -18,6 +20,75 @@ import (
 	"loom-pi-rebuild/internal/verification"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
+
+func TestP3ATeamDispatchAndSemanticBindingCarryExactAssetSet(t *testing.T) {
+	semantic := reflect.TypeOf(TeamNodeSemanticBinding{})
+	for _, field := range []string{"AssetRevisionBindings", "AssetRevisionSetDigest"} {
+		if _, found := semantic.FieldByName(field); !found {
+			t.Fatalf("TeamNodeSemanticBinding field %s is missing", field)
+		}
+	}
+	if _, found := semantic.FieldByName("MaterializationManifestDigest"); found {
+		t.Fatal("immutable node semantics must not contain an Attempt manifest")
+	}
+	materialization := reflect.TypeOf(TeamAttemptMaterialization{})
+	for _, field := range []string{
+		"AssetRevisionBindings", "AssetRevisionSetDigest",
+		"MaterializationManifestDigest", "MaterializationRootDigest",
+	} {
+		if _, found := materialization.FieldByName(field); !found {
+			t.Fatalf("TeamAttemptMaterialization field %s is missing", field)
+		}
+	}
+}
+
+func TestP3ATeamDispatchCASReadsEveryBoundAssetAuthorityStream(t *testing.T) {
+	binding := assets.ExactAssetRevisionBinding{
+		AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1",
+		RevisionID: "revision-1", SHA256Digest: strings.Repeat("a", 64),
+		SourceScope: assets.SourceScopeLocal,
+	}
+	bindingDigest, err := assets.CanonicalAssetRevisionSetDigest([]assets.ExactAssetRevisionBinding{binding})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-asset-heads",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main", AgentInstanceID: "agent-main",
+			RuntimeInstanceID: "runtime-main", Role: teams.ExecutionRoleMain,
+			MaxAttempts: 1, AssetRevisionBindings: []assets.ExactAssetRevisionBinding{binding},
+			AssetRevisionSetDigest: bindingDigest,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams := teamDispatchStreams(
+		plan,
+		plan.Nodes(),
+		[]TeamAttemptSelection{{LogicalNodeID: "main", AttemptNumber: 1}},
+		TeamExecutionRecord{},
+		nil,
+	)
+	for _, expected := range []string{
+		"evolution-asset-revision/skill/skill-1/revision-1",
+		"evolution-asset-activation/skill/skill-1",
+	} {
+		if !stringSliceContains(streams, expected) {
+			t.Fatalf("teamDispatchStreams() = %v, missing %s", streams, expected)
+		}
+	}
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
 
 type testRecoveryPolicyPort struct {
 	policy rules.RecoveryPolicy
@@ -103,6 +174,7 @@ func TestTeamDispatchCASHasOneWinnerAndIndependentAttemptLineage(t *testing.T) {
 			plan.Nodes(),
 			mainSelection,
 			TeamExecutionRecord{},
+			nil,
 		),
 	)
 	if err != nil {
@@ -249,6 +321,7 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 				plan.Nodes(),
 				selected,
 				candidateTeam,
+				nil,
 			),
 		)
 		if readErr != nil {
@@ -1104,7 +1177,7 @@ func dispatchTeamAttemptForTest(
 	}
 	snapshot, err := store.ReadStreamSet(
 		context.Background(),
-		teamDispatchStreams(plan, plan.Nodes(), selections, team),
+		teamDispatchStreams(plan, plan.Nodes(), selections, team, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1240,6 +1313,7 @@ func TestTeamDispatchFreezesSemanticBindingsBeforeLaterWorkWrites(t *testing.T) 
 				plan.Nodes(),
 				[]TeamAttemptSelection{selection},
 				current,
+				nil,
 			),
 		)
 		if readErr != nil {

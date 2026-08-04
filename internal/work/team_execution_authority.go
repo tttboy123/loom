@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/teams"
@@ -44,11 +45,23 @@ type TeamDispatchInput struct {
 	Plan                 teams.ExecutionPlan
 	ReadyAttempts        []TeamAttemptSelection
 	SemanticBindings     []TeamNodeSemanticBinding
+	Materializations     []TeamAttemptMaterialization
+	AssetSourceHeads     []journal.StreamHead
 	ViewVersion          string
 	ExpectedHeads        []journal.StreamHead
 	AuthoritativeTime    time.Time
 	PrepareLeaseDuration time.Duration
 	CorrelationID        string
+}
+
+type TeamAttemptMaterialization struct {
+	LogicalNodeID                 string
+	AttemptNumber                 int
+	AssetRevisionBindings         []assets.ExactAssetRevisionBinding
+	AssetRevisionSetDigest        string
+	MaterializationManifestDigest string
+	MaterializationRootDigest     string
+	Prepared                      assets.PreparedMaterialization
 }
 
 type TeamNodeSemanticBinding struct {
@@ -68,6 +81,8 @@ type TeamNodeSemanticBinding struct {
 	VerifierAgentInstanceID     string
 	VerifierRuntimeInstanceID   string
 	VerifierWorkflowPath        string
+	AssetRevisionBindings       []assets.ExactAssetRevisionBinding
+	AssetRevisionSetDigest      string
 }
 
 type TeamAttemptEvidenceInput struct {
@@ -184,22 +199,26 @@ type TeamRecoveryDecision interface {
 }
 
 type TeamAttemptRecord struct {
-	attemptNumber              int
-	workItemID                 string
-	runID                      string
-	claimID                    string
-	claimGeneration            int64
-	runtimeInstanceID          string
-	agentInstanceID            string
-	status                     string
-	workflowPath               string
-	evidenceID                 string
-	evidenceDigest             string
-	outputContractVersion      int
-	outputContractDigest       string
-	outputClassification       verification.OutputClassification
-	outputClassificationDigest string
-	outputSummaryDigest        string
+	attemptNumber                 int
+	workItemID                    string
+	runID                         string
+	claimID                       string
+	claimGeneration               int64
+	runtimeInstanceID             string
+	agentInstanceID               string
+	status                        string
+	workflowPath                  string
+	evidenceID                    string
+	evidenceDigest                string
+	outputContractVersion         int
+	outputContractDigest          string
+	outputClassification          verification.OutputClassification
+	outputClassificationDigest    string
+	outputSummaryDigest           string
+	assetRevisionBindings         []assets.ExactAssetRevisionBinding
+	assetRevisionSetDigest        string
+	materializationManifestDigest string
+	materializationRootDigest     string
 }
 
 type TeamNodeRecord struct {
@@ -294,10 +313,20 @@ func (record TeamAttemptRecord) ClaimID() string           { return record.claim
 func (record TeamAttemptRecord) ClaimGeneration() int64    { return record.claimGeneration }
 func (record TeamAttemptRecord) RuntimeInstanceID() string { return record.runtimeInstanceID }
 func (record TeamAttemptRecord) AgentInstanceID() string   { return record.agentInstanceID }
-func (record TeamAttemptRecord) Status() string            { return record.status }
-func (record TeamAttemptRecord) EvidenceID() string        { return record.evidenceID }
-func (record TeamAttemptRecord) EvidenceDigest() string    { return record.evidenceDigest }
-func (record TeamAttemptRecord) WorkflowPath() string      { return record.workflowPath }
+func (record TeamAttemptRecord) AssetRevisionBindings() []assets.ExactAssetRevisionBinding {
+	return cloneTeamAssetBindings(record.assetRevisionBindings)
+}
+func (record TeamAttemptRecord) AssetRevisionSetDigest() string { return record.assetRevisionSetDigest }
+func (record TeamAttemptRecord) MaterializationManifestDigest() string {
+	return record.materializationManifestDigest
+}
+func (record TeamAttemptRecord) MaterializationRootDigest() string {
+	return record.materializationRootDigest
+}
+func (record TeamAttemptRecord) Status() string         { return record.status }
+func (record TeamAttemptRecord) EvidenceID() string     { return record.evidenceID }
+func (record TeamAttemptRecord) EvidenceDigest() string { return record.evidenceDigest }
+func (record TeamAttemptRecord) WorkflowPath() string   { return record.workflowPath }
 func (record TeamAttemptRecord) OutputClassification() verification.OutputClassification {
 	return record.outputClassification
 }
@@ -338,6 +367,8 @@ func (authority *Authority) DispatchTeamReadySet(
 		nodes,
 		selections,
 		candidateTeam,
+		input.Materializations,
+		input.AssetSourceHeads,
 	)
 	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
 	if err != nil {
@@ -352,6 +383,13 @@ func (authority *Authority) DispatchTeamReadySet(
 	}
 	if !state.runIdentityInitialized {
 		return TeamDispatchResult{}, ErrRunIdentityIndexRequired
+	}
+	for _, materialization := range input.Materializations {
+		if !preparedMaterializationHeadsMatch(
+			materialization.Prepared.Heads(), snapshot.Heads(),
+		) {
+			return TeamDispatchResult{}, ErrTeamExecutionConflict
+		}
 	}
 	teamStreamID := teamExecutionStream(input.Plan.TeamInstanceID())
 	team, err := replayTeamExecution(
@@ -400,6 +438,9 @@ func (authority *Authority) DispatchTeamReadySet(
 		runtimeActive[runtimeInstanceID] = len(runtime.active)
 	}
 	events := make([]journal.Event, 0, 24)
+	for _, materialization := range input.Materializations {
+		events = append(events, materialization.Prepared.Event())
+	}
 	if team.status == "" {
 		teamSequence++
 		plannedID := deterministicEventID(
@@ -513,6 +554,10 @@ func (authority *Authority) DispatchTeamReadySet(
 	dispatchPayloads := make([]teamDispatchAttemptPayload, 0, len(selections))
 	for _, selection := range selections {
 		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		assetBinding := teamSemanticBindingByID(input.SemanticBindings, selection.LogicalNodeID)
+		materialization := teamAttemptMaterializationByID(
+			input.Materializations, selection.LogicalNodeID, selection.AttemptNumber,
+		)
 		nodeRecord := teamNodeByID(&team, selection.LogicalNodeID)
 		if nodeRecord == nil ||
 			nodeRecord.currentAttempt != selection.AttemptNumber {
@@ -619,7 +664,8 @@ func (authority *Authority) DispatchTeamReadySet(
 			}{
 				attemptRecord.workItemID, attemptRecord.runID, claimID, 1,
 				attemptRecord.runtimeInstanceID, attemptRecord.agentInstanceID,
-				expiresAt.Format(time.RFC3339Nano), statusReference,
+				expiresAt.Format(time.RFC3339Nano),
+				statusReference,
 			},
 		))
 		capacitySequences[attemptRecord.runtimeInstanceID]++
@@ -649,6 +695,10 @@ func (authority *Authority) DispatchTeamReadySet(
 		attemptRecord.claimID = claimID
 		attemptRecord.claimGeneration = 1
 		attemptRecord.status = "dispatched"
+		attemptRecord.assetRevisionBindings = cloneTeamAssetBindings(assetBinding.AssetRevisionBindings)
+		attemptRecord.assetRevisionSetDigest = assetBinding.AssetRevisionSetDigest
+		attemptRecord.materializationManifestDigest = materialization.MaterializationManifestDigest
+		attemptRecord.materializationRootDigest = materialization.MaterializationRootDigest
 		nodeRecord.status = "running"
 		nodeRecord.retryAt = time.Time{}
 		workItem := WorkItemRecord{
@@ -664,20 +714,28 @@ func (authority *Authority) DispatchTeamReadySet(
 			agentInstanceID:       attemptRecord.agentInstanceID,
 			prepareLeaseExpiresAt: expiresAt,
 			lastEventID:           claimEventID, streamSequence: 1,
+			AssetRevisionBindings:         toWorkAssetBindings(assetBinding.AssetRevisionBindings),
+			AssetRevisionSetDigest:        assetBinding.AssetRevisionSetDigest,
+			MaterializationManifestDigest: materialization.MaterializationManifestDigest,
+			MaterializationRootDigest:     materialization.MaterializationRootDigest,
 		}
 		dispatched = append(dispatched, TeamDispatchedNode{
 			logicalNode: node, attempt: *attemptRecord,
 			workItem: workItem, run: run,
 		})
 		dispatchPayloads = append(dispatchPayloads, teamDispatchAttemptPayload{
-			LogicalNodeID:     node.LogicalNodeID(),
-			AttemptNumber:     selection.AttemptNumber,
-			WorkItemID:        attemptRecord.workItemID,
-			RunID:             attemptRecord.runID,
-			ClaimID:           claimID,
-			ClaimGeneration:   1,
-			RuntimeInstanceID: attemptRecord.runtimeInstanceID,
-			AgentInstanceID:   attemptRecord.agentInstanceID,
+			LogicalNodeID:                 node.LogicalNodeID(),
+			AttemptNumber:                 selection.AttemptNumber,
+			WorkItemID:                    attemptRecord.workItemID,
+			RunID:                         attemptRecord.runID,
+			ClaimID:                       claimID,
+			ClaimGeneration:               1,
+			RuntimeInstanceID:             attemptRecord.runtimeInstanceID,
+			AgentInstanceID:               attemptRecord.agentInstanceID,
+			AssetRevisionBindings:         cloneTeamAssetBindings(assetBinding.AssetRevisionBindings),
+			AssetRevisionSetDigest:        assetBinding.AssetRevisionSetDigest,
+			MaterializationManifestDigest: materialization.MaterializationManifestDigest,
+			MaterializationRootDigest:     materialization.MaterializationRootDigest,
 		})
 	}
 	sort.Slice(dispatchPayloads, func(i, j int) bool {
@@ -789,7 +847,7 @@ func (authority *Authority) RebindTeamAttempt(
 		team.status == "" ||
 		team.planDigest != input.PlanDigest ||
 		isTerminalTeamStatus(team.status) {
-		return TeamExecutionRecord{}, ErrTeamExecutionConflict
+		return TeamExecutionRecord{}, fmt.Errorf("%w: replay before rebind: %v", ErrTeamExecutionConflict, err)
 	}
 	node := teamNodeByID(&team, input.LogicalNodeID)
 	attempt := teamAttemptByNumber(node, input.AttemptNumber)
@@ -1479,43 +1537,51 @@ func buildTeamRecoveryTransaction(
 }
 
 type teamPlanNodePayload struct {
-	LogicalNodeID     string              `json:"logical_node_id"`
-	Title             string              `json:"title"`
-	AgentInstanceID   string              `json:"agent_instance_id"`
-	RuntimeInstanceID string              `json:"runtime_instance_id"`
-	Role              teams.ExecutionRole `json:"role"`
-	DependsOn         []string            `json:"depends_on"`
-	MaxAttempts       int                 `json:"max_attempts"`
+	LogicalNodeID          string                             `json:"logical_node_id"`
+	Title                  string                             `json:"title"`
+	AgentInstanceID        string                             `json:"agent_instance_id"`
+	RuntimeInstanceID      string                             `json:"runtime_instance_id"`
+	Role                   teams.ExecutionRole                `json:"role"`
+	DependsOn              []string                           `json:"depends_on"`
+	MaxAttempts            int                                `json:"max_attempts"`
+	AssetRevisionBindings  []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest string                             `json:"asset_revision_set_digest"`
 }
 
 type teamSemanticBindingPayload struct {
-	LogicalNodeID               string  `json:"logical_node_id"`
-	OutputContractVersion       int     `json:"output_contract_version"`
-	OutputContractDigest        string  `json:"output_contract_digest"`
-	RecoveryPolicyVersion       int     `json:"recovery_policy_version"`
-	RecoveryPolicyDigest        string  `json:"recovery_policy_digest"`
-	AttemptCredits              int     `json:"attempt_credits"`
-	PrimaryWorkflowPath         string  `json:"primary_workflow_path"`
-	WorkflowFallbackKey         string  `json:"workflow_fallback_key"`
-	RecoveryApprovalRequired    bool    `json:"recovery_approval_required"`
-	AcceptanceContractVersion   *int    `json:"acceptance_contract_version,omitempty"`
-	AcceptanceContractDigest    *string `json:"acceptance_contract_digest,omitempty"`
-	AcceptanceRisk              *string `json:"risk,omitempty"`
-	IndependentVerifierRequired *bool   `json:"independent_verifier_required,omitempty"`
-	VerifierAgentInstanceID     *string `json:"verifier_agent_instance_id,omitempty"`
-	VerifierRuntimeInstanceID   *string `json:"verifier_runtime_instance_id,omitempty"`
-	VerifierWorkflowPath        *string `json:"verifier_workflow_path,omitempty"`
+	LogicalNodeID               string                             `json:"logical_node_id"`
+	OutputContractVersion       int                                `json:"output_contract_version"`
+	OutputContractDigest        string                             `json:"output_contract_digest"`
+	RecoveryPolicyVersion       int                                `json:"recovery_policy_version"`
+	RecoveryPolicyDigest        string                             `json:"recovery_policy_digest"`
+	AttemptCredits              int                                `json:"attempt_credits"`
+	PrimaryWorkflowPath         string                             `json:"primary_workflow_path"`
+	WorkflowFallbackKey         string                             `json:"workflow_fallback_key"`
+	RecoveryApprovalRequired    bool                               `json:"recovery_approval_required"`
+	AcceptanceContractVersion   *int                               `json:"acceptance_contract_version,omitempty"`
+	AcceptanceContractDigest    *string                            `json:"acceptance_contract_digest,omitempty"`
+	AcceptanceRisk              *string                            `json:"risk,omitempty"`
+	IndependentVerifierRequired *bool                              `json:"independent_verifier_required,omitempty"`
+	VerifierAgentInstanceID     *string                            `json:"verifier_agent_instance_id,omitempty"`
+	VerifierRuntimeInstanceID   *string                            `json:"verifier_runtime_instance_id,omitempty"`
+	VerifierWorkflowPath        *string                            `json:"verifier_workflow_path,omitempty"`
+	AssetRevisionBindings       []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest      string                             `json:"asset_revision_set_digest"`
 }
 
 type teamDispatchAttemptPayload struct {
-	LogicalNodeID     string `json:"logical_node_id"`
-	AttemptNumber     int    `json:"attempt_number"`
-	WorkItemID        string `json:"work_item_id"`
-	RunID             string `json:"run_id"`
-	ClaimID           string `json:"claim_id"`
-	ClaimGeneration   int64  `json:"claim_generation"`
-	RuntimeInstanceID string `json:"runtime_instance_id"`
-	AgentInstanceID   string `json:"agent_instance_id"`
+	LogicalNodeID                 string                             `json:"logical_node_id"`
+	AttemptNumber                 int                                `json:"attempt_number"`
+	WorkItemID                    string                             `json:"work_item_id"`
+	RunID                         string                             `json:"run_id"`
+	ClaimID                       string                             `json:"claim_id"`
+	ClaimGeneration               int64                              `json:"claim_generation"`
+	RuntimeInstanceID             string                             `json:"runtime_instance_id"`
+	AgentInstanceID               string                             `json:"agent_instance_id"`
+	AssetRevisionBindings         []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest        string                             `json:"asset_revision_set_digest"`
+	MaterializationManifestDigest string                             `json:"materialization_manifest_digest"`
+	MaterializationRootDigest     string                             `json:"materialization_root_digest"`
 }
 
 type teamAttemptTerminalPayload struct {
@@ -1603,6 +1669,9 @@ func validateTeamDispatchInput(
 		!validCanonicalUUID(input.CorrelationID) {
 		return nil, nil, ErrInvalidTeamExecution
 	}
+	if !validTeamAssetSourceHeads(input.AssetSourceHeads, input.ExpectedHeads) {
+		return nil, nil, ErrInvalidTeamExecution
+	}
 	rebuiltInputs := make([]teams.ExecutionNodeInput, len(nodes))
 	for index, node := range nodes {
 		rebuiltInputs[index] = teams.ExecutionNodeInput{
@@ -1610,7 +1679,9 @@ func validateTeamDispatchInput(
 			AgentInstanceID:   node.AgentInstanceID(),
 			RuntimeInstanceID: node.RuntimeInstanceID(),
 			Role:              node.Role(), DependsOn: node.DependsOn(),
-			MaxAttempts: node.MaxAttempts(),
+			MaxAttempts:            node.MaxAttempts(),
+			AssetRevisionBindings:  node.AssetRevisionBindings(),
+			AssetRevisionSetDigest: node.AssetRevisionSetDigest(),
 		}
 	}
 	rebuilt, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
@@ -1644,6 +1715,10 @@ func validateTeamDispatchInput(
 			!validTeamAcceptanceBinding(binding, node.AgentInstanceID()) {
 			return nil, nil, ErrInvalidTeamExecution
 		}
+		if !reflect.DeepEqual(cloneTeamAssetBindings(binding.AssetRevisionBindings), node.AssetRevisionBindings()) ||
+			binding.AssetRevisionSetDigest != node.AssetRevisionSetDigest() {
+			return nil, nil, ErrInvalidTeamExecution
+		}
 	}
 	selections := append([]TeamAttemptSelection(nil), input.ReadyAttempts...)
 	sort.Slice(selections, func(i, j int) bool {
@@ -1658,8 +1733,68 @@ func validateTeamDispatchInput(
 				selection.LogicalNodeID == selections[index-1].LogicalNodeID {
 			return nil, nil, ErrInvalidTeamAttempt
 		}
+		materialization := teamAttemptMaterializationByID(
+			input.Materializations, selection.LogicalNodeID, selection.AttemptNumber,
+		)
+		if len(node.AssetRevisionBindings()) == 0 {
+			if materialization.LogicalNodeID != "" {
+				return nil, nil, ErrInvalidTeamExecution
+			}
+			continue
+		}
+		if materialization.LogicalNodeID == "" ||
+			!reflect.DeepEqual(
+				cloneTeamAssetBindings(materialization.AssetRevisionBindings),
+				node.AssetRevisionBindings(),
+			) ||
+			materialization.AssetRevisionSetDigest != node.AssetRevisionSetDigest() ||
+			!validSHA256Hex(materialization.MaterializationManifestDigest) ||
+			!validSHA256Hex(materialization.MaterializationRootDigest) ||
+			!materialization.Prepared.Matches(
+				selection.LogicalNodeID,
+				selection.AttemptNumber,
+				materialization.AssetRevisionBindings,
+				materialization.AssetRevisionSetDigest,
+				materialization.MaterializationManifestDigest,
+				materialization.MaterializationRootDigest,
+			) {
+			return nil, nil, ErrInvalidTeamExecution
+		}
+	}
+	seenMaterializations := make(map[string]struct{}, len(input.Materializations))
+	for _, materialization := range input.Materializations {
+		key := fmt.Sprintf("%s\x00%d", materialization.LogicalNodeID, materialization.AttemptNumber)
+		if _, duplicate := seenMaterializations[key]; duplicate {
+			return nil, nil, ErrInvalidTeamExecution
+		}
+		seenMaterializations[key] = struct{}{}
+		matched := false
+		for _, selection := range selections {
+			if materialization.LogicalNodeID == selection.LogicalNodeID &&
+				materialization.AttemptNumber == selection.AttemptNumber {
+				matched = true
+			}
+		}
+		if !matched {
+			return nil, nil, ErrInvalidTeamExecution
+		}
 	}
 	return nodes, selections, nil
+}
+
+func teamAttemptMaterializationByID(
+	values []TeamAttemptMaterialization,
+	logicalNodeID string,
+	attemptNumber int,
+) TeamAttemptMaterialization {
+	for _, value := range values {
+		if value.LogicalNodeID == logicalNodeID &&
+			value.AttemptNumber == attemptNumber {
+			value.AssetRevisionBindings = cloneTeamAssetBindings(value.AssetRevisionBindings)
+			return value
+		}
+	}
+	return TeamAttemptMaterialization{}
 }
 
 func validateTeamEvidenceInput(
@@ -1786,13 +1921,15 @@ func scheduledTeamAttempt(
 	workflowPath string,
 ) TeamAttemptRecord {
 	return TeamAttemptRecord{
-		attemptNumber:     attemptNumber,
-		workItemID:        teamAttemptIdentity("work", plan, node.LogicalNodeID(), attemptNumber),
-		runID:             teamAttemptIdentity("run", plan, node.LogicalNodeID(), attemptNumber),
-		runtimeInstanceID: node.RuntimeInstanceID(),
-		agentInstanceID:   node.AgentInstanceID(),
-		workflowPath:      workflowPath,
-		status:            "scheduled",
+		attemptNumber:          attemptNumber,
+		workItemID:             teamAttemptIdentity("work", plan, node.LogicalNodeID(), attemptNumber),
+		runID:                  teamAttemptIdentity("run", plan, node.LogicalNodeID(), attemptNumber),
+		runtimeInstanceID:      node.RuntimeInstanceID(),
+		agentInstanceID:        node.AgentInstanceID(),
+		workflowPath:           workflowPath,
+		status:                 "scheduled",
+		assetRevisionBindings:  node.AssetRevisionBindings(),
+		assetRevisionSetDigest: node.AssetRevisionSetDigest(),
 	}
 }
 
@@ -1815,7 +1952,9 @@ func teamPlanPayload(
 			AgentInstanceID:   node.AgentInstanceID(),
 			RuntimeInstanceID: node.RuntimeInstanceID(),
 			Role:              node.Role(), DependsOn: node.DependsOn(),
-			MaxAttempts: node.MaxAttempts(),
+			MaxAttempts:            node.MaxAttempts(),
+			AssetRevisionBindings:  node.AssetRevisionBindings(),
+			AssetRevisionSetDigest: node.AssetRevisionSetDigest(),
 		}
 	}
 	payloadBindings := make([]teamSemanticBindingPayload, len(bindings))
@@ -1861,7 +2000,21 @@ func teamSemanticBindingPayloadFrom(
 		VerifierAgentInstanceID:     &verifierAgent,
 		VerifierRuntimeInstanceID:   &verifierRuntime,
 		VerifierWorkflowPath:        &verifierWorkflow,
+		AssetRevisionBindings:       cloneTeamAssetBindings(binding.AssetRevisionBindings),
+		AssetRevisionSetDigest:      binding.AssetRevisionSetDigest,
 	}
+}
+
+func toWorkAssetBindings(bindings []assets.ExactAssetRevisionBinding) []AssetRevisionBinding {
+	result := make([]AssetRevisionBinding, len(bindings))
+	for index, binding := range bindings {
+		result[index] = AssetRevisionBinding{
+			AssetKind: string(binding.AssetKind), DefinitionID: binding.DefinitionID,
+			RevisionID: binding.RevisionID, SHA256Digest: binding.SHA256Digest,
+			SourceScope: string(binding.SourceScope),
+		}
+	}
+	return result
 }
 
 func teamAttemptScheduledPayload(
@@ -1907,13 +2060,30 @@ func teamDispatchStreams(
 	nodes []teams.ExecutionNode,
 	selections []TeamAttemptSelection,
 	team TeamExecutionRecord,
+	materializations []TeamAttemptMaterialization,
+	assetSourceHeadSets ...[]journal.StreamHead,
 ) []string {
 	streams := map[string]struct{}{
 		teamExecutionStream(plan.TeamInstanceID()): {},
 		runIdentityStreamID:                        {},
 	}
+	if len(assetSourceHeadSets) == 1 {
+		for _, head := range assetSourceHeadSets[0] {
+			streams[head.StreamID] = struct{}{}
+		}
+	}
+	for _, materialization := range materializations {
+		event := materialization.Prepared.Event()
+		if event.StreamID != "" {
+			streams[event.StreamID] = struct{}{}
+		}
+	}
 	for _, selection := range selections {
 		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		for _, binding := range node.AssetRevisionBindings() {
+			streams["evolution-asset-revision/"+string(binding.AssetKind)+"/"+binding.DefinitionID+"/"+binding.RevisionID] = struct{}{}
+			streams["evolution-asset-activation/"+string(binding.AssetKind)+"/"+binding.DefinitionID] = struct{}{}
+		}
 		runtimeInstanceID := node.RuntimeInstanceID()
 		if teamNode := teamNodeByID(&team, selection.LogicalNodeID); teamNode != nil {
 			if attempt := teamAttemptByNumber(
@@ -1940,6 +2110,45 @@ func teamDispatchStreams(
 	}
 	sort.Strings(output)
 	return output
+}
+
+func validTeamAssetSourceHeads(
+	values []journal.StreamHead,
+	expected []journal.StreamHead,
+) bool {
+	if len(values) > 16 {
+		return false
+	}
+	expectedByStream := make(map[string]journal.StreamHead, len(expected))
+	for _, head := range expected {
+		expectedByStream[head.StreamID] = head
+	}
+	for index, head := range values {
+		if head.StreamID == "" || head.Sequence < 0 ||
+			index > 0 && values[index-1].StreamID >= head.StreamID ||
+			!strings.HasPrefix(head.StreamID, "team-definition/") &&
+				!strings.HasPrefix(head.StreamID, "evolution-asset-binding/") ||
+			expectedByStream[head.StreamID] != head {
+			return false
+		}
+	}
+	return true
+}
+
+func preparedMaterializationHeadsMatch(
+	prepared []journal.StreamHead,
+	actual []journal.StreamHead,
+) bool {
+	actualByStream := make(map[string]journal.StreamHead, len(actual))
+	for _, head := range actual {
+		actualByStream[head.StreamID] = head
+	}
+	for _, expected := range prepared {
+		if got, exists := actualByStream[expected.StreamID]; !exists || got != expected {
+			return false
+		}
+	}
+	return true
 }
 
 func exactTeamHeads(left []journal.StreamHead, right []journal.StreamHead) bool {
@@ -2020,8 +2229,12 @@ func exactTeamSemanticBindings(
 		return false
 	}
 	for _, node := range team.nodes {
-		if node.semanticBinding !=
-			teamSemanticBindingByID(bindings, node.logicalNodeID) {
+		candidate := teamSemanticBindingByID(bindings, node.logicalNodeID)
+		candidate.AssetRevisionBindings = cloneTeamAssetBindings(candidate.AssetRevisionBindings)
+		if !reflect.DeepEqual(
+			node.semanticBinding,
+			candidate,
+		) {
 			return false
 		}
 	}
@@ -2051,7 +2264,12 @@ func canonicalTeamSemanticDigest(
 			binding.VerifierAgentInstanceID,
 			binding.VerifierRuntimeInstanceID,
 			binding.VerifierWorkflowPath,
+			binding.AssetRevisionSetDigest,
 		)
+		for _, assetBinding := range cloneTeamAssetBindings(binding.AssetRevisionBindings) {
+			fields = append(fields, string(assetBinding.AssetKind), assetBinding.DefinitionID,
+				assetBinding.RevisionID, assetBinding.SHA256Digest, string(assetBinding.SourceScope))
+		}
 	}
 	for _, field := range fields {
 		var length [8]byte
@@ -2297,13 +2515,14 @@ func replayTeamExecution(
 				Nodes            []teamPlanNodePayload         `json:"nodes"`
 				SemanticBindings *[]teamSemanticBindingPayload `json:"semantic_bindings"`
 			}
+			decodeErr := decodeExactPayload(event.PayloadJSON, &payload)
 			if team.status != "" ||
-				decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				decodeErr != nil ||
 				payload.TeamInstanceID != teamInstanceID ||
 				!validSHA256Hex(payload.PlanDigest) ||
 				!validSHA256Hex(payload.ViewVersion) ||
 				len(payload.Nodes) == 0 || len(payload.Nodes) > 3 {
-				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				return TeamExecutionRecord{}, fmt.Errorf("%w: planned %s decode=%v", ErrTeamExecutionConflict, event.ID, decodeErr)
 			}
 			team = TeamExecutionRecord{
 				teamInstanceID:        teamInstanceID,
@@ -2342,6 +2561,8 @@ func replayTeamExecution(
 						PrimaryWorkflowPath:      binding.PrimaryWorkflowPath,
 						WorkflowFallbackKey:      binding.WorkflowFallbackKey,
 						RecoveryApprovalRequired: binding.RecoveryApprovalRequired,
+						AssetRevisionBindings:    cloneTeamAssetBindings(binding.AssetRevisionBindings),
+						AssetRevisionSetDigest:   binding.AssetRevisionSetDigest,
 					}
 					if acceptancePresent {
 						public.AcceptanceContractVersion = *binding.AcceptanceContractVersion
@@ -2372,13 +2593,15 @@ func replayTeamExecution(
 				binding := bindings[node.LogicalNodeID]
 				if payload.SemanticBindings != nil &&
 					(binding.LogicalNodeID == "" ||
+						!reflect.DeepEqual(binding.AssetRevisionBindings, node.AssetRevisionBindings) ||
+						binding.AssetRevisionSetDigest != node.AssetRevisionSetDigest ||
 						binding.AttemptCredits > node.MaxAttempts-1 ||
 						!team.legacyAcceptanceUnbound &&
 							!validTeamAcceptanceBinding(
 								binding,
 								node.AgentInstanceID,
 							)) {
-					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					return TeamExecutionRecord{}, fmt.Errorf("%w: planned node lineage %s binding=%#v node=%#v", ErrTeamExecutionConflict, node.LogicalNodeID, binding.AssetRevisionBindings, node.AssetRevisionBindings)
 				}
 				team.nodes[index] = TeamNodeRecord{
 					logicalNodeID:   node.LogicalNodeID,
@@ -2470,10 +2693,11 @@ func replayTeamExecution(
 				ViewVersion    string                       `json:"view_version"`
 				Attempts       []teamDispatchAttemptPayload `json:"attempts"`
 			}
-			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+			decodeErr := decodeExactPayload(event.PayloadJSON, &payload)
+			if decodeErr != nil ||
 				payload.TeamInstanceID != team.teamInstanceID ||
 				payload.PlanDigest != team.planDigest {
-				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				return TeamExecutionRecord{}, fmt.Errorf("%w: dispatched %s decode=%v", ErrTeamExecutionConflict, event.ID, decodeErr)
 			}
 			for _, dispatched := range payload.Attempts {
 				node := teamNodeByID(&team, dispatched.LogicalNodeID)
@@ -2482,12 +2706,18 @@ func replayTeamExecution(
 					attempt.workItemID != dispatched.WorkItemID ||
 					attempt.runID != dispatched.RunID ||
 					attempt.runtimeInstanceID != dispatched.RuntimeInstanceID ||
-					attempt.agentInstanceID != dispatched.AgentInstanceID {
-					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					attempt.agentInstanceID != dispatched.AgentInstanceID ||
+					!reflect.DeepEqual(node.semanticBinding.AssetRevisionBindings, dispatched.AssetRevisionBindings) ||
+					node.semanticBinding.AssetRevisionSetDigest != dispatched.AssetRevisionSetDigest {
+					return TeamExecutionRecord{}, fmt.Errorf("%w: dispatched attempt lineage %s semantic=%#v dispatch=%#v", ErrTeamExecutionConflict, dispatched.LogicalNodeID, node.semanticBinding.AssetRevisionBindings, dispatched.AssetRevisionBindings)
 				}
 				attempt.claimID = dispatched.ClaimID
 				attempt.claimGeneration = dispatched.ClaimGeneration
 				attempt.status = "dispatched"
+				attempt.assetRevisionBindings = cloneTeamAssetBindings(dispatched.AssetRevisionBindings)
+				attempt.assetRevisionSetDigest = dispatched.AssetRevisionSetDigest
+				attempt.materializationManifestDigest = dispatched.MaterializationManifestDigest
+				attempt.materializationRootDigest = dispatched.MaterializationRootDigest
 				node.status = "running"
 				node.retryAt = time.Time{}
 			}
@@ -3202,12 +3432,23 @@ func cloneTeamNodeRecords(records []TeamNodeRecord) []TeamNodeRecord {
 	for index, record := range records {
 		cloned[index] = record
 		cloned[index].attempts = append([]TeamAttemptRecord(nil), record.attempts...)
+		cloned[index].semanticBinding.AssetRevisionBindings = cloneTeamAssetBindings(record.semanticBinding.AssetRevisionBindings)
+		for attemptIndex := range cloned[index].attempts {
+			cloned[index].attempts[attemptIndex].assetRevisionBindings = cloneTeamAssetBindings(record.attempts[attemptIndex].assetRevisionBindings)
+		}
 		cloned[index].priorClassifications = append(
 			[]verification.OutputClassification(nil),
 			record.priorClassifications...,
 		)
 	}
 	return cloned
+}
+
+func cloneTeamAssetBindings(values []assets.ExactAssetRevisionBinding) []assets.ExactAssetRevisionBinding {
+	if values == nil {
+		return []assets.ExactAssetRevisionBinding{}
+	}
+	return append([]assets.ExactAssetRevisionBinding{}, values...)
 }
 
 func cloneTeamExecutionRecord(record TeamExecutionRecord) TeamExecutionRecord {

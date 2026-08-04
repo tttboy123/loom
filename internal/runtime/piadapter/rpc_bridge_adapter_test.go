@@ -349,7 +349,11 @@ func TestPiRPCTranscriptClosure(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Execute() error = %v", err)
 				}
-				if time.Since(started) > 2*time.Second ||
+				// Audit publication is a non-blocking select/default. Allow the
+				// process fixture enough scheduling time under the full parallel
+				// repository matrix; this bound still detects an implementation
+				// that blocks forever on an unavailable audit sink.
+				if time.Since(started) > 15*time.Second ||
 					len(result.InboundFrames()) != 5 {
 					t.Fatal("audit availability changed accepted execution")
 				}

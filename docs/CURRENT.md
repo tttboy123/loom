@@ -5907,3 +5907,157 @@ P2B-W1 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
 P2B-W2 = DOES NOT EXIST
 LIVE ACTION = COMPLETE / NO RERUN
 ```
+
+`CURRENT`: Phase 3A Goal is active at accepted baseline `6d380233`. Gate 0
+repository identity and dirty-boundary checks pass, but the Entry Audit found
+three critical prerequisites that are not yet closed: saved-Team exact Skill
+revision data does not enter authoritative Run/Attempt lineage; current Pi
+execution explicitly disables Skills and exposes no governed materialization
+capability; and there is no correlation-complete real native-window plus PTY
+shared-root journey substrate for the newly mandatory Cross-client Exit Gate.
+
+Journal/CAS, immutable Artifact/Evidence, accepted terminal authority,
+GlobalReadView and Credential Broker foundations are present and must be reused.
+No product code was changed. A single bounded Entry Amendment is proposed to
+reopen only exact asset lineage, private Runtime materialization and
+correlation-only journey metadata/harness inside the one P3A-W1. It creates no
+P3A-W2.
+
+Product implementation, ADR/Exit Contract freeze and client journeys remain
+locked until explicit Product Owner authorization and independent Amendment
+Review PASS.
+
+Read-only contract discovery has since narrowed the proposed reopening to the
+saved-Team-to-Run exact asset lineage, Runtime catalog/Pi private
+materialization, P3A product/API clients and correlation-only journey metadata.
+The existing Journal Store, Evidence Store, Credential Broker, root policy and
+accepted P2B-W1 remain closed. This discovery does not freeze the Amendment or
+unlock product code.
+
+The Product Owner has now authorized the single bounded Entry Amendment. The
+normative `ENTRY-AMENDMENT.md` is frozen for fresh independent Contract Review.
+It permits the later Gate 1 contracts to select exact owned files only from its
+closed allowlist, maps strict P3A `journey_id` correlation to the existing
+Journal `Event.CorrelationID`, and defines private atomic Pi Skill
+materialization without removing `--no-skills` until compatibility is proven.
+This freeze still grants no product edit, RED, migration, daemon launch,
+materialization, journey, live canary, staging or commit authority.
+
+Fresh independent Entry Amendment Contract Review 1 verified the exact frozen
+SHA-256 `e0346dc41dc69629b3fa3598e8a5cec85b244cadfb9a7538a8698bad7bea545f`
+and returned `P0=0`, `P1=0`, `P2=0`, Product/Authority `PASS` and
+Operational/Trace Governance `PASS`. No file/schema/authority contradiction was
+found. Gate 1 may now freeze the ADR, Phase 3A Exit Contract and exact single
+P3A-W1 contract. Product code remains locked until that combined Contract
+Review passes.
+
+Gate 1 governance is now frozen as one Candidate: proposed ADR-0013, the Phase
+3A Exit Contract and exact `P3A-W1 Versioned Evolution Asset Lifecycle and
+Runtime Materialization` contract. The P3A-W1 contract selects only paths from
+the reviewed Entry Amendment, explicitly excludes the pre-existing modified
+`internal/projection/team_execution_test.go`, freezes Event/IPC/journey schema,
+CAS/replay/migration/materialization rules, Mandatory RED, deterministic
+verification, real shared-root GUI+PTY journeys, rollback and one atomic local
+commit. Fresh independent combined Contract Review is required before RED or
+any product edit.
+
+Gate 1 Combined Contract Review 1 returned `P0=0`, `P1=4`, `P2=0`,
+Product/Authority `FAIL` and Operational/Trace Governance `FAIL`. Product code
+remains locked. The four contract repairs are: remove governance files from W1
+product ownership; make authoritative time service/authority-derived only;
+freeze authoritative Agent/Team/WorkPackage asset-binding facts and commands;
+and replace Event/IPC/materialization/journey schema prose with exact canonical
+field/stream/idempotency definitions before RED. Repair remains inside the
+single P3A-W1 governance Candidate; no P3A-W2 is created.
+
+P3A-W1 Contract Repair 1 is now frozen. It removes governance files from W1
+product ownership, makes authoritative time internal-only, adds exact
+Agent/Team/WorkPackage binding resolver/Event/action/projection/CAS semantics,
+and freezes canonical JSON, stream/Event/idempotency formulas, every Event and
+IPC action field, materialization manifest and journey evidence manifest. It
+uses only the reviewed Amendment's existing/new source paths. Product code
+remains locked pending fresh independent Re-review.
+
+Contract Repair 1 Re-review returned `P0=0`, `P1=2`, `P2=0` and dual `FAIL`:
+binding stream identity omitted scope identity even though Agent/Team IDs may be
+reused across scopes, and the Event-code prose contradicted two literal mapping
+rows. Repair 2 is now frozen with a full canonical subject identity digest and
+binding stream, plus the mapping table as sole Event-code authority and golden
+Template/RunPromotion Event IDs. No source ownership or authority expanded.
+
+Fresh independent Repair 2 Re-review returned `P0=0`, `P1=0`, `P2=0`,
+Product/Authority `PASS` and Operational/Trace Governance `PASS`. It independently
+recomputed both golden Event identities and found no remaining repair. ADR-0013
+is accepted. Gate 1 is closed successfully and the unique P3A-W1 may now capture
+Mandatory RED. No implementation behavior, daemon, materialization, client
+journey, staging or commit has occurred yet.
+
+P3A-W1 Mandatory RED is now partially captured. Compile-clean failures prove
+the missing asset domain/authority, strict journey wire, exact
+ExecutionPlan/dispatch/Run lineage, GlobalReadView accessors, Pi conformance,
+private materializer, application/API, production TUI and Swift surfaces. One
+test-only missing import was excluded and rerun correctly. Lifecycle/CAS/
+promotion/replay/materialization/security/template and client-parity behavioral
+RED remains mandatory, so implementation is still locked.
+
+```text
+PHASE3A = GATE 1 PASS / MANDATORY RED PARTIAL
+P3A-W1 = FROZEN / RED TESTS ONLY
+P3A-W2 = DOES NOT EXIST
+PRODUCT CODE = RED TESTS ONLY
+CROSS-CLIENT JOURNEY = NOT AUTHORIZED
+```
+
+`CURRENT`: P3A-W1 implementation is complete on the same accepted baseline
+`6d380233` (no new commits since). Mandatory RED is fully captured and the
+unique P3A-W1 Candidate passed the focused/race/vet/tidy/format gates, the
+deterministic matrix (Go full/race/vet/tidy/gofmt; Swift full/TSAN/Release),
+an independent Implementation Review (P0=P1=P2=0) and an owned-path repair
+review chain. Three post-final-review product changes were completed and
+regression-tested: the content-addressed evaluation fixture unification
+(`app.CanonicalEvolutionEvaluationFixture`, service/TUI/Swift shared digest
+formula), the journey isolation-root recovery
+(`recoverProductJourneyIsolationRoot`, fail-closed on foreign/symlink/
+non-owned Pi metadata roots), and the Swift contract probe extension
+(`--asset-action` with `stale_view`/`wrong_digest` variants plus public
+`sha256Text`/`canonicalEvolutionAssetDigests`).
+
+The mandatory Cross-client Exit Gate was amended by the frozen
+`P3A-W1-ALTERNATIVE-VERIFICATION-AMENDMENT.md` (Product Owner instruction
+2026-08-04, independent Review PASS): Computer-Use-driven real-window
+automation is replaced by the production Swift client over the real daemon
+socket, the real native window launched with `--socket --journey-id` and
+captured with `screencapture`, and the real PTY TUI. The GUI evidence
+surface is defined precisely by the frozen
+`P3A-W1-GUI-EVIDENCE-SURFACE-AMENDMENT.md` (same PO instruction; the
+production window is launched and connected per scenario with launch reads
+in the IPC log, screenshots are real checkpoint captures, and
+journey-specific GUI behavior is proven by the production Swift client
+records). All eight scenarios are
+frozen and verified PASS
+(`.loom-evidence/phase3a/P3A-W1/JOURNEY-ROOTS-INVENTORY.md`):
+happy lifecycle, cancel-reject-retain, stale-view-digest-generation,
+concurrent-single-winner, crash-before-cas, crash-after-cas-before-response,
+projection-failure-rebuild-reconnect and slow-client-redelivery-clean-restart.
+Independent dual Result reviews returned Product Result PASS and Operational
+and Trace Behavior PASS with P0=P1=0 and only documentation-precision P2
+findings that are now closed
+(`.loom-evidence/phase3a/P3A-W1-DUAL-RESULT-REVIEWS.md`, including the
+final-generation closure addendum recording the eight final `-r2` roots, the
+happy-root 498-event/492-correlated counts and the read-only re-verify PASS
+on all eight roots). The Whole-Candidate Review returned PASS (P0=0 P1=0
+P2=2) with its two documentation closures applied.
+
+The unique P3A-W1 is accepted by the atomic local commit containing this
+record. The final root set, binary digests and evidence bundle are recorded in
+`.loom-evidence/phase3a/P3A-W1/JOURNEY-ROOTS-INVENTORY.md`. No P3A-W2,
+further journey, push or merge follows from this acceptance. Unrelated dirty
+and untracked user files remain outside the commit.
+
+```text
+PHASE3A = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
+P3A-W1 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
+P3A-W2 = DOES NOT EXIST
+PRODUCT CODE = IMPLEMENTED / RED + DETERMINISTIC MATRIX PASS
+CROSS-CLIENT JOURNEY = ALTERNATIVE VERIFICATION / 8/8 PASS
+```

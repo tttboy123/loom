@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 	loomruntime "loom-pi-rebuild/internal/runtime"
@@ -1128,6 +1129,80 @@ func TestBuiltInMissionExecutionCompilerBindsExactRecipeAndVerifier(
 		projected,
 	); !errors.Is(err, ErrMissionExecutionConflict) {
 		t.Fatalf("unknown recipe recovery error = %v", err)
+	}
+}
+
+func TestP3AMissionCompilerMergesExactBindingsAndRequiresMaterializationCapability(t *testing.T) {
+	command := missionExecutionTestCommand("preflight")
+	now := time.Date(2026, 8, 3, 7, 0, 0, 0, time.UTC)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "loom-main-native", AdapterType: "pi-cli", ProviderID: "local",
+		ModelID:  "qwen2.5-coder-1.5b-instruct-q4-k-m",
+		AuthMode: loomruntime.AuthNative, RequiredCapabilities: []string{"models"},
+		Timeout: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-pi", DeviceID: "device-local", AdapterType: "pi-cli",
+		DisplayName: "Local Pi", ExecutableVersion: "0.82.1",
+		Status:               loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{"models", missionSkillMaterializationCapability},
+		Capacity:             1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingAt := func(revision, digit string) assets.ExactAssetRevisionBinding {
+		return assets.ExactAssetRevisionBinding{
+			AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1",
+			RevisionID: revision, SHA256Digest: strings.Repeat(digit, 64),
+			SourceScope: assets.SourceScopeLocal,
+		}
+	}
+	workPackageBinding := bindingAt("work-package", "d")
+	source := &controlledMissionExecutionBindingSource{binding: MissionExecutionBinding{
+		ViewVersion: command.ExpectedViewVersion, TeamInstanceID: command.TeamInstanceID,
+		AgentInstanceID: "agent-main", Profile: profile, Instance: instance,
+		CapacityAvailable:            1,
+		SavedTeamAssetBindings:       []assets.ExactAssetRevisionBinding{bindingAt("saved", "a")},
+		TeamDefinitionAssetBindings:  []assets.ExactAssetRevisionBinding{bindingAt("team", "b")},
+		AgentDefinitionAssetBindings: []assets.ExactAssetRevisionBinding{bindingAt("agent", "c")},
+		AssetBindingRecords: []assets.EvolutionAssetBindingRecord{{
+			SubjectKind: "work_package", SubjectID: command.WorkPackageID,
+			SubjectVersion: 1, SubjectDigest: command.WorkPackageDigest,
+			SubjectScope: "builtin", SubjectIdentityDigest: strings.Repeat("e", 64),
+			Bindings: []assets.ExactAssetRevisionBinding{workPackageBinding},
+		}},
+		AssetSourceStreamIDs: []string{"team-definition/team-1"},
+	}}
+	compiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: source, SourcePath: t.TempDir(),
+			Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compilation, err := compiler.CompileMissionExecution(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := compilation.Plan.Nodes()[0]
+	if got := node.AssetRevisionBindings(); len(got) != 1 || got[0] != workPackageBinding {
+		t.Fatalf("merged plan bindings = %#v", got)
+	}
+	if node.AssetRevisionSetDigest() == "" ||
+		!reflect.DeepEqual(compilation.Request.AssetSourceStreamIDs, []string{
+			"evolution-asset-binding/work_package/" + strings.Repeat("e", 64),
+			"team-definition/team-1",
+		}) {
+		t.Fatalf("lineage request = %#v", compilation.Request)
+	}
+	if got := compilation.Request.Nodes[0].Profile.RequiredCapabilities; !reflect.DeepEqual(got, []string{missionSkillMaterializationCapability, "models"}) {
+		t.Fatalf("required capabilities = %#v", got)
 	}
 }
 

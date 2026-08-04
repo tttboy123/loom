@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
 )
 
@@ -18,6 +19,7 @@ type TeamExecution struct {
 	PlanDigest              string
 	Status                  string
 	Nodes                   []TeamExecutionNode
+	AssetLineageAvailable   bool
 	LegacySemanticUnbound   bool
 	LegacyAcceptanceUnbound bool
 }
@@ -61,25 +63,33 @@ type TeamExecutionNode struct {
 	CreditsAfter                int
 	FallbackConsumed            bool
 	PriorClassifications        []string
+	AssetLineageAvailable       bool
+	AssetRevisionBindings       []assets.ExactAssetRevisionBinding
+	AssetRevisionSetDigest      string
 }
 
 type TeamExecutionAttempt struct {
-	AttemptNumber              int
-	WorkItemID                 string
-	RunID                      string
-	ClaimID                    string
-	ClaimGeneration            int64
-	RuntimeInstanceID          string
-	AgentInstanceID            string
-	Status                     string
-	EvidenceID                 string
-	EvidenceDigest             string
-	WorkflowPath               string
-	OutputContractVersion      int
-	OutputContractDigest       string
-	OutputClassification       string
-	OutputClassificationDigest string
-	OutputSummaryDigest        string
+	AttemptNumber                 int
+	WorkItemID                    string
+	RunID                         string
+	ClaimID                       string
+	ClaimGeneration               int64
+	RuntimeInstanceID             string
+	AgentInstanceID               string
+	Status                        string
+	EvidenceID                    string
+	EvidenceDigest                string
+	WorkflowPath                  string
+	OutputContractVersion         int
+	OutputContractDigest          string
+	OutputClassification          string
+	OutputClassificationDigest    string
+	OutputSummaryDigest           string
+	AssetLineageAvailable         bool
+	AssetRevisionBindings         []assets.ExactAssetRevisionBinding
+	AssetRevisionSetDigest        string
+	MaterializationManifestDigest string
+	MaterializationRootDigest     string
 }
 
 type TeamTimelineAnchor struct {
@@ -91,23 +101,29 @@ type TeamTimelineAnchor struct {
 }
 
 type GlobalReadView struct {
-	version             string
-	heads               map[string]journal.StreamHead
-	workItems           map[string]WorkItem
-	runs                map[string]Run
-	agentGrants         map[string]AgentGrant
-	latestGrantByRun    map[string]AgentGrant
-	evidence            map[string]Evidence
-	ruleSets            map[string]ProjectedRuleSet
-	approvalRequests    map[string]ProjectedApprovalRequest
-	teams               map[string]TeamInstance
-	agentInstances      map[string]AgentInstance
-	runtimeInstances    map[string]RuntimeInstance
-	teamDefinitions     map[string]TeamDefinitionRecord
-	providerCredentials map[string]ProviderCredentialRecord
-	teamExecutions      map[string]TeamExecution
-	sideTaskHandoffs    map[string]SideTaskHandoff
-	activeRunCount      map[string]int
+	version                      string
+	heads                        map[string]journal.StreamHead
+	workItems                    map[string]WorkItem
+	runs                         map[string]Run
+	agentGrants                  map[string]AgentGrant
+	latestGrantByRun             map[string]AgentGrant
+	evidence                     map[string]Evidence
+	ruleSets                     map[string]ProjectedRuleSet
+	approvalRequests             map[string]ProjectedApprovalRequest
+	teams                        map[string]TeamInstance
+	agentInstances               map[string]AgentInstance
+	runtimeInstances             map[string]RuntimeInstance
+	teamDefinitions              map[string]TeamDefinitionRecord
+	providerCredentials          map[string]ProviderCredentialRecord
+	teamExecutions               map[string]TeamExecution
+	sideTaskHandoffs             map[string]SideTaskHandoff
+	activeRunCount               map[string]int
+	evolutionAssetDefinitions    map[string]assets.SkillDefinition
+	evolutionAssetRevisions      map[string]assets.SkillRevision
+	evolutionAssetCandidates     map[string]assets.EvolutionCandidate
+	evolutionAssetEvaluations    map[string]assets.EvaluationRecord
+	evolutionAssetBindings       map[string]assets.EvolutionAssetBindingRecord
+	runtimeSkillMaterializations map[string]assets.RuntimeSkillMaterializationRecord
 }
 
 func (view GlobalReadView) Version() string { return view.version }
@@ -140,6 +156,10 @@ func (view GlobalReadView) WorkItemsForTeam(teamID string) []WorkItem {
 
 func (view GlobalReadView) Run(id string) (Run, bool) {
 	record, ok := view.runs[id]
+	record.AssetRevisionBindings = append(
+		[]ProjectedAssetRevisionBinding(nil),
+		record.AssetRevisionBindings...,
+	)
 	return record, ok
 }
 
@@ -411,6 +431,111 @@ func (view GlobalReadView) ActiveRunCount(runtimeInstanceID string) int {
 	return view.activeRunCount[runtimeInstanceID]
 }
 
+func (view GlobalReadView) EvolutionAssetDefinition(id string) (assets.SkillDefinition, bool) {
+	record, ok := view.evolutionAssetDefinitions[id]
+	return record, ok
+}
+
+func (view GlobalReadView) EvolutionAssetDefinitions(afterID string, limit int) ([]assets.SkillDefinition, bool) {
+	ids, ok := globalReadPageIDs(view.evolutionAssetDefinitions, afterID, limit)
+	if !ok {
+		return []assets.SkillDefinition{}, false
+	}
+	records := make([]assets.SkillDefinition, len(ids))
+	for index, id := range ids {
+		records[index] = view.evolutionAssetDefinitions[id]
+	}
+	return records, globalReadPageHasMore(view.evolutionAssetDefinitions, ids, afterID)
+}
+
+func (view GlobalReadView) EvolutionAssetRevision(id string) (assets.SkillRevision, bool) {
+	record, ok := view.evolutionAssetRevisions[id]
+	record.Dependencies = append([]string(nil), record.Dependencies...)
+	record.CompatibleRuntimeCapabilities = append([]string(nil), record.CompatibleRuntimeCapabilities...)
+	return record, ok
+}
+func (view GlobalReadView) EvolutionAssetRevisions(afterID string, limit int) ([]assets.SkillRevision, bool) {
+	ids, ok := globalReadPageIDs(view.evolutionAssetRevisions, afterID, limit)
+	if !ok {
+		return []assets.SkillRevision{}, false
+	}
+	records := make([]assets.SkillRevision, 0, len(ids))
+	for _, id := range ids {
+		record, _ := view.EvolutionAssetRevision(id)
+		records = append(records, record)
+	}
+	return records, globalReadPageHasMore(view.evolutionAssetRevisions, ids, afterID)
+}
+func (view GlobalReadView) EvolutionAssetCandidate(id string) (assets.EvolutionCandidate, bool) {
+	record, ok := view.evolutionAssetCandidates[id]
+	record.SourceEvidenceIDs = append([]string(nil), record.SourceEvidenceIDs...)
+	record.SourceEvidenceDigests = append([]string(nil), record.SourceEvidenceDigests...)
+	record.RequiredEvaluationIDs = append([]string(nil), record.RequiredEvaluationIDs...)
+	return record, ok
+}
+func (view GlobalReadView) EvolutionAssetCandidates(afterID string, limit int) ([]assets.EvolutionCandidate, bool) {
+	ids, ok := globalReadPageIDs(view.evolutionAssetCandidates, afterID, limit)
+	if !ok {
+		return []assets.EvolutionCandidate{}, false
+	}
+	records := make([]assets.EvolutionCandidate, 0, len(ids))
+	for _, id := range ids {
+		record, _ := view.EvolutionAssetCandidate(id)
+		records = append(records, record)
+	}
+	return records, globalReadPageHasMore(view.evolutionAssetCandidates, ids, afterID)
+}
+func (view GlobalReadView) EvolutionAssetEvaluation(id string) (assets.EvaluationRecord, bool) {
+	record, ok := view.evolutionAssetEvaluations[id]
+	return record, ok
+}
+func (view GlobalReadView) EvolutionAssetEvaluations(afterID string, limit int) ([]assets.EvaluationRecord, bool) {
+	ids, ok := globalReadPageIDs(view.evolutionAssetEvaluations, afterID, limit)
+	if !ok {
+		return []assets.EvaluationRecord{}, false
+	}
+	records := make([]assets.EvaluationRecord, len(ids))
+	for index, id := range ids {
+		records[index] = view.evolutionAssetEvaluations[id]
+	}
+	return records, globalReadPageHasMore(view.evolutionAssetEvaluations, ids, afterID)
+}
+func (view GlobalReadView) EvolutionAssetBinding(id string) (assets.EvolutionAssetBindingRecord, bool) {
+	record, ok := view.evolutionAssetBindings[id]
+	record.Bindings = append([]assets.ExactAssetRevisionBinding(nil), record.Bindings...)
+	return record, ok
+}
+func (view GlobalReadView) EvolutionAssetBindings(afterID string, limit int) ([]assets.EvolutionAssetBindingRecord, bool) {
+	ids, ok := globalReadPageIDs(view.evolutionAssetBindings, afterID, limit)
+	if !ok {
+		return []assets.EvolutionAssetBindingRecord{}, false
+	}
+	records := make([]assets.EvolutionAssetBindingRecord, 0, len(ids))
+	for _, id := range ids {
+		record, _ := view.EvolutionAssetBinding(id)
+		records = append(records, record)
+	}
+	return records, globalReadPageHasMore(view.evolutionAssetBindings, ids, afterID)
+}
+func (view GlobalReadView) RuntimeSkillMaterialization(id string) (assets.RuntimeSkillMaterializationRecord, bool) {
+	record, ok := view.runtimeSkillMaterializations[id]
+	record.AssetRevisionBindings = append(
+		[]assets.ExactAssetRevisionBinding(nil), record.AssetRevisionBindings...,
+	)
+	return record, ok
+}
+func (view GlobalReadView) RuntimeSkillMaterializations(afterID string, limit int) ([]assets.RuntimeSkillMaterializationRecord, bool) {
+	ids, ok := globalReadPageIDs(view.runtimeSkillMaterializations, afterID, limit)
+	if !ok {
+		return []assets.RuntimeSkillMaterializationRecord{}, false
+	}
+	records := make([]assets.RuntimeSkillMaterializationRecord, len(ids))
+	for index, id := range ids {
+		records[index], _ = view.RuntimeSkillMaterialization(id)
+	}
+	return records, globalReadPageHasMore(view.runtimeSkillMaterializations, ids, afterID)
+}
+
 func globalReadPageIDs[T any](
 	records map[string]T,
 	afterID string,
@@ -538,26 +663,59 @@ func buildGlobalReadView(
 		return GlobalReadView{}, err
 	}
 	view := GlobalReadView{
-		version:             hex.EncodeToString(sum[:]),
-		heads:               heads,
-		workItems:           cloned.WorkItems,
-		runs:                cloned.Runs,
-		agentGrants:         cloned.AgentGrants,
-		latestGrantByRun:    latestGrantByRun,
-		evidence:            cloned.Evidence,
-		ruleSets:            cloned.RuleSets,
-		approvalRequests:    cloned.ApprovalRequests,
-		teams:               cloned.Teams,
-		agentInstances:      cloned.AgentInstances,
-		runtimeInstances:    cloned.RuntimeInstances,
-		teamDefinitions:     cloned.TeamDefinitions,
-		providerCredentials: cloned.ProviderCredentials,
-		teamExecutions:      make(map[string]TeamExecution, len(teamExecutions)),
-		sideTaskHandoffs:    sideTaskHandoffs,
-		activeRunCount:      active,
+		version:                      hex.EncodeToString(sum[:]),
+		heads:                        heads,
+		workItems:                    cloned.WorkItems,
+		runs:                         cloned.Runs,
+		agentGrants:                  cloned.AgentGrants,
+		latestGrantByRun:             latestGrantByRun,
+		evidence:                     cloned.Evidence,
+		ruleSets:                     cloned.RuleSets,
+		approvalRequests:             cloned.ApprovalRequests,
+		teams:                        cloned.Teams,
+		agentInstances:               cloned.AgentInstances,
+		runtimeInstances:             cloned.RuntimeInstances,
+		teamDefinitions:              cloned.TeamDefinitions,
+		providerCredentials:          cloned.ProviderCredentials,
+		teamExecutions:               make(map[string]TeamExecution, len(teamExecutions)),
+		sideTaskHandoffs:             sideTaskHandoffs,
+		activeRunCount:               active,
+		evolutionAssetDefinitions:    map[string]assets.SkillDefinition{},
+		evolutionAssetRevisions:      map[string]assets.SkillRevision{},
+		evolutionAssetCandidates:     map[string]assets.EvolutionCandidate{},
+		evolutionAssetEvaluations:    map[string]assets.EvaluationRecord{},
+		evolutionAssetBindings:       map[string]assets.EvolutionAssetBindingRecord{},
+		runtimeSkillMaterializations: map[string]assets.RuntimeSkillMaterializationRecord{},
+	}
+	if cloned.EvolutionAssets != nil {
+		assetSnapshot := cloneEvolutionAssetSnapshot(*cloned.EvolutionAssets)
+		view.evolutionAssetDefinitions = assetSnapshot.Definitions
+		view.evolutionAssetRevisions = assetSnapshot.Revisions
+		view.evolutionAssetCandidates = assetSnapshot.Candidates
+		view.evolutionAssetEvaluations = assetSnapshot.Evaluations
+		view.evolutionAssetBindings = assetSnapshot.Bindings
+		view.runtimeSkillMaterializations = assetSnapshot.Materializations
 	}
 	for id, record := range teamExecutions {
-		view.teamExecutions[id] = cloneGlobalTeamExecution(record)
+		clonedTeam := cloneGlobalTeamExecution(record)
+		view.teamExecutions[id] = clonedTeam
+		for _, node := range clonedTeam.Nodes {
+			for _, attempt := range node.Attempts {
+				run, exists := view.runs[attempt.RunID]
+				if !exists || !attempt.AssetLineageAvailable {
+					continue
+				}
+				run.AssetLineageAvailable = true
+				run.AssetRevisionBindings = projectedRunAssetBindings(
+					attempt.AssetRevisionBindings,
+				)
+				run.AssetRevisionSetDigest = attempt.AssetRevisionSetDigest
+				run.MaterializationManifestDigest =
+					attempt.MaterializationManifestDigest
+				run.MaterializationRootDigest = attempt.MaterializationRootDigest
+				view.runs[attempt.RunID] = run
+			}
+		}
 	}
 	return view, nil
 }
@@ -577,6 +735,16 @@ func cloneGlobalTeamExecution(record TeamExecution) TeamExecution {
 			[]TeamExecutionAttempt(nil),
 			record.Nodes[index].Attempts...,
 		)
+		record.Nodes[index].AssetRevisionBindings = append(
+			[]assets.ExactAssetRevisionBinding(nil),
+			record.Nodes[index].AssetRevisionBindings...,
+		)
+		for attemptIndex := range record.Nodes[index].Attempts {
+			record.Nodes[index].Attempts[attemptIndex].AssetRevisionBindings = append(
+				[]assets.ExactAssetRevisionBinding(nil),
+				record.Nodes[index].Attempts[attemptIndex].AssetRevisionBindings...,
+			)
+		}
 	}
 	return record
 }

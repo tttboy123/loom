@@ -91,20 +91,30 @@ type PiMetadataRunner interface {
 	RunPiMetadata(context.Context, PiMetadataRequest) (PiMetadataResult, error)
 }
 
+type SkillMaterializationConformance interface {
+	VerifySkillMaterialization(context.Context) error
+}
+
+type SkillMaterializationConformanceProvider interface {
+	SkillMaterializationConformance() (SkillMaterializationConformance, bool)
+}
+
 type PiRuntimeProbeConfig struct {
-	ProbeID     string
-	InstanceID  string
-	DeviceID    string
-	DisplayName string
-	Runner      PiMetadataRunner
+	ProbeID                         string
+	InstanceID                      string
+	DeviceID                        string
+	DisplayName                     string
+	Runner                          PiMetadataRunner
+	SkillMaterializationConformance SkillMaterializationConformance
 }
 
 type piRuntimeProbe struct {
-	probeID     string
-	instanceID  string
-	deviceID    string
-	displayName string
-	runner      PiMetadataRunner
+	probeID                         string
+	instanceID                      string
+	deviceID                        string
+	displayName                     string
+	runner                          PiMetadataRunner
+	skillMaterializationConformance SkillMaterializationConformance
 }
 
 func NewPiRuntimeProbe(config PiRuntimeProbeConfig) (RuntimeProbe, error) {
@@ -115,12 +125,21 @@ func NewPiRuntimeProbe(config PiRuntimeProbeConfig) (RuntimeProbe, error) {
 		isNilPiMetadataRunner(config.Runner) {
 		return nil, ErrInvalidPiRuntimeProbe
 	}
+	conformance := config.SkillMaterializationConformance
+	if conformance == nil {
+		if provider, ok := config.Runner.(SkillMaterializationConformanceProvider); ok {
+			if provided, available := provider.SkillMaterializationConformance(); available {
+				conformance = provided
+			}
+		}
+	}
 	return &piRuntimeProbe{
-		probeID:     config.ProbeID,
-		instanceID:  config.InstanceID,
-		deviceID:    config.DeviceID,
-		displayName: config.DisplayName,
-		runner:      config.Runner,
+		probeID:                         config.ProbeID,
+		instanceID:                      config.InstanceID,
+		deviceID:                        config.DeviceID,
+		displayName:                     config.DisplayName,
+		runner:                          config.Runner,
+		skillMaterializationConformance: conformance,
 	}, nil
 }
 
@@ -172,6 +191,14 @@ func (p *piRuntimeProbe) ObserveRuntime(ctx context.Context) ([]RuntimeObservati
 		return nil, err
 	}
 
+	capabilities := []string{"pi.metadata.models", "pi.metadata.version"}
+	if p.skillMaterializationConformance != nil {
+		if err := p.skillMaterializationConformance.VerifySkillMaterialization(ctx); err != nil {
+			return nil, ErrInvalidPiRuntimeProbe
+		}
+		capabilities = append(capabilities, "loom.skill-materialization.pi.v1")
+		sort.Strings(capabilities)
+	}
 	instance, err := NewRuntimeInstance(RuntimeInstance{
 		ID:                   p.instanceID,
 		DeviceID:             p.deviceID,
@@ -179,7 +206,7 @@ func (p *piRuntimeProbe) ObserveRuntime(ctx context.Context) ([]RuntimeObservati
 		DisplayName:          p.displayName,
 		ExecutableVersion:    version,
 		Status:               RuntimeOnline,
-		ObservedCapabilities: []string{"pi.metadata.models", "pi.metadata.version"},
+		ObservedCapabilities: capabilities,
 		Capacity:             1,
 	})
 	if err != nil {

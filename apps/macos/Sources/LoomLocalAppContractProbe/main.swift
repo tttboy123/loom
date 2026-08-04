@@ -28,17 +28,35 @@ private struct ProbeSideTaskOutput: Encodable {
     let availableDecisions: [String]
 }
 
+private struct ProbeAssetOutput: Encodable {
+    let viewVersion: String
+    let definitions: Int
+    let revisions: Int
+    let candidates: Int
+    let evaluations: Int
+    let bindings: Int
+    let materializations: Int
+}
+
+private struct ProbeAssetActionOutput: Encodable {
+    let action: String
+    let operationID: String
+    let eventIDs: [String]
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
         do {
             let arguments = CommandLine.arguments
             guard arguments.count == 3 || arguments.count == 4 || arguments.count == 5
-                    || arguments.count == 6,
+                    || arguments.count == 6 || arguments.count == 7,
                 arguments[1] == "--socket",
                 arguments.count == 3 || arguments.count == 4 && arguments[3] == "--execution"
                     || arguments[3] == "--team" || arguments[3] == "--team-all"
                     || arguments[3] == "--decision"
+                    || arguments.count == 5 && arguments[3] == "--assets"
+                    || (arguments.count == 6 || arguments.count == 7) && arguments[3] == "--asset-action"
                     || arguments.count == 6 && arguments[3] == "--side-task-read"
             else {
                 throw LocalProductClientError.invalidRequest
@@ -49,6 +67,53 @@ enum LoomLocalAppContractProbe {
             )
             guard try await client.ping() else {
                 throw LocalProductClientError.invalidResponse
+            }
+            if arguments.count == 5 && arguments[3] == "--assets" {
+                let snapshot = try await client.evolutionAssetSnapshot(
+                    journeyID: arguments[4], cursor: "", limit: 64
+                )
+                let encoded = try JSONEncoder().encode(ProbeAssetOutput(
+                    viewVersion: snapshot.viewVersion,
+                    definitions: snapshot.definitions.count,
+                    revisions: snapshot.revisions.count,
+                    candidates: snapshot.candidates.count,
+                    evaluations: snapshot.evaluations.count,
+                    bindings: snapshot.bindings.count,
+                    materializations: snapshot.materializations.count
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if (arguments.count == 6 || arguments.count == 7) && arguments[3] == "--asset-action" {
+                let journeyID = arguments[4]
+                let action = arguments[5]
+                let variant = arguments.count == 7 ? arguments[6] : ""
+                let snapshot = try await client.evolutionAssetSnapshot(
+                    journeyID: journeyID, cursor: "", limit: 64
+                )
+                let command = try assetCommand(
+                    action: action, journeyID: journeyID, snapshot: snapshot,
+                    variant: variant
+                )
+                let receipt = try await client.evolutionAssetCommand(command)
+                guard receipt.operationID == command.operationID,
+                      receipt.action == command.action,
+                      !receipt.eventIDs.isEmpty else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                let encoded = try JSONEncoder().encode(ProbeAssetActionOutput(
+                    action: receipt.action,
+                    operationID: receipt.operationID,
+                    eventIDs: receipt.eventIDs
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
             }
             if arguments.count == 6 && arguments[3] == "--side-task-read" {
                 let result = try await client.readSideTask(
@@ -209,5 +274,254 @@ enum LoomLocalAppContractProbe {
             throw LocalProductClientError.invalidRequest
         }
         return kind
+    }
+
+    private static func assetCommand(
+        action: String,
+        journeyID: String,
+        snapshot: EvolutionAssetSnapshot,
+        variant: String
+    ) throws -> EvolutionAssetCommand {
+        let operationID = UUID().uuidString.lowercased()
+        func applyVariant(_ command: EvolutionAssetCommand) -> EvolutionAssetCommand {
+            switch variant {
+            case "stale_view":
+                return EvolutionAssetCommand(
+                    action: command.action, operationID: command.operationID,
+                    journeyID: command.journeyID,
+                    expectedViewVersion: "stale-view-version",
+                    expectedStreamHeads: command.expectedStreamHeads,
+                    decisionSource: command.decisionSource,
+                    assetKind: command.assetKind,
+                    definitionID: command.definitionID,
+                    revisionID: command.revisionID,
+                    candidateID: command.candidateID,
+                    name: command.name, description: command.description,
+                    scope: command.scope, sourcePath: command.sourcePath,
+                    artifactDigest: command.artifactDigest,
+                    contentDigest: command.contentDigest,
+                    sourceScope: command.sourceScope,
+                    sourceReferenceDigest: command.sourceReferenceDigest,
+                    provenanceDigest: command.provenanceDigest,
+                    risk: command.risk, reasonCode: command.reasonCode,
+                    expectedPreviousRevisionID: command.expectedPreviousRevisionID,
+                    targetRevisionID: command.targetRevisionID,
+                    targetRevisionDigest: command.targetRevisionDigest,
+                    fromRevisionID: command.fromRevisionID,
+                    fromDigest: command.fromDigest,
+                    evaluationIDs: command.evaluationIDs,
+                    evaluationID: command.evaluationID,
+                    fixtureKind: command.fixtureKind,
+                    fixtureDigest: command.fixtureDigest,
+                    baselineRevisionID: command.baselineRevisionID,
+                    baselineDigest: command.baselineDigest,
+                    candidateRevisionID: command.candidateRevisionID,
+                    candidateDigest: command.candidateDigest,
+                    requestedCaseIDs: command.requestedCaseIDs,
+                    subject: command.subject, bindings: command.bindings,
+                    assetRevisionSetDigest: command.assetRevisionSetDigest,
+                    sourceRunID: command.sourceRunID,
+                    sourceRunGeneration: command.sourceRunGeneration,
+                    sourceRunDigest: command.sourceRunDigest,
+                    sourceEvidenceIDs: command.sourceEvidenceIDs,
+                    sourceEvidenceDigests: command.sourceEvidenceDigests,
+                    redactedSummary: command.redactedSummary,
+                    redactedSummaryDigest: command.redactedSummaryDigest,
+                    scopeDifference: command.scopeDifference,
+                    expectedBenefit: command.expectedBenefit,
+                    templateOutput: command.templateOutput,
+                    parameterSchemaDigest: command.parameterSchemaDigest,
+                    permissionCeilingDigest: command.permissionCeilingDigest,
+                    scopeCeilingDigest: command.scopeCeilingDigest,
+                    parameterValues: command.parameterValues,
+                    parameterDigest: command.parameterDigest
+                )
+            case "wrong_digest":
+                return EvolutionAssetCommand(
+                    action: command.action, operationID: command.operationID,
+                    journeyID: command.journeyID,
+                    expectedViewVersion: command.expectedViewVersion,
+                    expectedStreamHeads: command.expectedStreamHeads,
+                    decisionSource: command.decisionSource,
+                    assetKind: command.assetKind,
+                    definitionID: command.definitionID,
+                    revisionID: command.revisionID,
+                    candidateID: command.candidateID,
+                    name: command.name, description: command.description,
+                    scope: command.scope, sourcePath: command.sourcePath,
+                    artifactDigest: String(repeating: "f", count: 64),
+                    contentDigest: command.contentDigest,
+                    sourceScope: command.sourceScope,
+                    sourceReferenceDigest: command.sourceReferenceDigest,
+                    provenanceDigest: command.provenanceDigest,
+                    risk: command.risk, reasonCode: command.reasonCode,
+                    expectedPreviousRevisionID: command.expectedPreviousRevisionID,
+                    targetRevisionID: command.targetRevisionID,
+                    targetRevisionDigest: command.targetRevisionDigest,
+                    fromRevisionID: command.fromRevisionID,
+                    fromDigest: command.fromDigest,
+                    evaluationIDs: command.evaluationIDs,
+                    evaluationID: command.evaluationID,
+                    fixtureKind: command.fixtureKind,
+                    fixtureDigest: command.fixtureDigest,
+                    baselineRevisionID: command.baselineRevisionID,
+                    baselineDigest: command.baselineDigest,
+                    candidateRevisionID: command.candidateRevisionID,
+                    candidateDigest: command.candidateDigest,
+                    requestedCaseIDs: command.requestedCaseIDs,
+                    subject: command.subject, bindings: command.bindings,
+                    assetRevisionSetDigest: command.assetRevisionSetDigest,
+                    sourceRunID: command.sourceRunID,
+                    sourceRunGeneration: command.sourceRunGeneration,
+                    sourceRunDigest: command.sourceRunDigest,
+                    sourceEvidenceIDs: command.sourceEvidenceIDs,
+                    sourceEvidenceDigests: command.sourceEvidenceDigests,
+                    redactedSummary: command.redactedSummary,
+                    redactedSummaryDigest: command.redactedSummaryDigest,
+                    scopeDifference: command.scopeDifference,
+                    expectedBenefit: command.expectedBenefit,
+                    templateOutput: command.templateOutput,
+                    parameterSchemaDigest: command.parameterSchemaDigest,
+                    permissionCeilingDigest: command.permissionCeilingDigest,
+                    scopeCeilingDigest: command.scopeCeilingDigest,
+                    parameterValues: command.parameterValues,
+                    parameterDigest: command.parameterDigest
+                )
+            default:
+                return command
+            }
+        }
+        switch action {
+        case "create_skill":
+            guard let sourcePath = ProcessInfo.processInfo.environment["LOOM_PROBE_SOURCE"] else {
+                throw LocalProductClientError.invalidRequest
+            }
+            let name = (sourcePath as NSString).lastPathComponent
+                .replacingOccurrences(of: (sourcePath as NSString).pathExtension.isEmpty ? "" : "." + (sourcePath as NSString).pathExtension, with: "")
+            let identity = LocalProductStore.sha256Text(
+                try String(contentsOfFile: sourcePath, encoding: .utf8)
+            )
+            let definitionID = "skill-" + String(identity.prefix(16))
+            let digests = try LocalProductStore.canonicalEvolutionAssetDigests(
+                kind: "skill", definitionID: definitionID,
+                revisionID: "revision-1", sourcePath: sourcePath
+            )
+            return EvolutionAssetCommand(
+                action: "create_skill", operationID: operationID,
+                journeyID: journeyID, expectedViewVersion: snapshot.viewVersion,
+                assetKind: .skill, definitionID: definitionID,
+                revisionID: "revision-1", name: name,
+                description: "Reviewed local Candidate", scope: "project",
+                sourcePath: sourcePath, artifactDigest: digests.artifact,
+                contentDigest: digests.content, sourceScope: "local",
+                sourceReferenceDigest: digests.artifact,
+                provenanceDigest: digests.artifact, risk: "low"
+            )
+        case "reject", "retain":
+            guard let candidate = snapshot.candidates.first(where: { $0.decision.isEmpty }),
+                  let revision = snapshot.revisions.first(where: {
+                      $0.definitionID == candidate.definitionID && $0.revisionID == candidate.revisionID
+                  }) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            let retain = action == "retain"
+            return EvolutionAssetCommand(
+                action: action, operationID: operationID,
+                journeyID: journeyID, expectedViewVersion: snapshot.viewVersion,
+                decisionSource: "user_explicit",
+                assetKind: candidate.assetKind,
+                definitionID: candidate.definitionID,
+                revisionID: candidate.revisionID,
+                candidateID: candidate.candidateID,
+                artifactDigest: revision.artifactDigest,
+                reasonCode: retain ? "keep_for_later" : "user_rejected"
+            )
+        case "record_evaluation":
+            guard let candidate = snapshot.candidates.first(where: { $0.decision.isEmpty }),
+                  let revision = snapshot.revisions.first(where: {
+                      $0.definitionID == candidate.definitionID && $0.revisionID == candidate.revisionID
+                  }) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            let baseline = snapshot.revisions.first(where: {
+                $0.definitionID == candidate.definitionID &&
+                    $0.revisionID == snapshot.definitions.first(where: {
+                        $0.definitionID == candidate.definitionID
+                    })?.activeRevisionID
+            }) ?? revision
+            let caseIDs = ["artifact_digest", "runtime_compatibility", "security_boundary"]
+            let fixture = "{\"schema_version\":1,\"fixture_kind\":\"synthetic\",\"case_ids\":[\"artifact_digest\",\"runtime_compatibility\",\"security_boundary\"],\"expected\":{\"quality_result\":\"pass\",\"failure_count\":0,\"usage_observed\":true,\"usage_microunits\":250,\"cost_observed\":true,\"cost_microunits\":1250,\"cost_currency\":\"USD\",\"compatibility_result\":\"compatible\",\"applicable_scope\":\"bounded_fixture\",\"regression_result\":\"equivalent\",\"security_result\":\"pass\"}}"
+            let fixtureDigest = LocalProductStore.sha256Text(fixture)
+            return applyVariant(EvolutionAssetCommand(
+                action: "record_evaluation", operationID: operationID,
+                journeyID: journeyID, expectedViewVersion: snapshot.viewVersion,
+                candidateID: candidate.candidateID,
+                evaluationID: UUID().uuidString.lowercased(),
+                fixtureKind: "synthetic", fixtureDigest: fixtureDigest,
+                baselineRevisionID: baseline.revisionID,
+                baselineDigest: baseline.artifactDigest,
+                candidateRevisionID: revision.revisionID,
+                candidateDigest: revision.artifactDigest,
+                requestedCaseIDs: caseIDs
+            ))
+        case "activate":
+            guard let candidate = snapshot.candidates.first(where: { $0.decision.isEmpty }),
+                  let revision = snapshot.revisions.first(where: {
+                      $0.definitionID == candidate.definitionID && $0.revisionID == candidate.revisionID
+                  }) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            let expectedPrevious = snapshot.definitions.first(where: {
+                $0.definitionID == candidate.definitionID
+            })?.activeRevisionID ?? ""
+            return applyVariant(EvolutionAssetCommand(
+                action: "activate", operationID: operationID,
+                journeyID: journeyID, expectedViewVersion: snapshot.viewVersion,
+                decisionSource: "user_explicit",
+                assetKind: candidate.assetKind,
+                definitionID: candidate.definitionID,
+                revisionID: candidate.revisionID,
+                candidateID: candidate.candidateID,
+                artifactDigest: revision.artifactDigest,
+                expectedPreviousRevisionID: expectedPrevious,
+                evaluationIDs: candidate.requiredEvaluationIDs
+            ))
+        case "set_binding":
+            guard let definition = snapshot.definitions.first,
+                  !definition.activeRevisionID.isEmpty,
+                  let revision = snapshot.revisions.first(where: {
+                      $0.definitionID == definition.definitionID &&
+                          $0.revisionID == definition.activeRevisionID
+                  }),
+                  let subject = snapshot.bindingSubjects.first(where: {
+                      $0.subjectKind == "work_package" && $0.subjectID == "work-package.coding"
+                  }) else {
+                throw LocalProductClientError.invalidRequest
+            }
+            let binding = EvolutionAssetExactBinding(
+                assetKind: revision.assetKind,
+                definitionID: revision.definitionID,
+                revisionID: revision.revisionID,
+                sha256Digest: revision.artifactDigest,
+                sourceScope: revision.sourceScope
+            )
+            func quoted(_ value: String) throws -> String {
+                let encoded = try JSONEncoder().encode(value)
+                guard let text = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidRequest
+                }
+                return text
+            }
+            let value = "[{\"asset_kind\":\(try quoted(revision.assetKind.rawValue)),\"definition_id\":\(try quoted(revision.definitionID)),\"revision_id\":\(try quoted(revision.revisionID)),\"sha256_digest\":\(try quoted(revision.artifactDigest)),\"source_scope\":\(try quoted(revision.sourceScope))}]"
+            let setDigest = LocalProductStore.sha256Text(value)
+            return applyVariant(EvolutionAssetCommand(
+                action: "set_binding", operationID: operationID,
+                journeyID: journeyID, expectedViewVersion: snapshot.viewVersion,
+                subject: subject, bindings: [binding],
+                assetRevisionSetDigest: setDigest
+            ))
+        default:
+            throw LocalProductClientError.invalidRequest
+        }
     }
 }

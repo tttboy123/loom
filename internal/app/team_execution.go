@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
@@ -91,6 +92,44 @@ type TeamExecutionRequest struct {
 	GrantLifetime        time.Duration
 	CorrelationID        string
 	OutputObserver       NodeOutputObserver
+	AssetSourceStreamIDs []string
+}
+
+type TeamAssetMaterializationRequest struct {
+	TeamExecutionID   string
+	LogicalNodeID     string
+	RunID             string
+	AttemptNumber     int
+	Generation        int64
+	JourneyID         string
+	ExpectedView      string
+	Profile           loomruntime.RuntimeProfile
+	Instance          loomruntime.RuntimeInstance
+	Bindings          []assets.ExactAssetRevisionBinding
+	RevisionSetDigest string
+}
+
+type TeamAssetMaterialization struct {
+	SourcePath     string
+	AttemptLineage work.TeamAttemptMaterialization
+	RunID          string
+	AttemptNumber  int
+	Generation     int64
+	JourneyID      string
+	ManifestDigest string
+	RootDigest     string
+	Authoritative  bool
+}
+
+type TeamAssetMaterializer interface {
+	PrepareTeamAttemptMaterialization(
+		context.Context,
+		TeamAssetMaterializationRequest,
+	) (TeamAssetMaterialization, error)
+	CleanupTeamAttemptMaterialization(
+		context.Context,
+		TeamAssetMaterialization,
+	) error
 }
 
 type TeamExecutionResult struct {
@@ -104,10 +143,21 @@ func (result TeamExecutionResult) ExecutedNodeIDs() []string {
 }
 
 type TeamCoordinator struct {
-	workAuthority  *work.Authority
-	grantAuthority *authorization.Authority
-	projection     *projection.Projection
-	evidenceStore  *evidence.Store
+	workAuthority     *work.Authority
+	grantAuthority    *authorization.Authority
+	projection        *projection.Projection
+	evidenceStore     *evidence.Store
+	assetMaterializer TeamAssetMaterializer
+}
+
+func (coordinator *TeamCoordinator) SetAssetMaterializer(
+	materializer TeamAssetMaterializer,
+) error {
+	if coordinator == nil || materializer == nil || coordinator.assetMaterializer != nil {
+		return ErrInvalidTeamCoordinator
+	}
+	coordinator.assetMaterializer = materializer
+	return nil
 }
 
 type teamRecoveryPolicyPort struct {
@@ -308,12 +358,22 @@ func (coordinator *TeamCoordinator) Run(
 			})
 			selectedExecutions = append(selectedExecutions, execution)
 		}
-		expectedHeads := appDispatchHeads(
+		selectedExecutions, materializations, cleanupMaterializations, err :=
+			coordinator.prepareTeamAssetMaterializations(
+				ctx, request, view, ready, selections, selectedExecutions,
+			)
+		if err != nil {
+			return TeamExecutionResult{}, err
+		}
+		expectedHeads := appDispatchHeadsWithSources(
 			view,
 			request.Plan,
 			selections,
 			ready,
+			request.AssetSourceStreamIDs,
+			materializations,
 		)
+		assetSourceHeads := appAssetSourceHeads(view, request.AssetSourceStreamIDs)
 		waveRequest := request
 		waveRequest.AuthoritativeTime = readyTime
 		dispatched, err := coordinator.workAuthority.DispatchTeamReadySet(
@@ -322,6 +382,8 @@ func (coordinator *TeamCoordinator) Run(
 				Plan:                 request.Plan,
 				ReadyAttempts:        selections,
 				SemanticBindings:     appSemanticBindings(request),
+				Materializations:     materializations,
+				AssetSourceHeads:     assetSourceHeads,
 				ViewVersion:          view.Version(),
 				ExpectedHeads:        expectedHeads,
 				AuthoritativeTime:    waveRequest.AuthoritativeTime,
@@ -330,12 +392,18 @@ func (coordinator *TeamCoordinator) Run(
 			},
 		)
 		if err != nil {
+			coordinator.cleanupTeamAssetMaterializations(ctx, cleanupMaterializations)
 			return TeamExecutionResult{}, fmt.Errorf(
 				"Team ready-set dispatch: %w",
 				err,
 			)
 		}
 		if err := coordinator.refreshTeamObservationView(ctx); err != nil {
+			return TeamExecutionResult{}, err
+		}
+		if err := coordinator.verifyDispatchedAssetLineage(
+			request.Plan.TeamInstanceID(), materializations,
+		); err != nil {
 			return TeamExecutionResult{}, err
 		}
 		tasks, err := coordinator.prepareTeamTasks(
@@ -355,6 +423,14 @@ func (coordinator *TeamCoordinator) Run(
 			ctx,
 			waveRequest,
 			outcomes,
+		); err != nil {
+			return TeamExecutionResult{}, err
+		}
+		for index := range cleanupMaterializations {
+			cleanupMaterializations[index].Authoritative = true
+		}
+		if err := coordinator.cleanupCommittedTeamAssetMaterializations(
+			ctx, cleanupMaterializations,
 		); err != nil {
 			return TeamExecutionResult{}, err
 		}
@@ -383,6 +459,21 @@ func (coordinator *TeamCoordinator) Run(
 		team:            team,
 		executedNodeIDs: executed,
 	}, ErrTeamExecutionIncomplete
+}
+
+func appAssetSourceHeads(
+	view projection.GlobalReadView,
+	streamIDs []string,
+) []journal.StreamHead {
+	heads := make([]journal.StreamHead, len(streamIDs))
+	for index, streamID := range streamIDs {
+		head, ok := view.Head(streamID)
+		if !ok {
+			head = journal.StreamHead{StreamID: streamID}
+		}
+		heads[index] = head
+	}
+	return heads
 }
 
 func (coordinator *TeamCoordinator) refreshTeamObservationView(
@@ -1797,6 +1888,7 @@ func validateTeamExecutionRequest(
 		request.GrantLifetime <= 0 ||
 		request.GrantLifetime > time.Hour ||
 		request.CorrelationID == "" ||
+		!validAppAssetSourceStreamIDs(request.AssetSourceStreamIDs) ||
 		request.OutputObserver != nil &&
 			nilAppInterface(request.OutputObserver) {
 		return nil, ErrInvalidTeamCoordinator
@@ -1870,6 +1962,23 @@ func validateTeamExecutionRequest(
 	return executions, nil
 }
 
+func validAppAssetSourceStreamIDs(values []string) bool {
+	if len(values) > 16 {
+		return false
+	}
+	for index, value := range values {
+		if value == "" || len(value) > 256 || strings.ContainsAny(value, "\r\n\x00") ||
+			index > 0 && values[index-1] >= value {
+			return false
+		}
+		if !strings.HasPrefix(value, "team-definition/") &&
+			!strings.HasPrefix(value, "evolution-asset-binding/") {
+			return false
+		}
+	}
+	return true
+}
+
 func appNodeSemantics(
 	request TeamExecutionRequest,
 	logicalNodeID string,
@@ -1903,6 +2012,7 @@ func appSemanticBindings(
 		len(request.Semantics),
 	)
 	for _, semantics := range request.Semantics {
+		planNode := appPlanNode(request.Plan, semantics.LogicalNodeID)
 		result = append(result, work.TeamNodeSemanticBinding{
 			LogicalNodeID:               semantics.LogicalNodeID,
 			OutputContractVersion:       semantics.OutputContract.Version(),
@@ -1920,6 +2030,8 @@ func appSemanticBindings(
 			VerifierAgentInstanceID:     semantics.VerifierAgentInstanceID,
 			VerifierRuntimeInstanceID:   semantics.VerifierRuntimeInstanceID,
 			VerifierWorkflowPath:        semantics.VerifierWorkflowPath,
+			AssetRevisionBindings:       planNode.AssetRevisionBindings(),
+			AssetRevisionSetDigest:      planNode.AssetRevisionSetDigest(),
 		})
 	}
 	return result
@@ -2033,13 +2145,15 @@ func appPlanningPlan(
 			}
 		}
 		inputs = append(inputs, teams.ExecutionNodeInput{
-			LogicalNodeID:     node.LogicalNodeID(),
-			Title:             node.Title(),
-			AgentInstanceID:   agentInstanceID,
-			RuntimeInstanceID: runtimeInstanceID,
-			Role:              node.Role(),
-			DependsOn:         node.DependsOn(),
-			MaxAttempts:       node.MaxAttempts(),
+			LogicalNodeID:          node.LogicalNodeID(),
+			Title:                  node.Title(),
+			AgentInstanceID:        agentInstanceID,
+			RuntimeInstanceID:      runtimeInstanceID,
+			Role:                   node.Role(),
+			DependsOn:              node.DependsOn(),
+			MaxAttempts:            node.MaxAttempts(),
+			AssetRevisionBindings:  node.AssetRevisionBindings(),
+			AssetRevisionSetDigest: node.AssetRevisionSetDigest(),
 		})
 	}
 	planningPlan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
@@ -2125,16 +2239,43 @@ func appDispatchHeads(
 	plan teams.ExecutionPlan,
 	selections []work.TeamAttemptSelection,
 	nodes []teams.ExecutionNode,
+	materializationSets ...[]work.TeamAttemptMaterialization,
 ) []journal.StreamHead {
+	return appDispatchHeadsWithSources(
+		view, plan, selections, nodes, nil, materializationSets...,
+	)
+}
+
+func appDispatchHeadsWithSources(
+	view projection.GlobalReadView,
+	plan teams.ExecutionPlan,
+	selections []work.TeamAttemptSelection,
+	nodes []teams.ExecutionNode,
+	assetSourceStreamIDs []string,
+	materializationSets ...[]work.TeamAttemptMaterialization,
+) []journal.StreamHead {
+	var materializations []work.TeamAttemptMaterialization
+	if len(materializationSets) == 1 {
+		materializations = materializationSets[0]
+	}
 	streams := map[string]struct{}{
 		"team-execution/" + plan.TeamInstanceID(): {},
 		"work-run-identity/v1":                    {},
+	}
+	for _, streamID := range assetSourceStreamIDs {
+		streams[streamID] = struct{}{}
 	}
 	for _, selection := range selections {
 		var runtimeInstanceID string
 		for _, node := range nodes {
 			if node.LogicalNodeID() == selection.LogicalNodeID {
 				runtimeInstanceID = node.RuntimeInstanceID()
+				for _, binding := range node.AssetRevisionBindings() {
+					streams["evolution-asset-revision/"+string(binding.AssetKind)+"/"+
+						binding.DefinitionID+"/"+binding.RevisionID] = struct{}{}
+					streams["evolution-asset-activation/"+string(binding.AssetKind)+"/"+
+						binding.DefinitionID] = struct{}{}
+				}
 				break
 			}
 		}
@@ -2148,6 +2289,11 @@ func appDispatchHeads(
 		streams["run/"+runID] = struct{}{}
 		streams["runtime_instance:"+runtimeInstanceID] = struct{}{}
 		streams["runtime_capacity:"+runtimeInstanceID] = struct{}{}
+	}
+	for _, materialization := range materializations {
+		for _, head := range materialization.Prepared.Heads() {
+			streams[head.StreamID] = struct{}{}
+		}
 	}
 	streamIDs := make([]string, 0, len(streams))
 	for streamID := range streams {
@@ -2163,6 +2309,164 @@ func appDispatchHeads(
 		heads[index] = head
 	}
 	return heads
+}
+
+func (coordinator *TeamCoordinator) prepareTeamAssetMaterializations(
+	ctx context.Context,
+	request TeamExecutionRequest,
+	view projection.GlobalReadView,
+	ready []teams.ExecutionNode,
+	selections []work.TeamAttemptSelection,
+	executions []TeamNodeExecution,
+) ([]TeamNodeExecution, []work.TeamAttemptMaterialization, []TeamAssetMaterialization, error) {
+	updated := append([]TeamNodeExecution(nil), executions...)
+	lineage := make([]work.TeamAttemptMaterialization, 0, len(ready))
+	prepared := make([]TeamAssetMaterialization, 0, len(ready))
+	cleanup := func() {
+		coordinator.cleanupTeamAssetMaterializations(ctx, prepared)
+	}
+	for index, node := range ready {
+		bindings := node.AssetRevisionBindings()
+		if len(bindings) == 0 {
+			continue
+		}
+		if coordinator.assetMaterializer == nil || index >= len(selections) ||
+			index >= len(updated) {
+			cleanup()
+			return nil, nil, nil, ErrTeamExecutionIncomplete
+		}
+		selection := selections[index]
+		execution := updated[index]
+		if selection.LogicalNodeID != node.LogicalNodeID() ||
+			execution.LogicalNodeID != node.LogicalNodeID() ||
+			execution.AttemptNumber != selection.AttemptNumber {
+			cleanup()
+			return nil, nil, nil, ErrInvalidTeamCoordinator
+		}
+		runID := appTeamAttemptIdentity(
+			"run", request.Plan, selection.LogicalNodeID, selection.AttemptNumber,
+		)
+		result, err := coordinator.assetMaterializer.PrepareTeamAttemptMaterialization(
+			ctx,
+			TeamAssetMaterializationRequest{
+				TeamExecutionID: request.Plan.TeamInstanceID(),
+				LogicalNodeID:   selection.LogicalNodeID,
+				RunID:           runID, AttemptNumber: selection.AttemptNumber,
+				Generation: 1, JourneyID: request.CorrelationID,
+				ExpectedView: view.Version(), Profile: execution.Profile,
+				Instance:          execution.Instance,
+				Bindings:          append([]assets.ExactAssetRevisionBinding(nil), bindings...),
+				RevisionSetDigest: node.AssetRevisionSetDigest(),
+			},
+		)
+		if err != nil {
+			cleanup()
+			return nil, nil, nil, err
+		}
+		attemptLineage := result.AttemptLineage
+		if result.SourcePath == "" ||
+			attemptLineage.LogicalNodeID != selection.LogicalNodeID ||
+			attemptLineage.AttemptNumber != selection.AttemptNumber ||
+			attemptLineage.AssetRevisionSetDigest != node.AssetRevisionSetDigest() ||
+			!equalAppAssetBindings(attemptLineage.AssetRevisionBindings, bindings) {
+			prepared = append(prepared, result)
+			cleanup()
+			return nil, nil, nil, ErrInvalidTeamCoordinator
+		}
+		execution.SourcePath = result.SourcePath
+		updated[index] = execution
+		lineage = append(lineage, attemptLineage)
+		prepared = append(prepared, result)
+	}
+	return updated, lineage, prepared, nil
+}
+
+func (coordinator *TeamCoordinator) cleanupTeamAssetMaterializations(
+	ctx context.Context,
+	prepared []TeamAssetMaterialization,
+) {
+	if coordinator == nil || coordinator.assetMaterializer == nil {
+		return
+	}
+	for index := len(prepared) - 1; index >= 0; index-- {
+		if prepared[index].Authoritative {
+			continue
+		}
+		_ = coordinator.assetMaterializer.CleanupTeamAttemptMaterialization(
+			ctx, prepared[index],
+		)
+	}
+}
+
+func (coordinator *TeamCoordinator) cleanupCommittedTeamAssetMaterializations(
+	ctx context.Context,
+	prepared []TeamAssetMaterialization,
+) error {
+	if coordinator == nil || coordinator.assetMaterializer == nil {
+		if len(prepared) == 0 {
+			return nil
+		}
+		return ErrInvalidTeamCoordinator
+	}
+	for index := len(prepared) - 1; index >= 0; index-- {
+		if err := coordinator.assetMaterializer.CleanupTeamAttemptMaterialization(
+			ctx, prepared[index],
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (coordinator *TeamCoordinator) verifyDispatchedAssetLineage(
+	teamInstanceID string,
+	materializations []work.TeamAttemptMaterialization,
+) error {
+	if len(materializations) == 0 {
+		return nil
+	}
+	view := coordinator.projection.GlobalReadView()
+	team, ok := view.TeamExecution(teamInstanceID)
+	if !ok {
+		return ErrTeamExecutionIncomplete
+	}
+	for _, expected := range materializations {
+		found := false
+		for _, node := range team.Nodes {
+			if node.LogicalNodeID != expected.LogicalNodeID {
+				continue
+			}
+			for _, attempt := range node.Attempts {
+				if attempt.AttemptNumber == expected.AttemptNumber &&
+					attempt.AssetLineageAvailable &&
+					attempt.AssetRevisionSetDigest == expected.AssetRevisionSetDigest &&
+					attempt.MaterializationManifestDigest == expected.MaterializationManifestDigest &&
+					attempt.MaterializationRootDigest == expected.MaterializationRootDigest &&
+					equalAppAssetBindings(attempt.AssetRevisionBindings, expected.AssetRevisionBindings) {
+					found = true
+				}
+			}
+		}
+		if !found {
+			return ErrTeamExecutionIncomplete
+		}
+	}
+	return nil
+}
+
+func equalAppAssetBindings(
+	left []assets.ExactAssetRevisionBinding,
+	right []assets.ExactAssetRevisionBinding,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func appTeamAttemptIdentity(

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,7 @@ type Snapshot struct {
 	Teams            map[string]TeamInstance
 	AgentInstances   map[string]AgentInstance
 	RuntimeInstances map[string]RuntimeInstance
+	EvolutionAssets  *EvolutionAssetSnapshot
 	localProductSetupSnapshotFields
 }
 
@@ -109,16 +111,32 @@ type WorkItem struct {
 }
 
 type Run struct {
-	ID                    string
-	WorkItemID            string
-	Phase                 string
-	ClaimID               string
-	ClaimGeneration       int64
-	RuntimeInstanceID     string
-	AgentInstanceID       string
-	PrepareLeaseExpiresAt time.Time
-	TerminalStatus        string
-	TerminalReason        string
+	ID                            string
+	WorkItemID                    string
+	Phase                         string
+	ClaimID                       string
+	ClaimGeneration               int64
+	RuntimeInstanceID             string
+	AgentInstanceID               string
+	PrepareLeaseExpiresAt         time.Time
+	TerminalStatus                string
+	TerminalReason                string
+	AssetLineageAvailable         bool
+	AssetRevisionBindings         []ProjectedAssetRevisionBinding
+	AssetRevisionSetDigest        string
+	MaterializationManifestDigest string
+	MaterializationRootDigest     string
+}
+
+// ProjectedAssetRevisionBinding is the Projection-owned immutable wire copy
+// of exact execution asset lineage. Keeping this local avoids making the core
+// replay package depend on the evolution authority package.
+type ProjectedAssetRevisionBinding struct {
+	AssetKind    string
+	DefinitionID string
+	RevisionID   string
+	SHA256Digest string
+	SourceScope  string
 }
 
 type AgentGrant struct {
@@ -242,18 +260,18 @@ func (p *Projection) Rebuild(ctx context.Context) error {
 	}
 	candidate, err := replay(ctx, events)
 	if err != nil {
-		return err
+		return fmt.Errorf("projection replay: %w", err)
 	}
 	teamExecutions, err := projectTeamExecutions(events)
 	if err != nil {
-		return err
+		return fmt.Errorf("team execution projection: %w", err)
 	}
 	if _, err := projectSideTaskHandoffs(events); err != nil {
-		return err
+		return fmt.Errorf("side-task projection: %w", err)
 	}
 	candidateView, err := buildGlobalReadView(candidate, events, teamExecutions)
 	if err != nil {
-		return err
+		return fmt.Errorf("global read view: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -298,6 +316,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	var grantAuthorityEvents []journal.Event
 	var evidenceEvents []journal.Event
 	var approvalEvents []journal.Event
+	var evolutionAssetEvents []journal.Event
 
 	for _, event := range ordered {
 		if err := ctx.Err(); err != nil {
@@ -333,6 +352,10 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 			approvalEvents = append(approvalEvents, event)
 			continue
 		}
+		if isEvolutionAssetProjectionEvent(event) {
+			evolutionAssetEvents = append(evolutionAssetEvents, event)
+			continue
+		}
 		if isRunAuthorityProjectionEvent(event) {
 			runAuthorityEvents = append(runAuthorityEvents, event)
 			continue
@@ -360,7 +383,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		&candidate,
 		normalizedRunEvents,
 	); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, fmt.Errorf("run authority: %w", err)
 	}
 	if err := applyGrantAuthorityProjection(
 		ctx,
@@ -368,7 +391,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		normalizedRunEvents,
 		grantAuthorityEvents,
 	); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, fmt.Errorf("grant authority: %w", err)
 	}
 	if err := applyApprovalProjection(
 		ctx,
@@ -386,7 +409,21 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	if err := candidate.validateSavedTeamLinks(); err != nil {
 		return Snapshot{}, err
 	}
+	if len(evolutionAssetEvents) > 0 {
+		projected, err := replayEvolutionAssetEvents(evolutionAssetEvents)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("%w: evolution assets", ErrInvalidProjectionEvent)
+		}
+		candidate.EvolutionAssets = &projected
+	}
 	return candidate, nil
+}
+
+func isEvolutionAssetProjectionEvent(event journal.Event) bool {
+	return strings.HasPrefix(event.Type, "EvolutionAsset") ||
+		event.Type == "EvolutionTemplateInstantiated" ||
+		event.Type == "EvolutionRunPromotionProposed" ||
+		strings.HasPrefix(event.Type, "RuntimeSkillMaterialization")
 }
 
 func (s *Snapshot) apply(event journal.Event) error {
@@ -888,6 +925,10 @@ func (s Snapshot) clone() Snapshot {
 		out.WorkItems[id] = workItem
 	}
 	for id, run := range s.Runs {
+		run.AssetRevisionBindings = append(
+			[]ProjectedAssetRevisionBinding(nil),
+			run.AssetRevisionBindings...,
+		)
 		out.Runs[id] = run
 	}
 	for id, grant := range s.AgentGrants {
@@ -913,6 +954,10 @@ func (s Snapshot) clone() Snapshot {
 		out.RuntimeInstances[id] = cloneProjectedRuntimeInstance(instance)
 	}
 	cloneLocalProductSetupSnapshot(s, &out)
+	if s.EvolutionAssets != nil {
+		cloned := cloneEvolutionAssetSnapshot(*s.EvolutionAssets)
+		out.EvolutionAssets = &cloned
+	}
 	return out
 }
 

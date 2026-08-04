@@ -42,6 +42,14 @@ func TestPiRuntimeProbeConstructorRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestP3APiProbeHasExplicitSkillMaterializationConformance(t *testing.T) {
+	configType := reflect.TypeOf(PiRuntimeProbeConfig{})
+	field, found := configType.FieldByName("SkillMaterializationConformance")
+	if !found || field.Type.Kind() != reflect.Interface {
+		t.Fatalf("PiRuntimeProbeConfig SkillMaterializationConformance = %#v, %v", field, found)
+	}
+}
+
 func TestPiRuntimeProbeRequestsAndObservation(t *testing.T) {
 	t.Parallel()
 
@@ -499,6 +507,62 @@ type recordingPiMetadataRunner struct {
 	calls      []PiMetadataRequest
 	mutateArgs bool
 	afterCall  func(PiMetadataCommand)
+}
+
+type testPiMaterializationProvider struct {
+	*recordingPiMetadataRunner
+	available bool
+	calls     int
+}
+
+func (provider *testPiMaterializationProvider) SkillMaterializationConformance() (
+	SkillMaterializationConformance,
+	bool,
+) {
+	if !provider.available {
+		return nil, false
+	}
+	return provider, true
+}
+
+func (provider *testPiMaterializationProvider) VerifySkillMaterialization(context.Context) error {
+	provider.calls++
+	return nil
+}
+
+func TestP3AProbeAdvertisesOnlyAvailableVerifiedMaterializationCapability(t *testing.T) {
+	provider := &testPiMaterializationProvider{
+		recordingPiMetadataRunner: successfulPiMetadataRunner(),
+		available:                 true,
+	}
+	config := validPiRuntimeProbeConfig()
+	config.Runner = provider
+	probe := mustPiRuntimeProbe(t, config)
+	observed, err := probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("conformance calls = %d, want 1", provider.calls)
+	}
+	want := []string{"loom.skill-materialization.pi.v1", "pi.metadata.models", "pi.metadata.version"}
+	if !reflect.DeepEqual(observed[0].Instance.ObservedCapabilities, want) {
+		t.Fatalf("capabilities = %#v, want %#v", observed[0].Instance.ObservedCapabilities, want)
+	}
+
+	provider = &testPiMaterializationProvider{
+		recordingPiMetadataRunner: successfulPiMetadataRunner(),
+		available:                 false,
+	}
+	config.Runner = provider
+	probe = mustPiRuntimeProbe(t, config)
+	observed, err = probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 0 || len(observed[0].Instance.ObservedCapabilities) != 2 {
+		t.Fatalf("unavailable conformance was used: calls=%d observation=%#v", provider.calls, observed[0])
+	}
 }
 
 func (r *recordingPiMetadataRunner) RunPiMetadata(_ context.Context, request PiMetadataRequest) (PiMetadataResult, error) {

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "runtime_id": "runtime.pi.earendil-works.0.82.1",
+  "executable_path": "/Users/lune/Library/Application Support/Loom/runtimes/pi/0.82.1/node_modules/.bin/pi",
+  "executable_sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca",
+  "model_version": "0.82.1",
+  "capability": "loom.skill-materialization.pi.v1",
+  "conformance": "deterministic installed-component probe at daemon start (private skill-path option, path semantics, cleanup)",
+  "network_allowed": false,
+  "provider_credentials_present": false,
+  "materialization": {
+    "private_root_mode": "0700",
+    "file_mode": "0600",
+    "publish": "sibling temp + same-filesystem no-replace atomic rename",
+    "collision_policy": "fail closed",
+    "cleanup": "manifest-matching Loom-owned root only, idempotent"
+  }
+}

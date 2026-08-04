@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
 
 	_ "modernc.org/sqlite"
@@ -1378,3 +1379,115 @@ const (
 	digestA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	digestB = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
+
+// TestP3ARunProjectionLegacyReclaimClearsAllLineageFields pins the reviewed
+// owned-path Repair P2 closure: a legacy RunClaimed (no lineage fields) that
+// replaces a lineage-bearing claim must fully reset the run projection to
+// empty/false semantics, including the three digest strings, matching the
+// attempt-projection convention.
+func TestP3ARunProjectionLegacyReclaimClearsAllLineageFields(t *testing.T) {
+	ctx := context.Background()
+	base := cloneProjectionEvents(validRunAuthorityProjectionEvents())
+	const correlation = "11111111-1111-4111-8111-111111111111"
+
+	claimIndex := -1
+	for index, event := range base {
+		if event.ID == "run-claimed" {
+			claimIndex = index
+			break
+		}
+	}
+	if claimIndex < 0 {
+		t.Fatal("run-claimed event not found")
+	}
+	claim1 := base[claimIndex]
+	var payload map[string]any
+	if err := json.Unmarshal(claim1.PayloadJSON, &payload); err != nil {
+		t.Fatalf("unmarshal first claim: %v", err)
+	}
+	bindings := []assets.ExactAssetRevisionBinding{{
+		AssetKind: "skill", DefinitionID: "skill-1", RevisionID: "revision-1",
+		SHA256Digest: digestA, SourceScope: "local",
+	}}
+	setDigest, err := assets.CanonicalAssetRevisionSetDigest(bindings)
+	if err != nil {
+		t.Fatalf("canonical set digest: %v", err)
+	}
+	payload["asset_revision_bindings"] = []any{map[string]any{
+		"asset_kind": "skill", "definition_id": "skill-1", "revision_id": "revision-1",
+		"sha256_digest": digestA, "source_scope": "local",
+	}}
+	payload["asset_revision_set_digest"] = setDigest
+	payload["materialization_manifest_digest"] = digestA
+	payload["materialization_root_digest"] = digestA
+	claim1.PayloadJSON = projectionPayload(t, payload)
+
+	// Minimal valid journal: discovery, generation-1 reserve, work creation and
+	// assignment, lineage-bearing claim, then a legacy generation-2 reclaim.
+	events := []journal.Event{base[0], base[1], base[3], base[4], claim1}
+
+	// Generation-2 reclaim from a legacy writer carries no lineage fields and
+	// occurs after the generation-1 prepare lease expires.
+	claim2 := runAuthorityEvent(
+		"run-claimed-2", "run/run-1", 2, "RunClaimed", correlation, "run-claimed",
+		map[string]any{
+			"work_item_id": "work-1", "run_id": "run-1",
+			"claim_id":         "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			"claim_generation": 2, "runtime_instance_id": "runtime-1",
+			"agent_instance_id":        "agent-1",
+			"prepare_lease_expires_at": runProjectionTime.Add(2 * time.Minute).Format(time.RFC3339Nano),
+			"runtime_status_stream_id": "runtime_instance:runtime-1",
+			"runtime_status_sequence":  1,
+			"runtime_status_event_id":  "runtime-discovery",
+		},
+	)
+	claim2.EmittedAt = runProjectionTime.Add(2 * time.Minute)
+	releaseOld := runAuthorityEvent(
+		"runtime-release-2", "runtime_capacity:runtime-1", 2,
+		"RuntimeCapacityReleased", correlation, "run-claimed-2",
+		map[string]any{
+			"work_item_id": "work-1", "run_id": "run-1",
+			"claim_id":         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			"claim_generation": 1, "runtime_instance_id": "runtime-1",
+			"agent_instance_id":        "agent-1",
+			"runtime_status_stream_id": "runtime_instance:runtime-1",
+			"runtime_status_sequence":  1,
+			"runtime_status_event_id":  "runtime-discovery",
+		},
+	)
+	reserveNew := runAuthorityEvent(
+		"runtime-reserve-2", "runtime_capacity:runtime-1", 3,
+		"RuntimeCapacityReserved", correlation, "run-claimed-2",
+		map[string]any{
+			"work_item_id": "work-1", "run_id": "run-1",
+			"claim_id":         "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			"claim_generation": 2, "runtime_instance_id": "runtime-1",
+			"agent_instance_id":        "agent-1",
+			"runtime_status_stream_id": "runtime_instance:runtime-1",
+			"runtime_status_sequence":  1,
+			"runtime_status_event_id":  "runtime-discovery",
+		},
+	)
+	events = append(events, claim2, releaseOld, reserveNew)
+
+	snapshot, err := replay(ctx, events)
+	if err != nil {
+		t.Fatalf("replay() error = %v", err)
+	}
+	run := snapshot.Runs["run-1"]
+	if run.AssetLineageAvailable {
+		t.Fatalf("legacy reclaim AssetLineageAvailable = true")
+	}
+	if len(run.AssetRevisionBindings) != 0 {
+		t.Fatalf("legacy reclaim bindings = %#v", run.AssetRevisionBindings)
+	}
+	if run.AssetRevisionSetDigest != "" ||
+		run.MaterializationManifestDigest != "" ||
+		run.MaterializationRootDigest != "" {
+		t.Fatalf(
+			"legacy reclaim stale digests set=%q manifest=%q root=%q",
+			run.AssetRevisionSetDigest, run.MaterializationManifestDigest,
+			run.MaterializationRootDigest,
+		)
+	}
+}

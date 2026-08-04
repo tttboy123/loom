@@ -3,6 +3,7 @@ package piadapter
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	loomruntime "loom-pi-rebuild/internal/runtime"
@@ -20,6 +22,7 @@ const (
 	maxPiMetadataOutputBytes     = 256 * 1024
 	maxPiMetadataProcessTimeout  = 30 * time.Second
 	piMetadataProcessWaitDelay   = time.Second
+	pi0821LockedExecutableSHA256 = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
 )
 
 var (
@@ -41,11 +44,13 @@ type PiMetadataProcessRunnerConfig struct {
 }
 
 type piMetadataProcessRunner struct {
-	executable    piMetadataExecutableBinding
-	isolationRoot piMetadataDirectoryBinding
-	searchPaths   []piMetadataDirectoryBinding
-	timeout       time.Duration
-	catalog       *piLocalModelCatalog
+	executable     piMetadataExecutableBinding
+	isolationRoot  piMetadataDirectoryBinding
+	searchPaths    []piMetadataDirectoryBinding
+	timeout        time.Duration
+	catalog        *piLocalModelCatalog
+	conformance    sync.Once
+	conformanceErr error
 }
 
 type piMetadataExecutableBinding struct {
@@ -196,6 +201,109 @@ func (r *piMetadataProcessRunner) RunPiMetadata(
 			Stderr: stderr.String(),
 		}, nil
 	}
+}
+
+func (r *piMetadataProcessRunner) SkillMaterializationConformance() (
+	loomruntime.SkillMaterializationConformance,
+	bool,
+) {
+	if r == nil || r.catalog == nil ||
+		hex.EncodeToString(r.executable.digest[:]) != pi0821LockedExecutableSHA256 {
+		return nil, false
+	}
+	return r, true
+}
+
+func (r *piMetadataProcessRunner) VerifySkillMaterialization(ctx context.Context) error {
+	if ctx == nil || r == nil {
+		return ErrInvalidPiMetadataProcessRunner
+	}
+	r.conformance.Do(func() {
+		r.conformanceErr = r.verifySkillMaterialization(ctx)
+	})
+	return r.conformanceErr
+}
+
+func (r *piMetadataProcessRunner) verifySkillMaterialization(ctx context.Context) error {
+	if err := r.validateBindings(); err != nil || r.catalog == nil {
+		return ErrPiMetadataBindingChanged
+	}
+	root, err := os.MkdirTemp(r.isolationRoot.path, "loom-pi-skill-conformance-")
+	if err != nil {
+		return ErrPiMetadataProcessFailed
+	}
+	defer os.RemoveAll(root)
+	if err := os.Chmod(root, 0o700); err != nil {
+		return ErrPiMetadataProcessFailed
+	}
+	content := []byte("# Loom Pi materialization conformance\n")
+	contentSum := sha256.Sum256(content)
+	contentDigest := hex.EncodeToString(contentSum[:])
+	bindings := []MaterializationBinding{{
+		AssetKind: "skill", DefinitionID: "loom-conformance",
+		RevisionID: "pi-0.82.1", Digest: contentDigest,
+		ContentDigest: contentDigest, SourceScope: "local",
+		Files: []MaterializationFile{{
+			RelativePath: "SKILL.md", Bytes: content, Digest: contentDigest,
+		}},
+	}}
+	setDigest, err := materializationBindingSetDigest(bindings)
+	if err != nil {
+		return ErrPiMetadataProcessFailed
+	}
+	plan := MaterializationPlan{
+		IsolatedRoot: root, RunID: "conformance", AttemptNumber: 1,
+		Generation: 1, RuntimeInstanceID: "pi-0.82.1",
+		RuntimeIdentityDigest:  hex.EncodeToString(r.executable.digest[:]),
+		RuntimeCapabilities:    []string{SkillMaterializationCapability},
+		AssetRevisionSetDigest: setDigest,
+		JourneyID:              "123e4567-e89b-42d3-a456-426614174000",
+		OperationID:            "materialize:conformance:1:1",
+		Bindings:               bindings,
+	}
+	materializer, err := NewSkillMaterializer(MaterializationHooks{})
+	if err != nil {
+		return ErrPiMetadataProcessFailed
+	}
+	result, err := materializer.Materialize(ctx, plan)
+	if err != nil {
+		return ErrPiMetadataProcessFailed
+	}
+	if _, err := materializer.Materialize(ctx, plan); !errors.Is(err, ErrMaterializationCollision) {
+		return ErrPiMetadataProcessFailed
+	}
+	directories, err := createPiMetadataInvocationDirectories(root)
+	if err != nil || r.catalog.materializeValidated(directories.agent) != nil {
+		return ErrPiMetadataProcessFailed
+	}
+	childContext, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	arguments := []string{
+		"--offline", "--no-approve", "--no-extensions", "--no-skills",
+		"--skill", filepath.Join(result.Root, "skills"),
+		"--no-prompt-templates", "--no-themes", "--no-context-files",
+		"--list-models",
+	}
+	command := exec.CommandContext(childContext, r.executable.path, arguments...)
+	command.Dir = directories.home
+	command.Env = r.environment(directories)
+	command.Stdin = nil
+	command.WaitDelay = piMetadataProcessWaitDelay
+	configurePiMetadataProcess(command)
+	stdout := newPiMetadataBoundedWriter(maxPiMetadataOutputBytes)
+	stderr := newPiMetadataBoundedWriter(maxPiMetadataOutputBytes)
+	command.Stdout, command.Stderr = stdout, stderr
+	if err := command.Run(); err != nil || childContext.Err() != nil ||
+		stdout.overflow || stderr.overflow {
+		return ErrPiMetadataProcessFailed
+	}
+	if err := materializer.Cleanup(ctx, plan); err != nil {
+		return ErrPiMetadataIsolationCleanup
+	}
+	if _, err := os.Lstat(result.Root); !errors.Is(err, os.ErrNotExist) {
+		return ErrPiMetadataIsolationCleanup
+	}
+	return r.validateBindings()
 }
 
 func bindPiMetadataExecutable(path string) (piMetadataExecutableBinding, error) {

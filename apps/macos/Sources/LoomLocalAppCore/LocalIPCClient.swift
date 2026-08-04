@@ -93,6 +93,7 @@ private indirect enum JSONValue: Codable {
 private struct ResponseEnvelope: Decodable {
     let version: Int
     let requestID: String
+    let journeyID: String?
     let ok: Bool
     let result: JSONValue?
     let error: ErrorEnvelope?
@@ -100,17 +101,19 @@ private struct ResponseEnvelope: Decodable {
     enum CodingKeys: String, CodingKey {
         case version
         case requestID = "request_id"
+        case journeyID = "journey_id"
         case ok, result, error
     }
 
     init(from decoder: Decoder) throws {
         try rejectIPCUnknownKeys(
             decoder,
-            allowed: ["version", "request_id", "ok", "result", "error"]
+            allowed: ["version", "request_id", "journey_id", "ok", "result", "error"]
         )
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
         requestID = try values.decode(String.self, forKey: .requestID)
+        journeyID = try values.decodeIfPresent(String.self, forKey: .journeyID)
         ok = try values.decode(Bool.self, forKey: .ok)
         result = try values.decodeIfPresent(JSONValue.self, forKey: .result)
         error = try values.decodeIfPresent(ErrorEnvelope.self, forKey: .error)
@@ -186,13 +189,15 @@ public enum LocalIPCWire {
 
     public static func decodeResponse(
         _ data: Data,
-        expectedRequestID: String
+        expectedRequestID: String,
+        expectedJourneyID: String? = nil
     ) throws -> Data {
         do {
             try StrictJSONScanner.validate(data)
             let envelope = try JSONDecoder().decode(ResponseEnvelope.self, from: data)
             guard envelope.version == 1,
                   envelope.requestID == expectedRequestID,
+                  envelope.journeyID == expectedJourneyID,
                   validRequestID(expectedRequestID) else {
                 throw LocalProductClientError.invalidResponse
             }
@@ -258,6 +263,46 @@ private struct TimelineParams: Encodable {
     enum CodingKeys: String, CodingKey {
         case teamInstanceID = "team_instance_id"
         case cursor, limit
+    }
+}
+
+private struct EvolutionAssetSnapshotParams: Encodable {
+    let cursor: String
+    let limit: Int
+    let assetKind = ""
+    let lifecycle = ""
+    let searchText = ""
+
+    enum CodingKeys: String, CodingKey {
+        case cursor, limit
+        case assetKind = "asset_kind", lifecycle, searchText = "search_text"
+    }
+}
+
+private struct EvolutionAssetDiffParams: Encodable {
+    let definitionID: String
+    let leftRevisionID: String
+    let leftDigest: String
+    let rightRevisionID: String
+    let rightDigest: String
+
+    enum CodingKeys: String, CodingKey {
+        case definitionID = "definition_id"
+        case leftRevisionID = "left_revision_id", leftDigest = "left_digest"
+        case rightRevisionID = "right_revision_id", rightDigest = "right_digest"
+    }
+}
+
+private struct EvolutionAssetCommandParams: Encodable {
+    let operationID: String
+    let action: String
+    let expectedViewVersion: String
+    let expectedStreamHeads: [EvolutionAssetStreamHead]
+    let input: EvolutionAssetCommand
+    enum CodingKeys: String, CodingKey {
+        case operationID = "operation_id", action
+        case expectedViewVersion = "expected_view_version"
+        case expectedStreamHeads = "expected_stream_heads", input
     }
 }
 
@@ -377,12 +422,14 @@ private struct CredentialParams: Encodable {
 private struct IPCRequest<Params: Encodable>: Encodable {
     let version = 1
     let requestID: String
+    let journeyID: String?
     let method: String
     let params: Params
 
     enum CodingKeys: String, CodingKey {
         case version
         case requestID = "request_id"
+        case journeyID = "journey_id"
         case method, params
     }
 }
@@ -392,7 +439,8 @@ public final class LocalIPCClient:
     LocalProductDecisionClientProtocol,
     LocalProductSetupClientProtocol,
     LocalProductExecutionClientProtocol,
-    LocalProductHandoffClientProtocol
+    LocalProductHandoffClientProtocol,
+    LocalProductAssetClientProtocol
 {
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
@@ -413,6 +461,14 @@ public final class LocalIPCClient:
     }
 
     public static func defaultClient() throws -> LocalIPCClient {
+        let arguments = CommandLine.arguments
+        if let socketIndex = arguments.firstIndex(of: "--socket") {
+            guard arguments.filter({ $0 == "--socket" }).count == 1,
+                  socketIndex + 1 < arguments.count else {
+                throw LocalProductClientError.invalidSocket
+            }
+            return try LocalIPCClient(socketPath: arguments[socketIndex + 1])
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath()
             .standardizedFileURL
@@ -454,6 +510,73 @@ public final class LocalIPCClient:
             )
         )
         return try LocalProductWire.decodeTimeline(result)
+    }
+
+    public func evolutionAssetSnapshot(
+        journeyID: String,
+        cursor: String = "",
+        limit: Int = 64
+    ) async throws -> EvolutionAssetSnapshot {
+        guard Self.validJourneyID(journeyID), (1...64).contains(limit), cursor.utf8.count <= 64 else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: journeyID,
+            method: "evolution_asset_snapshot",
+            params: EvolutionAssetSnapshotParams(cursor: cursor, limit: limit)
+        )
+        let snapshot = try EvolutionAssetWire.decodeSnapshot(result)
+        return snapshot
+    }
+
+    public func evolutionAssetDiff(
+        journeyID: String,
+        definitionID: String,
+        left: EvolutionAssetRevision,
+        right: EvolutionAssetRevision
+    ) async throws -> EvolutionAssetDiff {
+        guard Self.validJourneyID(journeyID), Self.validIdentifier(definitionID),
+              left.definitionID == definitionID, right.definitionID == definitionID else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: journeyID,
+            method: "evolution_asset_diff",
+            params: EvolutionAssetDiffParams(
+                definitionID: definitionID,
+                leftRevisionID: left.revisionID, leftDigest: left.artifactDigest,
+                rightRevisionID: right.revisionID, rightDigest: right.artifactDigest
+            )
+        )
+        let diff = try EvolutionAssetWire.decodeDiff(result)
+        guard diff.definitionID == definitionID,
+              diff.leftRevisionID == left.revisionID, diff.leftDigest == left.artifactDigest,
+              diff.rightRevisionID == right.revisionID, diff.rightDigest == right.artifactDigest else {
+            throw LocalProductClientError.invalidResponse
+        }
+        return diff
+    }
+
+    public func evolutionAssetCommand(
+        _ command: EvolutionAssetCommand
+    ) async throws -> EvolutionAssetCommandReceipt {
+        guard Self.validJourneyID(command.journeyID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: command.journeyID,
+            method: "evolution_asset_command",
+            params: EvolutionAssetCommandParams(
+                operationID: command.operationID, action: command.action,
+                expectedViewVersion: command.expectedViewVersion,
+                expectedStreamHeads: command.expectedStreamHeads, input: command
+            )
+        )
+        let receipt = try EvolutionAssetWire.decodeReceipt(result)
+        guard receipt.operationID == command.operationID, receipt.action == command.action else {
+            throw LocalProductClientError.invalidResponse
+        }
+        return receipt
     }
 
     public func decideMission(
@@ -774,6 +897,7 @@ public final class LocalIPCClient:
         }
         let request = IPCRequest(
             requestID: id,
+            journeyID: nil,
             method: method,
             params: params
         )
@@ -796,8 +920,46 @@ public final class LocalIPCClient:
         )
     }
 
+    private func callJourney<Params: Encodable>(
+        journeyID: String,
+        method: String,
+        params: Params
+    ) async throws -> Data {
+        let id = requestID()
+        let methods: Set<String> = [
+            "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
+        ]
+        guard LocalIPCWire.validRequestID(id), Self.validJourneyID(journeyID),
+              methods.contains(method) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let body = try JSONEncoder().encode(
+            IPCRequest(requestID: id, journeyID: journeyID, method: method, params: params)
+        )
+        try StrictJSONScanner.validate(body)
+        let response = try await Task.detached {
+            try Self.exchange(
+                path: self.socketPath,
+                request: try LocalIPCWire.frame(body, maximum: Self.requestMaximum),
+                timeoutSeconds: Self.requestTimeoutSeconds(for: method)
+            )
+        }.value
+        return try LocalIPCWire.decodeResponse(
+            response,
+            expectedRequestID: id,
+            expectedJourneyID: journeyID
+        )
+    }
+
     static func requestTimeoutSeconds(for method: String) -> Int {
         method == "credential_verify" || method == "mission_execution" ? 10 : 5
+    }
+
+    static func validJourneyID(_ value: String) -> Bool {
+        guard let uuid = UUID(uuidString: value), uuid.uuidString.lowercased() == value,
+              value[value.index(value.startIndex, offsetBy: 14)] == "4" else { return false }
+        let variant = value[value.index(value.startIndex, offsetBy: 19)]
+        return "89ab".contains(variant)
     }
 
     private static func exchange(

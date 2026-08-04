@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"loom-pi-rebuild/internal/assets"
 )
 
 var (
@@ -25,13 +27,15 @@ const (
 )
 
 type ExecutionNodeInput struct {
-	LogicalNodeID     string
-	Title             string
-	AgentInstanceID   string
-	RuntimeInstanceID string
-	Role              ExecutionRole
-	DependsOn         []string
-	MaxAttempts       int
+	LogicalNodeID          string
+	Title                  string
+	AgentInstanceID        string
+	RuntimeInstanceID      string
+	Role                   ExecutionRole
+	DependsOn              []string
+	MaxAttempts            int
+	AssetRevisionBindings  []assets.ExactAssetRevisionBinding
+	AssetRevisionSetDigest string
 }
 
 type ExecutionPlanInput struct {
@@ -40,13 +44,15 @@ type ExecutionPlanInput struct {
 }
 
 type ExecutionNode struct {
-	logicalNodeID     string
-	title             string
-	agentInstanceID   string
-	runtimeInstanceID string
-	role              ExecutionRole
-	dependsOn         []string
-	maxAttempts       int
+	logicalNodeID          string
+	title                  string
+	agentInstanceID        string
+	runtimeInstanceID      string
+	role                   ExecutionRole
+	dependsOn              []string
+	maxAttempts            int
+	assetRevisionBindings  []assets.ExactAssetRevisionBinding
+	assetRevisionSetDigest string
 }
 
 type ExecutionPlan struct {
@@ -92,6 +98,19 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 		if _, exists := agentIDs[raw.AgentInstanceID]; exists {
 			return ExecutionPlan{}, ErrInvalidExecutionPlan
 		}
+		assetBindings := append([]assets.ExactAssetRevisionBinding(nil), raw.AssetRevisionBindings...)
+		if len(assetBindings) == 0 {
+			if raw.AssetRevisionSetDigest != "" {
+				return ExecutionPlan{}, ErrInvalidExecutionPlan
+			}
+		} else {
+			digest, digestErr := assets.CanonicalAssetRevisionSetDigest(assetBindings)
+			if digestErr != nil || digest != raw.AssetRevisionSetDigest {
+				return ExecutionPlan{}, ErrInvalidExecutionPlan
+			}
+			canonicalJSON, _ := assets.CanonicalAssetRevisionSetJSON(assetBindings)
+			_ = json.Unmarshal(canonicalJSON, &assetBindings)
+		}
 		nodeIDs[raw.LogicalNodeID] = struct{}{}
 		agentIDs[raw.AgentInstanceID] = struct{}{}
 		if raw.Role == ExecutionRoleMain {
@@ -107,13 +126,15 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 			}
 		}
 		nodes[index] = ExecutionNode{
-			logicalNodeID:     raw.LogicalNodeID,
-			title:             raw.Title,
-			agentInstanceID:   raw.AgentInstanceID,
-			runtimeInstanceID: raw.RuntimeInstanceID,
-			role:              raw.Role,
-			dependsOn:         dependencies,
-			maxAttempts:       raw.MaxAttempts,
+			logicalNodeID:          raw.LogicalNodeID,
+			title:                  raw.Title,
+			agentInstanceID:        raw.AgentInstanceID,
+			runtimeInstanceID:      raw.RuntimeInstanceID,
+			role:                   raw.Role,
+			dependsOn:              dependencies,
+			maxAttempts:            raw.MaxAttempts,
+			assetRevisionBindings:  assetBindings,
+			assetRevisionSetDigest: raw.AssetRevisionSetDigest,
 		}
 	}
 	if mainCount != 1 {
@@ -150,6 +171,57 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 	}, nil
 }
 
+// MergeExecutionAssetBindings applies precedence levels from lowest to
+// highest. Identical tuples deduplicate, competing tuples at one level fail,
+// and a higher level may intentionally replace the same asset definition.
+func MergeExecutionAssetBindings(
+	levels ...[]assets.ExactAssetRevisionBinding,
+) ([]assets.ExactAssetRevisionBinding, string, error) {
+	merged := make(map[string]assets.ExactAssetRevisionBinding)
+	for _, rawLevel := range levels {
+		level := make(map[string]assets.ExactAssetRevisionBinding)
+		for _, binding := range rawLevel {
+			key := string(binding.AssetKind) + "\x00" + binding.DefinitionID
+			if existing, found := level[key]; found {
+				if existing != binding {
+					return nil, "", ErrInvalidExecutionPlan
+				}
+				continue
+			}
+			level[key] = binding
+		}
+		validated := make([]assets.ExactAssetRevisionBinding, 0, len(level))
+		for _, binding := range level {
+			validated = append(validated, binding)
+		}
+		if _, err := assets.CanonicalAssetRevisionSetDigest(validated); err != nil {
+			return nil, "", ErrInvalidExecutionPlan
+		}
+		for key, binding := range level {
+			merged[key] = binding
+		}
+	}
+	result := make([]assets.ExactAssetRevisionBinding, 0, len(merged))
+	for _, binding := range merged {
+		result = append(result, binding)
+	}
+	if len(result) == 0 {
+		return []assets.ExactAssetRevisionBinding{}, "", nil
+	}
+	canonical, err := assets.CanonicalAssetRevisionSetJSON(result)
+	if err != nil {
+		return nil, "", ErrInvalidExecutionPlan
+	}
+	if err := json.Unmarshal(canonical, &result); err != nil {
+		return nil, "", ErrInvalidExecutionPlan
+	}
+	digest, err := assets.CanonicalAssetRevisionSetDigest(result)
+	if err != nil {
+		return nil, "", ErrInvalidExecutionPlan
+	}
+	return result, digest, nil
+}
+
 func (plan ExecutionPlan) TeamInstanceID() string { return plan.teamInstanceID }
 func (plan ExecutionPlan) Nodes() []ExecutionNode { return cloneExecutionNodes(plan.nodes) }
 func (plan ExecutionPlan) Digest() string         { return plan.digest }
@@ -161,6 +233,13 @@ func (node ExecutionNode) RuntimeInstanceID() string { return node.runtimeInstan
 func (node ExecutionNode) Role() ExecutionRole       { return node.role }
 func (node ExecutionNode) DependsOn() []string       { return append([]string(nil), node.dependsOn...) }
 func (node ExecutionNode) MaxAttempts() int          { return node.maxAttempts }
+func (node ExecutionNode) AssetRevisionBindings() []assets.ExactAssetRevisionBinding {
+	if node.assetRevisionBindings == nil {
+		return []assets.ExactAssetRevisionBinding{}
+	}
+	return append([]assets.ExactAssetRevisionBinding{}, node.assetRevisionBindings...)
+}
+func (node ExecutionNode) AssetRevisionSetDigest() string { return node.assetRevisionSetDigest }
 
 func ReadyExecutionNodes(
 	plan ExecutionPlan,
@@ -242,13 +321,15 @@ func ReadyExecutionNodes(
 }
 
 type executionNodeJSON struct {
-	LogicalNodeID     string        `json:"logical_node_id"`
-	Title             string        `json:"title"`
-	AgentInstanceID   string        `json:"agent_instance_id"`
-	RuntimeInstanceID string        `json:"runtime_instance_id"`
-	Role              ExecutionRole `json:"role"`
-	DependsOn         []string      `json:"depends_on"`
-	MaxAttempts       int           `json:"max_attempts"`
+	LogicalNodeID          string                             `json:"logical_node_id"`
+	Title                  string                             `json:"title"`
+	AgentInstanceID        string                             `json:"agent_instance_id"`
+	RuntimeInstanceID      string                             `json:"runtime_instance_id"`
+	Role                   ExecutionRole                      `json:"role"`
+	DependsOn              []string                           `json:"depends_on"`
+	MaxAttempts            int                                `json:"max_attempts"`
+	AssetRevisionBindings  []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings,omitempty"`
+	AssetRevisionSetDigest string                             `json:"asset_revision_set_digest,omitempty"`
 }
 
 func executionNodesJSON(nodes []ExecutionNode) []executionNodeJSON {
@@ -258,7 +339,9 @@ func executionNodesJSON(nodes []ExecutionNode) []executionNodeJSON {
 			LogicalNodeID: node.logicalNodeID, Title: node.title,
 			AgentInstanceID: node.agentInstanceID, RuntimeInstanceID: node.runtimeInstanceID,
 			Role: node.role, DependsOn: append([]string(nil), node.dependsOn...),
-			MaxAttempts: node.maxAttempts,
+			MaxAttempts:            node.maxAttempts,
+			AssetRevisionBindings:  append([]assets.ExactAssetRevisionBinding(nil), node.assetRevisionBindings...),
+			AssetRevisionSetDigest: node.assetRevisionSetDigest,
 		}
 	}
 	return encoded
@@ -326,5 +409,6 @@ func cloneExecutionNodes(nodes []ExecutionNode) []ExecutionNode {
 
 func cloneExecutionNode(node ExecutionNode) ExecutionNode {
 	node.dependsOn = append([]string(nil), node.dependsOn...)
+	node.assetRevisionBindings = append([]assets.ExactAssetRevisionBinding(nil), node.assetRevisionBindings...)
 	return node
 }

@@ -3,9 +3,101 @@ package teams
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"loom-pi-rebuild/internal/assets"
 )
+
+func TestP3AExecutionPlanInputFreezesExactAssetRevisionSet(t *testing.T) {
+	inputType := reflect.TypeOf(ExecutionNodeInput{})
+	bindings, found := inputType.FieldByName("AssetRevisionBindings")
+	if !found || bindings.Type.Kind() != reflect.Slice {
+		t.Fatalf("ExecutionNodeInput AssetRevisionBindings = %#v, %v", bindings, found)
+	}
+	digest, found := inputType.FieldByName("AssetRevisionSetDigest")
+	if !found || digest.Type.Kind() != reflect.String {
+		t.Fatalf("ExecutionNodeInput AssetRevisionSetDigest = %#v, %v", digest, found)
+	}
+	nodeType := reflect.TypeOf(ExecutionNode{})
+	if _, found := nodeType.MethodByName("AssetRevisionBindings"); !found {
+		t.Fatal("ExecutionNode.AssetRevisionBindings method is missing")
+	}
+	if _, found := nodeType.MethodByName("AssetRevisionSetDigest"); !found {
+		t.Fatal("ExecutionNode.AssetRevisionSetDigest method is missing")
+	}
+}
+
+func TestP3AExecutionPlanFreezesBindingBytesAcrossLaterInputMutation(t *testing.T) {
+	binding := assets.ExactAssetRevisionBinding{
+		AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1",
+		RevisionID:   "revision-1",
+		SHA256Digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SourceScope:  assets.SourceScopeLocal,
+	}
+	bindingDigest, err := assets.CanonicalAssetRevisionSetDigest([]assets.ExactAssetRevisionBinding{binding})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ExecutionPlanInput{
+		TeamInstanceID: "team-assets",
+		Nodes: []ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main", AgentInstanceID: "agent-main",
+			RuntimeInstanceID: "runtime-main", Role: ExecutionRoleMain, MaxAttempts: 1,
+			AssetRevisionBindings:  []assets.ExactAssetRevisionBinding{binding},
+			AssetRevisionSetDigest: bindingDigest,
+		}},
+	}
+	plan, err := BuildExecutionPlan(input)
+	if err != nil {
+		t.Fatalf("BuildExecutionPlan() error = %v", err)
+	}
+	input.Nodes[0].AssetRevisionBindings[0].RevisionID = "revision-later"
+	node := plan.Nodes()[0]
+	got := node.AssetRevisionBindings()
+	if len(got) != 1 || got[0] != binding {
+		t.Fatalf("frozen bindings = %#v, want %#v", got, binding)
+	}
+	if node.AssetRevisionSetDigest() != bindingDigest {
+		t.Fatalf("binding digest = %q", node.AssetRevisionSetDigest())
+	}
+	got[0].RevisionID = "mutated"
+	if again := node.AssetRevisionBindings(); len(again) != 1 || again[0] != binding {
+		t.Fatalf("accessor mutation escaped: %#v", again)
+	}
+}
+
+func TestP3AExecutionBindingMergeUsesFrozenPrecedenceAndConflictsWithinLevel(t *testing.T) {
+	base := assets.ExactAssetRevisionBinding{
+		AssetKind: assets.AssetKindSkill, DefinitionID: "skill-1",
+		RevisionID: "revision-base", SHA256Digest: strings.Repeat("a", 64),
+		SourceScope: assets.SourceScopeLocal,
+	}
+	team := base
+	team.RevisionID, team.SHA256Digest = "revision-team", strings.Repeat("b", 64)
+	agent := team
+	agent.RevisionID, agent.SHA256Digest = "revision-agent", strings.Repeat("c", 64)
+	workPackage := agent
+	workPackage.RevisionID, workPackage.SHA256Digest = "revision-work", strings.Repeat("d", 64)
+	merged, digest, err := MergeExecutionAssetBindings(
+		[]assets.ExactAssetRevisionBinding{base, base},
+		[]assets.ExactAssetRevisionBinding{team},
+		[]assets.ExactAssetRevisionBinding{agent},
+		[]assets.ExactAssetRevisionBinding{workPackage},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 1 || merged[0] != workPackage || len(digest) != 64 {
+		t.Fatalf("merged = %#v digest=%q", merged, digest)
+	}
+	if _, _, err := MergeExecutionAssetBindings(
+		[]assets.ExactAssetRevisionBinding{base, team},
+	); !errors.Is(err, ErrInvalidExecutionPlan) {
+		t.Fatalf("same-level conflict error = %v", err)
+	}
+}
 
 func TestExecutionPlanIsImmutableDeterministicAndValidatesGraph(t *testing.T) {
 	input := ExecutionPlanInput{

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
 )
 
@@ -106,13 +107,17 @@ type runProjectionRun struct {
 }
 
 type runProjectionClaimedPayload struct {
-	WorkItemID            *string `json:"work_item_id"`
-	RunID                 *string `json:"run_id"`
-	ClaimID               *string `json:"claim_id"`
-	ClaimGeneration       *int64  `json:"claim_generation"`
-	RuntimeInstanceID     *string `json:"runtime_instance_id"`
-	AgentInstanceID       *string `json:"agent_instance_id"`
-	PrepareLeaseExpiresAt *string `json:"prepare_lease_expires_at"`
+	WorkItemID                    *string                             `json:"work_item_id"`
+	RunID                         *string                             `json:"run_id"`
+	ClaimID                       *string                             `json:"claim_id"`
+	ClaimGeneration               *int64                              `json:"claim_generation"`
+	RuntimeInstanceID             *string                             `json:"runtime_instance_id"`
+	AgentInstanceID               *string                             `json:"agent_instance_id"`
+	PrepareLeaseExpiresAt         *string                             `json:"prepare_lease_expires_at"`
+	AssetRevisionBindings         *[]assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest        *string                             `json:"asset_revision_set_digest"`
+	MaterializationManifestDigest *string                             `json:"materialization_manifest_digest"`
+	MaterializationRootDigest     *string                             `json:"materialization_root_digest"`
 	runProjectionStatusReferenceFields
 }
 
@@ -248,11 +253,11 @@ func applyRunAuthorityProjection(
 	}
 	statusFacts, err := indexRunProjectionStatusFacts(ctx, events)
 	if err != nil {
-		return err
+		return fmt.Errorf("status facts: %w", err)
 	}
 	workItems, runsByAssignment, outcomes, err := indexRunProjectionWorkItems(ctx, events)
 	if err != nil {
-		return err
+		return fmt.Errorf("work items: %w", err)
 	}
 	claims := make(map[string]*runProjectionClaim)
 	terminals := make(map[string]*runProjectionTerminal)
@@ -260,12 +265,12 @@ func applyRunAuthorityProjection(
 		ctx, events, runsByAssignment, workItems, statusFacts, claims, terminals,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("runs: %w", err)
 	}
 	if err := replayRunProjectionCapacity(
 		ctx, events, snapshot, statusFacts, claims, terminals,
 	); err != nil {
-		return err
+		return fmt.Errorf("capacity: %w", err)
 	}
 	for eventID, claim := range claims {
 		if !claim.reserved || claim.needsOldRelease && !claim.oldReleased {
@@ -710,7 +715,7 @@ func replayRunProjectionRuns(
 		runID := strings.TrimPrefix(streamID, "run/")
 		run, ok := assigned[runID]
 		if !ok {
-			return nil, ErrInvalidProjectionEvent
+			return nil, fmt.Errorf("%w: unassigned run", ErrInvalidProjectionEvent)
 		}
 		for _, event := range streamEvents {
 			if err := ctx.Err(); err != nil {
@@ -719,14 +724,31 @@ func replayRunProjectionRuns(
 			if !validRunProjectionEnvelope(event) ||
 				event.CausationID != run.lastEventID ||
 				event.Seq != run.sequence+1 {
-				return nil, ErrInvalidProjectionEvent
+				return nil, fmt.Errorf("%w: run envelope %s", ErrInvalidProjectionEvent, event.Type)
 			}
 			switch event.Type {
 			case "RunClaimed":
 				var payload runProjectionClaimedPayload
-				if err := decodeRunProjectionPayload(event, &payload); err != nil ||
-					!validRunProjectionClaimPayload(payload, run.record) {
-					return nil, ErrInvalidProjectionEvent
+				if err := decodeRunProjectionPayload(event, &payload); err != nil {
+					return nil, fmt.Errorf("%w: RunClaimed decode: %v", ErrInvalidProjectionEvent, err)
+				}
+				if !validRunProjectionClaimPayload(payload, run.record) {
+					return nil, fmt.Errorf(
+						"%w: RunClaimed fields bindings=%t set=%t manifest=%t root=%t work=%t run=%t claim=%t generation=%t runtime=%t agent=%t lease=%t reference=%t",
+						ErrInvalidProjectionEvent,
+						payload.AssetRevisionBindings != nil,
+						payload.AssetRevisionSetDigest != nil,
+						payload.MaterializationManifestDigest != nil,
+						payload.MaterializationRootDigest != nil,
+						payload.WorkItemID != nil && *payload.WorkItemID == run.record.WorkItemID,
+						payload.RunID != nil && *payload.RunID == run.record.ID,
+						payload.ClaimID != nil && validRunProjectionCanonicalUUID(*payload.ClaimID),
+						payload.ClaimGeneration != nil && *payload.ClaimGeneration == run.record.ClaimGeneration+1,
+						payload.RuntimeInstanceID != nil && *payload.RuntimeInstanceID != "",
+						payload.AgentInstanceID != nil && *payload.AgentInstanceID == run.record.AgentInstanceID,
+						payload.PrepareLeaseExpiresAt != nil,
+						payload.reference() != (runProjectionStatusReference{}),
+					)
 				}
 				expiresAt, err := parseRunProjectionTime(*payload.PrepareLeaseExpiresAt)
 				if err != nil || run.record.Phase == "running" ||
@@ -749,6 +771,25 @@ func replayRunProjectionRuns(
 				run.record.RuntimeInstanceID = *payload.RuntimeInstanceID
 				run.record.AgentInstanceID = *payload.AgentInstanceID
 				run.record.PrepareLeaseExpiresAt = expiresAt
+				lineagePresent := payload.AssetRevisionBindings != nil ||
+					payload.AssetRevisionSetDigest != nil ||
+					payload.MaterializationManifestDigest != nil ||
+					payload.MaterializationRootDigest != nil
+				if lineagePresent {
+					run.record.AssetLineageAvailable = len(*payload.AssetRevisionBindings) > 0
+					run.record.AssetRevisionBindings = projectedRunAssetBindings(
+						*payload.AssetRevisionBindings,
+					)
+					run.record.AssetRevisionSetDigest = *payload.AssetRevisionSetDigest
+					run.record.MaterializationManifestDigest = *payload.MaterializationManifestDigest
+					run.record.MaterializationRootDigest = *payload.MaterializationRootDigest
+				} else {
+					run.record.AssetLineageAvailable = false
+					run.record.AssetRevisionBindings = []ProjectedAssetRevisionBinding{}
+					run.record.AssetRevisionSetDigest = ""
+					run.record.MaterializationManifestDigest = ""
+					run.record.MaterializationRootDigest = ""
+				}
 				run.prepareLeaseExpiresAt = expiresAt
 				run.lastEventID = event.ID
 				run.sequence = event.Seq
@@ -838,6 +879,20 @@ func replayRunProjectionRuns(
 		assigned[runID] = run
 	}
 	return assigned, nil
+}
+
+func projectedRunAssetBindings(
+	bindings []assets.ExactAssetRevisionBinding,
+) []ProjectedAssetRevisionBinding {
+	result := make([]ProjectedAssetRevisionBinding, len(bindings))
+	for index, binding := range bindings {
+		result[index] = ProjectedAssetRevisionBinding{
+			AssetKind: string(binding.AssetKind), DefinitionID: binding.DefinitionID,
+			RevisionID: binding.RevisionID, SHA256Digest: binding.SHA256Digest,
+			SourceScope: string(binding.SourceScope),
+		}
+	}
+	return result
 }
 
 func replayRunProjectionCapacity(
@@ -1025,11 +1080,39 @@ func validRunProjectionClaimPayload(
 	payload runProjectionClaimedPayload,
 	run Run,
 ) bool {
-	return payload.WorkItemID != nil && payload.RunID != nil &&
-		payload.ClaimID != nil && payload.ClaimGeneration != nil &&
-		payload.RuntimeInstanceID != nil && payload.AgentInstanceID != nil &&
-		payload.PrepareLeaseExpiresAt != nil &&
-		*payload.WorkItemID == run.WorkItemID &&
+	if payload.WorkItemID == nil || payload.RunID == nil ||
+		payload.ClaimID == nil || payload.ClaimGeneration == nil ||
+		payload.RuntimeInstanceID == nil || payload.AgentInstanceID == nil ||
+		payload.PrepareLeaseExpiresAt == nil {
+		return false
+	}
+	lineagePresent := payload.AssetRevisionBindings != nil ||
+		payload.AssetRevisionSetDigest != nil ||
+		payload.MaterializationManifestDigest != nil ||
+		payload.MaterializationRootDigest != nil
+	if lineagePresent {
+		if payload.AssetRevisionBindings == nil ||
+			payload.AssetRevisionSetDigest == nil ||
+			payload.MaterializationManifestDigest == nil ||
+			payload.MaterializationRootDigest == nil {
+			return false
+		}
+		if len(*payload.AssetRevisionBindings) == 0 {
+			if *payload.AssetRevisionSetDigest != "" ||
+				*payload.MaterializationManifestDigest != "" ||
+				*payload.MaterializationRootDigest != "" {
+				return false
+			}
+		} else {
+			digest, err := assets.CanonicalAssetRevisionSetDigest(*payload.AssetRevisionBindings)
+			if err != nil || digest != *payload.AssetRevisionSetDigest ||
+				!validSHA256Digest(*payload.MaterializationManifestDigest) ||
+				!validSHA256Digest(*payload.MaterializationRootDigest) {
+				return false
+			}
+		}
+	}
+	return *payload.WorkItemID == run.WorkItemID &&
 		*payload.RunID == run.ID &&
 		validRunProjectionCanonicalUUID(*payload.ClaimID) &&
 		*payload.RuntimeInstanceID != "" &&

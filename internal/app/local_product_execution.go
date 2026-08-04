@@ -10,12 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/rules"
 	loomruntime "loom-pi-rebuild/internal/runtime"
@@ -29,16 +31,17 @@ import (
 const MissionExecutionSchemaVersion = 1
 
 const (
-	maxMissionExecutionTextBytes   = 4096
-	maxMissionExecutionListItems   = 64
-	maxMissionExecutionNodeCount   = 16
-	maxAuthoritativeMissionFlights = 64
-	missionExecutionPreflightTTL   = 5 * time.Minute
-	missionExecutionPreflight      = "preflight"
-	missionExecutionStart          = "start"
-	missionExecutionControl        = "control"
-	localPiProviderID              = "loom-local"
-	localPiAdapterModelID          = "qwen2.5-coder-1.5b-instruct-q4-k-m"
+	maxMissionExecutionTextBytes          = 4096
+	maxMissionExecutionListItems          = 64
+	maxMissionExecutionNodeCount          = 16
+	maxAuthoritativeMissionFlights        = 64
+	missionExecutionPreflightTTL          = 5 * time.Minute
+	missionExecutionPreflight             = "preflight"
+	missionExecutionStart                 = "start"
+	missionExecutionControl               = "control"
+	localPiProviderID                     = "loom-local"
+	localPiAdapterModelID                 = "qwen2.5-coder-1.5b-instruct-q4-k-m"
+	missionSkillMaterializationCapability = "loom.skill-materialization.pi.v1"
 )
 
 var ErrInvalidMissionExecution = errors.New("invalid mission execution")
@@ -140,12 +143,17 @@ type MissionExecutionReconstructor interface {
 }
 
 type MissionExecutionBinding struct {
-	ViewVersion       string
-	TeamInstanceID    string
-	AgentInstanceID   string
-	Profile           loomruntime.RuntimeProfile
-	Instance          loomruntime.RuntimeInstance
-	CapacityAvailable int
+	ViewVersion                  string
+	TeamInstanceID               string
+	AgentInstanceID              string
+	Profile                      loomruntime.RuntimeProfile
+	Instance                     loomruntime.RuntimeInstance
+	CapacityAvailable            int
+	SavedTeamAssetBindings       []assets.ExactAssetRevisionBinding
+	TeamDefinitionAssetBindings  []assets.ExactAssetRevisionBinding
+	AgentDefinitionAssetBindings []assets.ExactAssetRevisionBinding
+	AssetBindingRecords          []assets.EvolutionAssetBindingRecord
+	AssetSourceStreamIDs         []string
 }
 
 type MissionExecutionBindingSource interface {
@@ -291,11 +299,103 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		}
 		available = 1
 	}
+	assetBindings, err := resolveMissionExecutionAssetBindings(
+		view, team, agent,
+	)
+	if err != nil {
+		return MissionExecutionBinding{}, err
+	}
 	return MissionExecutionBinding{
 		ViewVersion: view.Version(), TeamInstanceID: teamInstanceID,
 		AgentInstanceID: agent.ID, Profile: profile, Instance: instance,
-		CapacityAvailable: available,
+		CapacityAvailable:            available,
+		SavedTeamAssetBindings:       assetBindings.savedTeam,
+		TeamDefinitionAssetBindings:  assetBindings.teamDefinition,
+		AgentDefinitionAssetBindings: assetBindings.agentDefinition,
+		AssetBindingRecords:          assetBindings.records,
+		AssetSourceStreamIDs:         assetBindings.sourceStreams,
 	}, nil
+}
+
+type missionExecutionAssetBindingContext struct {
+	savedTeam       []assets.ExactAssetRevisionBinding
+	teamDefinition  []assets.ExactAssetRevisionBinding
+	agentDefinition []assets.ExactAssetRevisionBinding
+	records         []assets.EvolutionAssetBindingRecord
+	sourceStreams   []string
+}
+
+func resolveMissionExecutionAssetBindings(
+	view projection.GlobalReadView,
+	team projection.TeamInstance,
+	agent projection.AgentInstance,
+) (missionExecutionAssetBindingContext, error) {
+	context := missionExecutionAssetBindingContext{
+		savedTeam:       []assets.ExactAssetRevisionBinding{},
+		teamDefinition:  []assets.ExactAssetRevisionBinding{},
+		agentDefinition: []assets.ExactAssetRevisionBinding{},
+		records:         []assets.EvolutionAssetBindingRecord{},
+		sourceStreams:   []string{"team-definition/" + team.TeamDefinitionID},
+	}
+	definition, ok := view.TeamDefinition(team.TeamDefinitionID)
+	if ok && (definition.Version != team.TeamDefinitionVersion ||
+		definition.DefinitionDigest != team.TeamDefinitionDigest ||
+		definition.Scope != team.TeamDefinitionScope) {
+		return missionExecutionAssetBindingContext{}, ErrMissionExecutionConflict
+	}
+	for _, role := range definition.Configuration.RoleBindings {
+		if role.AgentDefinitionID != agent.AgentDefinitionID || role.Kind != "main" {
+			continue
+		}
+		for _, skill := range role.SkillRevisions {
+			revisionID := strconv.Itoa(skill.Revision)
+			assetDefinition, found := view.EvolutionAssetDefinition(
+				"skill/" + skill.ID,
+			)
+			revision, revisionFound := view.EvolutionAssetRevision(
+				"skill/" + skill.ID + "/" + revisionID,
+			)
+			if !found || !revisionFound ||
+				assetDefinition.ActiveRevisionID != revisionID ||
+				revision.ArtifactDigest != skill.Digest {
+				return missionExecutionAssetBindingContext{}, ErrMissionExecutionConflict
+			}
+			context.savedTeam = append(context.savedTeam, assets.ExactAssetRevisionBinding{
+				AssetKind: assets.AssetKindSkill, DefinitionID: skill.ID,
+				RevisionID: revisionID, SHA256Digest: skill.Digest,
+				SourceScope: revision.SourceScope,
+			})
+		}
+	}
+	records, _ := view.EvolutionAssetBindings("", 64)
+	context.records = append(context.records, records...)
+	for _, record := range records {
+		switch {
+		case record.SubjectKind == "team_definition" &&
+			record.SubjectID == team.TeamDefinitionID &&
+			record.SubjectVersion == int64(team.TeamDefinitionVersion) &&
+			record.SubjectDigest == team.TeamDefinitionDigest &&
+			record.SubjectScope == team.TeamDefinitionScope:
+			context.teamDefinition = append(
+				context.teamDefinition, record.Bindings...,
+			)
+			context.sourceStreams = append(context.sourceStreams,
+				"evolution-asset-binding/team_definition/"+record.SubjectIdentityDigest)
+		case record.SubjectKind == "agent_definition" &&
+			record.SubjectID == agent.AgentDefinitionID &&
+			record.SubjectVersion == int64(agent.AgentDefinitionVersion) &&
+			record.SubjectScope == agent.AgentDefinitionScope &&
+			record.SubjectProjectID == agent.ScopeIdentity.ProjectID &&
+			record.SubjectGenerationID == agent.ScopeIdentity.GenerationID:
+			context.agentDefinition = append(
+				context.agentDefinition, record.Bindings...,
+			)
+			context.sourceStreams = append(context.sourceStreams,
+				"evolution-asset-binding/agent_definition/"+record.SubjectIdentityDigest)
+		}
+	}
+	sort.Strings(context.sourceStreams)
+	return context, nil
 }
 
 func parseLockedLocalPiModelIdentity(value string) (string, string, bool) {
@@ -439,16 +539,63 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 	if err != nil || workPackage.Digest() != command.WorkPackageDigest {
 		return MissionExecutionCompilation{}, ErrMissionExecutionConflict
 	}
+	workPackageBindings := []assets.ExactAssetRevisionBinding{}
+	assetSourceStreams := append([]string{}, binding.AssetSourceStreamIDs...)
+	for _, record := range binding.AssetBindingRecords {
+		if record.SubjectKind != "work_package" ||
+			record.SubjectID != workPackage.ID() ||
+			record.SubjectVersion != int64(workPackage.Version()) ||
+			record.SubjectDigest != workPackage.Digest() ||
+			record.SubjectScope != "builtin" {
+			continue
+		}
+		if len(workPackageBindings) != 0 {
+			return MissionExecutionCompilation{}, ErrMissionExecutionConflict
+		}
+		workPackageBindings = append(workPackageBindings, record.Bindings...)
+		assetSourceStreams = append(assetSourceStreams,
+			"evolution-asset-binding/work_package/"+record.SubjectIdentityDigest)
+	}
+	mergedAssetBindings, mergedAssetDigest, err := teams.MergeExecutionAssetBindings(
+		binding.SavedTeamAssetBindings,
+		binding.TeamDefinitionAssetBindings,
+		binding.AgentDefinitionAssetBindings,
+		workPackageBindings,
+	)
+	if err != nil {
+		return MissionExecutionCompilation{}, ErrMissionExecutionConflict
+	}
+	if len(mergedAssetBindings) > 0 {
+		profileInput := binding.Profile
+		profileInput.RequiredCapabilities = append(
+			[]string{}, profileInput.RequiredCapabilities...,
+		)
+		profileInput.RequiredCapabilities = append(
+			profileInput.RequiredCapabilities,
+			missionSkillMaterializationCapability,
+		)
+		profile, profileErr := loomruntime.NewRuntimeProfile(profileInput)
+		if profileErr != nil {
+			return MissionExecutionCompilation{}, ErrMissionExecutionConflict
+		}
+		if validated, validateErr := loomruntime.ValidateBinding(profile, binding.Instance); validateErr != nil || !validated.Accepted {
+			return MissionExecutionCompilation{}, ErrMissionExecutionConflict
+		}
+		binding.Profile = profile
+	}
+	sort.Strings(assetSourceStreams)
 	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
 		TeamInstanceID: command.TeamInstanceID,
 		Nodes: []teams.ExecutionNodeInput{{
-			LogicalNodeID:     "main",
-			Title:             command.Objective,
-			AgentInstanceID:   binding.AgentInstanceID,
-			RuntimeInstanceID: binding.Instance.ID,
-			Role:              teams.ExecutionRoleMain,
-			DependsOn:         []string{},
-			MaxAttempts:       2,
+			LogicalNodeID:          "main",
+			Title:                  command.Objective,
+			AgentInstanceID:        binding.AgentInstanceID,
+			RuntimeInstanceID:      binding.Instance.ID,
+			Role:                   teams.ExecutionRoleMain,
+			DependsOn:              []string{},
+			MaxAttempts:            2,
+			AssetRevisionBindings:  mergedAssetBindings,
+			AssetRevisionSetDigest: mergedAssetDigest,
 		}},
 	})
 	if err != nil {
@@ -610,6 +757,7 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		GrantLifetime:        2 * time.Minute,
 		CorrelationID:        command.CorrelationID,
 		OutputObserver:       outputObserver,
+		AssetSourceStreamIDs: assetSourceStreams,
 	}
 	return MissionExecutionCompilation{
 		Plan: plan, Preflight: preflight, Request: request,

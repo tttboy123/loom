@@ -4,9 +4,67 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestP3AJourneyWireAndMethodsAreStrictlyAvailable(t *testing.T) {
+	requestType := reflect.TypeOf(Request{})
+	requestJourney, found := requestType.FieldByName("JourneyID")
+	if !found || requestJourney.Tag.Get("json") != "journey_id,omitempty" {
+		t.Fatalf("Request JourneyID field = %#v, %v", requestJourney, found)
+	}
+	responseType := reflect.TypeOf(Response{})
+	responseJourney, found := responseType.FieldByName("JourneyID")
+	if !found || responseJourney.Tag.Get("json") != "journey_id,omitempty" {
+		t.Fatalf("Response JourneyID field = %#v, %v", responseJourney, found)
+	}
+	for _, method := range []string{
+		"evolution_asset_snapshot",
+		"evolution_asset_diff",
+		"evolution_asset_command",
+	} {
+		if !validMethod(method) {
+			t.Fatalf("validMethod(%q) = false", method)
+		}
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"request-p3a-red","journey_id":"11111111-1111-4111-8111-111111111111","method":"evolution_asset_snapshot","params":{"cursor":"","limit":1,"asset_kind":"","lifecycle":"","search_text":""}}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeRequest(P3A) error = %v", err)
+	}
+	journey := reflect.ValueOf(request).FieldByName("JourneyID")
+	if !journey.IsValid() || journey.String() != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("decoded journey = %v", journey)
+	}
+}
+
+func TestP3AJourneyWireRejectsMissingDuplicateUnknownAndInvalidIdentity(t *testing.T) {
+	validJourney := "123e4567-e89b-42d3-a456-426614174000"
+	valid := []byte(`{"version":1,"request_id":"asset-1","journey_id":"` + validJourney + `","method":"evolution_asset_snapshot","params":{}}`)
+	request, err := decodeRequest(valid)
+	if err != nil {
+		t.Fatalf("valid P3A request error = %v", err)
+	}
+	value := reflect.ValueOf(request)
+	journey := value.FieldByName("JourneyID")
+	if !journey.IsValid() || journey.String() != validJourney {
+		t.Fatalf("decoded journey = %v, want %s", journey, validJourney)
+	}
+	for _, input := range []string{
+		`{"version":1,"request_id":"asset-1","method":"evolution_asset_snapshot","params":{}}`,
+		`{"version":1,"request_id":"asset-1","journey_id":"not-a-uuid","method":"evolution_asset_snapshot","params":{}}`,
+		`{"version":1,"request_id":"asset-1","journey_id":"123E4567-E89B-42D3-A456-426614174000","method":"evolution_asset_snapshot","params":{}}`,
+		`{"version":1,"request_id":"asset-1","journey_id":"123e4567-e89b-42d3-a456-426614174000","journey_id":"123e4567-e89b-42d3-a456-426614174000","method":"evolution_asset_snapshot","params":{}}`,
+		`{"version":1,"request_id":"asset-1","journey_id":"123e4567-e89b-42d3-a456-426614174000","method":"evolution_asset_snapshot","params":{},"unexpected":true}`,
+	} {
+		if _, err := decodeRequest([]byte(input)); err == nil {
+			t.Fatalf("decodeRequest(%s) error = nil", input)
+		}
+	}
+}
 
 func TestFrameRoundTripIsBoundedAndRejectsTrailingOrTruncatedInput(t *testing.T) {
 	body := []byte(`{"version":1,"request_id":"request-1","method":"ping","params":{}}`)
