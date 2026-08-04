@@ -50,7 +50,7 @@ func TestSF1QueueWireOverSocket(t *testing.T) {
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "sf1-queue-fixture",
 		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
-			nil, nil, nil, nil, nil, nil, nil, queueAPI, nil,
+			nil, nil, nil, nil, nil, nil, nil, queueAPI, nil, nil,
 		)),
 	})
 	if err != nil {

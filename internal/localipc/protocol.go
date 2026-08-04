@@ -194,7 +194,8 @@ func requiresJourney(method string) bool {
 	switch method {
 	case "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
 		"queue_snapshot", "queue_command",
-		"workers_snapshot", "workers_command":
+		"workers_snapshot", "workers_command",
+		"integration_snapshot", "integration_command":
 		return true
 	default:
 		return false
@@ -317,7 +318,9 @@ func validMethod(method string) bool {
 		"queue_snapshot",
 		"queue_command",
 		"workers_snapshot",
-		"workers_command":
+		"workers_command",
+		"integration_snapshot",
+		"integration_command":
 		return true
 	default:
 		return false

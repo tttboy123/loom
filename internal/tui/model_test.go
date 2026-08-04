@@ -49,6 +49,20 @@ type fakeReadClient struct {
 	decided       app.SideTaskDecisionResult
 }
 
+func (client *fakeReadClient) IntegrationSnapshot(
+	_ context.Context,
+	_ string,
+) (app.IntegrationSnapshot, error) {
+	return app.IntegrationSnapshot{}, nil
+}
+
+func (client *fakeReadClient) IntegrationCommand(
+	_ context.Context,
+	_ app.IntegrationCommandRequest,
+) (app.IntegrationCommandResult, error) {
+	return app.IntegrationCommandResult{}, nil
+}
+
 type fakeAssetReadClient struct {
 	fakeReadClient
 	assetSnapshot api.EvolutionAssetSnapshot
@@ -1659,14 +1673,17 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenAssets,
 		ScreenQueue,
 		ScreenWorkers,
+		ScreenIntegration,
 		ScreenBoard,
 	}
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
-		if cmd != nil && want != ScreenAssets && want != ScreenQueue && want != ScreenWorkers {
+		if cmd != nil && want != ScreenAssets && want != ScreenQueue &&
+			want != ScreenWorkers && want != ScreenIntegration {
 			t.Fatalf("screen navigation produced command for %s", want)
 		}
-		if cmd == nil && (want == ScreenAssets || want == ScreenQueue || want == ScreenWorkers) {
+		if cmd == nil && (want == ScreenAssets || want == ScreenQueue ||
+			want == ScreenWorkers || want == ScreenIntegration) {
 			t.Fatalf("%s navigation omitted production IPC refresh", want)
 		}
 		model = updated.(Model)

@@ -81,6 +81,23 @@ private struct ProbeWorkersCommandOutput: Encodable {
     let disposition: String?
 }
 
+private struct ProbeIntegrationOutput: Encodable {
+    let viewVersion: String
+    let releases: Int
+    let canaries: Int
+    let timeline: Int
+    let attention: Int
+}
+
+private struct ProbeIntegrationCommandOutput: Encodable {
+    let action: String
+    let operationID: String
+    let eventIDs: [String]
+    let releaseID: String?
+    let canaryID: String?
+    let disposition: String?
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
@@ -96,6 +113,8 @@ enum LoomLocalAppContractProbe {
                     || arguments.count == 5 && arguments[3] == "--queue-snapshot"
                     || arguments.count == 5 && arguments[3] == "--workers-snapshot"
                     || arguments.count == 7 && arguments[3] == "--workers-command"
+                    || arguments.count == 5 && arguments[3] == "--integration-snapshot"
+                    || arguments.count == 7 && arguments[3] == "--integration-command"
                     || (arguments.count == 6 || arguments.count == 7) && arguments[3] == "--asset-action"
                     || arguments.count == 6 && (arguments[3] == "--queue-create-job"
                         || arguments[3] == "--queue-gap-observe"
@@ -181,6 +200,45 @@ enum LoomLocalAppContractProbe {
                     jobID: receipt.jobID,
                     generation: receipt.generation,
                     lane: receipt.lane,
+                    disposition: receipt.disposition
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--integration-snapshot" {
+                let snapshot = try await client.integrationSnapshot(journeyID: arguments[4])
+                let encoded = try JSONEncoder().encode(ProbeIntegrationOutput(
+                    viewVersion: snapshot.viewVersion,
+                    releases: snapshot.releases.count,
+                    canaries: snapshot.canaries.count,
+                    timeline: snapshot.timeline.count,
+                    attention: snapshot.attention.count
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 7 && arguments[3] == "--integration-command" {
+                let journeyID = arguments[4]
+                let action = arguments[5]
+                let input = try loadJSONObject(arguments[6])
+                let receipt = try await client.integrationCommand(
+                    journeyID: journeyID,
+                    operationID: "sf3-" + UUID().uuidString.lowercased(),
+                    action: action,
+                    input: input
+                )
+                let encoded = try JSONEncoder().encode(ProbeIntegrationCommandOutput(
+                    action: receipt.action,
+                    operationID: receipt.operationID,
+                    eventIDs: receipt.eventIDs,
+                    releaseID: receipt.releaseID,
+                    canaryID: receipt.canaryID,
                     disposition: receipt.disposition
                 ))
                 guard let output = String(data: encoded, encoding: .utf8) else {

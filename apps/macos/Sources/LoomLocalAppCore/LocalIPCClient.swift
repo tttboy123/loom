@@ -961,6 +961,7 @@ public final class LocalIPCClient:
         let id = requestID()
         let methods: Set<String> = [
             "workers_snapshot", "workers_command",
+            "integration_snapshot", "integration_command",
         ]
         guard LocalIPCWire.validRequestID(id), Self.validJourneyID(journeyID),
               methods.contains(method) else {

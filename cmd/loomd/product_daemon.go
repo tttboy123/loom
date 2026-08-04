@@ -28,9 +28,11 @@ import (
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/evidence"
+	"loom-pi-rebuild/internal/integration"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/mode"
+	"loom-pi-rebuild/internal/observability"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	"loom-pi-rebuild/internal/queue"
@@ -1770,6 +1772,30 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_workers", err)
 	}
+	integrationService, err := integration.NewIntegrationService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_integration", err)
+	}
+	observabilityService, err := observability.NewObservabilityService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_integration", err)
+	}
+	localIntegrationService, err := app.NewLocalIntegrationService(
+		store, integrationService, observabilityService,
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_integration", err)
+	}
+	integrationAPI, err := api.NewLocalIntegrationAPI(localIntegrationService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_integration", err)
+	}
 	var executionAPI *api.LocalProductExecutionAPI
 	var handoffAPI *api.LocalProductHandoffAPI
 	var savedTeamMaterializer productSavedTeamMaterializer
@@ -1809,6 +1835,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			assetAPI,
 			queueAPI,
 			workersAPI,
+			integrationAPI,
 		),
 	))
 	if journeyHarness != nil {
@@ -4241,6 +4268,7 @@ func localProductHandlerWithDecision(
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 }
 
@@ -4254,6 +4282,7 @@ func localProductHandlerWithComposition(
 	assetService *api.LocalProductAssetAPI,
 	queueService *api.LocalQueueAPI,
 	workersService *api.LocalWorkersAPI,
+	integrationService *api.LocalIntegrationAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
@@ -4287,6 +4316,9 @@ func localProductHandlerWithComposition(
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalQueueAPI)
 		}
 		if productWorkersMethod(request.Method) && workersService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalQueueAPI)
+		}
+		if productIntegrationMethod(request.Method) && integrationService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalQueueAPI)
 		}
 		switch request.Method {
@@ -4404,6 +4436,23 @@ func localProductHandlerWithComposition(
 			}
 			input.JourneyID = request.JourneyID
 			result, err := workersService.WorkersCommand(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "integration_snapshot":
+			result, err := integrationService.Snapshot(ctx)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "integration_command":
+			var input app.IntegrationCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidIntegrationRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := integrationService.Command(ctx, input)
 			if err != nil {
 				return productJourneyServiceError(request.JourneyID, err)
 			}
@@ -4703,6 +4752,10 @@ func productWorkersMethod(method string) bool {
 	return method == "workers_snapshot" || method == "workers_command"
 }
 
+func productIntegrationMethod(method string) bool {
+	return method == "integration_snapshot" || method == "integration_command"
+}
+
 type productCredentialParams struct {
 	ProviderID          string `json:"provider_id"`
 	CredentialReference string `json:"credential_reference"`
@@ -4864,7 +4917,10 @@ func productServiceError(err error) localipc.Response {
 		errors.Is(err, queue.ErrInvalidInput),
 		errors.Is(err, app.ErrInvalidWorkerRequest),
 		errors.Is(err, work.ErrInvalidWorkerRequest),
-		errors.Is(err, schedule.ErrInvalidInput):
+		errors.Is(err, schedule.ErrInvalidInput),
+		errors.Is(err, app.ErrInvalidIntegrationRequest),
+		errors.Is(err, integration.ErrInvalidInput),
+		errors.Is(err, observability.ErrInvalidInput):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
 		errors.Is(err, app.ErrBuilderNotFound),
@@ -4896,6 +4952,17 @@ func productServiceError(err error) localipc.Response {
 		return productErrorResponse("denied", err)
 	case errors.Is(err, schedule.ErrLeaseExpired), errors.Is(err, schedule.ErrStaleGeneration):
 		return productErrorResponse("stale_generation", err)
+	case errors.Is(err, integration.ErrStaleIntegration), errors.Is(err, integration.ErrDuplicateCanary),
+		errors.Is(err, integration.ErrCapacityOversold):
+		return productErrorResponse("conflict", err)
+	case errors.Is(err, integration.ErrUnauthorizedFrame), errors.Is(err, observability.ErrUnauthorized):
+		return productErrorResponse("denied", err)
+	case errors.Is(err, integration.ErrStaleGeneration), errors.Is(err, observability.ErrStaleFrame):
+		return productErrorResponse("stale_generation", err)
+	case errors.Is(err, integration.ErrMalformedFrame), errors.Is(err, observability.ErrMalformed):
+		return productErrorResponse("invalid_request", err)
+	case errors.Is(err, integration.ErrRollbackUnavailable):
+		return productErrorResponse("not_found", err)
 	case errors.Is(err, app.ErrNativeAuthConnectBusy),
 		errors.Is(err, app.ErrMissionExecutionBusy):
 		return productErrorResponse("busy", err)

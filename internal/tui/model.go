@@ -42,6 +42,7 @@ const (
 	ScreenAssets      Screen = "Evolution Assets"
 	ScreenQueue       Screen = "Queue"
 	ScreenWorkers     Screen = "Workers"
+	ScreenIntegration Screen = "Integration"
 )
 
 var screens = []Screen{
@@ -56,6 +57,7 @@ var screens = []Screen{
 	ScreenAssets,
 	ScreenQueue,
 	ScreenWorkers,
+	ScreenIntegration,
 }
 
 type ReadClient interface {
@@ -134,6 +136,11 @@ type QueueClient interface {
 type WorkersClient interface {
 	WorkersSnapshot(context.Context, app.WorkersSnapshotRequest) (app.WorkersSnapshot, error)
 	WorkersCommand(context.Context, app.WorkersCommandRequest) (app.WorkersCommandResult, error)
+}
+
+type IntegrationClient interface {
+	IntegrationSnapshot(context.Context, string) (app.IntegrationSnapshot, error)
+	IntegrationCommand(context.Context, app.IntegrationCommandRequest) (app.IntegrationCommandResult, error)
 }
 
 type HandoffClient interface {
@@ -371,6 +378,8 @@ type queueLoadedMsg struct{ snapshot api.QueueSnapshot }
 type queueFailedMsg struct{ err error }
 type workersLoadedMsg struct{ snapshot app.WorkersSnapshot }
 type workersFailedMsg struct{ err error }
+type integrationLoadedMsg struct{ snapshot app.IntegrationSnapshot }
+type integrationFailedMsg struct{ err error }
 
 type builderStartedMsg struct {
 	session app.BuilderSessionView
@@ -428,15 +437,16 @@ const (
 )
 
 type Model struct {
-	client          ReadClient
-	setupClient     SetupClient
-	executionClient ExecutionClient
-	handoffClient   HandoffClient
-	assetClient     EvolutionAssetClient
-	queueClient     QueueClient
-	workersClient   WorkersClient
-	ctx             context.Context
-	cancel          context.CancelFunc
+	client            ReadClient
+	setupClient       SetupClient
+	executionClient   ExecutionClient
+	handoffClient     HandoffClient
+	assetClient       EvolutionAssetClient
+	queueClient       QueueClient
+	workersClient     WorkersClient
+	integrationClient IntegrationClient
+	ctx               context.Context
+	cancel            context.CancelFunc
 
 	screenIndex            int
 	selections             [16]int
@@ -477,6 +487,7 @@ type Model struct {
 	evolutionAssets        api.EvolutionAssetSnapshot
 	queueSnapshot          api.QueueSnapshot
 	workersSnapshot        app.WorkersSnapshot
+	integrationSnapshot    app.IntegrationSnapshot
 	evolutionAssetDiff     api.EvolutionAssetDiff
 	evolutionSearch        string
 	evolutionJourneyID     string
@@ -516,6 +527,7 @@ func newModelWithContext(
 		assetClient:        assetClient,
 		queueClient:        queueClientFrom(client),
 		workersClient:      workersClientFrom(client),
+		integrationClient:  integrationClientFrom(client),
 		ctx:                ctx,
 		cancel:             cancel,
 		width:              80,
@@ -732,6 +744,20 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 		model.lastError = safeClientState(message.err)
 		return model, nil
+	case integrationLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.integrationSnapshot = message.snapshot
+		return model, nil
+	case integrationFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
 	case tea.KeyMsg:
 		if model.entryMode != "" {
 			return model.updateEntry(message)
@@ -787,6 +813,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadWorkers()
 			}
+			if model.Screen() == ScreenIntegration {
+				model.loading = true
+				return model, model.loadIntegration()
+			}
 			return model, nil
 		case "shift+tab", "left":
 			next := model.screenIndex - 1
@@ -805,6 +835,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenWorkers {
 				model.loading = true
 				return model, model.loadWorkers()
+			}
+			if model.Screen() == ScreenIntegration {
+				model.loading = true
+				return model, model.loadIntegration()
 			}
 			return model, nil
 		case "down", "j":
@@ -834,6 +868,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.Screen() == ScreenWorkers {
 				return model, model.loadWorkers()
+			}
+			if model.Screen() == ScreenIntegration {
+				return model, model.loadIntegration()
 			}
 			if model.Screen() == ScreenTeamBuilder {
 				return model, model.loadSetup()
@@ -1712,6 +1749,8 @@ func (model Model) screenBody() string {
 		return model.renderQueueView()
 	case ScreenWorkers:
 		return model.renderWorkersView()
+	case ScreenIntegration:
+		return model.renderIntegrationView()
 	default:
 		return ""
 	}
