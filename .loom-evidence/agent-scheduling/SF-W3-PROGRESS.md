@@ -49,6 +49,19 @@ CanaryStarted ×1, CanaryCompleted ×1, NodeOutputFramePublished ×1,
 ReleaseAdoptedByLaterRun ×1, ReleaseRolledBack ×1 + platform init.
 Deterministic matrix green (Go full/race/vet/tidy/gofmt; Swift full 96+4).
 
+## Bounded Repair 1 — projection-failure preserve (canary minimum #9)
+
+`internal/app/local_integration.go` now caches the last-good snapshot and
+returns it (old view preserved) while the controlled projection fault is
+active or a rebuild fails; `integration_command projection_failure_test`
+exposes the seam. The re-run journey
+(`/private/tmp/sf3-journey-final`, same journey id) added the checkpoint:
+with the fault active a new frame was committed but the snapshot kept the
+old view (timeline 1); after the fault cleared the rebuilt view showed
+timeline 2; restart rebuilt the identical state. Journal now has
+NodeOutputFramePublished ×2; `scripts/verify-sf3-cross-client-journey.sh`
+PASS.
+
 Next: implementation / dual-Result / Whole-Candidate reviews, exact staging
 per `SF-W3-SOURCE-LOCK.json` (32 paths, digest `59297f53…`), single SF-W3
 atomic local commit, then the whole-slice acceptance review.

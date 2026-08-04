@@ -1,7 +1,7 @@
 {
   "baseline_commit": "36b6c4b8cbcba428448f49a5368e1b291dc5a8cb9",
   "branch": "codex/loom-platform-slice2",
-  "generated_at": "2026-08-04T18:08:50Z",
+  "generated_at": "2026-08-04T18:16:13Z",
   "intentionally_excluded": [
     "internal/projection/team_execution_test.go",
     "AGENTS.md",
@@ -21,7 +21,7 @@
   "source_inventory": {
     "count": 32,
     "method": "sha256 of lexicographically path-sorted '<file_sha256>  <relative_path>' lines",
-    "ordered_sha256_lines_digest": "59297f53b2d2047bf53e4437de5248cd7d2257c54fbb08286a177539c8f5edfb",
+    "ordered_sha256_lines_digest": "d51484619b863d889f888e269904f24ef8be54eb25a7f1090d9674484d0de2ab",
     "paths": [
       "apps/macos/Sources/LoomLocalAppContractProbe/main.swift",
       "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",

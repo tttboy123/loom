@@ -29,9 +29,12 @@ Overall SF-W3 Implementation Review: PASS
    PASS (integration/observability/app/api/tui/localipc/loomd), `go vet`
    clean, `gofmt` clean, `go mod tidy` no diff, Swift build + `swift test`
    PASS (96 XCTest + 4 Swift Testing, 0 failures).
-5. Cross-client journey verified PASS (journal event set exact, dual-client
-   IPC with app launch reads, Integration-screen PTY transcript, screenshots,
-   postflight empty, restart rebuild identical).
+5. Cross-client journey verified PASS (journal event set exact incl.
+   NodeOutputFramePublished ×2, dual-client IPC with app launch reads,
+   Integration-screen PTY transcript, screenshots, postflight empty, restart
+   rebuild identical). Bounded Repair 1 adds the projection-failure-preserve
+   checkpoint (old view preserved while the fault is active; rebuilt after
+   clearing), closing canary minimum #9.
 
 No blocking finding remains.
 

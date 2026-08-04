@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 
 	"loom-pi-rebuild/internal/integration"
 	"loom-pi-rebuild/internal/journal"
@@ -43,6 +44,9 @@ type LocalIntegrationService struct {
 	store         *journal.Store
 	integration   *integration.IntegrationService
 	observability *observability.ObservabilityService
+	mu            sync.Mutex
+	lastSnapshot  IntegrationSnapshot
+	rebuildFault  bool
 }
 
 func NewLocalIntegrationService(
@@ -62,25 +66,52 @@ func NewLocalIntegrationService(
 func (service *LocalIntegrationService) ReadSnapshot(ctx context.Context) (IntegrationSnapshot, error) {
 	releases, err := service.integration.ReleaseProjection(ctx)
 	if err != nil {
-		return IntegrationSnapshot{}, err
+		return service.preservedView(err)
 	}
 	canaries, err := service.integration.CanaryProjection(ctx)
 	if err != nil {
-		return IntegrationSnapshot{}, err
+		return service.preservedView(err)
 	}
 	timeline, err := observability.BuildTimeline(ctx, service.store)
 	if err != nil {
-		return IntegrationSnapshot{}, err
+		return service.preservedView(err)
 	}
 	attention, err := observability.BuildAttention(ctx, service.store)
 	if err != nil {
-		return IntegrationSnapshot{}, err
+		return service.preservedView(err)
 	}
-	return IntegrationSnapshot{
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.rebuildFault {
+		return service.lastSnapshot, nil
+	}
+	snapshot := IntegrationSnapshot{
 		ViewVersion: "sf3-view",
 		Releases:    releases, Canaries: canaries,
 		Timeline: timeline.Frames, Attention: attention,
-	}, nil
+	}
+	service.lastSnapshot = snapshot
+	return snapshot, nil
+}
+
+// preservedView returns the last-good view (or the rebuild error when no
+// view has ever been built) so a failed projection refresh never discards
+// the old view.
+func (service *LocalIntegrationService) preservedView(rebuildErr error) (IntegrationSnapshot, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.lastSnapshot.ViewVersion != "" {
+		return service.lastSnapshot, nil
+	}
+	return IntegrationSnapshot{}, rebuildErr
+}
+
+// SetProjectionFault toggles the controlled projection-failure seam used by
+// the canary journey: while active, the old view is preserved.
+func (service *LocalIntegrationService) SetProjectionFault(active bool) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.rebuildFault = active
 }
 
 func (service *LocalIntegrationService) CommitCommand(
@@ -169,6 +200,18 @@ func (service *LocalIntegrationService) CommitCommand(
 		return IntegrationCommandResult{
 			OperationID: request.OperationID, Action: request.Action,
 			EventIDs: ids, Disposition: "published",
+		}, nil
+	case "projection_failure_test":
+		var input struct {
+			Active bool `json:"active"`
+		}
+		if err := json.Unmarshal(request.Input, &input); err != nil {
+			return IntegrationCommandResult{}, ErrInvalidIntegrationRequest
+		}
+		service.SetProjectionFault(input.Active)
+		return IntegrationCommandResult{
+			OperationID: request.OperationID, Action: request.Action,
+			EventIDs: []string{}, Disposition: "projection_fault_set",
 		}, nil
 	default:
 		return IntegrationCommandResult{}, ErrInvalidIntegrationRequest

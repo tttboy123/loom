@@ -17,12 +17,13 @@ Operational and Trace Behavior: PASS
 
 Product (verified): journal contains exactly IntegrationStarted ×1,
 CandidateIntegrated ×1, CanaryStarted ×1, CanaryCompleted ×1,
-NodeOutputFramePublished ×1, ReleaseAdoptedByLaterRun ×1,
+NodeOutputFramePublished ×2, ReleaseAdoptedByLaterRun ×1,
 ReleaseRolledBack ×1; single Integrator CAS winner with competing stale
 integration rejected; canary one-shot with duplicate blocked;
 unauthorized frame denied / authorized frame published; later Run adopted;
-rollback restored prior version; projection matches journal; result.md
-truthful.
+rollback restored prior version; projection-failure preserve demonstrated
+(old view kept while fault active, rebuilt after clearing); projection
+matches journal; result.md truthful.
 
 Operational/Trace (verified): §8-style evidence schema; zero journey drift;
 dual-client coverage with app-originated loom-swift rows; real PTY
