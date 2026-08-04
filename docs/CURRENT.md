@@ -6119,3 +6119,41 @@ SF-W1/W2/W3 = ACCEPTED / NO PRODUCT CODE
 SF-W4 = DOES NOT EXIST
 PRODUCT CODE = LOCKED UNTIL SF-W1 RED
 ```
+
+`CURRENT`: the v0.4.0 Agent Scheduling Framework slice is complete and
+accepted:
+
+- **Gate 1** (ADR-0014 + Exit Contract + SF-W1/W2/W3 freeze) passed combined
+  Contract Review 2 after Contract Repair 1; governance committed
+  `737c58c8`.
+- **SF-W1** `1abf033c` — Journal-authoritative queue projection, Decomposition
+  Compiler admission (eligibility, DAG cycle, duplicate active work,
+  protected-authority fail-closed, vertical capability), owned-path/mutex/
+  resource Conflict Arbiter, digest-bound Gap Proposal convergence.
+- **SF-W2** `36b6c4b8` — ephemeral worker pools (one claim per worker, no
+  oversell), attempt leases with generation fencing, Journal-rebuilt
+  Reconciler (crash reclamation with before/after-CAS seam), bounded
+  retry/backoff, seven-class failure routing with repair aging/fairness,
+  Reviewer read-only.
+- **SF-W3** `8e888565` + repair `ad9726a5` — single Integrator CAS,
+  versioned release lifecycle (publish / later-Run adoption / rollback),
+  one-shot offline canary with idempotent CAS, Timeline/Attention projections
+  with authorized generation-bound streaming (old view preserved during
+  controlled projection failure).
+- Each WorkItem completed a real GUI+TUI cross-client journey (alternative
+  verification: production Swift client over the real daemon socket, real
+  PTY TUI, real native window, restart/reconnect checkpoint) with Product
+  Result and Operational/Trace review records PASS (P0=P1=P2=0). Whole-slice
+  acceptance 12/12 PASS
+  (`.loom-evidence/agent-scheduling/WHOLE-SLICE-ACCEPTANCE-REVIEW.md`).
+- Deterministic matrix green per WorkItem (Go full/race/vet/tidy/gofmt;
+  Swift full/TSAN/Release); exact staging per each source-lock;
+  `internal/projection/team_execution_test.go` and documented exclusions
+  untouched; no push/merge/network/paid/user-config action.
+
+```text
+V0.4.0 = ACCEPTED / WHOLE-SLICE REVIEW PASS
+SF-W1/W2/W3 = ACCEPTED / ATOMIC LOCAL COMMITS COMPLETE
+SF-W4 = DOES NOT EXIST
+PRODUCT CODE = IMPLEMENTED / DETERMINISTIC MATRIX + JOURNEYS PASS
+```
