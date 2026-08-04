@@ -6048,8 +6048,9 @@ happy-root 498-event/492-correlated counts and the read-only re-verify PASS
 on all eight roots). The Whole-Candidate Review returned PASS (P0=0 P1=0
 P2=2) with its two documentation closures applied.
 
-The unique P3A-W1 is accepted by the atomic local commit containing this
-record. The final root set, binary digests and evidence bundle are recorded in
+The unique P3A-W1 is accepted by the atomic local commit `7d5f0b01`
+containing this record. The final root set, binary digests and evidence
+bundle are recorded in
 `.loom-evidence/phase3a/P3A-W1/JOURNEY-ROOTS-INVENTORY.md`. No P3A-W2,
 further journey, push or merge follows from this acceptance. Unrelated dirty
 and untracked user files remain outside the commit.
@@ -6060,4 +6061,61 @@ P3A-W1 = ACCEPTED / LOCAL ATOMIC COMMIT COMPLETE
 P3A-W2 = DOES NOT EXIST
 PRODUCT CODE = IMPLEMENTED / RED + DETERMINISTIC MATRIX PASS
 CROSS-CLIENT JOURNEY = ALTERNATIVE VERIFICATION / 8/8 PASS
+```
+
+`CURRENT`: the v0.4.0 Agent Scheduling Framework / concurrent development
+pipeline goal is active on the accepted P3A-W1 baseline `7d5f0b01`. Gate 0
+passed (`.loom-evidence/agent-scheduling/GATE0-AUDIT.md`): physical cwd,
+Git top-level, branch `codex/loom-platform-slice2` and HEAD agree with
+`docs/CURRENT.md`; the dirty/untracked boundary is an exact exclusion list
+(root docs, `internal/projection/team_execution_test.go`,
+phase1-final-live-gate, earlier-slice evidence, `.codex/**`, `.loom-drafts/**`,
+`apps/macos/.build/**`); the nine prerequisite capabilities are DONE
+(Journal authority + AppendBatchIfStreamHeads, rebuildable Projection/
+GlobalReadView, dispatch CAS, lease/generation fencing, Grant/Evidence
+lineage, independent worktree/path isolation, failure-classification +
+human_required lanes, real GUI/TUI cross-client substrate, Runtime
+capability matrix).
+
+Gate 1 is frozen and accepted as one combined Candidate:
+`docs/adr/0014-agent-scheduling-framework.md`
+(single-authority architecture, explicitly forbidding a second
+Scheduler/Journal/StateWriter/Projection/queue DB; Timeline/Attention/
+streaming are projections, never an authority),
+`.loom-evidence/agent-scheduling/SF-EXIT-CONTRACT.md` (lanes + seven-class
+failure taxonomy, at-least-once dispatch + idempotent CAS +
+lease/generation fencing, fairness with repair aging, frozen schemas,
+replay/restart semantics, authority boundaries, Decomposition Compiler
+rules, bounded-recovery ownership in SF-W2, streaming/Timeline/Attention
+ownership in SF-W3, mandatory RED, verification matrix, controlled self-host
+canary, cross-client Exit Gate, exact staging + one atomic commit per
+WorkItem, self-evolution gap-to-successor reconciliation, minimum
+acceptance, stop conditions), and
+`.loom-evidence/agent-scheduling/SF-WORKITEMS.md` (exactly three vertical
+WorkItems SF-W1 Queue State/Projection + Admission/Eligibility/Conflict
+Arbiter, SF-W2 Ephemeral Worker Pools + Lease/Reconciler + routing, SF-W3
+Single-writer Integration + controlled canary + Timeline/Attention; no
+SF-W4, no thin WorkItem). Cross-client journeys continue the accepted
+alternative-verification method (production native window + real PTY TUI +
+production Swift client over the real socket) per the Product Owner
+instruction 2026-08-04; Computer-Use-driven window automation remains
+skipped. Independent Contract Review 1 returned `FAIL`
+(`GATE1-CONTRACT-REVIEW-1.md`, P0=0 P1=7 P2=10: lane/status state machine,
+per-event payload schemas, GapProposal record, crash seam, dual-Scheduler
+single-winner, SF-W1/SF-W2 TUI ownership, per-WorkItem restart journeys,
+plus ten P2 precision items). `SF-CONTRACT-REPAIR-1.md` closed all seven P1
+and all ten P2 findings against the amended text, and a fresh independent
+Contract Re-review 2 returned `PASS` with P0=P1=P2=0
+(`GATE1-CONTRACT-REVIEW-2.md`), including the previously missing
+dual-Scheduler CAS single-winner RED (§10 #21) and minimum-acceptance
+(§16 #13) items. The docs-only Gate 1 governance commit (ADR-0014 + Exit
+Contract + WorkItems + Gate 0 audit + Review 1 + Repair 1 + Review 2 +
+`docs/CURRENT.md`/`docs/adr/README.md` records) is made as one atomic local
+commit. Product code remains locked until SF-W1 RED is established.
+
+```text
+V0.4.0 = GATE 0 PASS / GATE 1 CONTRACT RE-REVIEW 2 PASS / GOVERNANCE COMMIT
+SF-W1/W2/W3 = ACCEPTED / NO PRODUCT CODE
+SF-W4 = DOES NOT EXIST
+PRODUCT CODE = LOCKED UNTIL SF-W1 RED
 ```
