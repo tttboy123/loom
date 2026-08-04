@@ -50,6 +50,18 @@ Owned-file allowlist:
 - `apps/macos/Sources/LoomLocalAppCore/LocalQueueModels.swift` (new),
   `apps/macos/Tests/LoomLocalAppTests/LocalQueueModelsTests.swift` (new)
 
+Owned-file Amendment 1 (frozen,
+`SF-W1-OWNED-FILE-AMENDMENT-1.md`, independent Review 1 PASS) adds the
+additive-only delivery wiring required by the frozen journey:
+
+- `cmd/loomd/product_daemon.go` (additive: queue API build/wire +
+  `queue_snapshot`/`queue_command` routing; existing methods unchanged),
+  `cmd/loomd/product_daemon_test.go` (queue routing regression tests)
+- `internal/tui/model.go` (additive: `ScreenQueue` + screens-list entry +
+  Tab/refresh wiring + View dispatch; existing screens unchanged)
+- `apps/macos/Sources/LoomLocalAppContractProbe/main.swift` (additive:
+  queue action modes for the SF-W1 journey; existing modes unchanged)
+
 No modification of Journal store internals, existing authority writers, or
 accepted P2A/P2B/P3A files.
 

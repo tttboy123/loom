@@ -41,6 +41,27 @@ func TestP3AJourneyWireAndMethodsAreStrictlyAvailable(t *testing.T) {
 	}
 }
 
+func TestQueueJourneyWireAndMethodsAreStrictlyAvailable(t *testing.T) {
+	for _, method := range []string{"queue_snapshot", "queue_command"} {
+		if !validMethod(method) {
+			t.Fatalf("validMethod(%q) = false", method)
+		}
+		if !requiresJourney(method) {
+			t.Fatalf("requiresJourney(%q) = false", method)
+		}
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"request-queue-1","journey_id":"11111111-1111-4111-8111-111111111111","method":"queue_snapshot","params":{"cursor":"","limit":1}}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeRequest(queue_snapshot) error = %v", err)
+	}
+	if request.Method != "queue_snapshot" ||
+		request.JourneyID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("decoded queue request = %+v", request)
+	}
+}
+
 func TestP3AJourneyWireRejectsMissingDuplicateUnknownAndInvalidIdentity(t *testing.T) {
 	validJourney := "123e4567-e89b-42d3-a456-426614174000"
 	valid := []byte(`{"version":1,"request_id":"asset-1","journey_id":"` + validJourney + `","method":"evolution_asset_snapshot","params":{}}`)

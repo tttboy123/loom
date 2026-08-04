@@ -1657,15 +1657,16 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenAttention,
 		ScreenTimeline,
 		ScreenAssets,
+		ScreenQueue,
 		ScreenBoard,
 	}
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
-		if cmd != nil && want != ScreenAssets {
+		if cmd != nil && want != ScreenAssets && want != ScreenQueue {
 			t.Fatalf("screen navigation produced command for %s", want)
 		}
-		if cmd == nil && want == ScreenAssets {
-			t.Fatal("Evolution Assets navigation omitted production IPC refresh")
+		if cmd == nil && (want == ScreenAssets || want == ScreenQueue) {
+			t.Fatalf("%s navigation omitted production IPC refresh", want)
 		}
 		model = updated.(Model)
 		if model.Screen() != want {

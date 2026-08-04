@@ -44,6 +44,25 @@ private struct ProbeAssetActionOutput: Encodable {
     let eventIDs: [String]
 }
 
+private struct ProbeQueueOutput: Encodable {
+    let viewVersion: String
+    let jobs: Int
+    let gaps: Int
+    let successors: Int
+    let jobIDs: [String]
+}
+
+private struct ProbeQueueActionOutput: Encodable {
+    let action: String
+    let operationID: String
+    let eventIDs: [String]
+    let jobID: String?
+    let gapID: String?
+    let successorProposalID: String?
+    let disposition: String?
+    let status: String?
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
@@ -56,7 +75,11 @@ enum LoomLocalAppContractProbe {
                     || arguments[3] == "--team" || arguments[3] == "--team-all"
                     || arguments[3] == "--decision"
                     || arguments.count == 5 && arguments[3] == "--assets"
+                    || arguments.count == 5 && arguments[3] == "--queue-snapshot"
                     || (arguments.count == 6 || arguments.count == 7) && arguments[3] == "--asset-action"
+                    || arguments.count == 6 && (arguments[3] == "--queue-create-job"
+                        || arguments[3] == "--queue-gap-observe"
+                        || arguments[3] == "--queue-successor-compile")
                     || arguments.count == 6 && arguments[3] == "--side-task-read"
             else {
                 throw LocalProductClientError.invalidRequest
@@ -85,6 +108,68 @@ enum LoomLocalAppContractProbe {
                     throw LocalProductClientError.invalidResponse
                 }
                 print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--queue-snapshot" {
+                let snapshot = try await client.queueSnapshot(
+                    journeyID: arguments[4], cursor: "", limit: 64
+                )
+                let encoded = try JSONEncoder().encode(ProbeQueueOutput(
+                    viewVersion: snapshot.viewVersion,
+                    jobs: snapshot.jobs.count,
+                    gaps: snapshot.gaps.count,
+                    successors: snapshot.successors.count,
+                    jobIDs: snapshot.jobs.map(\.jobID)
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 6 && arguments[3] == "--queue-create-job" {
+                let journeyID = arguments[4]
+                let input = try loadJSONFile(arguments[5], as: QueueJobSubmission.self)
+                let receipt = try await client.queueCommand(QueueCommand(
+                    operationID: "queue-op-" + input.jobID,
+                    action: "create_job",
+                    journeyID: journeyID,
+                    input: input
+                ))
+                guard receipt.action == "create_job" else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                try printQueueAction(receipt)
+                return
+            }
+            if arguments.count == 6 && arguments[3] == "--queue-gap-observe" {
+                let journeyID = arguments[4]
+                let input = try loadJSONFile(arguments[5], as: QueueGapProposalSubmission.self)
+                let receipt = try await client.queueCommand(QueueCommand(
+                    operationID: "queue-op-gap-" + String(input.sourceDigests.joined().prefix(12)),
+                    action: "gap_observe",
+                    journeyID: journeyID,
+                    input: input
+                ))
+                guard receipt.action == "gap_observe" else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                try printQueueAction(receipt)
+                return
+            }
+            if arguments.count == 6 && arguments[3] == "--queue-successor-compile" {
+                let journeyID = arguments[4]
+                let input = try loadJSONFile(arguments[5], as: QueueSuccessorCompileRequest.self)
+                let receipt = try await client.queueCommand(QueueCommand(
+                    operationID: "queue-op-spr-" + String(input.gapID.prefix(12)),
+                    action: "successor_compile",
+                    journeyID: journeyID,
+                    input: input
+                ))
+                guard receipt.action == "successor_compile" else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                try printQueueAction(receipt)
                 return
             }
             if (arguments.count == 6 || arguments.count == 7) && arguments[3] == "--asset-action" {
@@ -265,6 +350,31 @@ enum LoomLocalAppContractProbe {
             print("error:invalid_response")
             Darwin.exit(2)
         }
+    }
+
+    private static func loadJSONFile<Value: Decodable>(
+        _ path: String,
+        as type: Value.Type
+    ) throws -> Value {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    private static func printQueueAction(_ receipt: QueueCommandReceipt) throws {
+        let encoded = try JSONEncoder().encode(ProbeQueueActionOutput(
+            action: receipt.action,
+            operationID: receipt.operationID,
+            eventIDs: receipt.eventIDs,
+            jobID: receipt.jobID,
+            gapID: receipt.gapID,
+            successorProposalID: receipt.successorProposalID,
+            disposition: receipt.disposition,
+            status: receipt.status
+        ))
+        guard let output = String(data: encoded, encoding: .utf8) else {
+            throw LocalProductClientError.invalidResponse
+        }
+        print(output)
     }
 
     private static func decisionKind(

@@ -33,6 +33,7 @@ import (
 	"loom-pi-rebuild/internal/mode"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
+	"loom-pi-rebuild/internal/queue"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/piadapter"
@@ -1735,6 +1736,18 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_assets", err)
 	}
+	queueService, err := app.NewLocalQueueService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+		func() string { return readModel.GlobalReadView().Version() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_queue", err)
+	}
+	queueAPI, err := api.NewLocalQueueAPI(queueService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_queue", err)
+	}
 	var executionAPI *api.LocalProductExecutionAPI
 	var handoffAPI *api.LocalProductHandoffAPI
 	var savedTeamMaterializer productSavedTeamMaterializer
@@ -1772,6 +1785,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			handoffAPI,
 			savedTeamMaterializer,
 			assetAPI,
+			queueAPI,
 		),
 	))
 	if journeyHarness != nil {
@@ -4201,6 +4215,8 @@ func localProductHandlerWithDecision(
 		execution,
 		nil,
 		nil,
+		nil,
+		nil,
 	)
 }
 
@@ -4211,12 +4227,9 @@ func localProductHandlerWithComposition(
 	execution *api.LocalProductExecutionAPI,
 	handoff *api.LocalProductHandoffAPI,
 	savedTeamMaterializer productSavedTeamMaterializer,
-	assetServices ...*api.LocalProductAssetAPI,
+	assetService *api.LocalProductAssetAPI,
+	queueService *api.LocalQueueAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
-	var assetService *api.LocalProductAssetAPI
-	if len(assetServices) == 1 {
-		assetService = assetServices[0]
-	}
 	return func(
 		ctx context.Context,
 		request localipc.Request,
@@ -4244,6 +4257,9 @@ func localProductHandlerWithComposition(
 		}
 		if productAssetMethod(request.Method) && assetService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalProductAssetAPI)
+		}
+		if productQueueMethod(request.Method) && queueService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalQueueAPI)
 		}
 		switch request.Method {
 		case "snapshot":
@@ -4316,6 +4332,28 @@ func localProductHandlerWithComposition(
 			}
 			input.JourneyID = request.JourneyID
 			result, err := assetService.EvolutionAssetCommand(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "queue_snapshot":
+			var input api.QueueSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidQueueRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := queueService.QueueSnapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "queue_command":
+			var input api.QueueCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidQueueRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := queueService.QueueCommand(ctx, input)
 			if err != nil {
 				return productJourneyServiceError(request.JourneyID, err)
 			}
@@ -4607,6 +4645,10 @@ func productAssetMethod(method string) bool {
 	return method == "evolution_asset_snapshot" || method == "evolution_asset_diff" || method == "evolution_asset_command"
 }
 
+func productQueueMethod(method string) bool {
+	return method == "queue_snapshot" || method == "queue_command"
+}
+
 type productCredentialParams struct {
 	ProviderID          string `json:"provider_id"`
 	CredentialReference string `json:"credential_reference"`
@@ -4763,7 +4805,9 @@ func productServiceError(err error) localipc.Response {
 		errors.Is(err, app.ErrInvalidMissionExecution),
 		errors.Is(err, app.ErrInvalidLocalProductSetup),
 		errors.Is(err, app.ErrInvalidLocalProductAsset),
-		errors.Is(err, assets.ErrInvalidInput):
+		errors.Is(err, assets.ErrInvalidInput),
+		errors.Is(err, app.ErrInvalidQueueRequest),
+		errors.Is(err, queue.ErrInvalidInput):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
 		errors.Is(err, app.ErrBuilderNotFound),
@@ -4772,7 +4816,8 @@ func productServiceError(err error) localipc.Response {
 	case errors.Is(err, app.ErrBuilderConflict),
 		errors.Is(err, app.ErrMissionDecisionConflict),
 		errors.Is(err, app.ErrMissionExecutionConflict),
-		errors.Is(err, app.ErrSideTaskProductConflict), errors.Is(err, assets.ErrConflict):
+		errors.Is(err, app.ErrSideTaskProductConflict), errors.Is(err, assets.ErrConflict),
+		errors.Is(err, queue.ErrDuplicateWork):
 		return productErrorResponse("conflict", err)
 	case errors.Is(err, app.ErrSideTaskProductCapabilityGap):
 		return productErrorResponse("capability_gap", err)
@@ -4786,7 +4831,8 @@ func productServiceError(err error) localipc.Response {
 		return productErrorResponse("human_required", err)
 	case errors.Is(err, app.ErrBuilderIncompatible), errors.Is(err, assets.ErrIncompatible):
 		return productErrorResponse("incompatible", err)
-	case errors.Is(err, app.ErrBuilderConfirmationRequired), errors.Is(err, assets.ErrDenied):
+	case errors.Is(err, app.ErrBuilderConfirmationRequired), errors.Is(err, assets.ErrDenied),
+		errors.Is(err, queue.ErrDenied), errors.Is(err, queue.ErrDAGCycle):
 		return productErrorResponse("denied", err)
 	case errors.Is(err, app.ErrNativeAuthConnectBusy),
 		errors.Is(err, app.ErrMissionExecutionBusy):

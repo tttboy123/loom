@@ -877,7 +877,7 @@ public final class LocalIPCClient:
             !decoded.buildID.isEmpty
     }
 
-    private func call<Params: Encodable>(
+    func call<Params: Encodable>(
         method: String,
         params: Params
     ) async throws -> Data {
@@ -920,7 +920,7 @@ public final class LocalIPCClient:
         )
     }
 
-    private func callJourney<Params: Encodable>(
+    func callJourney<Params: Encodable>(
         journeyID: String,
         method: String,
         params: Params
@@ -928,6 +928,7 @@ public final class LocalIPCClient:
         let id = requestID()
         let methods: Set<String> = [
             "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
+            "queue_snapshot", "queue_command",
         ]
         guard LocalIPCWire.validRequestID(id), Self.validJourneyID(journeyID),
               methods.contains(method) else {

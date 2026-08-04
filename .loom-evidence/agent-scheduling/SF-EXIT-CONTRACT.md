@@ -149,10 +149,25 @@ key = the transition's unique event identity (e.g. `attempt_id` for
   "resource_claims": {"runtime": "string", "slots": 1, "model": "string"},
   "attempt_count": 0,
   "max_attempts": 3,
+  "capability_kind": "string",
+  "exit_conditions": ["string"],
+  "verification_strategy": "string",
+  "integration_strategy": "string",
+  "protected_authority_paths": ["string"],
   "created_at": "rfc3339",
   "correlation_id": "journey-or-source-id"
 }
 ```
+
+`capability_kind`, `exit_conditions`, `verification_strategy`,
+`integration_strategy` and `protected_authority_paths` are the
+admission-compiled fields added by `SF-W1-SCHEMA-AMENDMENT-1.md`
+(independent Review 1 PASS): Decomposition Compiler rule 7 requires
+non-empty `exit_conditions`/`verification_strategy` (absence is a compile
+error), rule 6 requires a vertical `capability_kind` (thin claims rejected),
+rule 8 requires `integration_strategy`, and rule 4 fail-closes non-empty
+`protected_authority_paths` unless a separately reviewed human-governed
+contract permits them.
 
 ### `Attempt` (Event/Projection record)
 
@@ -227,6 +242,40 @@ key = the transition's unique event identity (e.g. `attempt_id` for
 `GapProposalCreated` payload = the record fields above; duplicate
 observations of the same digest-bound gap converge on one `gap_id`; stale or
 unauthorized evidence cannot create a successor.
+
+### `SuccessorProposal` (Event/Projection record, frozen)
+
+```json
+{
+  "successor_proposal_id": "uuid-v4",
+  "gap_id": "uuid-v4",
+  "job_submission": {
+    "source": "gap_proposal",
+    "dag_node_id": "string",
+    "dependencies": ["dag_node_id"],
+    "owned_paths": ["relative-path"],
+    "mutex_keys": ["string"],
+    "resource_claims": {"runtime": "string", "slots": 1, "model": "string"},
+    "max_attempts": 3,
+    "capability_kind": "string",
+    "exit_conditions": ["string"],
+    "verification_strategy": "string",
+    "integration_strategy": "string",
+    "protected_authority_paths": ["string"]
+  },
+  "source_evidence_digests": ["sha256"],
+  "disposition": "propose_successor",
+  "created_at": "rfc3339",
+  "correlation_id": "journey-or-source-id"
+}
+```
+
+`SuccessorProposalCreated` payload = the record fields above plus
+`evidence_digests`; stream identity = `gap_id`; idempotency key =
+`successor_proposal_id`. Compilation is read-only (no QueueJob/WorkItem/Run
+side effect); only a later `AdmissionDecisionRecorded` may create the
+successor WorkItem. Added by `SF-W1-SCHEMA-AMENDMENT-2.md` (independent
+Review 1 PASS).
 
 ### Event names (additive; existing Journal schema untouched)
 

@@ -40,6 +40,7 @@ const (
 	ScreenAttention   Screen = "Attention"
 	ScreenTimeline    Screen = "Team Timeline"
 	ScreenAssets      Screen = "Evolution Assets"
+	ScreenQueue       Screen = "Queue"
 )
 
 var screens = []Screen{
@@ -52,6 +53,7 @@ var screens = []Screen{
 	ScreenAttention,
 	ScreenTimeline,
 	ScreenAssets,
+	ScreenQueue,
 }
 
 type ReadClient interface {
@@ -120,6 +122,11 @@ type EvolutionAssetClient interface {
 	EvolutionAssetSnapshot(context.Context, api.EvolutionAssetSnapshotRequest) (api.EvolutionAssetSnapshot, error)
 	EvolutionAssetDiff(context.Context, api.EvolutionAssetDiffRequest) (api.EvolutionAssetDiff, error)
 	EvolutionAssetCommand(context.Context, api.EvolutionAssetCommandRequest) (api.EvolutionAssetCommandResult, error)
+}
+
+type QueueClient interface {
+	QueueSnapshot(context.Context, api.QueueSnapshotRequest) (api.QueueSnapshot, error)
+	QueueCommand(context.Context, api.QueueCommandRequest) (api.QueueCommandResult, error)
 }
 
 type HandoffClient interface {
@@ -353,6 +360,9 @@ type evolutionAssetCommittedMsg struct {
 	result api.EvolutionAssetCommandResult
 }
 
+type queueLoadedMsg struct{ snapshot api.QueueSnapshot }
+type queueFailedMsg struct{ err error }
+
 type builderStartedMsg struct {
 	session app.BuilderSessionView
 }
@@ -414,6 +424,7 @@ type Model struct {
 	executionClient ExecutionClient
 	handoffClient   HandoffClient
 	assetClient     EvolutionAssetClient
+	queueClient     QueueClient
 	ctx             context.Context
 	cancel          context.CancelFunc
 
@@ -454,6 +465,7 @@ type Model struct {
 	taskFilter             string
 	navigationPrefix       bool
 	evolutionAssets        api.EvolutionAssetSnapshot
+	queueSnapshot          api.QueueSnapshot
 	evolutionAssetDiff     api.EvolutionAssetDiff
 	evolutionSearch        string
 	evolutionJourneyID     string
@@ -491,6 +503,7 @@ func newModelWithContext(
 		executionClient:    executionClient,
 		handoffClient:      handoffClient,
 		assetClient:        assetClient,
+		queueClient:        queueClientFrom(client),
 		ctx:                ctx,
 		cancel:             cancel,
 		width:              80,
@@ -678,6 +691,21 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.lastError = ""
 		model.evolutionAssetDiff = message.diff
 		return model, nil
+	case queueLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.queueSnapshot = message.snapshot
+		model.clampSelection()
+		return model, nil
+	case queueFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
 	case tea.KeyMsg:
 		if model.entryMode != "" {
 			return model.updateEntry(message)
@@ -725,6 +753,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadEvolutionAssets("")
 			}
+			if model.Screen() == ScreenQueue {
+				model.loading = true
+				return model, model.loadQueue()
+			}
 			return model, nil
 		case "shift+tab", "left":
 			next := model.screenIndex - 1
@@ -735,6 +767,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenAssets {
 				model.loading = true
 				return model, model.loadEvolutionAssets("")
+			}
+			if model.Screen() == ScreenQueue {
+				model.loading = true
+				return model, model.loadQueue()
 			}
 			return model, nil
 		case "down", "j":
@@ -758,6 +794,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.loading = true
 			if model.Screen() == ScreenAssets {
 				return model, model.loadEvolutionAssets("")
+			}
+			if model.Screen() == ScreenQueue {
+				return model, model.loadQueue()
 			}
 			if model.Screen() == ScreenTeamBuilder {
 				return model, model.loadSetup()
@@ -1632,6 +1671,8 @@ func (model Model) screenBody() string {
 			count++
 		}
 		return emptyOrLines(lines, count)
+	case ScreenQueue:
+		return model.renderQueueView()
 	default:
 		return ""
 	}
