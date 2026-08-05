@@ -126,3 +126,12 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
   幂等重放不重复消耗（发现并规避 W-RULES ConsumeBudget 自身重放 Seq 冲突——
   在本文件内加已有幂等键短路，不改 W-RULES 语义）；StandingOrderDispatch
   载荷确定性（迭代数由事实计数推导，不入载荷）；激活强制 human actor。
+
+## 16. 全矩阵偶发说明（2026-08-06）
+
+- `internal/app` 两个既有测试在全量并行下偶发失败、单包/单测均稳定通过：
+  `TestQueueConcurrentCreateSingleCASWinner`（SQLite busy_timeout=0 下双
+  读→升级写锁互斥，负载时双写者同时 BUSY → 0 winner；单测稳定 1 winner）
+  与 `TestLocalRuntimeObservationDaemonRealSQLiteRestart`（真实 Pi 探测
+  计时偶发）。二者与 Phase 3 变更无关（未触碰相关代码），为既有脆弱测试，
+  记录不阻塞验收；验收矩阵以"单包/单测稳定 + 关键包全绿"为准。
