@@ -80,7 +80,7 @@ VERDICT（Controller 自查）: `PASS-with-repairs` —— 修复后未发现剩
 | P2-1 | P2 | 契约 §5.1 残留废弃 `danger` 字段 | **已修复**：契约与实现对齐 |
 | P2-2 | P2 | TUI grant 用 Reason 首词 / 硬编码时间 / 空值 panic | **已修复**：改用决策命令首词、真实时间、空命令拒绝 |
 | P2-3 | P2 | PermissionAttention 不过滤 resolved 状态 | **随 A4 关闭**（当前无 resolved 状态可滤） |
-| P2-4 | P2 | source-lock digest 不可复现 | **复检后再次修复**：原记录 digest 仍无法用声明方法复现；本审计重算并将 `ordered_sha256_lines_digest` 更新为可复现值（2f75bd…），方法注明无末尾换行 |
+| P2-4 | P2 | source-lock digest 不可复现 | **Controller 复核修正**：sub-agent 提交的 2f75bd… 仍不可复现；已由 Controller 重算为可复现值 `ade02e89…`（方法注明：字典序排序、LF 连接、无末尾换行）并提交修正 |
 
 ## 5. Amendment 1 后复检（2026-08-05，flash）
 
