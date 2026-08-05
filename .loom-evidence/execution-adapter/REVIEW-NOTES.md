@@ -91,3 +91,23 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
   RED 1-9 覆盖 fail-closed/7 能力/取消/重放/隔离/门禁。
 - flash 独立评审仍为开放项；按既有先例 Controller 冷读 + Product Owner Goal
   指令冻结。
+
+
+## 13. W-BRIDGE 旅程发现与 bounded amendments（2026-08-06）
+
+1. **JourneyID 传播修复**：`acceptToolCallEvent` 构造 ToolCallBinding 时原先
+   只填 WorkItemID/RunID/ClaimGeneration；真实桥接 ask 路径下
+   execution.Proposal.JourneyID 为空 → A4 批准 CorrelationID 非法 →
+   hook 失败整段拒绝。修复：从 `request.Dispatch.CorrelationID()` 派生
+   JourneyID（`internal/runtime/piadapter/rpc_bridge_adapter.go`，owned
+   file 最小变更；hook 级测试因 nil approvals 未覆盖此路径，旅程暴露）。
+2. **跨客户端 schema 适配**：W-BRIDGE 旅程的第二客户端为桥接运行时
+   （client_kind=bridge + gui observe 行）而非 TUI/GUI 交互；原因是桥接
+   传输层依赖外部 Pi 模型二进制（契约 §7 非目标：模型客户端/Provider）。
+   执行/批准/集成的 TUI/GUI 表面已由 B-W1/C-W1 旅程闭环，不重复。
+   此适配在 verify 脚本与 W-BRIDGE-PROGRESS 中显式记录。
+
+## 14. 开放评审项
+
+- 每个 WorkItem 的 flash 独立评审仍未跑通（模型 override 不可用）；由
+  Controller 冷读自查 + Product Owner Goal 指令冻结，评审记为开放项。

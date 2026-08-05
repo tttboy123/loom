@@ -32,7 +32,7 @@ var bridgeAllowedTools = map[permissions.ToolKind]struct{}{
 // ToolCallEnvelope 是模型提议工具调用的唯一信封（冻结于 W-BRIDGE 契约
 // §3.1）。模型输出是 Proposal；daemon 经执行适配器裁决后才可能执行。
 type ToolCallEnvelope struct {
-	JobID string                  `json:"job_id"`
+	JobID string                   `json:"job_id"`
 	Call  permissions.ProposedCall `json:"call"`
 }
 

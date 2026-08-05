@@ -44,7 +44,7 @@ const (
 	piRPCMaxRecords      = 1024
 	piRPCMaxBridgeFrames = 1024
 	piRPCMaxDeltaBytes   = 2048
-	piRPCSettingsJSON = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
+	piRPCSettingsJSON    = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
 )
 
 // piRPCSystemPrompt 由 ToolCallSystemPrompt() 提供：W-BRIDGE 启用工具面后，
@@ -1340,6 +1340,10 @@ func (adapter *piRPCBridgeAdapter) acceptToolCallEvent(
 			WorkItemID:      request.Binding.WorkItemID,
 			RunID:           request.Binding.RunID,
 			ClaimGeneration: request.Binding.ClaimGeneration,
+			// The RunStreamBinding has no journey field; the dispatch frame's
+			// CorrelationID is the journey/correlation lineage that the hook
+			// must carry into execution.Proposal for approval facts.
+			JourneyID: request.Dispatch.CorrelationID(),
 		}
 		result, err := adapter.toolHook.ExecuteToolCall(ctx, envelope, binding)
 		if err != nil {
