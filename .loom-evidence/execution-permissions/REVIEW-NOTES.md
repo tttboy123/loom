@@ -125,6 +125,27 @@ A4（批准生命周期接线，契约 §2/§8 全流程），按治理等待 Pr
   （`7266f17f-…`）verify PASS、source-lock 可复现。按既有先例收编，
   作者权归属本记录；后续 fresh 独立复评仍需补做。
 
+## 8. Amendment 3（A7-A13）与 Controller 收编（2026-08-05）
+
+flash 复审（v13/v14）发现并修复：
+- **A7（P0）**：默认模板 `go test *` 的整串 glob 可放行非危险链式命令
+  （`go test ./... && curl …`）。`bashPatternMatches` 改为段数对齐整串匹配：
+  单段 allow/grants 永远不能放行链式命令，显式链式 pattern 仍精确放行。
+  RED #20 先红后绿。
+- **A8（P1）**：Swift 原生 app attention 缺 `approvals` 且 `approvalID`
+  非可选导致解码失败；补 `PermissionApprovalView` + 视图 + 测试 + 真实 IPC
+  契约测试（生产 Swift 客户端经真实 socket 读 pending 批准）。
+- **A9（P1）**：`EffectiveMode` 同层多激活按 scopeID 字典序确定性选择。
+- **A10/A11（P2）**：Denial.RuleIDs 排序输出；activation/admin-lock 事件流
+  错位 Replay 拒绝。
+- **A12/A13（记录不阻塞）**：decision→approval 直接关联与间接危险调用沙箱
+  留待 B-W1。
+
+Controller 复核：内容正确、范围在 owned files 内、Go+Swift 全矩阵绿、
+RED #20 全绿、final13 旅程 verify PASS。**source-lock digest 再次不可复现
+（子代理记录值），由 Controller 重算为可复现值并提交（`cfc5863c`）**。
+子代理提交 `98bb68f3` 按既有先例收编；fresh 独立复评仍为开放项。
+
 ## 7. Amendment 2（A4）Controller 复核 + 跨流泄漏修复（2026-08-05）
 
 Product Owner 授权 A4 后，发现提交 `86460c1c` 已在授权前由子代理提前写入
