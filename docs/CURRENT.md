@@ -6251,3 +6251,28 @@ W3 = ACCEPTED / REPEATABLE SELF-HOST CANARY DEMONSTRATED
 WHOLE-SLICE ACCEPTANCE = PENDING
 PRODUCT CODE = UNCHANGED IN W2/W3 / JOURNEYS PASS
 ```
+
+`CURRENT`: the v0.4.1 whole-slice acceptance review PASSES
+(`.loom-evidence/agent-scheduling/V0.4.1-WHOLE-SLICE-ACCEPTANCE-REVIEW.md`,
+minimum acceptance 12/12, stop conditions no trigger, P0=P1=P2=0). All
+three delivery boundaries of the frozen `V0.4.1-CONTRACT.md` are closed:
+W1 `b607957f` (Queue/Workers/Integration product operations with the real
+cross-client journey), W2 `27ef27b5` (two real parallel development
+Candidates driven by the Loom scheduling flow), W3 `1fe5f8e8` (repeatable
+controlled self-host canary with idempotent CAS, projection-failure
+preserve and crash recovery). Deterministic matrix green at each product
+checkpoint (Go full/race/vet/tidy/gofmt; Swift 96+4); each WorkItem has
+its Implementation / dual-Result / Whole-Candidate review records PASS and
+one atomic local commit; exclusions untouched; no push/merge/network/paid/
+user-config action; no Computer-Use-driven window automation. The three
+main-goal remaining items are closed; anything beyond the three v0.4.1
+boundaries (e.g. Phase 3B-style routing or further product expansion)
+requires explicit Product Owner authorization.
+
+```text
+V0.4.1 = ACCEPTED / WHOLE-SLICE REVIEW PASS
+W1 = PRODUCT-LINE CLOSURE / ATOMIC COMMIT b607957f
+W2 = TWO REAL PARALLEL CANDIDATES / ATOMIC COMMIT 27ef27b5
+W3 = REPEATABLE SELF-HOST CANARY / ATOMIC COMMIT 1fe5f8e8
+PRODUCT CODE = W1 IMPLEMENTED / W2+W3 DEMONSTRATED / NO PUSH
+```
