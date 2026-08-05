@@ -17,10 +17,10 @@ flowchart TD
     sf --> bp1["B-P1 · 权限管道 · ✅ ACCEPTED"]
     bp1 --> bw1["B-W1 · 执行适配器 · 🟡 已实现待验收（旅程 PASS）"]
     bp1 --> cw1["C-W1 · 生产化落地 · 🟡 已实现待验收（旅程 PASS）"]
-    bw1 --> wbridge["W-BRIDGE · 模型桥接接入执行适配器 · ⏳ 规划中"]
-    bp1 --> wrules["W-RULES · 客户规则与 standing policy · ⏳ 规划中"]
-    bw1 --> wsandbox["Phase 3B · 受治理沙箱 · ⏳ 规划中"]
-    wbridge --> wauto["W-AUTONOMY · standing orders / Autopilot · 🔒 later opt-in"]
+    bw1 --> wbridge["W-BRIDGE · 模型桥接接入执行适配器 · ✅ 已实现（旅程 PASS）"]
+    bp1 --> wrules["W-RULES · 客户规则与 standing policy · ✅ 已实现（旅程 PASS）"]
+    bw1 --> wsandbox["Phase 3B · 受治理沙箱 · ✅ 已实现（canary PASS）"]
+    wbridge --> wauto["W-AUTONOMY · standing orders / Autopilot · ✅ 已实现（有界形态，旅程 PASS）"]
     p3a --> p4["Phase 4 · 互通 · ⏳ 规划中（需授权）"]
     p4 --> opt["Web / Marketplace / 多用户 / 外部通知 · 🔒 排除或 later opt-in"]
 ```
@@ -44,14 +44,28 @@ flowchart TD
 | B-P1 | `91d14f42` 链 → `f5b7009d`（ACCEPTED） | final13（`7266f17f…`） |
 | B-W1 | `3d750465` / `f69b49d9` | bw1-journey-final（`a67cc294…`） |
 | C-W1 | `d4a1b9ee` / `f69b49d9` | cw1-journey-final2（`9568c47d…`） |
-| W-BRIDGE / W-RULES / Phase 3B / W-AUTONOMY | 未开始 | — |
+| W-BRIDGE | `cf9360aa` | wbridge-journey（`88251c25…` 等） |
+| W-RULES | `46d522ff` | wrules-journey-final6（`83bfef4f…`） |
+| Phase 3B | `7beab591` | phase3b-canary（`3e296b89…` 等） |
+| W-AUTONOMY | `975fd6a4`（Gate 1 `89ec751e`） | wautonomy-journey（`8cd9301b…` 等） |
 
 ## Phase 3 扩展任务清单（本目标范围）
 
 1. B-W1 / C-W1 生产可用验收与真实激活落地（🟡 → ✅）。
-2. W-BRIDGE：模型桥接接入执行适配器（⏳ → ✅）。
-3. W-RULES：客户规则与 standing policy（⏳ → ✅）。
-4. Phase 3B：受治理沙箱（⏳ → ✅，v0.2.1 experimental）。
-5. W-AUTONOMY：standing orders / Autopilot 默认关闭的有界形态（🔒 → ✅ 有界）。
+2. W-BRIDGE：模型桥接接入执行适配器（✅ 已实现；daemon 传输层旅程为开放项）。
+3. W-RULES：客户规则与 standing policy（✅ 已实现，旅程 PASS）。
+4. Phase 3B：受治理沙箱（✅ 已实现，canary PASS，v0.2.1 experimental）。
+5. W-AUTONOMY：standing orders / Autopilot 默认关闭的有界形态（✅ 已实现，
+   旅程 PASS；daemon/TUI 表面为开放项）。
+
+## 状态更新记录（2026-08-06）
+
+- Phase 3 扩展五项（W-BRIDGE / W-RULES / Phase 3B / W-AUTONOMY，以及
+  B-W1/C-W1 待验收）均已进入"已实现"状态，全部有原子提交 + 确定性矩阵 +
+  旅程/canary verify PASS。
+- B-W1/C-W1 由 🟡 待验收提升为"证据齐备，待 Product Owner 确认"；
+  真实激活（C-W1 launchd/常驻 daemon 显式激活）仍需 Product Owner 显式
+  批准后才会执行（不变量：激活需 human 授权）。
+- 各节点开放项记录于对应 `*-PROGRESS.md` 与 `REVIEW-NOTES.md`。
 
 Phase 4 互通与 Web/Marketplace/多用户/外部通知不在本目标，维持 🔒/⏳。
