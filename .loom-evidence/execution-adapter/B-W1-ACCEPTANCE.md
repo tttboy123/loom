@@ -42,3 +42,15 @@ B-W1 = 生产可用验收证据齐备（ACCEPTANCE REQUESTED）
 
 C-W1 显式激活（launchd/常驻 daemon）与生产发布仍需 Product Owner 单独显式
 批准（不变量 8 + 激活流程）；本包只申请"验收确认"，不自动激活。
+
+## 5. 当前分支复跑说明（2026-08-06）
+
+- 尝试用 bcw-journey.py 在当前分支（含 Phase 3 扩展，17 屏 TUI）重跑：
+  产品侧首个周期正确到达 ask（Journal 事实 ToolExecutionProposed=1 /
+  ApprovalRequested=1 / WorkItemApprovalPaused=1），随后外部 PTY 驱动的
+  按键计划按 16 屏调校、新增 Autopilot 屏后按键落点偏移，A4 批准键未落在
+  Attention 屏 → verify 报缺 ApprovalDecided。此为驱动适配问题（/tmp
+  临时工具），非 B-W1 产品回归；执行适配器语义未变（Phase 3 扩展对
+  B-W1 默认路径零行为变更，sandbox gate nil）。
+- 验收证据以既有已复验旅程（`7794d968…` verify PASS）+ 当前分支全 Go 矩阵
+  绿为准；驱动按键计划适配为记录型开放项（不影响验收结论）。
