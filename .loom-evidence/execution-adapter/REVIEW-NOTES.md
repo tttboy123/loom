@@ -111,3 +111,18 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
 
 - 每个 WorkItem 的 flash 独立评审仍未跑通（模型 override 不可用）；由
   Controller 冷读自查 + Product Owner Goal 指令冻结，评审记为开放项。
+
+
+## 15. W-AUTONOMY Gate 1 + 实现（2026-08-06）
+
+- Gate 1 冻结：ADR/契约/RED（standing orders/Autopilot 默认关闭、持久授权/
+  预算/触发器/scope/stop-revoke/审计；复用 W-RULES Evaluate+ConsumeBudget 与
+  B-W1 Execute，不建第二套权威）。flash 独立评审为开放项（通道故障延续），
+  按既有先例 Controller 冷读 + Product Owner Goal 指令冻结。
+- 实现：`internal/rules/standing_order.go`（RED 1-10 全绿含 -race）+ 受控旅程
+  （define→human activate→预算内 2 次真实 dispatch→budget stop→revoke
+  block）PASS + verify 脚本。
+- Controller 复核要点：CheckDispatch 无副作用（budget 只读）；ConsumeDispatch
+  幂等重放不重复消耗（发现并规避 W-RULES ConsumeBudget 自身重放 Seq 冲突——
+  在本文件内加已有幂等键短路，不改 W-RULES 语义）；StandingOrderDispatch
+  载荷确定性（迭代数由事实计数推导，不入载荷）；激活强制 human actor。
