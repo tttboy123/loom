@@ -21,6 +21,7 @@ import (
 	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/production"
 	"loom-pi-rebuild/internal/work"
 )
 
@@ -44,6 +45,8 @@ const (
 	ScreenWorkers     Screen = "Workers"
 	ScreenIntegration Screen = "Integration"
 	ScreenPermissions Screen = "Permissions"
+	ScreenExecution   Screen = "Execution"
+	ScreenProduction  Screen = "Production"
 )
 
 var screens = []Screen{
@@ -60,6 +63,8 @@ var screens = []Screen{
 	ScreenWorkers,
 	ScreenIntegration,
 	ScreenPermissions,
+	ScreenExecution,
+	ScreenProduction,
 }
 
 type ReadClient interface {
@@ -143,6 +148,11 @@ type WorkersClient interface {
 type IntegrationClient interface {
 	IntegrationSnapshot(context.Context, string) (app.IntegrationSnapshot, error)
 	IntegrationCommand(context.Context, app.IntegrationCommandRequest) (app.IntegrationCommandResult, error)
+}
+
+type ProductionClient interface {
+	ProductionSnapshot(context.Context, app.ProductionSnapshotRequest) (production.ProductionSnapshot, error)
+	ProductionCommand(context.Context, app.ProductionCommandRequest) (app.ProductionCommandResult, error)
 }
 
 type HandoffClient interface {
@@ -445,17 +455,19 @@ const (
 )
 
 type Model struct {
-	client            ReadClient
-	setupClient       SetupClient
-	executionClient   ExecutionClient
-	handoffClient     HandoffClient
-	assetClient       EvolutionAssetClient
-	queueClient       QueueClient
-	workersClient     WorkersClient
-	integrationClient IntegrationClient
-	permissionClient  PermissionClient
-	ctx               context.Context
-	cancel            context.CancelFunc
+	client                 ReadClient
+	setupClient            SetupClient
+	boundedExecutionClient BoundedExecutionClient
+	handoffClient          HandoffClient
+	assetClient            EvolutionAssetClient
+	queueClient            QueueClient
+	workersClient          WorkersClient
+	integrationClient      IntegrationClient
+	permissionClient       PermissionClient
+	productionClient       ProductionClient
+	executionClient        ExecutionClient
+	ctx                    context.Context
+	cancel                 context.CancelFunc
 
 	screenIndex            int
 	selections             [16]int
@@ -499,7 +511,12 @@ type Model struct {
 	integrationSnapshot    app.IntegrationSnapshot
 	permissionSnapshot     app.PermissionSnapshot
 	permissionAttention    app.PermissionAttention
+	executionSnapshot      app.ExecutionSnapshot
+	productionSnapshot     production.ProductionSnapshot
+	productionPreview      production.ActivationPreview
+	productionPending      string
 	permissionDetail       bool
+	executionDetail        bool
 	evolutionAssetDiff     api.EvolutionAssetDiff
 	evolutionSearch        string
 	evolutionJourneyID     string
@@ -532,23 +549,25 @@ func newModelWithContext(
 		return Model{}, err
 	}
 	return Model{
-		client:             client,
-		setupClient:        setupClient,
-		executionClient:    executionClient,
-		handoffClient:      handoffClient,
-		assetClient:        assetClient,
-		queueClient:        queueClientFrom(client),
-		workersClient:      workersClientFrom(client),
-		integrationClient:  integrationClientFrom(client),
-		permissionClient:   permissionClientFrom(client),
-		ctx:                ctx,
-		cancel:             cancel,
-		width:              80,
-		height:             24,
-		loading:            true,
-		sideTaskPurpose:    "research",
-		sideTaskMode:       "report_only",
-		evolutionJourneyID: journeyID,
+		client:                 client,
+		setupClient:            setupClient,
+		executionClient:        executionClient,
+		handoffClient:          handoffClient,
+		assetClient:            assetClient,
+		queueClient:            queueClientFrom(client),
+		workersClient:          workersClientFrom(client),
+		integrationClient:      integrationClientFrom(client),
+		permissionClient:       permissionClientFrom(client),
+		boundedExecutionClient: boundedExecutionClientFrom(client),
+		productionClient:       productionClientFrom(client),
+		ctx:                    ctx,
+		cancel:                 cancel,
+		width:                  80,
+		height:                 24,
+		loading:                true,
+		sideTaskPurpose:        "research",
+		sideTaskMode:           "report_only",
+		evolutionJourneyID:     journeyID,
 	}, nil
 }
 
@@ -831,6 +850,52 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.loadPermissions(),
 			model.loadPermissionAttention(),
 		)
+	case executionLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.executionSnapshot = message.snapshot
+		model.clampSelection()
+		return model, nil
+	case executionFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case executionCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = message.note
+		return model, model.loadExecutions()
+	case productionLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.productionSnapshot = message.snapshot
+		return model, nil
+	case productionFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case productionCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.productionPreview = message.preview
+		model.lastError = message.note
+		return model, model.loadProduction()
 	case tea.KeyMsg:
 		if model.entryMode != "" {
 			return model.updateEntry(message)
@@ -900,6 +965,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadPermissions()
 			}
+			if model.Screen() == ScreenExecution && model.boundedExecutionClient != nil {
+				model.loading = true
+				return model, model.loadExecutions()
+			}
+			if model.Screen() == ScreenProduction && model.productionClient != nil {
+				model.loading = true
+				return model, model.loadProduction()
+			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				model.loading = true
 				return model, model.loadPermissionAttention()
@@ -930,6 +1003,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
 				model.loading = true
 				return model, model.loadPermissions()
+			}
+			if model.Screen() == ScreenExecution && model.boundedExecutionClient != nil {
+				model.loading = true
+				return model, model.loadExecutions()
+			}
+			if model.Screen() == ScreenProduction && model.productionClient != nil {
+				model.loading = true
+				return model, model.loadProduction()
 			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				model.loading = true
@@ -969,6 +1050,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
 				return model, model.loadPermissions()
+			}
+			if model.Screen() == ScreenExecution && model.boundedExecutionClient != nil {
+				return model, model.loadExecutions()
+			}
+			if model.Screen() == ScreenProduction && model.productionClient != nil {
+				return model, model.loadProduction()
 			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				return model, model.loadPermissionAttention()
@@ -1123,6 +1210,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "c":
+			if model.Screen() == ScreenProduction &&
+				model.productionClient != nil &&
+				model.productionPreview.Digest != "" {
+				model.loading = true
+				return model, model.productionConfirmActivation()
+			}
 			if model.Screen() == ScreenWorkers && model.workersClient != nil {
 				model.loading = true
 				return model, model.claimFirstJob()
@@ -1192,6 +1285,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "p":
+			if model.Screen() == ScreenExecution && model.boundedExecutionClient != nil {
+				model.loading = true
+				return model, model.proposeExecutionProbe()
+			}
+			if model.Screen() == ScreenProduction && model.productionClient != nil {
+				model.loading = true
+				return model, model.productionPreviewActivation()
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.PromotionSources) > 0 {
 				model.pendingEvolutionAction = "promote"
 				return model, nil
@@ -1273,6 +1374,13 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.verifyCredential()
 			}
 		case "x":
+			if model.Screen() == ScreenProduction &&
+				model.productionClient != nil &&
+				model.productionPreview.Digest != "" &&
+				model.productionPreview.Operation == "deactivation" {
+				model.loading = true
+				return model, model.productionConfirmDeactivation()
+			}
 			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
 				model.entryMode = entryPermissionCall
 				model.entry = []byte{}
@@ -1345,6 +1453,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "d":
+			if model.Screen() == ScreenProduction && model.productionClient != nil {
+				model.loading = true
+				return model, model.productionPreviewDeactivation()
+			}
+			if model.Screen() == ScreenExecution {
+				model.executionDetail = !model.executionDetail
+				return model, nil
+			}
 			if model.Screen() == ScreenPermissions {
 				model.permissionDetail = !model.permissionDetail
 				return model, nil
@@ -1887,6 +2003,10 @@ func (model Model) screenBody() string {
 		)
 	case ScreenPermissions:
 		return model.renderPermissionsView()
+	case ScreenExecution:
+		return model.renderExecutionsView()
+	case ScreenProduction:
+		return model.renderProductionView()
 	case ScreenTimeline:
 		lines := []string{"Team · Context · Changes · Evidence"}
 		if model.currentTeam == "" &&

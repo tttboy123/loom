@@ -208,6 +208,15 @@ func secureWorktreeRoot(worktree string) (string, error) {
 		return "", err
 	}
 	info, err := os.Lstat(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		// Provision the candidate worktree on first use (daemon-owned path,
+		// private 0700). This is not an authorization decision; the caller
+		// already resolved the worktree through the allowed profile.
+		if err := os.MkdirAll(abs, 0o700); err != nil {
+			return "", err
+		}
+		info, err = os.Lstat(abs)
+	}
 	if err != nil {
 		return "", err
 	}

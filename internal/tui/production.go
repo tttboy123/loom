@@ -49,8 +49,9 @@ type productionFailedMsg struct {
 }
 
 type productionCommandDoneMsg struct {
-	err  error
-	note string
+	err     error
+	note    string
+	preview production.ActivationPreview
 }
 
 func (model Model) loadProduction() tea.Cmd {
@@ -90,7 +91,7 @@ func (model Model) productionPreviewDeactivation() tea.Cmd {
 
 func (model Model) productionConfirmDeactivation() tea.Cmd {
 	return model.productionCommand("deactivation_confirm", map[string]any{
-		"operation": "deactivation_confirm",
+		"operation":      "deactivation_confirm",
 		"preview_digest": model.productionPreview.Digest, "authorized_by": "tui-user",
 	})
 }
@@ -109,9 +110,7 @@ func (model Model) productionCommand(action string, input map[string]any) tea.Cm
 		if err != nil {
 			return productionCommandDoneMsg{err: err}
 		}
-		model.productionPreview = result.Result.Preview
-		model.productionPending = action
-		return productionCommandDoneMsg{note: result.Note}
+		return productionCommandDoneMsg{note: result.Note, preview: result.Result.Preview}
 	}
 }
 
