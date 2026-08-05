@@ -31,11 +31,21 @@ type Adapter struct {
 	resolver  WorktreeResolver
 	approvals ApprovalRequester
 	decisions DecisionRecorder
+	sandbox   SandboxGate
 	now       func() time.Time
 
 	mu        sync.Mutex
 	inflight  map[string]bool
 	completed map[string]ExecutionResult
+}
+
+// WithSandboxGate wires the Phase 3B sandbox policy gate. A nil gate (default)
+// means no sandbox requirement; a non-nil gate enforces Required => fail closed.
+func (a *Adapter) WithSandboxGate(gate SandboxGate) *Adapter {
+	if a != nil {
+		a.sandbox = gate
+	}
+	return a
 }
 
 func NewAdapter(
@@ -374,6 +384,25 @@ func (a *Adapter) executeApproved(
 	_ string,
 	approvalID, approvalDigest string,
 ) (ExecutionResult, error) {
+	// Phase 3B sandbox policy gate: Required + unavailable backend => fail
+	// closed with zero side effects (never local fallback).
+	if a.sandbox != nil {
+		policy, policyErr := a.sandbox.ResolvePolicy(ctx, proposal.JobID)
+		if policyErr != nil {
+			return a.deny(ctx, proposal, executionID, callDigest, generation, events,
+				permissions.Denial{Reason: "sandbox policy error"})
+		}
+		if policy.Required {
+			available, availErr := a.sandbox.BackendAvailable(ctx, policy.Backend)
+			if availErr != nil || !available {
+				return a.deny(ctx, proposal, executionID, callDigest, generation, events,
+					permissions.Denial{
+						Reason:            "required sandbox backend unavailable",
+						AuthorizationPath: "configure the sandbox backend",
+					})
+			}
+		}
+	}
 	worktree, err := a.resolver.Resolve(ctx, proposal.JobID)
 	if err != nil {
 		return a.fail(ctx, proposal, executionID, callDigest, generation, events, "worktree resolution failed", "worktree_unavailable")

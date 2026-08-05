@@ -460,3 +460,16 @@ func TestRedB1_ExecutionLimitMapsToLimitExceededFact(t *testing.T) {
 		t.Fatalf("failed fact error_code = %q, want limit_exceeded", code)
 	}
 }
+
+func mustEvidenceStore(t testing.TB) *evidence.Store {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := evidence.NewStore(filepath.Join(root, "evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}

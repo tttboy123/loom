@@ -42,6 +42,7 @@ import (
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/piadapter"
+	"loom-pi-rebuild/internal/sandbox"
 	"loom-pi-rebuild/internal/schedule"
 	"loom-pi-rebuild/internal/state"
 	"loom-pi-rebuild/internal/supervisor"
@@ -1807,6 +1808,25 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_execution", err)
 	}
+	// Phase 3B governed sandbox: default off. Mounting a backend is an
+	// explicit experimental opt-in (LOOM_SANDBOX_BACKEND); when mounted, a
+	// Required policy fails closed on an unavailable backend and never falls
+	// back to local execution. No env => nil gate => unchanged local executor.
+	var sandboxGate execution.SandboxGate
+	if sandboxBackendName := os.Getenv("LOOM_SANDBOX_BACKEND"); sandboxBackendName != "" {
+		if sandboxBackendName != "loopback" {
+			return nil, newDaemonBuildFailure("build_execution",
+				errors.New("unsupported sandbox backend: "+sandboxBackendName))
+		}
+		loopback, loopbackErr := sandbox.NewLoopbackBackend("", 0)
+		if loopbackErr != nil {
+			return nil, newDaemonBuildFailure("build_execution", loopbackErr)
+		}
+		sandboxRequired := os.Getenv("LOOM_SANDBOX_REQUIRED") == "1"
+		sandboxGate = execution.NewBackendGate(loopback, func(ctx context.Context, _ string) (execution.SandboxPolicy, error) {
+			return execution.SandboxPolicy{Required: sandboxRequired, Backend: "loopback"}, nil
+		})
+	}
 	executionAdapter, err := execution.NewAdapter(
 		store,
 		executionEvidenceStore,
@@ -1818,6 +1838,9 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	)
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	if sandboxGate != nil {
+		executionAdapter = executionAdapter.WithSandboxGate(sandboxGate)
 	}
 	executionService, err := app.NewLocalExecutionService(
 		store,
