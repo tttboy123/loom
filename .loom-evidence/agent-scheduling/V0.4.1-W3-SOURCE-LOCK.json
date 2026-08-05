@@ -1,0 +1,34 @@
+{
+  "baseline_commit": "27ef27b5cbcba428448f49a5368e1b291dc5a8cb9",
+  "branch": "codex/loom-platform-slice2",
+  "contract_digest": "87ddce3dadabc3f61514b566690f8db69e9b5a1cfe4dd89c353c47f2c494292c",
+  "generated_at": "2026-08-05T04:10:00Z",
+  "intentionally_excluded": [
+    "AGENTS.md",
+    "PROGRESS.md",
+    "README.md",
+    ".codex/**",
+    ".loom-drafts/**",
+    ".loom-evidence/phase1-final-live-gate/**",
+    ".loom-evidence/phase1-slice3/**",
+    ".loom-evidence/phase2c/**",
+    ".loom-evidence/plan-amendments/**",
+    "apps/macos/.build/**"
+  ],
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "schema": "loom.v0.4.1.w3.source-lock.v1",
+  "schema_version": 1,
+  "source_inventory": {
+    "count": 3,
+    "method": "sha256 of lexicographically path-sorted '<file_sha256>  <relative_path>' lines",
+    "ordered_sha256_lines_digest": "378cd156d9c66369a265de34d0d57fec5cb2ec04dd4bcc673c28cfc1559f007d",
+    "paths": [
+      "docs/CURRENT.md",
+      "docs/runbooks/v041-w3-self-host-canary.md",
+      "scripts/verify-v041-w3-self-host-canary.sh"
+    ]
+  },
+  "notes": [
+    "W3 freezes and demonstrates the self-host canary; no product code is added. The canary mechanism is bound by the v0.4.0 SF-W3 lock."
+  ]
+}

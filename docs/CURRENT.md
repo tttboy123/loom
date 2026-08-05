@@ -6224,3 +6224,30 @@ W2 = ACCEPTED / TWO REAL PARALLEL CANDIDATES
 W3 = PENDING / REPEATABLE SELF-HOST CANARY
 PRODUCT CODE = UNCHANGED IN W2 / JOURNEY PASS
 ```
+
+`CURRENT`: W3 of the v0.4.1 contract is complete and accepted by its atomic
+local commit. The controlled self-host canary is frozen as a repeatable
+product function (runbook `docs/runbooks/v041-w3-self-host-canary.md` +
+`scripts/verify-v041-w3-self-host-canary.sh`) and demonstrated end to end
+on the v0.4.1 product (`fbae6a98-3a88-44f7-8d65-67b62626d55b`): one offline
+Run with locked runtime/model/skill bindings (`CanaryStarted` +
+`CanaryCompleted`); a duplicate start rejected by the idempotent CAS with
+zero new events (capacity 1 per canary stream, no oversell); with the
+controlled projection fault active, a second canary committed to the
+Journal while the snapshot preserved the old view, then rebuilt after the
+fault cleared; daemon restart rebuilt the canary state from the Journal
+with no duplicate facts; the real PTY TUI and the production Swift client
+observed the same projection. W3 adds no product code; the verify script
+PASSes with the exact binding, idempotent-rejection, fault-preserve and
+rebuild assertions; Implementation / dual-Result / Whole-Candidate reviews
+PASS with P0=P1=P2=0 (`.loom-evidence/agent-scheduling/V0.4.1-W3-*`).
+All three v0.4.1 delivery boundaries are now closed; the whole-slice
+acceptance review and final CURRENT.md record are the next gate. No
+push/merge/network/paid/user-config action.
+
+```text
+V0.4.1 = W1+W2+W3 ACCEPTED / ATOMIC LOCAL COMMITS COMPLETE
+W3 = ACCEPTED / REPEATABLE SELF-HOST CANARY DEMONSTRATED
+WHOLE-SLICE ACCEPTANCE = PENDING
+PRODUCT CODE = UNCHANGED IN W2/W3 / JOURNEYS PASS
+```
