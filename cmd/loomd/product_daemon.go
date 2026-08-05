@@ -1779,6 +1779,19 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_permissions", err)
 	}
+	customerRuleService, err := app.NewLocalCustomerRuleService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+		func() string { return readModel.GlobalReadView().Version() },
+		approvalPort.authority,
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_customer_rule", err)
+	}
+	customerRuleAPI, err := api.NewLocalCustomerRuleAPI(customerRuleService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_customer_rule", err)
+	}
 	executionEvidenceRoot := filepath.Join(filepath.Dir(statePath), "execution-evidence")
 	if err := ensureProductExecutionDirectory(executionEvidenceRoot); err != nil {
 		return nil, newDaemonBuildFailure("build_execution", err)
@@ -1963,6 +1976,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			permissionAPI,
 			boundedExecutionAPI,
 			productionAPI,
+			customerRuleAPI,
 		),
 	))
 	if journeyHarness != nil {
@@ -4408,6 +4422,7 @@ func localProductHandlerWithDecision(
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 }
 
@@ -4425,6 +4440,7 @@ func localProductHandlerWithComposition(
 	permissionService *api.LocalPermissionAPI,
 	executionService *api.LocalExecutionAPI,
 	productionService *api.LocalProductionAPI,
+	customerRuleService *api.LocalCustomerRuleAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
@@ -4465,6 +4481,9 @@ func localProductHandlerWithComposition(
 		}
 		if productPermissionMethod(request.Method) && permissionService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrPermissionStateUnavailable)
+		}
+		if productCustomerRuleMethod(request.Method) && customerRuleService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrInvalidCustomerRuleRequest)
 		}
 		if productExecutionMethod(request.Method) && executionService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrExecutionUnavailable)
@@ -4608,6 +4627,28 @@ func localProductHandlerWithComposition(
 			}
 			input.JourneyID = request.JourneyID
 			result, err := integrationService.Command(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "customer_rule_snapshot":
+			var input app.CustomerRuleSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidCustomerRuleRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := customerRuleService.Snapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "customer_rule_command":
+			var input app.CustomerRuleCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidCustomerRuleRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := customerRuleService.Command(ctx, input)
 			if err != nil {
 				return productJourneyServiceError(request.JourneyID, err)
 			}
@@ -5345,4 +5386,8 @@ func openProductReadDatabase(statePath string) (*sql.DB, error) {
 		return nil, errors.New("state unavailable")
 	}
 	return database, nil
+}
+
+func productCustomerRuleMethod(method string) bool {
+	return method == "customer_rule_snapshot" || method == "customer_rule_command"
 }

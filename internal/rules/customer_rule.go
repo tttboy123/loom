@@ -144,6 +144,34 @@ func digestCustomerRule(rule CustomerRule) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// CustomerRuleRecord is a public snapshot row: rule, lifecycle status, and
+// budget consumed in the current window (0 = lifetime).
+type CustomerRuleRecord struct {
+	Rule     CustomerRule
+	Status   string
+	Consumed int64
+}
+
+// SnapshotCustomerRules rebuilds the customer rule snapshot from Journal
+// events (read-only projection; never an authority).
+func SnapshotCustomerRules(events []journal.Event) ([]CustomerRuleRecord, error) {
+	projection, err := replayCustomerRules(events)
+	if err != nil {
+		return nil, err
+	}
+	var records []CustomerRuleRecord
+	for ruleID, record := range projection.rules {
+		records = append(records, CustomerRuleRecord{
+			Rule: record.rule, Status: record.status,
+			Consumed: projection.budget[ruleID][0],
+		})
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Rule.RuleID < records[j].Rule.RuleID
+	})
+	return records, nil
+}
+
 func customerStreamHeads(events []journal.Event) map[string]int64 {
 	heads := make(map[string]int64)
 	for _, event := range events {

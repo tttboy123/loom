@@ -41,7 +41,7 @@ func TestBp1PermissionHandlerWiredThroughComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, permissionAPI, nil, nil)
+	handler := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, permissionAPI, nil, nil, nil)
 	response := handler(context.Background(), localipc.Request{
 		Version: 1, RequestID: "req-1", JourneyID: "11111111-1111-4111-8111-111111111111",
 		Method: "permissions_snapshot", Params: []byte(`{}`),

@@ -89,7 +89,7 @@ func TestBw1ExecutionHandlerWiredThroughComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, executionAPI, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, executionAPI, nil, nil,
 	)
 	response := handler(context.Background(), localipc.Request{
 		Version: 1, RequestID: "req-exec-1", JourneyID: journey,
