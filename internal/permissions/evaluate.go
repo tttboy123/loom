@@ -130,7 +130,7 @@ func Evaluate(effective EffectiveProfile, call ProposedCall) (Verdict, Denial, e
 
 	dangerous := DangerousSegments(call.Command)
 
-	// 1. Rules: deny > (narrowest matching scope; ask > allow within it).
+	// 1. Deny rules always win.
 	denyIDs := matchedRuleIDs(effective.MergedRules, call, ActionDeny)
 	if len(denyIDs) > 0 {
 		return VerdictDeny, Denial{
@@ -139,41 +139,11 @@ func Evaluate(effective EffectiveProfile, call ProposedCall) (Verdict, Denial, e
 			RuleIDs:           denyIDs,
 		}, nil
 	}
-	if ruleIDs, ok := askOverAllowAtNarrowestScope(effective.MergedRules, call); ok {
-		return VerdictAsk, Denial{
-			Reason:            "action requires approval",
-			AuthorizationPath: "resolve the approval in the Attention Inbox",
-			RuleIDs:           ruleIDs,
-		}, nil
-	}
-	if ruleIDs := matchedRuleIDs(effective.MergedRules, call, ActionAllow); len(ruleIDs) > 0 {
-		return VerdictAllow, Denial{}, nil
-	}
 
-	// 2. Active grants (dangerous patterns are never grantable; dangerous
-	//    commands therefore never satisfy a grant).
-	if len(dangerous) == 0 {
-		for _, grant := range effective.Grants {
-			if grant.RevokedAt != "" || grant.Tool != call.Tool {
-				continue
-			}
-			if call.Tool == ToolBash {
-				if bashPatternMatches(grant.Pattern, call.Command) {
-					return VerdictAllow, Denial{}, nil
-				}
-			} else if matchPathGlob(grant.Pattern, call.Path) {
-				return VerdictAllow, Denial{}, nil
-			}
-		}
-	}
-
-	// 3. Read-only whitelist.
-	if IsReadOnlyTool(call.Tool) || (call.Tool == ToolBash && IsReadOnlyCommand(call.Command)) {
-		return VerdictAllow, Denial{}, nil
-	}
-
-	// 4. Dangerous commands: every mode except dont_ask re-asks; dont_ask
-	//    denies.
+	// 2. Dangerous segments re-ask in every mode except dont_ask, before any
+	//    allow rule or grant can pass the command. An allow rule matching the
+	//    whole string must never open a chained dangerous segment (contract
+	//    §3.4; RED #18).
 	if len(dangerous) > 0 {
 		if effective.Mode == ModeDontAsk {
 			return VerdictDeny, Denial{
@@ -187,7 +157,39 @@ func Evaluate(effective EffectiveProfile, call ProposedCall) (Verdict, Denial, e
 		}, nil
 	}
 
-	// 5. Mode prompt policy.
+	// 3. Rules: deny > (narrowest matching scope; ask > allow within it).
+	if ruleIDs, ok := askOverAllowAtNarrowestScope(effective.MergedRules, call); ok {
+		return VerdictAsk, Denial{
+			Reason:            "action requires approval",
+			AuthorizationPath: "resolve the approval in the Attention Inbox",
+			RuleIDs:           ruleIDs,
+		}, nil
+	}
+	if ruleIDs := matchedRuleIDs(effective.MergedRules, call, ActionAllow); len(ruleIDs) > 0 {
+		return VerdictAllow, Denial{}, nil
+	}
+
+	// 4. Active grants (dangerous patterns are never grantable; dangerous
+	//    commands therefore never satisfy a grant).
+	for _, grant := range effective.Grants {
+		if grant.RevokedAt != "" || grant.Tool != call.Tool {
+			continue
+		}
+		if call.Tool == ToolBash {
+			if bashPatternMatches(grant.Pattern, call.Command) {
+				return VerdictAllow, Denial{}, nil
+			}
+		} else if matchPathGlob(grant.Pattern, call.Path) {
+			return VerdictAllow, Denial{}, nil
+		}
+	}
+
+	// 5. Read-only whitelist.
+	if IsReadOnlyTool(call.Tool) || (call.Tool == ToolBash && IsReadOnlyCommand(call.Command)) {
+		return VerdictAllow, Denial{}, nil
+	}
+
+	// 6. Mode prompt policy.
 	switch effective.Mode {
 	case ModeDontAsk:
 		return VerdictDeny, Denial{

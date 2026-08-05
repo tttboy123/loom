@@ -26,6 +26,8 @@ Date: 2026-08-05
 | 15 | Projection 失败保留旧视图、零写入 | `TestRed15_ProjectionFailureKeepsOldView`（replay_test.go） | Replay error 后旧投影不变，无副作用 |
 | 16 | 配置文件不直接评估；导入才产生 PermissionRuleAdded | `TestRed16_ConfigFileImportOnly`（authority_test.go） | 未导入文件零效果；导入后重放生效 |
 | 17 | ScopeRoot 写入与管理员锁需 authorized_by；IssueGrant 拒绝危险 pattern | `TestRed17_RootHumanGateAndDangerousGrantRejected` | 空 authorized_by → error；危险 pattern grant → error |
+| 18 | allow 规则/模板/grants/bypass 均不能放行危险链式命令（危险段检查前置于 allow/ask 与 grants） | `TestRed18_AllowRuleCannotPassDangerousChain` | 模板 allow + `go test … && rm -rf …` → ask；`git *` allow + `git status && rm -rf …` → ask；bypass 仍 ask；干净模板命令仍 allow |
+| 19 | personal/project 作用域规则应用于 Job（单项目 daemon） | `TestRed19_PersonalAndProjectScopeApplyToJob` | personal allow `go run *` → allow；project deny `rm *` → deny；未被 deny 覆盖的危险命令仍 ask |
 
 旅程验证（契约 §8）：
 - `scripts/verify-bp1-cross-client-journey.sh`：TUI define/bind/validate/approve

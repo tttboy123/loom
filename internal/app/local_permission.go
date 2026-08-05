@@ -38,12 +38,15 @@ type PermissionAttentionRequest struct {
 }
 
 type PermissionDecisionView struct {
-	JobID             string              `json:"job_id"`
-	ApprovalID        string              `json:"approval_id,omitempty"`
-	Verdict           permissions.Verdict `json:"verdict"`
-	Reason            string              `json:"reason"`
-	AuthorizationPath string              `json:"authorization_path"`
-	RecordedAt        string              `json:"recorded_at"`
+	JobID             string               `json:"job_id"`
+	ApprovalID        string               `json:"approval_id,omitempty"`
+	Verdict           permissions.Verdict  `json:"verdict"`
+	Tool              permissions.ToolKind `json:"tool"`
+	Command           string               `json:"command,omitempty"`
+	Path              string               `json:"path,omitempty"`
+	Reason            string               `json:"reason"`
+	AuthorizationPath string               `json:"authorization_path"`
+	RecordedAt        string               `json:"recorded_at"`
 }
 
 type PermissionAttention struct {
@@ -171,6 +174,9 @@ func (service *LocalPermissionService) PermissionAttention(
 			JobID             string `json:"job_id"`
 			ApprovalID        string `json:"approval_id,omitempty"`
 			Verdict           string `json:"verdict"`
+			Tool              string `json:"tool"`
+			Command           string `json:"command"`
+			Path              string `json:"path"`
 			Reason            string `json:"reason"`
 			AuthorizationPath string `json:"authorization_path"`
 			RecordedAt        string `json:"recorded_at"`
@@ -183,7 +189,8 @@ func (service *LocalPermissionService) PermissionAttention(
 		}
 		decisions = append(decisions, PermissionDecisionView{
 			JobID: payload.JobID, ApprovalID: payload.ApprovalID,
-			Verdict: permissions.VerdictAsk, Reason: payload.Reason,
+			Verdict: permissions.VerdictAsk, Tool: permissions.ToolKind(payload.Tool),
+			Command: payload.Command, Path: payload.Path, Reason: payload.Reason,
 			AuthorizationPath: payload.AuthorizationPath, RecordedAt: payload.RecordedAt,
 		})
 	}
@@ -348,7 +355,7 @@ func (service *LocalPermissionService) validateCall(
 	}
 	if verdict == permissions.VerdictAsk {
 		events, err := service.authority.RecordDecision(
-			ctx, input.JobID, verdict, denial, "", request.OperationID, request.JourneyID,
+			ctx, input.JobID, input.Call, verdict, denial, "", request.OperationID, request.JourneyID,
 		)
 		if err != nil {
 			return PermissionCommandResult{}, err

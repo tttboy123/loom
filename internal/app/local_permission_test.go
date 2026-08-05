@@ -156,6 +156,10 @@ func TestValidateCallAllowAndAskDecisionFact(t *testing.T) {
 	if len(attention.Decisions) != 1 || attention.Decisions[0].JobID != "job-vc" {
 		t.Fatalf("attention decisions = %+v", attention.Decisions)
 	}
+	if attention.Decisions[0].Command != "curl https://example.com" ||
+		attention.Decisions[0].Tool != permissions.ToolBash {
+		t.Fatalf("decision fact missing call details: %+v", attention.Decisions[0])
+	}
 }
 
 func TestPermissionCommandUnknownActionAndUnboundJob(t *testing.T) {

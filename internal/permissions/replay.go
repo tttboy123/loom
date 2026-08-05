@@ -89,6 +89,8 @@ type decisionPayload struct {
 	ApprovalID        string   `json:"approval_id,omitempty"`
 	Verdict           Verdict  `json:"verdict"`
 	Tool              ToolKind `json:"tool"`
+	Command           string   `json:"command,omitempty"`
+	Path              string   `json:"path,omitempty"`
 	Reason            string   `json:"reason"`
 	AuthorizationPath string   `json:"authorization_path"`
 	RecordedAt        string   `json:"recorded_at"`
@@ -305,7 +307,7 @@ func applyEvent(projection *Projection, event journal.Event) error {
 			(payload.Verdict != VerdictAllow && payload.Verdict != VerdictAsk && payload.Verdict != VerdictDeny) {
 			return fmt.Errorf("%w: invalid decision", ErrInvalidEventPayload)
 		}
-		if payload.Tool != "" && !ValidToolKind(string(payload.Tool)) {
+		if !ValidToolKind(string(payload.Tool)) {
 			return fmt.Errorf("%w: invalid decision tool", ErrInvalidEventPayload)
 		}
 		if event.StreamID != streamDecision+payload.JobID {
@@ -446,6 +448,15 @@ func EffectiveMode(projection *Projection, jobID string) (Mode, error) {
 		}
 		return profile.Mode, nil
 	}
+	// Personal > project > root activation precedence (single-project
+	// daemon; scopeID resolution lands with the job->project mapping).
+	for _, scopeKind := range []ScopeKind{ScopePersonal, ScopeProject} {
+		for _, activation := range projection.Activations {
+			if activation.Scope == scopeKind && activation.ScopeID != "" {
+				return activation.Mode, nil
+			}
+		}
+	}
 	if activation, ok := projection.Activations[string(ScopeRoot)+"/global"]; ok {
 		return activation.Mode, nil
 	}
@@ -468,9 +479,16 @@ func rulesForJob(projection *Projection, jobID, profileID string) []Rule {
 		switch {
 		case rule.Scope == ScopeJob && rule.ScopeID == jobID:
 			rules = append(rules, rule)
-		case rule.Scope == ScopeRoot:
+		case rule.Scope == ScopeProject:
+			// Single-project daemon: project rules apply to every job. In a
+			// multi-project deployment the job->project mapping must scope
+			// this to rule.ScopeID (bounded amendment, tracked in REVIEW-NOTES).
 			rules = append(rules, rule)
-		case rule.Scope == ScopeProject && rule.ScopeID == "default":
+		case rule.Scope == ScopePersonal:
+			// Personal (user-local, gitignored) rules apply to every job in
+			// the same daemon session, scoped by project mapping when it lands.
+			rules = append(rules, rule)
+		case rule.Scope == ScopeRoot:
 			rules = append(rules, rule)
 		}
 	}
@@ -492,5 +510,16 @@ func ActiveGrants(projection *Projection, scope ScopeKind, scopeID string) []Gra
 }
 
 func grantsForJob(projection *Projection, jobID string) []Grant {
-	return append(ActiveGrants(projection, ScopeJob, jobID), ActiveGrants(projection, ScopeRoot, "global")...)
+	var grants []Grant
+	grants = append(grants, ActiveGrants(projection, ScopeJob, jobID)...)
+	for _, grant := range projection.Grants {
+		if grant.RevokedAt != "" {
+			continue
+		}
+		if (grant.Scope == ScopeProject || grant.Scope == ScopePersonal) && grant.ScopeID != "" {
+			grants = append(grants, grant)
+		}
+	}
+	grants = append(grants, ActiveGrants(projection, ScopeRoot, "global")...)
+	return grants
 }

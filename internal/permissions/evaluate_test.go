@@ -104,6 +104,51 @@ func TestRed06_ChainedCommandDenyWholeAllowWhole(t *testing.T) {
 	}
 }
 
+func TestRed18_AllowRuleCannotPassDangerousChain(t *testing.T) {
+	template, err := DefaultProjectProfileTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := EffectiveProfile{
+		Profile:     template,
+		Mode:        template.Mode,
+		MergedRules: template.Rules,
+	}
+	for _, call := range []ProposedCall{
+		{Tool: ToolBash, Command: "go test ./... && rm -rf vendor"},
+		{Tool: ToolBash, Command: "git status && rm -rf /tmp/x"},
+		{Tool: ToolBash, Command: "go build ./... ; chmod +x run.sh"},
+	} {
+		if got := verdictFor(t, effective, call); got != VerdictAsk {
+			t.Fatalf("dangerous chain %q verdict = %s, want ask (allow rule must not pass it)", call.Command, got)
+		}
+	}
+	// An explicit whole-string allow rule must still not pass a dangerous chain.
+	whole := EffectiveProfile{
+		Profile: PermissionProfile{ProfileID: "p", Mode: ModeDefault},
+		Mode:    ModeDefault,
+		MergedRules: []Rule{
+			{RuleID: "r-allow-git", Scope: ScopeProject, ScopeID: permTestProject,
+				Action: ActionAllow, Tool: ToolBash, Pattern: "git *"},
+		},
+	}
+	if got := verdictFor(t, whole, ProposedCall{Tool: ToolBash, Command: "git status && rm -rf /tmp/x"}); got != VerdictAsk {
+		t.Fatalf("allow rule must not pass chained rm, verdict = %s", got)
+	}
+	// bypass permissions still re-asks on dangerous segments.
+	bypass := EffectiveProfile{
+		Profile: PermissionProfile{ProfileID: "p", Mode: ModeBypassPermissions},
+		Mode:    ModeBypassPermissions,
+	}
+	if got := verdictFor(t, bypass, ProposedCall{Tool: ToolBash, Command: "git status && rm -rf /tmp/x"}); got != VerdictAsk {
+		t.Fatalf("bypass must still ask on dangerous chain, verdict = %s", got)
+	}
+	// A clean template command remains allowed (no UX regression).
+	if got := verdictFor(t, effective, ProposedCall{Tool: ToolBash, Command: "go test ./..."}); got != VerdictAllow {
+		t.Fatalf("clean template command verdict = %s, want allow", got)
+	}
+}
+
 func TestRed09_UnknownToolAndParseFailureError(t *testing.T) {
 	effective := EffectiveProfile{
 		Profile: PermissionProfile{ProfileID: "p", Mode: ModeDefault},

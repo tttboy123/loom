@@ -65,3 +65,51 @@ Swift 客户端文件）与 grok-build 官方权限文档。全部仓库引用�
 
 VERDICT（Controller 自查）: `PASS-with-repairs` —— 修复后未发现剩余 P0/P1；
 冻结待 Product Owner 确认。
+
+## 4. flash 独立 Implementation Review（v9，2026-08-05）
+
+独立评审（`bp1_impl_review_v9`，flash，全程只读）对提交 `91d14f42` 的
+实现返回 **FAIL**，并给出 1 P0 + 3 P1 + 4 P2：
+
+| # | 严重度 | 问题 | 处置 |
+|---|---|---|---|
+| P0-1 | P0 | allow 规则可放行链式危险命令（`go test … && rm -rf` / `git status && rm -rf` 实测 allow） | **已修复（A1）**：危险段检查前置于 allow/ask 规则与 grants；新增 RED #18（`TestRed18_AllowRuleCannotPassDangerousChain`）实测 PASS |
+| P1-1 | P1 | ask 批准生命周期未接线（`validate_call` 只写决策事实，`ResolveApproval` 恒 forward-only，TUI a/x/g 无真实批准） | **A4（OPEN）**：按治理作为受控开放项，复用既有 rules 批准权威，待 Product Owner 确认后以 Amendment 2 实施 |
+| P1-2 | P1 | 跨作用域合并不完整（缺 personal/project） | **已修复（A3）**：`rulesForJob`/`grantsForJob`/`EffectiveMode` 补齐 personal/project（单项目 daemon 假设如实记录）；新增 RED #19（`TestRed19_PersonalAndProjectScopeApplyToJob`）实测 PASS |
+| P1-3 | P1 | 决策事实缺 tool/command/path 审计字段 | **已修复（A2）**：`RecordDecision` 携带 `ProposedCall`；事实含 `tool/command/path`；App 视图、Swift 模型、TUI grant 派生同步 |
+| P2-1 | P2 | 契约 §5.1 残留废弃 `danger` 字段 | **已修复**：契约与实现对齐 |
+| P2-2 | P2 | TUI grant 用 Reason 首词 / 硬编码时间 / 空值 panic | **已修复**：改用决策命令首词、真实时间、空命令拒绝 |
+| P2-3 | P2 | PermissionAttention 不过滤 resolved 状态 | **随 A4 关闭**（当前无 resolved 状态可滤） |
+| P2-4 | P2 | source-lock digest 不可复现 | **复检后再次修复**：原记录 digest 仍无法用声明方法复现；本审计重算并将 `ordered_sha256_lines_digest` 更新为可复现值（2f75bd…），方法注明无末尾换行 |
+
+## 5. Amendment 1 后复检（2026-08-05，flash）
+
+对 A1-A3 + P2 修复后的工作区逐项核验：
+
+- **A**：P0-1 修复在 `evaluate.go` 中确认（deny → dangerous → ask/allow → grants → whitelist → mode）；RED #18 通过。
+- **B**：`ResolveEffectiveProfile`/`EffectiveMode`/`rulesForJob`/`grantsForJob`
+  在 `replay.go` 中确认 personal/project 作用域；RED #19 通过。
+- **C**：`RecordDecision(ctx, jobID, call, …)` 写入 `tool/command/path`；
+  Swift `PermissionDecisionView` 已同步解码字段。
+- **D**：契约 §5.1 无 `danger` 字段；TUI grant 逻辑已修复；source-lock 复现
+  问题在本轮复检中定位并修复（见 §4 P2-4）。
+- **E**：A4 边界可接受——不新建第二套批准权威、复用既有 rules 生命周期、
+  待 Product Owner 确认后作为 Amendment 2 实施；作为文档化开放项不阻塞
+  代码质量验收，但属于契约 §2/§8 "approve 全流程"的未达成项。
+- **F**：`go build/vet/test ./...` 全 PASS；`apps/macos swift test`
+  XCTest 97 PASS + 1 skipped、Swift Testing 4 PASS（0 failure）；
+  `verify-bp1-cross-client-journey.sh /private/tmp/bp1-journey-final9` PASS
+  （journey_id 65063ba9-2201-45d0-8d6f-01c102797ce9）。
+- **G**：无越界写入；用户排除项（AGENTS.md/PROGRESS.md/README.md/
+  phase1-final-live-gate/.loom-drafts/.codex）未被本变更触及。
+
+## 6. 独立评审重试失败记录（2026-08-05）
+
+按 Product Owner 指示改用 flash 进行 post-fix 独立评审，两次派发
+（`bp1_postfix_flash_reviewer`，spawn + followup）均遇到子代理通道故障：
+首次收到空载荷，第二次收到通用"ready"回复未执行任务。结论与 §2 一致：
+本会话子代理协作通道仍不可用。post-fix 评审以本 Agent（flash）的逐项
+复检记录代替，v9 的独立评审作为基线；fresh 独立复评仍保留为开放项。
+
+**B-P1 状态**：代码与证据齐备、全矩阵绿、旅程 verify PASS；唯一未达成项为
+A4（批准生命周期接线，契约 §2/§8 全流程），按治理等待 Product Owner 决策。

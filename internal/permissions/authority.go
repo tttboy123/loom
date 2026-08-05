@@ -357,8 +357,9 @@ func (a *Authority) ResolveApproval(ctx context.Context, approvalID, resolution,
 	return nil, ErrApprovalForwardOnly
 }
 
-func (a *Authority) RecordDecision(ctx context.Context, jobID string, verdict Verdict, denial Denial, approvalID, operationID, journeyID string) ([]journal.Event, error) {
-	if !validID(jobID) || (verdict != VerdictAllow && verdict != VerdictAsk && verdict != VerdictDeny) {
+func (a *Authority) RecordDecision(ctx context.Context, jobID string, call ProposedCall, verdict Verdict, denial Denial, approvalID, operationID, journeyID string) ([]journal.Event, error) {
+	if !validID(jobID) || !ValidToolKind(string(call.Tool)) ||
+		(verdict != VerdictAllow && verdict != VerdictAsk && verdict != VerdictDeny) {
 		return nil, ErrInvalidInput
 	}
 	projection, events, heads, err := a.latestProjection(ctx)
@@ -370,7 +371,8 @@ func (a *Authority) RecordDecision(ctx context.Context, jobID string, verdict Ve
 	event := newPermEvent("PermissionDecisionRecorded", streamID, heads[streamID]+1,
 		a.now(), journeyID, operationID, decisionPayload{
 			JobID: jobID, ApprovalID: approvalID, Verdict: verdict,
-			Tool: "", Reason: denial.Reason, AuthorizationPath: denial.AuthorizationPath,
+			Tool: call.Tool, Command: call.Command, Path: call.Path,
+			Reason: denial.Reason, AuthorizationPath: denial.AuthorizationPath,
 			RecordedAt: isoNow(a.now),
 		})
 	return a.appendCAS(ctx, events, heads, streamID, event)

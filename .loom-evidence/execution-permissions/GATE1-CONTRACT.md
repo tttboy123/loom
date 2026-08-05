@@ -317,7 +317,7 @@ func (a *Authority) RevokeGrant(ctx context.Context, grantID, operationID, journ
 func (a *Authority) ActivateMode(ctx context.Context, mode Mode, scope ScopeKind, scopeID, authorizedBy, operationID, journeyID string) ([]journal.Event, error)
 func (a *Authority) SetAdminLock(ctx context.Context, enabled bool, authorizedBy, operationID, journeyID string) ([]journal.Event, error)
 func (a *Authority) ResolveApproval(ctx context.Context, approvalID, resolution, resolvedBy, operationID, journeyID string) ([]journal.Event, error)
-func (a *Authority) RecordDecision(ctx context.Context, jobID string, verdict Verdict, denial Denial, approvalID, operationID, journeyID string) ([]journal.Event, error)
+func (a *Authority) RecordDecision(ctx context.Context, jobID string, call ProposedCall, verdict Verdict, denial Denial, approvalID, operationID, journeyID string) ([]journal.Event, error)
 ```
 
 每个权威方法在写入前重建最新投影并做 CAS（`AppendBatchIfStreamHeads`），
@@ -337,10 +337,10 @@ func (a *Authority) RecordDecision(ctx context.Context, jobID string, verdict Ve
 | `permission-profile/<profile_id>` | `PermissionProfileRetired` | `profile_id, retired_at` |
 | `permission-rule/<rule_id>` | `PermissionRuleAdded` / `PermissionRuleRevoked` | 前者 `{rule_id,scope,scope_id,action,tool,pattern}`；后者 `{rule_id,revoked_at}` |
 | `permission-binding/<job_id>` | `JobPermissionBound` | `job_id, profile_id, profile_digest, profile_generation, bound_at` |
-| `permission-grant/<grant_id>` | `PermissionGrantIssued` / `PermissionGrantRevoked` | 前者 `{grant_id,scope,scope_id,tool,pattern,danger,issued_at}`；后者 `{grant_id,revoked_at}` |
+| `permission-grant/<grant_id>` | `PermissionGrantIssued` / `PermissionGrantRevoked` | 前者 `{grant_id,scope,scope_id,tool,pattern,issued_at}`；后者 `{grant_id,revoked_at}` |
 | `permission-activation` | `PermissionActivationActivated` / `PermissionActivationDeactivated` | `{mode,scope,scope_id,activated_at|deactivated_at, authorized_by}` |
 | `permission-admin-lock` | `PermissionAdminLockEnabled` / `PermissionAdminLockDisabled` | `{enabled_at|disabled_at, authorized_by}` |
-| `permission-decision/<job_id>` | `PermissionDecisionRecorded` | `{job_id,approval_id?,verdict,tool,reason,authorization_path,recorded_at}` |
+| `permission-decision/<job_id>` | `PermissionDecisionRecorded` | `{job_id,approval_id?,verdict,tool,command?,path?,reason,authorization_path,recorded_at}` |
 
 工具级 ask 的**批准生命周期不新建第二套**：`validate_call` 命中 `ask` 时，
 权限层写入 `PermissionDecisionRecorded(ask)` 决策事实，并调用既有
@@ -439,6 +439,8 @@ validate_call   (对 Job 提议一次工具调用：返回 allow/ask/deny + type
     只有导入命令产生 `PermissionRuleAdded` 事实后才生效；未导入文件零效果。
 17. `ScopeRoot` 规则写入与管理员锁写入必须 `authorized_by` 非空；
     `IssueGrant` 拒绝覆盖危险段的 pattern。
+18. allow 规则/模板/grants/bypass 均不能放行含危险段的链式命令
+    （危险段检查前置于 allow/ask 规则与 grants；RED #5/#18 共同覆盖）。
 
 ## 8. 验证矩阵
 
@@ -509,7 +511,7 @@ apps/macos/Sources/LoomLocalAppContractProbe/main.swift      // 只读权限 pro
 
 1. 确定性矩阵全绿（Go full/race/vet/tidy/gofmt；Swift full/TSAN/Release）；
 2. B-P1 真实跨客户端旅程冻结并验证 PASS；
-3. RED 矩阵 17/17 通过；独立 Contract/Implementation/dual-Result/Whole-Candidate
+3. RED 矩阵 18/18 通过；独立 Contract/Implementation/dual-Result/Whole-Candidate
    Review 均 PASS（P0=P1=P2=0）；
 4. exact staging per source-lock；单个原子本地 commit；不 push/merge。
 

@@ -172,7 +172,10 @@ func TestRed03_AskEmitsDecisionFactAndNoApprovalEvent(t *testing.T) {
 	if verdict != VerdictAsk {
 		t.Fatalf("verdict = %s, want ask", verdict)
 	}
-	if _, err := auth.RecordDecision(context.Background(), permTestJobA, VerdictAsk, Denial{Reason: "needs approval", AuthorizationPath: "resolve approval"}, "", "op-decision-1", permTestCorrelation); err != nil {
+	if _, err := auth.RecordDecision(context.Background(), permTestJobA,
+		ProposedCall{Tool: ToolBash, Command: "curl https://example.com"},
+		VerdictAsk, Denial{Reason: "needs approval", AuthorizationPath: "resolve approval"},
+		"", "op-decision-1", permTestCorrelation); err != nil {
 		t.Fatalf("RecordDecision() error = %v", err)
 	}
 
@@ -279,11 +282,15 @@ func TestRed11_GrantRevocationRestartIdempotency(t *testing.T) {
 
 	// restart/idempotency: same operationID replayed twice must not duplicate facts.
 	before := len(allEvents(t, store))
-	if _, err := auth.RecordDecision(context.Background(), permTestJobA, VerdictAsk, Denial{Reason: "x"}, "", "op-decision-dup", permTestCorrelation); err != nil {
+	if _, err := auth.RecordDecision(context.Background(), permTestJobA,
+		ProposedCall{Tool: ToolBash, Command: "curl https://example.com"},
+		VerdictAsk, Denial{Reason: "x"}, "", "op-decision-dup", permTestCorrelation); err != nil {
 		t.Fatalf("RecordDecision() error = %v", err)
 	}
 	afterOnce := len(allEvents(t, store))
-	if _, err := auth.RecordDecision(context.Background(), permTestJobA, VerdictAsk, Denial{Reason: "x"}, "", "op-decision-dup", permTestCorrelation); err != nil {
+	if _, err := auth.RecordDecision(context.Background(), permTestJobA,
+		ProposedCall{Tool: ToolBash, Command: "curl https://example.com"},
+		VerdictAsk, Denial{Reason: "x"}, "", "op-decision-dup", permTestCorrelation); err != nil {
 		t.Fatalf("RecordDecision() second call error = %v", err)
 	}
 	if afterOnce != before+1 {
@@ -321,6 +328,36 @@ func TestRed12_ParallelJobIsolation(t *testing.T) {
 	}
 	if got := verdictFor(t, effectiveFor(t, projection, permTestJobB), call); got != VerdictDeny {
 		t.Fatalf("job B verdict = %s, want deny (job rules must be isolated)", got)
+	}
+}
+
+func TestRed19_PersonalAndProjectScopeApplyToJob(t *testing.T) {
+	store := openPermStore(t)
+	auth := mustPermAuthority(t, store)
+	mustProfile(t, auth, ProfileInput{ProfileID: permTestProfileA, Mode: ModeDefault})
+	mustBind(t, auth, permTestJobA, permTestProfileA)
+	if _, err := auth.AddRule(context.Background(), Rule{
+		RuleID: "r-personal-allow", Scope: ScopePersonal, ScopeID: "user-1",
+		Action: ActionAllow, Tool: ToolBash, Pattern: "go run *",
+	}, "user-1", "op-rule-personal", permTestCorrelation); err != nil {
+		t.Fatalf("AddRule(personal) error = %v", err)
+	}
+	if _, err := auth.AddRule(context.Background(), Rule{
+		RuleID: "r-project-deny", Scope: ScopeProject, ScopeID: "project-1",
+		Action: ActionDeny, Tool: ToolBash, Pattern: "rm *",
+	}, "user-1", "op-rule-project", permTestCorrelation); err != nil {
+		t.Fatalf("AddRule(project) error = %v", err)
+	}
+	projection := replayOf(t, allEvents(t, store))
+	effective := effectiveFor(t, projection, permTestJobA)
+	if got := verdictFor(t, effective, ProposedCall{Tool: ToolBash, Command: "go run cmd/main.go"}); got != VerdictAllow {
+		t.Fatalf("personal allow verdict = %s, want allow", got)
+	}
+	if got := verdictFor(t, effective, ProposedCall{Tool: ToolBash, Command: "rm -rf vendor"}); got != VerdictDeny {
+		t.Fatalf("project deny verdict = %s, want deny", got)
+	}
+	if got := verdictFor(t, effective, ProposedCall{Tool: ToolBash, Command: "chmod +x run.sh"}); got != VerdictAsk {
+		t.Fatalf("dangerous without deny verdict = %s, want ask", got)
 	}
 }
 

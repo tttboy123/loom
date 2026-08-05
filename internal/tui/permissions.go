@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -284,14 +285,21 @@ func (model Model) permissionGrantAlways() tea.Cmd {
 			return permissionCommandDoneMsg{err: app.ErrInvalidPermissionRequest}
 		}
 		decision := model.permissionAttention.Decisions[0]
-		firstWord := strings.Fields(decision.Reason)[0]
+		command := strings.TrimSpace(decision.Command)
+		firstWord := ""
+		if command != "" {
+			firstWord = strings.Fields(command)[0]
+		}
+		if firstWord == "" {
+			return permissionCommandDoneMsg{err: app.ErrInvalidPermissionRequest}
+		}
 		input, _ := json.Marshal(map[string]any{
 			"grant_id":  "tui-grant-" + decision.JobID + "-" + firstWord,
 			"scope":     "job",
 			"scope_id":  decision.JobID,
 			"tool":      "Bash",
 			"pattern":   firstWord + " *",
-			"issued_at": "2026-08-05T12:00:00Z",
+			"issued_at": time.Now().UTC().Format(time.RFC3339),
 		})
 		_, err := client.PermissionCommand(ctx, app.PermissionCommandRequest{
 			JourneyID: journeyID, OperationID: "tui-grant-" + decision.JobID,

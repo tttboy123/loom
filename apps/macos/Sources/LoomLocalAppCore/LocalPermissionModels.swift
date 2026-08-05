@@ -208,6 +208,9 @@ public struct PermissionDecisionView: Codable, Equatable, Sendable {
     public var jobID: String
     public var approvalID: String
     public var verdict: String
+    public var tool: String?
+    public var command: String?
+    public var path: String?
     public var reason: String
     public var authorizationPath: String
     public var recordedAt: String
@@ -216,6 +219,9 @@ public struct PermissionDecisionView: Codable, Equatable, Sendable {
         jobID: String = "",
         approvalID: String = "",
         verdict: String = "",
+        tool: String? = nil,
+        command: String? = nil,
+        path: String? = nil,
         reason: String = "",
         authorizationPath: String = "",
         recordedAt: String = ""
@@ -223,6 +229,9 @@ public struct PermissionDecisionView: Codable, Equatable, Sendable {
         self.jobID = jobID
         self.approvalID = approvalID
         self.verdict = verdict
+        self.tool = tool
+        self.command = command
+        self.path = path
         self.reason = reason
         self.authorizationPath = authorizationPath
         self.recordedAt = recordedAt
@@ -231,7 +240,7 @@ public struct PermissionDecisionView: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case jobID = "job_id"
         case approvalID = "approval_id"
-        case verdict, reason
+        case verdict, tool, command, path, reason
         case authorizationPath = "authorization_path"
         case recordedAt = "recorded_at"
     }
