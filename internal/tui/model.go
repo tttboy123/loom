@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
@@ -28,25 +29,26 @@ import (
 type Screen string
 
 const (
-	ScreenBoard       Screen = "Board"
-	ScreenNewMission  Screen = "New Mission"
-	ScreenMission     Screen = "Mission"
-	ScreenHome        Screen = "Home"
-	ScreenRuntimes    Screen = "Runtimes"
-	ScreenTeamBuilder Screen = "Team Builder"
-	ScreenTeams       Screen = "Teams"
-	ScreenRuns        Screen = "Runs / History"
-	ScreenEvidence    Screen = "Evidence"
-	ScreenCompare     Screen = "Compare"
-	ScreenAttention   Screen = "Attention"
-	ScreenTimeline    Screen = "Team Timeline"
-	ScreenAssets      Screen = "Evolution Assets"
-	ScreenQueue       Screen = "Queue"
-	ScreenWorkers     Screen = "Workers"
-	ScreenIntegration Screen = "Integration"
-	ScreenPermissions Screen = "Permissions"
-	ScreenExecution   Screen = "Execution"
-	ScreenProduction  Screen = "Production"
+	ScreenBoard         Screen = "Board"
+	ScreenNewMission    Screen = "New Mission"
+	ScreenMission       Screen = "Mission"
+	ScreenHome          Screen = "Home"
+	ScreenRuntimes      Screen = "Runtimes"
+	ScreenTeamBuilder   Screen = "Team Builder"
+	ScreenTeams         Screen = "Teams"
+	ScreenRuns          Screen = "Runs / History"
+	ScreenEvidence      Screen = "Evidence"
+	ScreenCompare       Screen = "Compare"
+	ScreenAttention     Screen = "Attention"
+	ScreenTimeline      Screen = "Team Timeline"
+	ScreenAssets        Screen = "Evolution Assets"
+	ScreenQueue         Screen = "Queue"
+	ScreenWorkers       Screen = "Workers"
+	ScreenIntegration   Screen = "Integration"
+	ScreenPermissions   Screen = "Permissions"
+	ScreenExecution     Screen = "Execution"
+	ScreenProduction    Screen = "Production"
+	ScreenCustomerRules Screen = "Customer Rules"
 )
 
 var screens = []Screen{
@@ -65,6 +67,7 @@ var screens = []Screen{
 	ScreenPermissions,
 	ScreenExecution,
 	ScreenProduction,
+	ScreenCustomerRules,
 }
 
 type ReadClient interface {
@@ -439,19 +442,20 @@ type sideTaskDecidedMsg struct{ result app.SideTaskDecisionResult }
 type sideTaskFailedMsg struct{ err error }
 
 const (
-	entryBuilderAnswer     = "builder_answer"
-	entryEditName          = "edit_name"
-	entryEditPurpose       = "edit_purpose"
-	entryCredentialPut     = "credential_put"
-	entryCredentialSwap    = "credential_swap"
-	entryTaskSearch        = "task_search"
-	entryMissionObjective  = "mission_objective"
-	entrySideTaskRequest   = "side_task_request"
-	entryEvolutionAsset    = "evolution_asset_name"
-	entryQueueJobPath      = "queue_job_path"
-	entryEvolutionSearch   = "evolution_asset_search"
-	entryPermissionProfile = "permission_profile"
-	entryPermissionCall    = "permission_call"
+	entryBuilderAnswer      = "builder_answer"
+	entryEditName           = "edit_name"
+	entryEditPurpose        = "edit_purpose"
+	entryCredentialPut      = "credential_put"
+	entryCredentialSwap     = "credential_swap"
+	entryTaskSearch         = "task_search"
+	entryMissionObjective   = "mission_objective"
+	entrySideTaskRequest    = "side_task_request"
+	entryEvolutionAsset     = "evolution_asset_name"
+	entryQueueJobPath       = "queue_job_path"
+	entryEvolutionSearch    = "evolution_asset_search"
+	entryPermissionProfile  = "permission_profile"
+	entryPermissionCall     = "permission_call"
+	entryCustomerRuleImport = "customer_rule_import"
 )
 
 type Model struct {
@@ -465,6 +469,7 @@ type Model struct {
 	integrationClient      IntegrationClient
 	permissionClient       PermissionClient
 	productionClient       ProductionClient
+	customerRuleClient     CustomerRuleClient
 	executionClient        ExecutionClient
 	ctx                    context.Context
 	cancel                 context.CancelFunc
@@ -513,6 +518,8 @@ type Model struct {
 	permissionAttention    app.PermissionAttention
 	executionSnapshot      app.ExecutionSnapshot
 	productionSnapshot     production.ProductionSnapshot
+	customerRuleSnapshot   app.CustomerRuleSnapshot
+	customerRuleDetail     bool
 	productionPreview      production.ActivationPreview
 	productionPending      string
 	permissionDetail       bool
@@ -560,6 +567,7 @@ func newModelWithContext(
 		permissionClient:       permissionClientFrom(client),
 		boundedExecutionClient: boundedExecutionClientFrom(client),
 		productionClient:       productionClientFrom(client),
+		customerRuleClient:     customerRuleClientFrom(client),
 		ctx:                    ctx,
 		cancel:                 cancel,
 		width:                  80,
@@ -839,6 +847,23 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.lastError = safeClientState(message.err)
 		return model, nil
+	case customerRuleLoadedMsg:
+		model.loading = false
+		model.lastError = ""
+		model.customerRuleSnapshot = message.snapshot
+		return model, nil
+	case customerRuleFailedMsg:
+		model.loading = false
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case customerRuleCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = message.note
+		return model, model.loadCustomerRules()
 	case permissionCommandDoneMsg:
 		model.loading = false
 		if message.err != nil {
@@ -973,6 +998,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadProduction()
 			}
+			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
+				model.loading = true
+				return model, model.loadCustomerRules()
+			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				model.loading = true
 				return model, model.loadPermissionAttention()
@@ -1011,6 +1040,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenProduction && model.productionClient != nil {
 				model.loading = true
 				return model, model.loadProduction()
+			}
+			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
+				model.loading = true
+				return model, model.loadCustomerRules()
 			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				model.loading = true
@@ -1056,6 +1089,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.Screen() == ScreenProduction && model.productionClient != nil {
 				return model, model.loadProduction()
+			}
+			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
+				return model, model.loadCustomerRules()
 			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				return model, model.loadPermissionAttention()
@@ -1274,6 +1310,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.setSelectedTeamStatus(true)
 			}
 		case "e":
+			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
+				model.loading = true
+				return model, model.customerRuleEvaluate()
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.pendingEvolutionAction = "evaluate"
 				return model, nil
@@ -1498,6 +1538,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "i":
+			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
+				model.entryMode = entryCustomerRuleImport
+				model.entry = []byte{}
+				return model, nil
+			}
 			if model.Screen() == ScreenIntegration && model.integrationClient != nil {
 				model.loading = true
 				return model, model.integrateFirstCandidate()
@@ -1529,41 +1574,40 @@ func (model Model) View() string {
 		return "Loom needs at least 60 columns × 16 rows. Resize the terminal.\n"
 	}
 	var builder strings.Builder
-	builder.WriteString("Loom · ")
-	builder.WriteString(string(model.Screen()))
+	builder.WriteString(styleHeader("Loom · " + string(model.Screen())))
 	builder.WriteByte('\n')
-	builder.WriteString(strings.Repeat("─", min(model.width, 72)))
+	builder.WriteString(styleDivider(min(model.width, 72)))
 	builder.WriteByte('\n')
 	switch {
 	case model.loading:
-		builder.WriteString("Loading your local workspace…\n")
+		builder.WriteString(styleLoading("Loading your local workspace…") + "\n")
 	case model.offline:
-		builder.WriteString("Daemon offline · read view unavailable\n")
+		builder.WriteString(styleError("Daemon offline · read view unavailable") + "\n")
 	case model.lastError != "":
-		builder.WriteString("State unavailable · ")
-		builder.WriteString(model.lastError)
+		builder.WriteString(styleError("State unavailable · "))
+		builder.WriteString(styleError(sanitizeCell(model.lastError, 80)))
 		builder.WriteByte('\n')
 	default:
 		builder.WriteString(model.screenBody())
 	}
 	if model.snapshot.Stale {
-		builder.WriteString("\nstale · showing the last preserved view · ")
-		builder.WriteString(sanitizeCell(model.snapshot.Reason, 80))
+		builder.WriteString("\n")
+		builder.WriteString(styleWarningBanner("stale · showing the last preserved view · " + sanitizeCell(model.snapshot.Reason, 80)))
 		builder.WriteByte('\n')
 	}
 	if model.snapshot.Partial {
 		builder.WriteString(
-			"\npartial · more records are available on another bounded page\n",
+			"\n" + styleWarningBanner("partial · more records are available on another bounded page") + "\n",
 		)
 	}
 	if model.help {
 		builder.WriteString(
-			"\nKeys: tab/shift+tab views · j/k select · enter open · r refresh · q quit\n",
+			"\n" + styleHelp("Keys: tab/shift+tab views · j/k select · enter open · r refresh · q quit") + "\n",
 		)
 	}
-	builder.WriteString(
-		"\nSaving a team never starts work\n",
-	)
+	builder.WriteString("\n")
+	builder.WriteString(styleKeyHint(screenKeyHint(model.Screen())))
+	builder.WriteString("\n")
 	return clipView(builder.String(), model.width, model.height)
 }
 
@@ -1578,95 +1622,102 @@ func (model Model) screenBody() string {
 	switch model.Screen() {
 	case ScreenBoard:
 		lines := []string{
-			"Lanes | Missions | Mission Detail",
-			"Proposed · Ready · Orchestrating · Review · Complete",
+			styleSection("Lanes | Missions | Mission Detail"),
+			styleSection("Proposed · Ready · Orchestrating · Review · Complete"),
 		}
 		newMissionMarker := " "
 		if model.selected == 0 {
-			newMissionMarker = "›"
+			newMissionMarker = styleSelectedMarker("›")
+		}
+		newMissionLine := newMissionMarker + " New Mission · describe the outcome and choose a Team"
+		if model.selected == 0 {
+			newMissionLine = styleSelected(newMissionLine)
 		}
 		lines = append(
 			lines,
-			newMissionMarker+
-				" New Mission · describe the outcome and choose a Team",
+			newMissionLine,
 		)
 		if model.taskFilter != "" {
 			lines = append(
 				lines,
-				"Filter · "+sanitizeCell(model.taskFilter, 48),
+				styleHelp("Filter · "+sanitizeCell(model.taskFilter, 48)),
 			)
 		}
 		for index, mission := range model.filteredMissions() {
 			marker := " "
 			if index+1 == model.selected {
-				marker = "›"
+				marker = styleSelectedMarker("›")
 			}
-			lines = append(lines, fmt.Sprintf(
+			row := fmt.Sprintf(
 				"%s %s · %s · %s",
 				marker,
 				model.missionDisplayTitle(mission),
 				sanitizeCell(string(mission.Lane), 18),
-				humanizeStatus(mission.Status),
-			))
+				styleStatus(humanizeStatus(mission.Status)),
+			)
+			if index+1 == model.selected {
+				row = styleSelected(row)
+			}
+			lines = append(lines, row)
 		}
 		if mission, ok := model.selectedMission(); ok {
 			lines = append(
 				lines,
 				"",
 				fmt.Sprintf(
-					"Mission Detail · %s · %s priority",
+					styleTitle("Mission Detail")+" · %s · %s priority",
 					model.missionDisplayTitle(mission),
-					humanizeStatus(mission.Priority),
+					styleStatus(humanizeStatus(mission.Priority)),
 				),
 			)
 			if len(mission.TeamPulse) == 0 {
-				lines = append(lines, "Team · no active presence")
+				lines = append(lines, styleSection("Team · no active presence"))
 			} else {
 				pulse := mission.TeamPulse[0]
 				lines = append(lines, fmt.Sprintf(
-					"Team · %s · %s · Attempt %d",
-					humanizeStatus(pulse.Role),
-					humanizeStatus(pulse.State),
+					styleSection("Team")+" · %s · %s · Attempt %d",
+					styleStatus(humanizeStatus(pulse.Role)),
+					styleStatus(humanizeStatus(pulse.State)),
 					pulse.AttemptNumber,
 				))
 			}
-			lines = append(lines, "Current node · "+
+			lines = append(lines, styleSection("Current node")+" · "+
 				model.missionNodeDisplayTitle(mission, mission.CurrentNodeID))
 			if decision, available :=
 				model.preparedMissionDecision(mission.MissionID); available {
 				lines = append(lines, fmt.Sprintf(
-					"Decision · %s prepared · a open",
-					humanizeStatus(decision.Kind),
+					styleSection("Decision")+" · %s prepared · a open",
+					styleStatus(humanizeStatus(decision.Kind)),
 				))
 			} else if mission.AttentionCount > 0 {
 				lines = append(
 					lines,
-					"Decision · attention exists · no prepared mutation",
+					styleSection("Decision · attention exists · no prepared mutation"),
 				)
 			} else {
-				lines = append(lines, "Decision · none required")
+				lines = append(lines, styleSection("Decision · none required"))
 			}
 			lines = append(
 				lines,
-				"Milestone · "+sanitizeCell(mission.LastMilestone, 72),
+				styleSection("Milestone")+" · "+sanitizeCell(mission.LastMilestone, 72),
 			)
 		}
 		if len(model.snapshot.Runs) > 0 {
 			lines = append(lines, fmt.Sprintf(
-				"  Recent work · %d item(s)",
+				styleSection("  Recent work")+" · %d item(s)",
 				len(model.snapshot.Runs),
 			))
 		}
 		if len(model.snapshot.Attention) > 0 {
 			lines = append(lines, fmt.Sprintf(
-				"  Needs your attention · %d item(s)",
+				styleSection("  Needs your attention")+" · %d item(s)",
 				len(model.snapshot.Attention),
 			))
 		}
 		lines = append(
 			lines,
 			"",
-			"/ filters Missions · enter opens · g b Board · g t current Mission",
+			styleHelp("/ filters Missions · enter opens · g b Board · g t current Mission"),
 		)
 		return strings.Join(lines, "\n") + "\n"
 	case ScreenNewMission:
@@ -2003,6 +2054,8 @@ func (model Model) screenBody() string {
 		)
 	case ScreenPermissions:
 		return model.renderPermissionsView()
+	case ScreenCustomerRules:
+		return model.renderCustomerRulesView()
 	case ScreenExecution:
 		return model.renderExecutionsView()
 	case ScreenProduction:
@@ -3420,6 +3473,17 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.loading = true
 			return model, model.permissionDefineDefault(profileID)
 		}
+		if model.entryMode == entryCustomerRuleImport {
+			content := strings.TrimSpace(sanitizeCell(string(model.entry), 4096))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if content == "" {
+				return model, nil
+			}
+			model.loading = true
+			return model, model.customerRuleImport(content)
+		}
 		if model.entryMode == entryPermissionCall {
 			command := strings.TrimSpace(sanitizeCell(string(model.entry), 512))
 			clearTUIBytes(model.entry)
@@ -4501,9 +4565,8 @@ func clipView(value string, width, height int) string {
 		lines = lines[:height]
 	}
 	for index, line := range lines {
-		runes := []rune(line)
-		if len(runes) > width {
-			lines[index] = string(runes[:width])
+		if ansi.StringWidth(line) > width {
+			lines[index] = ansi.Truncate(line, width, "")
 		}
 	}
 	return strings.Join(lines, "\n")

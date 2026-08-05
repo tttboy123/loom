@@ -15,6 +15,7 @@ Updated: 2026-08-06
   evaluate/consume_budget）、api 包装、daemon IPC（customer_rule_snapshot/
   customer_rule_command）、protocol 白名单、wire 测试（define→snapshot→
   evaluate require_approval）全绿。
-- 待办：TUI ScreenCustomerRules + 跨客户端旅程（report_only/require_approval/
-  reject/预算超限）+ require_approval→A4 暂停/恢复的 workItem→Job 映射接线
-  + flash 评审开放项。
+- TUI 完成：ScreenCustomerRules（列表/详情、i 导入 entry、e evaluate、r 刷新）+
+  测试。
+- 待办：跨客户端旅程（report_only/require_approval/reject/预算超限）+ 
+  require_approval→A4 暂停/恢复的 workItem→Job 映射接线 + flash 评审开放项。

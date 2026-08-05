@@ -1684,10 +1684,7 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
 	model = updated.(Model)
 	if !strings.Contains(model.View(), "Missions") ||
-		!strings.Contains(
-			model.View(),
-			"Saving a team never starts work",
-		) {
+		!strings.Contains(model.View(), "enter open") {
 		t.Fatalf("tasks view = %q", model.View())
 	}
 
@@ -1706,6 +1703,7 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenPermissions,
 		ScreenExecution,
 		ScreenProduction,
+		ScreenCustomerRules,
 		ScreenBoard,
 	}
 	for _, want := range wantScreens {
