@@ -1704,6 +1704,7 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenExecution,
 		ScreenProduction,
 		ScreenCustomerRules,
+		ScreenAutonomy,
 		ScreenBoard,
 	}
 	for _, want := range wantScreens {

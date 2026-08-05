@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,6 +87,29 @@ type standingOrderRecord struct {
 
 type standingOrderProjection struct {
 	orders map[string]standingOrderRecord
+}
+
+// StandingOrderRecord is the exported read-model row for a standing order.
+type StandingOrderRecord struct {
+	Order      StandingOrder
+	Dispatches int64
+}
+
+// Orders returns the projection rows ordered by order ID (read model only).
+func (projection standingOrderProjection) Orders() []StandingOrderRecord {
+	ids := make([]string, 0, len(projection.orders))
+	for orderID := range projection.orders {
+		ids = append(ids, orderID)
+	}
+	sort.Strings(ids)
+	records := make([]StandingOrderRecord, 0, len(ids))
+	for _, orderID := range ids {
+		record := projection.orders[orderID]
+		records = append(records, StandingOrderRecord{
+			Order: record.order, Dispatches: record.dispatches,
+		})
+	}
+	return records
 }
 
 func standingOrderStream(orderID string) string {

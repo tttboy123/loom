@@ -63,9 +63,25 @@
 
 ## 开放项（非阻断，记录待办）
 
-1. daemon 挂载与 TUI Autopilot 屏（owned files 列出 `wautonomy_wiring.go` /
-   `tui/autonomy.go`）：当前旅程为领域层 + B-W1 组合证据；把 standing
-   order 管理接入 daemon IPC 与 TUI 屏，连同 B-W1/C-W1 产品主线一并验收。
+1. ~~daemon 挂载与 TUI Autopilot 屏~~（已交付：`standing_order_snapshot/command`
+   IPC + `internal/app`/`internal/api` 服务 + `internal/tui/autonomy.go`
+   Autopilot 屏 + `cmd/loomd/wautonomy_wire_test.go` 组合测试）。
 2. per-Job 触发器的 ActionContext 绑定细化（当前触发器状态检查 + 调用模式
    匹配；Action/Risk 语义由 W-RULES 规则承载）。
 3. flash 独立评审开放项。
+
+## 产品面接线（2026-08-06 更新）
+
+- `internal/app/local_standing_order.go`：LocalStandingOrderService
+  （Snapshot 只读 + Command define/activate/revoke，human actor 强制）。
+- `internal/api/local_standing_order.go`：IPC 薄封装。
+- `internal/localipc/protocol.go`：`standing_order_snapshot` /
+  `standing_order_command` 方法注册。
+- `cmd/loomd/product_daemon.go`：服务组装 + handler 分发 + nil 守卫
+  （第 15 参 `standingOrderService`，全部既有 wire 测试调用点同步更新）。
+- `cmd/loomd/wautonomy_wire_test.go`：组合级 IPC 测试 PASS
+  （define→snapshot inactive→activate(human)→snapshot active→revoke→
+  snapshot revoked；空 actor 拒绝）。
+- `internal/tui/autonomy.go` + `model.go`：Autopilot 屏（默认 off 显示、
+  K 激活 / L 撤销 / r 刷新），`autonomy_test.go` PASS；屏幕导航测试同步
+  更新（新增第 17 屏，selections 扩容）。

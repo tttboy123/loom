@@ -44,7 +44,7 @@ func TestWRulesHandlerWiredThroughComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, customerRuleAPI)
+	handler := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, customerRuleAPI, nil)
 	journey := "66666666-6666-4666-8666-666666666666"
 
 	defineParams := mustMarshalJSON(map[string]any{

@@ -39,6 +39,7 @@ import (
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	"loom-pi-rebuild/internal/queue"
+	"loom-pi-rebuild/internal/rules"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/piadapter"
@@ -1793,6 +1794,22 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_customer_rule", err)
 	}
+	standingOrderService, err := app.NewLocalStandingOrderService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+		func() string { return readModel.GlobalReadView().Version() },
+		rules.NewStandingOrderAuthority(
+			store, approvalPort.authority,
+			func() time.Time { return time.Now().UTC() },
+		),
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_standing_order", err)
+	}
+	standingOrderAPI, err := api.NewLocalStandingOrderAPI(standingOrderService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_standing_order", err)
+	}
 	executionEvidenceRoot := filepath.Join(filepath.Dir(statePath), "execution-evidence")
 	if err := ensureProductExecutionDirectory(executionEvidenceRoot); err != nil {
 		return nil, newDaemonBuildFailure("build_execution", err)
@@ -2000,6 +2017,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			boundedExecutionAPI,
 			productionAPI,
 			customerRuleAPI,
+			standingOrderAPI,
 		),
 	))
 	if journeyHarness != nil {
@@ -4446,6 +4464,7 @@ func localProductHandlerWithDecision(
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 }
 
@@ -4464,6 +4483,7 @@ func localProductHandlerWithComposition(
 	executionService *api.LocalExecutionAPI,
 	productionService *api.LocalProductionAPI,
 	customerRuleService *api.LocalCustomerRuleAPI,
+	standingOrderService *api.LocalStandingOrderAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
@@ -4507,6 +4527,9 @@ func localProductHandlerWithComposition(
 		}
 		if productCustomerRuleMethod(request.Method) && customerRuleService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrInvalidCustomerRuleRequest)
+		}
+		if productStandingOrderMethod(request.Method) && standingOrderService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrInvalidStandingOrderRequest)
 		}
 		if productExecutionMethod(request.Method) && executionService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrExecutionUnavailable)
@@ -4672,6 +4695,28 @@ func localProductHandlerWithComposition(
 			}
 			input.JourneyID = request.JourneyID
 			result, err := customerRuleService.Command(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "standing_order_snapshot":
+			var input app.StandingOrderSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidStandingOrderRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := standingOrderService.Snapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "standing_order_command":
+			var input app.StandingOrderCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidStandingOrderRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := standingOrderService.Command(ctx, input)
 			if err != nil {
 				return productJourneyServiceError(request.JourneyID, err)
 			}
@@ -5413,4 +5458,8 @@ func openProductReadDatabase(statePath string) (*sql.DB, error) {
 
 func productCustomerRuleMethod(method string) bool {
 	return method == "customer_rule_snapshot" || method == "customer_rule_command"
+}
+
+func productStandingOrderMethod(method string) bool {
+	return method == "standing_order_snapshot" || method == "standing_order_command"
 }

@@ -49,6 +49,7 @@ const (
 	ScreenExecution     Screen = "Execution"
 	ScreenProduction    Screen = "Production"
 	ScreenCustomerRules Screen = "Customer Rules"
+	ScreenAutonomy      Screen = "Autopilot"
 )
 
 var screens = []Screen{
@@ -68,6 +69,7 @@ var screens = []Screen{
 	ScreenExecution,
 	ScreenProduction,
 	ScreenCustomerRules,
+	ScreenAutonomy,
 }
 
 type ReadClient interface {
@@ -470,12 +472,13 @@ type Model struct {
 	permissionClient       PermissionClient
 	productionClient       ProductionClient
 	customerRuleClient     CustomerRuleClient
+	standingOrderClient    AutonomyClient
 	executionClient        ExecutionClient
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 
 	screenIndex            int
-	selections             [16]int
+	selections             [24]int
 	width                  int
 	height                 int
 	selected               int
@@ -520,6 +523,8 @@ type Model struct {
 	productionSnapshot     production.ProductionSnapshot
 	customerRuleSnapshot   app.CustomerRuleSnapshot
 	customerRuleDetail     bool
+	standingOrderSnapshot  app.StandingOrderSnapshot
+	standingOrderSelected  int
 	productionPreview      production.ActivationPreview
 	productionPending      string
 	permissionDetail       bool
@@ -568,6 +573,7 @@ func newModelWithContext(
 		boundedExecutionClient: boundedExecutionClientFrom(client),
 		productionClient:       productionClientFrom(client),
 		customerRuleClient:     customerRuleClientFrom(client),
+		standingOrderClient:    standingOrderClientFrom(client),
 		ctx:                    ctx,
 		cancel:                 cancel,
 		width:                  80,
@@ -864,6 +870,22 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.lastError = message.note
 		return model, model.loadCustomerRules()
+	case standingOrderLoadedMsg:
+		model.loading = false
+		model.standingOrderSnapshot = message.snapshot
+		return model, nil
+	case standingOrderFailedMsg:
+		model.loading = false
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case standingOrderCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = message.note
+		return model, model.loadStandingOrders()
 	case permissionCommandDoneMsg:
 		model.loading = false
 		if message.err != nil {
@@ -1002,6 +1024,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadCustomerRules()
 			}
+			if model.Screen() == ScreenAutonomy && model.standingOrderClient != nil {
+				model.loading = true
+				return model, model.loadStandingOrders()
+			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				model.loading = true
 				return model, model.loadPermissionAttention()
@@ -1044,6 +1070,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
 				model.loading = true
 				return model, model.loadCustomerRules()
+			}
+			if model.Screen() == ScreenAutonomy && model.standingOrderClient != nil {
+				model.loading = true
+				return model, model.loadStandingOrders()
 			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				model.loading = true
@@ -1092,6 +1122,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
 				return model, model.loadCustomerRules()
+			}
+			if model.Screen() == ScreenAutonomy && model.standingOrderClient != nil {
+				return model, model.loadStandingOrders()
 			}
 			if model.Screen() == ScreenAttention && model.permissionClient != nil {
 				return model, model.loadPermissionAttention()
@@ -1312,6 +1345,22 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.setup.SavedTeams[model.selected].Status == "archived" {
 				model.loading = true
 				return model, model.setSelectedTeamStatus(true)
+			}
+		case "K":
+			if model.Screen() == ScreenAutonomy &&
+				model.standingOrderClient != nil &&
+				model.standingOrderSelected < len(model.standingOrderSnapshot.Orders) {
+				orderID := model.standingOrderSnapshot.Orders[model.standingOrderSelected].Order.OrderID
+				model.loading = true
+				return model, model.standingOrderActivate(orderID)
+			}
+		case "L":
+			if model.Screen() == ScreenAutonomy &&
+				model.standingOrderClient != nil &&
+				model.standingOrderSelected < len(model.standingOrderSnapshot.Orders) {
+				orderID := model.standingOrderSnapshot.Orders[model.standingOrderSelected].Order.OrderID
+				model.loading = true
+				return model, model.standingOrderRevoke(orderID)
 			}
 		case "e":
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
@@ -2060,6 +2109,8 @@ func (model Model) screenBody() string {
 		return model.renderPermissionsView()
 	case ScreenCustomerRules:
 		return model.renderCustomerRulesView()
+	case ScreenAutonomy:
+		return model.renderAutonomyView()
 	case ScreenExecution:
 		return model.renderExecutionsView()
 	case ScreenProduction:

@@ -160,7 +160,7 @@ func TestP3AProductionDaemonAssetJourneyUsesRealSocketAndAuthoritativeProjection
 	socketPath := filepath.Join(root, "loomd.sock")
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "p3a-fixture",
-		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, assetAPI, nil, nil, nil, nil, nil, nil, nil)),
+		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, assetAPI, nil, nil, nil, nil, nil, nil, nil, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +344,7 @@ func TestProductHandlerDispatchesStrictSideTaskOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(nil, nil, nil, nil, handoff, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := localProductHandlerWithComposition(nil, nil, nil, nil, handoff, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	params, err := json.Marshal(app.SideTaskProposalRequest{SchemaVersion: 1, Operation: "propose", ParentMissionID: "mission/team-1", ParentTeamInstanceID: "team-1", ParentTaskID: "work-1", ParentRunID: "run-1", ParentClaimGeneration: 1, ParentExecutionDigest: strings.Repeat("a", 64), Purpose: "research", Mode: "report_only", Title: "Research", AuthorizedRequest: "Find facts", PermissionScopes: []string{}, ExpectedViewVersion: strings.Repeat("b", 64), CorrelationID: "11111111-1111-4111-8111-111111111111"})
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func TestProductHandlerDispatchesStrictSideTaskOperation(t *testing.T) {
 	if bad.OK || bad.Error == nil || bad.Error.Code != "invalid_request" {
 		t.Fatalf("bad=%#v", bad)
 	}
-	unavailable := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)(
+	unavailable := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)(
 		context.Background(), localipc.Request{Method: "side_task_handoff", Params: params},
 	)
 	if unavailable.OK || unavailable.Error == nil || unavailable.Error.Code != "internal" {
@@ -4640,7 +4640,7 @@ func TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage(
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(),
 		BuildID: "side-task-strict-swift-read",
 		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
-			readService, nil, nil, executionAPI, bundle.handoff, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			readService, nil, nil, executionAPI, bundle.handoff, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		)),
 	})
 	if err != nil {
