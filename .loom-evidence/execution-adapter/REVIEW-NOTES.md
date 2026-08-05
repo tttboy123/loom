@@ -81,3 +81,13 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
   规则分层。RED 1-10 覆盖幂等/批准复用/零阻塞/拒绝/预算/重放/导入/门禁。
 - flash 独立评审仍为开放项（通道故障延续）；按既有先例 Controller 冷读 +
   Product Owner Goal 指令冻结。
+
+
+## 12. Phase 3B Gate 1（2026-08-06）
+
+- 契约/ADR/RED 三件套冻结：供应商中立 SandboxBackend（7 能力）、B-W1 policy
+  门禁（Required→fail-closed，绝不用本机兜底）、Journal 唯一权威 + reconcile、
+  generation fencing、无凭证/推理泄漏、默认关闭（v0.2.1 experimental）。
+  RED 1-9 覆盖 fail-closed/7 能力/取消/重放/隔离/门禁。
+- flash 独立评审仍为开放项；按既有先例 Controller 冷读 + Product Owner Goal
+  指令冻结。

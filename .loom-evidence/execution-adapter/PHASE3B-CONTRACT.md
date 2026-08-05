@@ -1,6 +1,6 @@
 # Gate 1 Exit Contract — Phase 3B 受治理沙箱
 
-**Status**: DRAFT — 待 flash 独立评审 PASS 后冻结；冻结前不改产品代码
+**Status**: FROZEN — EXECUTION AUTHORIZED（Product Owner Goal 指令 + Controller 冷读自查；flash 评审开放项）
 **Date**: 2026-08-06
 **Baseline**: `46d522ff` on `codex/loom-platform-slice2`
 **Risk**: STRICT — 执行隔离面、policy fail-closed、后端 reconcile
@@ -82,3 +82,30 @@ Go full/race/vet/tidy/gofmt；受控 spike 后端（loopback 夹具）canary：
 
 身份不一致、未评审 authority/schema 扩展、任何独立 Review FAIL、dirty 无法
 隔离 ⇒ 停止 HUMAN_REQUIRED。
+
+
+## 5.1 Exact owned files
+
+### 新增
+
+```text
+internal/sandbox/backend.go        // SandboxBackend 接口 + 类型
+internal/sandbox/backend_test.go   // RED 1-9（fake backend 录制）
+internal/sandbox/reconcile.go      // Journal 重建 + 清理（未 Destroy 实例）
+internal/sandbox/reconcile_test.go
+internal/execution/sandbox_gate.go // Adapter 沙箱 policy 门禁（Required→fail-closed）
+internal/execution/sandbox_gate_test.go
+cmd/loomd/sandbox_wire_test.go
+scripts/verify-phase3b-canary.sh
+.loom-evidence/execution-adapter/PHASE3B-PROGRESS.md
+```
+
+### 修改（最小面）
+
+```text
+internal/execution/adapter.go       // 注入沙箱 policy 门禁（默认不启用）
+cmd/loomd/product_daemon.go         // 挂载 sandbox 后端（loopback 夹具可注入）
+internal/localipc/protocol.go       // sandbox 状态只读方法（如旅程需要）
+```
+
+默认关闭：无 policy 时行为与本机 SandboxExecutor 完全一致。

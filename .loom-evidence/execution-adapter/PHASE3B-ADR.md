@@ -1,6 +1,6 @@
 # ADR: Phase 3B 受治理沙箱（SandboxBackend）
 
-**Status**: PROPOSED — 待 flash 独立评审 + Product Owner 冻结
+**Status**: FROZEN — 已获 Product Owner Goal 指令授权（Controller 自查；flash 评审开放项）
 **Date**: 2026-08-06
 **Baseline**: `46d522ff`（W-RULES 旅程）on `codex/loom-platform-slice2`
 **Release target**: `v0.2.1 experimental`（默认关闭）
