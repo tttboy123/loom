@@ -6193,3 +6193,34 @@ W2 = PENDING / TWO REAL PARALLEL CANDIDATES
 W3 = PENDING / REPEATABLE SELF-HOST CANARY
 PRODUCT CODE = W1 IMPLEMENTED / MATRIX + JOURNEY PASS
 ```
+
+`CURRENT`: W2 of the v0.4.1 contract is complete and accepted by its atomic
+local commit. Using the Loom scheduling flow itself, the framework-driven
+journey (`63d4ea90-588d-4359-bb0c-942a2c767020`) drove two genuinely
+parallel development Candidates: two Jobs admitted with distinct owned
+paths; worker A claimed via the real PTY TUI while worker B claimed via the
+production Swift client with A still open (two `AttemptClaimed` facts
+before any result — the Journal proves two independent SubAgents executing
+at the same time on separate Candidate branches/worktrees); worker B's
+deterministic test failure (`product_defect`) was recorded before A's
+development completed and the schedule Router routed it to the Repair lane,
+where a fresh worker claimed the Job and succeeded; both Candidates
+received read-only Reviewer verdicts PASS; the single Integrator landed
+exactly one versioned release (the Swift client's competing integration was
+rejected by CAS with zero events) and a later Run adopted it; the daemon
+restart rebuilt queue jobs=2 / worker attempts=3 / releases=1 from the
+Journal. W2 adds no product code — it exercises the shipped v0.4.0
+framework plus the v0.4.1 W1 operations; `scripts/
+verify-v041-w2-cross-client-journey.sh` PASS with the exact Journal fact
+set and parallel/repair/single-writer assertions; Implementation /
+dual-Result / Whole-Candidate reviews PASS with P0=P1=P2=0
+(`.loom-evidence/agent-scheduling/V0.4.1-W2-*`). W3 (repeatable controlled
+self-host canary) remains the current gate; no
+push/merge/network/paid/user-config action.
+
+```text
+V0.4.1 = W1+W2 ACCEPTED / ATOMIC LOCAL COMMITS COMPLETE
+W2 = ACCEPTED / TWO REAL PARALLEL CANDIDATES
+W3 = PENDING / REPEATABLE SELF-HOST CANARY
+PRODUCT CODE = UNCHANGED IN W2 / JOURNEY PASS
+```
