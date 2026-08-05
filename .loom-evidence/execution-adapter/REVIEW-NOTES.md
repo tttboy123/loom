@@ -71,3 +71,13 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
   （B-P1 §3.2 "Job profile 规则"作用域缺失——模板规则/内嵌 allow 此前不生效），
   已修复并新增 TestProfileEmbeddedRulesApplyToJob；deny wire 测试断言过严已修正。
 - flash 独立评审仍为开放项（通道故障延续）。
+
+
+## 11. W-RULES Gate 1（2026-08-06）
+
+- 契约/ADR/RED 三件套冻结：规则生命周期（define/revoke/expire）、effect
+  （require_approval/report_only/reject）、预算 append-only + fail-closed、
+  `.loom/permissions.toml` 导入（human 通道、幂等、零直接评估）、权限/客户
+  规则分层。RED 1-10 覆盖幂等/批准复用/零阻塞/拒绝/预算/重放/导入/门禁。
+- flash 独立评审仍为开放项（通道故障延续）；按既有先例 Controller 冷读 +
+  Product Owner Goal 指令冻结。

@@ -1,6 +1,6 @@
 # ADR: W-RULES 客户规则与 standing policy
 
-**Status**: PROPOSED — 待 flash 独立评审 + Product Owner 冻结
+**Status**: FROZEN — 已获 Product Owner Goal 指令授权（Controller 自查；flash 评审开放项）
 **Date**: 2026-08-06
 **Baseline**: `8be5d8ab`（W-BRIDGE）on `codex/loom-platform-slice2`
 **Closes**: P2B 记录的 capability_gap（现有 Rules/Approval 事实无法表达

@@ -1,6 +1,6 @@
 # Gate 1 Exit Contract — W-RULES 客户规则与 standing policy
 
-**Status**: DRAFT — 待 flash 独立评审 PASS 后冻结；冻结前不改产品代码
+**Status**: FROZEN — EXECUTION AUTHORIZED（Product Owner Goal 指令：完成 Phase 3 全部扩展任务 + Controller 冷读自查；flash 独立评审为开放项）
 **Date**: 2026-08-06
 **Baseline**: `8be5d8ab` on `codex/loom-platform-slice2`
 **Risk**: STRICT — 新 Journal facts、规则状态机、预算计数、导入通道
@@ -92,3 +92,34 @@ Autopilot 触发器（W-AUTONOMY）；网络/第三方；自动批准绕过；�
 
 身份不一致、未评审 authority/schema 扩展、任何独立 Review FAIL、dirty 无法
 隔离 ⇒ 停止 HUMAN_REQUIRED。
+
+
+## 6.1 Exact owned files
+
+### 新增
+
+```text
+internal/rules/customer_rule.go       // CustomerRule 模型 + Define/Revoke/Expire + Evaluate + ConsumeBudget
+internal/rules/customer_rule_test.go  // RED 1-10
+internal/rules/permissions_import.go  // .loom/permissions.toml 子集解析 + 导入为事实
+internal/rules/permissions_import_test.go
+internal/app/local_customer_rule.go   // 产品服务：规则 CRUD/导入/预算查询
+internal/app/local_customer_rule_test.go
+internal/api/local_customer_rule.go
+internal/tui/customerrule.go          // ScreenCustomerRules（列表/定义/导入/预算）
+internal/tui/customerrule_test.go
+cmd/loomd/customer_rule_wire_test.go
+scripts/verify-wrules-cross-client-journey.sh
+.loom-evidence/execution-adapter/W-RULES-PROGRESS.md
+```
+
+### 修改（最小面）
+
+```text
+cmd/loomd/product_daemon.go       // 挂载 customer rule 服务 + IPC
+internal/localipc/protocol.go     // customer_rule_snapshot/command 方法
+internal/tui/model.go             // ScreenCustomerRules 路由
+apps/macos/LocalIPCClient.swift   // 只读规则/预算状态
+```
+
+`internal/permissions`、`internal/execution` 只被消费；不重写其语义。
