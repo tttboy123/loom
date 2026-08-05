@@ -6284,3 +6284,34 @@ PRODUCT CODE = W1 IMPLEMENTED / W2+W3 DEMONSTRATED / NO PUSH
 app user guide (`product/NATIVE-APP-GUIDE.md`). They document the accepted
 Slice 1/2, Phase 2A/2B/3A and v0.4.0/v0.4.1 capabilities with authoritative
 WorkItem/commit ownership, verification evidence and client surfaces.
+
+## Phase 3 extension completion (2026-08-06)
+
+`CURRENT`: all Phase 3 extension WorkItems are implemented on
+`codex/loom-platform-slice2` with atomic commits, deterministic matrices and
+journey/canary verify PASS:
+
+- W-RULES customer rules & standing policy — `46d522ff` (cross-client journey
+  PASS, `83bfef4f…`).
+- W-BRIDGE model bridge → execution adapter — `cf9360aa` (cross-runtime
+  journey PASS; journey exposed and fixed a real JourneyID propagation defect;
+  daemon transport needs the external Pi model binary — open item).
+- Phase 3B governed sandbox — `7beab591` (RED 1-9 + loopback canary PASS;
+  default off via `LOOM_SANDBOX_BACKEND`).
+- W-AUTONOMY standing orders / Autopilot default-off bounded form —
+  `89ec751e` Gate 1 + `975fd6a4` (RED 1-10 + journey PASS: define→human
+  activate→2 bounded dispatches→budget stop→revoke block).
+- Phase tree frozen at `.loom-evidence/execution-adapter/PHASE-TREE.md`
+  (`cf56a3d1`); review notes and per-node open items in
+  `.loom-evidence/execution-adapter/`.
+
+`PARTIAL`: B-W1 and C-W1 production acceptance evidence is complete (journey
+roots recorded in PHASE-TREE), awaiting Product Owner confirmation; real
+activation (C-W1 launchd/daemon activation) remains gated on explicit human
+approval. Flash independent review remains an open item for every Phase 3
+node (channel unavailable; Controller cold-read + Product Owner Goal
+directive used per established precedent).
+
+`EXPERIMENTAL`: Phase 3B sandbox and W-AUTONOMY are default off; no behavior
+change without explicit opt-in. No push/merge/activation/credential changes
+were made.
