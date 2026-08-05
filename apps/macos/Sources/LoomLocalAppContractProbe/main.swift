@@ -104,6 +104,7 @@ private struct ProbePermissionOutput: Encodable {
     let bindings: Int
     let rules: Int
     let decisions: Int
+    let approvals: Int
     let adminLock: Bool
 }
 
@@ -266,6 +267,7 @@ enum LoomLocalAppContractProbe {
                     bindings: snapshot.bindings.count,
                     rules: snapshot.rules.count,
                     decisions: 0,
+                    approvals: 0,
                     adminLock: snapshot.adminLock
                 ))
                 guard let output = String(data: encoded, encoding: .utf8) else {
@@ -282,6 +284,7 @@ enum LoomLocalAppContractProbe {
                     bindings: 0,
                     rules: 0,
                     decisions: attention.decisions.count,
+                    approvals: attention.approvals.count,
                     adminLock: false
                 ))
                 guard let output = String(data: encoded, encoding: .utf8) else {

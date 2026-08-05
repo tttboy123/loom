@@ -60,6 +60,49 @@ func TestRed15_ProjectionFailureKeepsOldView(t *testing.T) {
 	}
 }
 
+func TestRed20_EffectiveModeDeterministicAcrossActivations(t *testing.T) {
+	projection := &Projection{
+		Profiles:     make(map[string]PermissionProfile),
+		Bindings:     make(map[string]JobBinding),
+		Rules:        make(map[string]Rule),
+		Grants:       make(map[string]Grant),
+		Activations:  make(map[string]Activation),
+		ApprovalView: make(map[string]Approval),
+		retired:      make(map[string]bool),
+	}
+	projection.Activations["personal/zz"] = Activation{
+		Mode: ModeAuto, Scope: ScopePersonal, ScopeID: "zz", ActivatedAt: "2026-08-05T12:00:00Z",
+	}
+	projection.Activations["personal/aa"] = Activation{
+		Mode: ModeDontAsk, Scope: ScopePersonal, ScopeID: "aa", ActivatedAt: "2026-08-05T12:00:00Z",
+	}
+	mode, err := EffectiveMode(projection, "job-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != ModeDontAsk {
+		t.Fatalf("EffectiveMode = %s, want deterministic dont_ask (lexicographically smallest scopeID)", mode)
+	}
+}
+
+func TestRed20_ActivationStreamMismatchRejected(t *testing.T) {
+	payload, err := json.Marshal(activationPayload{
+		Mode: ModeAuto, Scope: ScopePersonal, ScopeID: "global",
+		ActivatedAt: "2026-08-05T12:00:00Z", AuthorizedBy: "human-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := journal.Event{
+		ID: "perm1-wrong-stream", StreamID: "permission-rule/r-1",
+		Type: "PermissionActivationActivated", SchemaVersion: 1,
+		PayloadJSON: payload,
+	}
+	if _, err := Replay([]journal.Event{event}); err == nil {
+		t.Fatal("activation on a non-activation stream must fail replay")
+	}
+}
+
 func TestReplayRejectsInvalidProfileEventPayload(t *testing.T) {
 	store := openPermStore(t)
 	events := allEvents(t, store)

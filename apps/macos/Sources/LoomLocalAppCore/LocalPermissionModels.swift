@@ -206,7 +206,7 @@ public struct PermissionSnapshot: Codable, Equatable, Sendable {
 
 public struct PermissionDecisionView: Codable, Equatable, Sendable {
     public var jobID: String
-    public var approvalID: String
+    public var approvalID: String?
     public var verdict: String
     public var tool: String?
     public var command: String?
@@ -217,7 +217,7 @@ public struct PermissionDecisionView: Codable, Equatable, Sendable {
 
     public init(
         jobID: String = "",
-        approvalID: String = "",
+        approvalID: String? = nil,
         verdict: String = "",
         tool: String? = nil,
         command: String? = nil,
@@ -246,21 +246,53 @@ public struct PermissionDecisionView: Codable, Equatable, Sendable {
     }
 }
 
+public struct PermissionApprovalView: Codable, Equatable, Sendable {
+    public var approvalID: String
+    public var digest: String
+    public var jobID: String
+    public var status: String
+    public var command: String?
+
+    public init(
+        approvalID: String = "",
+        digest: String = "",
+        jobID: String = "",
+        status: String = "",
+        command: String? = nil
+    ) {
+        self.approvalID = approvalID
+        self.digest = digest
+        self.jobID = jobID
+        self.status = status
+        self.command = command
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case approvalID = "approval_id"
+        case digest
+        case jobID = "job_id"
+        case status, command
+    }
+}
+
 public struct PermissionAttention: Codable, Equatable, Sendable {
     public var viewVersion: String
     public var decisions: [PermissionDecisionView]
+    public var approvals: [PermissionApprovalView]
 
     public init(
         viewVersion: String = "",
-        decisions: [PermissionDecisionView] = []
+        decisions: [PermissionDecisionView] = [],
+        approvals: [PermissionApprovalView] = []
     ) {
         self.viewVersion = viewVersion
         self.decisions = decisions
+        self.approvals = approvals
     }
 
     enum CodingKeys: String, CodingKey {
         case viewVersion = "view_version"
-        case decisions
+        case decisions, approvals
     }
 }
 

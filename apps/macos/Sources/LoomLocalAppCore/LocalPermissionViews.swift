@@ -39,6 +39,9 @@ public struct PermissionExplorerView: View {
                     }
                 }
                 Section("Attention") {
+                    ForEach(attention.approvals, id: \.approvalID) { approval in
+                        Text("Pending \(approval.jobID) · \(approval.command ?? approval.status)")
+                    }
                     ForEach(attention.decisions, id: \.jobID) { decision in
                         Text("\(decision.jobID) · \(decision.reason)")
                     }

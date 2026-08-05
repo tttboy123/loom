@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"loom-pi-rebuild/internal/journal"
@@ -270,6 +271,9 @@ func applyEvent(projection *Projection, event journal.Event) error {
 		if err := decodeStrict(event.PayloadJSON, &payload); err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrInvalidEventPayload, event.Type, err)
 		}
+		if event.StreamID != streamActivation {
+			return fmt.Errorf("%w: activation stream mismatch", ErrInvalidEventPayload)
+		}
 		if !ValidMode(string(payload.Mode)) || !ValidScopeKind(string(payload.Scope)) || payload.ScopeID == "" {
 			return fmt.Errorf("%w: invalid activation", ErrInvalidEventPayload)
 		}
@@ -286,12 +290,18 @@ func applyEvent(projection *Projection, event journal.Event) error {
 		if err := decodeStrict(event.PayloadJSON, &payload); err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrInvalidEventPayload, event.Type, err)
 		}
+		if event.StreamID != streamActivation {
+			return fmt.Errorf("%w: activation stream mismatch", ErrInvalidEventPayload)
+		}
 		delete(projection.Activations, string(payload.Scope)+"/"+payload.ScopeID)
 		return nil
 	case "PermissionAdminLockEnabled", "PermissionAdminLockDisabled":
 		var payload adminLockPayload
 		if err := decodeStrict(event.PayloadJSON, &payload); err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrInvalidEventPayload, event.Type, err)
+		}
+		if event.StreamID != streamAdminLock {
+			return fmt.Errorf("%w: admin lock stream mismatch", ErrInvalidEventPayload)
 		}
 		if payload.AuthorizedBy == "" {
 			return fmt.Errorf("%w: admin lock without authorized_by", ErrInvalidEventPayload)
@@ -450,11 +460,21 @@ func EffectiveMode(projection *Projection, jobID string) (Mode, error) {
 	}
 	// Personal > project > root activation precedence (single-project
 	// daemon; scopeID resolution lands with the job->project mapping).
+	// Multiple activations within one scope kind resolve deterministically:
+	// the lexicographically smallest scopeID wins (map iteration must never
+	// influence the verdict).
 	for _, scopeKind := range []ScopeKind{ScopePersonal, ScopeProject} {
+		var candidates []Activation
 		for _, activation := range projection.Activations {
 			if activation.Scope == scopeKind && activation.ScopeID != "" {
-				return activation.Mode, nil
+				candidates = append(candidates, activation)
 			}
+		}
+		if len(candidates) > 0 {
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].ScopeID < candidates[j].ScopeID
+			})
+			return candidates[0].Mode, nil
 		}
 	}
 	if activation, ok := projection.Activations[string(ScopeRoot)+"/global"]; ok {

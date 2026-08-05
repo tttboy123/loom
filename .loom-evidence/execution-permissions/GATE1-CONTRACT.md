@@ -81,7 +81,10 @@ profile 模板显式 include 这些命令的 `allow` 规则（见 §3.2），保
   写入（RED #17）。
 - 匹配：`Read`/`Edit`/`Grep` 按路径 glob（`*` 不跨 `/`，`**` 跨层级）；
   `Bash` 按命令段（空白/`&&`/`;`/`|` 分段）前缀或整串匹配——`deny`/`ask`
-  命中任一段即整条被拒/待批，`allow` 只按整串匹配。
+  命中任一段即整条被拒/待批，`allow` 只按整串匹配（pattern 与 command 的
+  段数必须相同，且每个 pattern 段按前缀/glob 匹配对应 command 段——单段
+  `allow` 规则永远不能放行链式命令；显式链式 pattern 如 `git status && ls *`
+  允许精确链）。
 
 非 `deny` 冲突采用作用域窄者优先（`job` > `project` > `personal` > `root`），
 同作用域内 `ask` > `allow`——这是相对 grok-build 仅按严重度合并的**有意偏离**
@@ -441,6 +444,11 @@ validate_call   (对 Job 提议一次工具调用：返回 allow/ask/deny + type
     `IssueGrant` 拒绝覆盖危险段的 pattern。
 18. allow 规则/模板/grants/bypass 均不能放行含危险段的链式命令
     （危险段检查前置于 allow/ask 规则与 grants；RED #5/#18 共同覆盖）。
+19. personal/project 作用域规则应用于 Job（单项目 daemon；RED #19）。
+20. allow 规则/grants 也不能放行**非危险**链式命令的任意段（如
+    `go test ./... && curl …` 必须 ask）；deny 来源 RuleIDs 输出有序；
+    EffectiveMode 在多个同层激活间确定性选择（scopeID 字典序最小者）；
+    activation/admin-lock 事件流不匹配必须 Replay error（RED #20）。
 
 ## 8. 验证矩阵
 

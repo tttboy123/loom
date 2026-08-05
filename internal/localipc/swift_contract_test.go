@@ -5,10 +5,12 @@ package localipc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -26,7 +28,9 @@ import (
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
+	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/rules"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/state"
 
@@ -191,6 +195,225 @@ func TestP3ARealGoAssetServiceAndIPCDecodeInStrictSwiftClient(t *testing.T) {
 	}
 	if err := json.Unmarshal(output, &actual); err != nil || actual.ViewVersion == "" || actual.Definitions != 1 || actual.Revisions != 1 {
 		t.Fatalf("Swift P3A output=%q actual=%#v err=%v", output, actual, err)
+	}
+}
+
+type swiftBP1PermissionHandler struct {
+	api *api.LocalPermissionAPI
+}
+
+func (handler swiftBP1PermissionHandler) Handle(ctx context.Context, request Request) Response {
+	if request.JourneyID == "" || !validJourneyID(request.JourneyID) {
+		return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("journey"))}
+	}
+	switch request.Method {
+	case "permissions_snapshot":
+		var input app.PermissionSnapshotRequest
+		decoder := json.NewDecoder(bytes.NewReader(request.Params))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("params"))}
+		}
+		input.JourneyID = request.JourneyID
+		result, err := handler.api.PermissionSnapshot(ctx, input)
+		if err != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+		}
+		return Response{JourneyID: request.JourneyID, OK: true, Result: encoded}
+	case "permissions_attention":
+		var input app.PermissionAttentionRequest
+		decoder := json.NewDecoder(bytes.NewReader(request.Params))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("params"))}
+		}
+		input.JourneyID = request.JourneyID
+		result, err := handler.api.PermissionAttention(ctx, input)
+		if err != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+		}
+		return Response{JourneyID: request.JourneyID, OK: true, Result: encoded}
+	case "permissions_command":
+		var input app.PermissionCommandRequest
+		decoder := json.NewDecoder(bytes.NewReader(request.Params))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("params"))}
+		}
+		input.JourneyID = request.JourneyID
+		result, err := handler.api.PermissionCommand(ctx, input)
+		if err != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return Response{JourneyID: request.JourneyID, Error: safeProtocolError("internal", err)}
+		}
+		return Response{JourneyID: request.JourneyID, OK: true, Result: encoded}
+	default:
+		return Response{JourneyID: request.JourneyID, Error: safeProtocolError("invalid_request", errors.New("method"))}
+	}
+}
+
+type swiftTestPermissionAuthorizer struct {
+	now func() time.Time
+}
+
+func (authorizer *swiftTestPermissionAuthorizer) AuthorizeRuleSet(
+	ctx context.Context,
+	request rules.RuleSetActivationRequest,
+) (rules.AuthorizedRuleSetActivation, error) {
+	if err := ctx.Err(); err != nil {
+		return rules.AuthorizedRuleSetActivation{}, err
+	}
+	digest := sha256.Sum256([]byte("swift-permission-rule-auth"))
+	now := authorizer.now()
+	return rules.NewAuthorizedRuleSetActivation(
+		request,
+		"approver:permission-owner",
+		fmt.Sprintf("%x", digest[:]),
+		now,
+		now.Add(time.Hour),
+	)
+}
+
+func (authorizer *swiftTestPermissionAuthorizer) AuthorizeApprovalDecision(
+	ctx context.Context,
+	request rules.ApprovalDecisionRequest,
+) (rules.AuthorizedApprovalDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return rules.AuthorizedApprovalDecision{}, err
+	}
+	digest := sha256.Sum256([]byte("swift-permission-decision-auth"))
+	now := authorizer.now()
+	return rules.NewAuthorizedApprovalDecision(
+		request,
+		"approver:permission-owner",
+		fmt.Sprintf("%x", digest[:]),
+		now,
+		now.Add(time.Hour),
+	)
+}
+
+type swiftTestApprovalPort struct {
+	authority *rules.Authority
+}
+
+func (port swiftTestApprovalPort) RequestPermissionApproval(
+	ctx context.Context,
+	input rules.PermissionApprovalInput,
+) (rules.ApprovalRequestRecord, error) {
+	return port.authority.RequestPermissionApproval(ctx, input)
+}
+
+func (port swiftTestApprovalPort) DecidePermissionApproval(
+	ctx context.Context,
+	approvalID, approvalDigest, decision, resolvedBy, correlationID string,
+) (rules.ApprovalRequestRecord, error) {
+	return port.authority.DecidePermissionApproval(
+		ctx, approvalID, approvalDigest, decision, resolvedBy, correlationID,
+	)
+}
+
+func TestBp1SwiftProbeDecodesRealPermissionAttentionWithApprovals(t *testing.T) {
+	probe := buildSwiftContractProbe(t)
+	root, socketPath := swiftPrivateSocketRoot(t)
+	defer os.RemoveAll(root)
+	database, err := sql.Open("sqlite", filepath.Join(root, "bp1.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := journal.Migrate(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	now := func() time.Time { return time.Now().UTC() }
+	rulesAuthority, err := rules.NewAuthority(store, &swiftTestPermissionAuthorizer{now: now}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewLocalPermissionService(store, now, func() string { return "v1" }, swiftTestApprovalPort{authority: rulesAuthority})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissionAPI, err := api.NewLocalPermissionAPI(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(ServerConfig{
+		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "bp1-swift-fixture",
+		Handler: swiftBP1PermissionHandler{api: permissionAPI},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("server not ready")
+	}
+	journeyID := "123e4567-e89b-42d3-a456-426614174000"
+	template, err := permissions.DefaultProjectProfileTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	define, _ := json.Marshal(permissions.ProfileInput{
+		ProfileID: "swift-profile", Mode: template.Mode,
+		Rules: template.Rules, OwnedPaths: template.OwnedPaths,
+	})
+	if _, err := service.PermissionCommand(ctx, app.PermissionCommandRequest{
+		JourneyID: journeyID, OperationID: "swift-op-define", Action: "define_profile", Input: define,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bind, _ := json.Marshal(map[string]any{"job_id": "swift-job", "profile_id": "swift-profile"})
+	if _, err := service.PermissionCommand(ctx, app.PermissionCommandRequest{
+		JourneyID: journeyID, OperationID: "swift-op-bind", Action: "bind_job", Input: bind,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	call, _ := json.Marshal(map[string]any{
+		"job_id": "swift-job",
+		"call":   map[string]any{"tool": "Bash", "command": "curl https://example.com", "path": ""},
+	})
+	result, err := service.PermissionCommand(ctx, app.PermissionCommandRequest{
+		JourneyID: journeyID, OperationID: "swift-op-validate", Action: "validate_call", Input: call,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != permissions.VerdictAsk || result.ApprovalID == "" {
+		t.Fatalf("validate_call result = %+v", result)
+	}
+	output, runErr := exec.Command(probe, "--socket", socketPath, "--permissions-attention", journeyID).CombinedOutput()
+	cancel()
+	_ = server.Close()
+	<-done
+	if runErr != nil {
+		t.Fatalf("Swift B-P1 attention probe: %v output=%q", runErr, output)
+	}
+	var actual struct {
+		ViewVersion string `json:"viewVersion"`
+		Decisions   int    `json:"decisions"`
+		Approvals   int    `json:"approvals"`
+	}
+	if err := json.Unmarshal(output, &actual); err != nil {
+		t.Fatalf("probe output=%q err=%v", output, err)
+	}
+	if actual.Decisions < 1 || actual.Approvals < 1 {
+		t.Fatalf("Swift attention must see the same pending decision+approval, got %+v", actual)
 	}
 }
 

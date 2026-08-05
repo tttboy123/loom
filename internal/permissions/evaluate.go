@@ -1,6 +1,7 @@
 package permissions
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -238,6 +239,7 @@ func matchedRuleIDs(rules []Rule, call ProposedCall, action RuleAction) []string
 			ids = append(ids, rule.RuleID)
 		}
 	}
+	sort.Strings(ids)
 	return ids
 }
 
@@ -278,10 +280,12 @@ func askOverAllowAtNarrowestScope(rules []Rule, call ProposedCall) ([]string, bo
 		}
 	}
 	if hasAsk {
+		sort.Strings(ids)
 		return ids, true
 	}
 	// ask at this scope wins over allow at the same scope; a narrowest scope
 	// with only allow rules falls through to the allow rule check.
+	sort.Strings(ids)
 	return nil, false
 }
 
@@ -302,10 +306,27 @@ func bashPatternMatches(pattern, command string) bool {
 	if pattern == "" {
 		return false
 	}
-	if strings.HasPrefix(command, pattern) {
-		return true
+	// Allow rules match the whole command only (contract §3.2, RED #6/#20):
+	// pattern and command must contain the same number of segments, and each
+	// pattern segment must match the corresponding command segment by prefix
+	// or glob. A single-segment allow rule can never open a chained command.
+	patternSegments := splitCommandSegments(pattern)
+	commandSegments := splitCommandSegments(command)
+	if len(patternSegments) != len(commandSegments) {
+		return false
 	}
-	return matchGlob(pattern, command)
+	for index := range patternSegments {
+		patternSegment := strings.TrimSpace(patternSegments[index])
+		commandSegment := strings.TrimSpace(commandSegments[index])
+		if patternSegment == "" || commandSegment == "" {
+			return false
+		}
+		if !strings.HasPrefix(commandSegment, patternSegment) &&
+			!matchGlob(patternSegment, commandSegment) {
+			return false
+		}
+	}
+	return true
 }
 
 func bashSegmentMatches(pattern, command string) bool {

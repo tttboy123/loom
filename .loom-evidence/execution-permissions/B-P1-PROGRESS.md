@@ -1,75 +1,67 @@
 # B-P1 Execution Permission Pipeline — Progress
 
-Updated: 2026-08-05
+Updated: 2026-08-05（Amendment 3 后）
 
 ## Status
 
-- Gate 0：PASS（身份/排除清单/前置能力，见 GATE0-AUDIT.md）。
-- Gate 1：FROZEN（FREEZE-RECORD.md；外部 fresh Contract Review 为开放项）。
-- RED-first：`internal/permissions` 17 项 RED 中 16 项在本包绿
-  （RED 14 在 `internal/app` 服务层绿）；25 个单元测试全 PASS。
-- 产品服务层：`internal/app/local_permission.go` + `internal/api/local_permission.go`
-  （只读 snapshot/attention + 命令路由 + validate_call）测试 PASS。
-- daemon 挂载：`cmd/loomd/product_daemon.go` 三方法分发 +
-  `internal/localipc/protocol.go` 白名单；cmd/loomd 全测试 PASS。
-- 全仓 `go build ./...`、`go vet ./...`、`go test ./...` 全绿。
+- Gate 0：PASS（GATE0-AUDIT.md）。
+- Gate 1：FROZEN（FREEZE-RECORD.md；外部 fresh Contract Review 为开放项，
+  通道故障记录于 REVIEW-NOTES.md）。
+- RED-first：RED 1-20 全绿（18/19 由 Amendment 1 增加，20 由 Amendment 3
+  增加）；`internal/permissions` 单元测试、app/daemon/localipc/rules 集成
+  测试全 PASS。
+- A4/A5/A6（Amendment 2）与 A7-A13（Amendment 3）均已实施并验证。
+- 全仓 `go build ./...`、`go vet ./...`、`go test ./...` 全绿；
+  `swift build` + `swift test`（98 tests + 4 Swift Testing）全绿。
 
-## 已完成清单（对照契约 owned files）
+## 已完成清单
 
-- [x] `internal/permissions/model.go`（类型/常量/校验/digest）
-- [x] `internal/permissions/compile.go`（CompileProfile + DefaultProjectProfileTemplate）
-- [x] `internal/permissions/evaluate.go`（Evaluate/白名单/危险表/链式/glob）
-- [x] `internal/permissions/replay.go`（Replay 两阶段/ResolveEffectiveProfile/EffectiveMode/ActiveGrants）
-- [x] `internal/permissions/authority.go`（全部权威方法 + CAS + 幂等短路）
-- [x] `internal/permissions/{authority,evaluate,replay}_test.go`（RED 1-17 覆盖）
-- [x] `internal/app/local_permission.go` + test（RED 14 + validate_call）
-- [x] `internal/api/local_permission.go`（IPC API 包装）
-- [x] `cmd/loomd/product_daemon.go`（挂载 + 分发）
-- [x] `internal/localipc/protocol.go`（方法白名单 + journey 要求）
-- [x] `internal/tui/permissions.go`（ScreenPermissions Explorer + Attention 合并
-  a/x/g/v 键）+ `internal/tui/model.go` 路由 + `permissions_test.go`
-- [x] Swift：`LocalPermissionModels.swift`（PermissionWire 严格解码）、
-  `LocalPermissionViews.swift`（只读 Explorer/Attention 视图）、
-  `LocalIPCClient.swift` 只读方法（permissions_snapshot/attention，白名单）+ 测试
-- [x] `scripts/verify-bp1-cross-client-journey.sh`（B-P1 冻结验证门，含
-  permissions IPC/Journal 事实/Transcript 断言）
-- [x] **跨客户端旅程证据**：`/private/tmp/bp1-journey-final8`（journey_id
-  `1565bdca-59af-4f18-8a70-044d68d8260f`）真实 PTY TUI 全流程 + 原生 app
-  （生产 Swift 客户端读取 explorer/attention）+ 截图 + Journal 事实，经
-  `verify-bp1-cross-client-journey.sh` **PASS**
-
-## 待办（下一步）
-
-- [ ] 独立评审（Implementation/dual-Result/Whole-Candidate，子代理可用后补做；
-  期间以 Controller 自查 + 确定性矩阵 + 旅程验证为准）
-- [ ] 原子提交（exact staging per source-lock）
-- [ ] B（执行适配器）/ C（生产化）阻塞点评估
+- [x] `internal/permissions/` 五文件（model/compile/evaluate/replay/authority）
+  + 三个测试文件（RED 1-20 覆盖）。
+- [x] `internal/app/local_permission.go` + `internal/api/local_permission.go`
+  （snapshot/attention 只读 + 命令路由 + validate_call + resolve_approval）。
+- [x] `internal/rules` 批准生命周期接线（A4/A5/A6）：
+  `RequestPermissionApproval`/`DecidePermissionApproval` +
+  `PermissionApprovalProjectID` 跨流隔离 + 跨会话激活复用。
+- [x] daemon 挂载与 IPC 白名单（`cmd/loomd/product_daemon.go`、
+  `internal/localipc/protocol.go`、`cmd/loomd/permission_approvals.go`）。
+- [x] TUI：`ScreenPermissions` Explorer + Attention 合并（a/x/g/v）。
+- [x] Swift 原生 app：只读 snapshot/attention（含 approvals）、
+  `PermissionApprovalView`、probe 输出；真实 IPC 契约测试
+  `TestBp1SwiftProbeDecodesRealPermissionAttentionWithApprovals`。
+- [x] `scripts/verify-bp1-cross-client-journey.sh` 冻结验证门。
+- [x] 跨客户端旅程证据：`/private/tmp/bp1-journey-final13`
+  （journey_id `7266f17f-…`，含真实批准段）verify PASS；
+  final8/final9/final10/final11/final12 为阶段证据。
+- [x] B/C 阻塞点评估：`B-C-BLOCKER-ASSESSMENT.md`。
 
 ## 确定性矩阵（当前全绿）
 
-- `go build ./...`、`go vet ./...`、`go test ./...` 全 PASS
-- `internal/permissions` 25 测试（RED 1-17 覆盖）
-- `internal/app`、`internal/api`、`internal/tui`、`internal/localipc`、
-  `cmd/loomd` 全 PASS
-- `swift build` + `swift test`（98 tests，含权限模型解码）全 PASS
-- `scripts/verify-bp1-cross-client-journey.sh` 语法通过（待真实证据根）
-- B-P1 跨客户端旅程 verify **PASS**（final8）
+- `go build ./...`、`go vet ./...`、`go test ./...` 全 PASS。
+- `internal/permissions` RED 1-20 全绿（含 Amendment 3 新增四项）。
+- `internal/localipc` 新增 Swift 真实 IPC 契约测试 PASS。
+- `swift build` + `swift test`（98 tests，1 skipped，0 failure）+
+  4 Swift Testing PASS。
+- `verify-bp1-cross-client-journey.sh /private/tmp/bp1-journey-final13` PASS。
 
-## 旅程发现并修复的实现缺陷
+## 实现期发现并修复的缺陷
 
-1. `permissions.Replay` 曾对共享 Journal 中的非权限域事件（Queue/Work/
-   Runtime/AgentGrant）报错 → 改为只处理权限流事件，权限流内未知类型仍
-   fail-closed（RED #10/#15 语义保持）。
-2. TUI Attention 屏合并权限决策后 `emptyOrLines` 计数未含决策 → 修正计数，
-   决策行真实渲染（transcript 含 `• Permission …`）。
+1. 共享 Journal 非权限域事件曾导致 `Replay` 报错 → 只处理权限流，权限流内
+   未知类型仍 fail-closed（RED #10/#15）。
+2. TUI Attention 合并决策后渲染计数错误 → 修正。
+3. Amendment 1：allow 放行危险链式命令（P0-1）、决策事实缺 call、作用域
+   缺失（P1-2/3）、grant 载荷/模板等 P2。
+4. Amendment 2：跨流批准泄漏（A5）、跨会话激活冲突（A6）。
+5. Amendment 3：allow 放行非危险链式命令（A7 P0）、Swift attention 缺
+   approvals + approval_id 解码失败（A8 P1）、EffectiveMode 非确定（A9 P1）、
+   RuleIDs 非确定（A10）、激活/管理员锁流校验缺失（A11）。
 
-## 实现中记录的偏差/开放项
+## 开放项
 
-1. 决策事实 `Tool` 字段由 validate_call 路径填充，`RecordDecision` 签名（冻结
-   符号）不含 Tool，当前为空并跳过校验（契约 §5.1 注记）。
-2. `EffectiveMode` 的 personal/project 激活解析依赖 job→project scope 映射，
-   由 daemon 服务层在 B-P1 集成/后续 Amendment 提供；当前支持 profile mode +
-   root activation。
-3. `resolve_approval` 为 typed forward（`ErrApprovalForwardOnly`）；既有
-   `internal/rules` 批准权威的实线接线在 B-P1 集成测试阶段完成（RED 3 已在
-   permission 层证明"不重复写批准事件"）。
+- fresh 独立 Contract/Implementation 复评：子代理协作通道本机不可用
+  （CC Switch 仅 deepseek-v4-flash 可用且消息载荷持续为空）；flash 冷读
+  复评（v9 FAIL 基线 + v14 本轮）作为替代评审通道，通道恢复后补做。
+- 新旅程 final14（原生 app 读取 pending 批准）推荐补充证据；等价路径已由
+  真实 IPC 契约测试覆盖。
+- decision 事实 `approval_id` 直接关联（A12）与间接危险调用沙箱（A13）：
+  留待 B-W1 执行适配器落地。

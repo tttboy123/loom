@@ -7,6 +7,10 @@
     "implemented": true,
     "note": "A4 approval lifecycle wired via internal/rules"
   },
+  "amendment_3": {
+    "implemented": true,
+    "note": "A7-A13 flash cold-review fixes (chain-allow P0, Swift approvals, determinism)"
+  },
   "baseline_commit": "91d14f4275f8a4417e5a3832b1754a6e6cbc4278",
   "branch": "codex/loom-platform-slice2",
   "gate1_contract_digest": "47c234b80615dde67281b7102f9f1eb3dacc09e56417ec192d08f6c2648774bb",
@@ -26,7 +30,7 @@
     "controller_verified": true,
     "count": 35,
     "method": "sha256 of lexicographically path-sorted '<file_sha256>  <relative_path>' lines joined by LF (no trailing newline)",
-    "ordered_sha256_lines_digest": "39d971f5c511c456926c8238f9c2fc05d5ed0256f0e5071ff59c68cb26c2f284",
+    "ordered_sha256_lines_digest": "af410f2a03e8768d8cf296af7dc88755dc455d6d70dd4c0ec52a9dc0766e06ca",
     "paths": [
       "apps/macos/Sources/LoomLocalAppContractProbe/main.swift",
       "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",

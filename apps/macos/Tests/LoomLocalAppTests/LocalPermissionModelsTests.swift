@@ -55,6 +55,15 @@ final class LocalPermissionModelsTests: XCTestCase {
               "authorization_path": "resolve in Attention Inbox",
               "recorded_at": "2026-08-05T12:00:00Z"
             }
+          ],
+          "approvals": [
+            {
+              "approval_id": "approval-2",
+              "digest": "digest-2",
+              "job_id": "job-a",
+              "status": "pending",
+              "command": "curl https://example.com"
+            }
           ]
         }
         """.data(using: .utf8)!
@@ -62,6 +71,10 @@ final class LocalPermissionModelsTests: XCTestCase {
         XCTAssertEqual(attention.decisions.count, 1)
         XCTAssertEqual(attention.decisions[0].jobID, "job-a")
         XCTAssertEqual(attention.decisions[0].verdict, "ask")
+        XCTAssertEqual(attention.approvals.count, 1)
+        XCTAssertEqual(attention.approvals[0].approvalID, "approval-2")
+        XCTAssertEqual(attention.approvals[0].status, "pending")
+        XCTAssertEqual(attention.approvals[0].command, "curl https://example.com")
     }
 
 }

