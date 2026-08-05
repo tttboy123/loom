@@ -113,3 +113,55 @@ VERDICT（Controller 自查）: `PASS-with-repairs` —— 修复后未发现剩
 
 **B-P1 状态**：代码与证据齐备、全矩阵绿、旅程 verify PASS；唯一未达成项为
 A4（批准生命周期接线，契约 §2/§8 全流程），按治理等待 Product Owner 决策。
+
+## 7. Amendment 2（A4）Controller 复核 + 跨流泄漏修复（2026-08-05）
+
+Product Owner 授权 A4 后，发现提交 `86460c1c` 已在授权前由子代理提前写入
+（内容在授权范围内，以 Controller 身份复核收编）。复核过程发现的真实缺陷
+与处置：
+
+### 7.1 跨流泄漏（P1，已修复 — A5）
+
+- 现象：`pendingApprovals` 扫描全 Journal 的 `ApprovalRequested` 事件，无
+  permission 判别；`DecideApproval` 仅对 `approved` 校验 approver actor，
+  `rejected` 决议无 actor 校验。若同一 Journal 存在其它 rules 批准流（如
+  `local_product_decision.go` 的受控 Mission 授权，approverRefs
+  `["local-owner"]`），权限 Attention 会展示外来待批项，TUI `x` 可经
+  permission 通道"拒绝"非权限批准。
+- 修复：`rules.PermissionApprovalProjectID` 稳定判别标记；
+  `DecidePermissionApproval` 重放校验 `context.ProjectID()`（approved/
+  rejected 均拒绝）；`pendingApprovals` 按 `context.project_id` 过滤。
+- RED：`TestA49DecidePermissionApprovalRejectsForeignApproval`、
+  `TestA410AttentionAndResolveArePermissionScoped`（先红后绿）。
+
+### 7.2 授权时序记录
+
+`86460c1c` 提交时间 15:16，早于 Product Owner 在对话中的授权消息；提交内容
+与授权范围（Amendment 2 批准生命周期接线）一致，未触碰排除项，因此保留
+内容并记录时序异常；后续修复由 Controller 完成并提交。
+
+### 7.3 验证
+
+- Go build/vet/test ./... 全 PASS；Swift build + 98 tests PASS。
+- A4-1..A4-8（既有）+ A4-9/A4-10（新增）全绿。
+- 旅程 final12（journey_id 见 B-P1-AMENDMENT-2.md）含真实批准段，
+  `verify-bp1-cross-client-journey.sh` PASS。
+- 开放项不变：fresh 独立 Implementation Review 通道（本机子代理通道
+  故障）继续记录；flash 独立评审按 Product Owner 指示作为替代评审通道。
+
+### 7.4 A6：跨会话激活复用缺陷（P1，已修复）
+
+- 现象：permission RuleSet 按 Job 作用域、内容与 call 无关；首个批准
+  resolved 后同一 Job 换 call + 新 correlation 再次 ask 命中
+  `ErrRuleAuthorityConflict`（`ActivateRuleSet` 幂等要求 correlation 相同）。
+- 修复：`RequestPermissionApproval` 激活前 `readRuleSet` 检查，同 digest
+  已激活则复用（不重复写事实），digest 不同则冲突，未激活才激活。
+- RED：`TestA411SecondAskSameJobDifferentCorrelationReusesActivation`
+  （先红后绿，修复前实测 `Rule authority conflict`）。
+
+### 7.5 flash 独立评审通道（再次记录）
+
+按 Product Owner 指示派发 flash 评审：spawn（空载荷）、followup（空载荷）、
+send_message（空载荷）、fresh spawn（线程上限）均失败；子代理线程被历次
+故障尝试占满。评审以 Controller 冷读 + 既有 v9 flash FAIL 基线 + RED
+逐项验证替代，fresh 独立复评继续列为开放项（环境/通道恢复后补做）。

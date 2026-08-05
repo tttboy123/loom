@@ -1691,6 +1691,107 @@ func TestA46PermissionApprovalSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestA49DecidePermissionApprovalRejectsForeignApproval(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	seedRulesWorkItem(t, store, clock, "work-foreign", "run-foreign")
+	foreignRuleSet := mustRuleSet(
+		t,
+		mustRulesScope(t, "work_item", "work-foreign"),
+		1,
+		[]Rule{mustRule(
+			t,
+			"approve-start",
+			"start_run",
+			"high",
+			"require_approval",
+			"",
+			[]string{"local-owner"},
+			time.Minute,
+			"reject",
+		)},
+	)
+	if _, err := authority.ActivateRuleSet(
+		context.Background(),
+		mustRuleSetActivationRequest(t, foreignRuleSet),
+		rulesTestCorrelation,
+	); err != nil {
+		t.Fatal(err)
+	}
+	foreignAction := mustActionContext(t, "work-foreign", "run-foreign", "high")
+	foreignDecision, err := Evaluate([]RuleSet{foreignRuleSet}, foreignAction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := authority.RequestApproval(
+		context.Background(),
+		ApprovalRequestInput{
+			Context:            foreignAction,
+			ContinuationDigest: rulesTestContinuation,
+			Decision:           foreignDecision,
+			RequestedAt:        clock.now,
+			CorrelationID:      rulesTestCorrelation,
+		},
+	)
+	if err != nil {
+		t.Fatalf("foreign RequestApproval() error = %v", err)
+	}
+	for _, decision := range []string{"approved", "rejected"} {
+		if _, err := authority.DecidePermissionApproval(
+			context.Background(),
+			foreign.ID(), foreign.Digest(), decision,
+			"user-1", rulesTestCorrelation,
+		); err == nil {
+			t.Fatalf("DecidePermissionApproval(%s) must reject a foreign approval", decision)
+		}
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countRulesEventTypes(events, "ApprovalDecided", "WorkItemApprovalResolved") != 0 {
+		t.Fatal("foreign approval must not be resolved through the permission channel")
+	}
+}
+
+func TestA411SecondAskSameJobDifferentCorrelationReusesActivation(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	ctx := context.Background()
+	first, err := authority.RequestPermissionApproval(ctx, PermissionApprovalInput{
+		JobID: "job-a4-11", CallDigest: rulesTestContract,
+		Tool: "Bash", Command: "curl https://one.example.com",
+		RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+	})
+	if err != nil {
+		t.Fatalf("first ask error = %v", err)
+	}
+	if _, err := authority.DecidePermissionApproval(
+		ctx, first.ID(), first.Digest(), "approved", "user-1", rulesTestCorrelation,
+	); err != nil {
+		t.Fatalf("resolve first error = %v", err)
+	}
+	second, err := authority.RequestPermissionApproval(ctx, PermissionApprovalInput{
+		JobID: "job-a4-11", CallDigest: rulesTestContinuation,
+		Tool: "Bash", Command: "curl https://two.example.com",
+		RequestedAt: clock.now, CorrelationID: rulesOtherCorrelation,
+	})
+	if err != nil {
+		t.Fatalf("second ask (different call, different correlation) error = %v", err)
+	}
+	if second.ID() == first.ID() || second.Status() != "pending" {
+		t.Fatalf("second ask must create a new pending approval, got %s %s",
+			second.ID(), second.Status())
+	}
+	if got := countRulesEventTypes(mustRulesReadAll(t, store), "RuleSetActivated"); got != 1 {
+		t.Fatalf("permission ruleset must be activated exactly once, got %d", got)
+	}
+}
+
 func mustRulesReadAll(t testing.TB, store *journal.Store) []journal.Event {
 	t.Helper()
 	events, err := store.ReadAll(context.Background())

@@ -100,3 +100,51 @@
 未评审 authority 扩展、任何独立 Review FAIL、owned files 越界、dirty 无法
 隔离 ⇒ 停止 HUMAN_REQUIRED。实现走 RED-first + 全矩阵 + 新旅程（final10，
 含真实批准段）+ flash 独立评审。
+
+## A5（Controller 复核修复，已实现 — 2026-08-05）
+
+授权后 Controller 冷读复核发现**跨流泄漏**：`PermissionAttention` 的
+`pendingApprovals` 扫描全 Journal 的 `ApprovalRequested` 事实，未过滤"仅
+permission ask 产生的批准"；且 `DecideApproval` 只对 `approved` 决议校验
+actor 归属（`local-owner` vs `approver:permission-owner`），`rejected` 决议
+无 actor 校验——权限 Attention 可能展示并"拒绝"其它 rules 流程（如受控
+Mission 授权）的待批项。
+
+修复（RED-first，A4-9/A4-10 先红后绿）：
+
+- `internal/rules/authority.go`：新增稳定判别标记
+  `PermissionApprovalProjectID = "permission"`（权限批准上下文四元组
+  project/team/workpackage 均为此值）；`DecidePermissionApproval` 在转发
+  `DecideApproval` 前重放批准流并校验 `context.ProjectID()`，非权限批准一律
+  返回 `ErrCustomerAuthorizationDenied`（approved 与 rejected 均拦截）。
+- `internal/app/local_permission.go`：`pendingApprovals` 解析
+  `context.project_id`，仅收录 `PermissionApprovalProjectID` 的批准。
+- 测试：`TestA49DecidePermissionApprovalRejectsForeignApproval`（rules 层，
+  构造真实 `local-owner` 待批批准，approved/rejected 均拒绝且零决议事实）；
+  `TestA410AttentionAndResolveArePermissionScoped`（app 层，同 Journal 并存
+  权限批准 + 外来批准，Attention 只展示权限项，`resolve_approval` 拒绝外来
+  批准 ID）。
+
+全矩阵（Go build/vet/test、Swift build + 98 tests）保持 PASS；旅程 final12
+（含真实批准段）verify PASS。
+
+## A6（Controller 复核修复，已实现 — 2026-08-05）
+
+继续冷读发现**跨会话复用缺陷**：permission RuleSet 按 Job 作用域且对同一 Job
+的所有 ask 内容相同，但 `RequestPermissionApproval` 无条件调用
+`ActivateRuleSet`（幂等仅在 correlation 相同时生效）。首个批准 resolved
+（work item 回到 assigned）后，同一 Job 换 call digest + 新会话 correlation
+再次 ask 会命中 `ErrRuleAuthorityConflict`——阻塞"多次 ask / 新会话续用同一
+Job"的真实旅程。
+
+修复（RED-first，A4-11 先红后绿）：
+
+- `RequestPermissionApproval` 在激活前经 `readRuleSet` 检查该 Job 的
+  RuleSet 流；同 digest 已激活则复用（不新增 `RuleSetActivated` 事实），
+  digest 不同则 `ErrRuleAuthorityConflict`，未激活才 `ActivateRuleSet`。
+  崩溃窗口（激活已落盘、批准事件未落盘）与跨会话二次 ask 均恢复。
+- 测试 `TestA411SecondAskSameJobDifferentCorrelationReusesActivation`：
+  同一 Job 两次不同 call + 不同 correlation，第二次必须成功且产生新
+  pending 批准，`RuleSetActivated` 事实恒为 1。
+
+全矩阵保持 PASS；旅程 final13（含真实批准段）verify PASS。

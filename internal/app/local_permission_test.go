@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -13,8 +14,14 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/rules"
+	"loom-pi-rebuild/internal/work"
 
 	_ "modernc.org/sqlite"
+)
+
+const (
+	rulesTestContractHex     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	rulesTestContinuationHex = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 )
 
 func openPermAppStore(t testing.TB) *journal.Store {
@@ -231,6 +238,141 @@ func TestA48ApprovalLifecycleWiredThroughRulesPort(t *testing.T) {
 	}
 	if len(after.Approvals) != 0 {
 		t.Fatalf("resolved approval must leave attention: %+v", after.Approvals)
+	}
+}
+
+func TestA410AttentionAndResolveArePermissionScoped(t *testing.T) {
+	store := openPermAppStore(t)
+	clock := func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
+	authority, err := rules.NewAuthority(store, &appTestAuthorizer{clock: clock}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := &appTestApprovalPort{authority: authority, clock: clock}
+	service, err := NewLocalPermissionService(store, clock, func() string { return "view-v1" }, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Foreign (non-permission) pending approval in the same journal.
+	workAuthority, err := work.NewAuthority(
+		store,
+		clock,
+		bytes.NewReader(bytes.Repeat([]byte{0x31}, 1024)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workAuthority.InitializeRunIdentityIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := workAuthority.CreateAndAssign(ctx, work.WorkItemAssignmentInput{
+		WorkItemID: "work-foreign", Title: "Approval gated work",
+		RunID: "run-foreign", AgentInstanceID: "agent-1",
+		CorrelationID: "11111111-1111-4111-8111-111111111111",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	foreignScope, err := rules.NewScope("work_item", "work-foreign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignCondition, err := rules.NewCondition("start_run", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignEffect, err := rules.NewEffect(
+		"require_approval", "", []string{"local-owner"}, 2*time.Hour, "reject",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignRule, err := rules.NewRule("approve-start", foreignCondition, foreignEffect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignRuleSet, err := rules.NewRuleSet(foreignScope, 1, []rules.Rule{foreignRule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignActivation, err := rules.NewRuleSetActivationRequest(
+		foreignRuleSet, []byte("foreign-approval"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.ActivateRuleSet(ctx, foreignActivation, "11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	foreignAction, err := rules.NewActionContext(rules.ActionContextInput{
+		ProjectID: "project-1", TeamInstanceID: "team-1",
+		WorkPackageID: "package-1", WorkItemID: "work-foreign",
+		RunID: "run-foreign", AgentInstanceID: "agent-1",
+		LogicalNodeID: "node-1", AttemptNumber: 1,
+		Action: "start_run", Risk: "high", ContractDigest: rulesTestContractHex,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignDecision, err := rules.Evaluate([]rules.RuleSet{foreignRuleSet}, foreignAction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := authority.RequestApproval(ctx, rules.ApprovalRequestInput{
+		Context: foreignAction, ContinuationDigest: rulesTestContinuationHex,
+		Decision: foreignDecision, RequestedAt: clock(), CorrelationID: "11111111-1111-4111-8111-111111111111",
+	})
+	if err != nil {
+		t.Fatalf("foreign RequestApproval() error = %v", err)
+	}
+	// Permission ask for a separate job.
+	if _, err := permissionCommand(t, service, "define_profile", permissions.ProfileInput{
+		ProfileID: "profile-a410", Mode: permissions.ModeDefault,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "bind_job", struct {
+		JobID     string `json:"job_id"`
+		ProfileID string `json:"profile_id"`
+	}{JobID: "job-a410", ProfileID: "profile-a410"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "add_rule", struct {
+		Rule         permissions.Rule `json:"rule"`
+		AuthorizedBy string           `json:"authorized_by"`
+	}{Rule: permissions.Rule{
+		RuleID: "r-a410-ask", Scope: permissions.ScopeJob, ScopeID: "job-a410",
+		Action: permissions.ActionAsk, Tool: permissions.ToolBash, Pattern: "curl *",
+	}, AuthorizedBy: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	ask, err := permissionCommand(t, service, "validate_call", struct {
+		JobID string                   `json:"job_id"`
+		Call  permissions.ProposedCall `json:"call"`
+	}{JobID: "job-a410", Call: permissions.ProposedCall{
+		Tool: permissions.ToolBash, Command: "curl https://example.com",
+	}})
+	if err != nil {
+		t.Fatalf("validate_call error = %v", err)
+	}
+	attention, err := service.PermissionAttention(ctx, PermissionAttentionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attention.Approvals) != 1 || attention.Approvals[0].JobID != "job-a410" {
+		t.Fatalf("attention must show only the permission approval, got %+v", attention.Approvals)
+	}
+	if _, err := permissionCommand(t, service, "resolve_approval", struct {
+		ApprovalID     string `json:"approval_id"`
+		ApprovalDigest string `json:"approval_digest"`
+		Resolution     string `json:"resolution"`
+		ResolvedBy     string `json:"resolved_by"`
+	}{ApprovalID: foreign.ID(), ApprovalDigest: foreign.Digest(),
+		Resolution: "deny", ResolvedBy: "user-1"}); err == nil {
+		t.Fatal("resolve_approval must reject a foreign approval")
+	}
+	if ask.ApprovalID == "" {
+		t.Fatal("permission ask must carry an approval id")
 	}
 }
 

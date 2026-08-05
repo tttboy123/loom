@@ -1113,7 +1113,12 @@ type PermissionApprovalInput struct {
 }
 
 const (
-	permissionApprovalActor   = "permission"
+	// PermissionApprovalProjectID marks approval requests created by the
+	// permission layer. It is the stable discriminator used by permission
+	// attention and by DecidePermissionApproval so the permission channel can
+	// never see or resolve approvals owned by another rules flow.
+	PermissionApprovalProjectID = "permission"
+	permissionApprovalActor     = PermissionApprovalProjectID
 	permissionApproverRef     = "approver:permission-owner"
 	permissionApprovalTimeout = 24 * time.Hour
 )
@@ -1258,7 +1263,24 @@ func (authority *Authority) RequestPermissionApproval(
 	if err != nil {
 		return ApprovalRequestRecord{}, err
 	}
-	if _, err := authority.ActivateRuleSet(ctx, activation, input.CorrelationID); err != nil {
+	// The permission RuleSet is scoped to the Queue Job and identical for every
+	// ask on that job. Reuse an existing activation regardless of correlation:
+	// a retry after a crash (activation committed, approval append lost) or a
+	// second ask from a new session must not fail with ErrRuleAuthorityConflict
+	// or duplicate the RuleSetActivated fact.
+	existingActivation, activationFound, activationErr := authority.readRuleSet(
+		ctx,
+		ruleSet.StreamID(),
+	)
+	if activationErr != nil {
+		return ApprovalRequestRecord{}, activationErr
+	}
+	if activationFound && existingActivation.Digest() == ruleSet.digest {
+		// Already active for this job; the approval facts carry per-call
+		// identity via ContractDigest.
+	} else if activationFound {
+		return ApprovalRequestRecord{}, ErrRuleAuthorityConflict
+	} else if _, err := authority.ActivateRuleSet(ctx, activation, input.CorrelationID); err != nil {
 		return ApprovalRequestRecord{}, err
 	}
 	now, err := authority.operationTime()
@@ -1345,6 +1367,17 @@ func (authority *Authority) DecidePermissionApproval(
 		!validRuleText(resolvedBy) ||
 		!validCorrelationID(correlationID) {
 		return ApprovalRequestRecord{}, ErrInvalidApprovalInput
+	}
+	approvalEvents, err := authority.store.ReadStream(ctx, approvalStream(approvalID))
+	if err != nil {
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	existing, found, err := replayApprovalStream(approvalID, approvalEvents)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	if !found || existing.context.ProjectID() != PermissionApprovalProjectID {
+		return ApprovalRequestRecord{}, ErrCustomerAuthorizationDenied
 	}
 	request, err := NewApprovalDecisionRequest(
 		approvalID,

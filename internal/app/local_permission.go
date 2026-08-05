@@ -248,9 +248,16 @@ func (service *LocalPermissionService) pendingApprovals(events []journal.Event) 
 				ApprovalRequestDigest string `json:"approval_request_digest"`
 				Context               struct {
 					WorkItemID string `json:"work_item_id"`
+					ProjectID  string `json:"project_id"`
 				} `json:"context"`
 			}
 			if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
+				continue
+			}
+			if payload.Context.ProjectID != rules.PermissionApprovalProjectID {
+				// Approval requests from other rules flows (product decisions,
+				// mission authorizations) are owned by their own channels and
+				// must never surface in permission attention.
 				continue
 			}
 			records[payload.ApprovalRequestID] = &approvalRecord{
