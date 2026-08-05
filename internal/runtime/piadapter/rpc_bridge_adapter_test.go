@@ -679,10 +679,10 @@ func TestPiRPCRejectionReasonCodes(t *testing.T) {
 				"event=thinking_start reason=event_kind_unsupported",
 		},
 		{
-			name: "unsupported tool event",
+			name: "tool stream interrupted by text",
 			mode: "diagnostic-tool-first",
 			want: "Pi RPC protocol failed: phase=assistant_update " +
-				"event=toolcall_start reason=event_kind_unsupported",
+				"event=text_delta reason=text_content_progression",
 		},
 		{
 			name: "content index",
@@ -1041,7 +1041,6 @@ func piRPCFixtureScript(mode string) string {
 		"--offline",
 		"--no-approve",
 		"--no-session",
-		"--no-tools",
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",

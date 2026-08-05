@@ -667,6 +667,7 @@ type productMissionExecutionRuntimeConfig struct {
 	Now                func() time.Time
 	ExecutorFactory    productMissionExecutorFactory
 	Decisions          app.MissionExecutionDecisionRouter
+	ToolExecution      *execution.Adapter
 }
 
 type productMissionAssetExecutionConfig struct {
@@ -1923,6 +1924,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	var savedTeamMaterializer productSavedTeamMaterializer
 	if setupConfig.Execution != nil {
 		setupConfig.Execution.Decisions = decisionRouter
+		setupConfig.Execution.ToolExecution = executionAdapter
 		executionAPI, executionBundle, err = buildProductMissionExecutionAPI(
 			context.Background(),
 			store,
@@ -2868,6 +2870,14 @@ func newProductMissionExecutor(
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	var toolHook piadapter.ToolCallHook
+	if config.ToolExecution != nil {
+		hook, hookErr := newBridgeExecutionHook(config.ToolExecution)
+		if hookErr != nil {
+			return closeServer(hookErr)
+		}
+		toolHook = hook
+	}
 	adapter, err := piadapter.NewPiRPCBridgeAdapter(
 		piadapter.PiRPCBridgeAdapterConfig{
 			Execution: piadapter.PiExecutionAdapterConfig{
@@ -2885,6 +2895,7 @@ func newProductMissionExecutor(
 			ModelID:           "qwen2.5-coder-1.5b-instruct-q4-k-m",
 			BaseURL:           server.BaseURL(),
 			MaxAssistantBytes: 16384,
+			ToolHook:          toolHook,
 		},
 	)
 	if err != nil {

@@ -19,6 +19,7 @@ var (
 	ErrUnknownExecutionEvent = errors.New("unknown execution event")
 	ErrInvalidExecutionEvent = errors.New("invalid execution event")
 	ErrExecutionInFlight     = errors.New("execution already in flight")
+	ErrExecutionInterrupted  = errors.New("execution interrupted before terminal fact; terminalize before replay")
 	ErrExecutionPathOutside  = errors.New("execution path outside worktree")
 	ErrExecutionLimit        = errors.New("execution limit exceeded")
 	ErrExecutionTimedOut     = errors.New("execution timed out")

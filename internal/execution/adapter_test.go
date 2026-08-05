@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -355,5 +357,106 @@ func TestRedB6_CrashRecoveryNeverReexecutes(t *testing.T) {
 	}
 	if err := adapter.ReplayPending(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRedB1_AllowedWithoutTerminalNeverReexecutes(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-recover", []string{"src/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
+	executor := &recordingExecutor{}
+	adapter := mustAdapter(t, store, projection, executor, now)
+	proposal := Proposal{
+		JobID: execTestJobA, OperationID: "op-orphan-1", JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{Tool: permissions.ToolBash, Command: "ls -la"},
+	}
+	// Seed the Journal with Proposed + Allowed but no terminal fact, as if a
+	// crash happened between the allowed fact and the completed append.
+	call := callDigest(proposal.Call)
+	execID := executionID(proposal.JobID, call, proposal.OperationID)
+	stream := executionStreamID(proposal.JobID, execID)
+	events, _ := store.ReadAll(context.Background())
+	heads := streamHeads(events)
+	proposed, buildErr := adapter.buildEvent("proposed", stream, proposal.JobID, execID, call,
+		proposal, 1, now(), proposal.JourneyID)
+	if buildErr != nil {
+		t.Fatal(buildErr)
+	}
+	allowed, buildErr := adapter.buildAllowedEvent(stream, execID, now())
+	if buildErr != nil {
+		t.Fatal(buildErr)
+	}
+	if _, casErr := adapter.appendCAS(context.Background(), events, heads, stream,
+		[]journal.Event{proposed, allowed}); casErr != nil {
+		t.Fatal(casErr)
+	}
+	before := executor.runCount()
+	if _, err := adapter.Execute(context.Background(), proposal); !errors.Is(err, ErrExecutionInterrupted) {
+		t.Fatalf("retry after allowed-without-terminal error = %v", err)
+	}
+	if executor.runCount() != before {
+		t.Fatalf("retry executed again: runs=%d", executor.runCount())
+	}
+	if err := adapter.ReplayPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(context.Background(), proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != permissions.VerdictDeny ||
+		result.Note != "interrupted before terminal fact" {
+		t.Fatalf("terminalized result = %+v", result)
+	}
+	if executor.runCount() != before {
+		t.Fatalf("terminalized retry executed again: runs=%d", executor.runCount())
+	}
+}
+
+type limitExecutor struct{}
+
+func (limitExecutor) Edit(context.Context, EditRequest) (EditResult, error) {
+	return EditResult{}, ErrExecutionLimit
+}
+
+func (limitExecutor) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, ErrExecutionLimit
+}
+
+func TestRedB1_ExecutionLimitMapsToLimitExceededFact(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-limit", []string{"src/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
+	adapter := mustAdapter(t, store, projection, limitExecutor{}, now)
+	result, err := adapter.Execute(context.Background(), Proposal{
+		JobID: execTestJobA, OperationID: "op-limit-1", JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{Tool: permissions.ToolBash, Command: "ls -la"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != permissions.VerdictDeny {
+		t.Fatalf("result = %+v", result)
+	}
+	events, _ := store.ReadAll(context.Background())
+	var code string
+	for _, event := range events {
+		if event.Type != EventToolFailed {
+			continue
+		}
+		var payload failedPayload
+		if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
+			t.Fatal(err)
+		}
+		code = payload.ErrorCode
+	}
+	if code != "limit_exceeded" {
+		t.Fatalf("failed fact error_code = %q, want limit_exceeded", code)
 	}
 }

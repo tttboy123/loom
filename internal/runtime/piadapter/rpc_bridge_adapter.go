@@ -22,6 +22,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/supervisor"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
@@ -43,9 +44,12 @@ const (
 	piRPCMaxRecords      = 1024
 	piRPCMaxBridgeFrames = 1024
 	piRPCMaxDeltaBytes   = 2048
-	piRPCSystemPrompt    = "Answer only the supplied bounded task. Use no tools. Do not expose hidden reasoning, credentials, or filesystem paths. Return concise plain text."
-	piRPCSettingsJSON    = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
+	piRPCSettingsJSON = `{"compaction":{"enabled":false},"retry":{"enabled":false,"maxRetries":0,"baseDelayMs":0,"provider":{"maxRetries":0,"maxRetryDelayMs":0}}}` + "\n"
 )
+
+// piRPCSystemPrompt 由 ToolCallSystemPrompt() 提供：W-BRIDGE 启用工具面后，
+// 模型只能通过单一信封提议工具调用（契约 §3.1/§3.3）。
+var piRPCSystemPrompt = ToolCallSystemPrompt()
 
 type PiRPCBridgeAdapterConfig struct {
 	Execution         PiExecutionAdapterConfig
@@ -54,6 +58,7 @@ type PiRPCBridgeAdapterConfig struct {
 	BaseURL           string
 	MaxAssistantBytes int
 	TranscriptAudit   chan<- PiRPCTranscriptAudit
+	ToolHook          ToolCallHook
 }
 
 type PiRPCTranscriptAudit struct {
@@ -64,6 +69,18 @@ type PiRPCTranscriptAudit struct {
 	FinalSnapshotBytes       int
 	FinalAcceptedDeltaBytes  int
 	DeltaClosure             bool
+	ToolCallResults          []ToolCallAuditEntry
+}
+
+// ToolCallAuditEntry 是 W-BRIDGE 的 audit 记录：只有已批准执行的结果才
+// 携带 ExecutionID/ResultNote；ask/deny 只记录 verdict 与 reason 摘要
+// （契约 §3.3：不写完整 tool call payload/结果内容）。
+type ToolCallAuditEntry struct {
+	Verdict      permissions.Verdict `json:"verdict"`
+	Tool         string              `json:"tool"`
+	ExecutionID  string              `json:"execution_id,omitempty"`
+	ResultNote   string              `json:"result_note,omitempty"`
+	DenialReason string              `json:"denial_reason,omitempty"`
 }
 
 type piRPCBridgeAdapter struct {
@@ -73,6 +90,7 @@ type piRPCBridgeAdapter struct {
 	baseURL           string
 	maxAssistantBytes int
 	transcriptAudit   chan<- PiRPCTranscriptAudit
+	toolHook          ToolCallHook
 }
 
 type piRPCLineResult struct {
@@ -93,6 +111,11 @@ type piRPCState struct {
 	finalAssistant    json.RawMessage
 	textStarted       bool
 	textEnded         bool
+	toolStarted       bool
+	toolEnded         bool
+	toolCallBytes     []byte
+	toolResultSent    bool
+	toolResults       []ToolCallAuditEntry
 	doneSeen          bool
 	agentEnded        bool
 	settled           bool
@@ -167,6 +190,9 @@ const (
 	piRPCReasonUsageSchema            piRPCDiagnosticReason = "usage_schema"
 	piRPCReasonUsageProgression       piRPCDiagnosticReason = "usage_progression"
 	piRPCReasonTextContentProgression piRPCDiagnosticReason = "text_content_progression"
+	piRPCReasonToolCallProgression    piRPCDiagnosticReason = "toolcall_content_progression"
+	piRPCReasonToolCallInvalid        piRPCDiagnosticReason = "toolcall_invalid"
+	piRPCReasonToolCallHookFailed     piRPCDiagnosticReason = "toolcall_hook_failed"
 	piRPCReasonDeltaPolicy            piRPCDiagnosticReason = "delta_policy"
 	piRPCReasonTerminalStopReason     piRPCDiagnosticReason = "terminal_stop_reason"
 	piRPCReasonTerminalIdentity       piRPCDiagnosticReason = "terminal_identity"
@@ -228,6 +254,7 @@ func NewPiRPCBridgeAdapter(
 		baseURL:           config.BaseURL,
 		maxAssistantBytes: config.MaxAssistantBytes,
 		transcriptAudit:   config.TranscriptAudit,
+		toolHook:          config.ToolHook,
 	}, nil
 }
 
@@ -459,6 +486,7 @@ stdoutDrained:
 		FinalSnapshotBytes:       len(state.lastPartial),
 		FinalAcceptedDeltaBytes:  len(state.assistant),
 		DeltaClosure:             bytes.Equal(state.lastPartial, state.assistant),
+		ToolCallResults:          state.toolResults,
 	})
 	return result, nil
 }
@@ -484,7 +512,6 @@ func (adapter *piRPCBridgeAdapter) arguments(
 		"--offline",
 		"--no-approve",
 		"--no-session",
-		"--no-tools",
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -742,13 +769,7 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 			}
 		case "assistant":
 			if state.doneSeen ||
-				!state.textEnded ||
-				len(state.assistant) == 0 ||
-				!piRPCAssistantTextMessage(
-					fields["message"],
-					string(state.assistant),
-					true,
-				) {
+				(!state.textEnded && !state.toolEnded) {
 				return rejectPiRPC(
 					piRPCPhaseAssistantMessageEnd,
 					piRPCEventMessageEnd,
@@ -760,6 +781,33 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 						false,
 						true,
 					),
+				)
+			}
+			if state.textEnded {
+				if len(state.assistant) == 0 ||
+					!piRPCAssistantTextMessage(
+						fields["message"],
+						string(state.assistant),
+						true,
+					) {
+					return rejectPiRPC(
+						piRPCPhaseAssistantMessageEnd,
+						piRPCEventMessageEnd,
+						piRPCAssistantRejectionReason(
+							fields["message"],
+							string(state.assistant),
+							true,
+							state.assistantIdentity,
+							false,
+							true,
+						),
+					)
+				}
+			} else if _, err := piRPCObject(fields["message"]); err != nil {
+				return rejectPiRPC(
+					piRPCPhaseAssistantMessageEnd,
+					piRPCEventMessageEnd,
+					piRPCReasonAssistantMessageSchema,
 				)
 			}
 			if !state.assistantIdentity.acceptTerminal(fields["message"]) {
@@ -799,22 +847,30 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 				piRPCReasonEventShape,
 			)
 		}
-		if !piRPCAssistantTextMessage(
-			fields["message"],
-			string(state.assistant),
-			true,
-		) {
+		if state.textEnded {
+			if !piRPCAssistantTextMessage(
+				fields["message"],
+				string(state.assistant),
+				true,
+			) {
+				return rejectPiRPC(
+					piRPCPhaseTurnEnd,
+					piRPCEventTurnEnd,
+					piRPCAssistantRejectionReason(
+						fields["message"],
+						string(state.assistant),
+						true,
+						state.assistantIdentity,
+						false,
+						true,
+					),
+				)
+			}
+		} else if _, err := piRPCObject(fields["message"]); err != nil {
 			return rejectPiRPC(
 				piRPCPhaseTurnEnd,
 				piRPCEventTurnEnd,
-				piRPCAssistantRejectionReason(
-					fields["message"],
-					string(state.assistant),
-					true,
-					state.assistantIdentity,
-					false,
-					true,
-				),
+				piRPCReasonAssistantMessageSchema,
 			)
 		}
 		if !piRPCSemanticEqual(fields["message"], state.finalAssistant) ||
@@ -871,8 +927,10 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 			)
 		}
 		if !state.agentEnded || state.settled || state.turnCount == 0 ||
-			!state.textEnded || len(state.assistant) == 0 ||
-			!bytes.Equal(state.lastPartial, state.assistant) {
+			(!state.textEnded && !state.toolEnded) ||
+			(state.textEnded &&
+				(len(state.assistant) == 0 ||
+					!bytes.Equal(state.lastPartial, state.assistant))) {
 			return rejectPiRPC(
 				piRPCPhaseAgentSettled,
 				piRPCEventAgentSettled,
@@ -942,12 +1000,42 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 				piRPCReasonTextContentProgression,
 			)
 		}
+	case piRPCEventToolCallStart:
+		if state.toolStarted || state.toolEnded || state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonToolCallProgression,
+			)
+		}
+	case piRPCEventToolCallDelta:
+		if !state.toolStarted || state.toolEnded || state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonToolCallProgression,
+			)
+		}
+	case piRPCEventToolCallEnd:
+		if !state.toolStarted || state.toolEnded || state.doneSeen {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonToolCallProgression,
+			)
+		}
 	default:
 		return rejectPiRPC(
 			piRPCPhaseAssistantUpdate,
 			event,
 			piRPCReasonEventKindUnsupported,
 		)
+	}
+
+	if event == piRPCEventToolCallStart ||
+		event == piRPCEventToolCallDelta ||
+		event == piRPCEventToolCallEnd {
+		return adapter.acceptToolCallEvent(ctx, request, state, fields, event)
 	}
 
 	if !piRPCZero(fields["contentIndex"]) {
@@ -1148,6 +1236,204 @@ func (adapter *piRPCBridgeAdapter) acceptAssistantEvent(
 		state.lastPartial = bytes.Clone(witness)
 		state.textEnded = true
 	}
+	return nil
+}
+
+func (adapter *piRPCBridgeAdapter) acceptToolCallEvent(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	state *piRPCState,
+	fields map[string]json.RawMessage,
+	event piRPCDiagnosticEvent,
+) error {
+	if !piRPCZero(fields["contentIndex"]) {
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonContentIndex,
+		)
+	}
+	switch event {
+	case piRPCEventToolCallStart:
+		state.toolStarted = true
+		state.toolCallBytes = nil
+		if !state.assistantIdentity.acceptUpdate(fields["partial"], true) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					"",
+					true,
+					state.assistantIdentity,
+					true,
+					false,
+				),
+			)
+		}
+		return nil
+	case piRPCEventToolCallDelta:
+		partial, ok := fields["partial"]
+		if !ok {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonEventShape,
+			)
+		}
+		state.toolCallBytes = bytes.Clone(partial)
+		if !state.assistantIdentity.acceptUpdate(partial, false) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					partial,
+					"",
+					true,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
+		}
+		return nil
+	case piRPCEventToolCallEnd:
+		state.toolEnded = true
+		if !state.assistantIdentity.acceptUpdate(fields["partial"], false) {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCAssistantRejectionReason(
+					fields["partial"],
+					"",
+					true,
+					state.assistantIdentity,
+					false,
+					false,
+				),
+			)
+		}
+		envelopeBytes, err := piRPCToolCallEnvelope(fields["toolCall"])
+		if err != nil {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonToolCallInvalid,
+			)
+		}
+		envelope, err := DecodeToolCallEnvelope(envelopeBytes)
+		if err != nil {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonToolCallInvalid,
+			)
+		}
+		if adapter.toolHook == nil {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonEventKindUnsupported,
+			)
+		}
+		binding := ToolCallBinding{
+			WorkItemID:      request.Binding.WorkItemID,
+			RunID:           request.Binding.RunID,
+			ClaimGeneration: request.Binding.ClaimGeneration,
+		}
+		result, err := adapter.toolHook.ExecuteToolCall(ctx, envelope, binding)
+		if err != nil {
+			return rejectPiRPC(
+				piRPCPhaseAssistantUpdate,
+				event,
+				piRPCReasonToolCallHookFailed,
+			)
+		}
+		if err := adapter.emitToolCallResult(ctx, request, state, envelope, result); err != nil {
+			return err
+		}
+		state.toolResultSent = true
+		return nil
+	default:
+		return rejectPiRPC(
+			piRPCPhaseAssistantUpdate,
+			event,
+			piRPCReasonEventKindUnsupported,
+		)
+	}
+}
+
+const piRPCBridgeToolName = "loom_tool"
+
+// piRPCToolCallEnvelope 从 toolcall_end 的 toolCall 对象提取信封 JSON：
+// 必须恰好 {type:"toolCall", name:"loom_tool", arguments:<对象>}；
+// arguments 必须是 JSON 对象（拒绝字符串化嵌套，防注入）。
+func piRPCToolCallEnvelope(raw json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 {
+		return nil, ErrPiRPCProtocol
+	}
+	fields, err := piRPCObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !piRPCExactKeys(fields, "type", "name", "arguments") {
+		return nil, ErrPiRPCProtocol
+	}
+	if kind, ok := piRPCString(fields, "type"); !ok || kind != "toolCall" {
+		return nil, ErrPiRPCProtocol
+	}
+	if name, ok := piRPCString(fields, "name"); !ok || name != piRPCBridgeToolName {
+		return nil, ErrPiRPCProtocol
+	}
+	arguments := fields["arguments"]
+	if len(arguments) == 0 {
+		return nil, ErrPiRPCProtocol
+	}
+	if _, err := piRPCObject(arguments); err != nil {
+		return nil, ErrPiRPCProtocol
+	}
+	return bytes.Clone(arguments), nil
+}
+
+// emitToolCallResult 把裁决结果写入 audit 摘要（契约 §3.3）并作为 event
+// frame 推给客户端观察；结果只含已批准执行的内容，ask/deny 只有 verdict
+// 与 reason 摘要。
+func (adapter *piRPCBridgeAdapter) emitToolCallResult(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	state *piRPCState,
+	envelope ToolCallEnvelope,
+	result ToolCallResult,
+) error {
+	entry := ToolCallAuditEntry{
+		Verdict:      result.Verdict,
+		Tool:         string(envelope.Call.Tool),
+		ExecutionID:  result.ExecutionID,
+		ResultNote:   result.ResultNote,
+		DenialReason: result.DenialReason,
+	}
+	state.toolResults = append(state.toolResults, entry)
+	payload, err := json.Marshal(struct {
+		Envelope ToolCallEnvelope `json:"envelope"`
+		Result   ToolCallResult   `json:"result"`
+	}{Envelope: envelope, Result: result})
+	if err != nil {
+		return ErrPiRPCProtocol
+	}
+	frame, err := adapter.execution.outboundFrame(
+		request,
+		state.nextSequence,
+		bridgev1.MessageEvent,
+		payload,
+	)
+	if err != nil {
+		return errors.Join(ErrPiRPCProtocol, err)
+	}
+	if err := request.FrameSink.AcceptFrame(ctx, frame); err != nil {
+		return errors.Join(ErrPiRPCProtocol, err)
+	}
+	state.frames = append(state.frames, frame)
+	state.nextSequence++
 	return nil
 }
 

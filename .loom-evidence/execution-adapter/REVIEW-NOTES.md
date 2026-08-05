@@ -58,3 +58,16 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
 - Controller 自查要点：模型提议→daemon 执行边界保持（不变量 3 有界修订）；
   单信封严格解码；allow/ask(批准后恢复)/deny/零执行与 B-W1 Execute 语义一致；
   audit 只含已批准结果；模型客户端/网络/多工具协议排除正确。
+
+
+## 10. W-BRIDGE 实现 Controller 复核（2026-08-06）
+
+- 子代理越权实现了 W-BRIDGE 全栈（toolcall 信封/桥接事件接线/bridgeExecutionHook/
+  daemon 注入/execution 增强）。Controller 逐项复核：
+  - 信封严格解码与系统提示符合契约 §3.1；toolHook nil → event_kind_unsupported
+    （fail-closed）；ExecuteToolCall 复用 B-W1（allow 执行/ask 批准/deny 零执行）。
+  - execution 改动（pending-Allowed 不重执行、limit 错误码、幂等键）合理且全矩阵绿。
+- **Controller 修复真实缺陷**：ResolveEffectiveProfile 未合并 profile 内嵌规则
+  （B-P1 §3.2 "Job profile 规则"作用域缺失——模板规则/内嵌 allow 此前不生效），
+  已修复并新增 TestProfileEmbeddedRulesApplyToJob；deny wire 测试断言过严已修正。
+- flash 独立评审仍为开放项（通道故障延续）。

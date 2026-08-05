@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -106,6 +107,13 @@ func (a *Adapter) Execute(ctx context.Context, proposal Proposal) (ExecutionResu
 		a.completed[executionID] = result
 		a.mu.Unlock()
 		return result, nil
+	}
+	if found && existing.AllowedAt != "" {
+		// An Allowed fact with no terminal fact means the side effect may
+		// already have happened. Re-executing would violate exactly-once;
+		// ReplayPending is the only path that terminalizes it, and it never
+		// executes.
+		return ExecutionResult{}, ErrExecutionInterrupted
 	}
 
 	effective, profileErr := permissions.ResolveEffectiveProfile(permissionProjection, proposal.JobID)
@@ -393,7 +401,11 @@ func (a *Adapter) executeApproved(
 			NewContentDigest: hex.EncodeToString(contentSum[:]), NewContentBytes: content,
 		})
 		if editErr != nil {
-			return a.fail(ctx, proposal, executionID, callDigest, generation, events, editErr.Error(), "edit_failed")
+			code := "edit_failed"
+			if errors.Is(editErr, ErrExecutionLimit) {
+				code = "limit_exceeded"
+			}
+			return a.fail(ctx, proposal, executionID, callDigest, generation, events, editErr.Error(), code)
 		}
 		result = ExecutionResult{
 			ExecutionID: executionID, JobID: proposal.JobID,
@@ -406,7 +418,11 @@ func (a *Adapter) executeApproved(
 			Worktree: worktree, Command: proposal.Call.Command,
 		})
 		if runErr != nil {
-			return a.fail(ctx, proposal, executionID, callDigest, generation, events, runErr.Error(), "run_failed")
+			code := "run_failed"
+			if errors.Is(runErr, ErrExecutionLimit) {
+				code = "limit_exceeded"
+			}
+			return a.fail(ctx, proposal, executionID, callDigest, generation, events, runErr.Error(), code)
 		}
 		result = ExecutionResult{
 			ExecutionID: executionID, JobID: proposal.JobID,
@@ -571,7 +587,7 @@ func (a *Adapter) buildEvent(kind, streamID, jobID, executionID, callDigest stri
 	}
 	id := deterministicEventID(adapterPrefix, EventToolProposed, streamID, proposal.OperationID)
 	return journal.Event{
-		ID: id, StreamID: streamID, IdempotencyKey: adapterPrefix + "/" + EventToolProposed + "/" + proposal.OperationID,
+		ID: id, StreamID: streamID, IdempotencyKey: adapterPrefix + "/" + EventToolProposed + "/" + executionID,
 		Type: EventToolProposed, SchemaVersion: 1, EmittedAt: now.UTC(),
 		CorrelationID: journeyID, PayloadJSON: body,
 	}, nil

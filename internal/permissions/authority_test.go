@@ -458,3 +458,31 @@ func TestProjectionDeepEqualityAfterReplay(t *testing.T) {
 		t.Fatal("binding rebuild differs across replays")
 	}
 }
+
+func TestProfileEmbeddedRulesApplyToJob(t *testing.T) {
+	store := openPermStore(t)
+	auth := mustPermAuthority(t, store)
+	input := ProfileInput{
+		ProfileID: permTestProfileA, Mode: ModeDefault,
+		Rules: []Rule{{
+			RuleID: "r-profile-allow", Scope: ScopeJob, ScopeID: permTestJobA,
+			Action: ActionAllow, Tool: ToolBash, Pattern: "go test *",
+		}},
+	}
+	mustProfile(t, auth, input)
+	mustBind(t, auth, permTestJobA, permTestProfileA)
+	projection := replayOf(t, allEvents(t, store))
+	effective := effectiveFor(t, projection, permTestJobA)
+	found := false
+	for _, rule := range effective.MergedRules {
+		if rule.RuleID == "r-profile-allow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("profile-embedded rule missing from effective rules: %+v", effective.MergedRules)
+	}
+	if got := verdictFor(t, effective, ProposedCall{Tool: ToolBash, Command: "go test ./..."}); got != VerdictAllow {
+		t.Fatalf("verdict = %s, want allow (profile rule must apply)", got)
+	}
+}

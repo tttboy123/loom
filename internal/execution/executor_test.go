@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,5 +94,32 @@ func TestExecutorChangedFilesLimit(t *testing.T) {
 	}
 	if result.ChangedFilesDigest == "" {
 		t.Fatal("changed digest missing")
+	}
+}
+
+func TestExecutorRunLimitExceededOnNonZeroExit(t *testing.T) {
+	root := execTempDir(t)
+	for index := 0; index < maxChangedFiles+1; index++ {
+		name := filepath.Join(root, fmt.Sprintf("f%06d", index))
+		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := NewSandboxExecutor()
+	_, err := executor.Run(context.Background(), RunRequest{
+		Worktree: root, Command: "exit 3", Timeout: 30 * time.Second,
+	})
+	if !errors.Is(err, ErrExecutionLimit) {
+		t.Fatalf("Run() error = %v, want ErrExecutionLimit", err)
+	}
+}
+
+func TestExecutorEditMissingWorktreeFails(t *testing.T) {
+	root := filepath.Join(execTempDir(t), "does-not-exist")
+	executor := NewSandboxExecutor()
+	if _, err := executor.Edit(context.Background(), EditRequest{
+		Worktree: root, RelativePath: "src/app.txt", NewContent: "x",
+	}); err == nil {
+		t.Fatal("Edit() on missing worktree must fail closed")
 	}
 }

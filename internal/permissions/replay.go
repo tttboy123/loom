@@ -431,10 +431,19 @@ func ResolveEffectiveProfile(projection *Projection, jobID string) (EffectivePro
 	if err != nil {
 		return EffectiveProfile{}, err
 	}
+	// Profile-embedded rules are the Job's own rules (contract §3.2 "Job
+	// profile 规则"); they apply with job scope regardless of the scope tags
+	// stored inside the profile, and join Journal PermissionRuleAdded facts.
+	merged := rulesForJob(projection, jobID, binding.ProfileID)
+	for _, rule := range profile.Rules {
+		rule.Scope = ScopeJob
+		rule.ScopeID = jobID
+		merged = append(merged, rule)
+	}
 	return EffectiveProfile{
 		Profile:     profile,
 		Mode:        mode,
-		MergedRules: rulesForJob(projection, jobID, binding.ProfileID),
+		MergedRules: merged,
 		Grants:      grantsForJob(projection, jobID),
 		AdminLock:   projection.AdminLock,
 	}, nil

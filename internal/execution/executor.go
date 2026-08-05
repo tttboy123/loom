@@ -147,10 +147,14 @@ func (e *SandboxExecutor) Run(ctx context.Context, request RunRequest) (RunResul
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
+			changed, changedErr := changedFilesDigest(root)
+			if changedErr != nil {
+				return RunResult{}, changedErr
+			}
 			return RunResult{
 				ExitCode:           exitErr.ExitCode(),
 				OutputDigest:       digestBytes(output.Bytes()),
-				ChangedFilesDigest: mustChangedDigest(root),
+				ChangedFilesDigest: changed,
 				DurationMS:         duration,
 			}, nil
 		}
@@ -208,15 +212,6 @@ func secureWorktreeRoot(worktree string) (string, error) {
 		return "", err
 	}
 	info, err := os.Lstat(abs)
-	if errors.Is(err, os.ErrNotExist) {
-		// Provision the candidate worktree on first use (daemon-owned path,
-		// private 0700). This is not an authorization decision; the caller
-		// already resolved the worktree through the allowed profile.
-		if err := os.MkdirAll(abs, 0o700); err != nil {
-			return "", err
-		}
-		info, err = os.Lstat(abs)
-	}
 	if err != nil {
 		return "", err
 	}
@@ -327,14 +322,6 @@ func changedFilesDigest(root string) (string, error) {
 		_, _ = hash.Write([]byte{0})
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func mustChangedDigest(root string) string {
-	digest, err := changedFilesDigest(root)
-	if err != nil {
-		return emptyChangedDigest
-	}
-	return digest
 }
 
 func digestBytes(data []byte) string {

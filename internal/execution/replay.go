@@ -91,6 +91,14 @@ func getOrCreate(records map[string]*ExecutionRecord, order []string, executionI
 	return record
 }
 
+func mustGet(records map[string]*ExecutionRecord, executionID string) (*ExecutionRecord, error) {
+	record, ok := records[executionID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s before ToolExecutionProposed", ErrInvalidExecutionEvent, executionID)
+	}
+	return record, nil
+}
+
 func appendUnique(values []string, value string) []string {
 	for _, existing := range values {
 		if existing == value {
@@ -113,6 +121,9 @@ func applyProposed(records map[string]*ExecutionRecord, order []string, event jo
 		return nil, fmt.Errorf("%w: invalid proposed payload", ErrInvalidExecutionEvent)
 	}
 	record := getOrCreate(records, order, payload.ExecutionID, payload.JobID)
+	if record.ProposedAt != "" {
+		return nil, fmt.Errorf("%w: duplicate proposed for %s", ErrInvalidExecutionEvent, payload.ExecutionID)
+	}
 	record.CallDigest = payload.CallDigest
 	record.Tool = permissions.ToolKind(payload.Tool)
 	record.Command = payload.Command
@@ -130,9 +141,15 @@ func applyAllowed(records map[string]*ExecutionRecord, order []string, event jou
 	if err := decodeExecutionPayload(event, &payload); err != nil {
 		return nil, err
 	}
-	record := getOrCreate(records, order, payload.ExecutionID, "")
+	record, err := mustGet(records, payload.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
 	if payload.AllowedAt == "" {
 		return nil, fmt.Errorf("%w: invalid allowed payload", ErrInvalidExecutionEvent)
+	}
+	if record.AllowedAt != "" {
+		return nil, fmt.Errorf("%w: duplicate allowed for %s", ErrInvalidExecutionEvent, payload.ExecutionID)
 	}
 	record.AllowedAt = payload.AllowedAt
 	record.Status = "allowed"
@@ -144,7 +161,13 @@ func applyDenied(records map[string]*ExecutionRecord, order []string, event jour
 	if err := decodeExecutionPayload(event, &payload); err != nil {
 		return nil, err
 	}
-	record := getOrCreate(records, order, payload.ExecutionID, "")
+	record, err := mustGet(records, payload.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	if record.DeniedAt != "" {
+		return nil, fmt.Errorf("%w: duplicate denied for %s", ErrInvalidExecutionEvent, payload.ExecutionID)
+	}
 	record.DeniedAt = payload.DeniedAt
 	record.DenialReason = payload.Denial.Reason
 	record.Status = "denied"
@@ -156,7 +179,16 @@ func applyCompleted(records map[string]*ExecutionRecord, order []string, event j
 	if err := decodeExecutionPayload(event, &payload); err != nil {
 		return nil, err
 	}
-	record := getOrCreate(records, order, payload.ExecutionID, "")
+	record, err := mustGet(records, payload.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	if record.AllowedAt == "" {
+		return nil, fmt.Errorf("%w: completed without allowed for %s", ErrInvalidExecutionEvent, payload.ExecutionID)
+	}
+	if record.CompletedAt != "" {
+		return nil, fmt.Errorf("%w: duplicate completed for %s", ErrInvalidExecutionEvent, payload.ExecutionID)
+	}
 	record.ExitCode = payload.ExitCode
 	record.OutputDigest = payload.OutputDigest
 	record.ChangedFilesDigest = payload.ChangedFilesDigest
@@ -172,7 +204,13 @@ func applyFailed(records map[string]*ExecutionRecord, order []string, event jour
 	if err := decodeExecutionPayload(event, &payload); err != nil {
 		return nil, err
 	}
-	record := getOrCreate(records, order, payload.ExecutionID, "")
+	record, err := mustGet(records, payload.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	if record.FailedAt != "" {
+		return nil, fmt.Errorf("%w: duplicate failed for %s", ErrInvalidExecutionEvent, payload.ExecutionID)
+	}
 	record.FailedAt = payload.FailedAt
 	record.FailureReason = payload.Reason
 	record.ErrorCode = payload.ErrorCode

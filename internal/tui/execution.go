@@ -116,7 +116,7 @@ func (model Model) proposeExecutionProbe() tea.Cmd {
 
 func (model Model) renderExecutionsView() string {
 	lines := []string{
-		"Execution · bounded execution adapter",
+		styleTitle("Execution") + " · bounded execution adapter",
 		"p propose probe · d detail · r refresh · q quit",
 	}
 	if model.boundedExecutionClient == nil {
@@ -129,22 +129,26 @@ func (model Model) renderExecutionsView() string {
 	for index, record := range model.executionSnapshot.Records {
 		marker := " "
 		if index == model.selected {
-			marker = ">"
+			marker = styleSelectedMarker(">")
 		}
-		lines = append(lines, fmt.Sprintf(
+		row := fmt.Sprintf(
 			"%s %s · %s · %s · %s · %s",
 			marker,
 			sanitizeCell(record.ExecutionID, 12),
 			sanitizeCell(record.JobID, 24),
 			sanitizeCell(string(record.Tool), 10),
-			humanizeStatus(record.Status),
+			styleStatus(humanizeStatus(record.Status)),
 			sanitizeCell(record.ProposedAt, 20),
-		))
+		)
+		if index == model.selected {
+			row = styleSelected(row)
+		}
+		lines = append(lines, row)
 		if model.executionDetail && index == model.selected {
-			lines = append(lines, fmt.Sprintf(
+			lines = append(lines, styleSection(fmt.Sprintf(
 				"  command: %s",
 				sanitizeCell(record.Command, 64),
-			))
+			)))
 			lines = append(lines, fmt.Sprintf(
 				"  exit %d · output %s · changed %s",
 				record.ExitCode,
@@ -152,10 +156,10 @@ func (model Model) renderExecutionsView() string {
 				sanitizeCell(record.ChangedFilesDigest, 16),
 			))
 			if record.DenialReason != "" {
-				lines = append(lines, "  denial: "+sanitizeCell(record.DenialReason, 64))
+				lines = append(lines, styleError("  denial: "+sanitizeCell(record.DenialReason, 64)))
 			}
 			if record.FailureReason != "" {
-				lines = append(lines, "  failure: "+sanitizeCell(record.FailureReason, 64))
+				lines = append(lines, styleError("  failure: "+sanitizeCell(record.FailureReason, 64)))
 			}
 		}
 	}
