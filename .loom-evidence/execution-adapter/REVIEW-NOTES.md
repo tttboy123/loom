@@ -47,3 +47,14 @@ wire 测试、verify 脚本）。Controller 逐项复核并修复：
 - 全矩阵：Go build/vet/test 全 PASS；Swift 98 tests 全 PASS。
 
 子代理实现按既有先例收编（作者权归属本记录）；flash 独立复评仍为开放项。
+
+
+## 9. W-BRIDGE Gate 1（2026-08-06）
+
+- 契约/ADR/RED 三件套起草（信封协议、裁决语义、fail-closed 桥接、audit 过滤、
+  8 项 RED、owned files）。
+- flash 独立评审通道（v18 模型不可用 / v19 卡死）再次故障，记为开放项；
+  按既定先例以 Controller 冷读 + Product Owner Goal 指令冻结。
+- Controller 自查要点：模型提议→daemon 执行边界保持（不变量 3 有界修订）；
+  单信封严格解码；allow/ask(批准后恢复)/deny/零执行与 B-W1 Execute 语义一致；
+  audit 只含已批准结果；模型客户端/网络/多工具协议排除正确。
