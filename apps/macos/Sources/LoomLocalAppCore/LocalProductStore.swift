@@ -217,6 +217,8 @@ public enum LocalProductSection: String, CaseIterable, Identifiable, Sendable {
     case teams = "Teams"
     case inbox = "Inbox"
     case system = "System"
+    case execution = "Execution"
+    case production = "Production"
 
     public var id: String { rawValue }
 }
@@ -333,6 +335,8 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var evolutionAssetJourneyID = LocalProductStore.initialJourneyID()
     @Published public private(set) var permissionSnapshot: PermissionSnapshot?
     @Published public private(set) var permissionAttention: PermissionAttention?
+    @Published public private(set) var executionSnapshot: ExecutionSnapshot?
+    @Published public private(set) var productionSnapshot: ProductionSnapshot?
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
@@ -343,6 +347,8 @@ public final class LocalProductStore: ObservableObject {
     private let handoffClient: LocalProductHandoffClientProtocol?
     private let assetClient: LocalProductAssetClientProtocol?
     private let permissionClient: LocalProductPermissionClientProtocol?
+    private let executionSnapshotClient: LocalProductExecutionSnapshotClientProtocol?
+    private let productionSnapshotClient: LocalProductProductionSnapshotClientProtocol?
     private var executionObjective = ""
     private var pendingSideTaskProposalRequest: LocalProductSideTaskProposalRequest?
     private var timelineLoadGeneration: UInt64 = 0
@@ -364,6 +370,8 @@ public final class LocalProductStore: ObservableObject {
         handoffClient = client as? LocalProductHandoffClientProtocol
         assetClient = client as? LocalProductAssetClientProtocol
         permissionClient = client as? LocalProductPermissionClientProtocol
+        executionSnapshotClient = client as? LocalProductExecutionSnapshotClientProtocol
+        productionSnapshotClient = client as? LocalProductProductionSnapshotClientProtocol
     }
 
     public var providerManagementReachable: Bool {
@@ -1067,6 +1075,32 @@ public final class LocalProductStore: ObservableObject {
         } catch {
             permissionSnapshot = nil
             permissionAttention = nil
+        }
+    }
+
+    public func refreshExecutions() async {
+        guard let executionSnapshotClient else {
+            return
+        }
+        do {
+            executionSnapshot = try await executionSnapshotClient.executionSnapshot(
+                journeyID: evolutionAssetJourneyID
+            )
+        } catch {
+            executionSnapshot = nil
+        }
+    }
+
+    public func refreshProduction() async {
+        guard let productionSnapshotClient else {
+            return
+        }
+        do {
+            productionSnapshot = try await productionSnapshotClient.productionSnapshot(
+                journeyID: evolutionAssetJourneyID
+            )
+        } catch {
+            productionSnapshot = nil
         }
     }
 

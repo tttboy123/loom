@@ -609,6 +609,34 @@ public final class LocalIPCClient:
         return try PermissionWire.decodeAttention(result)
     }
 
+    public func executionSnapshot(
+        journeyID: String
+    ) async throws -> ExecutionSnapshot {
+        guard Self.validJourneyID(journeyID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: journeyID,
+            method: "execution_snapshot",
+            params: PermissionSnapshotParams()
+        )
+        return try ExecutionWire.decodeSnapshot(result)
+    }
+
+    public func productionSnapshot(
+        journeyID: String
+    ) async throws -> ProductionSnapshot {
+        guard Self.validJourneyID(journeyID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: journeyID,
+            method: "production_snapshot",
+            params: PermissionSnapshotParams()
+        )
+        return try ProductionWire.decodeSnapshot(result)
+    }
+
     public func decideMission(
         _ command: LocalProductDecisionCommand
     ) async throws -> LocalProductDecisionResult {

@@ -18,6 +18,7 @@ import (
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/production"
 )
 
 func TestP3ATUIProductionClientExposesAssetJourneyMethods(t *testing.T) {
@@ -61,6 +62,34 @@ func (client *fakeReadClient) IntegrationCommand(
 	_ app.IntegrationCommandRequest,
 ) (app.IntegrationCommandResult, error) {
 	return app.IntegrationCommandResult{}, nil
+}
+
+func (client *fakeReadClient) ExecutionSnapshot(
+	_ context.Context,
+	_ app.ExecutionSnapshotRequest,
+) (app.ExecutionSnapshot, error) {
+	return app.ExecutionSnapshot{}, nil
+}
+
+func (client *fakeReadClient) ExecutionCommand(
+	_ context.Context,
+	_ app.ExecutionCommandRequest,
+) (app.ExecutionCommandResult, error) {
+	return app.ExecutionCommandResult{}, nil
+}
+
+func (client *fakeReadClient) ProductionSnapshot(
+	_ context.Context,
+	_ app.ProductionSnapshotRequest,
+) (production.ProductionSnapshot, error) {
+	return production.ProductionSnapshot{}, nil
+}
+
+func (client *fakeReadClient) ProductionCommand(
+	_ context.Context,
+	_ app.ProductionCommandRequest,
+) (app.ProductionCommandResult, error) {
+	return app.ProductionCommandResult{}, nil
 }
 
 type fakeAssetReadClient struct {
@@ -1675,16 +1704,20 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenWorkers,
 		ScreenIntegration,
 		ScreenPermissions,
+		ScreenExecution,
+		ScreenProduction,
 		ScreenBoard,
 	}
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 		if cmd != nil && want != ScreenAssets && want != ScreenQueue &&
-			want != ScreenWorkers && want != ScreenIntegration {
+			want != ScreenWorkers && want != ScreenIntegration &&
+			want != ScreenExecution && want != ScreenProduction {
 			t.Fatalf("screen navigation produced command for %s", want)
 		}
 		if cmd == nil && (want == ScreenAssets || want == ScreenQueue ||
-			want == ScreenWorkers || want == ScreenIntegration) {
+			want == ScreenWorkers || want == ScreenIntegration ||
+			want == ScreenExecution || want == ScreenProduction) {
 			t.Fatalf("%s navigation omitted production IPC refresh", want)
 		}
 		model = updated.(Model)

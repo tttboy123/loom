@@ -196,7 +196,9 @@ func requiresJourney(method string) bool {
 		"queue_snapshot", "queue_command",
 		"workers_snapshot", "workers_command",
 		"integration_snapshot", "integration_command",
-		"permissions_snapshot", "permissions_attention", "permissions_command":
+		"permissions_snapshot", "permissions_attention", "permissions_command",
+		"execution_snapshot", "execution_command",
+		"production_snapshot", "production_command":
 		return true
 	default:
 		return false
@@ -324,7 +326,11 @@ func validMethod(method string) bool {
 		"integration_command",
 		"permissions_snapshot",
 		"permissions_attention",
-		"permissions_command":
+		"permissions_command",
+		"execution_snapshot",
+		"execution_command",
+		"production_snapshot",
+		"production_command":
 		return true
 	default:
 		return false

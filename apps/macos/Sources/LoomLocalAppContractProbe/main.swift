@@ -108,6 +108,17 @@ private struct ProbePermissionOutput: Encodable {
     let adminLock: Bool
 }
 
+private struct ProbeBoundedExecutionOutput: Encodable {
+    let viewVersion: String
+    let records: Int
+}
+
+private struct ProbeProductionOutput: Encodable {
+    let viewVersion: String
+    let activated: Bool
+    let degraded: Bool
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
@@ -131,7 +142,9 @@ enum LoomLocalAppContractProbe {
                         || arguments[3] == "--queue-successor-compile")
                     || arguments.count == 6 && arguments[3] == "--side-task-read"
                     || arguments.count == 5 && (arguments[3] == "--permissions-snapshot"
-                        || arguments[3] == "--permissions-attention")
+                        || arguments[3] == "--permissions-attention"
+                        || arguments[3] == "--execution-snapshot"
+                        || arguments[3] == "--production-snapshot")
             else {
                 throw LocalProductClientError.invalidRequest
             }
@@ -286,6 +299,31 @@ enum LoomLocalAppContractProbe {
                     decisions: attention.decisions.count,
                     approvals: attention.approvals.count,
                     adminLock: false
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--execution-snapshot" {
+                let snapshot = try await client.executionSnapshot(journeyID: arguments[4])
+                let encoded = try JSONEncoder().encode(ProbeBoundedExecutionOutput(
+                    viewVersion: snapshot.viewVersion,
+                    records: snapshot.records.count
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--production-snapshot" {
+                let snapshot = try await client.productionSnapshot(journeyID: arguments[4])
+                let encoded = try JSONEncoder().encode(ProbeProductionOutput(
+                    viewVersion: snapshot.viewVersion,
+                    activated: snapshot.activated,
+                    degraded: snapshot.recovery.degraded
                 ))
                 guard let output = String(data: encoded, encoding: .utf8) else {
                     throw LocalProductClientError.invalidResponse

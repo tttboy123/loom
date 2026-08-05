@@ -28,11 +28,14 @@ import (
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/evidence"
+	"loom-pi-rebuild/internal/execution"
 	"loom-pi-rebuild/internal/integration"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/mode"
 	"loom-pi-rebuild/internal/observability"
+	"loom-pi-rebuild/internal/permissions"
+	"loom-pi-rebuild/internal/production"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	"loom-pi-rebuild/internal/queue"
@@ -1593,6 +1596,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	var setupService *api.LocalProductSetupAPI
 	var executionBundle io.Closer
 	var assetEvidenceStore *evidence.Store
+	var executionEvidenceStore *evidence.Store
 	journeyHarness, err := controlledProductJourneyHarnessFromEnvironment(
 		statePath,
 		socketPath,
@@ -1621,6 +1625,9 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			}
 			if assetEvidenceStore != nil {
 				_ = assetEvidenceStore.Close()
+			}
+			if executionEvidenceStore != nil {
+				_ = executionEvidenceStore.Close()
 			}
 			if journeyHarness != nil {
 				_ = journeyHarness.Close()
@@ -1771,6 +1778,101 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_permissions", err)
 	}
+	executionEvidenceRoot := filepath.Join(filepath.Dir(statePath), "execution-evidence")
+	if err := ensureProductExecutionDirectory(executionEvidenceRoot); err != nil {
+		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	executionEvidenceStore, err = evidence.NewStore(executionEvidenceRoot)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	decisionRecorder, err := newExecutionDecisionRecorder(
+		store,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	executionAdapter, err := execution.NewAdapter(
+		store,
+		executionEvidenceStore,
+		execution.NewSandboxExecutor(),
+		&productWorktreeResolver{store: store},
+		approvalPort,
+		decisionRecorder,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	executionService, err := app.NewLocalExecutionService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+		func() string { return readModel.GlobalReadView().Version() },
+		executionAdapter,
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	boundedExecutionAPI, err := api.NewLocalExecutionAPI(executionService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_execution", err)
+	}
+	productionAppSupport := ""
+	productionLaunchAgents := ""
+	if sandboxRoot := os.Getenv("LOOM_PRODUCTION_SANDBOX_ROOT"); sandboxRoot != "" {
+		if !filepath.IsAbs(sandboxRoot) {
+			return nil, newDaemonBuildFailure("build_production", errors.New("invalid sandbox root"))
+		}
+		productionAppSupport = filepath.Join(sandboxRoot, "Application Support", "Loom")
+		productionLaunchAgents = filepath.Join(sandboxRoot, "LaunchAgents")
+	} else {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return nil, newDaemonBuildFailure("build_production", homeErr)
+		}
+		productionAppSupport = filepath.Join(home, "Library", "Application Support", "Loom")
+		productionLaunchAgents = filepath.Join(home, "Library", "LaunchAgents")
+	}
+	daemonExecutable, execErr := os.Executable()
+	if execErr != nil {
+		return nil, newDaemonBuildFailure("build_production", execErr)
+	}
+	productionCore, err := production.NewService(
+		store,
+		production.Paths{
+			AppSupport: productionAppSupport, LaunchAgents: productionLaunchAgents,
+			DaemonPath: daemonExecutable,
+		},
+		func() time.Time { return time.Now().UTC() },
+		func(ctx context.Context) (bool, error) {
+			events, readErr := store.ReadAll(ctx)
+			if readErr != nil {
+				return false, readErr
+			}
+			projection, replayErr := permissions.Replay(events)
+			if replayErr != nil {
+				return false, replayErr
+			}
+			return projection.AdminLock, nil
+		},
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_production", err)
+	}
+	productionService, err := app.NewLocalProductionService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+		func() string { return readModel.GlobalReadView().Version() },
+		productionCore,
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_production", err)
+	}
+	productionAPI, err := api.NewLocalProductionAPI(productionService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_production", err)
+	}
 	workerExecutionService, err := work.NewWorkerExecutionService(
 		store,
 		func() time.Time { return time.Now().UTC() },
@@ -1857,6 +1959,8 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			workersAPI,
 			integrationAPI,
 			permissionAPI,
+			boundedExecutionAPI,
+			productionAPI,
 		),
 	))
 	if journeyHarness != nil {
@@ -4291,6 +4395,8 @@ func localProductHandlerWithDecision(
 		nil,
 		nil,
 		nil,
+		nil,
+		nil,
 	)
 }
 
@@ -4306,6 +4412,8 @@ func localProductHandlerWithComposition(
 	workersService *api.LocalWorkersAPI,
 	integrationService *api.LocalIntegrationAPI,
 	permissionService *api.LocalPermissionAPI,
+	executionService *api.LocalExecutionAPI,
+	productionService *api.LocalProductionAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
@@ -4346,6 +4454,16 @@ func localProductHandlerWithComposition(
 		}
 		if productPermissionMethod(request.Method) && permissionService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrPermissionStateUnavailable)
+		}
+		if productExecutionMethod(request.Method) && executionService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrExecutionUnavailable)
+		}
+		if productProductionMethod(request.Method) && productionService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrProductionUnavailable)
+		}
+		if productionService != nil && productionService.Degraded(ctx) &&
+			productionWriteMethod(request.Method) {
+			return productJourneyErrorResponse(request.JourneyID, "degraded", production.ErrDegraded)
 		}
 		switch request.Method {
 		case "snapshot":
@@ -4512,6 +4630,50 @@ func localProductHandlerWithComposition(
 			}
 			input.JourneyID = request.JourneyID
 			result, err := permissionService.PermissionCommand(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "execution_snapshot":
+			var input app.ExecutionSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidExecutionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := executionService.ExecutionSnapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "execution_command":
+			var input app.ExecutionCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidExecutionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := executionService.ExecutionCommand(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "production_snapshot":
+			var input app.ProductionSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidProductionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := productionService.ProductionSnapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "production_command":
+			var input app.ProductionCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidProductionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := productionService.ProductionCommand(ctx, input)
 			if err != nil {
 				return productJourneyServiceError(request.JourneyID, err)
 			}
@@ -4819,6 +4981,24 @@ func productPermissionMethod(method string) bool {
 	return method == "permissions_snapshot" || method == "permissions_attention" || method == "permissions_command"
 }
 
+func productExecutionMethod(method string) bool {
+	return method == "execution_snapshot" || method == "execution_command"
+}
+
+func productProductionMethod(method string) bool {
+	return method == "production_snapshot" || method == "production_command"
+}
+
+func productionWriteMethod(method string) bool {
+	switch method {
+	case "production_command", "permissions_command", "execution_command",
+		"queue_command", "workers_command", "integration_command":
+		return true
+	default:
+		return false
+	}
+}
+
 type productCredentialParams struct {
 	ProviderID          string `json:"provider_id"`
 	CredentialReference string `json:"credential_reference"`
@@ -4983,7 +5163,9 @@ func productServiceError(err error) localipc.Response {
 		errors.Is(err, schedule.ErrInvalidInput),
 		errors.Is(err, app.ErrInvalidIntegrationRequest),
 		errors.Is(err, integration.ErrInvalidInput),
-		errors.Is(err, observability.ErrInvalidInput):
+		errors.Is(err, observability.ErrInvalidInput),
+		errors.Is(err, app.ErrInvalidProductionRequest),
+		errors.Is(err, production.ErrInvalidProductionInput):
 		return productErrorResponse("invalid_request", err)
 	case errors.Is(err, api.ErrTeamTimelineNotFound),
 		errors.Is(err, app.ErrBuilderNotFound),
@@ -5001,9 +5183,12 @@ func productServiceError(err error) localipc.Response {
 		return productErrorResponse("stale_view", err)
 	case errors.Is(err, app.ErrSideTaskProductStaleGeneration), errors.Is(err, assets.ErrStaleGeneration):
 		return productErrorResponse("stale_generation", err)
-	case errors.Is(err, app.ErrSideTaskProductDigestMismatch), errors.Is(err, assets.ErrDigestMismatch):
+	case errors.Is(err, app.ErrSideTaskProductDigestMismatch), errors.Is(err, assets.ErrDigestMismatch),
+		errors.Is(err, production.ErrPreviewDigestMismatch):
 		return productErrorResponse("digest_mismatch", err)
 	case errors.Is(err, app.ErrSideTaskProductHumanRequired):
+		return productErrorResponse("human_required", err)
+	case errors.Is(err, production.ErrAuthorizationRequired):
 		return productErrorResponse("human_required", err)
 	case errors.Is(err, app.ErrBuilderIncompatible), errors.Is(err, assets.ErrIncompatible):
 		return productErrorResponse("incompatible", err)
@@ -5020,6 +5205,10 @@ func productServiceError(err error) localipc.Response {
 		return productErrorResponse("conflict", err)
 	case errors.Is(err, integration.ErrUnauthorizedFrame), errors.Is(err, observability.ErrUnauthorized):
 		return productErrorResponse("denied", err)
+	case errors.Is(err, production.ErrAdminLockBlocksBypass):
+		return productErrorResponse("denied", err)
+	case errors.Is(err, production.ErrDegraded):
+		return productErrorResponse("degraded", err)
 	case errors.Is(err, integration.ErrStaleGeneration), errors.Is(err, observability.ErrStaleFrame):
 		return productErrorResponse("stale_generation", err)
 	case errors.Is(err, integration.ErrMalformedFrame), errors.Is(err, observability.ErrMalformed):
@@ -5105,6 +5294,7 @@ func localipcSafeError(code string, _ error) *localipc.ProtocolError {
 		"cursor_conflict":   {"cursor conflict", true},
 		"stream_gap":        {"stream gap", true},
 		"state_unavailable": {"state unavailable", true},
+		"degraded":          {"production state degraded; writes blocked", true},
 		"timeout":           {"request timed out", true},
 		"internal":          {"internal error", true},
 	}

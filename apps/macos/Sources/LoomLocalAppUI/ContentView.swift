@@ -54,7 +54,9 @@ public struct ContentView: View {
                 async let read: Void = store.refresh()
                 async let setup: Void = store.refreshSetup()
                 async let permissions: Void = store.refreshPermissions()
-                _ = await (read, setup, permissions)
+                async let executions: Void = store.refreshExecutions()
+                async let production: Void = store.refreshProduction()
+                _ = await (read, setup, permissions, executions, production)
             }
         }
         .frame(minWidth: 780, minHeight: 580)
@@ -606,6 +608,50 @@ public struct ContentView: View {
             inbox
         case .system:
             system
+        case .execution:
+            execution
+        case .production:
+            production
+        }
+    }
+
+    private var execution: some View {
+        WorkspaceScroll {
+            PageHeader(
+                title: "Execution",
+                subtitle: "Bounded execution adapter · journal-authoritative tool executions"
+            )
+            if let snapshot = store.executionSnapshot {
+                ExecutionExplorerView(snapshot: snapshot)
+            } else {
+                EmptyPanel(
+                    title: "Execution unavailable",
+                    detail: "The daemon did not return an execution snapshot."
+                )
+            }
+        }
+        .task {
+            await store.refreshExecutions()
+        }
+    }
+
+    private var production: some View {
+        WorkspaceScroll {
+            PageHeader(
+                title: "Production",
+                subtitle: "Resident daemon activation and recovery status"
+            )
+            if let snapshot = store.productionSnapshot {
+                ProductionStatusView(snapshot: snapshot)
+            } else {
+                EmptyPanel(
+                    title: "Production unavailable",
+                    detail: "The daemon did not return a production snapshot."
+                )
+            }
+        }
+        .task {
+            await store.refreshProduction()
         }
     }
 
@@ -1385,6 +1431,8 @@ public struct ContentView: View {
         case .teams: return "person.3"
         case .inbox: return "tray"
         case .system: return "gearshape"
+        case .execution: return "bolt"
+        case .production: return "server.rack"
         }
     }
 }
