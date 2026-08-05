@@ -6276,3 +6276,11 @@ W2 = TWO REAL PARALLEL CANDIDATES / ATOMIC COMMIT 27ef27b5
 W3 = REPEATABLE SELF-HOST CANARY / ATOMIC COMMIT 1fe5f8e8
 PRODUCT CODE = W1 IMPLEMENTED / W2+W3 DEMONSTRATED / NO PUSH
 ```
+
+`CURRENT`: the formal product documentation set is published under
+[`docs/product/`](product/README.md): capability matrix
+(`product/CAPABILITY-MATRIX.md`), complete runbook index
+(`product/RUNBOOKS.md`), TUI user guide (`product/TUI-GUIDE.md`) and native
+app user guide (`product/NATIVE-APP-GUIDE.md`). They document the accepted
+Slice 1/2, Phase 2A/2B/3A and v0.4.0/v0.4.1 capabilities with authoritative
+WorkItem/commit ownership, verification evidence and client surfaces.
