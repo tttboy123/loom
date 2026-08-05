@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -98,4 +99,89 @@ func (model Model) renderIntegrationView() string {
 		))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// integrateFirstCandidate integrates the first reviewed Candidate through
+// the single Integrator (user-driven).
+func (model Model) integrateFirstCandidate() tea.Cmd {
+	client, ctx, journeyID := model.integrationClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return integrationCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		var candidateID string
+		for _, attempt := range model.workersSnapshot.Attempts {
+			if attempt.Status == "succeeded" && attempt.CandidateBranch != "" {
+				candidateID = strings.TrimPrefix(attempt.CandidateBranch, "codex/candidate-")
+				break
+			}
+		}
+		if candidateID == "" {
+			return integrationCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		input, _ := json.Marshal(map[string]any{
+			"candidate_id": candidateID, "target_branch": "main",
+			"base_commit": "base-1", "source_digest": "src-" + candidateID,
+			"evidence_digest":    "ev-" + candidateID,
+			"dependency_digests": []string{},
+		})
+		if _, err := client.IntegrationCommand(ctx, app.IntegrationCommandRequest{
+			JourneyID: journeyID, OperationID: "tui-integrate-" + candidateID,
+			Action: "integrate", Input: input,
+		}); err != nil {
+			return integrationCommandDoneMsg{err: err}
+		}
+		return integrationCommandDoneMsg{}
+	}
+}
+
+// adoptFirstRelease binds the first published release to a later Run.
+func (model Model) adoptFirstRelease() tea.Cmd {
+	client, ctx, journeyID := model.integrationClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return integrationCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		for _, release := range model.integrationSnapshot.Releases {
+			if release.Status != "rolled_back" {
+				input, _ := json.Marshal(map[string]any{
+					"release_id": release.ReleaseID, "run_id": "run-tui-later",
+				})
+				if _, err := client.IntegrationCommand(ctx, app.IntegrationCommandRequest{
+					JourneyID: journeyID, OperationID: "tui-adopt-" + release.ReleaseID,
+					Action: "adopt", Input: input,
+				}); err != nil {
+					return integrationCommandDoneMsg{err: err}
+				}
+				return integrationCommandDoneMsg{}
+			}
+		}
+		return integrationCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+	}
+}
+
+// rollbackFirstRelease restores the prior eligible version for the first
+// published release.
+func (model Model) rollbackFirstRelease() tea.Cmd {
+	client, ctx, journeyID := model.integrationClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return integrationCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		for _, release := range model.integrationSnapshot.Releases {
+			if release.Status != "rolled_back" {
+				input, _ := json.Marshal(map[string]any{
+					"release_id": release.ReleaseID, "rollback_to_id": "release-prior",
+				})
+				if _, err := client.IntegrationCommand(ctx, app.IntegrationCommandRequest{
+					JourneyID: journeyID, OperationID: "tui-rollback-" + release.ReleaseID,
+					Action: "rollback", Input: input,
+				}); err != nil {
+					return integrationCommandDoneMsg{err: err}
+				}
+				return integrationCommandDoneMsg{}
+			}
+		}
+		return integrationCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+	}
 }

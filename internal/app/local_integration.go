@@ -87,11 +87,41 @@ func (service *LocalIntegrationService) ReadSnapshot(ctx context.Context) (Integ
 	}
 	snapshot := IntegrationSnapshot{
 		ViewVersion: "sf3-view",
-		Releases:    releases, Canaries: canaries,
-		Timeline: timeline.Frames, Attention: attention,
+		Releases:    normalizeSnapshotReleases(releases),
+		Canaries:    normalizeSnapshotCanaries(canaries),
+		Timeline:    normalizeSnapshotFrames(timeline.Frames),
+		Attention:   normalizeSnapshotAttention(attention),
 	}
 	service.lastSnapshot = snapshot
 	return snapshot, nil
+}
+
+func normalizeSnapshotReleases(values []integration.ReleaseCandidate) []integration.ReleaseCandidate {
+	if values == nil {
+		return []integration.ReleaseCandidate{}
+	}
+	return values
+}
+
+func normalizeSnapshotCanaries(values []integration.CanaryRun) []integration.CanaryRun {
+	if values == nil {
+		return []integration.CanaryRun{}
+	}
+	return values
+}
+
+func normalizeSnapshotFrames(values []integration.NodeOutputFrame) []integration.NodeOutputFrame {
+	if values == nil {
+		return []integration.NodeOutputFrame{}
+	}
+	return values
+}
+
+func normalizeSnapshotAttention(values []observability.AttentionItem) []observability.AttentionItem {
+	if values == nil {
+		return []observability.AttentionItem{}
+	}
+	return values
 }
 
 // preservedView returns the last-good view (or the rebuild error when no

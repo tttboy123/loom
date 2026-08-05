@@ -104,7 +104,7 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 	if err != nil {
 		t.Fatalf("projectTeamExecutionStream() error = %v", err)
 	}
-	view := buildGlobalReadView(
+	view := mustBuildGlobalReadView(t,
 		emptySnapshot(),
 		events,
 		map[string]TeamExecution{"team-1": record},
@@ -275,7 +275,7 @@ func TestTeamExecutionProjectionReplaysSemanticRecoveryMetadata(t *testing.T) {
 		attempt.OutputSummaryDigest != summaryDigest {
 		t.Fatalf("projected attempt metadata = %#v", attempt)
 	}
-	view := buildGlobalReadView(
+	view := mustBuildGlobalReadView(t,
 		emptySnapshot(),
 		events,
 		map[string]TeamExecution{"team-v2": record},

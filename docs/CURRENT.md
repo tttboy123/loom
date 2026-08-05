@@ -6157,3 +6157,39 @@ SF-W1/W2/W3 = ACCEPTED / ATOMIC LOCAL COMMITS COMPLETE
 SF-W4 = DOES NOT EXIST
 PRODUCT CODE = IMPLEMENTED / DETERMINISTIC MATRIX + JOURNEYS PASS
 ```
+
+`CURRENT`: the v0.4.1 product-line scheduling closure is active on the
+accepted v0.4.0 baseline `7e24ec29` with the frozen
+`.loom-evidence/agent-scheduling/V0.4.1-CONTRACT.md` (three delivery
+boundaries W1 product-line closure, W2 two real parallel Candidates, W3
+repeatable self-host canary; exclusions unchanged; no SF-W4). W1 is
+complete and accepted by its atomic local commit: the real PTY TUI Queue /
+Workers / Integration screens now carry genuine product operations
+(`n` create Job via `queue_command create_job`, `c` claim,
+`t` deterministic test success, `v` read-only Reviewer PASS,
+`i` integrate / `a` adopt / `b` rollback), the production Swift client
+reads the same projection over the real socket, and the integration
+snapshot normalizes empty collections so Swift decodes the exact closed
+shape (no null-array failure). The W1 cross-client journey
+(`105723c8-0595-4f6d-9890-0b411f16cb01`) passed the frozen evidence schema
+and `scripts/verify-v041-w1-cross-client-journey.sh` PASS with the exact
+Journal event set, dual-client IPC, real PTY transcript, native-window
+screenshot, restart/reconnect rebuild checkpoint and empty postflight.
+Deterministic matrix green (Go full/race/vet/tidy/gofmt; Swift full
+96+4). `internal/projection/team_execution_test.go` is owned by this
+candidate as a required test-compilation repair: its two baseline call
+sites fail to compile against the accepted `buildGlobalReadView` signature,
+so they switch to the existing error-asserting `mustBuildGlobalReadView`
+helper (test-only, no product behavior). Implementation / dual-Result /
+Whole-Candidate reviews PASS with P0=P1=P2=0
+(`.loom-evidence/agent-scheduling/V0.4.1-W1-*`). W2 (two genuinely
+parallel development Candidates driven by the Loom scheduling flow) and W3
+(repeatable controlled self-host canary) remain the current gates; no
+push/merge/network/paid/user-config action.
+
+```text
+V0.4.1 = W1 ACCEPTED / ATOMIC LOCAL COMMIT COMPLETE
+W2 = PENDING / TWO REAL PARALLEL CANDIDATES
+W3 = PENDING / REPEATABLE SELF-HOST CANARY
+PRODUCT CODE = W1 IMPLEMENTED / MATRIX + JOURNEY PASS
+```

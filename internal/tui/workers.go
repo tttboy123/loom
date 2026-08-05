@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 	"loom-pi-rebuild/internal/app"
@@ -92,4 +93,97 @@ func (model Model) renderWorkersView() string {
 		lines = append(lines, fmt.Sprintf("Repair wait age: %d", model.workersSnapshot.RepairWait))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// claimFirstJob explicitly dispatches one worker to the first non-terminal
+// queued Job (user-driven; nothing runs automatically).
+func (model Model) claimFirstJob() tea.Cmd {
+	client, ctx, journeyID := model.workersClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return workersCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		var jobID, dagNode string
+		for _, job := range model.queueSnapshot.Jobs {
+			if job.Status == "admitted" || job.Status == "queued" {
+				jobID = job.JobID
+				dagNode = job.DAGNodeID
+				break
+			}
+		}
+		if jobID == "" {
+			return workersCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		workerID := "tui-worker-" + strings.ReplaceAll(dagNode, "_", "-")
+		input, _ := json.Marshal(map[string]any{
+			"worker_id": workerID, "job_id": jobID,
+			"lane": "development", "candidate_branch": "codex/candidate-" + strings.TrimPrefix(workerID, "tui-worker-"),
+			"candidate_worktree": "/private/tmp/" + workerID,
+		})
+		if _, err := client.WorkersCommand(ctx, app.WorkersCommandRequest{
+			JourneyID: journeyID, OperationID: "tui-claim-" + jobID,
+			Action: "claim", Input: input,
+		}); err != nil {
+			return workersCommandDoneMsg{err: err}
+		}
+		return workersCommandDoneMsg{}
+	}
+}
+
+// recordTestSuccess records a deterministic test success for the first open
+// attempt and marks the Candidate ready for review.
+func (model Model) recordTestSuccess() tea.Cmd {
+	client, ctx, journeyID := model.workersClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return workersCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		for _, attempt := range model.workersSnapshot.Attempts {
+			if attempt.Status == "claimed" || attempt.Status == "running" {
+				input, _ := json.Marshal(map[string]any{
+					"attempt_id": attempt.AttemptID, "generation": attempt.Generation,
+					"status": "succeeded", "failure_class": "",
+					"evidence_digests": []string{"tui-test-evidence"},
+					"candidate_ready":  true,
+				})
+				if _, err := client.WorkersCommand(ctx, app.WorkersCommandRequest{
+					JourneyID: journeyID, OperationID: "tui-test-" + attempt.AttemptID,
+					Action: "result", Input: input,
+				}); err != nil {
+					return workersCommandDoneMsg{err: err}
+				}
+				return workersCommandDoneMsg{}
+			}
+		}
+		return workersCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+	}
+}
+
+// recordReviewPass records the read-only Reviewer verdict PASS for the first
+// Candidate ready for review.
+func (model Model) recordReviewPass() tea.Cmd {
+	client, ctx, journeyID := model.workersClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return workersCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		for _, attempt := range model.workersSnapshot.Attempts {
+			if attempt.Status == "succeeded" {
+				input, _ := json.Marshal(map[string]any{
+					"attempt_id": attempt.AttemptID, "generation": attempt.Generation,
+					"status": "succeeded", "failure_class": "",
+					"evidence_digests": []string{"tui-review-evidence"},
+					"review_verdict":   "PASS",
+				})
+				if _, err := client.WorkersCommand(ctx, app.WorkersCommandRequest{
+					JourneyID: journeyID, OperationID: "tui-review-" + attempt.AttemptID,
+					Action: "result", Input: input,
+				}); err != nil {
+					return workersCommandDoneMsg{err: err}
+				}
+				return workersCommandDoneMsg{}
+			}
+		}
+		return workersCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+	}
 }

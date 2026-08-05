@@ -380,6 +380,9 @@ type workersLoadedMsg struct{ snapshot app.WorkersSnapshot }
 type workersFailedMsg struct{ err error }
 type integrationLoadedMsg struct{ snapshot app.IntegrationSnapshot }
 type integrationFailedMsg struct{ err error }
+type queueCommandDoneMsg struct{ err error }
+type workersCommandDoneMsg struct{ err error }
+type integrationCommandDoneMsg struct{ err error }
 
 type builderStartedMsg struct {
 	session app.BuilderSessionView
@@ -433,6 +436,7 @@ const (
 	entryMissionObjective = "mission_objective"
 	entrySideTaskRequest  = "side_task_request"
 	entryEvolutionAsset   = "evolution_asset_name"
+	entryQueueJobPath     = "queue_job_path"
 	entryEvolutionSearch  = "evolution_asset_search"
 )
 
@@ -758,6 +762,30 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 		model.lastError = safeClientState(message.err)
 		return model, nil
+	case queueCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = ""
+		return model, model.loadQueue()
+	case workersCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = ""
+		return model, tea.Batch(model.loadWorkers(), model.loadQueue())
+	case integrationCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = ""
+		return model, model.loadIntegration()
 	case tea.KeyMsg:
 		if model.entryMode != "" {
 			return model.updateEntry(message)
@@ -982,6 +1010,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "n":
+			if model.Screen() == ScreenQueue && model.queueClient != nil {
+				model.entryMode = entryQueueJobPath
+				model.entry = []byte{}
+				return model, nil
+			}
 			if model.Screen() == ScreenAssets && model.assetClient != nil {
 				model.evolutionCreateMode = "create_skill"
 				model.entryMode = entryEvolutionAsset
@@ -1012,6 +1045,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "c":
+			if model.Screen() == ScreenWorkers && model.workersClient != nil {
+				model.loading = true
+				return model, model.claimFirstJob()
+			}
 			if model.Screen() == ScreenMission {
 				if _, ok := model.currentMissionCancelBinding(); ok {
 					model.loading = true
@@ -1025,6 +1062,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.confirmBuilder()
 			}
 		case "a":
+			if model.Screen() == ScreenIntegration && model.integrationClient != nil {
+				model.loading = true
+				return model, model.adoptFirstRelease()
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.pendingEvolutionAction = "activate"
 				return model, nil
@@ -1105,6 +1146,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "t":
+			if model.Screen() == ScreenWorkers && model.workersClient != nil {
+				model.loading = true
+				return model, model.recordTestSuccess()
+			}
 			if model.Screen() == ScreenAssets && model.assetClient != nil {
 				model.evolutionCreateMode = "team_template"
 				model.entryMode = entryEvolutionAsset
@@ -1122,6 +1167,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "v":
+			if model.Screen() == ScreenWorkers && model.workersClient != nil {
+				model.loading = true
+				return model, model.recordReviewPass()
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.loading = true
 				return model, model.compareSelectedEvolutionRevisions()
@@ -1211,11 +1260,19 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "b":
+			if model.Screen() == ScreenIntegration && model.integrationClient != nil {
+				model.loading = true
+				return model, model.rollbackFirstRelease()
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.pendingEvolutionAction = "bind"
 				return model, nil
 			}
 		case "i":
+			if model.Screen() == ScreenIntegration && model.integrationClient != nil {
+				model.loading = true
+				return model, model.integrateFirstCandidate()
+			}
 			if model.Screen() == ScreenAssets && model.assetClient != nil {
 				model.evolutionCreateMode = "import_skill"
 				model.entryMode = entryEvolutionAsset
@@ -3085,6 +3142,17 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			model.loading = true
 			return model, model.createEvolutionAsset(name)
+		}
+		if model.entryMode == entryQueueJobPath {
+			path := strings.TrimSpace(sanitizeCell(string(model.entry), 256))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if path == "" {
+				return model, nil
+			}
+			model.loading = true
+			return model, model.createQueueJob(path)
 		}
 		if len(model.entry) == 0 {
 			return model, nil
