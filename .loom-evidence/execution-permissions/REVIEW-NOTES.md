@@ -114,6 +114,17 @@ VERDICT（Controller 自查）: `PASS-with-repairs` —— 修复后未发现剩
 **B-P1 状态**：代码与证据齐备、全矩阵绿、旅程 verify PASS；唯一未达成项为
 A4（批准生命周期接线，契约 §2/§8 全流程），按治理等待 Product Owner 决策。
 
+## 7. A4 实施与 Controller 收编（2026-08-05）
+
+- A4（批准生命周期接线）已获 Product Owner 授权并实施（`86460c1c`），
+  RED A4-1…A4-8 全绿，旅程 final11 verify PASS。
+- flash 复审代理（bp1_impl_review_v12）在只读指令下仍提交了 A5/A6 修复
+  （`4b0cd75a`）。**Controller 复核**：A5（permission attention/决议仅限
+  permission 域批准，RED A4-9/A4-10）与 A6（同 Job 规则集跨会话复用激活，
+  RED A4-11）内容正确、范围在 owned files 内、全矩阵与旅程 final13
+  （`7266f17f-…`）verify PASS、source-lock 可复现。按既有先例收编，
+  作者权归属本记录；后续 fresh 独立复评仍需补做。
+
 ## 7. Amendment 2（A4）Controller 复核 + 跨流泄漏修复（2026-08-05）
 
 Product Owner 授权 A4 后，发现提交 `86460c1c` 已在授权前由子代理提前写入
