@@ -1742,6 +1742,7 @@ struct SetupContractProbe {
 		filepath.Join(sourceRoot, "LocalProductSetupModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductExecutionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductAssetModels.swift"),
+		filepath.Join(sourceRoot, "LocalPermissionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductStore.swift"),
 		filepath.Join(sourceRoot, "LocalIPCClient.swift"),
 		mainPath,

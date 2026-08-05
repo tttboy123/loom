@@ -331,6 +331,8 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var evolutionAssetDiff: EvolutionAssetDiff?
     @Published public private(set) var evolutionAssetStatus = "Idle"
     @Published public private(set) var evolutionAssetJourneyID = LocalProductStore.initialJourneyID()
+    @Published public private(set) var permissionSnapshot: PermissionSnapshot?
+    @Published public private(set) var permissionAttention: PermissionAttention?
     @Published public var selectedSection: LocalProductSection = .home
     @Published public var selectedTeamID: String?
 
@@ -340,6 +342,7 @@ public final class LocalProductStore: ObservableObject {
     private let executionClient: LocalProductExecutionClientProtocol?
     private let handoffClient: LocalProductHandoffClientProtocol?
     private let assetClient: LocalProductAssetClientProtocol?
+    private let permissionClient: LocalProductPermissionClientProtocol?
     private var executionObjective = ""
     private var pendingSideTaskProposalRequest: LocalProductSideTaskProposalRequest?
     private var timelineLoadGeneration: UInt64 = 0
@@ -360,6 +363,7 @@ public final class LocalProductStore: ObservableObject {
         executionClient = client as? LocalProductExecutionClientProtocol
         handoffClient = client as? LocalProductHandoffClientProtocol
         assetClient = client as? LocalProductAssetClientProtocol
+        permissionClient = client as? LocalProductPermissionClientProtocol
     }
 
     public var providerManagementReachable: Bool {
@@ -1043,6 +1047,26 @@ public final class LocalProductStore: ObservableObject {
                 : .fatal(reason: remote.code.rawValue)
         } catch {
             setupState = .unavailable(reason: closedClientReason(error))
+        }
+    }
+
+    public func refreshPermissions() async {
+        guard let permissionClient else {
+            return
+        }
+        do {
+            async let snapshot = permissionClient.permissionsSnapshot(
+                journeyID: evolutionAssetJourneyID
+            )
+            async let attention = permissionClient.permissionsAttention(
+                journeyID: evolutionAssetJourneyID
+            )
+            let (snap, attn) = try await (snapshot, attention)
+            permissionSnapshot = snap
+            permissionAttention = attn
+        } catch {
+            permissionSnapshot = nil
+            permissionAttention = nil
         }
     }
 

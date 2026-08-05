@@ -279,6 +279,8 @@ private struct EvolutionAssetSnapshotParams: Encodable {
     }
 }
 
+private struct PermissionSnapshotParams: Encodable {}
+
 private struct EvolutionAssetDiffParams: Encodable {
     let definitionID: String
     let leftRevisionID: String
@@ -577,6 +579,34 @@ public final class LocalIPCClient:
             throw LocalProductClientError.invalidResponse
         }
         return receipt
+    }
+
+    public func permissionsSnapshot(
+        journeyID: String
+    ) async throws -> PermissionSnapshot {
+        guard Self.validJourneyID(journeyID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: journeyID,
+            method: "permissions_snapshot",
+            params: PermissionSnapshotParams()
+        )
+        return try PermissionWire.decodeSnapshot(result)
+    }
+
+    public func permissionsAttention(
+        journeyID: String
+    ) async throws -> PermissionAttention {
+        guard Self.validJourneyID(journeyID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await callJourney(
+            journeyID: journeyID,
+            method: "permissions_attention",
+            params: PermissionSnapshotParams()
+        )
+        return try PermissionWire.decodeAttention(result)
     }
 
     public func decideMission(
@@ -930,6 +960,7 @@ public final class LocalIPCClient:
             "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
             "queue_snapshot", "queue_command",
             "workers_snapshot", "workers_command",
+            "permissions_snapshot", "permissions_attention",
         ]
         guard LocalIPCWire.validRequestID(id), Self.validJourneyID(journeyID),
               methods.contains(method) else {

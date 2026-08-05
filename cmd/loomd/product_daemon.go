@@ -1751,6 +1751,18 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_queue", err)
 	}
+	permissionService, err := app.NewLocalPermissionService(
+		store,
+		func() time.Time { return time.Now().UTC() },
+		func() string { return readModel.GlobalReadView().Version() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_permissions", err)
+	}
+	permissionAPI, err := api.NewLocalPermissionAPI(permissionService)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_permissions", err)
+	}
 	workerExecutionService, err := work.NewWorkerExecutionService(
 		store,
 		func() time.Time { return time.Now().UTC() },
@@ -1836,6 +1848,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			queueAPI,
 			workersAPI,
 			integrationAPI,
+			permissionAPI,
 		),
 	))
 	if journeyHarness != nil {
@@ -4269,6 +4282,7 @@ func localProductHandlerWithDecision(
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 }
 
@@ -4283,6 +4297,7 @@ func localProductHandlerWithComposition(
 	queueService *api.LocalQueueAPI,
 	workersService *api.LocalWorkersAPI,
 	integrationService *api.LocalIntegrationAPI,
+	permissionService *api.LocalPermissionAPI,
 ) func(context.Context, localipc.Request) localipc.Response {
 	return func(
 		ctx context.Context,
@@ -4320,6 +4335,9 @@ func localProductHandlerWithComposition(
 		}
 		if productIntegrationMethod(request.Method) && integrationService == nil {
 			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", api.ErrInvalidLocalQueueAPI)
+		}
+		if productPermissionMethod(request.Method) && permissionService == nil {
+			return productJourneyErrorResponse(request.JourneyID, "state_unavailable", app.ErrPermissionStateUnavailable)
 		}
 		switch request.Method {
 		case "snapshot":
@@ -4453,6 +4471,39 @@ func localProductHandlerWithComposition(
 			}
 			input.JourneyID = request.JourneyID
 			result, err := integrationService.Command(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "permissions_snapshot":
+			var input app.PermissionSnapshotRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidPermissionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := permissionService.PermissionSnapshot(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "permissions_attention":
+			var input app.PermissionAttentionRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidPermissionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := permissionService.PermissionAttention(ctx, input)
+			if err != nil {
+				return productJourneyServiceError(request.JourneyID, err)
+			}
+			return productJourneyResultResponse(request.JourneyID, result)
+		case "permissions_command":
+			var input app.PermissionCommandRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productJourneyErrorResponse(request.JourneyID, "invalid_request", app.ErrInvalidPermissionRequest)
+			}
+			input.JourneyID = request.JourneyID
+			result, err := permissionService.PermissionCommand(ctx, input)
 			if err != nil {
 				return productJourneyServiceError(request.JourneyID, err)
 			}
@@ -4754,6 +4805,10 @@ func productWorkersMethod(method string) bool {
 
 func productIntegrationMethod(method string) bool {
 	return method == "integration_snapshot" || method == "integration_command"
+}
+
+func productPermissionMethod(method string) bool {
+	return method == "permissions_snapshot" || method == "permissions_attention" || method == "permissions_command"
 }
 
 type productCredentialParams struct {

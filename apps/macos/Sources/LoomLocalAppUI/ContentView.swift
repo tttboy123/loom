@@ -53,7 +53,8 @@ public struct ContentView: View {
             if refreshOnAppear {
                 async let read: Void = store.refresh()
                 async let setup: Void = store.refreshSetup()
-                _ = await (read, setup)
+                async let permissions: Void = store.refreshPermissions()
+                _ = await (read, setup, permissions)
             }
         }
         .frame(minWidth: 780, minHeight: 580)

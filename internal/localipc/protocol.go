@@ -195,7 +195,8 @@ func requiresJourney(method string) bool {
 	case "evolution_asset_snapshot", "evolution_asset_diff", "evolution_asset_command",
 		"queue_snapshot", "queue_command",
 		"workers_snapshot", "workers_command",
-		"integration_snapshot", "integration_command":
+		"integration_snapshot", "integration_command",
+		"permissions_snapshot", "permissions_attention", "permissions_command":
 		return true
 	default:
 		return false
@@ -320,7 +321,10 @@ func validMethod(method string) bool {
 		"workers_snapshot",
 		"workers_command",
 		"integration_snapshot",
-		"integration_command":
+		"integration_command",
+		"permissions_snapshot",
+		"permissions_attention",
+		"permissions_command":
 		return true
 	default:
 		return false

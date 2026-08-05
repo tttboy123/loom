@@ -55,7 +55,7 @@ func TestSF3IntegrationWireOverSocket(t *testing.T) {
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "sf3-integration-fixture",
 		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
-			nil, nil, nil, nil, nil, nil, nil, nil, nil, integrationAPI,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, integrationAPI, nil,
 		)),
 	})
 	if err != nil {

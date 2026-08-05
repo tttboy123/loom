@@ -43,6 +43,7 @@ const (
 	ScreenQueue       Screen = "Queue"
 	ScreenWorkers     Screen = "Workers"
 	ScreenIntegration Screen = "Integration"
+	ScreenPermissions Screen = "Permissions"
 )
 
 var screens = []Screen{
@@ -58,6 +59,7 @@ var screens = []Screen{
 	ScreenQueue,
 	ScreenWorkers,
 	ScreenIntegration,
+	ScreenPermissions,
 }
 
 type ReadClient interface {
@@ -427,17 +429,19 @@ type sideTaskDecidedMsg struct{ result app.SideTaskDecisionResult }
 type sideTaskFailedMsg struct{ err error }
 
 const (
-	entryBuilderAnswer    = "builder_answer"
-	entryEditName         = "edit_name"
-	entryEditPurpose      = "edit_purpose"
-	entryCredentialPut    = "credential_put"
-	entryCredentialSwap   = "credential_swap"
-	entryTaskSearch       = "task_search"
-	entryMissionObjective = "mission_objective"
-	entrySideTaskRequest  = "side_task_request"
-	entryEvolutionAsset   = "evolution_asset_name"
-	entryQueueJobPath     = "queue_job_path"
-	entryEvolutionSearch  = "evolution_asset_search"
+	entryBuilderAnswer     = "builder_answer"
+	entryEditName          = "edit_name"
+	entryEditPurpose       = "edit_purpose"
+	entryCredentialPut     = "credential_put"
+	entryCredentialSwap    = "credential_swap"
+	entryTaskSearch        = "task_search"
+	entryMissionObjective  = "mission_objective"
+	entrySideTaskRequest   = "side_task_request"
+	entryEvolutionAsset    = "evolution_asset_name"
+	entryQueueJobPath      = "queue_job_path"
+	entryEvolutionSearch   = "evolution_asset_search"
+	entryPermissionProfile = "permission_profile"
+	entryPermissionCall    = "permission_call"
 )
 
 type Model struct {
@@ -449,6 +453,7 @@ type Model struct {
 	queueClient       QueueClient
 	workersClient     WorkersClient
 	integrationClient IntegrationClient
+	permissionClient  PermissionClient
 	ctx               context.Context
 	cancel            context.CancelFunc
 
@@ -492,6 +497,9 @@ type Model struct {
 	queueSnapshot          api.QueueSnapshot
 	workersSnapshot        app.WorkersSnapshot
 	integrationSnapshot    app.IntegrationSnapshot
+	permissionSnapshot     app.PermissionSnapshot
+	permissionAttention    app.PermissionAttention
+	permissionDetail       bool
 	evolutionAssetDiff     api.EvolutionAssetDiff
 	evolutionSearch        string
 	evolutionJourneyID     string
@@ -532,6 +540,7 @@ func newModelWithContext(
 		queueClient:        queueClientFrom(client),
 		workersClient:      workersClientFrom(client),
 		integrationClient:  integrationClientFrom(client),
+		permissionClient:   permissionClientFrom(client),
 		ctx:                ctx,
 		cancel:             cancel,
 		width:              80,
@@ -786,6 +795,42 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.lastError = ""
 		return model, model.loadIntegration()
+	case permissionsLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.permissionSnapshot = message.snapshot
+		model.clampSelection()
+		return model, nil
+	case permissionsFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case permissionAttentionLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.permissionAttention = message.attention
+		return model, nil
+	case permissionAttentionFailedMsg:
+		model.loading = false
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case permissionCommandDoneMsg:
+		model.loading = false
+		if message.err != nil {
+			model.lastError = safeClientState(message.err)
+			return model, nil
+		}
+		model.lastError = message.note
+		return model, tea.Batch(
+			model.loadPermissions(),
+			model.loadPermissionAttention(),
+		)
 	case tea.KeyMsg:
 		if model.entryMode != "" {
 			return model.updateEntry(message)
@@ -809,6 +854,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case "g":
+			if (model.Screen() == ScreenPermissions ||
+				model.Screen() == ScreenAttention) &&
+				model.permissionClient != nil {
+				model.loading = true
+				return model, model.permissionGrantAlways()
+			}
 			if model.Screen() == ScreenTeamBuilder &&
 				model.setupClient != nil {
 				model.entryMode = entryCredentialPut
@@ -845,6 +896,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadIntegration()
 			}
+			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
+				model.loading = true
+				return model, model.loadPermissions()
+			}
+			if model.Screen() == ScreenAttention && model.permissionClient != nil {
+				model.loading = true
+				return model, model.loadPermissionAttention()
+			}
 			return model, nil
 		case "shift+tab", "left":
 			next := model.screenIndex - 1
@@ -867,6 +926,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenIntegration {
 				model.loading = true
 				return model, model.loadIntegration()
+			}
+			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
+				model.loading = true
+				return model, model.loadPermissions()
+			}
+			if model.Screen() == ScreenAttention && model.permissionClient != nil {
+				model.loading = true
+				return model, model.loadPermissionAttention()
 			}
 			return model, nil
 		case "down", "j":
@@ -899,6 +966,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.Screen() == ScreenIntegration {
 				return model, model.loadIntegration()
+			}
+			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
+				return model, model.loadPermissions()
+			}
+			if model.Screen() == ScreenAttention && model.permissionClient != nil {
+				return model, model.loadPermissionAttention()
 			}
 			if model.Screen() == ScreenTeamBuilder {
 				return model, model.loadSetup()
@@ -1010,6 +1083,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "n":
+			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
+				model.entryMode = entryPermissionProfile
+				model.entry = []byte{}
+				return model, nil
+			}
 			if model.Screen() == ScreenQueue && model.queueClient != nil {
 				model.entryMode = entryQueueJobPath
 				model.entry = []byte{}
@@ -1062,6 +1140,13 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.confirmBuilder()
 			}
 		case "a":
+			if (model.Screen() == ScreenPermissions ||
+				model.Screen() == ScreenAttention) &&
+				model.permissionClient != nil &&
+				len(model.permissionAttention.Decisions) > 0 {
+				model.loading = true
+				return model, model.permissionResolveDecision("allow")
+			}
 			if model.Screen() == ScreenIntegration && model.integrationClient != nil {
 				model.loading = true
 				return model, model.adoptFirstRelease()
@@ -1167,6 +1252,12 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "v":
+			if (model.Screen() == ScreenPermissions ||
+				model.Screen() == ScreenAttention) &&
+				model.permissionClient != nil {
+				model.permissionDetail = !model.permissionDetail
+				return model, nil
+			}
 			if model.Screen() == ScreenWorkers && model.workersClient != nil {
 				model.loading = true
 				return model, model.recordReviewPass()
@@ -1182,6 +1273,17 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.verifyCredential()
 			}
 		case "x":
+			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
+				model.entryMode = entryPermissionCall
+				model.entry = []byte{}
+				return model, nil
+			}
+			if model.Screen() == ScreenAttention &&
+				model.permissionClient != nil &&
+				len(model.permissionAttention.Decisions) > 0 {
+				model.loading = true
+				return model, model.permissionResolveDecision("deny")
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.pendingEvolutionAction = "reject"
 				return model, nil
@@ -1243,6 +1345,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "d":
+			if model.Screen() == ScreenPermissions {
+				model.permissionDetail = !model.permissionDetail
+				return model, nil
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.pendingEvolutionAction = "archive_toggle"
 				return model, nil
@@ -1260,6 +1366,13 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "b":
+			if model.Screen() == ScreenPermissions &&
+				model.permissionClient != nil &&
+				model.selected < len(model.queueSnapshot.Jobs) &&
+				len(model.permissionSnapshot.Profiles) > 0 {
+				model.loading = true
+				return model, model.permissionBindSelected()
+			}
 			if model.Screen() == ScreenIntegration && model.integrationClient != nil {
 				model.loading = true
 				return model, model.rollbackFirstRelease()
@@ -1744,14 +1857,27 @@ func (model Model) screenBody() string {
 	case ScreenCompare:
 		return model.renderCompare()
 	case ScreenAttention:
-		lines := []string{"Needs your attention"}
+		lines := []string{"Needs your attention · a approve · x reject · g grant-always · v view"}
 		for _, item := range model.snapshot.Attention {
 			lines = append(lines, fmt.Sprintf(
 				"• %s",
 				sanitizeCell(item.ActionRequired, 64),
 			))
 		}
-		return emptyOrLines(lines, len(model.snapshot.Attention))
+		for _, decision := range model.permissionAttention.Decisions {
+			lines = append(lines, fmt.Sprintf(
+				"• Permission %s · %s · %s",
+				sanitizeCell(decision.JobID, 24),
+				sanitizeCell(decision.Reason, 40),
+				sanitizeCell(decision.AuthorizationPath, 48),
+			))
+		}
+		return emptyOrLines(
+			lines,
+			len(model.snapshot.Attention)+len(model.permissionAttention.Decisions),
+		)
+	case ScreenPermissions:
+		return model.renderPermissionsView()
 	case ScreenTimeline:
 		lines := []string{"Team · Context · Changes · Evidence"}
 		if model.currentTeam == "" &&
@@ -3153,6 +3279,28 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			model.loading = true
 			return model, model.createQueueJob(path)
+		}
+		if model.entryMode == entryPermissionProfile {
+			profileID := strings.TrimSpace(sanitizeCell(string(model.entry), 128))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if profileID == "" {
+				return model, nil
+			}
+			model.loading = true
+			return model, model.permissionDefineDefault(profileID)
+		}
+		if model.entryMode == entryPermissionCall {
+			command := strings.TrimSpace(sanitizeCell(string(model.entry), 512))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if command == "" {
+				return model, nil
+			}
+			model.loading = true
+			return model, model.permissionValidateCall(command)
 		}
 		if len(model.entry) == 0 {
 			return model, nil

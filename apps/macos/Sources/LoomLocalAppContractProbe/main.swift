@@ -98,6 +98,15 @@ private struct ProbeIntegrationCommandOutput: Encodable {
     let disposition: String?
 }
 
+private struct ProbePermissionOutput: Encodable {
+    let viewVersion: String
+    let profiles: Int
+    let bindings: Int
+    let rules: Int
+    let decisions: Int
+    let adminLock: Bool
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
@@ -120,6 +129,8 @@ enum LoomLocalAppContractProbe {
                         || arguments[3] == "--queue-gap-observe"
                         || arguments[3] == "--queue-successor-compile")
                     || arguments.count == 6 && arguments[3] == "--side-task-read"
+                    || arguments.count == 5 && (arguments[3] == "--permissions-snapshot"
+                        || arguments[3] == "--permissions-attention")
             else {
                 throw LocalProductClientError.invalidRequest
             }
@@ -240,6 +251,38 @@ enum LoomLocalAppContractProbe {
                     releaseID: receipt.releaseID,
                     canaryID: receipt.canaryID,
                     disposition: receipt.disposition
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--permissions-snapshot" {
+                let snapshot = try await client.permissionsSnapshot(journeyID: arguments[4])
+                let encoded = try JSONEncoder().encode(ProbePermissionOutput(
+                    viewVersion: snapshot.viewVersion,
+                    profiles: snapshot.profiles.count,
+                    bindings: snapshot.bindings.count,
+                    rules: snapshot.rules.count,
+                    decisions: 0,
+                    adminLock: snapshot.adminLock
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
+            }
+            if arguments.count == 5 && arguments[3] == "--permissions-attention" {
+                let attention = try await client.permissionsAttention(journeyID: arguments[4])
+                let encoded = try JSONEncoder().encode(ProbePermissionOutput(
+                    viewVersion: attention.viewVersion,
+                    profiles: 0,
+                    bindings: 0,
+                    rules: 0,
+                    decisions: attention.decisions.count,
+                    adminLock: false
                 ))
                 guard let output = String(data: encoded, encoding: .utf8) else {
                     throw LocalProductClientError.invalidResponse

@@ -49,7 +49,7 @@ func TestSF2WorkersWireOverSocket(t *testing.T) {
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "sf2-workers-fixture",
 		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
-			nil, nil, nil, nil, nil, nil, nil, nil, workersAPI, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil, workersAPI, nil, nil,
 		)),
 	})
 	if err != nil {
