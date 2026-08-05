@@ -23,7 +23,7 @@
 | 核心实现 | `3d750465`（internal/execution + daemon/app/api/TUI/Swift 表面） | ✅ |
 | Controller 修复 | approved-resume partial-batch 冲突、approved-ask resume 语义、worktree 自动预置 | ✅ |
 | RED 矩阵 | `internal/execution` 11 测试（allow/ask/deny/崩溃/重放/越界/幂等/隔离/密钥） | ✅ 全绿 |
-| 跨客户端旅程 | `/private/tmp/bw1-journey-final`（`7794d968-c8a8-46ba-9c1b-1a2e5bae81c7`）：真实执行 propose→ask→A4 批准→resume 执行；`verify-bw1-cross-client-journey.sh` PASS（本次复验） | ✅ |
+| 跨客户端旅程（当前分支新鲜重跑） | `/private/tmp/bw1-current2.bHj5C6`（`e515cc3f-4562-4989-a3e9-1f6628f0cbef`）：真实 daemon + Pi 运行时 + 原生 app + TUI；propose→ask→A4 批准→resume 执行；事实集 ToolExecutionProposed/Allowed/Completed=1 + ApprovalRequested/Decided=1；`verify-bw1-cross-client-journey.sh` PASS | ✅ |
 | 全矩阵 | Go build/vet/test 全 PASS；Swift 98 tests PASS（实现时） | ✅ |
 | 不变量 | 模型输出非执行权威；Journal 唯一权威；证据 digest-only；无第二套批准/规则 | ✅ |
 | 默认关闭 | 无 profile/policy 时不改变本机执行语义（Phase 3B wire 覆盖） | ✅ |
@@ -33,7 +33,7 @@
 ```text
 B-W1 = 生产可用验收证据齐备（ACCEPTANCE REQUESTED）
 实现提交 = 3d750465（+ Controller 修复）
-旅程 = bw1-journey-final（7794d968…）verify PASS（2026-08-06 复验）
+旅程 = bw1-current2（e515cc3f…）verify PASS（2026-08-06 当前分支重跑）
 全矩阵 = Go 全 PASS
 开放项 = flash 独立评审（通道不可用，记录 REVIEW-NOTES）
 ```
@@ -43,14 +43,10 @@ B-W1 = 生产可用验收证据齐备（ACCEPTANCE REQUESTED）
 C-W1 显式激活（launchd/常驻 daemon）与生产发布仍需 Product Owner 单独显式
 批准（不变量 8 + 激活流程）；本包只申请"验收确认"，不自动激活。
 
-## 5. 当前分支复跑说明（2026-08-06）
+## 5. 当前分支重跑（2026-08-06）
 
-- 尝试用 bcw-journey.py 在当前分支（含 Phase 3 扩展，17 屏 TUI）重跑：
-  产品侧首个周期正确到达 ask（Journal 事实 ToolExecutionProposed=1 /
-  ApprovalRequested=1 / WorkItemApprovalPaused=1），随后外部 PTY 驱动的
-  按键计划按 16 屏调校、新增 Autopilot 屏后按键落点偏移，A4 批准键未落在
-  Attention 屏 → verify 报缺 ApprovalDecided。此为驱动适配问题（/tmp
-  临时工具），非 B-W1 产品回归；执行适配器语义未变（Phase 3 扩展对
-  B-W1 默认路径零行为变更，sandbox gate nil）。
-- 验收证据以既有已复验旅程（`7794d968…` verify PASS）+ 当前分支全 Go 矩阵
-  绿为准；驱动按键计划适配为记录型开放项（不影响验收结论）。
+- 外部 PTY 驱动（bcw-journey.py）按键计划按 16 屏调校；新增 Autopilot 屏后
+  将 approve 前导航 tab 数 8→10、并在批准前加 refresh 等待异步加载，当前
+  分支 17 屏 TUI 下旅程 PASS（`e515cc3f…`）。驱动适配仅为临时工具变更，
+  产品代码无回归。
+- 既有旅程 `7794d968…` 亦复验 PASS（证据可追溯性保持）。

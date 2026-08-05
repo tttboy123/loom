@@ -42,8 +42,8 @@ flowchart TD
 | Phase 3A | `7d5f0b01`（P3A-W1） | phase3a 八场景 |
 | 调度框架 | `7e24ec29`（SF-W1..W3）→ `073ed862`（v0.4.1） | sf/v041 旅程 |
 | B-P1 | `91d14f42` 链 → `f5b7009d`（ACCEPTED） | final13（`7266f17f…`） |
-| B-W1 | `3d750465` / `f69b49d9` | bw1-journey-final（`a67cc294…`） |
-| C-W1 | `d4a1b9ee` / `f69b49d9` | cw1-journey-final2（`9568c47d…`） |
+| B-W1 | `3d750465` / `f69b49d9` | bw1-current2（`e515cc3f…`） |
+| C-W1 | `d4a1b9ee` / `f69b49d9` | cw1-current（`5aa03cdf…`） |
 | W-BRIDGE | `cf9360aa` | wbridge-journey（`88251c25…` 等） |
 | W-RULES | `46d522ff` | wrules-journey-final6（`83bfef4f…`） |
 | Phase 3B | `7beab591` | phase3b-canary（`3e296b89…` 等） |

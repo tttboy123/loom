@@ -21,7 +21,7 @@
 | Gate 1 冻结 | `C-W1-CONTRACT.md`（Controller 冷读 + Product Owner Goal 指令） | ✅ |
 | 核心实现 | `d4a1b9ee`（internal/production + daemon/app/api/TUI/Swift 表面） | ✅ |
 | Controller 修复 | activation preview digest 确定性化（去时间戳）；TUI preview digest 回传 | ✅ |
-| 跨客户端旅程 | `/private/tmp/cw1-journey-final2`（`9568c47d-6852-4eed-832a-78c3771247c8`）：Production 屏 preview→confirm→激活；`verify-cw1-cross-client-journey.sh` PASS（本次复验） | ✅ |
+| 跨客户端旅程（当前分支新鲜重跑） | `/private/tmp/cw1-current.Sx27ug`（`5aa03cdf-76fd-41b9-92a4-177f7b11f158`）：真实 daemon + Pi 运行时 + 原生 app + TUI；Production 屏 preview→confirm→激活；事实集 ProductionActivationActivated=1 + ProductionConfigWritten=1（配置写入注入沙箱根）；`verify-cw1-cross-client-journey.sh` PASS | ✅ |
 | 全矩阵 | Go build/vet/test 全 PASS；Swift 98 tests PASS（实现时） | ✅ |
 | 不变量 | 激活需 human 授权；配置写入先事实后落盘；沙箱根注入；无自动激活 | ✅ |
 | 默认关闭 | 无显式激活时系统状态不变 | ✅ |
@@ -31,7 +31,12 @@
 ```text
 C-W1 = 生产可用验收证据齐备（ACCEPTANCE REQUESTED）
 实现提交 = d4a1b9ee（+ Controller 修复）
-旅程 = cw1-journey-final2（9568c47d…）verify PASS（2026-08-06 复验）
+旅程 = cw1-current（5aa03cdf…）verify PASS（2026-08-06 当前分支重跑）
+
+## 5. 当前分支重跑（2026-08-06）
+
+- cw1_plan 的 14-tab 导航（Board→Production）在 17 屏布局下不跨回绕，驱动
+  无需改动即 PASS（`5aa03cdf…`）；既有旅程 `9568c47d…` 亦复验 PASS。
 全矩阵 = Go 全 PASS
 开放项 = flash 独立评审（通道不可用，记录 REVIEW-NOTES）
 ```
