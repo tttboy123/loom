@@ -6305,12 +6305,15 @@ journey/canary verify PASS:
   (`cf56a3d1`); review notes and per-node open items in
   `.loom-evidence/execution-adapter/`.
 
-`PARTIAL`: B-W1 and C-W1 production acceptance evidence is complete (journey
-roots recorded in PHASE-TREE), awaiting Product Owner confirmation; real
-activation (C-W1 launchd/daemon activation) remains gated on explicit human
-approval. Flash independent review remains an open item for every Phase 3
-node (channel unavailable; Controller cold-read + Product Owner Goal
-directive used per established precedent).
+`PARTIAL`: B-W1 and C-W1 production acceptance evidence is complete and
+freshly re-run on the current branch (B-W1 `e515cc3f…`, C-W1 `5aa03cdf…`
+cross-client journeys PASS; acceptance packages under
+`.loom-evidence/execution-adapter/B-W1-ACCEPTANCE.md` and
+`C-W1-ACCEPTANCE.md`), awaiting Product Owner confirmation; real activation
+(C-W1 launchd/daemon activation) remains gated on explicit human approval.
+Flash independent review remains an open item for every Phase 3 node
+(channel unavailable; Controller cold-read + Product Owner Goal directive
+used per established precedent).
 
 `EXPERIMENTAL`: Phase 3B sandbox and W-AUTONOMY are default off; no behavior
 change without explicit opt-in. No push/merge/activation/credential changes
