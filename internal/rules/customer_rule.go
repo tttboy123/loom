@@ -616,6 +616,52 @@ func parsePermissionsTOML(content []byte) ([]CustomerRule, error) {
 			}
 			current = &CustomerRule{RuleID: strings.Trim(fields[1], `"'`),
 				Scope: strings.Trim(fields[2], `"'`), ScopeID: strings.Trim(fields[3], `"'`)}
+			// Support single-line entry: trailing "key value" pairs after the
+			// required rule/scope/scope-id tokens (quoted values allowed).
+			rest := fields[4:]
+			for index := 0; index+1 < len(rest); index += 2 {
+				pairKey := rest[index]
+				pairValue := strings.Trim(rest[index+1], `"'`)
+				switch pairKey {
+				case "action":
+					current.Action = pairValue
+				case "risk":
+					current.Risk = pairValue
+				case "effect":
+					current.Effect = CustomerRuleEffectKind(pairValue)
+				case "approver":
+					current.ApproverRefs = append(current.ApproverRefs, pairValue)
+				case "timeout":
+					seconds, err := strconv.ParseInt(pairValue, 10, 64)
+					if err != nil {
+						return nil, ErrCustomerRuleImport
+					}
+					current.Timeout = time.Duration(seconds) * time.Second
+				case "on_timeout":
+					current.OnTimeout = pairValue
+				case "budget":
+					current.BudgetUnit = pairValue
+					if index+2 < len(rest) {
+						limit, err := strconv.ParseInt(strings.Trim(rest[index+2], `"'`), 10, 64)
+						if err == nil {
+							current.BudgetLimit = limit
+							index++
+							if index+2 < len(rest) && rest[index+1] == "period" {
+								seconds, perr := strconv.ParseInt(strings.Trim(rest[index+2], `"'`), 10, 64)
+								if perr == nil {
+									current.BudgetPeriod = time.Duration(seconds) * time.Second
+									index += 2
+								}
+							}
+						}
+					}
+				case "expires":
+					unix, err := strconv.ParseInt(pairValue, 10, 64)
+					if err == nil {
+						current.ExpiresAt = time.Unix(unix, 0).UTC()
+					}
+				}
+			}
 		case "action":
 			if current == nil {
 				return nil, ErrCustomerRuleImport

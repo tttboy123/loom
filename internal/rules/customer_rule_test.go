@@ -142,3 +142,18 @@ func wrTestContext() ActionContext {
 func wrInt(i int) string {
 	return string(rune('0' + i))
 }
+
+func TestRedWR7b_SingleLineImport(t *testing.T) {
+	content := []byte(`rule "rule-journey" project "project-1" action "publish" risk "high" effect "require_approval" approver "approver:permission-owner" timeout 3600 on_timeout "reject" budget calls 10`)
+	rules, err := parsePermissionsTOML(content)
+	if err != nil {
+		t.Fatalf("parse error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].RuleID != "rule-journey" ||
+		rules[0].Effect != EffectRequireApproval || rules[0].BudgetLimit != 10 {
+		t.Fatalf("rules = %+v", rules)
+	}
+	if err := validateCustomerRule(rules[0]); err != nil {
+		t.Fatalf("validate = %v", err)
+	}
+}

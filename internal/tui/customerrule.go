@@ -10,6 +10,7 @@ import (
 
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/rules"
 )
 
 type CustomerRuleClient interface {
@@ -109,6 +110,26 @@ func (model Model) customerRuleEvaluate() tea.Cmd {
 		}
 		return customerRuleCommandDoneMsg{note: fmt.Sprintf(
 			"rule %s effect %s", result.Decision.RuleID, result.Decision.Effect)}
+	}
+}
+
+// customerRuleDefineBuiltin defines the frozen journey rule without typed
+// entry, exercising the define command end to end.
+func (model Model) customerRuleDefineBuiltin() tea.Cmd {
+	client, ctx, journeyID := model.customerRuleClient, model.ctx, model.evolutionJourneyID
+	return func() tea.Msg {
+		if client == nil {
+			return customerRuleCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		input, _ := json.Marshal(rules.CustomerRule{
+			RuleID: "rule-journey", Scope: rules.CustomerScopeProject, ScopeID: "project-1",
+			Action: "publish", Risk: "high", Effect: rules.EffectReportOnly,
+		})
+		_, err := client.CustomerRuleCommand(ctx, app.CustomerRuleCommandRequest{
+			JourneyID: journeyID, OperationID: "tui-rule-define",
+			Action: "define", Input: input,
+		})
+		return customerRuleCommandDoneMsg{err: err, note: "rule defined"}
 	}
 }
 

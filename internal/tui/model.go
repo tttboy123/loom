@@ -1206,6 +1206,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "n":
+			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
+				model.loading = true
+				return model, model.customerRuleDefineBuiltin()
+			}
 			if model.Screen() == ScreenPermissions && model.permissionClient != nil {
 				model.entryMode = entryPermissionProfile
 				model.entry = []byte{}
