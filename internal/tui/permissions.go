@@ -248,25 +248,26 @@ func (model Model) permissionValidateCall(command string) tea.Cmd {
 	}
 }
 
-// permissionResolveDecision forwards approval resolution to the existing rules
-// authority (typed forward; wired at B-P1 integration).
+// permissionResolveDecision resolves a pending permission approval through the
+// existing rules authority (allow -> approved, deny -> rejected).
 func (model Model) permissionResolveDecision(resolution string) tea.Cmd {
 	client, ctx, journeyID := model.permissionClient, model.ctx, model.evolutionJourneyID
 	return func() tea.Msg {
 		if client == nil {
 			return permissionCommandDoneMsg{err: localipc.ErrLocalProductUnavailable}
 		}
-		if len(model.permissionAttention.Decisions) == 0 {
+		if len(model.permissionAttention.Approvals) == 0 {
 			return permissionCommandDoneMsg{err: app.ErrInvalidPermissionRequest}
 		}
-		decision := model.permissionAttention.Decisions[0]
+		approval := model.permissionAttention.Approvals[0]
 		input, _ := json.Marshal(map[string]any{
-			"approval_id": decision.ApprovalID,
-			"resolution":  resolution,
-			"resolved_by": "tui-user",
+			"approval_id":     approval.ApprovalID,
+			"approval_digest": approval.Digest,
+			"resolution":      resolution,
+			"resolved_by":     "tui-user",
 		})
 		_, err := client.PermissionCommand(ctx, app.PermissionCommandRequest{
-			JourneyID: journeyID, OperationID: "tui-resolve-" + decision.JobID,
+			JourneyID: journeyID, OperationID: "tui-resolve-" + approval.JobID,
 			Action: "resolve_approval", Input: input,
 		})
 		return permissionCommandDoneMsg{err: err}

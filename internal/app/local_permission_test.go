@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/permissions"
+	"loom-pi-rebuild/internal/rules"
 
 	_ "modernc.org/sqlite"
 )
@@ -39,7 +41,7 @@ func openPermAppStore(t testing.TB) *journal.Store {
 func mustPermService(t testing.TB, store *journal.Store) *LocalPermissionService {
 	t.Helper()
 	clock := func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
-	service, err := NewLocalPermissionService(store, clock, func() string { return "view-v1" })
+	service, err := NewLocalPermissionService(store, clock, func() string { return "view-v1" }, nil)
 	if err != nil {
 		t.Fatalf("NewLocalPermissionService() error = %v", err)
 	}
@@ -160,6 +162,140 @@ func TestValidateCallAllowAndAskDecisionFact(t *testing.T) {
 		attention.Decisions[0].Tool != permissions.ToolBash {
 		t.Fatalf("decision fact missing call details: %+v", attention.Decisions[0])
 	}
+}
+
+func TestA48ApprovalLifecycleWiredThroughRulesPort(t *testing.T) {
+	store := openPermAppStore(t)
+	clock := func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
+	port := mustAppApprovalPort(t, store, clock)
+	service, err := NewLocalPermissionService(store, clock, func() string { return "view-v1" }, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "define_profile", permissions.ProfileInput{
+		ProfileID: "profile-a48", Mode: permissions.ModeDefault,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "bind_job", struct {
+		JobID     string `json:"job_id"`
+		ProfileID string `json:"profile_id"`
+	}{JobID: "job-a48", ProfileID: "profile-a48"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "add_rule", struct {
+		Rule         permissions.Rule `json:"rule"`
+		AuthorizedBy string           `json:"authorized_by"`
+	}{Rule: permissions.Rule{
+		RuleID: "r-a48-ask", Scope: permissions.ScopeJob, ScopeID: "job-a48",
+		Action: permissions.ActionAsk, Tool: permissions.ToolBash, Pattern: "curl *",
+	}, AuthorizedBy: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	ask, err := permissionCommand(t, service, "validate_call", struct {
+		JobID string                   `json:"job_id"`
+		Call  permissions.ProposedCall `json:"call"`
+	}{JobID: "job-a48", Call: permissions.ProposedCall{
+		Tool: permissions.ToolBash, Command: "curl https://example.com",
+	}})
+	if err != nil {
+		t.Fatalf("validate_call error = %v", err)
+	}
+	if ask.Verdict != permissions.VerdictAsk || ask.ApprovalID == "" || ask.ApprovalDigest == "" {
+		t.Fatalf("ask result missing approval: %+v", ask)
+	}
+	attention, err := service.PermissionAttention(context.Background(), PermissionAttentionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attention.Approvals) != 1 || attention.Approvals[0].JobID != "job-a48" ||
+		attention.Approvals[0].Status != "pending" {
+		t.Fatalf("pending approval missing from attention: %+v", attention.Approvals)
+	}
+	approved, err := permissionCommand(t, service, "resolve_approval", struct {
+		ApprovalID     string `json:"approval_id"`
+		ApprovalDigest string `json:"approval_digest"`
+		Resolution     string `json:"resolution"`
+		ResolvedBy     string `json:"resolved_by"`
+	}{ApprovalID: ask.ApprovalID, ApprovalDigest: ask.ApprovalDigest,
+		Resolution: "allow", ResolvedBy: "user-1"})
+	if err != nil {
+		t.Fatalf("resolve_approval error = %v", err)
+	}
+	if approved.Note == "" || approved.ApprovalID == "" {
+		t.Fatalf("resolve result = %+v", approved)
+	}
+	after, err := service.PermissionAttention(context.Background(), PermissionAttentionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Approvals) != 0 {
+		t.Fatalf("resolved approval must leave attention: %+v", after.Approvals)
+	}
+}
+
+type appTestApprovalPort struct {
+	authority *rules.Authority
+	clock     func() time.Time
+}
+
+func mustAppApprovalPort(t testing.TB, store *journal.Store, clock func() time.Time) ApprovalPort {
+	t.Helper()
+	authority, err := rules.NewAuthority(store, &appTestAuthorizer{clock: clock}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &appTestApprovalPort{authority: authority, clock: clock}
+}
+
+func (port *appTestApprovalPort) RequestPermissionApproval(
+	ctx context.Context,
+	input rules.PermissionApprovalInput,
+) (rules.ApprovalRequestRecord, error) {
+	return port.authority.RequestPermissionApproval(ctx, input)
+}
+
+func (port *appTestApprovalPort) DecidePermissionApproval(
+	ctx context.Context,
+	approvalID, approvalDigest, decision, resolvedBy, correlationID string,
+) (rules.ApprovalRequestRecord, error) {
+	return port.authority.DecidePermissionApproval(
+		ctx, approvalID, approvalDigest, decision, resolvedBy, correlationID,
+	)
+}
+
+type appTestAuthorizer struct {
+	clock func() time.Time
+}
+
+func (authorizer *appTestAuthorizer) AuthorizeRuleSet(
+	ctx context.Context,
+	request rules.RuleSetActivationRequest,
+) (rules.AuthorizedRuleSetActivation, error) {
+	if err := ctx.Err(); err != nil {
+		return rules.AuthorizedRuleSetActivation{}, err
+	}
+	digest := sha256.Sum256([]byte("app-rule-auth"))
+	now := authorizer.clock()
+	return rules.NewAuthorizedRuleSetActivation(
+		request, "approver:permission-owner", fmt.Sprintf("%x", digest[:]),
+		now, now.Add(time.Hour),
+	)
+}
+
+func (authorizer *appTestAuthorizer) AuthorizeApprovalDecision(
+	ctx context.Context,
+	request rules.ApprovalDecisionRequest,
+) (rules.AuthorizedApprovalDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return rules.AuthorizedApprovalDecision{}, err
+	}
+	digest := sha256.Sum256([]byte("app-decision-auth"))
+	now := authorizer.clock()
+	return rules.NewAuthorizedApprovalDecision(
+		request, "approver:permission-owner", fmt.Sprintf("%x", digest[:]),
+		now, now.Add(time.Hour),
+	)
 }
 
 func TestPermissionCommandUnknownActionAndUnboundJob(t *testing.T) {

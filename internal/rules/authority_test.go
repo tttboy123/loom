@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1500,4 +1501,201 @@ func countRulesEventTypes(events []journal.Event, types ...string) int {
 		}
 	}
 	return count
+}
+
+func TestA41PermissionApprovalRequestedPendingWithRulesFacts(t *testing.T) {
+	store := openRulesStore(t)
+	authorizer := &rulesTestAuthorizer{
+		actor: "approver:permission-owner",
+		now:   time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+	}
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	record, err := authority.RequestPermissionApproval(
+		context.Background(),
+		PermissionApprovalInput{
+			JobID: "job-perm-a4", CallDigest: rulesTestContract,
+			Tool: "Bash", Command: "curl https://example.com",
+			RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+		},
+	)
+	if err != nil {
+		t.Fatalf("RequestPermissionApproval() error = %v", err)
+	}
+	if record.Status() != "pending" || record.WorkItemID() != "job-perm-a4" {
+		t.Fatalf("record = %+v", record)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"WorkItemCreated", "WorkItemAssigned",
+		"ApprovalRequested", "WorkItemApprovalPaused",
+	} {
+		if countRulesEventTypes(events, want) != 1 {
+			t.Fatalf("event %s count != 1: %+v", want, events)
+		}
+	}
+	for _, event := range events {
+		if event.Type == "PermissionApproval" ||
+			strings.Contains(event.Type, "PermissionApproval") {
+			t.Fatalf("permission layer must reuse rules approval events, got %s", event.Type)
+		}
+	}
+}
+
+func TestA42PermissionApprovalIdempotent(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	input := PermissionApprovalInput{
+		JobID: "job-perm-a4", CallDigest: rulesTestContract,
+		Tool: "Bash", Command: "curl https://example.com",
+		RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+	}
+	first, err := authority.RequestPermissionApproval(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(mustRulesReadAll(t, store))
+	second, err := authority.RequestPermissionApproval(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID() != first.ID() {
+		t.Fatalf("idempotent approval id mismatch: %s vs %s", second.ID(), first.ID())
+	}
+	if after := len(mustRulesReadAll(t, store)); after != before {
+		t.Fatalf("idempotent request duplicated facts: %d -> %d", before, after)
+	}
+}
+
+func TestA43PermissionApprovalResolveApproved(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	record, err := authority.RequestPermissionApproval(context.Background(), PermissionApprovalInput{
+		JobID: "job-perm-a4", CallDigest: rulesTestContract,
+		Tool: "Bash", Command: "curl https://example.com",
+		RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decided, err := authority.DecidePermissionApproval(
+		context.Background(), record.ID(), record.Digest(), "approved",
+		"user-1", rulesTestCorrelation,
+	)
+	if err != nil {
+		t.Fatalf("DecidePermissionApproval() error = %v", err)
+	}
+	if decided.Status() != "approved" ||
+		decided.DecisionActorRef() != "approver:permission-owner" {
+		t.Fatalf("decided = %+v", decided)
+	}
+	events, _ := store.ReadAll(context.Background())
+	if countRulesEventTypes(events, "ApprovalDecided") != 1 ||
+		countRulesEventTypes(events, "WorkItemApprovalResolved") != 1 {
+		t.Fatalf("resolution facts missing: %+v", events)
+	}
+}
+
+func TestA44PermissionApprovalResolveRejected(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	record, err := authority.RequestPermissionApproval(context.Background(), PermissionApprovalInput{
+		JobID: "job-perm-a4", CallDigest: rulesTestContract,
+		Tool: "Bash", Command: "curl https://example.com",
+		RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decided, err := authority.DecidePermissionApproval(
+		context.Background(), record.ID(), record.Digest(), "rejected",
+		"user-1", rulesTestCorrelation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decided.Status() != "rejected" {
+		t.Fatalf("status = %s, want rejected", decided.Status())
+	}
+}
+
+func TestA45PermissionApprovalRejectsEmptyActorAndDoubleResolve(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	authority := mustRulesAuthority(t, store, authorizer, clock)
+	record, err := authority.RequestPermissionApproval(context.Background(), PermissionApprovalInput{
+		JobID: "job-perm-a4", CallDigest: rulesTestContract,
+		Tool: "Bash", Command: "curl https://example.com",
+		RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.DecidePermissionApproval(
+		context.Background(), record.ID(), record.Digest(), "approved", "", rulesTestCorrelation,
+	); err == nil {
+		t.Fatal("empty resolvedBy must error")
+	}
+	if _, err := authority.DecidePermissionApproval(
+		context.Background(), record.ID(), record.Digest(), "approved",
+		"user-1", rulesTestCorrelation,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.DecidePermissionApproval(
+		context.Background(), record.ID(), record.Digest(), "rejected",
+		"user-1", rulesTestCorrelation,
+	); err == nil {
+		t.Fatal("double resolve must error")
+	}
+}
+
+func TestA46PermissionApprovalSurvivesRestart(t *testing.T) {
+	store := openRulesStore(t)
+	clock := &rulesTestClock{now: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)}
+	authorizer := &rulesTestAuthorizer{actor: "approver:permission-owner", now: clock.now}
+	first := mustRulesAuthority(t, store, authorizer, clock)
+	input := PermissionApprovalInput{
+		JobID: "job-perm-a4", CallDigest: rulesTestContract,
+		Tool: "Bash", Command: "curl https://example.com",
+		RequestedAt: clock.now, CorrelationID: rulesTestCorrelation,
+	}
+	record, err := first.RequestPermissionApproval(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := mustRulesAuthority(t, store, authorizer, clock)
+	again, err := restarted.RequestPermissionApproval(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID() != record.ID() || again.Status() != "pending" {
+		t.Fatalf("restart lost approval: %s %s", again.ID(), again.Status())
+	}
+	decided, err := restarted.DecidePermissionApproval(
+		context.Background(), again.ID(), again.Digest(), "approved",
+		"user-1", rulesTestCorrelation,
+	)
+	if err != nil || decided.Status() != "approved" {
+		t.Fatalf("restart resolve error=%v record=%+v", err, decided)
+	}
+}
+
+func mustRulesReadAll(t testing.TB, store *journal.Store) []journal.Event {
+	t.Helper()
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
 }

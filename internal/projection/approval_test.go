@@ -2,13 +2,19 @@ package projection
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"loom-pi-rebuild/internal/journal"
 	ruleauthority "loom-pi-rebuild/internal/rules"
+
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -115,6 +121,97 @@ func TestApprovalProjectionResolvesAndFailedRebuildPreservesPublishedState(t *te
 			beforeView.Version(),
 		)
 	}
+}
+
+func TestApprovalProjectionCompatibleWithPermissionApprovalFacts(t *testing.T) {
+	values := url.Values{}
+	values.Add("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "busy_timeout(5000)")
+	values.Add("_pragma", "journal_mode(WAL)")
+	database, err := sql.Open("sqlite", fmt.Sprintf(
+		"file:%s/perm-approval.db?%s",
+		t.TempDir(),
+		values.Encode(),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := journal.Migrate(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	clock := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	authority, err := ruleauthority.NewAuthority(store, &permissionProjectionAuthorizer{now: clock}, func() time.Time {
+		return clock
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := authority.RequestPermissionApproval(context.Background(),
+		ruleauthority.PermissionApprovalInput{
+			JobID: "job-perm-proj", CallDigest: approvalProjectionDigest,
+			Tool: "Bash", Command: "curl https://example.com",
+			RequestedAt: clock, CorrelationID: approvalProjectionCorrelation,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := newForTestSource(eventSliceSource{events: events})
+	if err := projection.Rebuild(context.Background()); err != nil {
+		t.Fatalf("projection must accept permission approval facts: %v", err)
+	}
+	snapshot := projection.Snapshot()
+	request, ok := snapshot.ApprovalRequests[record.ID()]
+	if !ok || request.Status != "pending" ||
+		request.WorkItemID != "job-perm-proj" {
+		t.Fatalf("projected permission approval = %#v %v", request, ok)
+	}
+	if work, exists := snapshot.WorkItems["job-perm-proj"]; !exists || work.Status != "waiting_approval" {
+		t.Fatalf("projected work item = %#v %v", work, exists)
+	}
+}
+
+type permissionProjectionAuthorizer struct {
+	now time.Time
+}
+
+func (authorizer *permissionProjectionAuthorizer) AuthorizeRuleSet(
+	ctx context.Context,
+	request ruleauthority.RuleSetActivationRequest,
+) (ruleauthority.AuthorizedRuleSetActivation, error) {
+	if err := ctx.Err(); err != nil {
+		return ruleauthority.AuthorizedRuleSetActivation{}, err
+	}
+	digest := sha256.Sum256([]byte("permission-rule-auth"))
+	return ruleauthority.NewAuthorizedRuleSetActivation(
+		request,
+		"approver:permission-owner",
+		fmt.Sprintf("%x", digest[:]),
+		authorizer.now,
+		authorizer.now.Add(time.Hour),
+	)
+}
+
+func (authorizer *permissionProjectionAuthorizer) AuthorizeApprovalDecision(
+	ctx context.Context,
+	request ruleauthority.ApprovalDecisionRequest,
+) (ruleauthority.AuthorizedApprovalDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return ruleauthority.AuthorizedApprovalDecision{}, err
+	}
+	digest := sha256.Sum256([]byte("permission-decision-auth"))
+	return ruleauthority.NewAuthorizedApprovalDecision(
+		request,
+		"approver:permission-owner",
+		fmt.Sprintf("%x", digest[:]),
+		authorizer.now,
+		authorizer.now.Add(time.Hour),
+	)
 }
 
 func TestApprovalProjectionSupportsExpiryAndRenumbersRunAuthorityView(t *testing.T) {

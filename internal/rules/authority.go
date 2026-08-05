@@ -1094,6 +1094,270 @@ func (authority *Authority) ExpireApproval(
 	)
 }
 
+// PermissionApprovalInput is the permission-layer ask. It reuses the full
+// customer approval lifecycle (RuleSetActivated -> RequestApproval ->
+// ApprovalRequested/WorkItemApprovalPaused -> ApprovalDecided/
+// WorkItemApprovalResolved) by representing the ask as a temporary
+// require_approval RuleSet scoped to the Queue Job's work item. The
+// permission layer has already decided "ask"; the approval decision remains a
+// human gate through the daemon's permission authorizer.
+type PermissionApprovalInput struct {
+	JobID         string
+	CallDigest    string
+	Tool          string
+	Command       string
+	Path          string
+	Reason        string
+	RequestedAt   time.Time
+	CorrelationID string
+}
+
+const (
+	permissionApprovalActor   = "permission"
+	permissionApproverRef     = "approver:permission-owner"
+	permissionApprovalTimeout = 24 * time.Hour
+)
+
+func (authority *Authority) RequestPermissionApproval(
+	ctx context.Context,
+	input PermissionApprovalInput,
+) (ApprovalRequestRecord, error) {
+	if ctx == nil || ctx.Err() != nil ||
+		!validRuleText(input.JobID) ||
+		!validSHA256(input.CallDigest) ||
+		!validRuleText(input.Tool) ||
+		input.RequestedAt.IsZero() ||
+		!validCorrelationID(input.CorrelationID) {
+		return ApprovalRequestRecord{}, ErrInvalidApprovalInput
+	}
+	action, err := NewActionContext(ActionContextInput{
+		ProjectID: permissionApprovalActor, TeamInstanceID: permissionApprovalActor,
+		WorkPackageID: permissionApprovalActor, WorkItemID: input.JobID,
+		RunID:           "run-permission-" + input.CallDigest[:16],
+		AgentInstanceID: permissionApprovalActor, LogicalNodeID: permissionApprovalActor,
+		AttemptNumber: 1, Action: "start_run", Risk: "medium",
+		ContractDigest: input.CallDigest,
+	})
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	condition, err := NewCondition("start_run", "medium")
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	effect, err := NewEffect(
+		"require_approval", "",
+		[]string{permissionApproverRef},
+		permissionApprovalTimeout,
+		"reject",
+	)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	rule, err := NewRule("permission-ask", condition, effect)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	scope, err := NewScope("work_item", input.JobID)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	ruleSet, err := NewRuleSet(scope, 1, []Rule{rule})
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	decision, err := Evaluate([]RuleSet{ruleSet}, action)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	if decision.Kind() != "require_approval" {
+		return ApprovalRequestRecord{}, ErrApprovalNotRequired
+	}
+	approvalID := approvalRequestID(
+		action.digest,
+		input.CallDigest,
+		decision.digest,
+	)
+	// Idempotency (RED A4-2/A4-6): an existing approval for the same ask is
+	// returned before any work-state gate so restart/replay is safe.
+	existingEvents, err := authority.store.ReadStream(ctx, approvalStream(approvalID))
+	if err != nil {
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	if existing, found, replayErr := replayApprovalStream(
+		approvalID,
+		existingEvents,
+	); replayErr != nil {
+		return ApprovalRequestRecord{}, replayErr
+	} else if found {
+		if existing.context.digest == action.digest &&
+			existing.continuationDigest == input.CallDigest &&
+			existing.decision.digest == decision.digest {
+			return existing, nil
+		}
+		return ApprovalRequestRecord{}, ErrApprovalAlreadyPending
+	}
+	workStreamID := workItemStream(input.JobID)
+	workEvents, err := authority.store.ReadStream(ctx, workStreamID)
+	if err != nil {
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	workState, workErr := replayApprovalWorkItem(input.JobID, workEvents)
+	workFound := workErr == nil && workState.workItemID != ""
+	workCausation := ""
+	switch {
+	case len(workEvents) == 0:
+		// Bootstrap the rules work-item record for the Queue Job so the
+		// approval state machine and projections see a complete lifecycle.
+		createdID := deterministicEventID(
+			"WorkItemCreated", input.JobID, "ready", input.CorrelationID,
+		)
+		assignedID := deterministicEventID(
+			"WorkItemAssigned", input.JobID, action.runID, input.CorrelationID,
+		)
+		workCausation = assignedID
+		now := input.RequestedAt.UTC()
+		workPrefix := []journal.Event{
+			newRulesEvent(createdID, workStreamID, 1, "WorkItemCreated", now,
+				input.CorrelationID, "",
+				struct {
+					WorkItemID string `json:"work_item_id"`
+					Title      string `json:"title"`
+					Status     string `json:"status"`
+				}{WorkItemID: input.JobID, Title: "permission-ask:" + input.Tool, Status: "ready"}),
+			newRulesEvent(assignedID, workStreamID, 2, "WorkItemAssigned", now,
+				input.CorrelationID, createdID,
+				struct {
+					WorkItemID      string `json:"work_item_id"`
+					RunID           string `json:"run_id"`
+					AgentInstanceID string `json:"agent_instance_id"`
+					Status          string `json:"status"`
+				}{WorkItemID: input.JobID, RunID: action.runID,
+					AgentInstanceID: permissionApprovalActor, Status: "assigned"}),
+		}
+		if _, err := authority.store.AppendBatchIfStreamHeads(
+			ctx,
+			[]journal.StreamHeadExpectation{{StreamID: workStreamID, Sequence: 0}},
+			workPrefix,
+		); err != nil {
+			return ApprovalRequestRecord{}, mapRulesJournalError(err)
+		}
+	case workErr != nil || !workFound:
+		return ApprovalRequestRecord{}, ErrApprovalStale
+	case workState.status == "waiting_approval":
+		return ApprovalRequestRecord{}, ErrApprovalAlreadyPending
+	case workState.status != "assigned":
+		return ApprovalRequestRecord{}, ErrApprovalStale
+	default:
+		workCausation = workState.lastEventID
+	}
+	activation, err := NewRuleSetActivationRequest(
+		ruleSet,
+		[]byte("permission-ask:"+input.JobID+":"+input.CallDigest),
+	)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	if _, err := authority.ActivateRuleSet(ctx, activation, input.CorrelationID); err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	now, err := authority.operationTime()
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	record := ApprovalRequestRecord{
+		id: approvalID, context: action,
+		continuationDigest: input.CallDigest,
+		decision:           decision, status: "pending",
+		previousStatus: "assigned",
+		requestedAt:    now, expiresAt: now.Add(decision.timeout),
+		correlationID: input.CorrelationID,
+	}
+	record.digest = digestApprovalRecord(record)
+	approvalEventID := deterministicEventID(
+		"ApprovalRequested", approvalID, record.digest, input.CorrelationID,
+	)
+	workEventID := deterministicEventID(
+		"WorkItemApprovalPaused", input.JobID, approvalID, approvalEventID,
+	)
+	workHead, err := authority.currentWorkHead(ctx, workStreamID)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	approvalEvent := newRulesEvent(
+		approvalEventID, approvalStream(approvalID), 1, "ApprovalRequested",
+		now, input.CorrelationID, workCausation, approvalRequestedPayloadFor(record),
+	)
+	workEvent := newRulesEvent(
+		workEventID, workStreamID, workHead+1, "WorkItemApprovalPaused",
+		now, input.CorrelationID, approvalEventID,
+		workItemApprovalPayload{
+			WorkItemID: input.JobID, ApprovalRequestID: approvalID,
+			ApprovalRequestDigest: record.digest,
+			PreviousStatus:        "assigned", Status: "waiting_approval",
+		},
+	)
+	snapshot, err := authority.store.ReadStreamSet(
+		ctx,
+		[]string{approvalStream(approvalID), workStreamID},
+	)
+	if err != nil {
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	streamIDs := []string{approvalStream(approvalID), workStreamID}
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		expectationsFor(snapshot, streamIDs),
+		[]journal.Event{approvalEvent, workEvent},
+	); err != nil {
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	record.lastEventID = approvalEventID
+	record.streamSequence = 1
+	return record, nil
+}
+
+func (authority *Authority) currentWorkHead(
+	ctx context.Context,
+	streamID string,
+) (int64, error) {
+	events, err := authority.store.ReadStream(ctx, streamID)
+	if err != nil {
+		return 0, mapRulesJournalError(err)
+	}
+	var head int64
+	for _, event := range events {
+		if event.Seq > head {
+			head = event.Seq
+		}
+	}
+	return head, nil
+}
+
+func (authority *Authority) DecidePermissionApproval(
+	ctx context.Context,
+	approvalID, approvalDigest, decision, resolvedBy, correlationID string,
+) (ApprovalRequestRecord, error) {
+	if ctx == nil || ctx.Err() != nil ||
+		!validRuleText(approvalID) ||
+		!validSHA256(approvalDigest) ||
+		(decision != "approved" && decision != "rejected") ||
+		!validRuleText(resolvedBy) ||
+		!validCorrelationID(correlationID) {
+		return ApprovalRequestRecord{}, ErrInvalidApprovalInput
+	}
+	request, err := NewApprovalDecisionRequest(
+		approvalID,
+		approvalDigest,
+		decision,
+		[]byte("permission-decision:"+resolvedBy),
+	)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	return authority.DecideApproval(ctx, request, correlationID)
+}
+
 func (authority *Authority) commitApprovalResolution(
 	ctx context.Context,
 	record ApprovalRequestRecord,

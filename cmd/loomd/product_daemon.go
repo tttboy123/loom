@@ -1751,10 +1751,18 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_queue", err)
 	}
+	approvalPort, err := newPermissionApprovalPort(
+		store,
+		func() time.Time { return time.Now().UTC() },
+	)
+	if err != nil {
+		return nil, newDaemonBuildFailure("build_permissions", err)
+	}
 	permissionService, err := app.NewLocalPermissionService(
 		store,
 		func() time.Time { return time.Now().UTC() },
 		func() string { return readModel.GlobalReadView().Version() },
+		approvalPort,
 	)
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_permissions", err)

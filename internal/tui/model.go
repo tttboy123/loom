@@ -1872,9 +1872,18 @@ func (model Model) screenBody() string {
 				sanitizeCell(decision.AuthorizationPath, 48),
 			))
 		}
+		for _, approval := range model.permissionAttention.Approvals {
+			lines = append(lines, fmt.Sprintf(
+				"• Approval %s · %s · pending",
+				sanitizeCell(approval.JobID, 24),
+				sanitizeCell(approval.Command, 48),
+			))
+		}
 		return emptyOrLines(
 			lines,
-			len(model.snapshot.Attention)+len(model.permissionAttention.Decisions),
+			len(model.snapshot.Attention)+
+				len(model.permissionAttention.Decisions)+
+				len(model.permissionAttention.Approvals),
 		)
 	case ScreenPermissions:
 		return model.renderPermissionsView()

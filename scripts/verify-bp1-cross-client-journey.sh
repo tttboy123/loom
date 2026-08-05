@@ -51,6 +51,10 @@ perm_events=$(/usr/bin/sqlite3 -readonly "$root/state/loom.db" "SELECT COUNT(*) 
 [ "$perm_events" -ge 3 ] || { echo "missing permission Journal facts ($perm_events)" >&2; exit 5; }
 decision_facts=$(/usr/bin/sqlite3 -readonly "$root/state/loom.db" "SELECT COUNT(*) FROM events WHERE event_type = 'PermissionDecisionRecorded';")
 [ "$decision_facts" -ge 1 ] || { echo "missing PermissionDecisionRecorded fact" >&2; exit 5; }
+approval_requested=$(/usr/bin/sqlite3 -readonly "$root/state/loom.db" "SELECT COUNT(*) FROM events WHERE event_type = 'ApprovalRequested';")
+[ "$approval_requested" -ge 1 ] || { echo "missing ApprovalRequested fact" >&2; exit 5; }
+approval_decided=$(/usr/bin/sqlite3 -readonly "$root/state/loom.db" "SELECT COUNT(*) FROM events WHERE event_type = 'ApprovalDecided';")
+[ "$approval_decided" -ge 1 ] || { echo "missing ApprovalDecided fact" >&2; exit 5; }
 
 test "$(/usr/bin/jq -er '.matches_journal' "$root/projection/summary.json")" = true || { echo "projection mismatch" >&2; exit 5; }
 for key in processes sockets locks leases temps; do
