@@ -6318,3 +6318,64 @@ used per established precedent).
 `EXPERIMENTAL`: Phase 3B sandbox and W-AUTONOMY are default off; no behavior
 change without explicit opt-in. No push/merge/activation/credential changes
 were made.
+
+## Phase 2C Chat-First Client Experience (2026-08-06)
+
+`CURRENT`: the Phase 2C chat-first client experience is active on the accepted
+v0.4.1 baseline `7e24ec29`, branch `codex/loom-platform-slice2`. ADR-0015
+(`docs/adr/0015-chat-first-client-shell-with-governance-panels.md`) records
+the three-pane shell decision: conversation as the primary lane, Agent-team
+governance as an optional side panel, and no automatic Team/Mission/Run creation
+from ordinary chat.
+
+`CURRENT`: **P2C-W1 Workspace Shell & Entry** is accepted by atomic local commit
+`4219ef62`. The native macOS app and Bubble Tea TUI now open into a
+composer-first workspace rather than the Board-first Mission dashboard. The
+left rail provides navigation, recents, Teams, Runtimes, Skills, and Library; the
+center shows a blank composer, bounded recent work, and a prominent `Open
+Folder…` affordance; the right governance panel displays Mission Board, Team,
+Attention, and Runtime views. The visual token system (canvas, rail, surface,
+raised, text-primary/secondary/muted, accent `#5E6AD2`, success, warning,
+danger, offline) is centralized in `LoomGraphite.swift` for macOS and in
+`style.go` for the TUI. Truthful connection states (`connecting`, `offline`,
+`reconnecting`, `fatal`) are distinct and carry actionable recovery. No-folder
+chat is a valid first-class journey. Deterministic matrix and cross-client
+journey J1 (fresh launch) / J3 (offline recovery) / J10 (light/dark/compact
+screenshots) pass. No Event Journal, one-writer, Projection, Scheduler, policy,
+Grant, or daemon authority change.
+
+`CURRENT`: **P2C-W2 Chat-First Conversation** is accepted by atomic local commit
+`449ab719`. The center conversation surface is implemented across both clients:
+- Go daemon: `internal/api/local_product_chat.go` provides in-memory thread
+  isolation, a 4 096-character content bound, and role-based responses. Plain
+  messages return a `loom` role with no side effects; explicit agent triggers
+  (`use agent`, `agent team`, `team` + `mission`) return a `proposal` role and
+  a tentative confirmation prompt. No Journal writes occur from chat.
+- IPC wiring: `chat_thread` and `chat_message` methods are added to the local
+  IPC handler, `LocalProductReadService`, and `LocalIPCClient`/`LocalProductStore`.
+- macOS: `LoomWorkspaceShell.swift` renders a real message timeline when messages
+  exist and keeps the welcome/recent cards when empty. The composer is always
+  visible, supports multi-line input, and sends via the arrow button or explicit
+  action. `Use Agent Team` is the explicit trigger for Agent mode.
+- TUI: `ScreenHome` is the default screen with a full-width composer band,
+  message history, `i` to draft, `enter` to send, `u` for Agent Team, and `g b`
+  for the Board. ANSI semantic colors from `style.go` are applied across all TUI
+  views.
+- RED tests: `local_product_chat_test.go`,
+  `LocalProductStoreTests.swift`, and `model_test.go` prove that ordinary chat
+  does not create Team or Mission facts and that explicit Agent triggers require
+  confirmation.
+
+Verification: `go test ./...` green, `swift test` 103/0/1 green, `go vet ./...`
+quiet, P2C-W2 files `gofmt` clean, Swift TSAN/Release build green. No
+push/merge/network/paid/user-config action.
+
+`PARTIAL`: **P2C-W3 Governance Side Panel** is frozen at
+`.loom-evidence/phase2c/contracts/P2C-W3-CONTRACT.md` and is the next
+implementation gate. It will consolidate the Mission Board, Team Topology,
+Timeline, Decisions, Evidence, Runtime health, and Attention views as a
+collapsible, context-aware right panel reachable from chat-first surface. No
+authority or policy change is in scope.
+
+`TARGET`: complete Phase 2C with P2C-W3, run the full J1–J10 cross-client journey
+set, and obtain whole-Phase review acceptance.
