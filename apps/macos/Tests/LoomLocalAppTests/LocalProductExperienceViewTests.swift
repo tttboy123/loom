@@ -133,19 +133,19 @@ final class LocalProductExperienceViewTests: XCTestCase {
 
         store.showMissionTeams()
         let teams = try XCTUnwrap(render(
-            ContentView(store: store, refreshOnAppear: false),
+            MissionWorkbench(store: store, showRail: false),
             colorScheme: .light,
             dynamicTypeSize: .large
         ))
         store.showMissionAttention()
         let attention = try XCTUnwrap(render(
-            ContentView(store: store, refreshOnAppear: false),
+            MissionWorkbench(store: store, showRail: false),
             colorScheme: .light,
             dynamicTypeSize: .large
         ))
         store.showMissionLibrary()
         let library = try XCTUnwrap(render(
-            ContentView(store: store, refreshOnAppear: false),
+            MissionWorkbench(store: store, showRail: false),
             colorScheme: .light,
             dynamicTypeSize: .large
         ))

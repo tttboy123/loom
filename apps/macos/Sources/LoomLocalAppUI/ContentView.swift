@@ -48,18 +48,18 @@ public struct ContentView: View {
     }
 
     public var body: some View {
-        MissionWorkbench(store: store)
-        .task {
-            if refreshOnAppear {
-                async let read: Void = store.refresh()
-                async let setup: Void = store.refreshSetup()
-                async let permissions: Void = store.refreshPermissions()
-                async let executions: Void = store.refreshExecutions()
-                async let production: Void = store.refreshProduction()
-                _ = await (read, setup, permissions, executions, production)
+        LoomWorkspaceShell(store: store)
+            .task {
+                if refreshOnAppear {
+                    async let read: Void = store.refresh()
+                    async let setup: Void = store.refreshSetup()
+                    async let permissions: Void = store.refreshPermissions()
+                    async let executions: Void = store.refreshExecutions()
+                    async let production: Void = store.refreshProduction()
+                    _ = await (read, setup, permissions, executions, production)
+                }
             }
-        }
-        .frame(minWidth: 780, minHeight: 580)
+            .frame(minWidth: 1080, minHeight: 680)
     }
 
     private var experience: LocalProductExperience {

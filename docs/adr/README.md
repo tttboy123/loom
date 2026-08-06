@@ -18,3 +18,5 @@
 | [0014](0014-agent-scheduling-framework.md) | Agent Scheduling Framework — single-authority queue/Scheduler/worker/integration architecture | accepted (Gate 1 Contract Re-review PASS) | 2026-08-04 |
 
 New decisions use [template.md](template.md). Superseded decisions remain in this index and link to their replacement.
+ | [0015](0015-chat-first-client-shell-with-governance-panels.md) | Chat-First Client Shell with Governance Panels | proposed | 2026-08-06 |
+ 

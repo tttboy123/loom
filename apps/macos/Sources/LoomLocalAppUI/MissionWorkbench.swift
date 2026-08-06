@@ -327,18 +327,23 @@ public struct MissionWorkbench: View {
     @State private var assetSearchText = ""
     @State private var pendingAssetMutation: PendingEvolutionAssetMutation?
 
-    public init(store: LocalProductStore) {
+    private let showRail: Bool
+
+    public init(store: LocalProductStore, showRail: Bool = true) {
         self.store = store
+        self.showRail = showRail
     }
 
     public var body: some View {
         HSplitView {
-            workbenchRail
-                .frame(
-                    minWidth: LoomGraphite.railWidth,
-                    idealWidth: LoomGraphite.railWidth,
-                    maxWidth: LoomGraphite.railWidth
-                )
+            if showRail {
+                workbenchRail
+                    .frame(
+                        minWidth: LoomGraphite.railWidth,
+                        idealWidth: LoomGraphite.railWidth,
+                        maxWidth: LoomGraphite.railWidth
+                    )
+            }
             switch store.workbench.route {
             case .board:
                 orchestrationBoard
@@ -411,7 +416,9 @@ public struct MissionWorkbench: View {
             .frame(minWidth: 620, idealWidth: 680, minHeight: 520)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Loom Mission orchestration workbench")
+        .accessibilityLabel(showRail
+            ? "Loom Mission orchestration workbench"
+            : "Loom governance panel")
     }
 
     private var workbenchRail: some View {
