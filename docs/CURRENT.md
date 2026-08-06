@@ -6379,3 +6379,12 @@ authority or policy change is in scope.
 
 `TARGET`: complete Phase 2C with P2C-W3, run the full J1–J10 cross-client journey
 set, and obtain whole-Phase review acceptance.
+
+`CURRENT`: **P2C-W3 Governance Side Panel** is in progress. The first cleanup
+sub-task is complete: the legacy `taskSidebar`, `conversationWorkspace`,
+`workspaceInspector`, `sidebar`, and provider connection UI code have been
+removed from `ContentView.swift` (`b3080423`). `ContentView` is now a thin
+wrapper around `LoomWorkspaceShell`. Swift build and tests remain green (101
+pass, 1 skip). Remaining P2C-W3 work: right-panel container/switcher, first-
+class Decisions and Evidence views, TUI side-panel rendering, and J5–J9 cross-
+client journeys.
