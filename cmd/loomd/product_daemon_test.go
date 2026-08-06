@@ -2955,7 +2955,7 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	message := model.Init()()
 	updated, command := model.Update(message)
 	if command != nil ||
-		!strings.Contains(updated.View(), "Saved team") ||
+		!strings.Contains(updated.View(), "Start with a task") ||
 		strings.Contains(updated.View(), "team.delivery") ||
 		strings.Contains(updated.View(), snapshot.ViewVersion) {
 		t.Fatalf(
@@ -2965,6 +2965,15 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 		)
 	}
 	model = updated.(loomtui.Model)
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(loomtui.Model)
+	if command != nil || !strings.Contains(model.View(), "Saved team") {
+		t.Fatalf(
+			"headless TUI did not reach Board view %q: %q",
+			snapshot.ViewVersion,
+			model.View(),
+		)
+	}
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyDown},
 		{Type: tea.KeyEnter},

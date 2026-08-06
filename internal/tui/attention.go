@@ -57,7 +57,7 @@ func (model Model) loadIntegration() tea.Cmd {
 
 func (model Model) renderIntegrationView() string {
 	lines := []string{
-		"Integration · single writer · Timeline / Attention",
+		styleTitle("Integration") + " · single writer · Timeline / Attention",
 		"r refresh · q quit",
 	}
 	if model.integrationClient == nil {
@@ -69,7 +69,7 @@ func (model Model) renderIntegrationView() string {
 			"Release %s · %s · %s · %s",
 			sanitizeCell(release.ReleaseID, 28),
 			sanitizeCell(release.TargetBranch, 16),
-			humanizeStatus(release.Status),
+			styleStatus(humanizeStatus(release.Status)),
 			sanitizeCell(release.CandidateID, 24),
 		))
 	}
@@ -78,7 +78,7 @@ func (model Model) renderIntegrationView() string {
 			"Canary %s · %s · %s",
 			sanitizeCell(canary.CanaryID, 28),
 			sanitizeCell(canary.RuntimeInstanceID, 32),
-			humanizeStatus(canary.Status),
+			styleStatus(humanizeStatus(canary.Status)),
 		))
 	}
 	for _, frame := range model.integrationSnapshot.Timeline {
@@ -87,14 +87,14 @@ func (model Model) renderIntegrationView() string {
 			sanitizeCell(frame.FrameID, 24),
 			sanitizeCell(frame.AttemptID, 28),
 			frame.Generation,
-			sanitizeCell(frame.Kind, 20),
+			styleStatus(sanitizeCell(frame.Kind, 20)),
 		))
 	}
 	for _, item := range model.integrationSnapshot.Attention {
 		lines = append(lines, fmt.Sprintf(
 			"Attention %s · %s · %s",
 			sanitizeCell(item.SourceID, 28),
-			humanizeStatus(item.Lane),
+			styleStatus(humanizeStatus(item.Lane)),
 			sanitizeCell(item.Summary, 40),
 		))
 	}

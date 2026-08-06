@@ -55,4 +55,12 @@ private struct UnavailableLocalProductClient: LocalProductClientProtocol {
     ) async throws -> LocalProductTimelinePage {
         throw LocalProductClientError.unavailable
     }
+
+    func chatThread(threadID: String) async throws -> LocalProductChatThread {
+        throw LocalProductClientError.unavailable
+    }
+
+    func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
+        throw LocalProductClientError.unavailable
+    }
 }

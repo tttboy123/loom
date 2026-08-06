@@ -935,6 +935,28 @@ public final class LocalIPCClient:
             !decoded.buildID.isEmpty
     }
 
+    public func chatThread(threadID: String) async throws -> LocalProductChatThread {
+        guard Self.validIdentifier(threadID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "chat_thread",
+            params: LocalProductChatThreadRequest(threadID: threadID)
+        )
+        return try LocalProductWire.decodeChatThread(result)
+    }
+
+    public func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
+        guard Self.validIdentifier(threadID), !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "chat_message",
+            params: LocalProductChatMessageRequest(threadID: threadID, content: content)
+        )
+        return try LocalProductWire.decodeChatThread(result)
+    }
+
     func call<Params: Encodable>(
         method: String,
         params: Params
@@ -949,6 +971,8 @@ public final class LocalIPCClient:
             "credential_replace", "credential_revoke", "mission_decision",
             "mission_execution",
             "side_task_handoff",
+            "chat_thread",
+            "chat_message",
         ])
         guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
             throw LocalProductClientError.invalidRequest

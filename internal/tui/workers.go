@@ -55,7 +55,7 @@ func (model Model) loadWorkers() tea.Cmd {
 
 func (model Model) renderWorkersView() string {
 	lines := []string{
-		"Worker Pools · lease / generation fencing",
+		styleTitle("Worker Pools") + " · lease / generation fencing",
 		"r refresh · q quit",
 	}
 	if model.workersClient == nil {
@@ -69,7 +69,7 @@ func (model Model) renderWorkersView() string {
 		lines = append(lines, fmt.Sprintf(
 			"› worker %s · lane %s · attempt %s · job %s · gen %d",
 			sanitizeCell(active.WorkerID, 24),
-			humanizeStatus(active.Lane),
+			styleStatus(humanizeStatus(active.Lane)),
 			sanitizeCell(active.AttemptID, 32),
 			sanitizeCell(active.JobID, 20),
 			active.Generation,
@@ -83,14 +83,14 @@ func (model Model) renderWorkersView() string {
 		lines = append(lines, fmt.Sprintf(
 			"  %s · lane %s · gen %d · %s · seam %s",
 			sanitizeCell(attempt.AttemptID, 32),
-			humanizeStatus(string(attempt.Lane)),
+			styleStatus(humanizeStatus(string(attempt.Lane))),
 			attempt.Generation,
-			humanizeStatus(status),
+			styleStatus(humanizeStatus(status)),
 			attempt.CrashSeam,
 		))
 	}
 	if model.workersSnapshot.RepairWait > 0 {
-		lines = append(lines, fmt.Sprintf("Repair wait age: %d", model.workersSnapshot.RepairWait))
+		lines = append(lines, styleSection(fmt.Sprintf("Repair wait age: %d", model.workersSnapshot.RepairWait)))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

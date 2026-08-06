@@ -354,9 +354,9 @@ func testMission(
 	}
 }
 
-func TestMissionWorkbenchStartsOnBoardAndUsesExactNavigation(t *testing.T) {
-	if len(screens) == 0 || screens[0] != ScreenBoard {
-		t.Fatalf("initial screen = %v, want %v", screens, ScreenBoard)
+func TestLoomStartsOnHomeAndUsesExactNavigation(t *testing.T) {
+	if len(screens) == 0 || screens[0] != ScreenHome {
+		t.Fatalf("initial screen = %v, want %v", screens, ScreenHome)
 	}
 	for _, screen := range screens {
 		if screen == Screen("Tasks") {
@@ -410,6 +410,10 @@ func TestMissionWorkbenchStartsOnBoardAndUsesExactNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(Model)
 	if view := model.View(); !strings.Contains(view, "Proposed") ||
 		!strings.Contains(view, "Orchestrating") ||
@@ -566,6 +570,8 @@ func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	model = updated.(Model)
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
@@ -883,6 +889,8 @@ func TestMissionApprovalKeyOpensReadOnlyDecisionWhenCommandIsNotPrepared(
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
 	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyDown},
 		{Type: tea.KeyRunes, Runes: []rune("g")},
@@ -922,12 +930,27 @@ func TestMissionApprovalKeyOpensReadOnlyDecisionWhenCommandIsNotPrepared(
 	}
 }
 
-func TestInteractionContinuityStartsWithBoardInsteadOfHome(t *testing.T) {
+func TestInteractionContinuityStartsWithHomeAndAllowsBoardNavigation(t *testing.T) {
 	for _, screen := range screens {
 		switch screen {
-		case ScreenHome, ScreenRuntimes, ScreenTeams:
-			t.Fatalf("object/dashboard-first primary screen remains: %q", screen)
+		case Screen("Tasks"):
+			t.Fatalf("legacy Tasks screen remains: %q", screen)
 		}
+	}
+	client := &fakeReadClient{}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	if model.Screen() != ScreenHome {
+		t.Fatalf("initial screen = %q, want %q", model.Screen(), ScreenHome)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if model.Screen() != ScreenBoard {
+		t.Fatalf("tabbed screen = %q, want %q", model.Screen(), ScreenBoard)
 	}
 }
 
@@ -954,6 +977,8 @@ func TestTaskSelectionSurvivesPrimaryViewSwitches(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	model = updated.(Model)
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(Model)
@@ -1009,6 +1034,10 @@ func TestTasksFilterWithoutReplacingCurrentSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(Model)
 	updated, _ = model.Update(tea.KeyMsg{
 		Type: tea.KeyRunes, Runes: []rune("/"),
@@ -1683,6 +1712,8 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	}
 	updated, _ := model.Update(snapshotLoadedMsg{snapshot: client.snapshot})
 	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
 	if !strings.Contains(model.View(), "Missions") ||
 		!strings.Contains(model.View(), "enter open") {
 		t.Fatalf("tasks view = %q", model.View())
@@ -1705,7 +1736,7 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenProduction,
 		ScreenCustomerRules,
 		ScreenAutonomy,
-		ScreenBoard,
+		ScreenHome,
 	}
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})

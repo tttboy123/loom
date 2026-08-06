@@ -1666,6 +1666,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		},
 		Decisions:     decisionBackend,
 		RuntimeHealth: runtimeHealth,
+		Chat:          api.NewLocalProductChatAPI(func() time.Time { return time.Now().UTC() }),
 	})
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_state", err)
@@ -4583,6 +4584,44 @@ func localProductHandlerWithComposition(
 				}
 			}
 			return productResultResponse(result)
+		case "chat_thread":
+			if service == nil {
+				return productErrorResponse(
+					"state_unavailable",
+					api.ErrLocalProductStateUnavailable,
+				)
+			}
+			var input api.LocalProductChatThreadRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductChatRequest,
+				)
+			}
+			result, err := service.ReadChatThread(ctx, input.ThreadID)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
+		case "chat_message":
+			if service == nil {
+				return productErrorResponse(
+					"state_unavailable",
+					api.ErrLocalProductStateUnavailable,
+				)
+			}
+			var input api.LocalProductChatMessageRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductChatRequest,
+				)
+			}
+			result, err := service.SendChatMessage(ctx, input)
+			if err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(result)
 		case "evolution_asset_snapshot":
 			var input api.EvolutionAssetSnapshotRequest
 			if decodeExactProductParams(request.Params, &input) != nil {
@@ -5265,6 +5304,7 @@ func productJourneyServiceError(journeyID string, err error) localipc.Response {
 func productServiceError(err error) localipc.Response {
 	switch {
 	case errors.Is(err, api.ErrInvalidLocalProductRequest),
+		errors.Is(err, api.ErrInvalidLocalProductChatRequest),
 		errors.Is(err, api.ErrInvalidTimelineRequest),
 		errors.Is(err, api.ErrInvalidLocalProductSetupAPI),
 		errors.Is(err, api.ErrInvalidLocalProductDecisionAPI),

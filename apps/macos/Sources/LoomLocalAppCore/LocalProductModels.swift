@@ -1055,6 +1055,52 @@ public struct LocalProductTimelinePage: Codable, Equatable, Sendable {
     }
 }
 
+public enum LocalProductChatRole: String, Codable, Sendable {
+    case user = "user"
+    case loom = "loom"
+    case proposal = "proposal"
+    case confirmation = "confirmation"
+}
+
+public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
+    public let messageID: String
+    public let role: String
+    public let content: String
+    public let tentative: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case role, content, tentative
+    }
+}
+
+public struct LocalProductChatThread: Codable, Equatable, Sendable {
+    public let threadID: String
+    public let messages: [LocalProductChatMessage]
+    public let canReply: Bool
+    public let requiresConfirmation: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case messages
+        case canReply = "can_reply"
+        case requiresConfirmation = "requires_confirmation"
+    }
+}
+
+public struct LocalProductChatThreadRequest: Encodable, Sendable {
+    public let threadID: String
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+    }
+}
+
+public struct LocalProductChatMessageRequest: Encodable, Sendable {
+    public let threadID: String
+    public let content: String
+}
+
 public enum LocalProductWire {
     public static func decodeSnapshot(_ data: Data) throws -> LocalProductSnapshot {
         try decode(LocalProductSnapshot.self, from: data)
@@ -1062,6 +1108,10 @@ public enum LocalProductWire {
 
     public static func decodeTimeline(_ data: Data) throws -> LocalProductTimelinePage {
         try decode(LocalProductTimelinePage.self, from: data)
+    }
+
+    public static func decodeChatThread(_ data: Data) throws -> LocalProductChatThread {
+        try decode(LocalProductChatThread.self, from: data)
     }
 
     private static func decode<T: Decodable>(

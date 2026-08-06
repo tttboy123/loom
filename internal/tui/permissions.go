@@ -113,7 +113,7 @@ func (model Model) loadPermissionAttention() tea.Cmd {
 
 func (model Model) renderPermissionsView() string {
 	lines := []string{
-		"Permissions · tool-call authorization pipeline",
+		styleTitle("Permissions") + " · tool-call authorization pipeline",
 		"j/k select · n define profile · b bind job · x validate call · d detail · r refresh · q quit",
 	}
 	if model.permissionClient == nil {
@@ -126,16 +126,20 @@ func (model Model) renderPermissionsView() string {
 	for index, profile := range model.permissionSnapshot.Profiles {
 		marker := " "
 		if index == model.selected {
-			marker = ">"
+			marker = styleSelectedMarker(">")
 		}
-		lines = append(lines, fmt.Sprintf(
+		row := fmt.Sprintf(
 			"%s Profile %s · gen %d · %s · %s",
 			marker,
 			sanitizeCell(profile.ProfileID, 28),
 			profile.Generation,
-			humanizeStatus(string(profile.Mode)),
+			styleStatus(humanizeStatus(string(profile.Mode))),
 			sanitizeCell(profile.Digest, 16),
-		))
+		)
+		if index == model.selected {
+			row = styleSelected(row)
+		}
+		lines = append(lines, row)
 	}
 	for _, binding := range model.permissionSnapshot.Bindings {
 		lines = append(lines, fmt.Sprintf(
@@ -148,18 +152,18 @@ func (model Model) renderPermissionsView() string {
 		lines = append(lines, fmt.Sprintf(
 			"  Rule %s · %s · %s · %s",
 			sanitizeCell(rule.RuleID, 22),
-			humanizeStatus(string(rule.Action)),
+			styleStatus(humanizeStatus(string(rule.Action))),
 			sanitizeCell(string(rule.Tool), 12),
 			sanitizeCell(rule.Pattern, 32),
 		))
 	}
 	if model.permissionDetail && model.selected < len(model.permissionSnapshot.Profiles) {
 		profile := model.permissionSnapshot.Profiles[model.selected]
-		lines = append(lines, "Detail:")
+		lines = append(lines, styleSection("Detail:"))
 		for _, rule := range profile.Rules {
 			lines = append(lines, fmt.Sprintf(
 				"  %s · %s · %s",
-				humanizeStatus(string(rule.Action)),
+				styleStatus(humanizeStatus(string(rule.Action))),
 				sanitizeCell(string(rule.Tool), 12),
 				sanitizeCell(rule.Pattern, 48),
 			))

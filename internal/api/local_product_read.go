@@ -38,6 +38,7 @@ type LocalProductReadConfig struct {
 	Decisions     MissionDecisionCommandSource
 	RuntimeHealth RuntimeObservationHealthSource
 	SideTasks     SideTaskSnapshotSource
+	Chat          *LocalProductChatAPI
 }
 
 type LocalProductReadService struct {
@@ -57,6 +58,7 @@ type LocalProductReadService struct {
 	executionObservers map[string]*localProductMissionObserver
 	tentativeRecords   map[string][]LocalProductTimelineRecord
 	tentativeGaps      map[string]*LocalProductStreamGap
+	chat               *LocalProductChatAPI
 }
 
 type localProductMissionObserver struct {
@@ -97,6 +99,7 @@ func NewLocalProductReadService(
 		decisions:          config.Decisions,
 		runtimeHealth:      config.RuntimeHealth,
 		sideTasks:          config.SideTasks,
+		chat:               config.Chat,
 		executionObservers: make(map[string]*localProductMissionObserver),
 		tentativeRecords:   make(map[string][]LocalProductTimelineRecord),
 		tentativeGaps:      make(map[string]*LocalProductStreamGap),
@@ -114,6 +117,20 @@ func (service *LocalProductReadService) SetSideTaskSnapshotSource(source SideTas
 	}
 	service.sideTasks = source
 	return nil
+}
+
+func (service *LocalProductReadService) ReadChatThread(ctx context.Context, threadID string) (LocalProductChatThread, error) {
+	if service == nil || service.chat == nil {
+		return LocalProductChatThread{}, ErrLocalProductChatUnavailable
+	}
+	return service.chat.ChatThread(ctx, threadID)
+}
+
+func (service *LocalProductReadService) SendChatMessage(ctx context.Context, req LocalProductChatMessageRequest) (LocalProductChatThread, error) {
+	if service == nil || service.chat == nil {
+		return LocalProductChatThread{}, ErrLocalProductChatUnavailable
+	}
+	return service.chat.SendMessage(ctx, req)
 }
 
 type LocalProductSnapshotRequest struct {

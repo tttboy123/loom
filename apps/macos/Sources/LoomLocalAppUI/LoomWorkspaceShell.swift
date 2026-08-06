@@ -209,8 +209,12 @@
  
              ScrollView {
                  VStack(alignment: .leading, spacing: 18) {
+                    if store.chatThread?.messages.isEmpty ?? true {
                      welcomeCard
                      recentWorkCard
+                    } else {
+                        chatTimeline
+                    }
                  }
                  .frame(maxWidth: 760, alignment: .leading)
                  .padding(.horizontal, 24)
@@ -226,6 +230,9 @@
                  .background(LoomGraphite.surface)
          }
          .background(LoomGraphite.raised)
+        .task {
+            await store.loadChatThread()
+        }
      }
  
      private var centerHeader: some View {
@@ -310,7 +317,32 @@
          }
      }
  
-     private var welcomeCard: some View {
+     private var chatTimeline: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(store.chatThread?.messages ?? [], id: \.messageID) { message in
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(message.role == "user" ? LoomGraphite.accent : Color.secondary)
+                        .frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(message.role == "user" ? "You" : "Loom")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(message.role == "user" ? LoomGraphite.accent : Color.secondary)
+                        Text(message.content)
+                            .font(.body)
+                            .foregroundStyle(message.tentative ? Color.secondary : Color.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(message.role == "user" ? "You: \(message.content)" : "Loom: \(message.content)")
+            }
+        }
+    }
+
+    private var welcomeCard: some View {
          VStack(alignment: .leading, spacing: 8) {
              Text("Start with a task")
                  .font(.title3.weight(.semibold))
@@ -433,7 +465,7 @@
  
                  Button {
                      Task {
-                         await store.startBlankBuilder()
+                        await store.sendChatMessage(store.workspace.selectedContinuity.composerDraft)
                      }
                  } label: {
                      Image(systemName: "arrow.up")
@@ -447,8 +479,8 @@
                  }
                  .buttonStyle(.plain)
                  .disabled(!sendButtonEnabled)
-                 .accessibilityLabel("Continue")
-                 .help("Continue with this task")
+                    .accessibilityLabel("Send message")
+                    .help("Send message")
              }
              Text("Review and confirmation are required before anything is saved.")
                  .font(.caption2)

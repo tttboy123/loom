@@ -53,6 +53,7 @@ const (
 )
 
 var screens = []Screen{
+	ScreenHome,
 	ScreenBoard,
 	ScreenNewMission,
 	ScreenMission,
@@ -81,6 +82,11 @@ type ReadClient interface {
 		context.Context,
 		api.LocalProductTimelineRequest,
 	) (api.LocalProductTimelinePage, error)
+}
+
+type ChatClient interface {
+	ChatThread(context.Context, api.LocalProductChatThreadRequest) (api.LocalProductChatThread, error)
+	SendChatMessage(context.Context, api.LocalProductChatMessageRequest) (api.LocalProductChatThread, error)
 }
 
 type SetupClient interface {
@@ -221,6 +227,24 @@ func (client *DaemonReadClient) ExecuteMission(
 	var envelope api.MissionExecutionEnvelope
 	err := client.client.Call(ctx, "mission_execution", command, &envelope)
 	return envelope, err
+}
+
+func (client *DaemonReadClient) ChatThread(
+	ctx context.Context,
+	request api.LocalProductChatThreadRequest,
+) (api.LocalProductChatThread, error) {
+	var thread api.LocalProductChatThread
+	err := client.client.Call(ctx, "chat_thread", request, &thread)
+	return thread, err
+}
+
+func (client *DaemonReadClient) SendChatMessage(
+	ctx context.Context,
+	request api.LocalProductChatMessageRequest,
+) (api.LocalProductChatThread, error) {
+	var thread api.LocalProductChatThread
+	err := client.client.Call(ctx, "chat_message", request, &thread)
+	return thread, err
 }
 
 func (client *DaemonReadClient) ProposeSideTask(ctx context.Context, request app.SideTaskProposalRequest) (app.SideTaskProposalResult, error) {
@@ -433,6 +457,21 @@ type missionStartedMsg struct {
 type missionExecutionFailedMsg struct {
 	err error
 }
+type chatThreadLoadedMsg struct {
+	thread api.LocalProductChatThread
+}
+
+type chatThreadFailedMsg struct {
+	err error
+}
+
+type chatMessageSentMsg struct {
+	thread api.LocalProductChatThread
+}
+
+type chatMessageFailedMsg struct {
+	err error
+}
 
 type sideTaskProposedMsg struct {
 	request app.SideTaskProposalRequest
@@ -445,6 +484,7 @@ type sideTaskFailedMsg struct{ err error }
 
 const (
 	entryBuilderAnswer      = "builder_answer"
+	entryChatDraft          = "chat_draft"
 	entryEditName           = "edit_name"
 	entryEditPurpose        = "edit_purpose"
 	entryCredentialPut      = "credential_put"
@@ -503,6 +543,9 @@ type Model struct {
 	missionPackageIndex    int
 	missionPreflight       app.MissionExecutionPreflight
 	missionResult          app.MissionExecutionResult
+	chatClient             ChatClient
+	chatThread             api.LocalProductChatThread
+	chatDraft              []byte
 	sideTaskPurpose        string
 	sideTaskMode           string
 	sideTaskTitle          string
@@ -552,6 +595,7 @@ func newModelWithContext(
 	}
 	ctx, cancel := context.WithCancel(parent)
 	setupClient, _ := client.(SetupClient)
+	chatClient, _ := client.(ChatClient)
 	executionClient, _ := client.(ExecutionClient)
 	handoffClient, _ := client.(HandoffClient)
 	assetClient, _ := client.(EvolutionAssetClient)
@@ -563,6 +607,7 @@ func newModelWithContext(
 	return Model{
 		client:                 client,
 		setupClient:            setupClient,
+		chatClient:             chatClient,
 		executionClient:        executionClient,
 		handoffClient:          handoffClient,
 		assetClient:            assetClient,
@@ -640,6 +685,34 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.timeline = cloneTimeline(message.page)
 		return model, nil
 	case timelineFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case chatThreadLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.chatThread = cloneChatThread(message.thread)
+		return model, nil
+	case chatThreadFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case chatMessageSentMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.chatThread = cloneChatThread(message.thread)
+		model.chatDraft = nil
+		return model, nil
+	case chatMessageFailedMsg:
 		model.loading = false
 		model.offline = errors.Is(
 			message.err,
@@ -1673,6 +1746,31 @@ func (model Model) Screen() Screen {
 
 func (model Model) screenBody() string {
 	switch model.Screen() {
+	case ScreenHome:
+		lines := []string{
+			styleTitle("Start with a task"),
+			"Describe the outcome you want. Loom stays in conversation until you choose to use an Agent Team.",
+			"",
+			"› New Mission · describe the outcome and choose a Team",
+			"",
+			styleSection("Chat"),
+		}
+		if len(model.chatThread.Messages) == 0 {
+			lines = append(lines, "No messages yet. Press i to write a message.")
+		} else {
+			for _, message := range model.chatThread.Messages {
+				prefix := "Loom"
+				if message.Role == "user" {
+					prefix = "You"
+				}
+				lines = append(lines, fmt.Sprintf("%s · %s", prefix, sanitizeCell(message.Content, 72)))
+			}
+		}
+		if model.entryMode == entryChatDraft {
+			lines = append(lines, "", "Draft · "+sanitizeCell(string(model.entry), 72))
+		}
+		lines = append(lines, "", styleHelp("i message · u Agent Team · g b Board · r refresh · q quit"))
+		return strings.Join(lines, "\n") + "\n"
 	case ScreenBoard:
 		lines := []string{
 			styleSection("Lanes | Missions | Mission Detail"),
@@ -1936,15 +2034,6 @@ func (model Model) screenBody() string {
 			lines = append(lines, "c Cancel Mission · exact current Attempt only")
 		}
 		return strings.Join(lines, "\n") + "\n"
-	case ScreenHome:
-		return fmt.Sprintf(
-			"Home\nCurrent read view\n%d runtimes · %d teams · %d runs · %d evidence\n%s",
-			len(model.snapshot.Runtimes),
-			len(model.snapshot.Teams),
-			len(model.snapshot.Runs),
-			len(model.snapshot.Evidence),
-			model.renderTeamNames(),
-		)
 	case ScreenRuntimes:
 		lines := make([]string, 0, len(model.snapshot.Runtimes)+1)
 		lines = append(lines, "Discovered local Runtimes")
@@ -3365,6 +3454,42 @@ func (model Model) startBlankBuilder() tea.Cmd {
 	}
 }
 
+func (model Model) loadChatThread() tea.Cmd {
+	client := model.chatClient
+	ctx := model.ctx
+	threadID := model.currentChatThreadID()
+	return func() tea.Msg {
+		if client == nil {
+			return chatThreadFailedMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		thread, err := client.ChatThread(ctx, api.LocalProductChatThreadRequest{ThreadID: threadID})
+		if err != nil {
+			return chatThreadFailedMsg{err: err}
+		}
+		return chatThreadLoadedMsg{thread: thread}
+	}
+}
+
+func (model Model) sendChatMessage(content string) tea.Cmd {
+	client := model.chatClient
+	ctx := model.ctx
+	threadID := model.currentChatThreadID()
+	return func() tea.Msg {
+		if client == nil {
+			return chatMessageFailedMsg{err: localipc.ErrLocalProductUnavailable}
+		}
+		thread, err := client.SendChatMessage(ctx, api.LocalProductChatMessageRequest{ThreadID: threadID, Content: content})
+		if err != nil {
+			return chatMessageFailedMsg{err: err}
+		}
+		return chatMessageSentMsg{thread: thread}
+	}
+}
+
+func (model Model) currentChatThreadID() string {
+	return "tui-thread"
+}
+
 func (model Model) startSelectedSetupAsset() tea.Cmd {
 	client := model.setupClient
 	ctx := model.ctx
@@ -3549,6 +3674,17 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			model.loading = true
 			return model, model.permissionValidateCall(command)
+		}
+		if model.entryMode == entryChatDraft {
+			content := strings.TrimSpace(sanitizeCell(string(model.entry), 4096))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if content == "" {
+				return model, nil
+			}
+			model.loading = true
+			return model, model.sendChatMessage(content)
 		}
 		if len(model.entry) == 0 {
 			return model, nil
@@ -3897,6 +4033,8 @@ func (model Model) renderCompare() string {
 func (model *Model) clampSelection() {
 	maximum := 0
 	switch model.Screen() {
+	case ScreenHome:
+		maximum = len(model.snapshot.Missions)
 	case ScreenBoard:
 		model.clampTaskSelection()
 		return
@@ -4470,6 +4608,12 @@ func safeClientState(err error) string {
 		return "timeout"
 	}
 	return "state_unavailable"
+}
+
+func cloneChatThread(thread api.LocalProductChatThread) api.LocalProductChatThread {
+	copied := thread
+	copied.Messages = append([]api.LocalProductChatMessage(nil), thread.Messages...)
+	return copied
 }
 
 func cloneSnapshot(snapshot api.LocalProductSnapshot) api.LocalProductSnapshot {

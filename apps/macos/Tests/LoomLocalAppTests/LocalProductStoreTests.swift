@@ -1125,6 +1125,87 @@ final class LocalProductStoreTests: XCTestCase {
         XCTAssertEqual(client.commands[2].claimGeneration, 3)
         XCTAssertEqual(client.commands[2].expectedViewVersion, store.snapshot?.viewVersion)
     }
+
+
+    func testPlainChatMessageDoesNotCreateTeamOrMission() async {
+        let client = ChatRecordingClient()
+        let store = LocalProductStore(client: client)
+
+        await store.sendChatMessage("Plan a vacation")
+
+        XCTAssertEqual(client.recordedThread?.messages.count, 2)
+        XCTAssertEqual(client.recordedThread?.messages.first?.role, "user")
+        XCTAssertEqual(client.recordedThread?.messages.last?.role, "loom")
+        XCTAssertNil(store.builderSession)
+        XCTAssertNil(store.snapshot)
+        XCTAssertFalse(client.setupStarted)
+    }
+
+    func testExplicitAgentTriggerRequiresConfirmationAndDoesNotAutoCreateTeam() async {
+        let client = ChatRecordingClient()
+        let store = LocalProductStore(client: client)
+
+        await store.startBlankBuilder()
+
+        XCTAssertNil(store.builderSession)
+        XCTAssertNil(store.lastConfirmation)
+        XCTAssertNil(store.snapshot)
+        XCTAssertFalse(client.setupStarted)
+    }
+private final class ChatRecordingClient: LocalProductClientProtocol {
+    private(set) var recordedThread: LocalProductChatThread?
+    private(set) var setupStarted = false
+
+    func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+        throw LocalProductClientError.unavailable
+    }
+
+    func timeline(
+        teamInstanceID: String,
+        cursor: String,
+        limit: Int
+    ) async throws -> LocalProductTimelinePage {
+        throw LocalProductClientError.unavailable
+    }
+
+    func chatThread(threadID: String) async throws -> LocalProductChatThread {
+        return recordedThread ?? LocalProductChatThread(
+            threadID: threadID,
+            messages: [],
+            canReply: true,
+            requiresConfirmation: false
+        )
+    }
+
+    func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
+        let user = LocalProductChatMessage(
+            messageID: "1",
+            role: "user",
+            content: content,
+            tentative: false
+        )
+        let loom = LocalProductChatMessage(
+            messageID: "2",
+            role: "loom",
+            content: "Loom received: \(content)",
+            tentative: false
+        )
+        let thread = LocalProductChatThread(
+            threadID: threadID,
+            messages: [user, loom],
+            canReply: true,
+            requiresConfirmation: false
+        )
+        recordedThread = thread
+        return thread
+    }
+
+    func setupSnapshot() async throws -> LocalProductSetupSnapshot {
+        setupStarted = true
+        throw LocalProductClientError.unavailable
+    }
+}
+
 }
 
 private func restartedSideTaskFixture() throws -> (

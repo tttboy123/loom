@@ -230,6 +230,18 @@ public protocol LocalProductClientProtocol {
         cursor: String,
         limit: Int
     ) async throws -> LocalProductTimelinePage
+    func chatThread(threadID: String) async throws -> LocalProductChatThread
+    func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread
+}
+
+public extension LocalProductClientProtocol {
+    func chatThread(threadID: String) async throws -> LocalProductChatThread {
+        throw LocalProductClientError.unavailable
+    }
+
+    func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
+        throw LocalProductClientError.unavailable
+    }
 }
 
 public protocol LocalProductDecisionClientProtocol {
@@ -323,6 +335,7 @@ public final class LocalProductStore: ObservableObject {
     @Published public private(set) var providerConnectionStatus: LocalProductProviderConnectResult?
     @Published public private(set) var workspace = LocalProductWorkspaceState()
     @Published public private(set) var workbench = MissionWorkspaceState()
+    @Published public private(set) var chatThread: LocalProductChatThread?
     @Published public private(set) var activeDecisionSheet: LocalProductDecisionSheet?
     @Published public private(set) var executionState: LocalProductExecutionState = .idle
     @Published public private(set) var executionPreflight: LocalProductExecutionPreflight?
@@ -1146,6 +1159,41 @@ public final class LocalProductStore: ObservableObject {
         closeTimelineLoadPresentation()
         workbench.showLibrary()
         Task { await loadEvolutionAssets() }
+    }
+
+
+    public func currentChatThreadID() -> String {
+        let anchor = workspace.selectedContinuity.threadAnchor
+        if !anchor.isEmpty {
+            return anchor
+        }
+        let id = "thread-\(UUID().uuidString.lowercased())"
+        workspace.updateThreadAnchor(id)
+        return id
+    }
+
+    public func loadChatThread() async {
+        do {
+            let thread = try await client.chatThread(threadID: currentChatThreadID())
+            chatThread = thread
+        } catch {
+            // Preserve existing chat thread; offline state is already surfaced by refresh.
+        }
+    }
+
+    public func sendChatMessage(_ content: String) async {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        workspace.updateComposerDraft("")
+        do {
+            let thread = try await client.sendChatMessage(
+                threadID: currentChatThreadID(),
+                content: trimmed
+            )
+            chatThread = thread
+        } catch {
+            workspace.updateComposerDraft(trimmed)
+        }
     }
 
     public var evolutionAssetReachable: Bool { assetClient != nil }

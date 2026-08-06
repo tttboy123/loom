@@ -301,6 +301,8 @@ func validMethod(method string) bool {
 	case "ping",
 		"snapshot",
 		"timeline_page",
+		"chat_thread",
+		"chat_message",
 		"mission_decision",
 		"mission_execution",
 		"side_task_handoff",

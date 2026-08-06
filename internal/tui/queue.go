@@ -75,25 +75,25 @@ func (model Model) renderQueueView() string {
 		lines = append(lines, fmt.Sprintf(
 			"• %s · %s · lane %s · dag %s · %s",
 			sanitizeCell(job.JobID, 36),
-			humanizeStatus(string(job.Status)),
-			humanizeStatus(string(job.Lane)),
+			styleStatus(humanizeStatus(string(job.Status))),
+			styleStatus(humanizeStatus(string(job.Lane))),
 			sanitizeCell(job.DAGNodeID, 24),
 			sanitizeCell(strings.Join(job.OwnedPaths, ","), 40),
 		))
 	}
 	if len(model.queueSnapshot.Gaps) > 0 {
-		lines = append(lines, "Gap proposals:")
+		lines = append(lines, styleSection("Gap proposals:"))
 		for _, gap := range model.queueSnapshot.Gaps {
 			lines = append(lines, fmt.Sprintf(
 				"• %s · %s · %s",
 				sanitizeCell(gap.GapID, 20),
-				sanitizeCell(gap.AffectedCapability, 24),
+				styleStatus(sanitizeCell(gap.AffectedCapability, 24)),
 				sanitizeCell(gap.Disposition, 20),
 			))
 		}
 	}
 	if len(model.queueSnapshot.Successors) > 0 {
-		lines = append(lines, "Successor proposals:")
+		lines = append(lines, styleSection("Successor proposals:"))
 		for _, successor := range model.queueSnapshot.Successors {
 			lines = append(lines, fmt.Sprintf(
 				"• %s · gap %s",

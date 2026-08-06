@@ -116,7 +116,7 @@ func (model Model) productionCommand(action string, input map[string]any) tea.Cm
 
 func (model Model) renderProductionView() string {
 	lines := []string{
-		"Production · resident daemon activation",
+		styleTitle("Production") + " · resident daemon activation",
 		"p preview activation · c confirm · d deactivation preview · x confirm deactivation · r refresh · q quit",
 	}
 	if model.productionClient == nil {
@@ -125,18 +125,18 @@ func (model Model) renderProductionView() string {
 	}
 	status := "inactive"
 	if model.productionSnapshot.Activated {
-		status = "activated · " + model.productionSnapshot.TargetMode
+		status = styleStatus("activated") + " · " + model.productionSnapshot.TargetMode
 	}
-	lines = append(lines, "Status: "+status)
+	lines = append(lines, styleSection("Status: ")+status)
 	if model.productionSnapshot.Recovery.Degraded {
-		lines = append(lines, "DEGRADED read-only: "+model.productionSnapshot.Recovery.Reason)
+		lines = append(lines, styleError("DEGRADED read-only: "+model.productionSnapshot.Recovery.Reason))
 	}
 	if model.productionPreview.Digest != "" {
-		lines = append(lines, fmt.Sprintf(
+		lines = append(lines, styleSection(fmt.Sprintf(
 			"Preview %s · digest %s",
 			model.productionPreview.Operation,
 			sanitizeCell(model.productionPreview.Digest, 16),
-		))
+		)))
 		for _, change := range model.productionPreview.Files {
 			lines = append(lines, fmt.Sprintf(
 				"  %s %s",

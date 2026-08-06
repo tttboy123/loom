@@ -9,31 +9,39 @@ public struct ExecutionExplorerView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Execution · bounded execution adapter")
-                .font(.headline)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(LoomGraphite.textPrimary)
             if snapshot.records.isEmpty {
                 Text("No executions yet. Propose a tool call from the TUI.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(LoomGraphite.textSecondary)
             }
             List(snapshot.records, id: \.executionID) { record in
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("\(record.jobID) · \(record.tool) · \(record.status)")
                         .font(.body)
+                        .foregroundStyle(LoomGraphite.textPrimary)
                     Text("execution \(record.executionID) · exit \(record.exitCode ?? -1)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(LoomGraphite.textSecondary)
+                        .monospaced()
                     if let denial = record.denialReason, !denial.isEmpty {
-                        Text("Denied · \(denial)").font(.caption).foregroundColor(.red)
+                        Text("Denied · \(denial)")
+                            .font(.caption)
+                            .foregroundStyle(LoomGraphite.statusDanger)
                     }
                     if let failure = record.failureReason, !failure.isEmpty {
-                        Text("Failed · \(failure)").font(.caption).foregroundColor(.red)
+                        Text("Failed · \(failure)")
+                            .font(.caption)
+                            .foregroundStyle(LoomGraphite.statusDanger)
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             }
         }
-        .padding()
+        .padding(16)
+        .background(LoomGraphite.surface)
     }
 }
