@@ -342,6 +342,7 @@ public struct LoomWorkspaceShell: View {
     @State private var builderAnswer = ""
     @State private var builderName = ""
     @State private var builderPurpose = ""
+    @State private var pendingMissionObjective = ""
     @State private var diagnosticPreview: LocalDiagnosticBundlePreview?
     @State private var diagnosticExporter: LocalDiagnosticBundleExporter?
     @State private var pendingConversationRouteTransition:
@@ -407,7 +408,8 @@ public struct LoomWorkspaceShell: View {
             MissionWorkbench(
                 store: store,
                 showProvidersInitially: presentation == .runtimeProviders,
-                showNewMissionInitially: presentation == .newMission
+                showNewMissionInitially: presentation == .newMission,
+                initialMissionObjective: pendingMissionObjective
             )
                 .frame(minWidth: 1_080, minHeight: 680)
         }
@@ -1178,6 +1180,17 @@ public struct LoomWorkspaceShell: View {
                             .help("Copy message text")
                         }
                         if isAgentProposal {
+                            if !store.executableTeams.isEmpty {
+                                Button {
+                                    runMissionFromChat(message)
+                                } label: {
+                                    Label("Run as Mission", systemImage: "play.circle")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .accessibilityLabel("Run this conversation as a Mission")
+                                .help("Pre-fill a Mission from this conversation and start it")
+                            }
                             Button {
                                 governance.open(.team)
                                 Task { await store.startBlankBuilder() }
@@ -1468,6 +1481,42 @@ public struct LoomWorkspaceShell: View {
         case "ultra": return "Ultra"
         default: return effort.capitalized
         }
+    }
+
+    private func runMissionFromChat(_ message: LocalProductChatMessage) {
+        let objective = chatMissionObjective(
+            around: message,
+            thread: store.chatThread
+        )
+        pendingMissionObjective = objective
+        store.showMissionBoard()
+        fullGovernancePresentation = .newMission
+    }
+
+    /// Builds a Mission objective from the conversation around a proposal:
+    /// the proposal's own content first, then the latest user message.
+    private func chatMissionObjective(
+        around message: LocalProductChatMessage,
+        thread: LocalProductChatThread?
+    ) -> String {
+        let trimmedProposal = message.displayContent.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !trimmedProposal.isEmpty,
+           trimmedProposal.utf8.count <= 4_096 {
+            return trimmedProposal
+        }
+        for candidate in (thread?.messages ?? []).reversed() {
+            if candidate.role == "user" {
+                let value = candidate.displayContent.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !value.isEmpty && value.utf8.count <= 4_096 {
+                    return value
+                }
+            }
+        }
+        return ""
     }
 
     private func copyChatMessage(_ text: String) {

@@ -1601,6 +1601,20 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertTrue(store.snapshot?.teams.first?.executable == true)
   }
 
+  func testExecutableTeamsExposesOnlyConfirmedRunnableTeams() async throws {
+    let client = try ProviderSetupStubClient(materializesTeam: true)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    XCTAssertTrue(store.executableTeams.isEmpty)
+
+    await store.startBlankBuilder()
+    await store.confirmBuilder()
+
+    XCTAssertEqual(store.executableTeams.count, 1)
+    XCTAssertEqual(store.executableTeams.first?.teamInstanceID, "team-instance-fixture")
+  }
+
   func testBuilderForwardsIndependentExecutionProfileEdit() async throws {
     let client = try ProviderSetupStubClient(materializesTeam: true)
     let store = LocalProductStore(client: client)

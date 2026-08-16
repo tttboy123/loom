@@ -2433,15 +2433,18 @@ public struct MissionWorkbench: View {
   @State private var pendingAssetMutation: PendingEvolutionAssetMutation?
 
   private let showRail: Bool
+  private let initialMissionObjective: String?
 
   public init(
     store: LocalProductStore,
     showRail: Bool = true,
     showProvidersInitially: Bool = false,
-    showNewMissionInitially: Bool = false
+    showNewMissionInitially: Bool = false,
+    initialMissionObjective: String? = nil
   ) {
     self.store = store
     self.showRail = showRail
+    self.initialMissionObjective = initialMissionObjective
     _showProviders = State(initialValue: showProvidersInitially)
     _showNewMission = State(initialValue: showNewMissionInitially)
   }
@@ -2674,9 +2677,7 @@ public struct MissionWorkbench: View {
   }
 
   private var executableTeams: [LocalProductTeamSummary] {
-    (store.snapshot?.teams ?? []).filter {
-      $0.confirmed && $0.executable && !$0.readOnly
-    }
+    store.executableTeams
   }
 
   private var selectedWorkPackage: LocalProductWorkPackageOption {
@@ -2790,6 +2791,11 @@ public struct MissionWorkbench: View {
       newMissionCommandBar
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
+    }
+    .onAppear {
+      if newMissionObjective.isEmpty, let prefill = initialMissionObjective {
+        newMissionObjective = prefill
+      }
     }
     .onChange(of: newMissionObjective) { _, _ in missionContextDidChange() }
     .onChange(of: confirmedMissionConstraints) { _, _ in missionContextDidChange() }

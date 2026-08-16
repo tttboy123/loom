@@ -12808,3 +12808,15 @@ skip); live snapshot shows DeepSeek ready + no Team, so the guide renders the
 "Chat is ready with DeepSeek / create a Team when needed" state; App rebuilt +
 reinstalled; `git diff --check` clean. Evidence:
 `.loom-evidence/phase2d/P2D-W2D-lower-friction-quickstart-v47.md`.
+
+`CURRENT / V48 FOLLOW-UP (CHAT → MISSION MERGE) (2026-08-16)`: Mission is now
+reachable directly from the conversation. A Loom proposal message shows a
+**Run as Mission** button (when an executable Team exists) that pre-fills the New
+Mission objective from the proposal / latest user message and opens the sheet —
+no re-typing and no separate New Mission hunt. `LocalProductStore` now exposes
+`executableTeams` (shared with `MissionWorkbench`), and `MissionWorkbench`
+accepts `initialMissionObjective` for pre-fill. Verified: macOS `237` tests, `0`
+failures (`1` visual-export skip); new test
+`testExecutableTeamsExposesOnlyConfirmedRunnableTeams`; App rebuilt +
+reinstalled; `git diff --check` clean. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-chat-to-mission-v48.md`.

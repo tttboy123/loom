@@ -2028,6 +2028,13 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  /// Confirmed, executable, non-read-only Teams a Mission can run on.
+  public var executableTeams: [LocalProductTeamSummary] {
+    (snapshot?.teams ?? []).filter {
+      $0.confirmed && $0.executable && !$0.readOnly
+    }
+  }
+
   public func selectTeam(_ team: LocalProductTeamSummary) {
     invalidateTimelineLoad()
     selectedTeamID = team.teamInstanceID
