@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/credentials"
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/journal"
@@ -1689,5 +1691,59 @@ func assertProductSetupCatalogRoleOptionsFreezable(
 		); err != nil {
 			t.Fatalf("role option %q is not freezable: %v", option.ID, err)
 		}
+	}
+}
+
+func TestProductMissionExecutorConstructsBrokeredOnlyWithoutLocalModel(t *testing.T) {
+	ctx := context.Background()
+	runs, _, _, _, _, journalStore := productAttemptLoopFixture(t)
+	grantAuthority, err := authorization.NewAuthority(
+		journalStore,
+		runs,
+		func() time.Time { return time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC) },
+		bytes.NewReader(bytes.Repeat([]byte{0x72}, 256)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor, err := newProductMissionExecutor(
+		ctx,
+		productMissionExecutionRuntimeConfig{
+			RuntimeSearchPaths: []string{root},
+			RuntimeInstanceID:  "runtime-1",
+			Now: func() time.Time {
+				return time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC)
+			},
+			AgentAdapters: []supervisor.RuntimeAdapter{
+				&productAgentFailureAdapterFixture{},
+			},
+		},
+		root,
+		runs,
+		grantAuthority,
+	)
+	if err != nil {
+		t.Fatalf("brokered-only executor construction failed: %v", err)
+	}
+	defer executor.Close(ctx)
+	brokeredKey := productMissionAdapterKey(
+		"loom-native",
+		productNativeAgentRuntimeInstanceID,
+	)
+	if _, ok := executor.supervisors[brokeredKey]; !ok {
+		t.Fatalf("brokered adapter missing from supervisors: %#v", executor.supervisors)
+	}
+	if _, ok := executor.supervisors[productMissionAdapterKey("pi-cli", "runtime-1")]; ok {
+		t.Fatal("pi-cli adapter must not register without LocalModelCatalog")
+	}
+	if _, err := executor.supervisorFor(supervisor.ExecuteInput{
+		Profile:  loomruntime.RuntimeProfile{AdapterType: "pi-cli"},
+		Instance: loomruntime.RuntimeInstance{ID: "runtime-1"},
+	}); !errors.Is(err, app.ErrInvalidMissionExecution) {
+		t.Fatalf("legacy pi-cli binding without model = %v, want invalid execution", err)
 	}
 }

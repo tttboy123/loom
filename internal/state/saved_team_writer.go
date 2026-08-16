@@ -185,7 +185,7 @@ func buildSavedTeamCommitEvents(
 		SourceRecordSetDigest:  records.RecordSetDigest(),
 		TeamCreatedAt:          team.CreatedAt,
 		BindingDigest:          binding.BindingDigest(),
-		RuntimeDiscoveryDigest: binding.RuntimeDiscoveryDigest(),
+		RuntimeDiscoveryDigest: binding.MainRuntimeDiscoveryDigest(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: Main Agent payload: %w", ErrInvalidSavedTeamCommitSource, err)

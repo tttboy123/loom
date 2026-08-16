@@ -77,6 +77,10 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 		t.Fatalf("expected deepseek+minimax roles, got %v", providers)
 	}
 
+	// 3b. Archive any leftover live-mixed Teams first so the draft's captured
+	// view version and catalog digest stay stable through confirm.
+	archiveLiveTeams(t, ctx, client)
+
 	// 4. Start a blank Team draft (form-first), set name+purpose, and add a
 	//    second subagent so the Team spans two independent Provider Accounts
 	//    across four Agents (main + three subagents).
@@ -112,6 +116,14 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 			session.CanConfirm, session.BindingDg)
 	}
 
+	// 5. Capture the pre-existing TeamInstance IDs so the newly confirmed
+	//    instance can be selected deterministically (saved-team archives do
+	//    not remove already-materialized instances).
+	beforeTeamIDs := map[string]bool{}
+	for _, existing := range refreshTeams(t, ctx, client) {
+		beforeTeamIDs[existing.TeamInstanceID] = true
+	}
+
 	// 5. Confirm the Team.
 	definitionID := "team-live-mixed-" + time.Now().UTC().Format("20060102T150405Z")
 	confirmation, err := confirmSession(t, ctx, client, session, definitionID)
@@ -122,17 +134,38 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 		confirmation.TeamDefinitionID, confirmation.Status,
 		confirmation.TeamInstanceCreated, confirmation.RunCreated)
 
-	// 6. Snapshot: the confirmed Team must appear as executable.
+	// 6. Snapshot: the newly confirmed Team must appear as an executable saved
+	//    TeamInstance (the read service maps it to its generated TeamInstance ID,
+	//    not the definition ID). Select the instance that did not exist before
+	//    this confirmation.
 	teams := refreshTeams(t, ctx, client)
 	if len(teams) == 0 {
 		t.Fatal("no Team in snapshot after confirmation")
 	}
-	team := teams[0]
+	var team teamSummary
+	for _, candidate := range teams {
+		if candidate.SourceKind == "saved_team" && candidate.Confirmed &&
+			candidate.Executable && !candidate.ReadOnly &&
+			!beforeTeamIDs[candidate.TeamInstanceID] {
+			team = candidate
+			break
+		}
+	}
+	if team.TeamInstanceID == "" {
+		t.Fatalf("new confirmed team missing from snapshot: %#v", teams)
+	}
 	t.Logf("team=%s display=%q executable=%v confirmed=%v",
 		team.TeamInstanceID, team.DisplayName, team.Executable, team.Confirmed)
 	if !team.Confirmed || !team.Executable {
 		t.Fatalf("confirmed team not executable: %#v", team)
 	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(), 30*time.Second,
+		)
+		defer cleanupCancel()
+		archiveLiveTeams(t, cleanupCtx, client, definitionID)
+	})
 
 	// 7. Preflight a real Mission on this Team (paid real run).
 	preflight, err := preflightMission(t, ctx, client, team)
@@ -150,7 +183,12 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 	if preflight.Preflight != nil {
 		nodes = preflight.Preflight.Nodes
 	}
-	t.Logf("preflight nodes=%d ready=%v", len(nodes), countStatus(nodes, "ready"))
+	ready := countStatus(nodes, "ready")
+	t.Logf("preflight nodes=%d ready=%v", len(nodes), ready)
+	if len(nodes) != 4 || ready != 4 {
+		t.Fatalf("expected 4/4 ready nodes for the mixed-provider Team, got %d/%d: %#v",
+			ready, len(nodes), nodes)
+	}
 
 	// 8. Run the Mission and verify per-Agent bindings + real progress.
 	result, err := runMission(t, ctx, client, team, preflight)
@@ -158,6 +196,12 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 		t.Fatalf("run mission: %v", err)
 	}
 	t.Logf("mission result: status=%s note=%q", result.Status, result.Note)
+	switch result.Status {
+	case "running", "awaiting_recovery", "blocked", "succeeded", "failed",
+		"degraded", "human_required", "cancelled":
+	default:
+		t.Fatalf("mission start returned unrecognized status %q", result.Status)
+	}
 
 	// 9. Snapshot accounting rows: attempts + per-Account accounting coverage.
 	verifyAccountingRows(t, ctx, client, team.TeamInstanceID)
@@ -326,9 +370,45 @@ func confirmSession(t *testing.T, ctx context.Context, client *localipc.Client, 
 	return confirmation, nil
 }
 
+func archiveLiveTeams(t *testing.T, ctx context.Context, client *localipc.Client, definitionIDs ...string) {
+	t.Helper()
+	want := map[string]bool{}
+	for _, id := range definitionIDs {
+		want[id] = true
+	}
+	var raw json.RawMessage
+	if err := client.Call(ctx, "setup_snapshot", struct{}{}, &raw); err != nil {
+		t.Logf("archive setup_snapshot: %v", err)
+		return
+	}
+	var snap struct {
+		SavedTeams []struct {
+			ID         string `json:"id"`
+			Status     string `json:"status"`
+			StreamHead int64  `json:"stream_head"`
+		} `json:"saved_teams"`
+	}
+	_ = json.Unmarshal(raw, &snap)
+	for _, saved := range snap.SavedTeams {
+		if saved.Status != "active" || saved.StreamHead <= 0 ||
+			!strings.HasPrefix(saved.ID, "team-live-mixed-") {
+			continue
+		}
+		if len(want) > 0 && !want[saved.ID] {
+			continue
+		}
+		if err := client.Call(ctx, "team_archive", map[string]any{
+			"definition_id": saved.ID, "expected_head": saved.StreamHead,
+		}, &struct{}{}); err != nil {
+			t.Logf("archive team %s: %v", saved.ID, err)
+		}
+	}
+}
+
 type teamSummary struct {
 	TeamInstanceID string `json:"team_instance_id"`
 	DisplayName    string `json:"display_name"`
+	SourceKind     string `json:"source_kind"`
 	Confirmed      bool   `json:"confirmed"`
 	Executable     bool   `json:"executable"`
 	ReadOnly       bool   `json:"read_only"`
@@ -339,7 +419,7 @@ func refreshTeams(t *testing.T, ctx context.Context, client *localipc.Client) []
 	var raw json.RawMessage
 	if err := client.Call(ctx, "snapshot", map[string]any{
 		"after_team_id": "", "after_runtime_id": "", "after_run_id": "",
-		"after_evidence_id": "", "limit": 100,
+		"after_evidence_id": "", "limit": 64,
 	}, &raw); err != nil {
 		// Fall back to setup_snapshot (saved teams).
 		if err := client.Call(ctx, "setup_snapshot", struct{}{}, &raw); err != nil {
@@ -381,7 +461,7 @@ type preflightEnvelope struct {
 			ModelID       string `json:"model_id"`
 			Status        string `json:"status"`
 		} `json:"nodes"`
-		Digest string `json:"digest"`
+		PreflightDigest string `json:"preflight_digest"`
 	} `json:"preflight"`
 }
 
@@ -404,25 +484,34 @@ func countStatus(nodes []struct {
 
 func preflightMission(t *testing.T, ctx context.Context, client *localipc.Client, team teamSummary) (preflightEnvelope, error) {
 	t.Helper()
-	var raw json.RawMessage
-	err := client.Call(ctx, "mission_execution", map[string]any{
-		"schema_version": 1, "operation": "preflight",
-		"mission_id":            "mission/" + team.TeamInstanceID,
-		"team_instance_id":      team.TeamInstanceID,
-		"work_package_id":       "work-package.coding",
-		"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe29634646ceafd618809b6b22c8a4f",
-		"objective":             "Verify the mixed-provider Team runs end to end",
-		"expected_view_version": currentViewVersion(t, ctx, client),
-		"correlation_id":        "loom-chat-live-team-" + time.Now().UTC().Format("20060102T150405Z"),
-	}, &raw)
-	if err != nil {
-		return preflightEnvelope{}, err
+	const attempts = 5
+	for attempt := 0; attempt < attempts; attempt++ {
+		var raw json.RawMessage
+		err := client.Call(ctx, "mission_execution", map[string]any{
+			"schema_version": 1, "operation": "preflight",
+			"mission_id":            "mission/" + team.TeamInstanceID,
+			"team_instance_id":      team.TeamInstanceID,
+			"work_package_id":       "work-package.coding",
+			"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f",
+			"objective":             "Verify the mixed-provider Team runs end to end",
+			"expected_view_version": currentViewVersion(t, ctx, client),
+			"correlation_id":        matrixOperationID(),
+		}, &raw)
+		if err != nil {
+			var remote *localipc.RemoteError
+			if errors.As(err, &remote) && remote.Code == "conflict" &&
+				attempt < attempts-1 {
+				continue
+			}
+			return preflightEnvelope{}, err
+		}
+		var envelope preflightEnvelope
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return preflightEnvelope{}, fmt.Errorf("decode: %w", err)
+		}
+		return envelope, nil
 	}
-	var envelope preflightEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return preflightEnvelope{}, fmt.Errorf("decode: %w", err)
-	}
-	return envelope, nil
+	return preflightEnvelope{}, errors.New("preflight view version conflict retries exhausted")
 }
 
 func currentViewVersion(t *testing.T, ctx context.Context, client *localipc.Client) string {
@@ -448,26 +537,46 @@ func runMission(t *testing.T, ctx context.Context, client *localipc.Client, team
 	if preflight.Preflight == nil {
 		return missionRunResult{}, errors.New("no preflight envelope")
 	}
-	var raw json.RawMessage
-	err := client.Call(ctx, "mission_execution", map[string]any{
-		"schema_version": 1, "operation": "execute",
-		"mission_id":            "mission/" + team.TeamInstanceID,
-		"team_instance_id":      team.TeamInstanceID,
-		"work_package_id":       "work-package.coding",
-		"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe29634646ceafd618809b6b22c8a4f",
-		"objective":             "Verify the mixed-provider Team runs end to end",
-		"expected_view_version": currentViewVersion(t, ctx, client),
-		"preflight_digest":      preflight.Preflight.Digest,
-		"correlation_id":        "loom-chat-live-team-run-" + time.Now().UTC().Format("20060102T150405Z"),
-	}, &raw)
-	if err != nil {
-		return missionRunResult{}, err
+	const attempts = 5
+	for attempt := 0; attempt < attempts; attempt++ {
+		var raw json.RawMessage
+		err := client.Call(ctx, "mission_execution", map[string]any{
+			"schema_version": 1, "operation": "start",
+			"mission_id":            "mission/" + team.TeamInstanceID,
+			"team_instance_id":      team.TeamInstanceID,
+			"work_package_id":       "work-package.coding",
+			"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f",
+			"objective":             "Verify the mixed-provider Team runs end to end",
+			"expected_view_version": currentViewVersion(t, ctx, client),
+			"preflight_digest":      preflight.Preflight.PreflightDigest,
+			"correlation_id":        matrixOperationID(),
+		}, &raw)
+		if err != nil {
+			var remote *localipc.RemoteError
+			if errors.As(err, &remote) && remote.Code == "conflict" &&
+				attempt < attempts-1 {
+				continue
+			}
+			return missionRunResult{}, err
+		}
+		var envelope struct {
+			Result *struct {
+				Status string `json:"status"`
+				Note   string `json:"note"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return missionRunResult{}, fmt.Errorf("decode: %w", err)
+		}
+		if envelope.Result == nil {
+			return missionRunResult{}, fmt.Errorf("start envelope has no result: %s", raw)
+		}
+		return missionRunResult{
+			Status: envelope.Result.Status,
+			Note:   envelope.Result.Note,
+		}, nil
 	}
-	var result missionRunResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return missionRunResult{}, fmt.Errorf("decode: %w", err)
-	}
-	return result, nil
+	return missionRunResult{}, errors.New("mission start view version conflict retries exhausted")
 }
 
 func verifyAccountingRows(t *testing.T, ctx context.Context, client *localipc.Client, teamInstanceID string) {

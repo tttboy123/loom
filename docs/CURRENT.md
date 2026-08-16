@@ -2,6 +2,59 @@
 
 Updated: 2026-08-16
 
+## Phase 2D V33 Brokered-Only Mission Execution — G3 Installed-Live PASS (2026-08-16)
+
+`CURRENT / G3 INSTALLED-LIVE PASS`: the installed App daemon now confirms and
+starts a real 4-Agent mixed-provider Team end to end (DeepSeek main + MiniMax +
+DeepSeek reviewer + MiniMax researcher). `builder_confirm` materializes the
+TeamInstance, preflight resolves `4/4 ready` nodes across two independent
+Provider accounts, and `mission_execution start` returns `status=running` with
+real paid Provider calls under per-Agent Vault leases and frozen bindings.
+Verified with `LOOM_LIVE_TEAM_E2E=1` on the production bundle at
+`/Users/lune/Applications/Loom.app` (daemon launched without
+`--local-model-*`; no local GGUF model present).
+
+`CURRENT / BROKERED-ONLY MISSION EXECUTION`: removed the hard
+`LocalModelCatalog` prerequisite for Mission execution. The installed Pi
+runtime ships the Pi CLI but no local model, so the previous daemon built no
+Execution config and preflight returned `state_unavailable`. Now:
+`missionExecutionConfigFromDaemonBuild` emits a brokered-only Execution config;
+`newProductMissionExecutor`/`buildProductMissionExecutionAPI` accept a nil
+catalog and only append the `pi-cli` deferred adapter when a local model
+exists; legacy `pi-cli` single-role bindings still fail closed without a model.
+
+`CURRENT / PER-INSTANCE RUNTIME DISCOVERY DIGEST`: the materializer recorded
+the full-catalog composite discovery digest as the main Agent's
+`RuntimeDiscoveryDigest`, which never matched the projected runtime instance's
+per-instance `DiscoveryDigest`, so configured mixed-provider bindings always
+conflicted at preflight. The binding candidate now carries the main runtime's
+per-instance digest (`WithMainRuntimeDiscoveryDigest`) and the writer persists
+it; validation compares canonical fields only.
+
+`CURRENT / GOVERNED CONTEXT RETRIEVAL PAIRING`: `productMissionExecutor` no
+longer injects a bare `ContextRetriever` (the supervisor rejects a retriever
+without its paired `DeliveryBroker`). The governed attempt-loop adapter now
+materializes the scoped retriever and its delivery coordinator together
+downstream, preserving attempt-loop accounting.
+
+`CURRENT / NATIVE PROMPT BOUND`: raised the OpenAI-compatible nativeadapter
+prompt limit from 4 KiB to 64 KiB (the loom-native Context Capsule cap is
+32 KiB; conversation adapters use 64 KiB). Real mission prompts (objective +
+workspace context) previously exceeded 4 KiB and were rejected as a bridge
+protocol failure.
+
+`CURRENT / LIVE GATE HARNESS`: `TestLiveMixedProviderTeamE2E` now uses valid
+UUID correlation IDs, the exact `work-package.coding` digest, snapshot limit 64
+(so it reads real TeamInstance IDs instead of silently falling back), selects
+the newly confirmed TeamInstance, archives leftover `team-live-mixed-*` teams,
+retries view-version conflicts, asserts `4/4 ready`, and decodes the start
+envelope status.
+
+`VERIFICATION`: `go test ./...` green except the known pre-existing
+`internal/runtime/harnessadapter` child-process flake (passes 3/3 in
+isolation); `swift test` all suites pass; focused race checks pass;
+`git diff --check` clean.
+
 ## Product state
 
 - `CURRENT`: product scope, Phase 1 contracts, architecture, trust boundaries,

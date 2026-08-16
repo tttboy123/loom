@@ -1569,3 +1569,44 @@ func errString(err error) string {
 	}
 	return err.Error()
 }
+
+func TestLoomNativeDispatchAcceptsLargeMissionRoleContextPrompt(t *testing.T) {
+	capsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "conversation-mission", TeamID: "team-mixed",
+			AgentID: "agent-deepseek", RoleID: "coordinator",
+			ProviderID:        DeepSeekAgentProviderID,
+			ProviderAccountID: "deepseek.primary", ModelID: DeepSeekAgentModelID,
+			AuthMode: "brokered", ContextAdapterID: "context:loom-native:v1",
+			DisclosurePolicyID: "policy.test", DisclosurePolicyVersion: 1,
+			TokenBudget: 1024,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "objective-1", Kind: contextcapsule.KindConversationGoal,
+			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 256, Required: true,
+			Content: []byte(strings.Repeat(
+				"Verify the mixed-provider Team runs end to end with real provider calls. ",
+				160,
+			)),
+			SourceType: contextcapsule.SourceAuthority, SourceRef: "goal:phase-2d",
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := contextcapsule.RenderDispatchPayload(capsule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture prompt exceeds the legacy 4 KiB bound that rejected real
+	// mission prompts, while staying inside the 32 KiB loom-native capsule cap.
+	const legacyPromptBound = 4096
+	if len(payload) <= legacyPromptBound {
+		t.Fatalf("fixture prompt is not large: %d bytes", len(payload))
+	}
+	dispatch, err := decodeDeepSeekAgentDispatch(payload)
+	if err != nil || !strings.Contains(dispatch.Prompt, "mixed-provider Team") {
+		t.Fatalf("large context dispatch = %#v, %v", dispatch, err)
+	}
+}

@@ -3295,36 +3295,10 @@ func (executor *productMissionExecutor) Execute(
 	ctx context.Context,
 	input supervisor.ExecuteInput,
 ) (supervisor.Outcome, error) {
-	if input.ContextCapsule != (contextcapsule.AuthorityRecord{}) {
-		binding, bindingErr := loomruntime.FreezeExecutionBinding(input.Profile, input.Instance)
-		if bindingErr != nil {
-			return supervisor.Outcome{}, app.ErrInvalidMissionExecution
-		}
-		if productAgentContainsString(
-			binding.Capabilities,
-			loomruntime.CapabilityContextRetrieval,
-		) {
-			if executor.contextStore == nil || executor.contextAuditor == nil {
-				return supervisor.Outcome{}, app.ErrInvalidMissionExecution
-			}
-			retriever, retrievalErr := contextcapsule.NewScopedRetriever(
-				input.ContextCapsule,
-				contextcapsule.AttemptIdentity{
-					WorkItemID: input.Generation.WorkItemID, RunID: input.Generation.RunID,
-					ClaimID:                input.Generation.ClaimID,
-					ClaimGeneration:        input.Generation.ClaimGeneration,
-					RuntimeInstanceID:      input.Generation.RuntimeInstanceID,
-					ExecutionBindingDigest: binding.BindingDigest,
-					IncidentID:             input.Generation.CorrelationID,
-				},
-				executor.contextStore, executor.contextAuditor,
-			)
-			if retrievalErr != nil {
-				return supervisor.Outcome{}, app.ErrInvalidMissionExecution
-			}
-			input.ContextRetriever = retriever
-		}
-	}
+	// The Context Capsule + Route Segment are carried through unchanged. The
+	// governed attempt-loop adapter materializes the scoped ContextRetriever
+	// and its paired DeliveryBroker downstream (both must arrive together at
+	// the supervisor boundary; a retriever without a delivery is rejected).
 	selected, err := executor.supervisorFor(input)
 	if err != nil {
 		return supervisor.Outcome{}, app.ErrInvalidMissionExecution
@@ -3368,8 +3342,7 @@ func newProductMissionExecutor(
 	workAuthority *work.Authority,
 	grantAuthority *authorization.Authority,
 ) (*productMissionExecutor, error) {
-	if ctx == nil || config.LocalModelCatalog == nil ||
-		workAuthority == nil || grantAuthority == nil ||
+	if ctx == nil || workAuthority == nil || grantAuthority == nil ||
 		(config.ContextRetrievalStore == nil) != (config.ContextRetrievalAuditor == nil) ||
 		(config.ContextRetrievalStore == nil) != (config.AttemptPayloadStore == nil) {
 		return nil, app.ErrInvalidMissionExecution
@@ -3382,14 +3355,18 @@ func newProductMissionExecutor(
 	config.AttemptLoops = attemptLoops
 	config.AgentInbox = agentInboxCoordinator
 	config.ActiveAttempts = activeAttempts
-	piExecutable, err := resolveProductPiExecutable(config.RuntimeSearchPaths)
-	if err != nil {
-		return nil, err
+	var runtimeAdapter *productDeferredPiRuntimeAdapter
+	adapters := make([]supervisor.RuntimeAdapter, 0, 1+len(config.AgentAdapters))
+	if config.LocalModelCatalog != nil {
+		piExecutable, err := resolveProductPiExecutable(config.RuntimeSearchPaths)
+		if err != nil {
+			return nil, err
+		}
+		runtimeAdapter = &productDeferredPiRuntimeAdapter{
+			config: config, piExecutable: piExecutable,
+		}
+		adapters = append(adapters, runtimeAdapter)
 	}
-	runtimeAdapter := &productDeferredPiRuntimeAdapter{
-		config: config, piExecutable: piExecutable,
-	}
-	adapters := []supervisor.RuntimeAdapter{runtimeAdapter}
 	for _, agentAdapter := range config.AgentAdapters {
 		wrapped, wrapErr := newProductPiRuntimeAdapter(agentAdapter)
 		if wrapErr != nil {
@@ -3407,6 +3384,7 @@ func newProductMissionExecutor(
 			governed, governErr := newProductAttemptLoopRuntimeAdapterWithGovernance(
 				adapter, attemptLoops, config.AttemptPayloadStore, activeAttempts,
 				agentInboxCoordinator, config.AgentCheckpointStore,
+				config.ContextRetrievalStore, config.ContextRetrievalAuditor,
 			)
 			if governErr != nil {
 				return nil, governErr
@@ -3670,7 +3648,6 @@ func buildProductMissionExecutionAPI(
 	assetDependencies ...productMissionAssetExecutionConfig,
 ) (_ *api.LocalProductExecutionAPI, _ io.Closer, resultErr error) {
 	if ctx == nil || store == nil || readModel == nil || nilProductAssetPort(readService) ||
-		config.LocalModelCatalog == nil ||
 		config.RuntimeInstanceID == "" ||
 		len(config.RuntimeSearchPaths) == 0 ||
 		!filepath.IsAbs(statePath) {
@@ -5958,6 +5935,24 @@ func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
 			app.ErrInvalidLocalProductSetup,
 			err,
 		)
+	}
+	// Record the main Agent's runtime instance discovery digest (the digest of
+	// the exact runtime instance discovery event the main Agent binds against),
+	// not the full-catalog composite digest. Mission execution resolution
+	// compares this value against the projected runtime instance's
+	// DiscoveryDigest to detect runtime drift.
+	mainRuntime, mainRuntimeOK := view.RuntimeInstance(
+		binding.MainBinding().RuntimeInstanceID,
+	)
+	if !mainRuntimeOK ||
+		mainRuntime.ID != binding.MainBinding().RuntimeInstanceID {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
+	}
+	binding, err = binding.WithMainRuntimeDiscoveryDigest(
+		mainRuntime.DiscoveryDigest,
+	)
+	if err != nil {
+		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
 	}
 	committed, err := state.CommitSavedTeamInstanceRecordSet(
 		ctx,

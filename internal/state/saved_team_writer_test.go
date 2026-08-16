@@ -1058,3 +1058,42 @@ func containsStateString(input, search string) bool {
 	}
 	return false
 }
+
+func TestSavedTeamCommitMainAgentRecordsPerInstanceRuntimeDiscoveryDigest(
+	t *testing.T,
+) {
+	fixture := newSavedTeamCommitFixture(t, 3, false, false)
+	const perInstanceDigest = "1111111111111111111111111111111111111111111111111111111111111111"
+	binding, err := fixture.binding.WithMainRuntimeDiscoveryDigest(perInstanceDigest)
+	if err != nil {
+		t.Fatalf("WithMainRuntimeDiscoveryDigest() error = %v", err)
+	}
+	if binding.MainRuntimeDiscoveryDigest() != perInstanceDigest {
+		t.Fatalf(
+			"MainRuntimeDiscoveryDigest() = %q, want %q",
+			binding.MainRuntimeDiscoveryDigest(), perInstanceDigest,
+		)
+	}
+	if binding.RuntimeDiscoveryDigest() == perInstanceDigest {
+		t.Fatal("composite RuntimeDiscoveryDigest must differ from the per-instance digest")
+	}
+	fixture.binding = binding
+	store, _ := openSavedTeamWriterStore(t)
+	got, err := fixture.commitTo(context.Background(), store)
+	if err != nil {
+		t.Fatalf("CommitSavedTeamInstanceRecordSet() error = %v", err)
+	}
+	var mainPayload map[string]any
+	if err := json.Unmarshal(
+		got.MainAgentEvent().PayloadJSON, &mainPayload,
+	); err != nil {
+		t.Fatalf("main payload decode error = %v", err)
+	}
+	recorded, ok := mainPayload["runtime_discovery_digest"].(string)
+	if !ok || recorded != perInstanceDigest {
+		t.Fatalf(
+			"main agent runtime_discovery_digest = %q (%v), want %q",
+			recorded, ok, perInstanceDigest,
+		)
+	}
+}

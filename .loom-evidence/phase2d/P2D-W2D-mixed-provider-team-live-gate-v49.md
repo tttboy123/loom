@@ -1,8 +1,13 @@
 # P2D-W2D Mixed-Provider Team Live Gate (V49)
 
-Status: `SOURCE VERIFIED / INSTALLED-LIVE GATE DEFINED`
+Status: `RESOLVED BY V33 — INSTALLED-LIVE GATE PASSING`
 
 Date: 2026-08-16
+
+> RESOLUTION: the LocalModelCatalog over-constraint described below is fixed in
+> V33 (`P2D-W2D-brokered-only-mission-execution-live-v33.md`). The installed
+> App daemon now confirms + preflights + starts a real 4-Agent mixed-provider
+> Team (`preflight nodes=4 ready=4`, `start status=running`).
 
 Parent Goal: `Phase 2D - Multi-Provider, Multi-Model Agent Team Orchestration`
 

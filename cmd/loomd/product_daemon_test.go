@@ -11709,3 +11709,70 @@ func TestProductCodexConversationAuthMapsToActionableError(t *testing.T) {
 		t.Fatalf("unclassified error changed: %v", err)
 	}
 }
+
+func TestProductMissionExecutionCompositionBuildsBrokeredOnlyWithoutLocalModel(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	appendProductExecutionRuntimeFixture(t, database)
+	appendProductExecutionTeamFixture(t, database)
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	readService, err := api.NewLocalProductReadService(
+		api.LocalProductReadConfig{
+			Journal: store, Projection: readModel,
+			Now: func() time.Time { return time.Now().UTC() },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionAPI, closer, err := buildProductMissionExecutionAPI(
+		context.Background(),
+		store,
+		readModel,
+		readService,
+		statePath,
+		productMissionExecutionRuntimeConfig{
+			RuntimeSearchPaths: []string{t.TempDir()},
+			RuntimeInstanceID:  "runtime-1",
+			Now: func() time.Time {
+				return time.Date(2026, 8, 1, 10, 5, 0, 0, time.UTC)
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("brokered-only execution API construction failed: %v", err)
+	}
+	defer closer.Close()
+	workPackage, err := work.CodingWorkPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := app.MissionExecutionCommand{
+		SchemaVersion: app.MissionExecutionSchemaVersion,
+		Operation:     "preflight", MissionID: "mission/team-execution-ready",
+		TeamInstanceID:      "team-execution-ready",
+		WorkPackageID:       workPackage.ID(),
+		WorkPackageDigest:   workPackage.Digest(),
+		Objective:           "Produce one bounded verified result",
+		ExpectedViewVersion: readModel.GlobalReadView().Version(),
+		CorrelationID:       "33333333-3333-4333-8333-333333333333",
+	}
+	envelope, err := executionAPI.ExecuteMission(
+		context.Background(),
+		command,
+	)
+	if err != nil || envelope.Preflight == nil ||
+		envelope.Preflight.PreflightDigest == "" {
+		t.Fatalf("preflight = %#v, %v", envelope, err)
+	}
+}

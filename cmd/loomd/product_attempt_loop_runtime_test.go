@@ -684,6 +684,7 @@ func TestProductAttemptLoopRuntimeConsumesSteerThenQueueWithoutDuplicateTerminal
 	}
 	adapter, err := newProductAttemptLoopRuntimeAdapterWithGovernance(
 		delegate, loops, payloadStore, newProductActiveAttemptRegistry(), inbox, nil,
+		nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -821,7 +822,7 @@ func TestProductLoomNativeConsumesAuthoritativeInboxAcrossProviderRounds(t *test
 	}
 	adapter, err := newProductAttemptLoopRuntimeAdapterWithGovernance(
 		native, loops, payloadStore, newProductActiveAttemptRegistry(), inbox,
-		checkpointStore,
+		checkpointStore, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

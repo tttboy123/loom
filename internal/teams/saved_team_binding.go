@@ -42,17 +42,18 @@ type SavedTeamRuntimeRoleBinding struct {
 }
 
 type SavedTeamRuntimeBindingCandidate struct {
-	ready                  bool
-	teamDefinitionID       string
-	teamDefinitionVersion  int
-	teamDefinitionScope    TeamDefinitionScope
-	scopeIdentity          agents.ScopeIdentity
-	teamDefinitionDigest   string
-	runtimeDiscoveryDigest string
-	mainBinding            SavedTeamRuntimeRoleBinding
-	subAgentBindings       []SavedTeamRuntimeRoleBinding
-	roleCount              int
-	bindingDigest          string
+	ready                      bool
+	teamDefinitionID           string
+	teamDefinitionVersion      int
+	teamDefinitionScope        TeamDefinitionScope
+	scopeIdentity              agents.ScopeIdentity
+	teamDefinitionDigest       string
+	runtimeDiscoveryDigest     string
+	mainRuntimeDiscoveryDigest string
+	mainBinding                SavedTeamRuntimeRoleBinding
+	subAgentBindings           []SavedTeamRuntimeRoleBinding
+	roleCount                  int
+	bindingDigest              string
 }
 
 type SavedTeamRuntimeBindingValidationCandidate struct {
@@ -215,7 +216,7 @@ func ValidateSavedTeamRuntimeBinding(
 	if err != nil {
 		return SavedTeamRuntimeBindingValidationCandidate{}, err
 	}
-	if !reflect.DeepEqual(current, expected) {
+	if !savedTeamRuntimeBindingsCanonicallyEqual(current, expected) {
 		return SavedTeamRuntimeBindingValidationCandidate{}, ErrSavedTeamRuntimeBindingSourceMismatch
 	}
 	return SavedTeamRuntimeBindingValidationCandidate{
@@ -363,6 +364,25 @@ func digestSavedTeamRuntimeBinding(input SavedTeamRuntimeBindingCandidate) (stri
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// savedTeamRuntimeBindingsCanonicallyEqual compares the canonical fields that
+// define a saved-Team runtime binding. The per-instance main runtime discovery
+// digest (mainRuntimeDiscoveryDigest) is an execution-record annotation added
+// after plan validation and is intentionally excluded here.
+func savedTeamRuntimeBindingsCanonicallyEqual(
+	left, right SavedTeamRuntimeBindingCandidate,
+) bool {
+	return left.ready == right.ready &&
+		left.teamDefinitionID == right.teamDefinitionID &&
+		left.teamDefinitionVersion == right.teamDefinitionVersion &&
+		left.teamDefinitionScope == right.teamDefinitionScope &&
+		reflect.DeepEqual(left.scopeIdentity, right.scopeIdentity) &&
+		left.teamDefinitionDigest == right.teamDefinitionDigest &&
+		left.runtimeDiscoveryDigest == right.runtimeDiscoveryDigest &&
+		reflect.DeepEqual(left.mainBinding, right.mainBinding) &&
+		reflect.DeepEqual(left.subAgentBindings, right.subAgentBindings) &&
+		left.roleCount == right.roleCount
+}
+
 func cloneSavedTeamRuntimeBinding(input SavedTeamRuntimeBindingCandidate) SavedTeamRuntimeBindingCandidate {
 	input.mainBinding = cloneSavedTeamRuntimeRoleBinding(input.mainBinding)
 	input.subAgentBindings = cloneSavedTeamRuntimeRoleBindings(input.subAgentBindings)
@@ -421,6 +441,31 @@ func (c SavedTeamRuntimeBindingCandidate) TeamDefinitionDigest() string {
 
 func (c SavedTeamRuntimeBindingCandidate) RuntimeDiscoveryDigest() string {
 	return c.runtimeDiscoveryDigest
+}
+
+// WithMainRuntimeDiscoveryDigest returns a copy of the binding that records the
+// main Agent's runtime instance discovery digest (the digest of the specific
+// runtime instance discovery event the main Agent is bound against, not the
+// full-catalog composite digest). Mission execution resolution compares this
+// value against the projected runtime instance's DiscoveryDigest.
+func (c SavedTeamRuntimeBindingCandidate) WithMainRuntimeDiscoveryDigest(
+	digest string,
+) (SavedTeamRuntimeBindingCandidate, error) {
+	if len(digest) != 64 {
+		return SavedTeamRuntimeBindingCandidate{}, ErrInvalidSavedTeamRuntimeBinding
+	}
+	decoded, err := hex.DecodeString(digest)
+	if err != nil || hex.EncodeToString(decoded) != digest {
+		return SavedTeamRuntimeBindingCandidate{}, ErrInvalidSavedTeamRuntimeBinding
+	}
+	c.mainRuntimeDiscoveryDigest = digest
+	return c, nil
+}
+
+// MainRuntimeDiscoveryDigest returns the main Agent's runtime instance
+// discovery digest recorded at materialization, or "" when unset.
+func (c SavedTeamRuntimeBindingCandidate) MainRuntimeDiscoveryDigest() string {
+	return c.mainRuntimeDiscoveryDigest
 }
 
 func (c SavedTeamRuntimeBindingCandidate) MainBinding() SavedTeamRuntimeRoleBinding {

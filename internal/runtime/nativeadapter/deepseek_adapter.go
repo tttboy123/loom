@@ -43,7 +43,7 @@ const (
 	MiniMaxAgentEndpoint             = "https://api.minimaxi.com/v1/chat/completions"
 	MiniMaxAgentEndpointFingerprint  = "e06a7ee6786ad3f758a129ef7f6c214e9a17ff88c4326bb1e0e82b93c94ca561"
 
-	deepSeekAgentMaxPromptBytes    = 4096
+	deepSeekAgentMaxPromptBytes    = 64 * 1024
 	deepSeekAgentMaxContentBytes   = 4096
 	contextToolMaxArgumentsBytes   = 2048
 	contextToolMaxResultBytes      = 32 << 10

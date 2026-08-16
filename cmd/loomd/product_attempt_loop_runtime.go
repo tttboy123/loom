@@ -35,12 +35,14 @@ const (
 )
 
 type productAttemptLoopRuntimeAdapter struct {
-	delegate     supervisor.RuntimeAdapter
-	loops        *work.AttemptLoopAuthority
-	payloadStore attemptpayload.Store
-	active       *productActiveAttemptRegistry
-	inbox        *work.AgentInboxCoordinator
-	checkpoints  agentcheckpoint.Store
+	delegate       supervisor.RuntimeAdapter
+	loops          *work.AttemptLoopAuthority
+	payloadStore   attemptpayload.Store
+	active         *productActiveAttemptRegistry
+	inbox          *work.AgentInboxCoordinator
+	checkpoints    agentcheckpoint.Store
+	contextStore   contextcapsule.RetrievalStore
+	contextAuditor contextcapsule.RetrievalAuditor
 }
 
 type productAttemptLoopFactAuthority struct {
@@ -115,7 +117,7 @@ func newProductAttemptLoopRuntimeAdapterWithRegistry(
 	active *productActiveAttemptRegistry,
 ) (*productAttemptLoopRuntimeAdapter, error) {
 	return newProductAttemptLoopRuntimeAdapterWithGovernance(
-		delegate, loops, payloadStore, active, nil, nil,
+		delegate, loops, payloadStore, active, nil, nil, nil, nil,
 	)
 }
 
@@ -126,6 +128,8 @@ func newProductAttemptLoopRuntimeAdapterWithGovernance(
 	active *productActiveAttemptRegistry,
 	inbox *work.AgentInboxCoordinator,
 	checkpoints agentcheckpoint.Store,
+	contextStore contextcapsule.RetrievalStore,
+	contextAuditor contextcapsule.RetrievalAuditor,
 ) (*productAttemptLoopRuntimeAdapter, error) {
 	checkpointAvailable := checkpoints != nil && !nilProductAgentInterface(checkpoints)
 	_, restartConformant := delegate.(loomruntime.AgentAttemptRestartConformance)
@@ -139,6 +143,7 @@ func newProductAttemptLoopRuntimeAdapterWithGovernance(
 	return &productAttemptLoopRuntimeAdapter{
 		delegate: delegate, loops: loops, payloadStore: payloadStore,
 		active: active, inbox: inbox, checkpoints: checkpoints,
+		contextStore: contextStore, contextAuditor: contextAuditor,
 	}, nil
 }
 
@@ -254,8 +259,29 @@ func (adapter *productAttemptLoopRuntimeAdapter) Execute(
 		loomruntime.CapabilityContextRetrieval,
 	)
 	if capable {
-		if nilProductAgentInterface(request.ContextRetriever) ||
-			!nilProductAgentInterface(request.ContextDelivery) {
+		if nilProductAgentInterface(request.ContextRetriever) {
+			if adapter.contextStore == nil || adapter.contextAuditor == nil {
+				return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
+			}
+			retriever, retrievalErr := contextcapsule.NewScopedRetriever(
+				request.ContextCapsule,
+				contextcapsule.AttemptIdentity{
+					WorkItemID: request.Binding.WorkItemID, RunID: request.Binding.RunID,
+					ClaimID: request.ClaimID, ClaimGeneration: request.Binding.ClaimGeneration,
+					RuntimeInstanceID:      request.Binding.RuntimeInstanceID,
+					ExecutionBindingDigest: request.ExecutionBinding.BindingDigest,
+					IncidentID:             request.IncidentID,
+				},
+				adapter.contextStore, adapter.contextAuditor,
+			)
+			if retrievalErr != nil {
+				return supervisor.AdapterResult{}, errors.Join(
+					app.ErrInvalidMissionExecution, retrievalErr,
+				)
+			}
+			request.ContextRetriever = retriever
+		}
+		if !nilProductAgentInterface(request.ContextDelivery) {
 			return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
 		}
 		facts := &productAttemptLoopFactAuthority{

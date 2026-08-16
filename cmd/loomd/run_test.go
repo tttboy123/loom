@@ -665,3 +665,33 @@ func TestDaemonBuildFailureNestedAmbiguityFailsClosed(t *testing.T) {
 		t.Fatalf("reason = %q, want build_unknown", got)
 	}
 }
+
+func TestMissionExecutionConfigFromDaemonBuildAllowsBrokeredOnlyWithoutLocalModel(
+	t *testing.T,
+) {
+	config := missionExecutionConfigFromDaemonBuild(daemonBuildConfig{
+		CodexExecutable:    "/opt/codex/bin/codex",
+		ClaudeExecutable:   "/opt/claude/bin/claude",
+		OpenCodeExecutable: "/opt/opencode/bin/opencode",
+		Observer: app.LocalRuntimeObservationDaemonConfig{
+			RuntimeSearchPaths: []string{"/opt/pi-a"},
+			RuntimeInstanceID:  "runtime-1",
+		},
+	})
+	if config == nil {
+		t.Fatal("brokered-only execution config must not be nil")
+	}
+	if config.LocalModelCatalog != nil {
+		t.Fatalf(
+			"brokered-only execution config must not carry a local model catalog: %#v",
+			config.LocalModelCatalog,
+		)
+	}
+	if config.RuntimeInstanceID != "runtime-1" ||
+		!reflect.DeepEqual(config.RuntimeSearchPaths, []string{"/opt/pi-a"}) ||
+		config.CodexExecutable != "/opt/codex/bin/codex" ||
+		config.ClaudeExecutable != "/opt/claude/bin/claude" ||
+		config.OpenCodeExecutable != "/opt/opencode/bin/opencode" {
+		t.Fatalf("execution config = %#v", config)
+	}
+}

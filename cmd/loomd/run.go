@@ -150,21 +150,29 @@ func productionDaemonBuilder(
 func missionExecutionConfigFromDaemonBuild(
 	config daemonBuildConfig,
 ) *productMissionExecutionRuntimeConfig {
-	if config.Observer.LocalModelCatalog == nil {
-		return nil
-	}
-	catalog := *config.Observer.LocalModelCatalog
-	return &productMissionExecutionRuntimeConfig{
+	execution := &productMissionExecutionRuntimeConfig{
 		RuntimeSearchPaths: append(
 			[]string(nil),
 			config.Observer.RuntimeSearchPaths...,
 		),
 		RuntimeInstanceID:  config.Observer.RuntimeInstanceID,
-		LocalModelCatalog:  &catalog,
 		CodexExecutable:    config.CodexExecutable,
 		ClaudeExecutable:   config.ClaudeExecutable,
 		OpenCodeExecutable: config.OpenCodeExecutable,
 	}
+	if config.Observer.LocalModelCatalog != nil {
+		catalog := *config.Observer.LocalModelCatalog
+		execution.LocalModelCatalog = &catalog
+	}
+	if execution.RuntimeInstanceID == "" &&
+		len(execution.RuntimeSearchPaths) == 0 &&
+		execution.LocalModelCatalog == nil &&
+		execution.CodexExecutable == "" &&
+		execution.ClaudeExecutable == "" &&
+		execution.OpenCodeExecutable == "" {
+		return nil
+	}
+	return execution
 }
 
 func run(
