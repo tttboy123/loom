@@ -2808,13 +2808,91 @@ public final class LocalProductStore: ObservableObject {
     return availableConversationProfiles.first { $0.profileID == profileID }
   }
 
-  /// Effective model for the selected Provider: the user selection, or the
-  /// selected profile's default model when nothing was chosen yet.
-  public var effectiveConversationModelID: String {
-    if !selectedConversationModelID.isEmpty {
-      return selectedConversationModelID
+  /// Providers with a usable conversation credential: native profiles
+  /// (codex/openai, opencode) plus every verified brokered account profile.
+  public var verifiedConversationProviderIDs: Set<String> {
+    Set(availableConversationProfiles.map(\.providerID))
+  }
+
+  /// Owning Provider of a model for the selected Provider: a qualified
+  /// "provider/model" identity owns its prefix (OpenCode bucket), otherwise
+  /// the model belongs to the selected Provider.
+  public func conversationModelOwnerProvider(
+    providerID: String,
+    modelID: String
+  ) -> String {
+    if let slash = modelID.firstIndex(of: "/") {
+      return String(modelID[..<slash])
     }
-    return selectedConversationProfile?.modelID ?? ""
+    return providerID
+  }
+
+  /// A model is selectable only when its owning Provider credential is
+  /// usable: native harness profiles (opencode/openai) need no extra account,
+  /// and every brokered model requires a verified Loom account for that
+  /// Provider. This is the selection-time gate that prevents picking e.g. a
+  /// MiniMax model before MiniMax is verified.
+  public func isConversationModelAvailable(
+    providerID: String,
+    modelID: String
+  ) -> Bool {
+    let owner = conversationModelOwnerProvider(
+      providerID: providerID,
+      modelID: modelID
+    )
+    switch owner {
+    case "opencode", "openai":
+      return true
+    default:
+      return verifiedConversationProviderIDs.contains(owner)
+    }
+  }
+
+  public func conversationModelUnavailableReason(
+    providerID: String,
+    modelID: String
+  ) -> String? {
+    guard !isConversationModelAvailable(
+      providerID: providerID,
+      modelID: modelID
+    ) else { return nil }
+    let owner = conversationModelOwnerProvider(
+      providerID: providerID,
+      modelID: modelID
+    )
+    return "Requires a verified \(owner) Provider credential. Open Provider Account to configure and verify \(owner), or select a different model."
+  }
+
+  /// Effective model for the selected Provider: the user selection when it is
+  /// still usable, otherwise the profile default, otherwise the first usable
+  /// model in the Provider catalog. Never returns a model whose owning
+  /// Provider credential is not verified (for example after an account is
+  /// revoked).
+  public var effectiveConversationModelID: String {
+    let profile = selectedConversationProfile
+    let providerID = profile?.providerID ?? ""
+    let selected = selectedConversationModelID
+    if !selected.isEmpty,
+      isConversationModelAvailable(
+        providerID: providerID,
+        modelID: selected
+      ) {
+      return selected
+    }
+    if let defaultModel = profile?.modelID,
+      !defaultModel.isEmpty,
+      isConversationModelAvailable(
+        providerID: providerID,
+        modelID: defaultModel
+      ) {
+      return defaultModel
+    }
+    return localProductConversationModels(providerID: providerID).first {
+      isConversationModelAvailable(
+        providerID: providerID,
+        modelID: $0.modelID
+      )
+    }?.modelID ?? ""
   }
 
   /// Effective reasoning effort: the user selection, or a provider-default
@@ -2838,9 +2916,15 @@ public final class LocalProductStore: ObservableObject {
   }
 
   public func selectConversationModel(_ modelID: String) {
+    let providerID = selectedConversationProfile?.providerID ?? ""
+    guard isConversationModelAvailable(
+      providerID: providerID,
+      modelID: modelID
+    ) else {
+      return
+    }
     selectedConversationModelID = modelID
     selectedConversationReasoningEffort = ""
-    let providerID = selectedConversationProfile?.providerID ?? ""
     let efforts = localProductConversationReasoningEfforts(
       providerID: providerID,
       modelID: modelID

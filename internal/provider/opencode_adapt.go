@@ -40,7 +40,10 @@ func OpenCodeCredentialEnv(providerID string) (string, bool) {
 		// reads the Zhipu key from ZHIPU_API_KEY.
 		return "ZHIPU_API_KEY", true
 	case "opencode":
-		return "OPENCODE_API_KEY", true
+		// The OpenCode provider identity is the harness itself; its hosted
+		// free-tier models run under OpenCode's own native auth and Loom
+		// manages no "opencode" account, so there is no key to inject.
+		return "", false
 	case "stepfun":
 		return "STEPFUN_API_KEY", true
 	case "openrouter":

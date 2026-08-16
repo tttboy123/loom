@@ -1820,7 +1820,8 @@ func TestLocalProductSetupPublishesReadyConversationProfiles(t *testing.T) {
 		snapshot.ConversationProfiles[1].ProviderID != "opencode" ||
 		snapshot.ConversationProfiles[1].HarnessAdapter != "opencode" ||
 		snapshot.ConversationProfiles[1].Protocol != "opencode_agent" ||
-		snapshot.ConversationProfiles[1].ModelID != "deepseek/deepseek-chat" ||
+		snapshot.ConversationProfiles[1].ModelID !=
+			provider.OpenCodeConversationDefaultModel ||
 		snapshot.ConversationProfiles[2].ProfileID !=
 			"conversation-deepseek-deepseek-chat-r2" ||
 		snapshot.ConversationProfiles[2].ProviderID != "deepseek" ||
@@ -1877,39 +1878,38 @@ func TestSetupConversationProfilesPublishesEveryVerifiedProviderAccount(t *testi
 	}
 }
 
-func TestSetupConversationProfilesOpenCodeDefaultFollowsVerifiedProvider(t *testing.T) {
-	// Only DeepSeek verified -> the OpenCode profile defaults to a DeepSeek
-	// model instead of the catalog default (openai/gpt-5.5) which has no
-	// configured credential.
-	profiles := setupConversationProfiles(
-		NativeAuthObservation{Status: "available", AuthMode: "native_auth"},
+func TestSetupConversationProfilesOpenCodeDefaultIsNativeFreeTier(t *testing.T) {
+	// The OpenCode profile must not silently default to a DeepSeek/MiniMax
+	// model even when those Providers are verified; cross-Provider models are
+	// gated behind explicit user selection. The default is always OpenCode's
+	// own hosted free-tier model.
+	for _, accounts := range [][]ProviderAccountDirectoryEntry{
 		nil,
-		[]ProviderAccountDirectoryEntry{{
+		{{
 			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
 			AuthMode: "brokered", Revision: 6, Status: "verified",
 		}},
-	)
-	if len(profiles) != 3 {
-		t.Fatalf("profiles = %#v", profiles)
-	}
-	opencode := profiles[1]
-	if opencode.ProfileID != provider.OpenCodeConversationProfileID ||
-		opencode.ModelID != "deepseek/deepseek-chat" {
-		t.Fatalf("opencode profile = %#v", opencode)
-	}
-
-	// No verified accounts -> fall back to the catalog default.
-	profiles = setupConversationProfiles(
-		NativeAuthObservation{Status: "available", AuthMode: "native_auth"},
-		nil,
-		nil,
-	)
-	if len(profiles) != 2 {
-		t.Fatalf("profiles = %#v", profiles)
-	}
-	if profiles[1].ProfileID != provider.OpenCodeConversationProfileID ||
-		profiles[1].ModelID != provider.OpenCodeConversationDefaultModel {
-		t.Fatalf("opencode profile = %#v", profiles[1])
+		{{
+			ProviderID: "minimax", ProviderAccountID: "minimax.primary",
+			AuthMode: "brokered", Revision: 3, Status: "verified",
+		}},
+	} {
+		profiles := setupConversationProfiles(
+			NativeAuthObservation{Status: "available", AuthMode: "native_auth"},
+			nil,
+			accounts,
+		)
+		if len(profiles) < 2 {
+			t.Fatalf("profiles = %#v", profiles)
+		}
+		opencode := profiles[1]
+		if opencode.ProfileID != provider.OpenCodeConversationProfileID ||
+			opencode.ModelID != provider.OpenCodeConversationDefaultModel {
+			t.Fatalf("opencode profile = %#v", opencode)
+		}
+		if provider.OpenCodeConversationDefaultModel != "opencode/deepseek-v4-flash-free" {
+			t.Fatalf("OpenCode default model = %q", provider.OpenCodeConversationDefaultModel)
+		}
 	}
 }
 

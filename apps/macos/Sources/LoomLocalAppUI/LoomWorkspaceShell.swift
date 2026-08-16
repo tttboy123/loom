@@ -1402,6 +1402,10 @@ public struct LoomWorkspaceShell: View {
         if !models.isEmpty {
             Menu {
                 ForEach(models) { model in
+                    let available = store.isConversationModelAvailable(
+                        providerID: providerID,
+                        modelID: model.modelID
+                    )
                     Button {
                         store.selectConversationModel(model.modelID)
                     } label: {
@@ -1412,6 +1416,28 @@ public struct LoomWorkspaceShell: View {
                                 : "circle"
                         )
                     }
+                    .disabled(!available)
+                    .help(
+                        available
+                            ? "Model depends on the Provider"
+                            : (store.conversationModelUnavailableReason(
+                                providerID: providerID,
+                                modelID: model.modelID
+                              ) ?? "Model unavailable")
+                    )
+                }
+                if models.contains(where: { model in
+                    !store.isConversationModelAvailable(
+                        providerID: providerID,
+                        modelID: model.modelID
+                    )
+                }) {
+                    Divider()
+                    Text(
+                        "Models whose Provider credential is not verified are disabled. Configure and verify the Provider account to enable them."
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
             } label: {
                 Label(

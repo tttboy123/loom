@@ -3360,7 +3360,7 @@ final class LocalProductStoreTests: XCTestCase {
           "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
           "providers":[],
           "conversation_profiles":[
-            {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"deepseek/deepseek-chat","auth_mode":"native_auth","credential_revision":0}
+            {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"opencode/deepseek-v4-flash-free","auth_mode":"native_auth","credential_revision":0}
           ],
           "runtimes":[],"saved_teams":[],"templates":[],"role_options":[],
           "skills":[],"permissions":[],"resources":[]
@@ -3369,13 +3369,22 @@ final class LocalProductStoreTests: XCTestCase {
       )
     )
     let openCodeStore = LocalProductStore(client: client, initialSetupSnapshot: openCodeSnapshot)
-    XCTAssertEqual(openCodeStore.effectiveConversationModelID, "deepseek/deepseek-chat")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
-    // DeepSeek Chat is toggle-only in the OpenCode CLI: no effort values.
+    // The OpenCode profile defaults to its own hosted free-tier model, which
+    // needs no verified Provider credential.
+    XCTAssertEqual(
+      openCodeStore.effectiveConversationModelID,
+      "opencode/deepseek-v4-flash-free"
+    )
+    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "low")
+    // A cross-Provider model whose owning Provider is not verified is refused
+    // at selection time instead of failing at send time.
     openCodeStore.selectConversationModel("deepseek/deepseek-chat")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
+    XCTAssertEqual(
+      openCodeStore.effectiveConversationModelID,
+      "opencode/deepseek-v4-flash-free"
+    )
     // Effort-capable models expose their exact CLI values.
-    openCodeStore.selectConversationModel("deepseek/deepseek-v4-flash")
+    openCodeStore.selectConversationModel("opencode/deepseek-v4-flash-free")
     XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "low")
     openCodeStore.selectConversationReasoningEffort("max")
     XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "max")
@@ -4126,7 +4135,7 @@ private final class ExecutionStubClient:
   }
 }
 
-private final class StubLocalProductClient: LocalProductClientProtocol {
+final class StubLocalProductClient: LocalProductClientProtocol {
   private var snapshots: [Result<LocalProductSnapshot, Error>]
   private(set) var snapshotRequestCount = 0
   private(set) var timelineRequestCount = 0

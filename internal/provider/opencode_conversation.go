@@ -18,10 +18,11 @@ import (
 
 const (
 	// OpenCodeConversationDefaultModel is the default model identity used only
-	// when a profile does not pin one. It is a real OpenCode CLI 1.18.3 model
-	// (deepseek/deepseek-chat) so a profile with no verified Provider account
-	// still starts from a resolvable model instead of an unavailable one.
-	OpenCodeConversationDefaultModel   = "deepseek/deepseek-chat"
+	// when a profile does not pin one. It is OpenCode's own hosted free-tier
+	// model (OpenCode CLI 1.18.3 catalog) so a profile starts from a usable
+	// model that needs no injected Provider credential, instead of silently
+	// routing a DeepSeek/MiniMax model through the OpenCode harness.
+	OpenCodeConversationDefaultModel   = "opencode/deepseek-v4-flash-free"
 	maxOpenCodeConversationPromptBytes = 64 * 1024
 )
 

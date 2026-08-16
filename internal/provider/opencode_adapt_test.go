@@ -79,4 +79,7 @@ func TestOpenCodeCredentialEnvGrounding(t *testing.T) {
 	if _, ok := OpenCodeCredentialEnv("unknown-provider"); ok {
 		t.Fatal("unknown provider reported a credential env")
 	}
+	if got, ok := OpenCodeCredentialEnv("opencode"); ok || got != "" {
+		t.Fatalf("OpenCodeCredentialEnv(\"opencode\") = %q, %v; want native auth", got, ok)
+	}
 }

@@ -938,23 +938,13 @@ func setupProviderAccountDirectory(
 	return result
 }
 
-// openCodeConversationDefaultModel returns the first OpenCode model whose
-// Provider has a verified Loom account (for example deepseek/deepseek-chat when
-// only DeepSeek is verified), falling back to the catalog default. This keeps
-// the App's out-of-the-box conversation usable instead of defaulting to a model
-// whose Provider credential is not configured.
-func openCodeConversationDefaultModel(
-	accounts map[string]ProviderAccountDirectoryEntry,
-) string {
-	for _, model := range provider.ProviderConversationModels("opencode") {
-		providerID, _, ok := strings.Cut(model.ID, "/")
-		if !ok {
-			continue
-		}
-		if _, exists := accounts[providerID+".primary"]; exists {
-			return model.ID
-		}
-	}
+// openCodeConversationDefaultModel returns the OpenCode profile's default
+// model: OpenCode's own hosted free-tier model. The OpenCode profile must not
+// silently default to a DeepSeek/MiniMax model; those Providers have their own
+// conversation profiles, and the client's Model layer gates cross-Provider
+// OpenCode models by verified accounts so they are only used when the user
+// explicitly selects them.
+func openCodeConversationDefaultModel() string {
 	return provider.OpenCodeConversationDefaultModel
 }
 
@@ -998,7 +988,7 @@ func setupConversationProfiles(
 		profiles = append(profiles, ConversationProviderProfile{
 			ProfileID:      provider.OpenCodeConversationProfileID,
 			HarnessAdapter: "opencode", ProviderID: "opencode", DisplayName: "OpenCode",
-			Protocol: "opencode_agent", ModelID: openCodeConversationDefaultModel(accounts),
+			Protocol: "opencode_agent", ModelID: openCodeConversationDefaultModel(),
 			AuthMode: "native_auth",
 		})
 	}

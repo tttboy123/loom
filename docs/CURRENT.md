@@ -2,6 +2,31 @@
 
 Updated: 2026-08-17
 
+## Phase 2D Conversation Model Routing + Credential Gating FIX (2026-08-17)
+
+`CURRENT / FIXES`:
+- The OpenCode profile no longer silently defaults to a DeepSeek/MiniMax
+  model. `openCodeConversationDefaultModel` now always returns OpenCode's own
+  hosted free-tier model (`opencode/deepseek-v4-flash-free`,
+  `OpenCodeConversationDefaultModel`), so opening the App never routes a
+  "DeepSeek/MiniMax" conversation through the OpenCode harness by surprise;
+  those Providers have their own verified-only conversation profiles.
+- MiniMax/DeepSeek/zai models are gated at selection time. The client derives
+  each model's owning Provider (qualified `provider/model` prefix, otherwise
+  the selected Provider) and disables the model unless that Provider has a
+  verified Loom account; `selectConversationModel` refuses unavailable models
+  and `effectiveConversationModelID` falls back to a usable native model when
+  the selected model's account is revoked. The picker shows an actionable
+  "Requires a verified <provider> Provider credential" hint.
+- `OpenCodeCredentialEnv("opencode")` is native (`ok=false`): OpenCode's own
+  free-tier models run without injecting a key, so they no longer fail with
+  "requires a verified opencode Provider credential".
+
+`VERIFICATION`: full Go suite green (`go test ./... -count=1 -p 1`); `swift
+test` 242 tests, 0 failures (1 pre-existing visual-export skip); new Swift
+gating tests cover verified/unverified model availability, refused selection,
+and effective-model fallback after revocation.
+
 ## Phase 2D V32 Governed Handoff / Roundtable — Strict IPC + Cross-Client Journey PASS (2026-08-17)
 
 `CURRENT / ROUNDTABLE (GOVERNED HANDOFF)`: new `internal/roundtable` journal
