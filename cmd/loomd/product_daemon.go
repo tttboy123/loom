@@ -5856,10 +5856,11 @@ func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
 	if err != nil {
 		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
 	}
-	definition, selections, err := productSavedTeamMaterializationInputs(
-		record,
-		setupCatalog,
-	)
+	definition, selections, materializationProfiles, err :=
+		productSavedTeamMaterializationInputs(
+			record,
+			setupCatalog,
+		)
 	if err != nil || definition.Digest() != confirmation.TeamDefinitionDigest {
 		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
 	}
@@ -5872,7 +5873,7 @@ func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
 		definition.ID(),
 		scope,
 		setupCatalog.AgentDefinitions,
-		setupCatalog.RuntimeProfiles,
+		materializationProfiles,
 		setupCatalog.RuntimeDiscovery,
 		selections,
 	)
@@ -5885,7 +5886,7 @@ func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
 	}
 	resolutionCatalog := teams.TeamResolutionCatalogInput{
 		AgentDefinitions:       append([]agents.AgentDefinition{}, setupCatalog.AgentDefinitions...),
-		RuntimeProfiles:        append([]loomruntime.RuntimeProfile{}, setupCatalog.RuntimeProfiles...),
+		RuntimeProfiles:        append([]loomruntime.RuntimeProfile{}, materializationProfiles...),
 		TeamDefinitions:        []teams.TeamDefinition{definition},
 		MainAgentDefinitionIDs: []string{definition.MainAgentDefinitionID()},
 		DefaultMainAgentID:     definition.MainAgentDefinitionID(),
@@ -5985,7 +5986,7 @@ func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
 func productSavedTeamMaterializationInputs(
 	record projection.TeamDefinitionRecord,
 	catalog app.LocalProductSetupCatalog,
-) (teams.TeamDefinition, []teams.SavedTeamRuntimeSelection, error) {
+) (teams.TeamDefinition, []teams.SavedTeamRuntimeSelection, []loomruntime.RuntimeProfile, error) {
 	runtimeProfiles := make(
 		[]loomruntime.RuntimeProfile,
 		0,
@@ -5995,10 +5996,10 @@ func productSavedTeamMaterializationInputs(
 	for _, candidate := range catalog.RuntimeProfiles {
 		profile, err := loomruntime.NewRuntimeProfile(candidate)
 		if err != nil {
-			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+			return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 		}
 		if _, duplicate := profileIndexes[profile.ID]; duplicate {
-			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+			return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 		}
 		index := len(runtimeProfiles)
 		runtimeProfiles = append(runtimeProfiles, profile)
@@ -6011,11 +6012,11 @@ func productSavedTeamMaterializationInputs(
 		profile, err := productRuntimeProfileFromRecord(binding.ExecutionProfile)
 		if err != nil || profile.ID != binding.RuntimeProfileID ||
 			profile.ModelID != binding.ModelID {
-			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+			return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 		}
 		if index, exists := profileIndexes[profile.ID]; exists {
 			if !productRuntimeProfilesEqual(runtimeProfiles[index], profile) {
-				return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+				return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 			}
 			continue
 		}
@@ -6049,12 +6050,12 @@ func productSavedTeamMaterializationInputs(
 	)
 	if err != nil || definition.Digest() != record.DefinitionDigest ||
 		len(record.Configuration.RoleBindings) != len(roles) {
-		return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+		return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 	}
 	bindings := make(map[string]projection.TeamConfigurationRoleBinding, len(roles))
 	for _, binding := range record.Configuration.RoleBindings {
 		if _, duplicate := bindings[binding.AgentDefinitionID]; duplicate {
-			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+			return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 		}
 		bindings[binding.AgentDefinitionID] = binding
 	}
@@ -6071,14 +6072,14 @@ func productSavedTeamMaterializationInputs(
 			binding.RuntimeProfileID != role.RuntimeProfileID ||
 			binding.ModelID != profile.ModelID ||
 			binding.RuntimeInstanceID == "" {
-			return teams.TeamDefinition{}, nil, app.ErrInvalidLocalProductSetup
+			return teams.TeamDefinition{}, nil, nil, app.ErrInvalidLocalProductSetup
 		}
 		selections[index] = teams.SavedTeamRuntimeSelection{
 			AgentDefinitionID: role.AgentDefinitionID,
 			RuntimeInstanceID: binding.RuntimeInstanceID,
 		}
 	}
-	return definition, selections, nil
+	return definition, selections, runtimeProfiles, nil
 }
 
 func productRuntimeProfileFromRecord(
@@ -6088,19 +6089,21 @@ func productRuntimeProfileFromRecord(
 		return loomruntime.RuntimeProfile{}, app.ErrInvalidLocalProductSetup
 	}
 	return loomruntime.ValidateExecutionProfile(loomruntime.RuntimeProfile{
-		ID:                   record.ID,
-		AdapterType:          record.HarnessAdapter,
-		ProviderID:           record.ProviderID,
-		ProviderAccountID:    record.ProviderAccountID,
-		ModelID:              record.ModelID,
-		AuthMode:             record.AuthMode,
-		EndpointFingerprint:  record.EndpointFingerprint,
-		CredentialReference:  record.CredentialReference,
-		CredentialRevision:   record.CredentialRevision,
-		ReasoningEffort:      record.ReasoningEffort,
-		RequiredCapabilities: append([]string(nil), record.RequiredCapabilities...),
-		Timeout:              record.Timeout,
-		Budget:               record.Budget,
+		ID:                         record.ID,
+		AdapterType:                record.HarnessAdapter,
+		ProviderID:                 record.ProviderID,
+		ProviderAccountID:          record.ProviderAccountID,
+		ModelID:                    record.ModelID,
+		AuthMode:                   record.AuthMode,
+		EndpointFingerprint:        record.EndpointFingerprint,
+		CredentialReference:        record.CredentialReference,
+		CredentialRevision:         record.CredentialRevision,
+		ReasoningEffort:            record.ReasoningEffort,
+		RequiredCapabilities:       append([]string(nil), record.RequiredCapabilities...),
+		Timeout:                    record.Timeout,
+		Budget:                     record.Budget,
+		RemoteToolEnrollmentID:     record.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: record.RemoteToolEnrollmentDigest,
 	})
 }
 

@@ -2,6 +2,37 @@
 
 Updated: 2026-08-16
 
+## Phase 2D V34 G4/G5 — Failure Isolation + Web/MCP Diagnostics Installed-Live PASS (2026-08-16)
+
+`CURRENT / G4 INSTALLED-LIVE PASS`: revoking the MiniMax broker credential on
+the installed App blocks exactly the two MiniMax-bound Agents at preflight with
+the credential reason while the two DeepSeek-bound peers stay `ready` and
+dispatch real paid calls; the accounting board isolates the failure to the
+MiniMax account (`TestLiveSingleAgentFailureIsolationE2E`).
+
+`CURRENT / G5 INSTALLED-LIVE PASS`: a `web_search` + `mcp_server` Enrollment
+configured under `deepseek.primary` appears active + policy-current in the
+account directory; binding `web_search` to one subagent freezes the Enrollment
+pair into the saved TeamDefinition + materialized TeamInstance; revoking it
+blocks only the bound Agent at preflight
+(`Remote tool enrollment was revoked...`) while the unbound main stays ready;
+default production (no Search/MCP port) materializes no remote capability and
+stays fail-closed (`TestLiveRemoteToolEnrollmentIsolationE2E`).
+
+`CURRENT / FIXES`: three real defects fixed for G4/G5:
+- `productRuntimeProfileFromRecord` dropped the Enrollment pair during
+  materialization; `MaterializeConfirmedTeam` now threads the materialization
+  profiles through the saved-Team binding.
+- `resolveMissionExecutionProfile` dropped the Enrollment pair when resolving
+  the frozen execution binding, so a revoked Enrollment never blocked its
+  Agent at preflight.
+- `internal/localipc` `validMethod` + Swift allowlist accept the enrollment
+  configure/revoke routes.
+
+`VERIFICATION`: full Go suite green; `swift test` all suites pass;
+`git diff --check` clean; all four live gates (G3/G6, G4, G5) pass on the
+production App bundle.
+
 ## Phase 2D V34 G6 Accounting + Governance Board — Installed-Live PASS (2026-08-16)
 
 `CURRENT / G6 INSTALLED-LIVE PASS`: with Provider Account Policies + Model

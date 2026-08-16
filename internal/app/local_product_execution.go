@@ -538,7 +538,10 @@ func resolveMissionExecutionProfile(
 		RequiredCapabilities: append(
 			[]string{}, profileRecord.RequiredCapabilities...,
 		),
-		Timeout: profileRecord.Timeout, Budget: profileRecord.Budget,
+		Timeout:                    profileRecord.Timeout,
+		Budget:                     profileRecord.Budget,
+		RemoteToolEnrollmentID:     profileRecord.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: profileRecord.RemoteToolEnrollmentDigest,
 	})
 	if err != nil {
 		return missionExecutionProfileResolution{}, ErrMissionExecutionConflict

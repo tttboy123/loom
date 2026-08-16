@@ -3423,3 +3423,67 @@ func mustMissionFallbackDecisionScope(
 func executionTestDigest(label string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(label)))
 }
+
+func TestResolveMissionExecutionProfileCarriesRemoteToolEnrollment(t *testing.T) {
+	database := openTeamCanaryDB(t)
+	store := journal.NewStore(database)
+	now := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
+	digest := func(seed int) string { return fmt.Sprintf("%064x", seed) }
+	correlation := "11111111-1111-4111-8111-111111111111"
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		if _, err := store.Append(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"discovery_digest": digest(7), "source_probe_id": "probe-loom",
+		"instance": map[string]any{
+			"id": "runtime.loom-native.local", "device_id": "device-local",
+			"adapter_type": "loom-native", "display_name": "Loom Native",
+			"executable_version": "v1", "status": "online",
+			"observed_capabilities": []string{"context_retrieval"}, "capacity": 3,
+		},
+		"model_ids": []string{"deepseek/deepseek-chat"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent(journal.Event{
+		ID: "runtime-loom", StreamID: "runtime_instance:runtime.loom-native.local",
+		Seq: 1, IdempotencyKey: "runtime-loom-idem",
+		Type: "RuntimeInstanceDiscovered", SchemaVersion: 1,
+		EmittedAt: now, CorrelationID: correlation, PayloadJSON: payload,
+	})
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	enrollmentDigest := digest(9)
+	resolved, err := resolveMissionExecutionProfile(
+		readModel.GlobalReadView(),
+		"team-enroll",
+		projection.TeamExecutionProfileRecord{
+			Version: 1, ID: "profile-enroll",
+			HarnessAdapter:      "loom-native",
+			ProviderID:          "deepseek",
+			ProviderAccountID:   "deepseek.primary",
+			ModelID:             "deepseek-chat",
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("f", 64),
+			CredentialReference: "credential-ref-deepseek", CredentialRevision: 1,
+			Timeout:                    time.Minute,
+			RemoteToolEnrollmentID:     "enroll-web-live-1",
+			RemoteToolEnrollmentDigest: enrollmentDigest,
+		},
+		"runtime.loom-native.local",
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.profile.RemoteToolEnrollmentID != "enroll-web-live-1" ||
+		resolved.profile.RemoteToolEnrollmentDigest != enrollmentDigest {
+		t.Fatalf("preflight resolution dropped the Enrollment pair: %#v", resolved.profile)
+	}
+}

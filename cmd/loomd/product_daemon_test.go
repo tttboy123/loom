@@ -265,7 +265,7 @@ func TestPhase2DMaterializationRebuildsPersistedCustomExecutionProfile(t *testin
 		AgentDefinitions: definitions,
 	}
 
-	rebuilt, selections, err := productSavedTeamMaterializationInputs(record, catalog)
+	rebuilt, selections, _, err := productSavedTeamMaterializationInputs(record, catalog)
 	if err != nil || rebuilt.Digest() != definition.Digest() || len(selections) != 4 {
 		t.Fatalf("materialization = %#v, %#v, %v", rebuilt, selections, err)
 	}
@@ -278,7 +278,7 @@ func TestPhase2DMaterializationRebuildsPersistedCustomExecutionProfile(t *testin
 	drifted := profiles[0]
 	drifted.CredentialRevision++
 	catalog.RuntimeProfiles = []loomruntime.RuntimeProfile{drifted}
-	if _, _, err := productSavedTeamMaterializationInputs(
+	if _, _, _, err := productSavedTeamMaterializationInputs(
 		record,
 		catalog,
 	); !errors.Is(err, app.ErrInvalidLocalProductSetup) {
@@ -11774,5 +11774,32 @@ func TestProductMissionExecutionCompositionBuildsBrokeredOnlyWithoutLocalModel(
 	if err != nil || envelope.Preflight == nil ||
 		envelope.Preflight.PreflightDigest == "" {
 		t.Fatalf("preflight = %#v, %v", envelope, err)
+	}
+}
+
+func TestProductRuntimeProfileFromRecordCarriesRemoteToolEnrollment(t *testing.T) {
+	record := projection.TeamExecutionProfileRecord{
+		Version: 1, ID: "profile-enroll",
+		HarnessAdapter:      nativeadapter.LoomNativeAgentAdapterType,
+		ProviderID:          nativeadapter.DeepSeekAgentProviderID,
+		ProviderAccountID:   "deepseek.primary",
+		ModelID:             nativeadapter.DeepSeekAgentModelID,
+		AuthMode:            loomruntime.AuthBrokered,
+		EndpointFingerprint: nativeadapter.DeepSeekAgentEndpointFingerprint,
+		CredentialReference: "credential-ref-deepseek", CredentialRevision: 1,
+		Timeout:                    time.Minute,
+		RemoteToolEnrollmentID:     "enroll-web-live-1",
+		RemoteToolEnrollmentDigest: strings.Repeat("a", 64),
+	}
+	profile, err := productRuntimeProfileFromRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.RemoteToolEnrollmentID != record.RemoteToolEnrollmentID ||
+		profile.RemoteToolEnrollmentDigest != record.RemoteToolEnrollmentDigest {
+		t.Fatalf("materializer dropped the Enrollment pair: %#v", profile)
+	}
+	if _, err := loomruntime.ValidateExecutionProfile(profile); err != nil {
+		t.Fatalf("enrollment profile invalid: %v", err)
 	}
 }
