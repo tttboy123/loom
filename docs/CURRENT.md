@@ -12785,3 +12785,14 @@ docs/API:
   `236` tests, `0` failures (`1` visual-export skip); App rebuilt/reinstalled;
   `git diff --check` clean. Evidence:
   `.loom-evidence/phase2d/P2D-W2D-team-sidebar-friction-v45.md`.
+
+`CURRENT / V46 FOLLOW-UP (NEW MISSION CLARITY) (2026-08-16)`: the sidebar "New
+Mission" action was a dead end without a confirmed Agent Team (empty Team
+picker, unusable form, no guidance). The New Mission sheet now explains in plain
+language what a Mission is, and when no executable Team exists it shows a
+"Create Agent Team first" guided empty state with a one-click button that opens
+Teams and starts the blank Team builder. The full form only appears once an
+executable Team exists. Verified: macOS `236` tests, `0` failures (`1` visual-
+export skip); live snapshot shows `saved_teams=0` so the guidance path is what
+users see; App rebuilt/reinstalled; `git diff --check` clean. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-new-mission-clarity-v46.md`.

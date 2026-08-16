@@ -2691,8 +2691,9 @@ public struct MissionWorkbench: View {
         VStack(alignment: .leading, spacing: 4) {
           Text("New Mission")
             .font(.title2.weight(.semibold))
-          Text("Choose the work and Team, review exact access, then start explicitly.")
+          Text("A Mission is one bounded piece of work that an Agent Team carries out for you, with review before anything runs.")
             .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         Spacer()
         Button("Close") { showNewMission = false }
@@ -2703,48 +2704,81 @@ public struct MissionWorkbench: View {
 
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
-          Picker("Work type", selection: $newMissionWorkPackageID) {
-            ForEach(LocalProductWorkPackageOption.accepted) { option in
-              Text(option.title).tag(option.id)
-            }
-          }
-          .pickerStyle(.segmented)
+          if executableTeams.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+              HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "person.3.fill")
+                  .font(.system(size: 26, weight: .regular))
+                  .foregroundStyle(LoomGraphite.accent)
+                  .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                  Text("You need an Agent Team first")
+                    .font(.headline)
+                  Text(
+                    "Missions run on Agent Teams. Create and confirm a Team, then come back here to start a Mission."
+                  )
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+                }
+              }
+              HStack(spacing: 10) {
+                Button {
+                  showNewMission = false
+                  store.showMissionTeams()
+                  Task { await store.startBlankBuilder() }
+                } label: {
+                  Label("Create Agent Team", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Create Agent Team")
+                .help("Create Agent Team")
 
-          Picker("Team", selection: $newMissionTeamID) {
-            if executableTeams.isEmpty {
-              Text("No confirmed Team available").tag("")
+                Button("Close") { showNewMission = false }
+                  .buttonStyle(.bordered)
+              }
             }
-            ForEach(executableTeams, id: \.teamInstanceID) { team in
-              Text(
-                LocalProductExperience.visibleName(
-                  team.displayName,
-                  internalID: team.teamInstanceID,
-                  fallback: "Confirmed Team"
+            .padding(.vertical, 16)
+          } else {
+            Picker("Work type", selection: $newMissionWorkPackageID) {
+              ForEach(LocalProductWorkPackageOption.accepted) { option in
+                Text(option.title).tag(option.id)
+              }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Team", selection: $newMissionTeamID) {
+              ForEach(executableTeams, id: \.teamInstanceID) { team in
+                Text(
+                  LocalProductExperience.visibleName(
+                    team.displayName,
+                    internalID: team.teamInstanceID,
+                    fallback: "Confirmed Team"
+                  )
                 )
-              )
-              .tag(team.teamInstanceID)
+                .tag(team.teamInstanceID)
+              }
             }
-          }
 
-          VStack(alignment: .leading, spacing: 7) {
-            Text("Mission objective")
-              .font(.subheadline.weight(.semibold))
-            TextField(
-              "What should this Mission accomplish?",
-              text: $newMissionObjective,
-              axis: .vertical
-            )
-            .lineLimit(3...6)
-            .textFieldStyle(.roundedBorder)
-          }
+            VStack(alignment: .leading, spacing: 7) {
+              Text("Mission objective")
+                .font(.subheadline.weight(.semibold))
+              TextField(
+                "What should this Mission accomplish?",
+                text: $newMissionObjective,
+                axis: .vertical
+              )
+              .lineLimit(3...6)
+              .textFieldStyle(.roundedBorder)
+            }
 
-          Divider()
-
-          missionContextEditor
-
-          if let preflight = store.executionPreflight {
             Divider()
-            missionPreflightReview(preflight)
+
+            missionContextEditor
+
+            if let preflight = store.executionPreflight {
+              Divider()
+              missionPreflightReview(preflight)
+            }
           }
         }
         .padding(24)
