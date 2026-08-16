@@ -1178,7 +1178,8 @@ func replayAcceptanceSourceLineage(
 		*payload.RunID != input.RunID ||
 		*payload.ClaimID != input.ClaimID ||
 		*payload.ClaimGeneration != input.ClaimGeneration ||
-		*payload.Status != input.TerminalStatus {
+		*payload.Status != input.TerminalStatus ||
+		(payload.Accounting != nil && !payload.Accounting.valid()) {
 		return WorkItemRecord{}, RunRecord{}, ErrWorkItemAcceptanceConflict
 	}
 	return state.workItems[input.WorkItemID], RunRecord{

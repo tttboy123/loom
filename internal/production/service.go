@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -44,7 +43,7 @@ func (s *Service) Snapshot(ctx context.Context) (ProductionSnapshot, error) {
 	if err != nil {
 		return ProductionSnapshot{}, err
 	}
-	recovery := s.recoveryStatus(ctx, activated)
+	recovery := s.recoveryStatus(ctx, activated, mode)
 	return ProductionSnapshot{
 		ViewVersion: "v1", Activated: activated,
 		ActivatedAt: activatedAt, TargetMode: mode, Recovery: recovery,
@@ -81,11 +80,11 @@ func (s *Service) Command(ctx context.Context, command ActivationCommand) (Comma
 }
 
 func (s *Service) Degraded(ctx context.Context) bool {
-	activated, _, _, err := s.activationFromJournal(ctx)
+	activated, _, mode, err := s.activationFromJournal(ctx)
 	if err != nil {
 		return true
 	}
-	return s.recoveryStatus(ctx, activated).Degraded
+	return s.recoveryStatus(ctx, activated, mode).Degraded
 }
 
 func (s *Service) preview(ctx context.Context, operation, targetMode string) (ActivationPreview, error) {
@@ -180,7 +179,6 @@ func (s *Service) confirmActivation(ctx context.Context, command ActivationComma
 	}
 	if digestFile(plistPath) != "absent" {
 		if err := copyFileAtomic(plistPath, backupPlist); err != nil {
-			_ = removeFileIfExists(configPath)
 			return CommandResult{}, err
 		}
 	}
@@ -190,7 +188,11 @@ func (s *Service) confirmActivation(ctx context.Context, command ActivationComma
 		return CommandResult{}, err
 	}
 	if err := installPlist(s.paths); err != nil {
-		_ = removeFileIfExists(configPath)
+		if digestFile(backupConfig) != "absent" {
+			_ = copyFileAtomic(backupConfig, configPath)
+		} else {
+			_ = removeFileIfExists(configPath)
+		}
 		_ = s.recordRollback(ctx, command, plistPath, err)
 		return CommandResult{}, err
 	}
@@ -200,7 +202,7 @@ func (s *Service) confirmActivation(ctx context.Context, command ActivationComma
 			ids = append(ids, eventIDs(committed)...)
 		}
 	}
-	recovery := s.recoveryStatus(ctx, true)
+	recovery := s.recoveryStatus(ctx, true, command.TargetMode)
 	return CommandResult{
 		Operation: command.Operation, Digest: expected.Digest,
 		Activated: true, Recovery: recovery, EventIDs: ids,
@@ -263,31 +265,29 @@ func (s *Service) confirmDeactivation(ctx context.Context, command ActivationCom
 	}, nil
 }
 
-func (s *Service) recoveryStatus(ctx context.Context, activated bool) RecoveryStatus {
+func (s *Service) recoveryStatus(ctx context.Context, activated bool, mode string) RecoveryStatus {
 	if !activated {
 		return RecoveryStatus{Degraded: false, LastActivated: false}
 	}
-	matches, err := configMatches(s.paths.ConfigPath())
-	if err != nil || !matches {
+	configDigest := digestFile(s.paths.ConfigPath())
+	expectedConfig := sha256Hex(desiredConfig(true, mode))
+	if configDigest != expectedConfig {
 		return RecoveryStatus{
 			Degraded: true, LastActivated: true,
 			ConfigDigestMismatch: true,
 			Reason:               "journal says activated but disk config digest does not match",
 		}
 	}
+	plistDigest := digestFile(s.paths.PlistPath())
+	expectedPlist := sha256Hex(desiredPlist(s.paths.DaemonPath, s.paths.AppSupport))
+	if plistDigest != expectedPlist {
+		return RecoveryStatus{
+			Degraded: true, LastActivated: true,
+			ConfigDigestMismatch: true,
+			Reason:               "journal says activated but launchd plist digest does not match",
+		}
+	}
 	return RecoveryStatus{Degraded: false, LastActivated: true}
-}
-
-func configMatches(path string) (bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, err
-	}
-	var payload configPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return false, err
-	}
-	return payload.SchemaVersion == 1 && payload.Activated, nil
 }
 
 func (s *Service) activationFromJournal(ctx context.Context) (bool, string, string, error) {
@@ -299,19 +299,28 @@ func (s *Service) activationFromJournal(ctx context.Context) (bool, string, stri
 	activatedAt := ""
 	mode := ""
 	for _, event := range events {
+		if event.StreamID != streamActivation {
+			continue
+		}
 		if event.Type == EventActivationActivated {
 			var payload struct {
 				Mode        string `json:"target_mode"`
 				ActivatedAt string `json:"activated_at"`
 			}
 			if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
-				continue
+				return false, "", "", fmt.Errorf("%w: malformed activation fact", err)
 			}
 			activated = true
 			activatedAt = payload.ActivatedAt
 			mode = payload.Mode
 		}
 		if event.Type == EventActivationDeactivated {
+			var payload struct {
+				DeactivatedAt string `json:"deactivated_at"`
+			}
+			if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
+				return false, "", "", fmt.Errorf("%w: malformed deactivation fact", err)
+			}
 			activated = false
 			activatedAt = ""
 			mode = ""

@@ -60,7 +60,7 @@ func TestQueueConcurrentCreateSingleCASWinner(t *testing.T) {
 	service := newQueueService(t)
 	journeyID := "123e4567-e89b-42d3-a456-426614174000"
 	var winners int
-	var errorsSeen int
+	var errorsSeen []error
 	var mutex sync.Mutex
 	var wait sync.WaitGroup
 	for index := 0; index < 2; index++ {
@@ -78,7 +78,7 @@ func TestQueueConcurrentCreateSingleCASWinner(t *testing.T) {
 			if err == nil {
 				winners++
 			} else {
-				errorsSeen++
+				errorsSeen = append(errorsSeen, err)
 			}
 		}(index)
 	}
@@ -86,8 +86,8 @@ func TestQueueConcurrentCreateSingleCASWinner(t *testing.T) {
 	if winners != 1 {
 		t.Fatalf("winners = %d, want exactly 1", winners)
 	}
-	if errorsSeen != 1 {
-		t.Fatalf("losers = %d, want exactly 1", errorsSeen)
+	if len(errorsSeen) != 1 || !errors.Is(errorsSeen[0], queue.ErrDuplicateWork) {
+		t.Fatalf("losers = %v, want one duplicate-work rejection", errorsSeen)
 	}
 }
 

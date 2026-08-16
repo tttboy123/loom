@@ -7,17 +7,22 @@
 ## 启动
 
 ```sh
-# 显式连接某个 daemon socket（推荐，产品旅程用法）
-open /path/to/Loom.app --args --socket /path/to/loomd.sock --journey-id <uuid>
-
-# 或直接打开，使用默认 socket：~/Library/Application Support/Loom/run/loomd.sock
+# 正常使用：直接打开即可
 open /path/to/Loom.app
 ```
 
-- `--socket`：真实 daemon 的 Unix socket 路径。
-- `--journey-id`：旅程关联 UUID（仅关联，不是权威/代际；不带则普通使用）。
-- app 启动时会在 IPC 日志留下 `loom-swift-*` 启动读（连接证明）。
-- 连接不可用时 app 显示不可用状态（offline），不会伪造数据。
+- `Loom.app` 内含匹配版本的 `loomd`。App 启动时先通过 macOS
+  `SMAppService` 注册并启动服务；本地 ad-hoc 签名包无法注册后台项目时，
+  使用仅随当前 App 生命周期存在的同包 helper。
+- 两种路径都使用默认 socket：
+  `~/Library/Application Support/Loom/run/loomd.sock`。
+- App 会等待真实 socket 并做有界重连。只有服务确实无法建立时才显示
+  unavailable；注册 API 返回成功不等于服务健康。
+- 用户不需要单独安装、启动或理解 `loomd`，也不需要打开终端。
+- 若本机 Codex 已登录，Loom 会自动将其作为普通对话的受控 responder；
+  用户不需要先打开 Runtime & Providers。未登录时才需要显式 Connect。
+- Developer ID 签名公开版由 `launchd` 管理常驻生命周期；本地 ad-hoc
+  版关闭 App 后 helper 会自动结束。
 
 ## 主界面
 
@@ -67,6 +72,6 @@ open /path/to/Loom.app
 ## 局限
 
 - app 是本地单用户产品：无 Web/共享/多用户。
-- Provider 连接只做受控凭证管理与可用性显示；不执行 Provider 路由或
-  自动激活。
+- 普通 Codex 对话使用临时、只读、非权威路径；Agent Team 的 Provider
+  路由、写操作与执行仍需显式治理和授权，不会由聊天自动激活。
 - 默认窗口尺寸 1100×720（最小 900×580），不支持命令行环境之外的主题化。

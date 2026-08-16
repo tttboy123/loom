@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,70 @@ import (
 	"testing"
 	"time"
 )
+
+func TestExecutorReadAndGrepReturnBoundedTextWithoutFollowingSymlinks(t *testing.T) {
+	root := execTempDir(t)
+	content := []byte("alpha\nneedle one\nomega\nneedle two\n")
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := NewSandboxExecutor()
+	read, err := executor.Read(context.Background(), ReadRequest{
+		Worktree: root, RelativePath: "notes.txt", OutputLimit: 12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	if string(read.Content) != "alpha\nneedle" || !read.Truncated ||
+		read.ContentDigest != digestBytes(read.Content) ||
+		read.OutputDigest != digestBytes(content) {
+		t.Fatalf("Read() = %#v content=%q", read, read.Content)
+	}
+	grep, err := executor.Grep(context.Background(), GrepRequest{
+		Worktree: root, RelativePath: "notes.txt", Pattern: "needle",
+		OutputLimit: 128, MatchLimit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grep.Close()
+	if !bytes.Equal(grep.Content, []byte("2:needle one\n4:needle two\n")) || grep.Truncated ||
+		grep.ContentDigest != digestBytes(grep.Content) {
+		t.Fatalf("Grep() = %#v content=%q", grep, grep.Content)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Read(context.Background(), ReadRequest{
+		Worktree: root, RelativePath: "escape.txt", OutputLimit: 64,
+	}); !errors.Is(err, ErrExecutionPathOutside) {
+		t.Fatalf("symlink Read() error = %v", err)
+	}
+}
+
+func TestExecutorReadRejectsBinaryAndGrepRejectsInvalidPattern(t *testing.T) {
+	root := execTempDir(t)
+	if err := os.WriteFile(filepath.Join(root, "binary"), []byte{'a', 0, 'b'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := NewSandboxExecutor()
+	if _, err := executor.Read(context.Background(), ReadRequest{
+		Worktree: root, RelativePath: "binary", OutputLimit: 64,
+	}); !errors.Is(err, ErrExecutionContent) {
+		t.Fatalf("binary Read() error = %v", err)
+	}
+	if _, err := executor.Grep(context.Background(), GrepRequest{
+		Worktree: root, RelativePath: "binary", Pattern: "[", OutputLimit: 64,
+	}); !errors.Is(err, ErrInvalidExecutionInput) {
+		t.Fatalf("invalid Grep() error = %v", err)
+	}
+}
 
 func execTempDir(t testing.TB) string {
 	t.Helper()

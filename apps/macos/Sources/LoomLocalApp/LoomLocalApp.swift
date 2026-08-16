@@ -1,4 +1,5 @@
 import Darwin
+import os
 import SwiftUI
 import LoomLocalAppCore
 import LoomLocalAppUI
@@ -23,6 +24,12 @@ enum LoomLocalAppEntry {
 
 private struct LoomApplication: App {
     @StateObject private var store: LocalProductStore
+    @StateObject private var serviceProcessHost: LocalServiceProcessHost
+    private let serviceBootstrapper: LocalServiceBootstrapper
+    private let serviceLogger = Logger(
+        subsystem: "com.earendilworks.loom.local",
+        category: "service-bootstrap"
+    )
 
     init() {
         let client: LocalProductClientProtocol
@@ -32,14 +39,51 @@ private struct LoomApplication: App {
             client = UnavailableLocalProductClient()
         }
         _store = StateObject(wrappedValue: LocalProductStore(client: client))
+        _serviceProcessHost = StateObject(
+            wrappedValue: LocalServiceProcessHost()
+        )
+        serviceBootstrapper = LocalServiceBootstrapper(
+            registration: SystemLocalServiceRegistration()
+        )
     }
 
     var body: some Scene {
         WindowGroup("Loom") {
-            ContentView(store: store)
+            ContentView(
+                store: store,
+                prepareLocalService: prepareLocalService
+            )
                 .frame(minWidth: 900, minHeight: 580)
         }
         .defaultSize(width: 1100, height: 720)
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Open Folder...") {
+                    NotificationCenter.default.post(
+                        name: .loomOpenFolderRequested,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("o", modifiers: .command)
+            }
+        }
+    }
+
+    private func prepareLocalService() async -> LocalServiceBootstrapOutcome {
+        let outcome = serviceBootstrapper.prepare()
+        serviceLogger.info("managed service registration evaluated")
+        switch outcome {
+        case .enabled, .registered:
+            if await serviceProcessHost.waitForDefaultSocket() {
+                serviceLogger.info("managed service socket available")
+                return outcome
+            }
+            serviceLogger.notice("starting bundled service fallback")
+            return serviceProcessHost.start() ? .registered : .unavailable
+        case .requiresApproval, .unavailable:
+            serviceLogger.notice("starting foreground bundled service")
+            return serviceProcessHost.start() ? .registered : outcome
+        }
     }
 }
 

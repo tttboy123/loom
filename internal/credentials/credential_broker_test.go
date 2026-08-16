@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,10 +72,11 @@ func (store *brokerTestStore) Delete(
 }
 
 type brokerTestVerifier struct {
-	status VerificationStatus
-	reason VerificationReason
-	err    error
-	seen   []byte
+	providerID string
+	status     VerificationStatus
+	reason     VerificationReason
+	err        error
+	seen       []byte
 }
 
 func (verifier *brokerTestVerifier) Verify(
@@ -82,7 +84,11 @@ func (verifier *brokerTestVerifier) Verify(
 	providerID string,
 	secret []byte,
 ) (VerificationResult, error) {
-	if providerID != "minimax" {
+	expectedProviderID := verifier.providerID
+	if expectedProviderID == "" {
+		expectedProviderID = "minimax"
+	}
+	if providerID != expectedProviderID {
 		return VerificationResult{}, errors.New("wrong provider")
 	}
 	verifier.seen = append([]byte(nil), secret...)
@@ -110,11 +116,37 @@ func (committer *brokerTestCommitter) CommitCredentialMetadata(
 	}
 	return MetadataResult{
 		ProviderID:          command.ProviderID,
+		ProviderAccountID:   command.ProviderAccountID,
 		CredentialReference: command.CredentialReference,
 		Revision:            command.ExpectedRevision + 1,
 		Status:              command.Status,
 		Reason:              command.Reason,
 	}, nil
+}
+
+func TestCredentialBrokerPreservesProviderAccountIdentity(t *testing.T) {
+	store := &brokerTestStore{}
+	committer := &brokerTestCommitter{}
+	broker, err := NewCredentialBroker(CredentialBrokerConfig{
+		Store: store, Verifier: &brokerTestVerifier{providerID: "deepseek"},
+		Committer: committer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := broker.Configure(context.Background(), CredentialCommand{
+		CommandID: "configure-deepseek-work", ProviderID: "deepseek",
+		ProviderAccountID:   "deepseek.work",
+		CredentialReference: "credential-ref-deepseek-work", ExpectedRevision: 0,
+		OccurredAt: time.Unix(1000, 0).UTC(), Secret: []byte("private-key"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderAccountID != "deepseek.work" || len(committer.commands) != 1 ||
+		committer.commands[0].ProviderAccountID != "deepseek.work" {
+		t.Fatalf("result=%#v commands=%#v", result, committer.commands)
+	}
 }
 
 type brokerCancelingVerifier struct {
@@ -403,6 +435,80 @@ func TestCredentialBrokerConfigureVerifyReplaceAndRevoke(t *testing.T) {
 	}
 }
 
+func TestCredentialBrokerAcceptsCatalogProviderCredential(t *testing.T) {
+	store := &brokerTestStore{}
+	verifier := &brokerTestVerifier{
+		providerID: "deepseek",
+		status:     VerificationValid,
+		reason:     VerificationReasonNone,
+	}
+	committer := &brokerTestCommitter{}
+	broker, err := NewCredentialBroker(CredentialBrokerConfig{
+		Store: store, Verifier: verifier, Committer: committer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte{0x31, 0x32, 0x33, 0x34}
+	configured, err := broker.Configure(context.Background(), CredentialCommand{
+		CommandID:           "configure-deepseek-1",
+		ProviderID:          "deepseek",
+		CredentialReference: "credential-ref-deepseek-1",
+		ExpectedRevision:    0,
+		OccurredAt:          time.Unix(150, 0).UTC(),
+		Secret:              secret,
+	})
+	if err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if configured.ProviderID != "deepseek" ||
+		configured.Status != CredentialConfigured ||
+		configured.Revision != 1 ||
+		!allCredentialBytesZero(secret) {
+		t.Fatalf("Configure() result = %#v, input = %v", configured, secret)
+	}
+	verified, err := broker.Verify(context.Background(), CredentialCommand{
+		CommandID:           "verify-deepseek-2",
+		ProviderID:          "deepseek",
+		CredentialReference: "credential-ref-deepseek-1",
+		ExpectedRevision:    1,
+		OccurredAt:          time.Unix(151, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if verified.ProviderID != "deepseek" ||
+		verified.Status != CredentialVerified || verified.Revision != 2 {
+		t.Fatalf("Verify() result = %#v", verified)
+	}
+}
+
+func TestCredentialBrokerRejectsMalformedProviderIdentifier(t *testing.T) {
+	for _, providerID := range []string{
+		"", "DeepSeek", "deep_seek", "deepseek/../../keychain", "-deepseek",
+	} {
+		t.Run(providerID, func(t *testing.T) {
+			broker, err := NewCredentialBroker(CredentialBrokerConfig{
+				Store: &brokerTestStore{}, Verifier: &brokerTestVerifier{},
+				Committer: &brokerTestCommitter{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			secret := []byte{0x31, 0x32, 0x33, 0x34}
+			_, err = broker.Configure(context.Background(), CredentialCommand{
+				CommandID: "configure-invalid-provider", ProviderID: providerID,
+				CredentialReference: "credential-ref-invalid-provider",
+				OccurredAt:          time.Unix(152, 0).UTC(), Secret: secret,
+			})
+			if !errors.Is(err, ErrInvalidCredentialCommand) ||
+				!allCredentialBytesZero(secret) {
+				t.Fatalf("Configure() error = %v, input = %v", err, secret)
+			}
+		})
+	}
+}
+
 func TestCredentialBrokerRollsBackStoreOnMetadataFailure(t *testing.T) {
 	oldSecret := []byte{0x01, 0x02, 0x03, 0x04}
 	store := &brokerTestStore{
@@ -430,7 +536,8 @@ func TestCredentialBrokerRollsBackStoreOnMetadataFailure(t *testing.T) {
 		ExpectedRevision:    1,
 		OccurredAt:          time.Unix(200, 0).UTC(),
 		Secret:              replacement,
-	}); !errors.Is(err, ErrCredentialMetadataConflict) {
+	}); !errors.Is(err, ErrCredentialMetadataConflict) ||
+		CredentialFailureStage(err) != CredentialStageMetadataCommit {
 		t.Fatalf("Replace() error = %v", err)
 	}
 	restored, err := store.Read(context.Background(), "credential-ref-1")
@@ -447,7 +554,8 @@ func TestCredentialBrokerRollsBackStoreOnMetadataFailure(t *testing.T) {
 		CredentialReference: "credential-ref-1",
 		ExpectedRevision:    1,
 		OccurredAt:          time.Unix(201, 0).UTC(),
-	}); !errors.Is(err, ErrCredentialMetadataConflict) {
+	}); !errors.Is(err, ErrCredentialMetadataConflict) ||
+		CredentialFailureStage(err) != CredentialStageMetadataCommit {
 		t.Fatalf("Revoke() error = %v", err)
 	}
 	restored, err = store.Read(context.Background(), "credential-ref-1")
@@ -457,7 +565,10 @@ func TestCredentialBrokerRollsBackStoreOnMetadataFailure(t *testing.T) {
 }
 
 func TestCredentialBrokerReturnsClosedErrorsWithoutSecretDisclosure(t *testing.T) {
-	store := &brokerTestStore{putErr: ErrCredentialStoreDenied}
+	store := &brokerTestStore{putErr: withCredentialFailureStage(
+		CredentialStageKeychainAccess,
+		ErrCredentialStoreDenied,
+	)}
 	broker, err := NewCredentialBroker(CredentialBrokerConfig{
 		Store: store,
 		Verifier: &brokerTestVerifier{
@@ -477,9 +588,70 @@ func TestCredentialBrokerReturnsClosedErrorsWithoutSecretDisclosure(t *testing.T
 		Secret:              secret,
 	})
 	if !errors.Is(err, ErrCredentialStoreDenied) ||
+		CredentialFailureStage(err) != CredentialStageKeychainAccess ||
 		bytes.Contains([]byte(err.Error()), []byte{0xaa, 0xbb}) ||
 		!allCredentialBytesZero(secret) {
 		t.Fatalf("unsafe Configure() error = %v, input = %v", err, secret)
+	}
+}
+
+func TestCredentialFailureStagesAndHelperExitCodesAreClosed(t *testing.T) {
+	for _, test := range []struct {
+		stage string
+		err   error
+		code  int
+	}{
+		{
+			stage: CredentialStageHelperAuthorization,
+			err:   ErrCredentialHelperUnauthorized,
+			code:  4,
+		},
+		{
+			stage: CredentialStageHelperRequest,
+			err:   ErrCredentialHelperProtocol,
+			code:  5,
+		},
+		{
+			stage: CredentialStageKeychainAccess,
+			err:   ErrCredentialStoreUnavailable,
+			code:  6,
+		},
+	} {
+		wrapped := withCredentialFailureStage(test.stage, test.err)
+		if CredentialFailureStage(wrapped) != test.stage ||
+			ProductKeychainHelperExitCode(wrapped) != test.code ||
+			strings.Contains(wrapped.Error(), test.stage) {
+			t.Fatalf("stage=%q error=%v code=%d", test.stage, wrapped,
+				ProductKeychainHelperExitCode(wrapped))
+		}
+	}
+	if stage := CredentialFailureStage(
+		withCredentialFailureStage("private-path", errors.New("private")),
+	); stage != "" {
+		t.Fatalf("unbounded credential stage = %q", stage)
+	}
+}
+
+func TestCredentialFailureRetryabilitySeparatesRecoveryFromTransientStages(t *testing.T) {
+	for _, test := range []struct {
+		stage string
+		want  bool
+	}{
+		{stage: CredentialStageLeaseIssue, want: true},
+		{stage: CredentialStageLeaseExpire, want: true},
+		{stage: CredentialStageLeaseRevoke, want: true},
+		{stage: CredentialStageVaultKeyLoad, want: false},
+		{stage: CredentialStageVaultOpen, want: false},
+		{stage: CredentialStageVaultDecrypt, want: false},
+		{stage: CredentialStageVaultAADValidation, want: false},
+		{stage: CredentialStageVaultRecovery, want: false},
+		{stage: CredentialStageHelperAuthorization, want: false},
+		{stage: CredentialStageMetadataCommit, want: false},
+		{stage: "private-stage", want: false},
+	} {
+		if got := CredentialFailureRetryable(test.stage); got != test.want {
+			t.Fatalf("CredentialFailureRetryable(%q) = %t, want %t", test.stage, got, test.want)
+		}
 	}
 }
 

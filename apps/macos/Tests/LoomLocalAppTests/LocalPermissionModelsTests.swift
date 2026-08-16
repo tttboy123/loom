@@ -62,6 +62,10 @@ final class LocalPermissionModelsTests: XCTestCase {
               "digest": "digest-2",
               "job_id": "job-a",
               "status": "pending",
+              "call_digest": "call-digest-2",
+              "tool": "Bash",
+              "details_available": true,
+              "detail_status": "encrypted_vault",
               "command": "curl https://example.com"
             }
           ]
@@ -74,6 +78,10 @@ final class LocalPermissionModelsTests: XCTestCase {
         XCTAssertEqual(attention.approvals.count, 1)
         XCTAssertEqual(attention.approvals[0].approvalID, "approval-2")
         XCTAssertEqual(attention.approvals[0].status, "pending")
+        XCTAssertEqual(attention.approvals[0].callDigest, "call-digest-2")
+        XCTAssertEqual(attention.approvals[0].tool, "Bash")
+        XCTAssertEqual(attention.approvals[0].detailsAvailable, true)
+        XCTAssertEqual(attention.approvals[0].detailStatus, "encrypted_vault")
         XCTAssertEqual(attention.approvals[0].command, "curl https://example.com")
     }
 

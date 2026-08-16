@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -164,5 +165,97 @@ func TestReplayRejectsDuplicateTerminal(t *testing.T) {
 	}
 	if _, err := ReplaySnapshot(events); !errors.Is(err, ErrInvalidExecutionEvent) {
 		t.Fatalf("ReplaySnapshot() error = %v, want invalid event", err)
+	}
+}
+
+func TestReplayRejectsInvalidRecoveryRequiredTransitions(t *testing.T) {
+	now := execTime().UTC()
+	executionID := "exec-recovery-invalid"
+	stream := executionStreamID(execTestJobA, executionID)
+	proposed := journal.Event{
+		ID: "p-recovery", StreamID: stream, Seq: 1,
+		IdempotencyKey: "recovery-proposed", Type: EventToolProposed,
+		SchemaVersion: 1, EmittedAt: now,
+		PayloadJSON: mustJSON(proposedPayload{
+			JobID: execTestJobA, ExecutionID: executionID, CallDigest: "abc",
+			Tool: "Bash", Command: "printf private", ProposedAt: now.Format(time.RFC3339Nano),
+			Generation: 1, OperationID: "op-recovery", JourneyID: execTestCorrelation,
+		}),
+	}
+	allowed := journal.Event{
+		ID: "a-recovery", StreamID: stream, Seq: 2,
+		IdempotencyKey: "recovery-allowed", Type: EventToolAllowed,
+		SchemaVersion: 1, EmittedAt: now,
+		PayloadJSON: mustJSON(allowedPayload{
+			ExecutionID: executionID, AllowedAt: now.Format(time.RFC3339Nano),
+		}),
+	}
+	recovery := func(id string, seq int64, code, action string) journal.Event {
+		return journal.Event{
+			ID: id, StreamID: stream, Seq: seq,
+			IdempotencyKey: id + "-key", Type: EventToolRecoveryRequired,
+			SchemaVersion: 2, EmittedAt: now,
+			PayloadJSON: mustJSON(recoveryRequiredPayloadV2{
+				ExecutionID: executionID, RecoveryCode: code,
+				RecoveryAction: action, RequiredAt: now.Format(time.RFC3339Nano),
+			}),
+		}
+	}
+
+	tests := []struct {
+		name   string
+		events []journal.Event
+	}{
+		{
+			name: "without allow",
+			events: []journal.Event{
+				proposed,
+				recovery("r-without-allow", 2, "side_effect_unknown", "resolve_tool_recovery"),
+			},
+		},
+		{
+			name: "substituted code",
+			events: []journal.Event{
+				proposed, allowed,
+				recovery("r-bad-code", 3, "retry_now", "resolve_tool_recovery"),
+			},
+		},
+		{
+			name: "substituted action",
+			events: []journal.Event{
+				proposed, allowed,
+				recovery("r-bad-action", 3, "side_effect_unknown", "retry_tool"),
+			},
+		},
+		{
+			name: "duplicate recovery terminal",
+			events: []journal.Event{
+				proposed, allowed,
+				recovery("r-first", 3, "side_effect_unknown", "resolve_tool_recovery"),
+				recovery("r-second", 4, "side_effect_unknown", "resolve_tool_recovery"),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ReplaySnapshot(test.events); !errors.Is(err, ErrInvalidExecutionEvent) {
+				t.Fatalf("ReplaySnapshot() error = %v, want invalid event", err)
+			}
+		})
+	}
+}
+
+func TestRecoveryRequiredPayloadIsContentFree(t *testing.T) {
+	payload := mustJSON(recoveryRequiredPayloadV2{
+		ExecutionID:  "exec-recovery-private",
+		RecoveryCode: "side_effect_unknown", RecoveryAction: "resolve_tool_recovery",
+		RequiredAt: execTime().Format(time.RFC3339Nano),
+	})
+	for _, forbidden := range [][]byte{
+		[]byte(`"command"`), []byte(`"path"`), []byte("printf private"),
+	} {
+		if bytes.Contains(payload, forbidden) {
+			t.Fatalf("recovery payload contains forbidden content %q: %s", forbidden, payload)
+		}
 	}
 }

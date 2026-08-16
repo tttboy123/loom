@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/work"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
@@ -81,13 +82,21 @@ type AuthorizedFrameObserver interface {
 }
 
 type AdapterRequest struct {
-	WorkspacePath string
-	HomePath      string
-	TempPath      string
-	Binding       bridgev1.RunStreamBinding
-	Dispatch      bridgev1.Frame
-	Grant         authorization.Token
-	FrameSink     FrameSink
+	WorkspacePath    string
+	HomePath         string
+	TempPath         string
+	Binding          bridgev1.RunStreamBinding
+	ClaimID          string
+	IncidentID       string
+	ExecutionBinding loomruntime.FrozenExecutionBinding
+	Dispatch         bridgev1.Frame
+	Grant            authorization.Token
+	FrameSink        FrameSink
+	ContextCapsule   contextcapsule.AuthorityRecord
+	RouteSegment     contextcapsule.RouteSegmentBinding
+	ContextRetriever contextcapsule.Retriever
+	ContextDelivery  contextcapsule.DeliveryBroker
+	AgentInputs      loomruntime.AgentInputSource
 }
 
 type AdapterResultInput struct {
@@ -97,6 +106,7 @@ type AdapterResultInput struct {
 	DispatchAcknowledged bool
 	ResultAcknowledged   bool
 	CancelAcknowledged   bool
+	Accounting           *work.RunAccounting
 }
 
 type AdapterResult struct {
@@ -106,6 +116,8 @@ type AdapterResult struct {
 	dispatchAcknowledged bool
 	resultAcknowledged   bool
 	cancelAcknowledged   bool
+	accountingAvailable  bool
+	accounting           work.RunAccounting
 	valid                bool
 }
 
@@ -115,13 +127,18 @@ type Config struct {
 }
 
 type ExecuteInput struct {
-	SourcePath    string
-	Profile       loomruntime.RuntimeProfile
-	Instance      loomruntime.RuntimeInstance
-	Generation    work.RunGenerationInput
-	Grant         authorization.IssuedGrant
-	Dispatch      bridgev1.Frame
-	FrameObserver AuthorizedFrameObserver
+	SourcePath           string
+	ExpectedSourceDigest string
+	Profile              loomruntime.RuntimeProfile
+	Instance             loomruntime.RuntimeInstance
+	Generation           work.RunGenerationInput
+	Grant                authorization.IssuedGrant
+	Dispatch             bridgev1.Frame
+	FrameObserver        AuthorizedFrameObserver
+	ContextCapsule       contextcapsule.AuthorityRecord
+	RouteSegment         contextcapsule.RouteSegmentBinding
+	ContextRetriever     contextcapsule.Retriever
+	ContextDelivery      contextcapsule.DeliveryBroker
 }
 
 type WorkspaceChange struct {
@@ -258,11 +275,16 @@ func NewAdapterResult(input AdapterResultInput) (AdapterResult, error) {
 		input.ExitCode > 255 {
 		return AdapterResult{}, ErrInvalidManagedExecution
 	}
+	if input.Accounting != nil {
+		if err := work.ValidateRunAccounting(*input.Accounting); err != nil {
+			return AdapterResult{}, ErrInvalidManagedExecution
+		}
+	}
 	frames, err := cloneManagedFrames(input.InboundFrames)
 	if err != nil {
 		return AdapterResult{}, ErrInvalidManagedExecution
 	}
-	return AdapterResult{
+	result := AdapterResult{
 		inboundFrames:        frames,
 		stderr:               bytes.Clone(input.Stderr),
 		exitCode:             input.ExitCode,
@@ -270,7 +292,12 @@ func NewAdapterResult(input AdapterResultInput) (AdapterResult, error) {
 		resultAcknowledged:   input.ResultAcknowledged,
 		cancelAcknowledged:   input.CancelAcknowledged,
 		valid:                true,
-	}, nil
+	}
+	if input.Accounting != nil {
+		result.accountingAvailable = true
+		result.accounting = *input.Accounting
+	}
+	return result, nil
 }
 
 func (result AdapterResult) InboundFrames() []bridgev1.Frame {
@@ -282,6 +309,9 @@ func (result AdapterResult) ExitCode() int              { return result.exitCode
 func (result AdapterResult) DispatchAcknowledged() bool { return result.dispatchAcknowledged }
 func (result AdapterResult) ResultAcknowledged() bool   { return result.resultAcknowledged }
 func (result AdapterResult) CancelAcknowledged() bool   { return result.cancelAcknowledged }
+func (result AdapterResult) Accounting() (work.RunAccounting, bool) {
+	return result.accounting, result.accountingAvailable
+}
 
 func (change WorkspaceChange) Path() string              { return change.path }
 func (change WorkspaceChange) Kind() WorkspaceChangeKind { return change.kind }
@@ -343,7 +373,8 @@ func (supervisor *Supervisor) Execute(
 		return Outcome{}, fmt.Errorf("%w: run already active", ErrInvalidManagedExecution)
 	}
 	defer supervisor.releaseRun(input.Generation.RunID)
-	if err := supervisor.validateInput(ctx, input); err != nil {
+	executionBinding, err := supervisor.validateInput(ctx, input)
+	if err != nil {
 		if errors.Is(err, work.ErrStaleClaimGeneration) {
 			err = errors.Join(err, supervisor.revokeRejected(input))
 		}
@@ -380,6 +411,16 @@ func (supervisor *Supervisor) Execute(
 			"workspace_failed",
 			authorization.RevocationTerminal,
 			err,
+		)
+	}
+	if input.ExpectedSourceDigest != "" &&
+		workspace.sourceDigest != input.ExpectedSourceDigest {
+		return supervisor.finishFailure(
+			input, workspace, bridgev1.BoundRunStream{},
+			workspace.sourceDigest, "", nil, nil,
+			"failed", "source_changed",
+			authorization.RevocationTerminal,
+			ErrSourceChanged,
 		)
 	}
 	defer func() {
@@ -478,13 +519,20 @@ func (supervisor *Supervisor) Execute(
 	result, adapterErr := supervisor.adapter.Execute(
 		executionContext,
 		AdapterRequest{
-			WorkspacePath: workspace.workspacePath,
-			HomePath:      workspace.homePath,
-			TempPath:      workspace.tempPath,
-			Binding:       managedBinding(input.Generation),
-			Dispatch:      input.Dispatch,
-			Grant:         input.Grant.Token(),
-			FrameSink:     frameSink,
+			WorkspacePath:    workspace.workspacePath,
+			HomePath:         workspace.homePath,
+			TempPath:         workspace.tempPath,
+			Binding:          managedBinding(input.Generation),
+			ClaimID:          input.Generation.ClaimID,
+			IncidentID:       input.Generation.CorrelationID,
+			ExecutionBinding: executionBinding,
+			Dispatch:         input.Dispatch,
+			Grant:            input.Grant.Token(),
+			FrameSink:        frameSink,
+			ContextCapsule:   input.ContextCapsule,
+			RouteSegment:     input.RouteSegment,
+			ContextRetriever: input.ContextRetriever,
+			ContextDelivery:  input.ContextDelivery,
 		},
 	)
 	executionContextErr := executionContext.Err()
@@ -611,6 +659,25 @@ func (supervisor *Supervisor) Execute(
 			ErrManagedWorkspace,
 		)
 	}
+	accounting, accountingAvailable := result.Accounting()
+	var accountingInput *work.RunAccounting
+	if accountingAvailable {
+		if rateCard, available := run.ProviderModelRateCard(); available &&
+			!accounting.CostObserved {
+			estimated, estimateErr := work.EstimateRunAccounting(accounting, rateCard)
+			if estimateErr != nil {
+				return supervisor.finishFailure(
+					input, workspace, stream,
+					workspace.sourceDigest, workspaceDigest, changes, result.Stderr(),
+					"failed", "accounting_failed",
+					authorization.RevocationTerminal,
+					estimateErr,
+				)
+			}
+			accounting = estimated
+		}
+		accountingInput = &accounting
+	}
 	return supervisor.finishTerminal(
 		input,
 		stream,
@@ -622,29 +689,37 @@ func (supervisor *Supervisor) Execute(
 		reason,
 		authorization.RevocationTerminal,
 		nil,
+		accountingInput,
 	)
 }
 
 func (supervisor *Supervisor) validateInput(
 	ctx context.Context,
 	input ExecuteInput,
-) error {
+) (loomruntime.FrozenExecutionBinding, error) {
 	if ctx == nil {
-		return ErrInvalidManagedExecution
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
 	}
 	if input.FrameObserver != nil && nilManagedInterface(input.FrameObserver) {
-		return ErrInvalidManagedExecution
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
+	}
+	if input.ExpectedSourceDigest != "" && !validManagedTreeDigest(input.ExpectedSourceDigest) {
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
 	}
 	profile, err := loomruntime.NewRuntimeProfile(input.Profile)
 	if err != nil {
-		return errors.Join(ErrInvalidManagedExecution, err)
+		return loomruntime.FrozenExecutionBinding{},
+			errors.Join(ErrInvalidManagedExecution, err)
 	}
 	instance, err := loomruntime.NewRuntimeInstance(input.Instance)
 	if err != nil {
-		return errors.Join(ErrInvalidManagedExecution, err)
+		return loomruntime.FrozenExecutionBinding{},
+			errors.Join(ErrInvalidManagedExecution, err)
 	}
-	if _, err := loomruntime.ValidateBinding(profile, instance); err != nil {
-		return errors.Join(ErrInvalidManagedExecution, err)
+	executionBinding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		return loomruntime.FrozenExecutionBinding{},
+			errors.Join(ErrInvalidManagedExecution, err)
 	}
 	generation := input.Generation
 	grant := input.Grant.Record()
@@ -655,10 +730,10 @@ func (supervisor *Supervisor) validateInput(
 		generation.RuntimeInstanceID == "" ||
 		generation.AgentInstanceID == "" ||
 		generation.CorrelationID == "" {
-		return ErrInvalidManagedExecution
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
 	}
 	if grant.ClaimGeneration() != generation.ClaimGeneration {
-		return work.ErrStaleClaimGeneration
+		return loomruntime.FrozenExecutionBinding{}, work.ErrStaleClaimGeneration
 	}
 	if grant.ID() == "" ||
 		input.Grant.Token().Value() == "" ||
@@ -671,21 +746,24 @@ func (supervisor *Supervisor) validateInput(
 		instance.ID != generation.RuntimeInstanceID ||
 		instance.AdapterType != supervisor.adapter.AdapterType() ||
 		instance.ID != supervisor.adapter.RuntimeInstanceID() {
-		return ErrInvalidManagedExecution
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
 	}
 	if !managedHasOperations(grant.AllowedOperations()) {
-		return ErrInvalidManagedExecution
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
+	}
+	if err := validManagedContextRetrieval(input, executionBinding); err != nil {
+		return loomruntime.FrozenExecutionBinding{}, err
 	}
 	if !managedDispatchMatches(input.Dispatch, generation) ||
 		bytes.Contains(
 			input.Dispatch.Payload(),
 			[]byte(input.Grant.Token().Value()),
 		) {
-		return ErrInvalidManagedExecution
+		return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
 	}
 	snapshot, err := supervisor.workAuthority.Snapshot(context.Background())
 	if err != nil {
-		return err
+		return loomruntime.FrozenExecutionBinding{}, err
 	}
 	for _, run := range snapshot.Runs() {
 		if run.ID() != generation.RunID {
@@ -697,11 +775,54 @@ func (supervisor *Supervisor) validateInput(
 			run.ClaimGeneration() != generation.ClaimGeneration ||
 			run.RuntimeInstanceID() != generation.RuntimeInstanceID ||
 			run.AgentInstanceID() != generation.AgentInstanceID {
-			return work.ErrStaleClaimGeneration
+			return loomruntime.FrozenExecutionBinding{}, work.ErrStaleClaimGeneration
 		}
+		authoritativeBinding := run.ExecutionBinding()
+		if authoritativeBinding.BindingDigest == "" ||
+			authoritativeBinding.BindingDigest != executionBinding.BindingDigest {
+			return loomruntime.FrozenExecutionBinding{}, ErrInvalidManagedExecution
+		}
+		return executionBinding, nil
+	}
+	return loomruntime.FrozenExecutionBinding{}, work.ErrRunNotClaimable
+}
+
+func validManagedContextRetrieval(
+	input ExecuteInput,
+	binding loomruntime.FrozenExecutionBinding,
+) error {
+	emptyAuthority := input.ContextCapsule == (contextcapsule.AuthorityRecord{})
+	emptySegment := input.RouteSegment == (contextcapsule.RouteSegmentBinding{})
+	retrieverPresent := input.ContextRetriever != nil &&
+		!nilManagedInterface(input.ContextRetriever)
+	deliveryPresent := input.ContextDelivery != nil &&
+		!nilManagedInterface(input.ContextDelivery)
+	if emptyAuthority && emptySegment && !retrieverPresent && !deliveryPresent {
 		return nil
 	}
-	return work.ErrRunNotClaimable
+	if emptyAuthority || emptySegment || retrieverPresent != deliveryPresent ||
+		input.ContextRetriever != nil && !retrieverPresent ||
+		input.ContextDelivery != nil && !deliveryPresent {
+		return ErrInvalidManagedExecution
+	}
+	authority, err := contextcapsule.ValidateAuthorityRecord(input.ContextCapsule)
+	segment, segmentErr := contextcapsule.ValidateRouteSegmentBinding(input.RouteSegment)
+	if err != nil || authority.AgentID != input.Generation.AgentInstanceID ||
+		authority.ProviderID != binding.ProviderID ||
+		authority.ProviderAccountID != binding.ProviderAccountID ||
+		authority.ModelID != binding.ModelID || authority.AuthMode != string(binding.AuthMode) ||
+		segmentErr != nil || segment.ConversationID != authority.ConversationID ||
+		segment.TeamID != authority.TeamID || segment.AgentID != authority.AgentID ||
+		segment.RoleID != authority.RoleID || segment.CapsuleDigest != authority.CapsuleDigest ||
+		segment.ExecutionBindingDigest != binding.BindingDigest {
+		return errors.Join(ErrInvalidManagedExecution, err, segmentErr)
+	}
+	dispatch, err := contextcapsule.DecodeDispatchPayload(input.Dispatch.Payload())
+	if err != nil || dispatch.CapsuleDigest != authority.CapsuleDigest ||
+		dispatch.DisclosureReceiptDigest != authority.DisclosureReceiptDigest {
+		return errors.Join(ErrInvalidManagedExecution, err)
+	}
+	return nil
 }
 
 func (supervisor *Supervisor) acceptBridgeResult(
@@ -754,7 +875,7 @@ func (supervisor *Supervisor) finishFailure(
 ) (Outcome, error) {
 	return supervisor.finishTerminal(
 		input, stream, sourceDigest, workspaceDigest, changes, stderr,
-		status, reason, revokeReason, primary,
+		status, reason, revokeReason, primary, nil,
 	)
 }
 
@@ -769,6 +890,7 @@ func (supervisor *Supervisor) finishTerminal(
 	reason string,
 	revokeReason authorization.RevocationReason,
 	primary error,
+	accounting *work.RunAccounting,
 ) (Outcome, error) {
 	terminalContext, cancelTerminal := context.WithTimeout(
 		context.Background(),
@@ -781,6 +903,7 @@ func (supervisor *Supervisor) finishTerminal(
 			RunGenerationInput: input.Generation,
 			Status:             status,
 			Reason:             reason,
+			Accounting:         accounting,
 		},
 	)
 	cancelTerminal()

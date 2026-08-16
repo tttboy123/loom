@@ -89,11 +89,17 @@ validate_bundle() {
   [ -z "$(find "$bundle" -type l -print -quit)" ] || return 1
   [ "$(/usr/bin/stat -f '%u' "$bundle")" = "$effective_uid" ] || return 1
   executable="$bundle/Contents/MacOS/LoomLocalApp"
+  helper="$bundle/Contents/Library/Helpers/loomd"
+  agent_plist="$bundle/Contents/Library/LaunchAgents/com.earendilworks.loom.local.daemon.plist"
   plist="$bundle/Contents/Info.plist"
   [ -f "$executable" ] && [ ! -L "$executable" ] || return 1
+  [ -f "$helper" ] && [ ! -L "$helper" ] || return 1
+  [ -f "$agent_plist" ] && [ ! -L "$agent_plist" ] || return 1
   [ -f "$plist" ] && [ ! -L "$plist" ] || return 1
   [ "$(/usr/bin/stat -f '%Lp' "$bundle")" = 700 ] || return 1
   [ "$(/usr/bin/stat -f '%Lp' "$executable")" = 700 ] || return 1
+  [ "$(/usr/bin/stat -f '%Lp' "$helper")" = 700 ] || return 1
+  [ "$(/usr/bin/stat -f '%Lp' "$agent_plist")" = 600 ] || return 1
   [ "$(/usr/bin/stat -f '%Lp' "$plist")" = 600 ] || return 1
   [ -z "$(
     find "$bundle" -exec /usr/bin/stat -f '%u' {} \; |
@@ -104,7 +110,7 @@ validate_bundle() {
       /usr/bin/grep -Ev '^700$' || true
   )" ] || return 1
   [ -z "$(
-    find "$bundle" -type f ! -path "$executable" \
+    find "$bundle" -type f ! -path "$executable" ! -path "$helper" \
       -exec /usr/bin/stat -f '%Lp' {} \; |
       /usr/bin/grep -Ev '^600$' || true
   )" ] || return 1
@@ -113,7 +119,12 @@ validate_bundle() {
   )" = com.earendilworks.loom.local ] || return 1
   /usr/bin/lipo -archs "$executable" |
     /usr/bin/grep -Eq '(^| )arm64( |$)' || return 1
-  /usr/bin/codesign --verify --strict "$bundle" || return 1
+  /usr/bin/lipo -archs "$helper" |
+    /usr/bin/grep -Eq '(^| )arm64( |$)' || return 1
+  [ "$(
+    /usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$agent_plist"
+  )" = Contents/Library/Helpers/loomd ] || return 1
+  /usr/bin/codesign --verify --deep --strict "$bundle" || return 1
 }
 
 transaction="$destination_parent/.Loom.app.transaction.$$"

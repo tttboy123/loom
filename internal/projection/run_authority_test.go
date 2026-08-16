@@ -8,14 +8,212 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"loom-pi-rebuild/internal/journal"
+	loomruntime "loom-pi-rebuild/internal/runtime"
 )
 
 var runProjectionTime = time.Date(2026, 7, 26, 1, 2, 3, 0, time.UTC)
+
+func TestPhase2DRunProjectionCarriesValidatedExecutionBinding(t *testing.T) {
+	budget := int64(500)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "profile.verifier", AdapterType: "pi-cli",
+		ProviderID: "anthropic", ProviderAccountID: "anthropic.production",
+		ModelID: "claude-sonnet", AuthMode: loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("a", 64),
+		CredentialReference: "credential-ref-anthropic-production",
+		CredentialRevision:  7, ReasoningEffort: "high",
+		RequiredCapabilities: []string{
+			loomruntime.CapabilityReasoningEffort,
+		},
+		Timeout: time.Minute, Budget: &budget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-1", DeviceID: "device-1", AdapterType: "pi-cli",
+		DisplayName: "Fixture", Status: loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{loomruntime.CapabilityReasoningEffort},
+		Capacity:             1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := projectedExecutionBindingPayload{
+		ProfileID: binding.ProfileID, HarnessAdapter: binding.HarnessAdapter,
+		RuntimeInstanceID: binding.RuntimeInstanceID,
+		ProviderID:        binding.ProviderID, ProviderAccountID: binding.ProviderAccountID,
+		ModelID: binding.ModelID, AuthMode: string(binding.AuthMode),
+		EndpointFingerprint: binding.EndpointFingerprint,
+		CredentialReference: binding.CredentialReference,
+		CredentialRevision:  binding.CredentialRevision,
+		ReasoningEffort:     binding.ReasoningEffort,
+		TimeoutNanoseconds:  int64(binding.Timeout), Budget: binding.Budget,
+		Capabilities:  append([]string(nil), binding.Capabilities...),
+		BindingDigest: binding.BindingDigest,
+	}
+	events := validRunAuthorityProjectionEvents()
+	for index := range events {
+		if events[index].Type != "WorkItemAssigned" {
+			continue
+		}
+		var assignment map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &assignment); err != nil {
+			t.Fatal(err)
+		}
+		assignment["execution_binding"] = payload
+		events[index].PayloadJSON = projectionPayload(t, assignment)
+	}
+
+	snapshot, err := replay(context.Background(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := snapshot.Runs["run-1"]
+	if !run.ExecutionBindingAvailable ||
+		run.ExecutionBinding.BindingDigest != binding.BindingDigest ||
+		run.ExecutionBinding.ProviderAccountID != "anthropic.production" ||
+		run.ExecutionBinding.CredentialRevision != 7 ||
+		run.ExecutionBinding.ReasoningEffort != "high" {
+		t.Fatalf("projected binding = %#v", run.ExecutionBinding)
+	}
+
+	for index := range events {
+		if events[index].Type != "WorkItemAssigned" {
+			continue
+		}
+		var assignment map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &assignment); err != nil {
+			t.Fatal(err)
+		}
+		encoded := assignment["execution_binding"].(map[string]any)
+		encoded["credential_revision"] = float64(8)
+		events[index].PayloadJSON = projectionPayload(t, assignment)
+	}
+	if _, err := replay(context.Background(), events); !errors.Is(
+		err, ErrInvalidProjectionEvent,
+	) {
+		t.Fatalf("tampered projected binding error = %v", err)
+	}
+}
+
+func TestPhase2DRunProjectionCarriesValidatedProviderAccounting(t *testing.T) {
+	events := validRunAuthorityProjectionEvents()
+	for index := range events {
+		if events[index].Type != "RunTerminalCommitted" {
+			continue
+		}
+		var terminal map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &terminal); err != nil {
+			t.Fatal(err)
+		}
+		terminal["accounting"] = map[string]any{
+			"usage_observed": true, "input_tokens": 40,
+			"output_tokens": 10, "cache_read_tokens": 5,
+			"cache_write_tokens": 0, "total_tokens": 50,
+			"cost_observed": true, "cost_microunits": 125,
+			"cost_currency": "USD", "cost_source": "provider_reported",
+		}
+		events[index].PayloadJSON = projectionPayload(t, terminal)
+	}
+
+	snapshot, err := replay(context.Background(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := snapshot.Runs["run-1"]
+	if !run.AccountingAvailable || !run.Accounting.UsageObserved ||
+		run.Accounting.TotalTokens != 50 || !run.Accounting.CostObserved ||
+		run.Accounting.CostMicrounits != 125 ||
+		run.Accounting.CostCurrency != "USD" ||
+		run.Accounting.CostSource != "provider_reported" {
+		t.Fatalf("projected accounting = %#v", run)
+	}
+
+	for index := range events {
+		if events[index].Type != "RunTerminalCommitted" {
+			continue
+		}
+		var terminal map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &terminal); err != nil {
+			t.Fatal(err)
+		}
+		accounting := terminal["accounting"].(map[string]any)
+		delete(accounting, "cost_source")
+		events[index].PayloadJSON = projectionPayload(t, terminal)
+	}
+	legacySnapshot, err := replay(context.Background(), events)
+	if err != nil {
+		t.Fatalf("legacy accounting replay error = %v", err)
+	}
+	if got := legacySnapshot.Runs["run-1"].Accounting.CostSource; got != "legacy_unspecified" {
+		t.Fatalf("legacy cost source = %q", got)
+	}
+
+	for index := range events {
+		if events[index].Type != "RunTerminalCommitted" {
+			continue
+		}
+		var terminal map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &terminal); err != nil {
+			t.Fatal(err)
+		}
+		accounting := terminal["accounting"].(map[string]any)
+		accounting["cost_source"] = ""
+		events[index].PayloadJSON = projectionPayload(t, terminal)
+	}
+	if _, err := replay(context.Background(), events); !errors.Is(
+		err, ErrInvalidProjectionEvent,
+	) {
+		t.Fatalf("explicit empty cost source projection error = %v", err)
+	}
+
+	for index := range events {
+		if events[index].Type != "RunTerminalCommitted" {
+			continue
+		}
+		var terminal map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &terminal); err != nil {
+			t.Fatal(err)
+		}
+		accounting := terminal["accounting"].(map[string]any)
+		accounting["cost_source"] = nil
+		events[index].PayloadJSON = projectionPayload(t, terminal)
+	}
+	if _, err := replay(context.Background(), events); !errors.Is(
+		err, ErrInvalidProjectionEvent,
+	) {
+		t.Fatalf("null cost source projection error = %v", err)
+	}
+
+	for index := range events {
+		if events[index].Type != "RunTerminalCommitted" {
+			continue
+		}
+		var terminal map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &terminal); err != nil {
+			t.Fatal(err)
+		}
+		accounting := terminal["accounting"].(map[string]any)
+		accounting["cost_currency"] = "usd"
+		events[index].PayloadJSON = projectionPayload(t, terminal)
+	}
+	if _, err := replay(context.Background(), events); !errors.Is(
+		err, ErrInvalidProjectionEvent,
+	) {
+		t.Fatalf("invalid accounting projection error = %v", err)
+	}
+}
 
 type mutableRunAuthoritySource struct {
 	mu     sync.Mutex

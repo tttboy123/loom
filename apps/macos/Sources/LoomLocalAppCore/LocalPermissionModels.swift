@@ -251,27 +251,46 @@ public struct PermissionApprovalView: Codable, Equatable, Sendable {
     public var digest: String
     public var jobID: String
     public var status: String
+    public var callDigest: String?
+    public var tool: String?
     public var command: String?
+    public var path: String?
+    public var detailsAvailable: Bool?
+    public var detailStatus: String?
 
     public init(
         approvalID: String = "",
         digest: String = "",
         jobID: String = "",
         status: String = "",
-        command: String? = nil
+        callDigest: String? = nil,
+        tool: String? = nil,
+        command: String? = nil,
+        path: String? = nil,
+        detailsAvailable: Bool? = nil,
+        detailStatus: String? = nil
     ) {
         self.approvalID = approvalID
         self.digest = digest
         self.jobID = jobID
         self.status = status
+        self.callDigest = callDigest
+        self.tool = tool
         self.command = command
+        self.path = path
+        self.detailsAvailable = detailsAvailable
+        self.detailStatus = detailStatus
     }
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
         case digest
         case jobID = "job_id"
-        case status, command
+        case status
+        case callDigest = "call_digest"
+        case tool, command, path
+        case detailsAvailable = "details_available"
+        case detailStatus = "detail_status"
     }
 }
 

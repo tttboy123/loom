@@ -2,10 +2,12 @@ package teams
 
 import (
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,8 +17,14 @@ import (
 
 func TestTeamDefinitionBuildAndValidate(t *testing.T) {
 	definitions, profiles, input := teamDefinitionFixture()
+	definitions = append(definitions, projectAgent("agent.sub.three"))
+	profiles = append(profiles, runtimeProfile("profile.sub.three"))
+	input.Roles = append(input.Roles, TeamDefinitionRole{
+		Kind: TeamDefinitionRoleSubAgent, AgentDefinitionID: "agent.sub.three",
+		RuntimeProfileID: "profile.sub.three", Responsibility: "validate",
+	})
 
-	for _, count := range []int{1, 2, 3} {
+	for _, count := range []int{1, 2, 3, 4} {
 		t.Run(string(rune('0'+count))+"_roles", func(t *testing.T) {
 			current := input
 			current.Roles = append([]TeamDefinitionRole(nil), input.Roles[:count]...)
@@ -47,7 +55,9 @@ func TestTeamDefinitionBuildAndValidate(t *testing.T) {
 
 	t.Run("normalizes role order and copies mutable inputs", func(t *testing.T) {
 		reordered := input
-		reordered.Roles = []TeamDefinitionRole{input.Roles[2], input.Roles[0], input.Roles[1]}
+		reordered.Roles = []TeamDefinitionRole{
+			input.Roles[3], input.Roles[1], input.Roles[0], input.Roles[2],
+		}
 		first := mustBuildTeamDefinition(t, input, definitions, profiles)
 		second := mustBuildTeamDefinition(t, reordered, definitions, profiles)
 		if first.Digest() != second.Digest() || !reflect.DeepEqual(first.Roles(), second.Roles()) {
@@ -78,6 +88,20 @@ func TestTeamDefinitionBuildAndValidate(t *testing.T) {
 
 func TestTeamDefinitionBuildFailures(t *testing.T) {
 	definitions, profiles, input := teamDefinitionFixture()
+	tooMany := input
+	tooMany.Roles = append([]TeamDefinitionRole(nil), input.Roles...)
+	tooManyDefinitions := append([]agents.AgentDefinition(nil), definitions...)
+	tooManyProfiles := append([]loomruntime.RuntimeProfile(nil), profiles...)
+	for index := len(tooMany.Roles); index <= MaxTeamAgentCount; index++ {
+		agentID := fmt.Sprintf("agent.sub.%d", index)
+		profileID := fmt.Sprintf("profile.sub.%d", index)
+		tooMany.Roles = append(tooMany.Roles, TeamDefinitionRole{
+			Kind: TeamDefinitionRoleSubAgent, AgentDefinitionID: agentID,
+			RuntimeProfileID: profileID, Responsibility: "bounded role",
+		})
+		tooManyDefinitions = append(tooManyDefinitions, projectAgent(agentID))
+		tooManyProfiles = append(tooManyProfiles, runtimeProfile(profileID))
+	}
 	archived := definitions[1]
 	archived.Status = agents.DefinitionArchived
 	invalidDefinition := definitions[0]
@@ -103,9 +127,7 @@ func TestTeamDefinitionBuildFailures(t *testing.T) {
 		{name: "zero roles", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) { i.Roles = nil }), definitions: definitions, profiles: profiles, want: ErrInvalidTeamDefinitionRole},
 		{name: "zero main", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) { i.Roles[0].Kind = TeamDefinitionRoleSubAgent }), definitions: definitions, profiles: profiles, want: ErrInvalidTeamDefinitionRole},
 		{name: "two main", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) { i.Roles[1].Kind = TeamDefinitionRoleMain }), definitions: definitions, profiles: profiles, want: ErrInvalidTeamDefinitionRole},
-		{name: "three subagents", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) {
-			i.Roles = append(i.Roles, TeamDefinitionRole{Kind: TeamDefinitionRoleSubAgent, AgentDefinitionID: "agent.sub.three", RuntimeProfileID: "profile.sub.three", Responsibility: "third"})
-		}), definitions: append(definitions, projectAgent("agent.sub.three")), profiles: append(profiles, runtimeProfile("profile.sub.three")), want: ErrInvalidTeamDefinitionRole},
+		{name: "too many agents", input: tooMany, definitions: tooManyDefinitions, profiles: tooManyProfiles, want: ErrInvalidTeamDefinitionRole},
 		{name: "duplicate agent", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) { i.Roles[1].AgentDefinitionID = "agent.main" }), definitions: definitions, profiles: profiles, want: ErrDuplicateTeamDefinitionReference},
 		{name: "empty responsibility", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) { i.Roles[0].Responsibility = "" }), definitions: definitions, profiles: profiles, want: ErrInvalidTeamDefinitionRole},
 		{name: "invented agent", input: withTeamDefinitionInput(input, func(i *TeamDefinitionInput) { i.Roles[0].AgentDefinitionID = "agent.invented" }), definitions: definitions, profiles: profiles, want: ErrInventedTeamDefinitionReference},
@@ -338,6 +360,17 @@ func teamDefinitionFixture() ([]agents.AgentDefinition, []loomruntime.RuntimePro
 	return definitions, profiles, input
 }
 
+func fourRoleTeamDefinitionFixture() ([]agents.AgentDefinition, []loomruntime.RuntimeProfile, TeamDefinitionInput) {
+	definitions, profiles, input := teamDefinitionFixture()
+	definitions = append(definitions, projectAgent("agent.sub.three"))
+	profiles = append(profiles, runtimeProfile("profile.sub.three"))
+	input.Roles = append(input.Roles, TeamDefinitionRole{
+		Kind: TeamDefinitionRoleSubAgent, AgentDefinitionID: "agent.sub.three",
+		RuntimeProfileID: "profile.sub.three", Responsibility: "validate",
+	})
+	return definitions, profiles, input
+}
+
 func projectAgent(id string) agents.AgentDefinition {
 	return agents.AgentDefinition{
 		ID: id, Version: 1, Scope: agents.ScopeProject,
@@ -356,9 +389,12 @@ func reusableAgent(id string) agents.AgentDefinition {
 func runtimeProfile(id string) loomruntime.RuntimeProfile {
 	budget := int64(100)
 	return loomruntime.RuntimeProfile{
-		ID: id, AdapterType: "test", ProviderID: "provider.test", ModelID: "model.test",
-		AuthMode: loomruntime.AuthBrokered, RequiredCapabilities: []string{"text"},
-		Timeout: time.Minute, Budget: &budget,
+		ID: id, AdapterType: "test", ProviderID: "provider.test",
+		ProviderAccountID: "provider-account." + id, ModelID: "model.test",
+		AuthMode:            loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("a", 64),
+		CredentialReference: "credential-ref-" + strings.ReplaceAll(id, ".", "-"), CredentialRevision: 1,
+		RequiredCapabilities: []string{"text"}, Timeout: time.Minute, Budget: &budget,
 	}
 }
 

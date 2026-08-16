@@ -371,6 +371,68 @@ func TestCreateAndAssignExactRetryConflict(t *testing.T) { // s3_w2_create_assig
 	assertZeroRun(t, gotRun)
 }
 
+func TestPhase2DCreateAndAssignFreezesExecutionBindingOnRun(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 1)
+	input := assignment("work-binding", "run-binding")
+	input.ExecutionBinding = testReasoningFrozenExecutionBinding(
+		t,
+		"profile.binding",
+		"anthropic",
+		"anthropic.production",
+		"claude-sonnet",
+		"credential-ref-anthropic-production",
+		7,
+		"high",
+	)
+
+	_, run, err := authority.CreateAndAssign(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ExecutionBinding().BindingDigest !=
+		input.ExecutionBinding.BindingDigest ||
+		run.ExecutionBinding().ProviderAccountID != "anthropic.production" ||
+		run.ExecutionBinding().CredentialRevision != 7 ||
+		run.ExecutionBinding().ReasoningEffort != "high" {
+		t.Fatalf("Run binding = %#v", run.ExecutionBinding())
+	}
+
+	replayed, err := authority.Snapshot(context.Background())
+	if err != nil || len(replayed.Runs()) != 1 ||
+		replayed.Runs()[0].ExecutionBinding().BindingDigest !=
+			input.ExecutionBinding.BindingDigest ||
+		replayed.Runs()[0].ExecutionBinding().ReasoningEffort != "high" {
+		t.Fatalf("replayed Run binding = %#v, %v", replayed.Runs(), err)
+	}
+
+	changed := input
+	changed.ExecutionBinding = testFrozenExecutionBinding(
+		t,
+		"profile.changed",
+		"openai",
+		"openai.fallback",
+		"gpt-5.5-codex",
+		"credential-ref-openai-fallback",
+		2,
+	)
+	if _, _, err := authority.CreateAndAssign(
+		context.Background(), changed,
+	); !errors.Is(err, ErrRunAuthorityConflict) {
+		t.Fatalf("changed binding retry error = %v", err)
+	}
+
+	tampered := assignment("work-tampered", "run-tampered")
+	tampered.ExecutionBinding = input.ExecutionBinding
+	tampered.ExecutionBinding.CredentialRevision++
+	if _, _, err := authority.CreateAndAssign(
+		context.Background(), tampered,
+	); !errors.Is(err, ErrInvalidRunAuthorityInput) {
+		t.Fatalf("tampered binding error = %v", err)
+	}
+}
+
 func TestClaimRuntimeStatusCapacityAtomicity(t *testing.T) { // s3_w2_claim_runtime_status_capacity_atomicity
 	t.Parallel()
 
@@ -406,13 +468,15 @@ func TestClaimRuntimeStatusCapacityAtomicity(t *testing.T) { // s3_w2_claim_runt
 			)
 		}
 		assertExactJSON(t, runEvents[0].PayloadJSON, map[string]any{
-			"work_item_id": "work-1", "run_id": "run-1",
+			"claim_contract_version": float64(2),
+			"work_item_id":           "work-1", "run_id": "run-1",
 			"claim_id": run.ClaimID(), "claim_generation": float64(1),
 			"runtime_instance_id": "runtime-1", "agent_instance_id": "agent-1",
 			"prepare_lease_expires_at": testNow.Add(time.Minute).Format(time.RFC3339Nano),
 			"runtime_status_stream_id": "runtime_instance:runtime-1",
 			"runtime_status_sequence":  float64(1),
 			"runtime_status_event_id":  "runtime-discovered-runtime-1",
+			"rate_card_status":         "not_configured",
 		})
 		assertExactJSON(t, capacityEvents[0].PayloadJSON, map[string]any{
 			"work_item_id": "work-1", "run_id": "run-1",
@@ -713,6 +777,17 @@ func TestStartTerminalOnceLateGeneration(t *testing.T) { // s3_w2_start_terminal
 		terminalInput := RunTerminalInput{
 			RunGenerationInput: generationInput(running),
 			Status:             "succeeded",
+			Accounting: &RunAccounting{
+				UsageObserved:   true,
+				InputTokens:     120,
+				OutputTokens:    30,
+				CacheReadTokens: 20,
+				TotalTokens:     150,
+				CostObserved:    true,
+				CostMicrounits:  275,
+				CostCurrency:    "USD",
+				CostSource:      CostSourceHarnessReported,
+			},
 		}
 		workItem, terminal, err := authority.CommitTerminal(context.Background(), terminalInput)
 		if err != nil {
@@ -722,6 +797,23 @@ func TestStartTerminalOnceLateGeneration(t *testing.T) { // s3_w2_start_terminal
 			terminal.TerminalStatus() != "succeeded" || terminal.TerminalReason() != "" {
 			t.Fatalf("terminal records: work=%#v run=%#v", workItem, terminal)
 		}
+		accounting, accountingAvailable := terminal.Accounting()
+		if !accountingAvailable || !accounting.UsageObserved ||
+			accounting.TotalTokens != 150 || !accounting.CostObserved ||
+			accounting.CostMicrounits != 275 || accounting.CostCurrency != "USD" ||
+			accounting.CostSource != CostSourceHarnessReported {
+			t.Fatalf("terminal accounting = %#v, %v", accounting, accountingAvailable)
+		}
+		terminalInput.Accounting.CostMicrounits = 999
+		snapshot, err := authority.Snapshot(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		persisted, persistedAvailable := snapshot.Runs()[0].Accounting()
+		if !persistedAvailable || persisted.CostMicrounits != 275 {
+			t.Fatalf("accounting aliased caller input = %#v", persisted)
+		}
+		terminalInput.Accounting.CostMicrounits = 275
 		workEvents, _ := store.ReadStream(context.Background(), "work-item/work-1")
 		runEvents, _ := store.ReadStream(context.Background(), "run/run-1")
 		statusEvents, _ := store.ReadStream(context.Background(), "runtime_instance:runtime-1")
@@ -761,6 +853,13 @@ func TestStartTerminalOnceLateGeneration(t *testing.T) { // s3_w2_start_terminal
 			"claim_id": claimed.ClaimID(), "claim_generation": float64(1),
 			"runtime_instance_id": "runtime-1", "agent_instance_id": "agent-1",
 			"status": "succeeded", "reason": "",
+			"accounting": map[string]any{
+				"usage_observed": true, "input_tokens": float64(120),
+				"output_tokens": float64(30), "cache_read_tokens": float64(20),
+				"cache_write_tokens": float64(0), "total_tokens": float64(150),
+				"cost_observed": true, "cost_microunits": float64(275),
+				"cost_currency": "USD", "cost_source": "harness_reported",
+			},
 			"runtime_status_stream_id": "runtime_instance:runtime-1",
 			"runtime_status_sequence":  float64(1),
 			"runtime_status_event_id":  "runtime-discovered-runtime-1",
@@ -780,8 +879,12 @@ func TestStartTerminalOnceLateGeneration(t *testing.T) { // s3_w2_start_terminal
 			t.Fatalf("terminal retry: work=%#v run=%#v error=%v", retryWork, retryRun, err)
 		}
 		different := terminalInput
-		different.Status = "failed"
-		different.Reason = "late"
+		different.Accounting = &RunAccounting{
+			UsageObserved: true,
+			InputTokens:   120,
+			OutputTokens:  31,
+			TotalTokens:   151,
+		}
 		if workItem, run, err := authority.CommitTerminal(context.Background(), different); !errors.Is(err, ErrRunAlreadyTerminal) {
 			t.Fatalf("different terminal error = %v, want ErrRunAlreadyTerminal", err)
 		} else {
@@ -874,6 +977,30 @@ func TestStartTerminalOnceLateGeneration(t *testing.T) { // s3_w2_start_terminal
 			{RunGenerationInput: generationInput(claimed), Status: "succeeded", Reason: "not empty"},
 			{RunGenerationInput: generationInput(claimed), Status: "failed"},
 			{RunGenerationInput: generationInput(claimed), Status: "cancelled"},
+			{
+				RunGenerationInput: generationInput(claimed), Status: "succeeded",
+				Accounting: &RunAccounting{InputTokens: 1},
+			},
+			{
+				RunGenerationInput: generationInput(claimed), Status: "succeeded",
+				Accounting: &RunAccounting{
+					CostObserved: true, CostMicrounits: 1, CostCurrency: "USD",
+				},
+			},
+			{
+				RunGenerationInput: generationInput(claimed), Status: "succeeded",
+				Accounting: &RunAccounting{
+					CostObserved: true, CostMicrounits: 1, CostCurrency: "USD",
+					CostSource: CostSourceLegacyUnspecified,
+				},
+			},
+			{
+				RunGenerationInput: generationInput(claimed), Status: "succeeded",
+				Accounting: &RunAccounting{
+					CostObserved: true, CostMicrounits: 1, CostCurrency: "USD",
+					CostSource: "unknown",
+				},
+			},
 		} {
 			if workItem, run, err := authority.CommitTerminal(context.Background(), terminal); !errors.Is(err, ErrInvalidRunAuthorityInput) {
 				t.Errorf("terminal %#v error = %v", terminal, err)
@@ -1035,6 +1162,29 @@ func TestRunAuthorityInputSnapshotMutationAndStaticBoundary(t *testing.T) { // s
 			return true
 		})
 	})
+}
+
+func TestReplayRunAccountingCostSourceDistinguishesMissingFromNull(t *testing.T) {
+	base := `{"usage_observed":false,"input_tokens":0,"output_tokens":0,` +
+		`"cache_read_tokens":0,"cache_write_tokens":0,"total_tokens":0,` +
+		`"cost_observed":true,"cost_microunits":1,"cost_currency":"USD"`
+
+	var missing replayRunAccountingPayload
+	if err := json.Unmarshal([]byte(base+`}`), &missing); err != nil || !missing.valid() {
+		t.Fatalf("missing legacy cost source = %#v, %v", missing, err)
+	}
+	accounting, present, valid := missing.accounting()
+	if !valid || present || accounting.CostSource != CostSourceLegacyUnspecified {
+		t.Fatalf("missing legacy accounting = %#v, %t, %t", accounting, present, valid)
+	}
+
+	var nullSource replayRunAccountingPayload
+	if err := json.Unmarshal([]byte(base+`,"cost_source":null}`), &nullSource); err != nil {
+		t.Fatal(err)
+	}
+	if nullSource.valid() {
+		t.Fatalf("null cost source accepted = %#v", nullSource)
+	}
 }
 
 func TestApprovalPauseAndResolutionFenceClaimAndReplayStrictly(t *testing.T) {

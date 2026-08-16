@@ -60,6 +60,82 @@ func (service *LocalProductSetupAPI) ConnectCodex(
 	return backend.ConnectCodex(ctx)
 }
 
+func (service *LocalProductSetupAPI) ConfigureProviderAccountPolicy(
+	ctx context.Context,
+	command app.ProviderAccountPolicyCommand,
+) (app.ProviderAccountPolicyResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.ProviderAccountPolicyResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ConfigureProviderAccountPolicy(
+			context.Context,
+			app.ProviderAccountPolicyCommand,
+		) (app.ProviderAccountPolicyResult, error)
+	})
+	if !ok {
+		return app.ProviderAccountPolicyResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ConfigureProviderAccountPolicy(ctx, command)
+}
+
+func (service *LocalProductSetupAPI) ConfigureProviderModelRateCard(
+	ctx context.Context,
+	command app.ProviderModelRateCardCommand,
+) (app.ProviderModelRateCardResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.ProviderModelRateCardResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ConfigureProviderModelRateCard(
+			context.Context,
+			app.ProviderModelRateCardCommand,
+		) (app.ProviderModelRateCardResult, error)
+	})
+	if !ok {
+		return app.ProviderModelRateCardResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ConfigureProviderModelRateCard(ctx, command)
+}
+
+func (service *LocalProductSetupAPI) ConfigureRemoteToolBackendEnrollment(
+	ctx context.Context,
+	command app.RemoteToolBackendEnrollmentCommand,
+) (app.RemoteToolBackendEnrollmentResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.RemoteToolBackendEnrollmentResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ConfigureRemoteToolBackendEnrollment(
+			context.Context,
+			app.RemoteToolBackendEnrollmentCommand,
+		) (app.RemoteToolBackendEnrollmentResult, error)
+	})
+	if !ok {
+		return app.RemoteToolBackendEnrollmentResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ConfigureRemoteToolBackendEnrollment(ctx, command)
+}
+
+func (service *LocalProductSetupAPI) RevokeRemoteToolBackendEnrollment(
+	ctx context.Context,
+	command app.RemoteToolBackendEnrollmentRevokeCommand,
+) (app.RemoteToolBackendEnrollmentResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.RemoteToolBackendEnrollmentResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		RevokeRemoteToolBackendEnrollment(
+			context.Context,
+			app.RemoteToolBackendEnrollmentRevokeCommand,
+		) (app.RemoteToolBackendEnrollmentResult, error)
+	})
+	if !ok {
+		return app.RemoteToolBackendEnrollmentResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.RevokeRemoteToolBackendEnrollment(ctx, command)
+}
+
 func (service *LocalProductSetupAPI) Close() error {
 	if service == nil || service.backend == nil {
 		return ErrInvalidLocalProductSetupAPI
@@ -289,6 +365,37 @@ func (service *LocalProductSetupAPI) RevokeCredential(
 }
 
 func canonicalSetupSnapshot(input app.SetupSnapshot) app.SetupSnapshot {
+	if input.CredentialVault != nil {
+		vault := *input.CredentialVault
+		input.CredentialVault = &vault
+	}
+	input.Providers = append(
+		[]app.ProviderDirectoryEntry{},
+		input.Providers...,
+	)
+	input.ProviderAccounts = append(
+		[]app.ProviderAccountDirectoryEntry{},
+		input.ProviderAccounts...,
+	)
+	for index := range input.ProviderAccounts {
+		input.ProviderAccounts[index].RateCards = append(
+			[]app.ProviderModelRateCardDirectoryEntry{},
+			input.ProviderAccounts[index].RateCards...,
+		)
+		input.ProviderAccounts[index].RemoteToolBackends = append(
+			[]app.RemoteToolBackendDirectoryEntry{},
+			input.ProviderAccounts[index].RemoteToolBackends...,
+		)
+		for backendIndex := range input.ProviderAccounts[index].RemoteToolBackends {
+			input.ProviderAccounts[index].RemoteToolBackends[backendIndex].AllowedTools = append(
+				[]string{},
+				input.ProviderAccounts[index].RemoteToolBackends[backendIndex].AllowedTools...,
+			)
+		}
+	}
+	input.ConversationProfiles = append(
+		[]app.ConversationProviderProfile{}, input.ConversationProfiles...,
+	)
 	input.Runtimes = append([]app.SetupRuntimePreview{}, input.Runtimes...)
 	for index := range input.Runtimes {
 		input.Runtimes[index].ModelIDs = append(
@@ -326,6 +433,10 @@ func canonicalSetupSnapshot(input app.SetupSnapshot) app.SetupSnapshot {
 		)
 		role.PermissionIDs = append([]string{}, role.PermissionIDs...)
 		role.ResourceIDs = append([]string{}, role.ResourceIDs...)
+		role.RequiredCapabilities = append(
+			[]string{},
+			role.RequiredCapabilities...,
+		)
 	}
 	input.Skills = append([]app.SetupSkillRevision{}, input.Skills...)
 	for index := range input.Skills {
@@ -366,6 +477,10 @@ func canonicalBuilderSession(
 		}
 		role.PermissionIDs = append([]string{}, role.PermissionIDs...)
 		role.ResourceIDs = append([]string{}, role.ResourceIDs...)
+		role.RequiredCapabilities = append(
+			[]string{},
+			role.RequiredCapabilities...,
+		)
 	}
 	input.Preview.Permissions = append(
 		[]string{},

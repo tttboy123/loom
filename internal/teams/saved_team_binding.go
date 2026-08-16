@@ -38,6 +38,7 @@ type SavedTeamRuntimeRoleBinding struct {
 	RuntimeProfileID  string
 	RuntimeInstanceID string
 	Binding           loomruntime.BindingCandidate
+	ExecutionBinding  loomruntime.FrozenExecutionBinding
 }
 
 type SavedTeamRuntimeBindingCandidate struct {
@@ -139,6 +140,10 @@ func BuildSavedTeamRuntimeBinding(
 		if err != nil {
 			return SavedTeamRuntimeBindingCandidate{}, err
 		}
+		executionBinding, err := loomruntime.FreezeExecutionBinding(profile, observation.Instance)
+		if err != nil {
+			return SavedTeamRuntimeBindingCandidate{}, err
+		}
 		if role.Kind == TeamDefinitionRoleMain {
 			materializationUsage[selection.RuntimeInstanceID]++
 		}
@@ -148,6 +153,7 @@ func BuildSavedTeamRuntimeBinding(
 			RuntimeProfileID:  role.RuntimeProfileID,
 			RuntimeInstanceID: selection.RuntimeInstanceID,
 			Binding:           binding,
+			ExecutionBinding:  executionBinding,
 		})
 	}
 	for runtimeID, count := range materializationUsage {
@@ -287,7 +293,7 @@ func normalizeSavedTeamRuntimeBindings(
 			return SavedTeamRuntimeRoleBinding{}, nil, ErrInvalidSavedTeamRuntimeBinding
 		}
 	}
-	if main.AgentDefinitionID == "" || len(subAgents) > 2 {
+	if main.AgentDefinitionID == "" || len(subAgents) > MaxTeamAgentCount-1 {
 		return SavedTeamRuntimeRoleBinding{}, nil, ErrInvalidSavedTeamRuntimeBinding
 	}
 	sort.Slice(subAgents, func(i, j int) bool {
@@ -358,7 +364,34 @@ func digestSavedTeamRuntimeBinding(input SavedTeamRuntimeBindingCandidate) (stri
 }
 
 func cloneSavedTeamRuntimeBinding(input SavedTeamRuntimeBindingCandidate) SavedTeamRuntimeBindingCandidate {
-	input.subAgentBindings = append([]SavedTeamRuntimeRoleBinding(nil), input.subAgentBindings...)
+	input.mainBinding = cloneSavedTeamRuntimeRoleBinding(input.mainBinding)
+	input.subAgentBindings = cloneSavedTeamRuntimeRoleBindings(input.subAgentBindings)
+	return input
+}
+
+func cloneSavedTeamRuntimeRoleBindings(
+	input []SavedTeamRuntimeRoleBinding,
+) []SavedTeamRuntimeRoleBinding {
+	if input == nil {
+		return nil
+	}
+	output := make([]SavedTeamRuntimeRoleBinding, len(input))
+	for index := range input {
+		output[index] = cloneSavedTeamRuntimeRoleBinding(input[index])
+	}
+	return output
+}
+
+func cloneSavedTeamRuntimeRoleBinding(
+	input SavedTeamRuntimeRoleBinding,
+) SavedTeamRuntimeRoleBinding {
+	input.ExecutionBinding.Capabilities = append(
+		[]string(nil), input.ExecutionBinding.Capabilities...,
+	)
+	if input.ExecutionBinding.Budget != nil {
+		budget := *input.ExecutionBinding.Budget
+		input.ExecutionBinding.Budget = &budget
+	}
 	return input
 }
 
@@ -391,11 +424,11 @@ func (c SavedTeamRuntimeBindingCandidate) RuntimeDiscoveryDigest() string {
 }
 
 func (c SavedTeamRuntimeBindingCandidate) MainBinding() SavedTeamRuntimeRoleBinding {
-	return c.mainBinding
+	return cloneSavedTeamRuntimeRoleBinding(c.mainBinding)
 }
 
 func (c SavedTeamRuntimeBindingCandidate) SubAgentBindings() []SavedTeamRuntimeRoleBinding {
-	return append([]SavedTeamRuntimeRoleBinding(nil), c.subAgentBindings...)
+	return cloneSavedTeamRuntimeRoleBindings(c.subAgentBindings)
 }
 
 func (c SavedTeamRuntimeBindingCandidate) RoleCount() int {

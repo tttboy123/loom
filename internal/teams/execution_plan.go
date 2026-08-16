@@ -21,9 +21,16 @@ var (
 
 type ExecutionRole string
 
+type ExecutionNodeKind string
+
 const (
-	ExecutionRoleMain     ExecutionRole = "main"
-	ExecutionRoleSubAgent ExecutionRole = "subagent"
+	ExecutionRoleMain         ExecutionRole     = "main"
+	ExecutionRoleSubAgent     ExecutionRole     = "subagent"
+	ExecutionNodeAgent        ExecutionNodeKind = ""
+	ExecutionNodeRouteSibling ExecutionNodeKind = "route_sibling"
+	ExecutionNodeAggregation  ExecutionNodeKind = "aggregation"
+	MaxTeamAgentCount                           = 9
+	MaxExecutionNodeCount                       = MaxTeamAgentCount * 3
 )
 
 type ExecutionNodeInput struct {
@@ -32,6 +39,8 @@ type ExecutionNodeInput struct {
 	AgentInstanceID        string
 	RuntimeInstanceID      string
 	Role                   ExecutionRole
+	Kind                   ExecutionNodeKind
+	RouteGroupID           string
 	DependsOn              []string
 	MaxAttempts            int
 	AssetRevisionBindings  []assets.ExactAssetRevisionBinding
@@ -49,6 +58,8 @@ type ExecutionNode struct {
 	agentInstanceID        string
 	runtimeInstanceID      string
 	role                   ExecutionRole
+	kind                   ExecutionNodeKind
+	routeGroupID           string
 	dependsOn              []string
 	maxAttempts            int
 	assetRevisionBindings  []assets.ExactAssetRevisionBinding
@@ -58,6 +69,7 @@ type ExecutionNode struct {
 type ExecutionPlan struct {
 	teamInstanceID string
 	nodes          []ExecutionNode
+	agentCount     int
 	digest         string
 }
 
@@ -68,6 +80,15 @@ type ExecutionNodeState struct {
 	RetryAt        time.Time
 }
 
+type InitialExecutionBlock struct {
+	LogicalNodeID       string
+	Code                string
+	Stage               string
+	Reason              string
+	Retryable           bool
+	SourceLogicalNodeID string
+}
+
 type RuntimeCapacityState struct {
 	RuntimeInstanceID string
 	Capacity          int
@@ -76,12 +97,12 @@ type RuntimeCapacityState struct {
 
 func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 	if !validExecutionID(input.TeamInstanceID) ||
-		len(input.Nodes) == 0 || len(input.Nodes) > 3 {
+		len(input.Nodes) == 0 || len(input.Nodes) > MaxExecutionNodeCount {
 		return ExecutionPlan{}, ErrInvalidExecutionPlan
 	}
 	nodes := make([]ExecutionNode, len(input.Nodes))
 	nodeIDs := make(map[string]struct{}, len(input.Nodes))
-	agentIDs := make(map[string]struct{}, len(input.Nodes))
+	agentIDs := make(map[string]struct{}, MaxTeamAgentCount)
 	mainCount := 0
 	for index, raw := range input.Nodes {
 		if !validExecutionID(raw.LogicalNodeID) ||
@@ -89,13 +110,15 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 			!validExecutionID(raw.AgentInstanceID) ||
 			!validExecutionID(raw.RuntimeInstanceID) ||
 			raw.MaxAttempts < 1 || raw.MaxAttempts > 3 ||
-			raw.Role != ExecutionRoleMain && raw.Role != ExecutionRoleSubAgent {
+			raw.Role != ExecutionRoleMain && raw.Role != ExecutionRoleSubAgent ||
+			raw.Kind != ExecutionNodeAgent &&
+				raw.Kind != ExecutionNodeRouteSibling &&
+				raw.Kind != ExecutionNodeAggregation ||
+			raw.Kind == ExecutionNodeAgent && raw.RouteGroupID != "" ||
+			raw.Kind != ExecutionNodeAgent && !validExecutionID(raw.RouteGroupID) {
 			return ExecutionPlan{}, ErrInvalidExecutionPlan
 		}
 		if _, exists := nodeIDs[raw.LogicalNodeID]; exists {
-			return ExecutionPlan{}, ErrInvalidExecutionPlan
-		}
-		if _, exists := agentIDs[raw.AgentInstanceID]; exists {
 			return ExecutionPlan{}, ErrInvalidExecutionPlan
 		}
 		assetBindings := append([]assets.ExactAssetRevisionBinding(nil), raw.AssetRevisionBindings...)
@@ -113,7 +136,10 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 		}
 		nodeIDs[raw.LogicalNodeID] = struct{}{}
 		agentIDs[raw.AgentInstanceID] = struct{}{}
-		if raw.Role == ExecutionRoleMain {
+		if len(agentIDs) > MaxTeamAgentCount {
+			return ExecutionPlan{}, ErrInvalidExecutionPlan
+		}
+		if raw.Role == ExecutionRoleMain && raw.Kind != ExecutionNodeRouteSibling {
 			mainCount++
 		}
 		dependencies := append([]string(nil), raw.DependsOn...)
@@ -131,6 +157,8 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 			agentInstanceID:        raw.AgentInstanceID,
 			runtimeInstanceID:      raw.RuntimeInstanceID,
 			role:                   raw.Role,
+			kind:                   raw.Kind,
+			routeGroupID:           raw.RouteGroupID,
 			dependsOn:              dependencies,
 			maxAttempts:            raw.MaxAttempts,
 			assetRevisionBindings:  assetBindings,
@@ -150,6 +178,9 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 			}
 		}
 	}
+	if !validParallelRouteGroups(nodes) {
+		return ExecutionPlan{}, ErrInvalidExecutionPlan
+	}
 	if executionPlanHasCycle(nodes) {
 		return ExecutionPlan{}, ErrExecutionDependencyCycle
 	}
@@ -167,6 +198,7 @@ func BuildExecutionPlan(input ExecutionPlanInput) (ExecutionPlan, error) {
 	return ExecutionPlan{
 		teamInstanceID: input.TeamInstanceID,
 		nodes:          cloneExecutionNodes(nodes),
+		agentCount:     len(agentIDs),
 		digest:         hex.EncodeToString(digest[:]),
 	}, nil
 }
@@ -224,6 +256,7 @@ func MergeExecutionAssetBindings(
 
 func (plan ExecutionPlan) TeamInstanceID() string { return plan.teamInstanceID }
 func (plan ExecutionPlan) Nodes() []ExecutionNode { return cloneExecutionNodes(plan.nodes) }
+func (plan ExecutionPlan) AgentCount() int        { return plan.agentCount }
 func (plan ExecutionPlan) Digest() string         { return plan.digest }
 
 func (node ExecutionNode) LogicalNodeID() string     { return node.logicalNodeID }
@@ -231,6 +264,8 @@ func (node ExecutionNode) Title() string             { return node.title }
 func (node ExecutionNode) AgentInstanceID() string   { return node.agentInstanceID }
 func (node ExecutionNode) RuntimeInstanceID() string { return node.runtimeInstanceID }
 func (node ExecutionNode) Role() ExecutionRole       { return node.role }
+func (node ExecutionNode) Kind() ExecutionNodeKind   { return node.kind }
+func (node ExecutionNode) RouteGroupID() string      { return node.routeGroupID }
 func (node ExecutionNode) DependsOn() []string       { return append([]string(nil), node.dependsOn...) }
 func (node ExecutionNode) MaxAttempts() int          { return node.maxAttempts }
 func (node ExecutionNode) AssetRevisionBindings() []assets.ExactAssetRevisionBinding {
@@ -320,12 +355,111 @@ func ReadyExecutionNodes(
 	return ready, nil
 }
 
+func PropagateInitialExecutionBlocks(
+	plan ExecutionPlan,
+	direct []InitialExecutionBlock,
+) ([]InitialExecutionBlock, error) {
+	if !validExecutionID(plan.teamInstanceID) || len(plan.nodes) == 0 ||
+		len(plan.digest) != 64 || len(direct) > len(plan.nodes) {
+		return nil, ErrInvalidExecutionState
+	}
+	nodeByID := make(map[string]ExecutionNode, len(plan.nodes))
+	for _, node := range plan.nodes {
+		nodeByID[node.logicalNodeID] = node
+	}
+	initial := append([]InitialExecutionBlock(nil), direct...)
+	sort.Slice(initial, func(i, j int) bool {
+		return initial[i].LogicalNodeID < initial[j].LogicalNodeID
+	})
+	blocked := make(map[string]InitialExecutionBlock, len(plan.nodes))
+	result := make([]InitialExecutionBlock, 0, len(plan.nodes))
+	for index, block := range initial {
+		if !validInitialExecutionBlock(block, false) ||
+			index > 0 && block.LogicalNodeID == initial[index-1].LogicalNodeID {
+			return nil, ErrInvalidExecutionState
+		}
+		if _, exists := nodeByID[block.LogicalNodeID]; !exists {
+			return nil, ErrInvalidExecutionState
+		}
+		blocked[block.LogicalNodeID] = block
+		result = append(result, block)
+	}
+	for {
+		changed := false
+		for _, node := range plan.nodes {
+			if _, exists := blocked[node.logicalNodeID]; exists {
+				continue
+			}
+			for _, dependency := range node.dependsOn {
+				source, exists := blocked[dependency]
+				if !exists {
+					continue
+				}
+				block := InitialExecutionBlock{
+					LogicalNodeID: node.logicalNodeID, Code: "dependency_blocked",
+					Stage:     "agent_attempt_dispatch",
+					Reason:    "A required Agent is blocked.",
+					Retryable: source.Retryable, SourceLogicalNodeID: dependency,
+				}
+				blocked[node.logicalNodeID] = block
+				result = append(result, block)
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return result, nil
+}
+
+func ValidateInitialExecutionBlocks(
+	plan ExecutionPlan,
+	blocks []InitialExecutionBlock,
+) ([]InitialExecutionBlock, error) {
+	direct := make([]InitialExecutionBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Code != "dependency_blocked" {
+			direct = append(direct, block)
+		}
+	}
+	canonical, err := PropagateInitialExecutionBlocks(plan, direct)
+	if err != nil || !equalInitialExecutionBlocks(canonical, blocks) {
+		return nil, ErrInvalidExecutionState
+	}
+	return append([]InitialExecutionBlock(nil), canonical...), nil
+}
+
+func InitialExecutionNodeStates(
+	plan ExecutionPlan,
+	blocks []InitialExecutionBlock,
+) []ExecutionNodeState {
+	blocked := make(map[string]struct{}, len(blocks))
+	for _, block := range blocks {
+		blocked[block.LogicalNodeID] = struct{}{}
+	}
+	states := make([]ExecutionNodeState, 0, len(plan.nodes))
+	for _, node := range plan.nodes {
+		status := "pending"
+		if _, exists := blocked[node.logicalNodeID]; exists {
+			status = "blocked"
+		}
+		states = append(states, ExecutionNodeState{
+			LogicalNodeID: node.logicalNodeID, Status: status,
+		})
+	}
+	return states
+}
+
 type executionNodeJSON struct {
 	LogicalNodeID          string                             `json:"logical_node_id"`
 	Title                  string                             `json:"title"`
 	AgentInstanceID        string                             `json:"agent_instance_id"`
 	RuntimeInstanceID      string                             `json:"runtime_instance_id"`
 	Role                   ExecutionRole                      `json:"role"`
+	Kind                   ExecutionNodeKind                  `json:"kind,omitempty"`
+	RouteGroupID           string                             `json:"route_group_id,omitempty"`
 	DependsOn              []string                           `json:"depends_on"`
 	MaxAttempts            int                                `json:"max_attempts"`
 	AssetRevisionBindings  []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings,omitempty"`
@@ -338,13 +472,112 @@ func executionNodesJSON(nodes []ExecutionNode) []executionNodeJSON {
 		encoded[index] = executionNodeJSON{
 			LogicalNodeID: node.logicalNodeID, Title: node.title,
 			AgentInstanceID: node.agentInstanceID, RuntimeInstanceID: node.runtimeInstanceID,
-			Role: node.role, DependsOn: append([]string(nil), node.dependsOn...),
+			Role: node.role, Kind: node.kind, RouteGroupID: node.routeGroupID,
+			DependsOn:              append([]string(nil), node.dependsOn...),
 			MaxAttempts:            node.maxAttempts,
 			AssetRevisionBindings:  append([]assets.ExactAssetRevisionBinding(nil), node.assetRevisionBindings...),
 			AssetRevisionSetDigest: node.assetRevisionSetDigest,
 		}
 	}
 	return encoded
+}
+
+type executionRouteGroup struct {
+	siblings   []ExecutionNode
+	aggregator *ExecutionNode
+}
+
+func validParallelRouteGroups(nodes []ExecutionNode) bool {
+	groups := make(map[string]*executionRouteGroup)
+	agentNodes := make(map[string][]ExecutionNode)
+	siblingGroupByID := make(map[string]string)
+	for index := range nodes {
+		node := nodes[index]
+		agentNodes[node.agentInstanceID] = append(agentNodes[node.agentInstanceID], node)
+		if node.kind == ExecutionNodeAgent {
+			continue
+		}
+		group := groups[node.routeGroupID]
+		if group == nil {
+			group = &executionRouteGroup{}
+			groups[node.routeGroupID] = group
+		}
+		switch node.kind {
+		case ExecutionNodeRouteSibling:
+			group.siblings = append(group.siblings, node)
+			siblingGroupByID[node.logicalNodeID] = node.routeGroupID
+		case ExecutionNodeAggregation:
+			if group.aggregator != nil {
+				return false
+			}
+			copy := node
+			group.aggregator = &copy
+		default:
+			return false
+		}
+	}
+	for _, related := range agentNodes {
+		if len(related) == 1 {
+			continue
+		}
+		groupID := related[0].routeGroupID
+		if groupID == "" {
+			return false
+		}
+		for _, node := range related {
+			if node.routeGroupID != groupID || node.kind == ExecutionNodeAgent {
+				return false
+			}
+		}
+	}
+	for groupID, group := range groups {
+		if len(group.siblings) < 2 || group.aggregator == nil {
+			return false
+		}
+		aggregator := *group.aggregator
+		siblingIDs := make([]string, 0, len(group.siblings))
+		var commonDependencies []string
+		for index, sibling := range group.siblings {
+			if sibling.agentInstanceID != aggregator.agentInstanceID ||
+				sibling.role != aggregator.role ||
+				sibling.routeGroupID != groupID {
+				return false
+			}
+			if index == 0 {
+				commonDependencies = sibling.dependsOn
+			} else if !equalExecutionStrings(commonDependencies, sibling.dependsOn) {
+				return false
+			}
+			siblingIDs = append(siblingIDs, sibling.logicalNodeID)
+		}
+		sort.Strings(siblingIDs)
+		if !equalExecutionStrings(siblingIDs, aggregator.dependsOn) {
+			return false
+		}
+	}
+	for _, node := range nodes {
+		for _, dependency := range node.dependsOn {
+			groupID, sibling := siblingGroupByID[dependency]
+			if !sibling ||
+				node.kind == ExecutionNodeAggregation && node.routeGroupID == groupID {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func equalExecutionStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func executionPlanHasCycle(nodes []ExecutionNode) bool {
@@ -387,6 +620,51 @@ func validExecutionNodeStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func validInitialExecutionBlock(block InitialExecutionBlock, dependency bool) bool {
+	if !validExecutionID(block.LogicalNodeID) ||
+		!validExecutionToken(block.Code) || !validExecutionToken(block.Stage) ||
+		!validExecutionReason(block.Reason) {
+		return false
+	}
+	if dependency {
+		return block.Code == "dependency_blocked" &&
+			validExecutionID(block.SourceLogicalNodeID) &&
+			block.SourceLogicalNodeID != block.LogicalNodeID
+	}
+	return block.Code != "dependency_blocked" && block.SourceLogicalNodeID == ""
+}
+
+func equalInitialExecutionBlocks(left, right []InitialExecutionBlock) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validExecutionToken(value string) bool {
+	if value == "" || len(value) > 64 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, current := range value {
+		if current != '_' &&
+			(current < 'a' || current > 'z') &&
+			(current < '0' || current > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validExecutionReason(value string) bool {
+	return value != "" && len(value) <= 512 && utf8.ValidString(value) &&
+		strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func validExecutionID(value string) bool {

@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,22 +19,25 @@ import (
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/state"
 	"loom-pi-rebuild/internal/teams"
+	"loom-pi-rebuild/internal/work"
 )
 
 const localProductSetupSchemaVersion = 1
 
 var (
-	ErrInvalidLocalProductSetup     = errors.New("invalid local product setup")
-	ErrBuilderNotFound              = errors.New("builder session not found")
-	ErrBuilderConflict              = errors.New("builder session conflict")
-	ErrBuilderIncompatible          = errors.New("builder configuration incompatible")
-	ErrBuilderConfirmationRequired  = errors.New("builder confirmation required")
-	ErrCredentialSetupUnavailable   = errors.New("credential setup unavailable")
-	ErrNativeAuthConnectUnavailable = errors.New("native auth connection unavailable")
-	ErrNativeAuthConnectBusy        = errors.New("native auth connection busy")
+	ErrInvalidLocalProductSetup              = errors.New("invalid local product setup")
+	ErrBuilderNotFound                       = errors.New("builder session not found")
+	ErrBuilderConflict                       = errors.New("builder session conflict")
+	ErrBuilderIncompatible                   = errors.New("builder configuration incompatible")
+	ErrRemoteToolEnrollmentSelectionRejected = errors.New("remote tool enrollment selection rejected")
+	ErrBuilderConfirmationRequired           = errors.New("builder confirmation required")
+	ErrCredentialSetupUnavailable            = errors.New("credential setup unavailable")
+	ErrNativeAuthConnectUnavailable          = errors.New("native auth connection unavailable")
+	ErrNativeAuthConnectBusy                 = errors.New("native auth connection busy")
 )
 
 type BuilderSource string
@@ -65,6 +72,18 @@ type CredentialStatusSource interface {
 		context.Context,
 		string,
 	) (credentials.MetadataResult, error)
+}
+
+type CredentialAccountStatusSource interface {
+	CredentialAccountStatus(
+		context.Context,
+		string,
+		string,
+	) (credentials.MetadataResult, error)
+}
+
+type CredentialVaultStatusSource interface {
+	CredentialVaultStatus(context.Context) (CredentialVaultStatus, error)
 }
 
 type CredentialMutator interface {
@@ -151,15 +170,19 @@ type LocalProductSetupConfig struct {
 		Rebuild(context.Context) error
 		GlobalReadView() projection.GlobalReadView
 	}
-	Writer              *state.LocalProductSetupWriter
-	Catalog             LocalProductSetupCatalog
-	CatalogSource       SetupCatalogSource
-	Identity            SetupIdentitySource
-	Now                 func() time.Time
-	NativeAuth          NativeAuthObserver
-	NativeAuthConnector NativeAuthConnector
-	Credentials         CredentialStatusSource
-	CredentialMutator   CredentialMutator
+	Writer                       *state.LocalProductSetupWriter
+	Catalog                      LocalProductSetupCatalog
+	CatalogSource                SetupCatalogSource
+	Identity                     SetupIdentitySource
+	Now                          func() time.Time
+	NativeAuth                   NativeAuthObserver
+	NativeAuthConnector          NativeAuthConnector
+	Credentials                  CredentialStatusSource
+	CredentialMutator            CredentialMutator
+	CredentialVault              CredentialVaultStatusSource
+	ProviderAccountPolicies      ProviderAccountPolicyAuthority
+	ProviderModelRateCards       ProviderModelRateCardAuthority
+	RemoteToolBackendEnrollments RemoteToolBackendEnrollmentAuthority
 }
 
 type ProviderSetupStatus struct {
@@ -169,6 +192,106 @@ type ProviderSetupStatus struct {
 	Revision            int64  `json:"revision"`
 	Status              string `json:"status"`
 	Reason              string `json:"reason"`
+}
+
+type ProviderDirectoryEntry struct {
+	ProviderID             string `json:"provider_id"`
+	DisplayName            string `json:"display_name"`
+	Category               string `json:"category"`
+	Protocol               string `json:"protocol"`
+	AuthMode               string `json:"auth_mode"`
+	ConnectionKind         string `json:"connection_kind"`
+	CredentialReference    string `json:"credential_reference"`
+	Revision               int64  `json:"revision"`
+	Status                 string `json:"status"`
+	Reason                 string `json:"reason"`
+	SupportsModelDiscovery bool   `json:"supports_model_discovery"`
+}
+
+type ProviderAccountDirectoryEntry struct {
+	ProviderID                 string                                `json:"provider_id"`
+	ProviderAccountID          string                                `json:"provider_account_id"`
+	AuthMode                   string                                `json:"auth_mode"`
+	CredentialReference        string                                `json:"credential_reference"`
+	Revision                   int64                                 `json:"revision"`
+	Status                     string                                `json:"status"`
+	Reason                     string                                `json:"reason"`
+	PolicyAvailable            bool                                  `json:"policy_available"`
+	PolicyVersion              int                                   `json:"policy_version"`
+	PolicyRevision             int64                                 `json:"policy_revision"`
+	PolicyDigest               string                                `json:"policy_digest"`
+	MaximumConcurrentAttempts  int                                   `json:"maximum_concurrent_attempts"`
+	DispatchWindowSeconds      int64                                 `json:"dispatch_window_seconds"`
+	MaximumDispatchStarts      int                                   `json:"maximum_dispatch_starts"`
+	MaximumAssignedBudgetUnits int64                                 `json:"maximum_assigned_budget_units"`
+	TrustDomain                string                                `json:"trust_domain"`
+	RetentionMode              string                                `json:"retention_mode"`
+	DataRegion                 string                                `json:"data_region"`
+	RateCards                  []ProviderModelRateCardDirectoryEntry `json:"rate_cards"`
+	RemoteToolBackends         []RemoteToolBackendDirectoryEntry     `json:"remote_tool_backends"`
+}
+
+type RemoteToolBackendDirectoryEntry struct {
+	EnrollmentVersion             int      `json:"enrollment_version"`
+	EnrollmentID                  string   `json:"enrollment_id"`
+	BackendKind                   string   `json:"backend_kind"`
+	AdapterID                     string   `json:"adapter_id"`
+	ProviderAccountPolicyVersion  int      `json:"provider_account_policy_version"`
+	ProviderAccountPolicyRevision int64    `json:"provider_account_policy_revision"`
+	ProviderAccountPolicyDigest   string   `json:"provider_account_policy_digest"`
+	PolicyCurrent                 bool     `json:"policy_current"`
+	EndpointFingerprint           string   `json:"endpoint_fingerprint"`
+	MCPServerID                   string   `json:"mcp_server_id"`
+	AllowedTools                  []string `json:"allowed_tools"`
+	Revision                      int64    `json:"revision"`
+	Status                        string   `json:"status"`
+	MaximumConcurrentCalls        int      `json:"maximum_concurrent_calls"`
+	MaximumCallsPerAttempt        int      `json:"maximum_calls_per_attempt"`
+	TimeoutSeconds                int64    `json:"timeout_seconds"`
+	MaximumResultBytes            int      `json:"maximum_result_bytes"`
+	MaximumBudgetUnits            int64    `json:"maximum_budget_units"`
+	ConfiguredAt                  string   `json:"configured_at"`
+	EnrollmentDigest              string   `json:"enrollment_digest"`
+}
+
+type ProviderModelRateCardDirectoryEntry struct {
+	ModelID                        string `json:"model_id"`
+	Revision                       int64  `json:"revision"`
+	RateCardDigest                 string `json:"rate_card_digest"`
+	Currency                       string `json:"currency"`
+	InputTokenBasis                string `json:"input_token_basis"`
+	InputMicrounitsPerMillion      int64  `json:"input_microunits_per_million"`
+	OutputMicrounitsPerMillion     int64  `json:"output_microunits_per_million"`
+	CacheReadMicrounitsPerMillion  int64  `json:"cache_read_microunits_per_million"`
+	CacheWriteMicrounitsPerMillion int64  `json:"cache_write_microunits_per_million"`
+	RoundingMode                   string `json:"rounding_mode"`
+	ConfiguredAt                   string `json:"configured_at"`
+}
+
+type CredentialVaultStatus struct {
+	SchemaVersion             int    `json:"schema_version"`
+	Status                    string `json:"status"`
+	StorageMode               string `json:"storage_mode"`
+	MigrationRequiredAccounts int    `json:"migration_required_accounts"`
+	RecoveryRequiredAccounts  int    `json:"recovery_required_accounts"`
+}
+
+type ConversationProviderProfile struct {
+	ProfileID          string `json:"profile_id"`
+	HarnessAdapter     string `json:"harness_adapter"`
+	ProviderID         string `json:"provider_id"`
+	ProviderAccountID  string `json:"provider_account_id"`
+	DisplayName        string `json:"display_name"`
+	Protocol           string `json:"protocol"`
+	ModelID            string `json:"model_id"`
+	AuthMode           string `json:"auth_mode"`
+	CredentialRevision int64  `json:"credential_revision"`
+	PolicyVersion      int    `json:"policy_version"`
+	PolicyRevision     int64  `json:"policy_revision"`
+	PolicyDigest       string `json:"policy_digest"`
+	TrustDomain        string `json:"trust_domain"`
+	RetentionMode      string `json:"retention_mode"`
+	DataRegion         string `json:"data_region"`
 }
 
 type SetupRuntimePreview struct {
@@ -194,20 +317,48 @@ type SetupSavedTeamPreview struct {
 }
 
 type SetupTeamTemplatePreview = SetupTeamTemplate
-type SetupRoleOptionPreview = SetupRoleOption
+
+type SetupRoleOptionPreview struct {
+	ID                         string   `json:"id"`
+	Kind                       string   `json:"kind"`
+	AgentDefinitionID          string   `json:"agent_definition_id"`
+	RuntimeProfileID           string   `json:"runtime_profile_id"`
+	RuntimeInstanceID          string   `json:"runtime_instance_id"`
+	HarnessAdapter             string   `json:"harness_adapter"`
+	ProviderID                 string   `json:"provider_id"`
+	ProviderAccountID          string   `json:"provider_account_id"`
+	ModelID                    string   `json:"model_id"`
+	AuthMode                   string   `json:"auth_mode"`
+	CredentialRevision         int64    `json:"credential_revision"`
+	ReasoningEffort            string   `json:"reasoning_effort"`
+	TimeoutMilliseconds        int64    `json:"timeout_milliseconds"`
+	BudgetAvailable            bool     `json:"budget_available"`
+	BudgetUnits                int64    `json:"budget_units"`
+	RequiredCapabilities       []string `json:"required_capabilities"`
+	RemoteToolEnrollmentID     string   `json:"remote_tool_enrollment_id,omitempty"`
+	RemoteToolEnrollmentDigest string   `json:"remote_tool_enrollment_digest,omitempty"`
+	SkillRevisionIDs           []string `json:"skill_revision_ids"`
+	PermissionIDs              []string `json:"permission_ids"`
+	ResourceIDs                []string `json:"resource_ids"`
+	Responsibility             string   `json:"responsibility"`
+}
 
 type SetupSnapshot struct {
-	SchemaVersion int                        `json:"schema_version"`
-	ViewVersion   string                     `json:"view_version"`
-	Codex         ProviderSetupStatus        `json:"codex"`
-	MiniMax       ProviderSetupStatus        `json:"minimax"`
-	Runtimes      []SetupRuntimePreview      `json:"runtimes"`
-	SavedTeams    []SetupSavedTeamPreview    `json:"saved_teams"`
-	Templates     []SetupTeamTemplatePreview `json:"templates"`
-	RoleOptions   []SetupRoleOptionPreview   `json:"role_options"`
-	Skills        []SetupSkillRevision       `json:"skills"`
-	Permissions   []string                   `json:"permissions"`
-	Resources     []SetupResourcePointer     `json:"resources"`
+	SchemaVersion        int                             `json:"schema_version"`
+	ViewVersion          string                          `json:"view_version"`
+	Codex                ProviderSetupStatus             `json:"codex"`
+	MiniMax              ProviderSetupStatus             `json:"minimax"`
+	Providers            []ProviderDirectoryEntry        `json:"providers"`
+	ProviderAccounts     []ProviderAccountDirectoryEntry `json:"provider_accounts"`
+	CredentialVault      *CredentialVaultStatus          `json:"credential_vault,omitempty"`
+	ConversationProfiles []ConversationProviderProfile   `json:"conversation_profiles"`
+	Runtimes             []SetupRuntimePreview           `json:"runtimes"`
+	SavedTeams           []SetupSavedTeamPreview         `json:"saved_teams"`
+	Templates            []SetupTeamTemplatePreview      `json:"templates"`
+	RoleOptions          []SetupRoleOptionPreview        `json:"role_options"`
+	Skills               []SetupSkillRevision            `json:"skills"`
+	Permissions          []string                        `json:"permissions"`
+	Resources            []SetupResourcePointer          `json:"resources"`
 }
 
 type BuilderQuestionOption struct {
@@ -221,22 +372,67 @@ type BuilderQuestion struct {
 	Options []BuilderQuestionOption `json:"options"`
 }
 
+type BuilderExecutionRoutePreview struct {
+	RuntimeProfileID           string   `json:"runtime_profile_id"`
+	HarnessAdapter             string   `json:"harness_adapter"`
+	ProviderID                 string   `json:"provider_id"`
+	ProviderAccountID          string   `json:"provider_account_id"`
+	ModelID                    string   `json:"model_id"`
+	AuthMode                   string   `json:"auth_mode"`
+	CredentialRevision         int64    `json:"credential_revision"`
+	ReasoningEffort            string   `json:"reasoning_effort"`
+	TimeoutMilliseconds        int64    `json:"timeout_milliseconds"`
+	BudgetAvailable            bool     `json:"budget_available"`
+	BudgetUnits                int64    `json:"budget_units"`
+	RequiredCapabilities       []string `json:"required_capabilities"`
+	RemoteToolEnrollmentID     string   `json:"remote_tool_enrollment_id,omitempty"`
+	RemoteToolEnrollmentDigest string   `json:"remote_tool_enrollment_digest,omitempty"`
+}
+
 type BuilderRolePreview struct {
-	Kind                string               `json:"kind"`
-	AgentDefinitionID   string               `json:"agent_definition_id"`
-	AgentVersion        int                  `json:"agent_version"`
-	AgentScope          string               `json:"agent_scope"`
-	DisplayName         string               `json:"display_name"`
-	Responsibility      string               `json:"responsibility"`
-	Runtime             SetupRuntimePreview  `json:"runtime"`
-	RuntimeProfileID    string               `json:"runtime_profile_id"`
-	ModelID             string               `json:"model_id"`
-	AuthMode            string               `json:"auth_mode"`
-	Skills              []SetupSkillRevision `json:"skills"`
-	PermissionIDs       []string             `json:"permission_ids"`
-	ResourceIDs         []string             `json:"resource_ids"`
-	Compatible          bool                 `json:"compatible"`
-	CompatibilityReason string               `json:"compatibility_reason"`
+	Kind                         string                         `json:"kind"`
+	AgentDefinitionID            string                         `json:"agent_definition_id"`
+	AgentVersion                 int                            `json:"agent_version"`
+	AgentScope                   string                         `json:"agent_scope"`
+	DisplayName                  string                         `json:"display_name"`
+	Responsibility               string                         `json:"responsibility"`
+	Runtime                      SetupRuntimePreview            `json:"runtime"`
+	RuntimeProfileID             string                         `json:"runtime_profile_id"`
+	HarnessAdapter               string                         `json:"harness_adapter"`
+	ProviderID                   string                         `json:"provider_id"`
+	ProviderAccountID            string                         `json:"provider_account_id"`
+	ModelID                      string                         `json:"model_id"`
+	AuthMode                     string                         `json:"auth_mode"`
+	CredentialRevision           int64                          `json:"credential_revision"`
+	ReasoningEffort              string                         `json:"reasoning_effort"`
+	TimeoutMilliseconds          int64                          `json:"timeout_milliseconds"`
+	BudgetAvailable              bool                           `json:"budget_available"`
+	BudgetUnits                  int64                          `json:"budget_units"`
+	RequiredCapabilities         []string                       `json:"required_capabilities"`
+	RemoteToolEnrollmentID       string                         `json:"remote_tool_enrollment_id,omitempty"`
+	RemoteToolEnrollmentDigest   string                         `json:"remote_tool_enrollment_digest,omitempty"`
+	FallbackConfigured           bool                           `json:"fallback_configured"`
+	FallbackRuntimeProfileID     string                         `json:"fallback_runtime_profile_id"`
+	FallbackHarnessAdapter       string                         `json:"fallback_harness_adapter"`
+	FallbackProviderID           string                         `json:"fallback_provider_id"`
+	FallbackProviderAccountID    string                         `json:"fallback_provider_account_id"`
+	FallbackModelID              string                         `json:"fallback_model_id"`
+	FallbackAuthMode             string                         `json:"fallback_auth_mode"`
+	FallbackCredentialRevision   int64                          `json:"fallback_credential_revision"`
+	FallbackReasoningEffort      string                         `json:"fallback_reasoning_effort"`
+	FallbackTimeoutMilliseconds  int64                          `json:"fallback_timeout_milliseconds"`
+	FallbackBudgetAvailable      bool                           `json:"fallback_budget_available"`
+	FallbackBudgetUnits          int64                          `json:"fallback_budget_units"`
+	FallbackRequiredCapabilities []string                       `json:"fallback_required_capabilities"`
+	FallbackApprovalRequired     bool                           `json:"fallback_approval_required"`
+	ParallelRouteSetVersion      int                            `json:"parallel_route_set_version"`
+	ParallelRoutes               []BuilderExecutionRoutePreview `json:"parallel_routes"`
+	SynthesisRoute               BuilderExecutionRoutePreview   `json:"synthesis_route"`
+	Skills                       []SetupSkillRevision           `json:"skills"`
+	PermissionIDs                []string                       `json:"permission_ids"`
+	ResourceIDs                  []string                       `json:"resource_ids"`
+	Compatible                   bool                           `json:"compatible"`
+	CompatibilityReason          string                         `json:"compatibility_reason"`
 }
 
 type BuilderPreview struct {
@@ -282,12 +478,13 @@ type BuilderAnswerCommand struct {
 }
 
 type BuilderEditCommand struct {
-	DraftID          string `json:"draft_id"`
-	ExpectedRevision int    `json:"expected_revision"`
-	CatalogDigest    string `json:"catalog_digest"`
-	ViewVersion      string `json:"view_version"`
-	Field            string `json:"field"`
-	Value            string `json:"value"`
+	DraftID               string `json:"draft_id"`
+	ExpectedRevision      int    `json:"expected_revision"`
+	CatalogDigest         string `json:"catalog_digest"`
+	ViewVersion           string `json:"view_version"`
+	Field                 string `json:"field"`
+	Value                 string `json:"value"`
+	RoleAgentDefinitionID string `json:"role_agent_definition_id,omitempty"`
 }
 
 type BuilderValidateCommand struct {
@@ -325,6 +522,7 @@ type TeamStatusCommand struct {
 
 type CredentialSetupCommand struct {
 	ProviderID          string `json:"provider_id"`
+	ProviderAccountID   string `json:"provider_account_id,omitempty"`
 	CredentialReference string `json:"credential_reference"`
 	ExpectedRevision    int64  `json:"expected_revision"`
 	OperationID         string `json:"operation_id,omitempty"`
@@ -345,18 +543,24 @@ type ProviderConnectResult struct {
 }
 
 type localProductBuilderSession struct {
-	view          BuilderSessionView
-	catalog       LocalProductSetupCatalog
-	domainCatalog teams.TeamDraftCatalogSnapshot
-	name          string
-	purpose       string
-	mainRoleID    string
-	subRoleIDs    []string
-	structured    teams.StructuredTeamDraft
-	hasStructured bool
-	sourceID      string
-	sourceVersion int
-	sourceDigest  string
+	view                     BuilderSessionView
+	catalog                  LocalProductSetupCatalog
+	domainCatalog            teams.TeamDraftCatalogSnapshot
+	name                     string
+	purpose                  string
+	mainRoleID               string
+	subRoleIDs               []string
+	mainFallbackRoleID       string
+	subagentFallbackRoleIDs  map[string]string
+	mainParallelRoleIDs      []string
+	subagentParallelRoleIDs  map[string][]string
+	mainSynthesisRoleID      string
+	subagentSynthesisRoleIDs map[string]string
+	structured               teams.StructuredTeamDraft
+	hasStructured            bool
+	sourceID                 string
+	sourceVersion            int
+	sourceDigest             string
 }
 
 type LocalProductSetupService struct {
@@ -365,16 +569,20 @@ type LocalProductSetupService struct {
 		Rebuild(context.Context) error
 		GlobalReadView() projection.GlobalReadView
 	}
-	writer              *state.LocalProductSetupWriter
-	catalog             LocalProductSetupCatalog
-	domainCatalog       teams.TeamDraftCatalogSnapshot
-	catalogSource       SetupCatalogSource
-	identity            SetupIdentitySource
-	now                 func() time.Time
-	nativeAuth          NativeAuthObserver
-	nativeAuthConnector NativeAuthConnector
-	credentials         CredentialStatusSource
-	credentialMutator   CredentialMutator
+	writer                       *state.LocalProductSetupWriter
+	catalog                      LocalProductSetupCatalog
+	domainCatalog                teams.TeamDraftCatalogSnapshot
+	catalogSource                SetupCatalogSource
+	identity                     SetupIdentitySource
+	now                          func() time.Time
+	nativeAuth                   NativeAuthObserver
+	nativeAuthConnector          NativeAuthConnector
+	credentials                  CredentialStatusSource
+	credentialMutator            CredentialMutator
+	credentialVault              CredentialVaultStatusSource
+	providerAccountPolicies      ProviderAccountPolicyAuthority
+	providerModelRateCards       ProviderModelRateCardAuthority
+	remoteToolBackendEnrollments RemoteToolBackendEnrollmentAuthority
 
 	mu       sync.Mutex
 	sessions map[string]*localProductBuilderSession
@@ -401,19 +609,23 @@ func NewLocalProductSetupService(
 		return nil, err
 	}
 	return &LocalProductSetupService{
-		journal:             config.Journal,
-		projection:          config.Projection,
-		writer:              config.Writer,
-		catalog:             cloneSetupCatalog(config.Catalog),
-		domainCatalog:       domainCatalog,
-		catalogSource:       config.CatalogSource,
-		identity:            config.Identity,
-		now:                 config.Now,
-		nativeAuth:          config.NativeAuth,
-		nativeAuthConnector: config.NativeAuthConnector,
-		credentials:         config.Credentials,
-		credentialMutator:   config.CredentialMutator,
-		sessions:            make(map[string]*localProductBuilderSession),
+		journal:                      config.Journal,
+		projection:                   config.Projection,
+		writer:                       config.Writer,
+		catalog:                      cloneSetupCatalog(config.Catalog),
+		domainCatalog:                domainCatalog,
+		catalogSource:                config.CatalogSource,
+		identity:                     config.Identity,
+		now:                          config.Now,
+		nativeAuth:                   config.NativeAuth,
+		nativeAuthConnector:          config.NativeAuthConnector,
+		credentials:                  config.Credentials,
+		credentialMutator:            config.CredentialMutator,
+		credentialVault:              config.CredentialVault,
+		providerAccountPolicies:      config.ProviderAccountPolicies,
+		providerModelRateCards:       config.ProviderModelRateCards,
+		remoteToolBackendEnrollments: config.RemoteToolBackendEnrollments,
+		sessions:                     make(map[string]*localProductBuilderSession),
 	}, nil
 }
 
@@ -563,6 +775,23 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			StreamHead:       streamHead.Sequence,
 		})
 	}
+	providers := service.providerDirectory(ctx, auth)
+	providerAccounts := setupProviderAccountDirectory(
+		ctx, view, service.credentials,
+	)
+	var credentialVault *CredentialVaultStatus
+	if service.credentialVault != nil {
+		vaultStatus, statusErr := service.credentialVault.CredentialVaultStatus(ctx)
+		if statusErr != nil || !closedCredentialVaultStatus(vaultStatus) {
+			vaultStatus = CredentialVaultStatus{
+				SchemaVersion: 1,
+				Status:        "recovery_required",
+				StorageMode:   "local_key_file",
+			}
+		}
+		vaultStatus = setupCredentialVaultStatus(vaultStatus, providerAccounts)
+		credentialVault = &vaultStatus
+	}
 	return cloneSetupSnapshot(SetupSnapshot{
 		SchemaVersion: localProductSetupSchemaVersion,
 		ViewVersion:   view.Version(),
@@ -572,15 +801,367 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			Status:     auth.Status,
 			Reason:     auth.Reason,
 		},
-		MiniMax:     miniMax,
-		Runtimes:    setupRuntimePreviews(catalog),
-		SavedTeams:  saved,
-		Templates:   append([]SetupTeamTemplate{}, catalog.Templates...),
-		RoleOptions: append([]SetupRoleOption{}, catalog.RoleOptions...),
-		Skills:      append([]SetupSkillRevision{}, catalog.SkillRevisions...),
-		Permissions: append([]string{}, catalog.Permissions...),
-		Resources:   append([]SetupResourcePointer{}, catalog.Resources...),
+		MiniMax:              miniMax,
+		Providers:            providers,
+		ProviderAccounts:     providerAccounts,
+		CredentialVault:      credentialVault,
+		ConversationProfiles: setupConversationProfiles(auth, providers, providerAccounts),
+		Runtimes:             setupRuntimePreviews(catalog),
+		SavedTeams:           saved,
+		Templates:            append([]SetupTeamTemplate{}, catalog.Templates...),
+		RoleOptions:          setupRoleOptionPreviews(catalog),
+		Skills:               append([]SetupSkillRevision{}, catalog.SkillRevisions...),
+		Permissions:          append([]string{}, catalog.Permissions...),
+		Resources:            append([]SetupResourcePointer{}, catalog.Resources...),
 	}), nil
+}
+
+func setupCredentialVaultStatus(
+	base CredentialVaultStatus,
+	accounts []ProviderAccountDirectoryEntry,
+) CredentialVaultStatus {
+	status := base
+	status.MigrationRequiredAccounts = 0
+	status.RecoveryRequiredAccounts = 0
+	for _, account := range accounts {
+		switch account.Status {
+		case "migration_required":
+			status.MigrationRequiredAccounts++
+		case "recovery_required":
+			status.RecoveryRequiredAccounts++
+		}
+	}
+	if base.Status == "locked" {
+		status.Status = "locked"
+	} else if base.Status == "recovery_required" ||
+		status.RecoveryRequiredAccounts > 0 {
+		status.Status = "recovery_required"
+	} else if base.Status == "migration_required" ||
+		status.MigrationRequiredAccounts > 0 {
+		status.Status = "migration_required"
+	} else {
+		status.Status = "unlocked"
+	}
+	return status
+}
+
+func closedCredentialVaultStatus(status CredentialVaultStatus) bool {
+	if status.SchemaVersion != 1 ||
+		status.MigrationRequiredAccounts < 0 ||
+		status.RecoveryRequiredAccounts < 0 {
+		return false
+	}
+	switch status.StorageMode {
+	case "local_key_file", "passphrase", "external":
+	default:
+		return false
+	}
+	switch status.Status {
+	case "unlocked", "locked", "migration_required", "recovery_required":
+		return true
+	default:
+		return false
+	}
+}
+
+func setupProviderAccountDirectory(
+	ctx context.Context,
+	view projection.GlobalReadView,
+	statusSource CredentialStatusSource,
+) []ProviderAccountDirectoryEntry {
+	result := make([]ProviderAccountDirectoryEntry, 0)
+	accountStatus, hasAccountStatus := statusSource.(CredentialAccountStatusSource)
+	for _, descriptor := range provider.Catalog() {
+		for _, record := range view.ProviderAccountCredentials(descriptor.ID) {
+			if hasAccountStatus {
+				status, err := accountStatus.CredentialAccountStatus(
+					ctx, record.ProviderID, record.ProviderAccountID,
+				)
+				if err == nil &&
+					status.CredentialReference == record.CredentialReference &&
+					status.Revision == record.Revision &&
+					closedCredentialStatus(
+						string(status.Status), string(status.Reason),
+					) {
+					record.Status = string(status.Status)
+					record.Reason = string(status.Reason)
+				}
+			}
+			entry := ProviderAccountDirectoryEntry{
+				ProviderID: record.ProviderID, ProviderAccountID: record.ProviderAccountID,
+				AuthMode: record.AuthMode, CredentialReference: record.CredentialReference,
+				Revision: record.Revision, Status: record.Status, Reason: record.Reason,
+			}
+			if policy, ok := view.ProviderAccountPolicy(
+				record.ProviderID, record.ProviderAccountID,
+			); ok {
+				entry.PolicyAvailable = true
+				entry.PolicyVersion = policy.Version()
+				entry.PolicyRevision = policy.Revision()
+				entry.PolicyDigest = policy.Digest()
+				entry.MaximumConcurrentAttempts = policy.MaximumConcurrentAttempts()
+				entry.DispatchWindowSeconds = int64(policy.DispatchWindow() / time.Second)
+				entry.MaximumDispatchStarts = policy.MaximumDispatchStarts()
+				entry.MaximumAssignedBudgetUnits = policy.MaximumAssignedBudgetUnits()
+				entry.TrustDomain = policy.TrustDomain()
+				entry.RetentionMode = policy.RetentionMode()
+				entry.DataRegion = policy.DataRegion()
+			}
+			for _, rateCard := range view.ProviderModelRateCards(
+				record.ProviderID, record.ProviderAccountID,
+			) {
+				entry.RateCards = append(entry.RateCards, providerModelRateCardDirectoryEntry(rateCard))
+			}
+			if entry.RateCards == nil {
+				entry.RateCards = []ProviderModelRateCardDirectoryEntry{}
+			}
+			for _, enrollment := range view.RemoteToolBackendEnrollments(
+				record.ProviderID, record.ProviderAccountID,
+			) {
+				policy, policyAvailable := view.ProviderAccountPolicy(
+					record.ProviderID, record.ProviderAccountID,
+				)
+				entry.RemoteToolBackends = append(
+					entry.RemoteToolBackends,
+					remoteToolBackendDirectoryEntry(
+						enrollment,
+						policyAvailable && remoteToolBackendEnrollmentUsesPolicy(enrollment, policy),
+					),
+				)
+			}
+			if entry.RemoteToolBackends == nil {
+				entry.RemoteToolBackends = []RemoteToolBackendDirectoryEntry{}
+			}
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
+// openCodeConversationDefaultModel returns the first OpenCode model whose
+// Provider has a verified Loom account (for example deepseek/deepseek-chat when
+// only DeepSeek is verified), falling back to the catalog default. This keeps
+// the App's out-of-the-box conversation usable instead of defaulting to a model
+// whose Provider credential is not configured.
+func openCodeConversationDefaultModel(
+	accounts map[string]ProviderAccountDirectoryEntry,
+) string {
+	for _, model := range provider.ProviderConversationModels("opencode") {
+		providerID, _, ok := strings.Cut(model.ID, "/")
+		if !ok {
+			continue
+		}
+		if _, exists := accounts[providerID+".primary"]; exists {
+			return model.ID
+		}
+	}
+	return provider.OpenCodeConversationDefaultModel
+}
+
+func setupConversationProfiles(
+	auth NativeAuthObservation,
+	providers []ProviderDirectoryEntry,
+	providerAccounts []ProviderAccountDirectoryEntry,
+) []ConversationProviderProfile {
+	accounts := make(map[string]ProviderAccountDirectoryEntry, len(providerAccounts))
+	for _, entry := range providerAccounts {
+		if entry.Status != "verified" || entry.Reason != "" || entry.Revision <= 0 ||
+			entry.AuthMode != "brokered" ||
+			!credentials.ValidProviderAccountIdentifier(
+				entry.ProviderID, entry.ProviderAccountID,
+			) {
+			continue
+		}
+		accounts[entry.ProviderAccountID] = entry
+	}
+	for _, entry := range providers {
+		if entry.Status != "verified" || entry.Reason != "" || entry.Revision <= 0 {
+			continue
+		}
+		accountID := entry.ProviderID + ".primary"
+		if _, exists := accounts[accountID]; !exists {
+			accounts[accountID] = ProviderAccountDirectoryEntry{
+				ProviderID: entry.ProviderID, ProviderAccountID: accountID,
+				AuthMode: entry.AuthMode, Revision: entry.Revision,
+				Status: entry.Status, Reason: entry.Reason,
+			}
+		}
+	}
+	profiles := make([]ConversationProviderProfile, 0, 1+len(providerAccounts))
+	if auth.Status == "available" && auth.AuthMode == "native_auth" {
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.CodexConversationProfileID,
+			HarnessAdapter: "codex", ProviderID: "openai", DisplayName: "Codex",
+			Protocol: "openai_responses", ModelID: "codex-default",
+			AuthMode: "native_auth",
+		})
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.OpenCodeConversationProfileID,
+			HarnessAdapter: "opencode", ProviderID: "opencode", DisplayName: "OpenCode",
+			Protocol: "opencode_agent", ModelID: openCodeConversationDefaultModel(accounts),
+			AuthMode: "native_auth",
+		})
+	}
+	ordered := make([]ProviderAccountDirectoryEntry, 0, len(accounts))
+	for _, entry := range accounts {
+		ordered = append(ordered, entry)
+	}
+	providerOrder := make(map[string]int)
+	for index, descriptor := range provider.Catalog() {
+		providerOrder[descriptor.ID] = index
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		leftOrder, leftKnown := providerOrder[ordered[left].ProviderID]
+		rightOrder, rightKnown := providerOrder[ordered[right].ProviderID]
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return ordered[left].ProviderAccountID < ordered[right].ProviderAccountID
+	})
+	for _, entry := range ordered {
+		profile := ConversationProviderProfile{
+			HarnessAdapter: "loom-native", ProviderID: entry.ProviderID,
+			ProviderAccountID: entry.ProviderAccountID,
+			Protocol:          "openai_compatible",
+			AuthMode:          "brokered", CredentialRevision: entry.Revision,
+			PolicyVersion: entry.PolicyVersion, PolicyRevision: entry.PolicyRevision,
+			PolicyDigest: entry.PolicyDigest, TrustDomain: entry.TrustDomain,
+			RetentionMode: entry.RetentionMode, DataRegion: entry.DataRegion,
+		}
+		switch entry.ProviderID {
+		case "anthropic":
+			profile.ProfileID = provider.AnthropicConversationAccountProfileID(
+				entry.ProviderAccountID, entry.Revision,
+			)
+			profile.DisplayName = "Anthropic"
+			profile.Protocol = "anthropic_messages"
+			profile.ModelID = provider.AnthropicConversationModelID
+		case "deepseek":
+			profile.ProfileID = provider.DeepSeekConversationAccountProfileID(
+				entry.ProviderAccountID, entry.Revision,
+			)
+			profile.DisplayName = "DeepSeek"
+			profile.ModelID = provider.DeepSeekConversationModelID
+		case "kimi":
+			profile.ProfileID = provider.KimiConversationAccountProfileID(
+				entry.ProviderAccountID, entry.Revision,
+			)
+			profile.DisplayName = "Kimi"
+			profile.ModelID = provider.KimiConversationModelID
+		case "minimax":
+			profile.ProfileID = provider.MiniMaxConversationAccountProfileID(
+				entry.ProviderAccountID, entry.Revision,
+			)
+			profile.DisplayName = "MiniMax"
+			profile.ModelID = provider.MiniMaxConversationModelID
+		default:
+			continue
+		}
+		if profile.ProfileID == "" {
+			continue
+		}
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID: profile.ProfileID, HarnessAdapter: profile.HarnessAdapter,
+			ProviderID: profile.ProviderID, ProviderAccountID: profile.ProviderAccountID,
+			DisplayName: profile.DisplayName, Protocol: profile.Protocol,
+			ModelID: profile.ModelID, AuthMode: profile.AuthMode,
+			CredentialRevision: profile.CredentialRevision,
+			PolicyVersion:      profile.PolicyVersion, PolicyRevision: profile.PolicyRevision,
+			PolicyDigest: profile.PolicyDigest, TrustDomain: profile.TrustDomain,
+			RetentionMode: profile.RetentionMode, DataRegion: profile.DataRegion,
+		})
+	}
+	return profiles
+}
+
+func setupRoleOptionPreviews(
+	catalog LocalProductSetupCatalog,
+) []SetupRoleOptionPreview {
+	profiles := make(map[string]loomruntime.RuntimeProfile, len(catalog.RuntimeProfiles))
+	for _, profile := range catalog.RuntimeProfiles {
+		profiles[profile.ID] = profile
+	}
+	result := make([]SetupRoleOptionPreview, 0, len(catalog.RoleOptions))
+	for _, option := range catalog.RoleOptions {
+		profile, ok := profiles[option.RuntimeProfileID]
+		if !ok {
+			continue
+		}
+		budgetAvailable := profile.Budget != nil
+		budgetUnits := int64(0)
+		if profile.Budget != nil {
+			budgetUnits = *profile.Budget
+		}
+		result = append(result, SetupRoleOptionPreview{
+			ID: option.ID, Kind: option.Kind,
+			AgentDefinitionID:          option.AgentDefinitionID,
+			RuntimeProfileID:           option.RuntimeProfileID,
+			RuntimeInstanceID:          option.RuntimeInstanceID,
+			HarnessAdapter:             profile.AdapterType,
+			ProviderID:                 profile.ProviderID,
+			ProviderAccountID:          profile.ProviderAccountID,
+			ModelID:                    profile.ModelID,
+			AuthMode:                   string(profile.AuthMode),
+			CredentialRevision:         profile.CredentialRevision,
+			ReasoningEffort:            profile.ReasoningEffort,
+			TimeoutMilliseconds:        profile.Timeout.Milliseconds(),
+			BudgetAvailable:            budgetAvailable,
+			BudgetUnits:                budgetUnits,
+			RequiredCapabilities:       append([]string{}, profile.RequiredCapabilities...),
+			RemoteToolEnrollmentID:     profile.RemoteToolEnrollmentID,
+			RemoteToolEnrollmentDigest: profile.RemoteToolEnrollmentDigest,
+			SkillRevisionIDs:           append([]string{}, option.SkillRevisionIDs...),
+			PermissionIDs:              append([]string{}, option.PermissionIDs...),
+			ResourceIDs:                append([]string{}, option.ResourceIDs...),
+			Responsibility:             option.Responsibility,
+		})
+	}
+	return result
+}
+
+func (service *LocalProductSetupService) providerDirectory(
+	ctx context.Context,
+	auth NativeAuthObservation,
+) []ProviderDirectoryEntry {
+	catalog := provider.Catalog()
+	entries := make([]ProviderDirectoryEntry, 0, len(catalog))
+	for _, descriptor := range catalog {
+		entry := ProviderDirectoryEntry{
+			ProviderID:             descriptor.ID,
+			DisplayName:            descriptor.DisplayName,
+			Category:               descriptor.Category,
+			Protocol:               descriptor.Protocol,
+			AuthMode:               descriptor.AuthMode,
+			ConnectionKind:         descriptor.ConnectionKind,
+			Status:                 "unconfigured",
+			SupportsModelDiscovery: descriptor.SupportsModelDiscovery,
+		}
+		switch descriptor.ConnectionKind {
+		case "native_runtime":
+			entry.Status = auth.Status
+			entry.Reason = auth.Reason
+		case "managed_cloud":
+			entry.Status = "external_setup_required"
+		case "local_runtime":
+			entry.Status = "not_detected"
+		case "custom_endpoint":
+			entry.Status = "endpoint_required"
+		default:
+			status, err := service.credentials.CredentialStatus(ctx, descriptor.ID)
+			if err == nil && status.ProviderID == descriptor.ID &&
+				closedCredentialStatus(string(status.Status), string(status.Reason)) {
+				entry.CredentialReference = status.CredentialReference
+				entry.Revision = status.Revision
+				entry.Status = string(status.Status)
+				entry.Reason = string(status.Reason)
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func (service *LocalProductSetupService) StartBuilder(
@@ -612,8 +1193,11 @@ func (service *LocalProductSetupService) StartBuilder(
 			Question:      emptyBuilderQuestion(),
 			Preview:       emptyBuilderPreview(),
 		},
-		catalog:       catalog,
-		domainCatalog: domainCatalog,
+		catalog:                  catalog,
+		domainCatalog:            domainCatalog,
+		subagentFallbackRoleIDs:  make(map[string]string),
+		subagentParallelRoleIDs:  make(map[string][]string),
+		subagentSynthesisRoleIDs: make(map[string]string),
 	}
 	scoped := service.withSessionCatalog(session)
 	switch command.Source {
@@ -653,6 +1237,7 @@ func (service *LocalProductSetupService) StartBuilder(
 		if err := scoped.loadSavedTeamSession(session, command); err != nil {
 			return BuilderSessionView{}, err
 		}
+		scoped = service.withSessionCatalog(session)
 		if err := scoped.initializeStructuredSession(session); err != nil {
 			return BuilderSessionView{}, err
 		}
@@ -774,19 +1359,230 @@ func (service *LocalProductSetupService) EditBuilder(
 	}
 	switch command.Field {
 	case "team_name":
+		if command.RoleAgentDefinitionID != "" {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
 		session.name = command.Value
 	case "purpose":
+		if command.RoleAgentDefinitionID != "" {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
 		session.purpose = command.Value
 	case "main_role":
+		if command.RoleAgentDefinitionID != "" {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
 		if !scoped.validRoleChoice(command.Value, "main") {
 			return BuilderSessionView{}, ErrInvalidLocalProductSetup
 		}
 		session.mainRoleID = command.Value
+		session.mainParallelRoleIDs = nil
+		session.mainSynthesisRoleID = ""
+		if !scoped.validFallbackRoleChoice(
+			session, "main", "", session.mainFallbackRoleID,
+		) {
+			session.mainFallbackRoleID = ""
+		}
 	case "subagent_role":
 		if !scoped.validRoleChoice(command.Value, "subagent") {
 			return BuilderSessionView{}, ErrInvalidLocalProductSetup
 		}
-		session.subRoleIDs = []string{command.Value}
+		_, index, err := scoped.builderRoleSelection(
+			session, "subagent", command.RoleAgentDefinitionID,
+		)
+		if err != nil {
+			return BuilderSessionView{}, err
+		}
+		choice, _ := scoped.setupRole(command.Value)
+		for peerIndex, roleID := range session.subRoleIDs {
+			if peerIndex == index {
+				continue
+			}
+			peer, ok := scoped.setupRole(roleID)
+			if ok && peer.AgentDefinitionID == choice.AgentDefinitionID {
+				return BuilderSessionView{}, ErrInvalidLocalProductSetup
+			}
+		}
+		delete(session.subagentFallbackRoleIDs, command.RoleAgentDefinitionID)
+		delete(session.subagentParallelRoleIDs, command.RoleAgentDefinitionID)
+		delete(session.subagentSynthesisRoleIDs, command.RoleAgentDefinitionID)
+		session.subRoleIDs[index] = command.Value
+	case "subagent_add":
+		if command.RoleAgentDefinitionID != "" ||
+			len(session.subRoleIDs) >= teams.MaxTeamAgentCount-1 ||
+			!scoped.validRoleChoice(command.Value, "subagent") {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
+		choice, _ := scoped.setupRole(command.Value)
+		for _, roleID := range session.subRoleIDs {
+			current, ok := scoped.setupRole(roleID)
+			if ok && current.AgentDefinitionID == choice.AgentDefinitionID {
+				return BuilderSessionView{}, ErrInvalidLocalProductSetup
+			}
+		}
+		session.subRoleIDs = append(session.subRoleIDs, command.Value)
+	case "subagent_remove":
+		if len(session.subRoleIDs) <= 1 || command.RoleAgentDefinitionID == "" {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
+		_, index, err := scoped.builderRoleSelection(
+			session, "subagent", command.RoleAgentDefinitionID,
+		)
+		if err != nil {
+			return BuilderSessionView{}, err
+		}
+		delete(session.subagentFallbackRoleIDs, command.RoleAgentDefinitionID)
+		delete(session.subagentParallelRoleIDs, command.RoleAgentDefinitionID)
+		delete(session.subagentSynthesisRoleIDs, command.RoleAgentDefinitionID)
+		session.subRoleIDs = append(
+			session.subRoleIDs[:index], session.subRoleIDs[index+1:]...,
+		)
+	case "main_fallback_role", "subagent_fallback_role":
+		kind := strings.TrimSuffix(command.Field, "_fallback_role")
+		if len(service.builderParallelRoleIDs(
+			session, kind, command.RoleAgentDefinitionID,
+		)) != 0 {
+			return BuilderSessionView{}, ErrBuilderIncompatible
+		}
+		if command.Value == "none" {
+			service.setBuilderFallbackRole(
+				session, kind, command.RoleAgentDefinitionID, "",
+			)
+			break
+		}
+		if !scoped.validFallbackRoleChoice(
+			session, kind, command.RoleAgentDefinitionID, command.Value,
+		) {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
+		service.setBuilderFallbackRole(
+			session, kind, command.RoleAgentDefinitionID, command.Value,
+		)
+	case "main_parallel_route_add", "subagent_parallel_route_add":
+		kind := strings.TrimSuffix(command.Field, "_parallel_route_add")
+		if service.builderFallbackRoleID(
+			session, kind, command.RoleAgentDefinitionID,
+		) != "" {
+			return BuilderSessionView{}, ErrBuilderIncompatible
+		}
+		if err := scoped.addBuilderParallelRole(
+			session, kind, command.RoleAgentDefinitionID, command.Value,
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+	case "main_parallel_route_remove", "subagent_parallel_route_remove":
+		kind := strings.TrimSuffix(command.Field, "_parallel_route_remove")
+		if err := scoped.removeBuilderParallelRole(
+			session, kind, command.RoleAgentDefinitionID, command.Value,
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+	case "main_harness_route", "subagent_harness_route",
+		"main_provider_account_route", "subagent_provider_account_route":
+		kind := "main"
+		if strings.HasPrefix(command.Field, "subagent_") {
+			kind = "subagent"
+		}
+		if err := service.adoptBuilderRoleExecutionRoute(
+			session, kind, command.RoleAgentDefinitionID,
+			command.Field, command.Value,
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+		scoped = service.withSessionCatalog(session)
+		fallbackRoleID := service.builderFallbackRoleID(
+			session, kind, command.RoleAgentDefinitionID,
+		)
+		if !scoped.validFallbackRoleChoice(
+			session, kind, command.RoleAgentDefinitionID, fallbackRoleID,
+		) {
+			service.setBuilderFallbackRole(
+				session, kind, command.RoleAgentDefinitionID, "",
+			)
+		}
+	case "main_reasoning_effort", "subagent_reasoning_effort":
+		kind := strings.TrimSuffix(command.Field, "_reasoning_effort")
+		effort := command.Value
+		if effort == "provider_default" {
+			effort = ""
+		}
+		if err := service.customizeBuilderRoleProfile(
+			session,
+			kind,
+			command.RoleAgentDefinitionID,
+			func(profile *loomruntime.RuntimeProfile) error {
+				profile.ReasoningEffort = effort
+				return nil
+			},
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+		scoped = service.withSessionCatalog(session)
+	case "main_model", "subagent_model":
+		kind := strings.TrimSuffix(command.Field, "_model")
+		if err := service.customizeBuilderRoleProfile(
+			session,
+			kind,
+			command.RoleAgentDefinitionID,
+			func(profile *loomruntime.RuntimeProfile) error {
+				profile.ModelID = command.Value
+				return nil
+			},
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+		scoped = service.withSessionCatalog(session)
+	case "main_timeout_seconds", "subagent_timeout_seconds":
+		kind := strings.TrimSuffix(command.Field, "_timeout_seconds")
+		seconds, parseErr := strconv.ParseInt(command.Value, 10, 64)
+		if parseErr != nil || seconds < 1 || seconds > 3_600 {
+			return BuilderSessionView{}, ErrInvalidLocalProductSetup
+		}
+		if err := service.customizeBuilderRoleProfile(
+			session,
+			kind,
+			command.RoleAgentDefinitionID,
+			func(profile *loomruntime.RuntimeProfile) error {
+				profile.Timeout = time.Duration(seconds) * time.Second
+				return nil
+			},
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+		scoped = service.withSessionCatalog(session)
+	case "main_budget_units", "subagent_budget_units":
+		kind := strings.TrimSuffix(command.Field, "_budget_units")
+		if err := service.customizeBuilderRoleProfile(
+			session,
+			kind,
+			command.RoleAgentDefinitionID,
+			func(profile *loomruntime.RuntimeProfile) error {
+				if command.Value == "none" {
+					profile.Budget = nil
+					return nil
+				}
+				units, parseErr := strconv.ParseInt(command.Value, 10, 64)
+				if parseErr != nil || units < 0 || units > 1_000_000_000 {
+					return ErrInvalidLocalProductSetup
+				}
+				profile.Budget = &units
+				return nil
+			},
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+		scoped = service.withSessionCatalog(session)
+	case "main_remote_tool_enrollment", "subagent_remote_tool_enrollment":
+		kind := strings.TrimSuffix(command.Field, "_remote_tool_enrollment")
+		if err := service.selectBuilderRoleRemoteToolEnrollment(
+			session,
+			kind,
+			command.RoleAgentDefinitionID,
+			command.Value,
+		); err != nil {
+			return BuilderSessionView{}, err
+		}
+		scoped = service.withSessionCatalog(session)
 	default:
 		return BuilderSessionView{}, ErrInvalidLocalProductSetup
 	}
@@ -809,6 +1605,590 @@ func (service *LocalProductSetupService) EditBuilder(
 	session.view.Question = emptyBuilderQuestion()
 	scoped.refreshBuilderView(session)
 	return cloneBuilderSessionView(session.view), nil
+}
+
+func (service *LocalProductSetupService) adoptBuilderRoleExecutionRoute(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	field string,
+	sourceRoleID string,
+) error {
+	if session == nil || (kind != "main" && kind != "subagent") {
+		return ErrInvalidLocalProductSetup
+	}
+	isHarnessRoute := field == kind+"_harness_route"
+	isProviderAccountRoute := field == kind+"_provider_account_route"
+	if !isHarnessRoute && !isProviderAccountRoute {
+		return ErrInvalidLocalProductSetup
+	}
+	currentRoleID, roleIndex, err := service.builderRoleSelection(
+		session, kind, roleAgentDefinitionID,
+	)
+	if err != nil {
+		return err
+	}
+	scoped := service.withSessionCatalog(session)
+	current, currentOK := scoped.setupRole(currentRoleID)
+	source, sourceOK := scoped.setupRole(sourceRoleID)
+	if !currentOK || !sourceOK || source.Kind != kind ||
+		current.Kind != kind ||
+		source.AgentDefinitionID != current.AgentDefinitionID {
+		return ErrInvalidLocalProductSetup
+	}
+	currentProfile, currentProfileOK := scoped.setupRuntimeProfile(
+		current.RuntimeProfileID,
+	)
+	sourceProfile, sourceProfileOK := scoped.setupRuntimeProfile(
+		source.RuntimeProfileID,
+	)
+	sourceObservation, sourceObservationOK := scoped.setupRuntimeObservation(
+		source.RuntimeInstanceID,
+	)
+	if !currentProfileOK || !sourceProfileOK || !sourceObservationOK ||
+		!containsSetupString(sourceObservation.ModelIDs, sourceProfile.ModelID) {
+		return ErrBuilderIncompatible
+	}
+	if _, err := loomruntime.FreezeExecutionBinding(
+		sourceProfile, sourceObservation.Instance,
+	); err != nil {
+		return ErrBuilderIncompatible
+	}
+	if isProviderAccountRoute &&
+		(sourceProfile.AdapterType != currentProfile.AdapterType ||
+			source.RuntimeInstanceID != current.RuntimeInstanceID) {
+		return ErrBuilderIncompatible
+	}
+	if isHarnessRoute &&
+		(sourceProfile.ProviderID != currentProfile.ProviderID ||
+			sourceProfile.ProviderAccountID != currentProfile.ProviderAccountID ||
+			sourceProfile.AuthMode != currentProfile.AuthMode ||
+			sourceProfile.EndpointFingerprint != currentProfile.EndpointFingerprint ||
+			sourceProfile.CredentialReference != currentProfile.CredentialReference ||
+			sourceProfile.CredentialRevision != currentProfile.CredentialRevision ||
+			sourceProfile.ModelID != currentProfile.ModelID) {
+		return ErrBuilderIncompatible
+	}
+
+	profile := currentProfile
+	runtimeInstanceID := current.RuntimeInstanceID
+	if isHarnessRoute {
+		profile.AdapterType = sourceProfile.AdapterType
+		runtimeInstanceID = source.RuntimeInstanceID
+	} else {
+		profile.ProviderID = sourceProfile.ProviderID
+		profile.ProviderAccountID = sourceProfile.ProviderAccountID
+		profile.AuthMode = sourceProfile.AuthMode
+		profile.EndpointFingerprint = sourceProfile.EndpointFingerprint
+		profile.CredentialReference = sourceProfile.CredentialReference
+		profile.CredentialRevision = sourceProfile.CredentialRevision
+		profile.ModelID = sourceProfile.ModelID
+		// A Provider Account route change invalidates any Enrollment bound
+		// to the previous account; the selection must be made again.
+		profile.RemoteToolEnrollmentID = ""
+		profile.RemoteToolEnrollmentDigest = ""
+	}
+	targetObservation, targetObservationOK := scoped.setupRuntimeObservation(
+		runtimeInstanceID,
+	)
+	if !targetObservationOK ||
+		!containsSetupString(targetObservation.ModelIDs, profile.ModelID) {
+		return ErrBuilderIncompatible
+	}
+	profile.ID = ""
+	profileIdentity, err := json.Marshal(struct {
+		Domain            string
+		Kind              string
+		AgentDefinitionID string
+		RuntimeInstanceID string
+		Profile           loomruntime.RuntimeProfile
+	}{
+		Domain: "loom.builder-agent-route.v2", Kind: kind,
+		AgentDefinitionID: current.AgentDefinitionID,
+		RuntimeInstanceID: runtimeInstanceID,
+		Profile:           profile,
+	})
+	if err != nil {
+		return ErrInvalidLocalProductSetup
+	}
+	profileDigest := sha256.Sum256(profileIdentity)
+	suffix := hex.EncodeToString(profileDigest[:12])
+	profile.ID = "loom-profile-" + suffix
+	profile, err = loomruntime.NewRuntimeProfile(profile)
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	if _, err := loomruntime.FreezeExecutionBinding(
+		profile, targetObservation.Instance,
+	); err != nil {
+		return ErrBuilderIncompatible
+	}
+
+	custom := cloneSetupRoleOption(current)
+	custom.ID = "loom-role-" + kind + "-" + suffix
+	custom.RuntimeProfileID = profile.ID
+	custom.RuntimeInstanceID = runtimeInstanceID
+
+	candidate := cloneSetupCatalog(session.catalog)
+	removeProfileID := current.RuntimeProfileID
+	if !strings.HasPrefix(removeProfileID, "loom-profile-") {
+		removeProfileID = ""
+	}
+	profiles := make(
+		[]loomruntime.RuntimeProfile,
+		0,
+		len(candidate.RuntimeProfiles)+1,
+	)
+	for _, existing := range candidate.RuntimeProfiles {
+		if existing.ID != removeProfileID && existing.ID != profile.ID {
+			profiles = append(profiles, existing)
+		}
+	}
+	candidate.RuntimeProfiles = append(profiles, profile)
+	options := make([]SetupRoleOption, 0, len(candidate.RoleOptions)+1)
+	for _, option := range candidate.RoleOptions {
+		if option.ID != custom.ID &&
+			(option.ID != current.ID ||
+				!strings.HasPrefix(current.ID, "loom-role-"+kind+"-")) {
+			options = append(options, option)
+		}
+	}
+	candidate.RoleOptions = append(options, custom)
+	if err := validateSetupCatalog(candidate); err != nil {
+		return ErrBuilderIncompatible
+	}
+	domainCatalog, err := buildSetupDomainCatalog(candidate)
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	session.catalog = candidate
+	session.domainCatalog = domainCatalog
+	if kind == "main" {
+		session.mainRoleID = custom.ID
+	} else {
+		session.subRoleIDs[roleIndex] = custom.ID
+	}
+	return nil
+}
+
+func (service *LocalProductSetupService) selectBuilderRoleRemoteToolEnrollment(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	value string,
+) error {
+	if session == nil || (kind != "main" && kind != "subagent") ||
+		!validSetupText(value, 512) {
+		return ErrInvalidLocalProductSetup
+	}
+	roleID, _, err := service.builderRoleSelection(
+		session, kind, roleAgentDefinitionID,
+	)
+	if err != nil {
+		return err
+	}
+	scoped := service.withSessionCatalog(session)
+	option, ok := scoped.setupRole(roleID)
+	if !ok {
+		return ErrBuilderIncompatible
+	}
+	profile, ok := scoped.setupRuntimeProfile(option.RuntimeProfileID)
+	if !ok {
+		return ErrBuilderIncompatible
+	}
+	if value == "none" {
+		if profile.RemoteToolEnrollmentID == "" {
+			return nil
+		}
+		return service.customizeBuilderRoleProfile(
+			session, kind, roleAgentDefinitionID,
+			func(candidate *loomruntime.RuntimeProfile) error {
+				candidate.RemoteToolEnrollmentID = ""
+				candidate.RemoteToolEnrollmentDigest = ""
+				return nil
+			},
+		)
+	}
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) != 2 || !validRemoteToolBackendEnrollmentSelectionSyntax(
+		parts[0], parts[1],
+	) {
+		return ErrInvalidLocalProductSetup
+	}
+	enrollment, ok := service.authoritativeRemoteToolEnrollment(
+		profile.ProviderID, profile.ProviderAccountID, parts[0],
+	)
+	if !ok {
+		return ErrRemoteToolEnrollmentSelectionRejected
+	}
+	policy, policyOK := service.projection.GlobalReadView().ProviderAccountPolicy(
+		profile.ProviderID, profile.ProviderAccountID,
+	)
+	if enrollment.Status() != work.RemoteToolBackendEnrollmentActive ||
+		!policyOK ||
+		!remoteToolBackendEnrollmentUsesPolicy(enrollment, policy) ||
+		enrollment.Digest() != parts[1] ||
+		!work.BuiltInRemoteToolBackendCatalog().RemoteToolBackendAdapterSupported(
+			enrollment.AdapterID(),
+		) {
+		return ErrRemoteToolEnrollmentSelectionRejected
+	}
+	return service.customizeBuilderRoleProfile(
+		session, kind, roleAgentDefinitionID,
+		func(candidate *loomruntime.RuntimeProfile) error {
+			candidate.RemoteToolEnrollmentID = enrollment.EnrollmentID()
+			candidate.RemoteToolEnrollmentDigest = enrollment.Digest()
+			return nil
+		},
+	)
+}
+
+func (service *LocalProductSetupService) authoritativeRemoteToolEnrollment(
+	providerID string,
+	providerAccountID string,
+	enrollmentID string,
+) (work.RemoteToolBackendEnrollment, bool) {
+	if service == nil || service.projection == nil {
+		return work.RemoteToolBackendEnrollment{}, false
+	}
+	for _, enrollment := range service.projection.GlobalReadView().RemoteToolBackendEnrollments(
+		providerID, providerAccountID,
+	) {
+		if enrollment.EnrollmentID() == enrollmentID && enrollment.Valid() {
+			return enrollment, true
+		}
+	}
+	return work.RemoteToolBackendEnrollment{}, false
+}
+
+func validRemoteToolBackendEnrollmentSelectionSyntax(enrollmentID string, digest string) bool {
+	return validSetupText(enrollmentID, 128) &&
+		len(digest) == 64 &&
+		digest == strings.ToLower(digest)
+}
+
+func (service *LocalProductSetupService) customizeBuilderRoleProfile(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	mutate func(*loomruntime.RuntimeProfile) error,
+) error {
+	if session == nil || mutate == nil ||
+		(kind != "main" && kind != "subagent") {
+		return ErrInvalidLocalProductSetup
+	}
+	roleID, roleIndex, err := service.builderRoleSelection(
+		session, kind, roleAgentDefinitionID,
+	)
+	if err != nil {
+		return err
+	}
+	scoped := service.withSessionCatalog(session)
+	option, ok := scoped.setupRole(roleID)
+	if !ok {
+		return ErrBuilderIncompatible
+	}
+	profile, ok := scoped.setupRuntimeProfile(option.RuntimeProfileID)
+	if !ok || mutate(&profile) != nil {
+		return ErrInvalidLocalProductSetup
+	}
+	observation, ok := scoped.setupRuntimeObservation(option.RuntimeInstanceID)
+	if !ok || !containsSetupString(observation.ModelIDs, profile.ModelID) {
+		return ErrBuilderIncompatible
+	}
+	profile.ID = ""
+	digestInput, err := json.Marshal(struct {
+		Kind              string
+		AgentDefinitionID string
+		RuntimeInstanceID string
+		Profile           loomruntime.RuntimeProfile
+	}{kind, option.AgentDefinitionID, option.RuntimeInstanceID, profile})
+	if err != nil {
+		return ErrInvalidLocalProductSetup
+	}
+	digest := sha256.Sum256(digestInput)
+	suffix := hex.EncodeToString(digest[:12])
+	profile.ID = "loom-profile-" + suffix
+	profile, err = loomruntime.NewRuntimeProfile(profile)
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	if _, err := loomruntime.FreezeExecutionBinding(profile, observation.Instance); err != nil {
+		return ErrBuilderIncompatible
+	}
+	customOption := cloneSetupRoleOption(option)
+	customOption.ID = "loom-role-" + kind + "-" + suffix
+	customOption.RuntimeProfileID = profile.ID
+	removeProfileID := option.RuntimeProfileID
+	if !strings.HasPrefix(removeProfileID, "loom-profile-") {
+		removeProfileID = ""
+	}
+	removeOptionID := option.ID
+	if !strings.HasPrefix(removeOptionID, "loom-role-"+kind+"-") {
+		removeOptionID = ""
+	}
+	profiles := make([]loomruntime.RuntimeProfile, 0, len(session.catalog.RuntimeProfiles)+1)
+	for _, current := range session.catalog.RuntimeProfiles {
+		if current.ID != removeProfileID && current.ID != profile.ID {
+			profiles = append(profiles, current)
+		}
+	}
+	session.catalog.RuntimeProfiles = append(profiles, profile)
+	options := make([]SetupRoleOption, 0, len(session.catalog.RoleOptions)+1)
+	for _, current := range session.catalog.RoleOptions {
+		if current.ID != removeOptionID && current.ID != customOption.ID {
+			options = append(options, current)
+		}
+	}
+	session.catalog.RoleOptions = append(options, customOption)
+	if kind == "main" {
+		session.mainRoleID = customOption.ID
+	} else {
+		session.subRoleIDs[roleIndex] = customOption.ID
+	}
+	return nil
+}
+
+func (service *LocalProductSetupService) builderRoleSelection(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+) (string, int, error) {
+	if session == nil {
+		return "", -1, ErrInvalidLocalProductSetup
+	}
+	if kind == "main" {
+		if roleAgentDefinitionID != "" {
+			return "", -1, ErrInvalidLocalProductSetup
+		}
+		return session.mainRoleID, -1, nil
+	}
+	if kind != "subagent" || roleAgentDefinitionID == "" {
+		return "", -1, ErrInvalidLocalProductSetup
+	}
+	matchedIndex := -1
+	scoped := service.withSessionCatalog(session)
+	for index, roleID := range session.subRoleIDs {
+		option, ok := scoped.setupRole(roleID)
+		if !ok || option.AgentDefinitionID != roleAgentDefinitionID {
+			continue
+		}
+		if matchedIndex >= 0 {
+			return "", -1, ErrBuilderIncompatible
+		}
+		matchedIndex = index
+	}
+	if matchedIndex < 0 {
+		return "", -1, ErrInvalidLocalProductSetup
+	}
+	return session.subRoleIDs[matchedIndex], matchedIndex, nil
+}
+
+func (service *LocalProductSetupService) setBuilderFallbackRole(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	roleID string,
+) {
+	if kind == "main" {
+		if roleAgentDefinitionID != "" {
+			return
+		}
+		session.mainFallbackRoleID = roleID
+	} else if kind == "subagent" && roleAgentDefinitionID != "" {
+		if session.subagentFallbackRoleIDs == nil {
+			session.subagentFallbackRoleIDs = make(map[string]string)
+		}
+		if roleID == "" {
+			delete(session.subagentFallbackRoleIDs, roleAgentDefinitionID)
+		} else {
+			session.subagentFallbackRoleIDs[roleAgentDefinitionID] = roleID
+		}
+	}
+}
+
+func (service *LocalProductSetupService) builderFallbackRoleID(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+) string {
+	if session == nil {
+		return ""
+	}
+	if kind == "main" {
+		if roleAgentDefinitionID != "" {
+			return ""
+		}
+		return session.mainFallbackRoleID
+	}
+	if kind == "subagent" {
+		return session.subagentFallbackRoleIDs[roleAgentDefinitionID]
+	}
+	return ""
+}
+
+func (service *LocalProductSetupService) builderParallelRoleIDs(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+) []string {
+	if session == nil {
+		return nil
+	}
+	if kind == "main" && roleAgentDefinitionID == "" {
+		return append([]string(nil), session.mainParallelRoleIDs...)
+	}
+	if kind == "subagent" && roleAgentDefinitionID != "" {
+		return append(
+			[]string(nil),
+			session.subagentParallelRoleIDs[roleAgentDefinitionID]...,
+		)
+	}
+	return nil
+}
+
+func (service *LocalProductSetupService) builderSynthesisRoleID(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+) string {
+	if session == nil {
+		return ""
+	}
+	if kind == "main" && roleAgentDefinitionID == "" {
+		return session.mainSynthesisRoleID
+	}
+	if kind == "subagent" && roleAgentDefinitionID != "" {
+		return session.subagentSynthesisRoleIDs[roleAgentDefinitionID]
+	}
+	return ""
+}
+
+func (service *LocalProductSetupService) setBuilderParallelRoles(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	roleIDs []string,
+	synthesisRoleID string,
+) {
+	roleIDs = append([]string(nil), roleIDs...)
+	sort.Strings(roleIDs)
+	if kind == "main" && roleAgentDefinitionID == "" {
+		session.mainParallelRoleIDs = roleIDs
+		session.mainSynthesisRoleID = synthesisRoleID
+		return
+	}
+	if kind != "subagent" || roleAgentDefinitionID == "" {
+		return
+	}
+	if session.subagentParallelRoleIDs == nil {
+		session.subagentParallelRoleIDs = make(map[string][]string)
+	}
+	if session.subagentSynthesisRoleIDs == nil {
+		session.subagentSynthesisRoleIDs = make(map[string]string)
+	}
+	if len(roleIDs) == 0 {
+		delete(session.subagentParallelRoleIDs, roleAgentDefinitionID)
+		delete(session.subagentSynthesisRoleIDs, roleAgentDefinitionID)
+		return
+	}
+	session.subagentParallelRoleIDs[roleAgentDefinitionID] = roleIDs
+	session.subagentSynthesisRoleIDs[roleAgentDefinitionID] = synthesisRoleID
+}
+
+func (service *LocalProductSetupService) addBuilderParallelRole(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	roleID string,
+) error {
+	if !service.validFallbackRoleChoice(
+		session, kind, roleAgentDefinitionID, roleID,
+	) {
+		return ErrBuilderIncompatible
+	}
+	roleIDs := service.builderParallelRoleIDs(
+		session, kind, roleAgentDefinitionID,
+	)
+	if len(roleIDs) >= 2 || containsSetupString(roleIDs, roleID) {
+		return ErrInvalidLocalProductSetup
+	}
+	primaryRoleID, _, err := service.builderRoleSelection(
+		session, kind, roleAgentDefinitionID,
+	)
+	if err != nil {
+		return err
+	}
+	roleIDs = append(roleIDs, roleID)
+	service.setBuilderParallelRoles(
+		session, kind, roleAgentDefinitionID, roleIDs, primaryRoleID,
+	)
+	return nil
+}
+
+func (service *LocalProductSetupService) removeBuilderParallelRole(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	roleID string,
+) error {
+	roleIDs := service.builderParallelRoleIDs(
+		session, kind, roleAgentDefinitionID,
+	)
+	index := -1
+	for currentIndex, current := range roleIDs {
+		if current == roleID {
+			index = currentIndex
+			break
+		}
+	}
+	if index < 0 {
+		return ErrInvalidLocalProductSetup
+	}
+	roleIDs = append(roleIDs[:index], roleIDs[index+1:]...)
+	synthesisRoleID := service.builderSynthesisRoleID(
+		session, kind, roleAgentDefinitionID,
+	)
+	if len(roleIDs) == 0 {
+		synthesisRoleID = ""
+	}
+	service.setBuilderParallelRoles(
+		session, kind, roleAgentDefinitionID, roleIDs, synthesisRoleID,
+	)
+	return nil
+}
+
+func (service *LocalProductSetupService) validFallbackRoleChoice(
+	session *localProductBuilderSession,
+	kind string,
+	roleAgentDefinitionID string,
+	fallbackRoleID string,
+) bool {
+	if fallbackRoleID == "" {
+		return true
+	}
+	primaryRoleID, _, err := service.builderRoleSelection(
+		session, kind, roleAgentDefinitionID,
+	)
+	if err != nil {
+		return false
+	}
+	primary, primaryOK := service.setupRole(primaryRoleID)
+	fallback, fallbackOK := service.setupRole(fallbackRoleID)
+	if !primaryOK || !fallbackOK || primary.ID == fallback.ID ||
+		primary.Kind != kind || fallback.Kind != kind ||
+		primary.AgentDefinitionID != fallback.AgentDefinitionID ||
+		primary.RuntimeProfileID == fallback.RuntimeProfileID {
+		return false
+	}
+	profile, profileOK := service.setupRuntimeProfile(fallback.RuntimeProfileID)
+	observation, observationOK := service.setupRuntimeObservation(fallback.RuntimeInstanceID)
+	if !profileOK || !observationOK ||
+		!containsSetupString(observation.ModelIDs, profile.ModelID) {
+		return false
+	}
+	_, err = loomruntime.FreezeExecutionBinding(profile, observation.Instance)
+	return err == nil
 }
 
 func (service *LocalProductSetupService) ValidateBuilder(
@@ -991,9 +2371,15 @@ func (service *LocalProductSetupService) ConfigureCredential(
 	command CredentialSetupCommand,
 ) (CredentialSetupResult, error) {
 	defer clearSetupBytes(command.Secret)
+	providerAccountID := setupProviderAccountID(
+		command.ProviderID, command.ProviderAccountID,
+	)
 	if service == nil ||
 		ctx == nil ||
-		command.ProviderID != "minimax" ||
+		!provider.SupportsBrokeredCredential(command.ProviderID) ||
+		!credentials.ValidProviderAccountIdentifier(
+			command.ProviderID, providerAccountID,
+		) ||
 		command.CredentialReference != "" ||
 		command.OperationID != "" ||
 		len(command.Secret) == 0 ||
@@ -1013,7 +2399,8 @@ func (service *LocalProductSetupService) ConfigureCredential(
 		ctx,
 		credentials.CredentialCommand{
 			CommandID:           commandID,
-			ProviderID:          "minimax",
+			ProviderID:          command.ProviderID,
+			ProviderAccountID:   providerAccountID,
 			CredentialReference: reference,
 			ExpectedRevision:    command.ExpectedRevision,
 			OccurredAt:          service.now().UTC(),
@@ -1050,9 +2437,15 @@ func (service *LocalProductSetupService) mutateCredential(
 	command CredentialSetupCommand,
 	action string,
 ) (CredentialSetupResult, error) {
+	providerAccountID := setupProviderAccountID(
+		command.ProviderID, command.ProviderAccountID,
+	)
 	if service == nil ||
 		ctx == nil ||
-		command.ProviderID != "minimax" ||
+		!provider.SupportsBrokeredCredential(command.ProviderID) ||
+		!credentials.ValidProviderAccountIdentifier(
+			command.ProviderID, providerAccountID,
+		) ||
 		!validSetupCredentialReference(command.CredentialReference) ||
 		command.ExpectedRevision <= 0 ||
 		service.credentialMutator == nil {
@@ -1081,7 +2474,8 @@ func (service *LocalProductSetupService) mutateCredential(
 	}
 	brokerCommand := credentials.CredentialCommand{
 		CommandID:           commandID,
-		ProviderID:          "minimax",
+		ProviderID:          command.ProviderID,
+		ProviderAccountID:   providerAccountID,
 		CredentialReference: command.CredentialReference,
 		ExpectedRevision:    command.ExpectedRevision,
 		OccurredAt:          service.now().UTC(),
@@ -1099,6 +2493,13 @@ func (service *LocalProductSetupService) mutateCredential(
 		return CredentialSetupResult{}, ErrCredentialSetupUnavailable
 	}
 	return setupCredentialResult(result, err)
+}
+
+func setupProviderAccountID(providerID, providerAccountID string) string {
+	if providerAccountID == "" && providerID != "" {
+		return providerID + ".primary"
+	}
+	return providerAccountID
 }
 
 func (service *LocalProductSetupService) setTeamStatus(
@@ -1308,7 +2709,7 @@ func validateSetupCatalog(catalog LocalProductSetupCatalog) error {
 			!observationOK {
 			return ErrInvalidLocalProductSetup
 		}
-		if _, err := loomruntime.ValidateBinding(
+		if _, err := loomruntime.FreezeExecutionBinding(
 			profile,
 			observation.Instance,
 		); err != nil ||
@@ -1552,11 +2953,73 @@ func (service *LocalProductSetupService) refreshBuilderView(
 		len(session.view.Preview.CompatibilityGaps) == 0
 	if session.hasStructured {
 		session.view.ContentDigest = session.structured.ContentDigest()
-		session.view.BindingDigest = session.structured.BindingDigest()
+		session.view.BindingDigest = service.builderBindingDigest(session)
 	}
 	if session.view.Question.Options == nil {
 		session.view.Question.Options = []BuilderQuestionOption{}
 	}
+}
+
+func (service *LocalProductSetupService) builderBindingDigest(
+	session *localProductBuilderSession,
+) string {
+	base := session.structured.BindingDigest()
+	if session.mainFallbackRoleID == "" && len(session.subagentFallbackRoleIDs) == 0 &&
+		len(session.mainParallelRoleIDs) == 0 &&
+		len(session.subagentParallelRoleIDs) == 0 {
+		return base
+	}
+	type route struct {
+		Kind               string   `json:"kind"`
+		PrimaryRoleID      string   `json:"primary_role_id"`
+		FallbackRoleID     string   `json:"fallback_role_id,omitempty"`
+		Approval           bool     `json:"approval_required,omitempty"`
+		ParallelRoleIDs    []string `json:"parallel_role_ids,omitempty"`
+		SynthesisRoleID    string   `json:"synthesis_role_id,omitempty"`
+		ParallelSetVersion int      `json:"parallel_set_version,omitempty"`
+	}
+	routes := make([]route, 0, 1+len(session.subRoleIDs))
+	if session.mainFallbackRoleID != "" {
+		routes = append(routes, route{
+			Kind: "main", PrimaryRoleID: session.mainRoleID,
+			FallbackRoleID: session.mainFallbackRoleID, Approval: true,
+		})
+	} else if len(session.mainParallelRoleIDs) > 0 {
+		routes = append(routes, route{
+			Kind: "main", PrimaryRoleID: session.mainRoleID,
+			ParallelRoleIDs: append([]string(nil), session.mainParallelRoleIDs...),
+			SynthesisRoleID: session.mainSynthesisRoleID, ParallelSetVersion: 1,
+		})
+	}
+	for _, primaryRoleID := range session.subRoleIDs {
+		primary, ok := service.setupRole(primaryRoleID)
+		if !ok {
+			continue
+		}
+		if fallbackRoleID := session.subagentFallbackRoleIDs[primary.AgentDefinitionID]; fallbackRoleID != "" {
+			routes = append(routes, route{
+				Kind: "subagent", PrimaryRoleID: primaryRoleID,
+				FallbackRoleID: fallbackRoleID, Approval: true,
+			})
+		} else if parallelRoleIDs := session.subagentParallelRoleIDs[primary.AgentDefinitionID]; len(parallelRoleIDs) > 0 {
+			routes = append(routes, route{
+				Kind: "subagent", PrimaryRoleID: primaryRoleID,
+				ParallelRoleIDs:    append([]string(nil), parallelRoleIDs...),
+				SynthesisRoleID:    session.subagentSynthesisRoleIDs[primary.AgentDefinitionID],
+				ParallelSetVersion: 1,
+			})
+		}
+	}
+	encoded, err := json.Marshal(struct {
+		Domain string  `json:"domain"`
+		Base   string  `json:"base_binding_digest"`
+		Routes []route `json:"routes"`
+	}{"loom.builder-route-set.v2", base, routes})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func (service *LocalProductSetupService) buildBuilderPreview(
@@ -1595,7 +3058,7 @@ func (service *LocalProductSetupService) buildBuilderPreview(
 			observationOK
 		reason := ""
 		if compatible {
-			if _, err := loomruntime.ValidateBinding(
+			if _, err := loomruntime.FreezeExecutionBinding(
 				profile,
 				observation.Instance,
 			); err != nil {
@@ -1626,25 +3089,151 @@ func (service *LocalProductSetupService) buildBuilderPreview(
 		}
 		authMode := ""
 		modelID := ""
+		harnessAdapter := ""
+		providerID := ""
+		providerAccountID := ""
+		credentialRevision := int64(0)
+		reasoningEffort := ""
+		timeoutMilliseconds := int64(0)
+		budgetAvailable := false
+		budgetUnits := int64(0)
+		requiredCapabilities := []string{}
 		if profileOK {
 			authMode = string(profile.AuthMode)
 			modelID = profile.ModelID
+			harnessAdapter = profile.AdapterType
+			providerID = profile.ProviderID
+			providerAccountID = profile.ProviderAccountID
+			credentialRevision = profile.CredentialRevision
+			reasoningEffort = profile.ReasoningEffort
+			timeoutMilliseconds = profile.Timeout.Milliseconds()
+			budgetAvailable = profile.Budget != nil
+			if profile.Budget != nil {
+				budgetUnits = *profile.Budget
+			}
+			requiredCapabilities = sortedSetupStrings(profile.RequiredCapabilities)
 			runtimePreview.ModelID = modelID
 		}
-		role := BuilderRolePreview{
-			Kind:                option.Kind,
-			AgentDefinitionID:   option.AgentDefinitionID,
-			Responsibility:      option.Responsibility,
-			Runtime:             runtimePreview,
-			RuntimeProfileID:    option.RuntimeProfileID,
-			ModelID:             modelID,
-			AuthMode:            authMode,
-			Skills:              skills,
-			PermissionIDs:       append([]string{}, option.PermissionIDs...),
-			ResourceIDs:         append([]string{}, option.ResourceIDs...),
-			Compatible:          compatible,
-			CompatibilityReason: reason,
+		remoteToolEnrollmentID := ""
+		remoteToolEnrollmentDigest := ""
+		if profileOK && profile.RemoteToolEnrollmentID != "" {
+			remoteToolEnrollmentID = profile.RemoteToolEnrollmentID
+			remoteToolEnrollmentDigest = profile.RemoteToolEnrollmentDigest
 		}
+		roleTargetID := ""
+		if option.Kind == "subagent" {
+			roleTargetID = option.AgentDefinitionID
+		}
+		fallbackRoleID := service.builderFallbackRoleID(
+			session, option.Kind, roleTargetID,
+		)
+		fallback, fallbackOK := service.setupRole(fallbackRoleID)
+		fallbackProfile, fallbackProfileOK := service.setupRuntimeProfile(fallback.RuntimeProfileID)
+		fallbackConfigured := fallbackRoleID != "" && fallbackOK && fallbackProfileOK
+		if fallbackRoleID != "" && !service.validFallbackRoleChoice(
+			session, option.Kind, roleTargetID, fallbackRoleID,
+		) {
+			fallbackConfigured = false
+			compatible = false
+			reason = "fallback_incompatible"
+			preview.CompatibilityGaps = append(preview.CompatibilityGaps, reason)
+		}
+		role := BuilderRolePreview{
+			Kind:                       option.Kind,
+			AgentDefinitionID:          option.AgentDefinitionID,
+			Responsibility:             option.Responsibility,
+			Runtime:                    runtimePreview,
+			RuntimeProfileID:           option.RuntimeProfileID,
+			HarnessAdapter:             harnessAdapter,
+			ProviderID:                 providerID,
+			ProviderAccountID:          providerAccountID,
+			ModelID:                    modelID,
+			AuthMode:                   authMode,
+			CredentialRevision:         credentialRevision,
+			ReasoningEffort:            reasoningEffort,
+			TimeoutMilliseconds:        timeoutMilliseconds,
+			BudgetAvailable:            budgetAvailable,
+			BudgetUnits:                budgetUnits,
+			RequiredCapabilities:       requiredCapabilities,
+			RemoteToolEnrollmentID:     remoteToolEnrollmentID,
+			RemoteToolEnrollmentDigest: remoteToolEnrollmentDigest,
+			FallbackConfigured:         fallbackConfigured,
+			FallbackApprovalRequired:   fallbackConfigured,
+			ParallelRoutes:             []BuilderExecutionRoutePreview{},
+			Skills:                     skills,
+			PermissionIDs:              append([]string{}, option.PermissionIDs...),
+			ResourceIDs:                append([]string{}, option.ResourceIDs...),
+			Compatible:                 compatible,
+			CompatibilityReason:        reason,
+		}
+		if fallbackConfigured {
+			role.FallbackRuntimeProfileID = fallback.RuntimeProfileID
+			role.FallbackHarnessAdapter = fallbackProfile.AdapterType
+			role.FallbackProviderID = fallbackProfile.ProviderID
+			role.FallbackProviderAccountID = fallbackProfile.ProviderAccountID
+			role.FallbackModelID = fallbackProfile.ModelID
+			role.FallbackAuthMode = string(fallbackProfile.AuthMode)
+			role.FallbackCredentialRevision = fallbackProfile.CredentialRevision
+			role.FallbackReasoningEffort = fallbackProfile.ReasoningEffort
+			role.FallbackTimeoutMilliseconds = fallbackProfile.Timeout.Milliseconds()
+			role.FallbackBudgetAvailable = fallbackProfile.Budget != nil
+			if fallbackProfile.Budget != nil {
+				role.FallbackBudgetUnits = *fallbackProfile.Budget
+			}
+			role.FallbackRequiredCapabilities = sortedSetupStrings(
+				fallbackProfile.RequiredCapabilities,
+			)
+		}
+		parallelRoleIDs := service.builderParallelRoleIDs(
+			session, option.Kind, roleTargetID,
+		)
+		if len(parallelRoleIDs) > 0 {
+			if fallbackConfigured {
+				compatible = false
+				reason = "parallel_fallback_conflict"
+				preview.CompatibilityGaps = append(preview.CompatibilityGaps, reason)
+			}
+			role.ParallelRouteSetVersion = 1
+			role.ParallelRoutes = append(
+				role.ParallelRoutes,
+				builderExecutionRoutePreview(profile),
+			)
+			for _, parallelRoleID := range parallelRoleIDs {
+				parallelOption, optionOK := service.setupRole(parallelRoleID)
+				parallelProfile, routeProfileOK := service.setupRuntimeProfile(
+					parallelOption.RuntimeProfileID,
+				)
+				if !optionOK || !routeProfileOK ||
+					!service.validFallbackRoleChoice(
+						session, option.Kind, roleTargetID, parallelRoleID,
+					) {
+					compatible = false
+					reason = "parallel_route_incompatible"
+					preview.CompatibilityGaps = append(preview.CompatibilityGaps, reason)
+					continue
+				}
+				role.ParallelRoutes = append(
+					role.ParallelRoutes,
+					builderExecutionRoutePreview(parallelProfile),
+				)
+			}
+			synthesisRoleID := service.builderSynthesisRoleID(
+				session, option.Kind, roleTargetID,
+			)
+			synthesisOption, optionOK := service.setupRole(synthesisRoleID)
+			synthesisProfile, synthesisOK := service.setupRuntimeProfile(
+				synthesisOption.RuntimeProfileID,
+			)
+			if !optionOK || !synthesisOK {
+				compatible = false
+				reason = "synthesis_route_incompatible"
+				preview.CompatibilityGaps = append(preview.CompatibilityGaps, reason)
+			} else {
+				role.SynthesisRoute = builderExecutionRoutePreview(synthesisProfile)
+			}
+		}
+		role.Compatible = compatible
+		role.CompatibilityReason = reason
 		if definitionOK {
 			role.AgentVersion = definition.Version
 			role.AgentScope = string(definition.Scope)
@@ -1662,6 +3251,27 @@ func (service *LocalProductSetupService) buildBuilderPreview(
 	preview.Resources = sortedSetupKeys(resourceSet)
 	sort.Strings(preview.CompatibilityGaps)
 	return preview
+}
+
+func builderExecutionRoutePreview(
+	profile loomruntime.RuntimeProfile,
+) BuilderExecutionRoutePreview {
+	result := BuilderExecutionRoutePreview{
+		RuntimeProfileID: profile.ID, HarnessAdapter: profile.AdapterType,
+		ProviderID: profile.ProviderID, ProviderAccountID: profile.ProviderAccountID,
+		ModelID: profile.ModelID, AuthMode: string(profile.AuthMode),
+		CredentialRevision:         profile.CredentialRevision,
+		ReasoningEffort:            profile.ReasoningEffort,
+		TimeoutMilliseconds:        profile.Timeout.Milliseconds(),
+		BudgetAvailable:            profile.Budget != nil,
+		RequiredCapabilities:       sortedSetupStrings(profile.RequiredCapabilities),
+		RemoteToolEnrollmentID:     profile.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: profile.RemoteToolEnrollmentDigest,
+	}
+	if profile.Budget != nil {
+		result.BudgetUnits = *profile.Budget
+	}
+	return result
 }
 
 func (service *LocalProductSetupService) definitionInputs(
@@ -1690,7 +3300,7 @@ func (service *LocalProductSetupService) definitionInputs(
 			return nil, state.TeamConfigurationSnapshot{},
 				ErrBuilderIncompatible
 		}
-		if _, err := loomruntime.ValidateBinding(
+		if _, err := loomruntime.FreezeExecutionBinding(
 			profile,
 			observation.Instance,
 		); err != nil ||
@@ -1733,6 +3343,7 @@ func (service *LocalProductSetupService) definitionInputs(
 				RuntimeProfileID:  option.RuntimeProfileID,
 				RuntimeInstanceID: option.RuntimeInstanceID,
 				ModelID:           profile.ModelID,
+				ExecutionProfile:  setupExecutionProfileSnapshot(profile),
 				SkillRevisions:    skills,
 				PermissionIDs: append(
 					[]string{},
@@ -1744,8 +3355,128 @@ func (service *LocalProductSetupService) definitionInputs(
 				),
 			},
 		)
+		roleTargetID := ""
+		if option.Kind == "subagent" {
+			roleTargetID = option.AgentDefinitionID
+		}
+		if fallbackRoleID := service.builderFallbackRoleID(
+			session, option.Kind, roleTargetID,
+		); fallbackRoleID != "" {
+			fallback, found := service.setupRole(fallbackRoleID)
+			fallbackProfile, profileFound := service.setupRuntimeProfile(fallback.RuntimeProfileID)
+			fallbackObservation, observationFound := service.setupRuntimeObservation(
+				fallback.RuntimeInstanceID,
+			)
+			if !found || !profileFound || !observationFound ||
+				!service.validFallbackRoleChoice(
+					session, option.Kind, roleTargetID, fallbackRoleID,
+				) {
+				return nil, state.TeamConfigurationSnapshot{}, ErrBuilderIncompatible
+			}
+			if _, err := loomruntime.FreezeExecutionBinding(
+				fallbackProfile, fallbackObservation.Instance,
+			); err != nil {
+				return nil, state.TeamConfigurationSnapshot{}, ErrBuilderIncompatible
+			}
+			binding := &configuration.RoleBindings[len(configuration.RoleBindings)-1]
+			binding.FallbackRoute = &state.TeamConfigurationFallbackRoute{
+				Version: 1, RuntimeProfileID: fallback.RuntimeProfileID,
+				RuntimeInstanceID: fallback.RuntimeInstanceID,
+				ModelID:           fallbackProfile.ModelID,
+				ExecutionProfile:  setupExecutionProfileSnapshot(fallbackProfile),
+				ApprovalRequired:  true,
+			}
+		} else if parallelRoleIDs := service.builderParallelRoleIDs(
+			session, option.Kind, roleTargetID,
+		); len(parallelRoleIDs) > 0 {
+			additional := make(
+				[]state.TeamConfigurationExecutionRoute,
+				0,
+				len(parallelRoleIDs),
+			)
+			for _, parallelRoleID := range parallelRoleIDs {
+				route, routeErr := service.builderExecutionRoute(
+					session, option, parallelRoleID,
+				)
+				if routeErr != nil {
+					return nil, state.TeamConfigurationSnapshot{}, routeErr
+				}
+				additional = append(additional, route)
+			}
+			synthesis, routeErr := service.builderExecutionRoute(
+				session,
+				option,
+				service.builderSynthesisRoleID(session, option.Kind, roleTargetID),
+			)
+			if routeErr != nil {
+				return nil, state.TeamConfigurationSnapshot{}, routeErr
+			}
+			binding := &configuration.RoleBindings[len(configuration.RoleBindings)-1]
+			binding.ParallelRouteSet = &state.TeamConfigurationParallelRouteSet{
+				Version: 1, AdditionalRoutes: additional,
+				SynthesisRoute: synthesis,
+			}
+		}
 	}
 	return roles, configuration, nil
+}
+
+func (service *LocalProductSetupService) builderExecutionRoute(
+	session *localProductBuilderSession,
+	primary SetupRoleOption,
+	routeRoleID string,
+) (state.TeamConfigurationExecutionRoute, error) {
+	scoped := service.withSessionCatalog(session)
+	option, ok := scoped.setupRole(routeRoleID)
+	if !ok || option.Kind != primary.Kind ||
+		option.AgentDefinitionID != primary.AgentDefinitionID {
+		return state.TeamConfigurationExecutionRoute{}, ErrBuilderIncompatible
+	}
+	profile, ok := scoped.setupRuntimeProfile(option.RuntimeProfileID)
+	observation, observationOK := scoped.setupRuntimeObservation(
+		option.RuntimeInstanceID,
+	)
+	if !ok || !observationOK ||
+		!containsSetupString(observation.ModelIDs, profile.ModelID) {
+		return state.TeamConfigurationExecutionRoute{}, ErrBuilderIncompatible
+	}
+	if _, err := loomruntime.FreezeExecutionBinding(
+		profile, observation.Instance,
+	); err != nil {
+		return state.TeamConfigurationExecutionRoute{}, ErrBuilderIncompatible
+	}
+	return state.TeamConfigurationExecutionRoute{
+		Version: 1, RuntimeProfileID: option.RuntimeProfileID,
+		RuntimeInstanceID: option.RuntimeInstanceID, ModelID: profile.ModelID,
+		ExecutionProfile: setupExecutionProfileSnapshot(profile),
+	}, nil
+}
+
+func setupExecutionProfileSnapshot(
+	profile loomruntime.RuntimeProfile,
+) *state.TeamConfigurationExecutionProfile {
+	snapshot := &state.TeamConfigurationExecutionProfile{
+		Version:                    1,
+		ID:                         profile.ID,
+		HarnessAdapter:             profile.AdapterType,
+		ProviderID:                 profile.ProviderID,
+		ProviderAccountID:          profile.ProviderAccountID,
+		ModelID:                    profile.ModelID,
+		AuthMode:                   profile.AuthMode,
+		EndpointFingerprint:        profile.EndpointFingerprint,
+		CredentialReference:        profile.CredentialReference,
+		CredentialRevision:         profile.CredentialRevision,
+		ReasoningEffort:            profile.ReasoningEffort,
+		TimeoutNanoseconds:         int64(profile.Timeout),
+		RequiredCapabilities:       append([]string(nil), profile.RequiredCapabilities...),
+		RemoteToolEnrollmentID:     profile.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: profile.RemoteToolEnrollmentDigest,
+	}
+	if profile.Budget != nil {
+		budget := *profile.Budget
+		snapshot.Budget = &budget
+	}
+	return snapshot
 }
 
 func (service *LocalProductSetupService) currentSession(
@@ -1906,7 +3637,22 @@ func (service *LocalProductSetupService) loadSavedTeamSession(
 	session.sourceVersion = record.Version
 	session.sourceDigest = record.DefinitionDigest
 	for _, binding := range record.Configuration.RoleBindings {
-		optionID := service.findRoleOption(binding)
+		scoped := service.withSessionCatalog(session)
+		optionID := scoped.findRoleOption(binding)
+		if optionID == "" && binding.ExecutionProfileAvailable {
+			if _, exists := scoped.setupRuntimeProfile(binding.RuntimeProfileID); exists {
+				return ErrBuilderIncompatible
+			}
+			if err := service.restoreSavedExecutionProfile(
+				session,
+				record,
+				binding,
+			); err != nil {
+				return err
+			}
+			scoped = service.withSessionCatalog(session)
+			optionID = scoped.findRoleOption(binding)
+		}
 		if optionID == "" {
 			return ErrBuilderIncompatible
 		}
@@ -1915,10 +3661,304 @@ func (service *LocalProductSetupService) loadSavedTeamSession(
 		} else {
 			session.subRoleIDs = append(session.subRoleIDs, optionID)
 		}
+		if binding.FallbackRouteAvailable {
+			fallbackOptionID := scoped.findFallbackRoleOption(binding)
+			if fallbackOptionID == "" {
+				if err := service.restoreSavedFallbackRoute(
+					session,
+					record,
+					binding,
+				); err != nil {
+					return err
+				}
+				scoped = service.withSessionCatalog(session)
+				fallbackOptionID = scoped.findFallbackRoleOption(binding)
+			}
+			roleTargetID := ""
+			if binding.Kind == "subagent" {
+				roleTargetID = binding.AgentDefinitionID
+			}
+			if fallbackOptionID == "" || !scoped.validFallbackRoleChoice(
+				session,
+				binding.Kind,
+				roleTargetID,
+				fallbackOptionID,
+			) {
+				return ErrBuilderIncompatible
+			}
+			service.setBuilderFallbackRole(
+				session,
+				binding.Kind,
+				roleTargetID,
+				fallbackOptionID,
+			)
+		}
+		if binding.ParallelRouteSetAvailable {
+			routeSet := binding.ParallelRouteSet
+			if routeSet.Version != 1 || len(routeSet.AdditionalRoutes) < 1 ||
+				len(routeSet.AdditionalRoutes) > 2 || binding.FallbackRouteAvailable {
+				return ErrBuilderIncompatible
+			}
+			roleTargetID := ""
+			if binding.Kind == "subagent" {
+				roleTargetID = binding.AgentDefinitionID
+			}
+			parallelRoleIDs := make([]string, 0, len(routeSet.AdditionalRoutes))
+			for _, route := range routeSet.AdditionalRoutes {
+				routeOptionID := scoped.findExecutionRouteOption(binding, route)
+				if routeOptionID == "" || !scoped.validFallbackRoleChoice(
+					session, binding.Kind, roleTargetID, routeOptionID,
+				) {
+					return ErrBuilderIncompatible
+				}
+				parallelRoleIDs = append(parallelRoleIDs, routeOptionID)
+			}
+			synthesisRoleID := scoped.findExecutionRouteOption(
+				binding, routeSet.SynthesisRoute,
+			)
+			if synthesisRoleID == "" {
+				return ErrBuilderIncompatible
+			}
+			service.setBuilderParallelRoles(
+				session, binding.Kind, roleTargetID,
+				parallelRoleIDs, synthesisRoleID,
+			)
+		}
 	}
 	if session.mainRoleID == "" || len(session.subRoleIDs) == 0 {
 		return ErrBuilderIncompatible
 	}
+	return nil
+}
+
+func (service *LocalProductSetupService) restoreSavedFallbackRoute(
+	session *localProductBuilderSession,
+	record projection.TeamDefinitionRecord,
+	binding projection.TeamConfigurationRoleBinding,
+) error {
+	if session == nil || !binding.FallbackRouteAvailable {
+		return ErrBuilderIncompatible
+	}
+	route := binding.FallbackRoute
+	profileRecord := route.ExecutionProfile
+	if route.Version != 1 || !route.ApprovalRequired ||
+		profileRecord.Version != 1 ||
+		profileRecord.ID != route.RuntimeProfileID ||
+		profileRecord.ModelID != route.ModelID ||
+		route.RuntimeProfileID == binding.RuntimeProfileID {
+		return ErrBuilderIncompatible
+	}
+
+	candidate := cloneSetupCatalog(session.catalog)
+	scoped := service.withSessionCatalog(session)
+	profile, profileExists := scoped.setupRuntimeProfile(route.RuntimeProfileID)
+	if !profileExists {
+		var err error
+		profile, err = runtimeProfileFromSavedRecord(profileRecord)
+		if err != nil {
+			return err
+		}
+		candidate.RuntimeProfiles = append(candidate.RuntimeProfiles, profile)
+	}
+	candidateSession := *session
+	candidateSession.catalog = candidate
+	scoped = service.withSessionCatalog(&candidateSession)
+	observation, ok := scoped.setupRuntimeObservation(route.RuntimeInstanceID)
+	if !ok || !containsSetupString(observation.ModelIDs, profile.ModelID) {
+		return ErrBuilderIncompatible
+	}
+	if _, err := loomruntime.FreezeExecutionBinding(
+		profile,
+		observation.Instance,
+	); err != nil {
+		return ErrBuilderIncompatible
+	}
+
+	responsibility := ""
+	for _, role := range record.Roles {
+		if role.Kind == binding.Kind &&
+			role.AgentDefinitionID == binding.AgentDefinitionID &&
+			role.RuntimeProfileID == binding.RuntimeProfileID {
+			responsibility = role.Responsibility
+			break
+		}
+	}
+	if responsibility == "" {
+		return ErrBuilderIncompatible
+	}
+	skillIDs := make([]string, 0, len(binding.SkillRevisions))
+	for _, revision := range binding.SkillRevisions {
+		key := setupSkillKey(revision.ID, revision.Revision)
+		skill, found := scoped.setupSkill(key)
+		if !found || skill.Digest != revision.Digest {
+			return ErrBuilderIncompatible
+		}
+		skillIDs = append(skillIDs, key)
+	}
+	identityInput, err := json.Marshal(struct {
+		Kind              string
+		AgentDefinitionID string
+		RuntimeProfileID  string
+	}{binding.Kind, binding.AgentDefinitionID, route.RuntimeProfileID})
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	identityDigest := sha256.Sum256(identityInput)
+	candidate.RoleOptions = append(candidate.RoleOptions, SetupRoleOption{
+		ID: "saved-fallback-role-" + binding.Kind + "-" +
+			hex.EncodeToString(identityDigest[:12]),
+		Kind:              binding.Kind,
+		AgentDefinitionID: binding.AgentDefinitionID,
+		RuntimeProfileID:  route.RuntimeProfileID,
+		RuntimeInstanceID: route.RuntimeInstanceID,
+		SkillRevisionIDs:  skillIDs,
+		PermissionIDs:     append([]string(nil), binding.PermissionIDs...),
+		ResourceIDs:       append([]string(nil), binding.ResourceIDs...),
+		Responsibility:    responsibility,
+	})
+	if err := validateSetupCatalog(candidate); err != nil {
+		return ErrBuilderIncompatible
+	}
+	domainCatalog, err := buildSetupDomainCatalog(candidate)
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	session.catalog = candidate
+	session.domainCatalog = domainCatalog
+	return nil
+}
+
+func runtimeProfileFromSavedRecord(
+	profileRecord projection.TeamExecutionProfileRecord,
+) (loomruntime.RuntimeProfile, error) {
+	profileBudget := profileRecord.Budget
+	if profileBudget != nil {
+		budget := *profileBudget
+		profileBudget = &budget
+	}
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:                   profileRecord.ID,
+		AdapterType:          profileRecord.HarnessAdapter,
+		ProviderID:           profileRecord.ProviderID,
+		ProviderAccountID:    profileRecord.ProviderAccountID,
+		ModelID:              profileRecord.ModelID,
+		AuthMode:             profileRecord.AuthMode,
+		EndpointFingerprint:  profileRecord.EndpointFingerprint,
+		CredentialReference:  profileRecord.CredentialReference,
+		CredentialRevision:   profileRecord.CredentialRevision,
+		ReasoningEffort:      profileRecord.ReasoningEffort,
+		RequiredCapabilities: append([]string(nil), profileRecord.RequiredCapabilities...),
+		Timeout:              profileRecord.Timeout,
+		Budget:               profileBudget,
+	})
+	if err != nil {
+		return loomruntime.RuntimeProfile{}, ErrBuilderIncompatible
+	}
+	return profile, nil
+}
+
+func (service *LocalProductSetupService) restoreSavedExecutionProfile(
+	session *localProductBuilderSession,
+	record projection.TeamDefinitionRecord,
+	binding projection.TeamConfigurationRoleBinding,
+) error {
+	if session == nil || !binding.ExecutionProfileAvailable {
+		return ErrBuilderIncompatible
+	}
+	profileRecord := binding.ExecutionProfile
+	if profileRecord.Version != 1 ||
+		profileRecord.ID != binding.RuntimeProfileID ||
+		profileRecord.ModelID != binding.ModelID {
+		return ErrBuilderIncompatible
+	}
+	profile, err := runtimeProfileFromSavedRecord(profileRecord)
+	if err != nil {
+		return err
+	}
+
+	candidate := cloneSetupCatalog(session.catalog)
+	candidate.RuntimeProfiles = append(candidate.RuntimeProfiles, profile)
+	candidateSession := *session
+	candidateSession.catalog = candidate
+	scoped := service.withSessionCatalog(&candidateSession)
+	if _, ok := scoped.setupAgent(binding.AgentDefinitionID); !ok {
+		return ErrBuilderIncompatible
+	}
+	observation, ok := scoped.setupRuntimeObservation(binding.RuntimeInstanceID)
+	if !ok || !containsSetupString(observation.ModelIDs, profile.ModelID) {
+		return ErrBuilderIncompatible
+	}
+	if _, err := loomruntime.FreezeExecutionBinding(profile, observation.Instance); err != nil {
+		return ErrBuilderIncompatible
+	}
+	responsibility := ""
+	for _, role := range record.Roles {
+		if role.Kind == binding.Kind &&
+			role.AgentDefinitionID == binding.AgentDefinitionID &&
+			role.RuntimeProfileID == binding.RuntimeProfileID {
+			responsibility = role.Responsibility
+			break
+		}
+	}
+	if responsibility == "" {
+		return ErrBuilderIncompatible
+	}
+	skillIDs := make([]string, 0, len(binding.SkillRevisions))
+	for _, revision := range binding.SkillRevisions {
+		key := setupSkillKey(revision.ID, revision.Revision)
+		skill, found := scoped.setupSkill(key)
+		if !found || skill.Digest != revision.Digest {
+			return ErrBuilderIncompatible
+		}
+		skillIDs = append(skillIDs, key)
+	}
+	for _, permissionID := range binding.PermissionIDs {
+		if !containsSetupString(candidate.Permissions, permissionID) {
+			return ErrBuilderIncompatible
+		}
+	}
+	for _, resourceID := range binding.ResourceIDs {
+		found := false
+		for _, resource := range candidate.Resources {
+			if resource.ID == resourceID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrBuilderIncompatible
+		}
+	}
+	identityInput, err := json.Marshal(struct {
+		Kind              string
+		AgentDefinitionID string
+		RuntimeProfileID  string
+	}{binding.Kind, binding.AgentDefinitionID, binding.RuntimeProfileID})
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	identityDigest := sha256.Sum256(identityInput)
+	option := SetupRoleOption{
+		ID:                "saved-role-" + binding.Kind + "-" + hex.EncodeToString(identityDigest[:12]),
+		Kind:              binding.Kind,
+		AgentDefinitionID: binding.AgentDefinitionID,
+		RuntimeProfileID:  binding.RuntimeProfileID,
+		RuntimeInstanceID: binding.RuntimeInstanceID,
+		SkillRevisionIDs:  skillIDs,
+		PermissionIDs:     append([]string(nil), binding.PermissionIDs...),
+		ResourceIDs:       append([]string(nil), binding.ResourceIDs...),
+		Responsibility:    responsibility,
+	}
+	candidate.RoleOptions = append(candidate.RoleOptions, option)
+	if err := validateSetupCatalog(candidate); err != nil {
+		return ErrBuilderIncompatible
+	}
+	domainCatalog, err := buildSetupDomainCatalog(candidate)
+	if err != nil {
+		return ErrBuilderIncompatible
+	}
+	session.catalog = candidate
+	session.domainCatalog = domainCatalog
 	return nil
 }
 
@@ -1927,6 +3967,47 @@ func (service *LocalProductSetupService) findRoleOption(
 ) string {
 	for _, option := range service.catalog.RoleOptions {
 		if service.roleOptionMatchesSavedBinding(option, binding) {
+			return option.ID
+		}
+	}
+	return ""
+}
+
+func (service *LocalProductSetupService) findFallbackRoleOption(
+	binding projection.TeamConfigurationRoleBinding,
+) string {
+	if !binding.FallbackRouteAvailable {
+		return ""
+	}
+	route := binding.FallbackRoute
+	for _, option := range service.catalog.RoleOptions {
+		if option.Kind != binding.Kind ||
+			option.AgentDefinitionID != binding.AgentDefinitionID ||
+			option.RuntimeProfileID != route.RuntimeProfileID ||
+			option.RuntimeInstanceID != route.RuntimeInstanceID {
+			continue
+		}
+		profile, ok := service.setupRuntimeProfile(option.RuntimeProfileID)
+		if ok && profile.ModelID == route.ModelID {
+			return option.ID
+		}
+	}
+	return ""
+}
+
+func (service *LocalProductSetupService) findExecutionRouteOption(
+	binding projection.TeamConfigurationRoleBinding,
+	route projection.TeamConfigurationExecutionRouteRecord,
+) string {
+	for _, option := range service.catalog.RoleOptions {
+		if option.Kind != binding.Kind ||
+			option.AgentDefinitionID != binding.AgentDefinitionID ||
+			option.RuntimeProfileID != route.RuntimeProfileID ||
+			option.RuntimeInstanceID != route.RuntimeInstanceID {
+			continue
+		}
+		profile, ok := service.setupRuntimeProfile(option.RuntimeProfileID)
+		if ok && profile.ModelID == route.ModelID {
 			return option.ID
 		}
 	}
@@ -2136,6 +4217,9 @@ func setupCredentialResult(
 	err error,
 ) (CredentialSetupResult, error) {
 	if err != nil {
+		if credentials.CredentialFailureStage(err) != "" {
+			return CredentialSetupResult{}, err
+		}
 		switch {
 		case errors.Is(err, credentials.ErrCredentialStoreDenied):
 			return CredentialSetupResult{}, credentials.ErrCredentialStoreDenied
@@ -2166,6 +4250,11 @@ func cloneSetupCatalog(input LocalProductSetupCatalog) LocalProductSetupCatalog 
 	output := input
 	output.AgentDefinitions = append([]agents.AgentDefinition{}, input.AgentDefinitions...)
 	output.RuntimeProfiles = append([]loomruntime.RuntimeProfile{}, input.RuntimeProfiles...)
+	for index := range output.RuntimeProfiles {
+		output.RuntimeProfiles[index] = cloneSetupRuntimeProfile(
+			output.RuntimeProfiles[index],
+		)
+	}
 	output.SkillRevisions = append([]SetupSkillRevision{}, input.SkillRevisions...)
 	for index := range output.SkillRevisions {
 		output.SkillRevisions[index] = cloneSetupSkill(output.SkillRevisions[index])
@@ -2186,7 +4275,48 @@ func cloneSetupCatalog(input LocalProductSetupCatalog) LocalProductSetupCatalog 
 	return output
 }
 
+func cloneSetupRuntimeProfile(
+	input loomruntime.RuntimeProfile,
+) loomruntime.RuntimeProfile {
+	input.RequiredCapabilities = append(
+		[]string(nil),
+		input.RequiredCapabilities...,
+	)
+	if input.Budget != nil {
+		budget := *input.Budget
+		input.Budget = &budget
+	}
+	return input
+}
+
 func cloneSetupSnapshot(input SetupSnapshot) SetupSnapshot {
+	if input.CredentialVault != nil {
+		vault := *input.CredentialVault
+		input.CredentialVault = &vault
+	}
+	input.Providers = append([]ProviderDirectoryEntry{}, input.Providers...)
+	input.ProviderAccounts = append(
+		[]ProviderAccountDirectoryEntry{}, input.ProviderAccounts...,
+	)
+	for index := range input.ProviderAccounts {
+		input.ProviderAccounts[index].RateCards = append(
+			[]ProviderModelRateCardDirectoryEntry{},
+			input.ProviderAccounts[index].RateCards...,
+		)
+		input.ProviderAccounts[index].RemoteToolBackends = append(
+			[]RemoteToolBackendDirectoryEntry{},
+			input.ProviderAccounts[index].RemoteToolBackends...,
+		)
+		for backendIndex := range input.ProviderAccounts[index].RemoteToolBackends {
+			input.ProviderAccounts[index].RemoteToolBackends[backendIndex].AllowedTools = append(
+				[]string{},
+				input.ProviderAccounts[index].RemoteToolBackends[backendIndex].AllowedTools...,
+			)
+		}
+	}
+	input.ConversationProfiles = append(
+		[]ConversationProviderProfile{}, input.ConversationProfiles...,
+	)
 	input.Runtimes = append([]SetupRuntimePreview{}, input.Runtimes...)
 	for index := range input.Runtimes {
 		input.Runtimes[index].ModelIDs = append(
@@ -2206,9 +4336,16 @@ func cloneSetupSnapshot(input SetupSnapshot) SetupSnapshot {
 			input.Templates[index].SubagentRoleIDs...,
 		)
 	}
-	input.RoleOptions = append([]SetupRoleOption{}, input.RoleOptions...)
+	input.RoleOptions = append([]SetupRoleOptionPreview{}, input.RoleOptions...)
 	for index := range input.RoleOptions {
-		input.RoleOptions[index] = cloneSetupRoleOption(input.RoleOptions[index])
+		role := &input.RoleOptions[index]
+		role.RequiredCapabilities = append(
+			[]string{},
+			role.RequiredCapabilities...,
+		)
+		role.SkillRevisionIDs = append([]string{}, role.SkillRevisionIDs...)
+		role.PermissionIDs = append([]string{}, role.PermissionIDs...)
+		role.ResourceIDs = append([]string{}, role.ResourceIDs...)
 	}
 	input.Skills = append([]SetupSkillRevision{}, input.Skills...)
 	for index := range input.Skills {
@@ -2243,6 +4380,23 @@ func cloneBuilderSessionView(input BuilderSessionView) BuilderSessionView {
 		}
 		role.PermissionIDs = append([]string{}, role.PermissionIDs...)
 		role.ResourceIDs = append([]string{}, role.ResourceIDs...)
+		role.RequiredCapabilities = append(
+			[]string{},
+			role.RequiredCapabilities...,
+		)
+		role.ParallelRoutes = append(
+			[]BuilderExecutionRoutePreview{},
+			role.ParallelRoutes...,
+		)
+		for routeIndex := range role.ParallelRoutes {
+			role.ParallelRoutes[routeIndex].RequiredCapabilities = append(
+				[]string{},
+				role.ParallelRoutes[routeIndex].RequiredCapabilities...,
+			)
+		}
+		role.SynthesisRoute.RequiredCapabilities = append(
+			[]string{}, role.SynthesisRoute.RequiredCapabilities...,
+		)
 	}
 	input.Preview.Permissions = append(
 		[]string{},
@@ -2290,6 +4444,12 @@ func sortedSetupKeys(values map[string]struct{}) []string {
 	return output
 }
 
+func sortedSetupStrings(values []string) []string {
+	output := append([]string{}, values...)
+	sort.Strings(output)
+	return output
+}
+
 func setupSkillKey(id string, revision int) string {
 	return fmt.Sprintf("%s@%d", id, revision)
 }
@@ -2319,6 +4479,10 @@ func closedCredentialStatus(status, reason string) bool {
 		return reason == "provider_rejected" ||
 			reason == "unavailable" ||
 			reason == "timeout"
+	case "migration_required":
+		return reason == "vault_entry_missing"
+	case "recovery_required":
+		return reason == "vault_unavailable"
 	default:
 		return false
 	}

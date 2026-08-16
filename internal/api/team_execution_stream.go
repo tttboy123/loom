@@ -20,8 +20,11 @@ import (
 	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/verification"
+	"loom-pi-rebuild/internal/work"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
 
@@ -53,10 +56,45 @@ type ViewSource interface {
 	GlobalReadView() projection.GlobalReadView
 }
 
+type AgentAttemptDiagnosticQuery struct {
+	IncidentID        string
+	ProviderID        string
+	ProviderAccountID string
+	ModelID           string
+}
+
+type AgentAttemptDiagnosticSummary struct {
+	IncidentID        string
+	ProviderID        string
+	ProviderAccountID string
+	ModelID           string
+	FailureStage      string
+	FailureCode       string
+	Retryable         bool
+}
+
+type AgentAttemptDiagnosticSource interface {
+	// AgentAttemptDiagnostics returns observational metadata only. It cannot
+	// authorize or change an Attempt, Team, cursor, or projection version.
+	AgentAttemptDiagnostics(
+		context.Context,
+		[]AgentAttemptDiagnosticQuery,
+	) ([]AgentAttemptDiagnosticSummary, error)
+}
+
+type GovernedTestReportSource interface {
+	GovernedTestReportsForAttempt(
+		context.Context,
+		work.AttemptReportQuery,
+	) ([]verification.GovernedTestReport, error)
+}
+
 type TeamExecutionStreamConfig struct {
 	TeamInstanceID string
 	Journal        *journal.Store
 	Projection     ViewSource
+	Diagnostics    AgentAttemptDiagnosticSource
+	TestReports    GovernedTestReportSource
 	Now            func() time.Time
 }
 
@@ -64,6 +102,8 @@ type TeamExecutionStream struct {
 	teamInstanceID string
 	journal        *journal.Store
 	projection     ViewSource
+	diagnostics    AgentAttemptDiagnosticSource
+	testReports    GovernedTestReportSource
 	now            func() time.Time
 
 	mu             sync.Mutex
@@ -84,6 +124,8 @@ func NewTeamExecutionStream(
 		teamInstanceID: config.TeamInstanceID,
 		journal:        config.Journal,
 		projection:     config.Projection,
+		diagnostics:    config.Diagnostics,
+		testReports:    config.TestReports,
 		now:            config.Now,
 		subscribers:    make(map[uint64]*Subscription),
 	}, nil
@@ -415,37 +457,144 @@ func newStreamGap(input streamGapInput) (StreamGap, error) {
 }
 
 type TeamBoard struct {
-	schemaVersion  int
-	teamInstanceID string
-	planDigest     string
-	status         string
-	viewVersion    string
-	nodes          []NodeBoardRow
-	cost           CostObservation
+	schemaVersion    int
+	teamInstanceID   string
+	planDigest       string
+	status           string
+	viewVersion      string
+	nodes            []NodeBoardRow
+	providerAccounts []ProviderAccountBoardRow
+	cost             CostObservation
 }
 
 type NodeBoardRow struct {
-	LogicalNodeID       string `json:"logical_node_id"`
-	Status              string `json:"status"`
-	DependencySatisfied bool   `json:"dependency_satisfied"`
-	CurrentAttempt      int    `json:"current_attempt"`
-	WorkItemID          string `json:"work_item_id"`
-	RunID               string `json:"run_id"`
-	RuntimeInstanceID   string `json:"runtime_instance_id"`
-	AgentInstanceID     string `json:"agent_instance_id"`
-	VerificationStatus  string `json:"verification_status"`
-	RecoveryAction      string `json:"recovery_action"`
-	RetryAt             string `json:"retry_at"`
+	LogicalNodeID                      string   `json:"logical_node_id"`
+	NodeKind                           string   `json:"node_kind"`
+	RouteGroupID                       string   `json:"route_group_id"`
+	Status                             string   `json:"status"`
+	DependencySatisfied                bool     `json:"dependency_satisfied"`
+	CurrentAttempt                     int      `json:"current_attempt"`
+	WorkItemID                         string   `json:"work_item_id"`
+	RunID                              string   `json:"run_id"`
+	RuntimeInstanceID                  string   `json:"runtime_instance_id"`
+	AgentInstanceID                    string   `json:"agent_instance_id"`
+	VerificationStatus                 string   `json:"verification_status"`
+	RecoveryAction                     string   `json:"recovery_action"`
+	RetryAt                            string   `json:"retry_at"`
+	FallbackConfigured                 bool     `json:"fallback_configured"`
+	RecoveryApprovalRequired           bool     `json:"recovery_approval_required"`
+	FallbackApprovalAvailable          bool     `json:"fallback_approval_available"`
+	FallbackApprovalVersion            int      `json:"fallback_approval_version"`
+	FallbackConsumed                   bool     `json:"fallback_consumed"`
+	ExecutionBindingAvailable          bool     `json:"execution_binding_available"`
+	HarnessAdapter                     string   `json:"harness_adapter"`
+	ProviderID                         string   `json:"provider_id"`
+	ProviderAccountID                  string   `json:"provider_account_id"`
+	ModelID                            string   `json:"model_id"`
+	ReasoningEffort                    string   `json:"reasoning_effort"`
+	TimeoutNanoseconds                 int64    `json:"timeout_nanoseconds"`
+	BindingBudgetCredits               *int64   `json:"binding_budget_credits"`
+	Capabilities                       []string `json:"capabilities"`
+	CredentialRevision                 int64    `json:"credential_revision"`
+	ContextCapsuleAvailable            bool     `json:"context_capsule_available"`
+	ContextCapsuleDigest               string   `json:"context_capsule_digest"`
+	RouteSegmentAvailable              bool     `json:"route_segment_available"`
+	RouteSegmentID                     string   `json:"route_segment_id"`
+	RouteSegmentDigest                 string   `json:"route_segment_digest"`
+	ContextDisclosureReceiptDigest     string   `json:"context_disclosure_receipt_digest"`
+	ContextAdapterID                   string   `json:"context_adapter_id"`
+	DisclosurePolicyID                 string   `json:"disclosure_policy_id"`
+	DisclosurePolicyVersion            int      `json:"disclosure_policy_version"`
+	ContextTokenBudget                 int      `json:"context_token_budget"`
+	ContextTokenCount                  int      `json:"context_token_count"`
+	ContextDisclosedCount              int      `json:"context_disclosed_count"`
+	ContextOmissionCount               int      `json:"context_omission_count"`
+	ProviderAccountPolicyAvailable     bool     `json:"provider_account_policy_available"`
+	ProviderAccountPolicyVersion       int      `json:"provider_account_policy_version"`
+	ProviderAccountPolicyRevision      int64    `json:"provider_account_policy_revision"`
+	ProviderAccountPolicyDigest        string   `json:"provider_account_policy_digest"`
+	ProviderAccountTrustDomain         string   `json:"provider_account_trust_domain"`
+	ProviderAccountRetentionMode       string   `json:"provider_account_retention_mode"`
+	ProviderAccountDataRegion          string   `json:"provider_account_data_region"`
+	ProviderAccountAssignedBudgetUnits int64    `json:"provider_account_assigned_budget_units"`
+	ProviderModelRateCardAvailable     bool     `json:"provider_model_rate_card_available"`
+	ProviderModelRateCardRevision      int64    `json:"provider_model_rate_card_revision"`
+	ProviderModelRateCardDigest        string   `json:"provider_model_rate_card_digest"`
+	ProviderModelRateCardCurrency      string   `json:"provider_model_rate_card_currency"`
+	ProviderModelRateCardInputBasis    string   `json:"provider_model_rate_card_input_basis"`
+	TerminalReason                     string   `json:"terminal_reason"`
+	IncidentID                         string   `json:"incident_id"`
+	FailureDiagnosticAvailable         bool     `json:"failure_diagnostic_available"`
+	FailureStage                       string   `json:"failure_stage"`
+	FailureCode                        string   `json:"failure_code"`
+	FailureRetryable                   bool     `json:"failure_retryable"`
+	TestReportAvailable                bool     `json:"test_report_available"`
+	TestReportCount                    int      `json:"test_report_count"`
+	TestReportPassedCount              int      `json:"test_report_passed_count"`
+	TestReportFailedCount              int      `json:"test_report_failed_count"`
+	TestReportSetDigest                string   `json:"test_report_set_digest"`
+	LatestTestRunner                   string   `json:"latest_test_runner"`
+	LatestTestScope                    string   `json:"latest_test_scope"`
+	LatestTestOutcome                  string   `json:"latest_test_outcome"`
+	LatestTestReportDigest             string   `json:"latest_test_report_digest"`
+	AccountingAvailable                bool     `json:"accounting_available"`
+	UsageObserved                      bool     `json:"usage_observed"`
+	InputTokens                        int64    `json:"input_tokens"`
+	OutputTokens                       int64    `json:"output_tokens"`
+	CacheReadTokens                    int64    `json:"cache_read_tokens"`
+	CacheWriteTokens                   int64    `json:"cache_write_tokens"`
+	TotalTokens                        int64    `json:"total_tokens"`
+	CostObserved                       bool     `json:"cost_observed"`
+	CostMicrounits                     int64    `json:"cost_microunits"`
+	CostCurrency                       string   `json:"cost_currency"`
+	CostSource                         string   `json:"cost_source"`
+}
+
+type ProviderAccountCostRow struct {
+	Currency         string `json:"currency"`
+	Source           string `json:"source"`
+	AmountMicrounits int64  `json:"amount_microunits"`
+}
+
+type ProviderAccountBoardRow struct {
+	ProviderID                 string                   `json:"provider_id"`
+	ProviderAccountID          string                   `json:"provider_account_id"`
+	ActiveAttempts             int                      `json:"active_attempts"`
+	AttemptCount               int                      `json:"attempt_count"`
+	FailedAttempts             int                      `json:"failed_attempts"`
+	RateLimitedAttempts        int                      `json:"rate_limited_attempts"`
+	ErrorRateBasisPoints       int                      `json:"error_rate_basis_points"`
+	BudgetAttemptCount         int                      `json:"budget_attempt_count"`
+	BudgetUnits                int64                    `json:"budget_units"`
+	PolicyAvailable            bool                     `json:"policy_available"`
+	PolicyRevision             int64                    `json:"policy_revision"`
+	PolicyDigest               string                   `json:"policy_digest"`
+	MaximumConcurrentAttempts  int                      `json:"maximum_concurrent_attempts"`
+	DispatchWindowSeconds      int64                    `json:"dispatch_window_seconds"`
+	MaximumDispatchStarts      int                      `json:"maximum_dispatch_starts"`
+	MaximumAssignedBudgetUnits int64                    `json:"maximum_assigned_budget_units"`
+	ActiveAssignedBudgetUnits  int64                    `json:"active_assigned_budget_units"`
+	AccountingAttemptCount     int                      `json:"accounting_attempt_count"`
+	UsageAttemptCount          int                      `json:"usage_attempt_count"`
+	InputTokens                int64                    `json:"input_tokens"`
+	OutputTokens               int64                    `json:"output_tokens"`
+	CacheReadTokens            int64                    `json:"cache_read_tokens"`
+	CacheWriteTokens           int64                    `json:"cache_write_tokens"`
+	TotalTokens                int64                    `json:"total_tokens"`
+	CostAttemptCount           int                      `json:"cost_attempt_count"`
+	Costs                      []ProviderAccountCostRow `json:"costs"`
+	AggregationOverflow        bool                     `json:"aggregation_overflow"`
 }
 
 type teamBoardWire struct {
-	SchemaVersion  int             `json:"schema_version"`
-	TeamInstanceID string          `json:"team_instance_id"`
-	PlanDigest     string          `json:"plan_digest"`
-	Status         string          `json:"status"`
-	ViewVersion    string          `json:"view_version"`
-	Nodes          []NodeBoardRow  `json:"nodes"`
-	Cost           CostObservation `json:"cost"`
+	SchemaVersion    int                       `json:"schema_version"`
+	TeamInstanceID   string                    `json:"team_instance_id"`
+	PlanDigest       string                    `json:"plan_digest"`
+	Status           string                    `json:"status"`
+	ViewVersion      string                    `json:"view_version"`
+	Nodes            []NodeBoardRow            `json:"nodes"`
+	ProviderAccounts []ProviderAccountBoardRow `json:"provider_accounts"`
+	Cost             CostObservation           `json:"cost"`
 }
 
 func (board TeamBoard) MarshalJSON() ([]byte, error) {
@@ -453,14 +602,19 @@ func (board TeamBoard) MarshalJSON() ([]byte, error) {
 	if nodes == nil {
 		nodes = []NodeBoardRow{}
 	}
+	providerAccounts := cloneProviderAccountRows(board.providerAccounts)
+	if providerAccounts == nil {
+		providerAccounts = []ProviderAccountBoardRow{}
+	}
 	return marshalCompact(teamBoardWire{
-		SchemaVersion:  board.schemaVersion,
-		TeamInstanceID: board.teamInstanceID,
-		PlanDigest:     board.planDigest,
-		Status:         board.status,
-		ViewVersion:    board.viewVersion,
-		Nodes:          nodes,
-		Cost:           board.cost,
+		SchemaVersion:    board.schemaVersion,
+		TeamInstanceID:   board.teamInstanceID,
+		PlanDigest:       board.planDigest,
+		Status:           board.status,
+		ViewVersion:      board.viewVersion,
+		Nodes:            nodes,
+		ProviderAccounts: providerAccounts,
+		Cost:             board.cost,
 	})
 }
 
@@ -630,6 +784,7 @@ func (stream *TeamExecutionStream) ReadPage(
 	heads, err := unionCursorHeads(decoded.Heads, scopeA)
 	if err != nil {
 		return stream.gapFromView(
+			ctx,
 			cursor,
 			"scope_overflow",
 			ErrTimelineScopeOverflow,
@@ -649,12 +804,12 @@ func (stream *TeamExecutionStream) ReadPage(
 	if err != nil {
 		switch {
 		case errors.Is(err, journal.ErrInvalidStreamCursor):
-			return stream.gapFromView(cursor, "invalid_cursor", ErrInvalidTimelineCursor, viewA)
+			return stream.gapFromView(ctx, cursor, "invalid_cursor", ErrInvalidTimelineCursor, viewA)
 		case errors.Is(err, journal.ErrStreamCursorConflict),
 			errors.Is(err, journal.ErrStreamSequenceGap):
-			return stream.gapFromView(cursor, "cursor_conflict", ErrTimelineCursorConflict, viewA)
+			return stream.gapFromView(ctx, cursor, "cursor_conflict", ErrTimelineCursorConflict, viewA)
 		case errors.Is(err, journal.ErrStreamPageLimit):
-			return stream.gapFromView(cursor, "page_overflow", ErrTimelinePageOverflow, viewA)
+			return stream.gapFromView(ctx, cursor, "page_overflow", ErrTimelinePageOverflow, viewA)
 		default:
 			return TimelinePage{}, err
 		}
@@ -669,7 +824,7 @@ func (stream *TeamExecutionStream) ReadPage(
 	}
 	nextHeads, err := unionCursorHeads(journalPage.Heads(), scopeB)
 	if err != nil {
-		return stream.gapFromView(cursor, "scope_overflow", ErrTimelineScopeOverflow, viewB)
+		return stream.gapFromView(ctx, cursor, "scope_overflow", ErrTimelineScopeOverflow, viewB)
 	}
 	nextCursorState := timelineCursor{
 		SchemaVersion:  timelineSchemaVersion,
@@ -691,9 +846,12 @@ func (stream *TeamExecutionStream) ReadPage(
 	if err != nil {
 		return TimelinePage{}, err
 	}
-	board, attention := deriveBoardAndAttention(
+	board, attention := deriveBoardAndAttentionWithSources(
+		ctx,
 		viewB,
 		stream.teamInstanceID,
+		stream.diagnostics,
+		stream.testReports,
 	)
 	return TimelinePage{
 		teamInstanceID: stream.teamInstanceID,
@@ -717,10 +875,11 @@ func (stream *TeamExecutionStream) requestGap(
 	}
 	_ = stream.projection.Rebuild(ctx)
 	view := stream.projection.GlobalReadView()
-	return stream.gapFromView(cursor, reason, specific, view)
+	return stream.gapFromView(ctx, cursor, reason, specific, view)
 }
 
 func (stream *TeamExecutionStream) gapFromView(
+	ctx context.Context,
 	cursor,
 	reason string,
 	specific error,
@@ -743,9 +902,12 @@ func (stream *TeamExecutionStream) gapFromView(
 	}
 	page := newTimelineGapPage(stream.teamInstanceID, gap)
 	if _, ok := view.TeamExecution(stream.teamInstanceID); ok {
-		page.board, page.attention = deriveBoardAndAttention(
+		page.board, page.attention = deriveBoardAndAttentionWithSources(
+			ctx,
 			view,
 			stream.teamInstanceID,
+			stream.diagnostics,
+			stream.testReports,
 		)
 	}
 	page.attention = append(page.attention, attentionFromGap(gap))
@@ -1249,6 +1411,7 @@ func unionCursorHeads(
 
 var authoritativeKinds = map[string]string{
 	"TeamExecutionPlanned":          "team_planned",
+	"TeamNodeInitiallyBlocked":      "node_initially_blocked",
 	"TeamNodeAttemptScheduled":      "node_scheduled",
 	"TeamReadySetDispatched":        "ready_set_dispatched",
 	"TeamNodeAttemptRebound":        "node_rebound",
@@ -1348,8 +1511,8 @@ func mapAuthoritativeRecords(
 			cursor:         cursor,
 			payload: DeliveryPayload{
 				status:         firstNonempty(safe["status"], safe["acceptance_decision_kind"]),
-				reasonCode:     firstNonempty(safe["reason_code"], safe["reason"]),
-				action:         firstNonempty(safe["action"], safe["recovery_action"]),
+				reasonCode:     firstNonempty(safe["reason_code"], safe["code"], safe["reason"]),
+				action:         firstNonempty(safe["action"], safe["recovery_action"], safe["stage"]),
 				warningCode:    safe["warning_code"],
 				retryAt:        safe["retry_at"],
 				evidenceDigest: firstNonempty(safe["evidence_digest"], safe["source_evidence_digest"]),
@@ -1377,6 +1540,29 @@ func deriveBoardAndAttention(
 	view projection.GlobalReadView,
 	teamInstanceID string,
 ) (TeamBoard, []AttentionItem) {
+	return deriveBoardAndAttentionWithDiagnostics(
+		context.Background(), view, teamInstanceID, nil,
+	)
+}
+
+func deriveBoardAndAttentionWithDiagnostics(
+	ctx context.Context,
+	view projection.GlobalReadView,
+	teamInstanceID string,
+	diagnostics AgentAttemptDiagnosticSource,
+) (TeamBoard, []AttentionItem) {
+	return deriveBoardAndAttentionWithSources(
+		ctx, view, teamInstanceID, diagnostics, nil,
+	)
+}
+
+func deriveBoardAndAttentionWithSources(
+	ctx context.Context,
+	view projection.GlobalReadView,
+	teamInstanceID string,
+	diagnostics AgentAttemptDiagnosticSource,
+	testReports GovernedTestReportSource,
+) (TeamBoard, []AttentionItem) {
 	execution, _ := view.TeamExecution(teamInstanceID)
 	board := TeamBoard{
 		schemaVersion:  timelineSchemaVersion,
@@ -1390,11 +1576,23 @@ func deriveBoardAndAttention(
 	for _, node := range execution.Nodes {
 		row := NodeBoardRow{
 			LogicalNodeID:       node.LogicalNodeID,
+			NodeKind:            node.Kind,
+			RouteGroupID:        node.RouteGroupID,
 			Status:              node.Status,
 			DependencySatisfied: node.DependencySatisfied,
 			CurrentAttempt:      node.CurrentAttempt,
 			RecoveryAction:      node.RecoveryAction,
 		}
+		applyInitialRouteToBoardRow(&row, node)
+		if node.InitialBlockCode != "" {
+			row.TerminalReason = node.InitialBlockReason
+			row.IncidentID = node.InitialBlockIncidentID
+			row.FailureDiagnosticAvailable = true
+			row.FailureStage = node.InitialBlockStage
+			row.FailureCode = node.InitialBlockCode
+			row.FailureRetryable = node.InitialBlockRetryable
+		}
+		applyFallbackGovernanceToBoardRow(&row, node)
 		if !node.RetryAt.IsZero() {
 			row.RetryAt = canonicalTime(node.RetryAt)
 		}
@@ -1407,6 +1605,7 @@ func deriveBoardAndAttention(
 			row.RunID = attempt.RunID
 			row.RuntimeInstanceID = attempt.RuntimeInstanceID
 			row.AgentInstanceID = attempt.AgentInstanceID
+			applyAttemptBindingToBoardRow(&row, attempt)
 			if workItem, exists := view.WorkItem(attempt.WorkItemID); exists {
 				row.VerificationStatus = workItem.VerificationStatus
 			}
@@ -1446,9 +1645,12 @@ func deriveBoardAndAttention(
 			))
 		}
 	}
+	enrichBoardFailureDiagnostics(ctx, &board, diagnostics)
+	enrichBoardGovernedTestReports(ctx, &board, execution, testReports)
 	sort.Slice(board.nodes, func(i, j int) bool {
 		return board.nodes[i].LogicalNodeID < board.nodes[j].LogicalNodeID
 	})
+	board.providerAccounts = aggregateProviderAccountBoardRows(view, execution)
 	for _, approval := range view.ApprovalRequestsForTeam(teamInstanceID) {
 		if approval.Status != "pending" && approval.Status != "expired" {
 			continue
@@ -1493,6 +1695,493 @@ func deriveBoardAndAttention(
 	}
 	sortAttention(attention)
 	return board, attention
+}
+
+func enrichBoardGovernedTestReports(
+	ctx context.Context,
+	board *TeamBoard,
+	execution projection.TeamExecution,
+	source GovernedTestReportSource,
+) {
+	if ctx == nil || board == nil || source == nil ||
+		board.teamInstanceID == "" || execution.TeamInstanceID != board.teamInstanceID {
+		return
+	}
+	for index := range board.nodes {
+		row := &board.nodes[index]
+		attempt, found := findProjectedAttempt(
+			execution,
+			row.LogicalNodeID,
+			row.CurrentAttempt,
+		)
+		if !found || !attempt.ExecutionBindingAvailable ||
+			!attempt.ContextCapsuleAvailable || attempt.IncidentID == "" {
+			continue
+		}
+		reports, err := source.GovernedTestReportsForAttempt(
+			ctx,
+			work.AttemptReportQuery{
+				TeamInstanceID: execution.TeamInstanceID,
+				Authority: attemptpayload.Authority{
+					Scope: attemptpayload.Scope{
+						ConversationID: attempt.ContextCapsule.ConversationID,
+						WorkItemID:     attempt.WorkItemID, RunID: attempt.RunID,
+						ClaimGeneration:        attempt.ClaimGeneration,
+						RuntimeInstanceID:      attempt.RuntimeInstanceID,
+						ExecutionBindingDigest: attempt.ExecutionBinding.BindingDigest,
+						CapsuleDigest:          attempt.ContextCapsule.CapsuleDigest,
+					},
+					ClaimID: attempt.ClaimID, AgentInstanceID: attempt.AgentInstanceID,
+					IncidentID: attempt.IncidentID,
+				},
+			},
+		)
+		if err != nil || len(reports) == 0 {
+			continue
+		}
+		setDigest, err := verification.GovernedTestReportSetDigest(reports)
+		if err != nil {
+			continue
+		}
+		ordered := append([]verification.GovernedTestReport(nil), reports...)
+		sort.Slice(ordered, func(i, j int) bool {
+			return ordered[i].CallSequence() < ordered[j].CallSequence()
+		})
+		passed := 0
+		for _, report := range ordered {
+			if report.Outcome() == verification.TestOutcomePassed {
+				passed++
+			}
+		}
+		latest := ordered[len(ordered)-1]
+		row.TestReportAvailable = true
+		row.TestReportCount = len(ordered)
+		row.TestReportPassedCount = passed
+		row.TestReportFailedCount = len(ordered) - passed
+		row.TestReportSetDigest = setDigest
+		row.LatestTestRunner = string(latest.Runner())
+		row.LatestTestScope = string(latest.Scope())
+		row.LatestTestOutcome = string(latest.Outcome())
+		row.LatestTestReportDigest = latest.Digest()
+	}
+}
+
+func enrichBoardFailureDiagnostics(
+	ctx context.Context,
+	board *TeamBoard,
+	source AgentAttemptDiagnosticSource,
+) {
+	if ctx == nil || board == nil || source == nil {
+		return
+	}
+	queries := make([]AgentAttemptDiagnosticQuery, 0, len(board.nodes))
+	queryKeys := make(map[string]struct{}, len(board.nodes))
+	for _, row := range board.nodes {
+		if !row.ExecutionBindingAvailable || !validBoardIncidentID(row.IncidentID) {
+			continue
+		}
+		query := AgentAttemptDiagnosticQuery{
+			IncidentID: row.IncidentID, ProviderID: row.ProviderID,
+			ProviderAccountID: row.ProviderAccountID, ModelID: row.ModelID,
+		}
+		key := agentAttemptDiagnosticKey(query)
+		if key == "" {
+			continue
+		}
+		if _, exists := queryKeys[key]; exists {
+			continue
+		}
+		queryKeys[key] = struct{}{}
+		queries = append(queries, query)
+	}
+	if len(queries) == 0 {
+		return
+	}
+	summaries, err := source.AgentAttemptDiagnostics(ctx, queries)
+	if err != nil {
+		return
+	}
+	byKey := make(map[string]AgentAttemptDiagnosticSummary, len(summaries))
+	duplicates := make(map[string]struct{})
+	for _, summary := range summaries {
+		key := agentAttemptDiagnosticSummaryKey(summary)
+		if _, requested := queryKeys[key]; !requested ||
+			!validBoardFailureStage(summary.FailureStage) ||
+			!validBoardFailureCode(summary.FailureCode) {
+			continue
+		}
+		if _, exists := byKey[key]; exists {
+			delete(byKey, key)
+			duplicates[key] = struct{}{}
+			continue
+		}
+		if _, duplicate := duplicates[key]; duplicate {
+			continue
+		}
+		byKey[key] = summary
+	}
+	for index := range board.nodes {
+		row := &board.nodes[index]
+		key := agentAttemptDiagnosticKey(AgentAttemptDiagnosticQuery{
+			IncidentID: row.IncidentID, ProviderID: row.ProviderID,
+			ProviderAccountID: row.ProviderAccountID, ModelID: row.ModelID,
+		})
+		summary, exists := byKey[key]
+		if !exists {
+			continue
+		}
+		row.FailureDiagnosticAvailable = true
+		row.FailureStage = summary.FailureStage
+		row.FailureCode = summary.FailureCode
+		row.FailureRetryable = summary.Retryable
+	}
+}
+
+func agentAttemptDiagnosticKey(query AgentAttemptDiagnosticQuery) string {
+	if !validBoardIncidentID(query.IncidentID) ||
+		!validBoardDiagnosticIdentifier(query.ProviderID, 64) ||
+		!validBoardDiagnosticIdentifier(query.ProviderAccountID, 128) ||
+		!validBoardDiagnosticIdentifier(query.ModelID, 256) {
+		return ""
+	}
+	return strings.Join([]string{
+		query.IncidentID, query.ProviderID, query.ProviderAccountID, query.ModelID,
+	}, "\x00")
+}
+
+func agentAttemptDiagnosticSummaryKey(summary AgentAttemptDiagnosticSummary) string {
+	return agentAttemptDiagnosticKey(AgentAttemptDiagnosticQuery{
+		IncidentID: summary.IncidentID, ProviderID: summary.ProviderID,
+		ProviderAccountID: summary.ProviderAccountID, ModelID: summary.ModelID,
+	})
+}
+
+func validBoardDiagnosticIdentifier(value string, maximum int) bool {
+	if value == "" || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '-' || character == '_' || character == '.' ||
+			character == '/' || character == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validBoardFailureCode(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func validBoardFailureStage(stage string) bool {
+	switch stage {
+	case "input_admission", "uds_transport", "daemon_admission",
+		"helper_validation", "helper_start", "helper_authorization",
+		"helper_request", "helper_timeout", "helper_response", "helper_exit",
+		"keychain_access", "metadata_commit", "projection_refresh",
+		"vault_key_load", "vault_open", "vault_encrypt", "vault_commit",
+		"vault_decrypt", "vault_aad_validation", "vault_rotation", "vault_recovery",
+		"vault_export", "credential_lease_issue", "credential_lease_expire",
+		"credential_lease_revoke", "migration_read", "migration_commit",
+		"migration_cleanup", "provider_dns", "provider_tls", "provider_connect",
+		"provider_http", "provider_auth", "provider_rate_limit", "profile_publish",
+		"conversation_dispatch", "agent_attempt_dispatch", "agent_attempt_reconcile":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyFallbackGovernanceToBoardRow(
+	row *NodeBoardRow,
+	node projection.TeamExecutionNode,
+) {
+	if row == nil {
+		return
+	}
+	row.FallbackConfigured = node.WorkflowFallbackKey != ""
+	row.RecoveryApprovalRequired = node.RecoveryApprovalRequired
+	row.FallbackApprovalAvailable = node.FallbackApprovalAvailable
+	row.FallbackApprovalVersion = node.FallbackApprovalVersion
+	row.FallbackConsumed = node.FallbackConsumed
+}
+
+func applyInitialRouteToBoardRow(
+	row *NodeBoardRow,
+	node projection.TeamExecutionNode,
+) {
+	if row == nil || !node.InitialRouteAvailable {
+		return
+	}
+	row.ExecutionBindingAvailable = true
+	row.HarnessAdapter = node.InitialHarnessAdapter
+	row.ProviderID = node.InitialProviderID
+	row.ProviderAccountID = node.InitialProviderAccountID
+	row.ModelID = node.InitialModelID
+	row.ReasoningEffort = node.InitialReasoningEffort
+	row.TimeoutNanoseconds = node.InitialTimeoutNanoseconds
+	row.Capabilities = append([]string(nil), node.InitialCapabilities...)
+	row.CredentialRevision = node.InitialCredentialRevision
+	if node.InitialBudget != nil {
+		budget := *node.InitialBudget
+		row.BindingBudgetCredits = &budget
+	}
+}
+
+func applyAttemptBindingToBoardRow(
+	row *NodeBoardRow,
+	attempt projection.TeamExecutionAttempt,
+) {
+	if row == nil {
+		return
+	}
+	row.TerminalReason = attempt.TerminalReason
+	if validBoardIncidentID(attempt.IncidentID) {
+		row.IncidentID = attempt.IncidentID
+	}
+	if !attempt.ExecutionBindingAvailable {
+		return
+	}
+	binding := attempt.ExecutionBinding
+	row.ExecutionBindingAvailable = true
+	row.HarnessAdapter = binding.HarnessAdapter
+	row.ProviderID = binding.ProviderID
+	row.ProviderAccountID = binding.ProviderAccountID
+	row.ModelID = binding.ModelID
+	row.ReasoningEffort = binding.ReasoningEffort
+	row.TimeoutNanoseconds = int64(binding.Timeout)
+	if binding.Budget != nil {
+		budget := *binding.Budget
+		row.BindingBudgetCredits = &budget
+	}
+	row.Capabilities = append([]string{}, binding.Capabilities...)
+	row.CredentialRevision = binding.CredentialRevision
+	if attempt.ContextCapsuleAvailable {
+		contextRecord := attempt.ContextCapsule
+		row.ContextCapsuleAvailable = true
+		row.ContextCapsuleDigest = contextRecord.CapsuleDigest
+		row.ContextDisclosureReceiptDigest = contextRecord.DisclosureReceiptDigest
+		row.ContextAdapterID = contextRecord.ContextAdapterID
+		row.DisclosurePolicyID = contextRecord.DisclosurePolicyID
+		row.DisclosurePolicyVersion = contextRecord.DisclosurePolicyVersion
+		row.ContextTokenBudget = contextRecord.TokenBudget
+		row.ContextTokenCount = contextRecord.TokenCount
+		row.ContextDisclosedCount = contextRecord.DisclosedCount
+		row.ContextOmissionCount = contextRecord.OmittedCount
+	}
+	if attempt.RouteSegmentAvailable {
+		row.RouteSegmentAvailable = true
+		row.RouteSegmentID = attempt.RouteSegment.SegmentID
+		row.RouteSegmentDigest = attempt.RouteSegment.Digest
+	}
+	row.ProviderAccountPolicyAvailable = attempt.ProviderAccountPolicyAvailable
+	row.ProviderAccountPolicyVersion = attempt.ProviderAccountPolicyVersion
+	row.ProviderAccountPolicyRevision = attempt.ProviderAccountPolicyRevision
+	row.ProviderAccountPolicyDigest = attempt.ProviderAccountPolicyDigest
+	row.ProviderAccountTrustDomain = attempt.ProviderAccountTrustDomain
+	row.ProviderAccountRetentionMode = attempt.ProviderAccountRetentionMode
+	row.ProviderAccountDataRegion = attempt.ProviderAccountDataRegion
+	row.ProviderAccountAssignedBudgetUnits =
+		attempt.ProviderAccountAssignedBudgetUnits
+	row.ProviderModelRateCardAvailable = attempt.ProviderModelRateCardAvailable
+	if attempt.ProviderModelRateCardAvailable {
+		rateCard := attempt.ProviderModelRateCard
+		row.ProviderModelRateCardRevision = rateCard.Revision
+		row.ProviderModelRateCardDigest = rateCard.Digest
+		row.ProviderModelRateCardCurrency = rateCard.Currency
+		row.ProviderModelRateCardInputBasis = rateCard.InputTokenBasis
+	}
+	if attempt.AccountingAvailable {
+		accounting := attempt.Accounting
+		row.AccountingAvailable = true
+		row.UsageObserved = accounting.UsageObserved
+		row.InputTokens = accounting.InputTokens
+		row.OutputTokens = accounting.OutputTokens
+		row.CacheReadTokens = accounting.CacheReadTokens
+		row.CacheWriteTokens = accounting.CacheWriteTokens
+		row.TotalTokens = accounting.TotalTokens
+		row.CostObserved = accounting.CostObserved
+		row.CostMicrounits = accounting.CostMicrounits
+		row.CostCurrency = accounting.CostCurrency
+		row.CostSource = accounting.CostSource
+	}
+}
+
+func validBoardIncidentID(value string) bool {
+	if len(value) < 1 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'A' && character <= 'Z' ||
+			character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' ||
+			character == '.' || character == '_' ||
+			character == ':' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+type providerAccountAccumulator struct {
+	row   ProviderAccountBoardRow
+	costs map[string]int64
+}
+
+func aggregateProviderAccountBoardRows(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+) []ProviderAccountBoardRow {
+	byAccount := make(map[string]*providerAccountAccumulator)
+	for _, node := range execution.Nodes {
+		for _, attempt := range node.Attempts {
+			if !attempt.ExecutionBindingAvailable {
+				continue
+			}
+			binding := attempt.ExecutionBinding
+			if binding.ProviderID == "" || binding.ProviderAccountID == "" {
+				continue
+			}
+			key := binding.ProviderID + "\x00" + binding.ProviderAccountID
+			account := byAccount[key]
+			if account == nil {
+				account = &providerAccountAccumulator{
+					row: ProviderAccountBoardRow{
+						ProviderID:        binding.ProviderID,
+						ProviderAccountID: binding.ProviderAccountID,
+					},
+					costs: make(map[string]int64),
+				}
+				if policy, ok := view.ProviderAccountPolicy(
+					binding.ProviderID, binding.ProviderAccountID,
+				); ok {
+					account.row.PolicyAvailable = true
+					account.row.PolicyRevision = policy.Revision()
+					account.row.PolicyDigest = policy.Digest()
+					account.row.MaximumConcurrentAttempts =
+						policy.MaximumConcurrentAttempts()
+					account.row.DispatchWindowSeconds =
+						int64(policy.DispatchWindow() / time.Second)
+					account.row.MaximumDispatchStarts =
+						policy.MaximumDispatchStarts()
+					account.row.MaximumAssignedBudgetUnits =
+						policy.MaximumAssignedBudgetUnits()
+				}
+				byAccount[key] = account
+			}
+			account.row.AttemptCount++
+			if activeProviderAccountAttempt(attempt.Status) {
+				account.row.ActiveAttempts++
+				if attempt.ProviderAccountPolicyAvailable &&
+					!addProviderAccountValue(
+						&account.row.ActiveAssignedBudgetUnits,
+						attempt.ProviderAccountAssignedBudgetUnits,
+					) {
+					account.row.AggregationOverflow = true
+				}
+			}
+			if attempt.Status == "failed" || attempt.Status == "cancelled" {
+				account.row.FailedAttempts++
+			}
+			if attempt.TerminalReason == "rate_limited" ||
+				attempt.TerminalReason == "provider_rate_limited" {
+				account.row.RateLimitedAttempts++
+			}
+			if binding.Budget != nil {
+				account.row.BudgetAttemptCount++
+				if !addProviderAccountValue(&account.row.BudgetUnits, *binding.Budget) {
+					account.row.AggregationOverflow = true
+				}
+			}
+			if !attempt.AccountingAvailable {
+				continue
+			}
+			account.row.AccountingAttemptCount++
+			accounting := attempt.Accounting
+			if accounting.UsageObserved {
+				account.row.UsageAttemptCount++
+				for target, value := range map[*int64]int64{
+					&account.row.InputTokens:      accounting.InputTokens,
+					&account.row.OutputTokens:     accounting.OutputTokens,
+					&account.row.CacheReadTokens:  accounting.CacheReadTokens,
+					&account.row.CacheWriteTokens: accounting.CacheWriteTokens,
+					&account.row.TotalTokens:      accounting.TotalTokens,
+				} {
+					if !addProviderAccountValue(target, value) {
+						account.row.AggregationOverflow = true
+					}
+				}
+			}
+			if accounting.CostObserved {
+				account.row.CostAttemptCount++
+				key := accounting.CostCurrency + "\x00" + accounting.CostSource
+				current := account.costs[key]
+				if !addProviderAccountValue(&current, accounting.CostMicrounits) {
+					account.row.AggregationOverflow = true
+				} else {
+					account.costs[key] = current
+				}
+			}
+		}
+	}
+	rows := make([]ProviderAccountBoardRow, 0, len(byAccount))
+	for _, account := range byAccount {
+		if account.row.AttemptCount > 0 {
+			account.row.ErrorRateBasisPoints =
+				account.row.FailedAttempts * 10_000 / account.row.AttemptCount
+		}
+		account.row.Costs = make([]ProviderAccountCostRow, 0, len(account.costs))
+		for key, amount := range account.costs {
+			parts := strings.SplitN(key, "\x00", 2)
+			account.row.Costs = append(account.row.Costs, ProviderAccountCostRow{
+				Currency: parts[0], Source: parts[1], AmountMicrounits: amount,
+			})
+		}
+		sort.Slice(account.row.Costs, func(i, j int) bool {
+			if account.row.Costs[i].Currency != account.row.Costs[j].Currency {
+				return account.row.Costs[i].Currency < account.row.Costs[j].Currency
+			}
+			return account.row.Costs[i].Source < account.row.Costs[j].Source
+		})
+		rows = append(rows, account.row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].ProviderID != rows[j].ProviderID {
+			return rows[i].ProviderID < rows[j].ProviderID
+		}
+		return rows[i].ProviderAccountID < rows[j].ProviderAccountID
+	})
+	return rows
+}
+
+func activeProviderAccountAttempt(status string) bool {
+	switch status {
+	case "succeeded", "failed", "cancelled":
+		return false
+	default:
+		return status != ""
+	}
+}
+
+func addProviderAccountValue(target *int64, value int64) bool {
+	if target == nil || value < 0 || *target > int64(1<<63-1)-value {
+		return false
+	}
+	*target += value
+	return true
 }
 
 func newAttention(
@@ -1780,6 +2469,13 @@ func resolveDeliveryLineage(
 				attemptNumber,
 			)
 			logicalNodeID = safe["logical_node_id"]
+		} else if kind == "node_initially_blocked" && safe["logical_node_id"] != "" {
+			for _, node := range execution.Nodes {
+				if node.LogicalNodeID == safe["logical_node_id"] && node.Status == "blocked" {
+					logicalNodeID, found = node.LogicalNodeID, true
+					break
+				}
+			}
 		}
 	}
 	if err := validateDeliveryLineageFields(
@@ -1833,7 +2529,7 @@ func safeEventFields(payload []byte) (map[string]string, error) {
 	}
 	allowed := map[string]struct{}{
 		"logical_node_id": {}, "attempt_number": {}, "status": {},
-		"reason_code": {}, "reason": {}, "action": {},
+		"reason_code": {}, "reason": {}, "code": {}, "stage": {}, "action": {},
 		"recovery_action": {}, "warning_code": {}, "retry_at": {},
 		"evidence_digest": {}, "source_evidence_digest": {},
 		"acceptance_decision_kind": {},
@@ -2095,7 +2791,18 @@ func firstNonempty(values ...string) string {
 
 func cloneBoard(board TeamBoard) TeamBoard {
 	board.nodes = append([]NodeBoardRow(nil), board.nodes...)
+	board.providerAccounts = cloneProviderAccountRows(board.providerAccounts)
 	return board
+}
+
+func cloneProviderAccountRows(
+	rows []ProviderAccountBoardRow,
+) []ProviderAccountBoardRow {
+	cloned := append([]ProviderAccountBoardRow(nil), rows...)
+	for index := range cloned {
+		cloned[index].Costs = append([]ProviderAccountCostRow(nil), rows[index].Costs...)
+	}
+	return cloned
 }
 
 func cloneTimelinePage(page TimelinePage) TimelinePage {

@@ -27,6 +27,36 @@ func TestLocalProductSetupWriterSavesArchivesAndRestoresTeamDefinition(
 		t.Fatalf("NewLocalProductSetupWriter() error = %v", err)
 	}
 	definition, definitions, profiles := localProductSetupDefinition(t)
+	budget := int64(64)
+	profiles[0].ProviderID = "deepseek"
+	profiles[0].ProviderAccountID = "deepseek.primary"
+	profiles[0].AuthMode = loomruntime.AuthBrokered
+	profiles[0].EndpointFingerprint = localProductSetupDigest("endpoint")
+	profiles[0].CredentialReference = "credential-ref-deepseek-primary"
+	profiles[0].CredentialRevision = 4
+	profiles[0].Budget = &budget
+	profileSnapshot := &TeamConfigurationExecutionProfile{
+		Version: 1, ID: profiles[0].ID,
+		HarnessAdapter: profiles[0].AdapterType, ProviderID: profiles[0].ProviderID,
+		ProviderAccountID: profiles[0].ProviderAccountID, ModelID: profiles[0].ModelID,
+		AuthMode:            profiles[0].AuthMode,
+		EndpointFingerprint: profiles[0].EndpointFingerprint,
+		CredentialReference: profiles[0].CredentialReference,
+		CredentialRevision:  profiles[0].CredentialRevision,
+		TimeoutNanoseconds:  int64(profiles[0].Timeout), Budget: &budget,
+		RequiredCapabilities: append([]string(nil), profiles[0].RequiredCapabilities...),
+	}
+	fallbackSnapshot := &TeamConfigurationExecutionProfile{
+		Version: 1, ID: profiles[1].ID,
+		HarnessAdapter: profiles[1].AdapterType, ProviderID: profiles[1].ProviderID,
+		ProviderAccountID: profiles[1].ProviderAccountID, ModelID: profiles[1].ModelID,
+		AuthMode:             profiles[1].AuthMode,
+		EndpointFingerprint:  profiles[1].EndpointFingerprint,
+		CredentialReference:  profiles[1].CredentialReference,
+		CredentialRevision:   profiles[1].CredentialRevision,
+		TimeoutNanoseconds:   int64(profiles[1].Timeout),
+		RequiredCapabilities: append([]string(nil), profiles[1].RequiredCapabilities...),
+	}
 	command := TeamDefinitionSaveCommand{
 		CommandID:       "save-command-1",
 		ExpectedHead:    0,
@@ -49,6 +79,12 @@ func TestLocalProductSetupWriterSavesArchivesAndRestoresTeamDefinition(
 					RuntimeProfileID:  "profile-main",
 					RuntimeInstanceID: "runtime-pi",
 					ModelID:           "model-a",
+					ExecutionProfile:  profileSnapshot,
+					FallbackRoute: &TeamConfigurationFallbackRoute{
+						Version: 1, RuntimeProfileID: profiles[1].ID,
+						RuntimeInstanceID: "runtime-pi", ModelID: profiles[1].ModelID,
+						ExecutionProfile: fallbackSnapshot, ApprovalRequired: true,
+					},
 					SkillRevisions: []TeamConfigurationSkillRevision{
 						{
 							ID:       "skill-review",
@@ -72,6 +108,22 @@ func TestLocalProductSetupWriterSavesArchivesAndRestoresTeamDefinition(
 			},
 		},
 	}
+	command.Configuration.RoleBindings[0].ExecutionProfile.CredentialRevision++
+	if _, err := writer.SaveTeamDefinition(
+		context.Background(),
+		command,
+	); !errors.Is(err, ErrInvalidLocalProductSetupWrite) {
+		t.Fatalf("SaveTeamDefinition(profile drift) error = %v", err)
+	}
+	command.Configuration.RoleBindings[0].ExecutionProfile.CredentialRevision--
+	command.Configuration.RoleBindings[0].FallbackRoute.ApprovalRequired = false
+	if _, err := writer.SaveTeamDefinition(
+		context.Background(),
+		command,
+	); !errors.Is(err, ErrInvalidLocalProductSetupWrite) {
+		t.Fatalf("SaveTeamDefinition(unapproved fallback) error = %v", err)
+	}
+	command.Configuration.RoleBindings[0].FallbackRoute.ApprovalRequired = true
 	saved, err := writer.SaveTeamDefinition(context.Background(), command)
 	if err != nil {
 		t.Fatalf("SaveTeamDefinition() error = %v", err)
@@ -123,10 +175,131 @@ func TestLocalProductSetupWriterSavesArchivesAndRestoresTeamDefinition(
 	if len(events) != 3 {
 		t.Fatalf("events = %d", len(events))
 	}
+	if !bytes.Contains(
+		events[0].PayloadJSON,
+		[]byte(`"credential_reference":"credential-ref-deepseek-primary"`),
+	) {
+		t.Fatalf("missing frozen credential reference: %s", events[0].PayloadJSON)
+	}
+	if !bytes.Contains(events[0].PayloadJSON, []byte(`"fallback_route"`)) ||
+		!bytes.Contains(events[0].PayloadJSON, []byte(`"approval_required":true`)) {
+		t.Fatalf("missing governed fallback route: %s", events[0].PayloadJSON)
+	}
 	for _, event := range events {
-		if bytes.Contains(event.PayloadJSON, []byte("credential")) ||
-			bytes.Contains(event.PayloadJSON, []byte("secret")) {
-			t.Fatalf("unexpected credential material in team event: %s", event.PayloadJSON)
+		for _, forbidden := range [][]byte{
+			[]byte("deepseek-live-secret"),
+			[]byte("Authorization"),
+			[]byte("api_key"),
+			[]byte("secret_body"),
+		} {
+			if bytes.Contains(event.PayloadJSON, forbidden) {
+				t.Fatalf("unexpected secret material in team event: %s", event.PayloadJSON)
+			}
+		}
+	}
+}
+
+func TestLocalProductSetupWriterPersistsVersionedParallelRouteSet(t *testing.T) {
+	store := openLocalProductSetupWriterStore(t)
+	writer, err := NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, definitions, profiles := localProductSetupDefinition(t)
+	primary := profiles[0]
+	alternate := primary
+	alternate.ID = "profile-main-parallel"
+	alternate.ProviderID = "deepseek"
+	alternate.ProviderAccountID = "deepseek.primary"
+	alternate.ModelID = "deepseek-chat"
+	alternate.AuthMode = loomruntime.AuthBrokered
+	alternate.EndpointFingerprint = localProductSetupDigest("parallel-endpoint")
+	alternate.CredentialReference = "credential-ref-deepseek-parallel"
+	alternate.CredentialRevision = 7
+	profiles = append(profiles, alternate)
+	snapshot := func(profile loomruntime.RuntimeProfile) *TeamConfigurationExecutionProfile {
+		return &TeamConfigurationExecutionProfile{
+			Version: 1, ID: profile.ID, HarnessAdapter: profile.AdapterType,
+			ProviderID: profile.ProviderID, ProviderAccountID: profile.ProviderAccountID,
+			ModelID: profile.ModelID, AuthMode: profile.AuthMode,
+			EndpointFingerprint:  profile.EndpointFingerprint,
+			CredentialReference:  profile.CredentialReference,
+			CredentialRevision:   profile.CredentialRevision,
+			TimeoutNanoseconds:   int64(profile.Timeout),
+			RequiredCapabilities: append([]string(nil), profile.RequiredCapabilities...),
+		}
+	}
+	route := func(profile loomruntime.RuntimeProfile) TeamConfigurationExecutionRoute {
+		return TeamConfigurationExecutionRoute{
+			Version: 1, RuntimeProfileID: profile.ID,
+			RuntimeInstanceID: "runtime-pi", ModelID: profile.ModelID,
+			ExecutionProfile: snapshot(profile),
+		}
+	}
+	command := TeamDefinitionSaveCommand{
+		CommandID: "save-parallel-route-set", OccurredAt: time.Unix(1050, 0).UTC(),
+		Definition: definition, Definitions: definitions, RuntimeProfiles: profiles,
+		DraftID: "draft-parallel", DraftRevision: 1,
+		CatalogDigest: localProductSetupDigest("parallel-catalog"),
+		ContentDigest: localProductSetupDigest("parallel-content"),
+		BindingDigest: localProductSetupDigest("parallel-binding"),
+		Configuration: TeamConfigurationSnapshot{
+			RequestedConcurrency: 2, MaximumBudgetCredits: 100,
+			RoleBindings: []TeamConfigurationRoleBinding{
+				{
+					Kind: "main", AgentDefinitionID: "agent-main",
+					RuntimeProfileID: primary.ID, RuntimeInstanceID: "runtime-pi",
+					ModelID: primary.ModelID, ExecutionProfile: snapshot(primary),
+					ParallelRouteSet: &TeamConfigurationParallelRouteSet{
+						Version:          1,
+						AdditionalRoutes: []TeamConfigurationExecutionRoute{route(alternate)},
+						SynthesisRoute:   route(primary),
+					},
+					SkillRevisions: []TeamConfigurationSkillRevision{},
+					PermissionIDs:  []string{}, ResourceIDs: []string{},
+				},
+				{
+					Kind: "subagent", AgentDefinitionID: "agent-sub",
+					RuntimeProfileID: profiles[1].ID, RuntimeInstanceID: "runtime-pi",
+					ModelID:        profiles[1].ModelID,
+					SkillRevisions: []TeamConfigurationSkillRevision{},
+					PermissionIDs:  []string{}, ResourceIDs: []string{},
+				},
+			},
+		},
+	}
+	command.Configuration.RoleBindings[0].ParallelRouteSet.AdditionalRoutes[0].
+		ExecutionProfile.CredentialRevision++
+	if _, err := writer.SaveTeamDefinition(context.Background(), command); !errors.Is(err, ErrInvalidLocalProductSetupWrite) {
+		t.Fatalf("SaveTeamDefinition(route substitution) error = %v", err)
+	}
+	command.Configuration.RoleBindings[0].ParallelRouteSet.AdditionalRoutes[0].
+		ExecutionProfile.CredentialRevision--
+	command.Configuration.RoleBindings[0].FallbackRoute = &TeamConfigurationFallbackRoute{
+		Version: 1, RuntimeProfileID: alternate.ID, RuntimeInstanceID: "runtime-pi",
+		ModelID: alternate.ModelID, ExecutionProfile: snapshot(alternate),
+		ApprovalRequired: true,
+	}
+	if _, err := writer.SaveTeamDefinition(context.Background(), command); !errors.Is(err, ErrInvalidLocalProductSetupWrite) {
+		t.Fatalf("SaveTeamDefinition(parallel plus fallback) error = %v", err)
+	}
+	command.Configuration.RoleBindings[0].FallbackRoute = nil
+	if _, err := writer.SaveTeamDefinition(context.Background(), command); err != nil {
+		t.Fatalf("SaveTeamDefinition(parallel route set) error = %v", err)
+	}
+	events, err := store.ReadStream(context.Background(), "team-definition/team-1")
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ReadStream() = %d, %v", len(events), err)
+	}
+	for _, required := range [][]byte{
+		[]byte(`"parallel_route_set"`),
+		[]byte(`"additional_routes"`),
+		[]byte(`"synthesis_route"`),
+		[]byte(`"provider_account_id":"deepseek.primary"`),
+		[]byte(`"credential_revision":7`),
+	} {
+		if !bytes.Contains(events[0].PayloadJSON, required) {
+			t.Fatalf("missing parallel route authority %q: %s", required, events[0].PayloadJSON)
 		}
 	}
 }
@@ -228,6 +401,96 @@ func TestLocalProductSetupWriterCommitsOnlyNonSecretCredentialMetadata(
 		bytes.Contains(events[0].PayloadJSON, []byte("authorization")) ||
 		bytes.Contains(events[0].PayloadJSON, []byte("secret")) {
 		t.Fatalf("credential events = %#v", events)
+	}
+}
+
+func TestLocalProductSetupWriterCommitsCatalogProviderMetadata(t *testing.T) {
+	store := openLocalProductSetupWriterStore(t)
+	writer, err := NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID:           "credential-deepseek-1",
+			ProviderID:          "deepseek",
+			CredentialReference: "credential-ref-deepseek-1",
+			ExpectedRevision:    0,
+			OccurredAt:          time.Unix(1250, 0).UTC(),
+			Status:              credentials.CredentialConfigured,
+			Reason:              credentials.VerificationReasonNone,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CommitCredentialMetadata() error = %v", err)
+	}
+	if result.ProviderID != "deepseek" || result.Revision != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	events, err := store.ReadStream(
+		context.Background(), "provider-credential/deepseek",
+	)
+	if err != nil || len(events) != 1 ||
+		events[0].Type != "ProviderCredentialConfigured" {
+		t.Fatalf("events = %#v, error = %v", events, err)
+	}
+}
+
+func TestLocalProductSetupWriterCommitsIndependentProviderAccountStream(t *testing.T) {
+	store := openLocalProductSetupWriterStore(t)
+	writer, err := NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := writer.CommitCredentialMetadata(
+		context.Background(), credentials.MetadataCommand{
+			CommandID: "credential-deepseek-work-1", ProviderID: "deepseek",
+			ProviderAccountID:   "deepseek.work",
+			CredentialReference: "credential-ref-deepseek-work-1",
+			ExpectedRevision:    0, OccurredAt: time.Unix(1251, 0).UTC(),
+			Status: credentials.CredentialConfigured,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderAccountID != "deepseek.work" || result.Revision != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	events, err := store.ReadStream(
+		context.Background(), "provider-account-credential/deepseek.work",
+	)
+	if err != nil || len(events) != 1 ||
+		events[0].Type != "ProviderAccountCredentialConfigured" ||
+		!bytes.Contains(events[0].PayloadJSON, []byte(`"provider_account_id":"deepseek.work"`)) ||
+		bytes.Contains(events[0].PayloadJSON, []byte("private-key")) {
+		t.Fatalf("events = %#v, error = %v", events, err)
+	}
+}
+
+func TestLocalProductSetupWriterKeepsPrimaryAccountOnLegacyStream(t *testing.T) {
+	store := openLocalProductSetupWriterStore(t)
+	writer, err := NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := writer.CommitCredentialMetadata(
+		context.Background(), credentials.MetadataCommand{
+			CommandID: "credential-deepseek-primary-1", ProviderID: "deepseek",
+			ProviderAccountID:   "deepseek.primary",
+			CredentialReference: "credential-ref-deepseek-primary-1",
+			ExpectedRevision:    0, OccurredAt: time.Unix(1252, 0).UTC(),
+			Status: credentials.CredentialConfigured,
+		},
+	)
+	if err != nil || result.ProviderAccountID != "deepseek.primary" {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	events, err := store.ReadStream(context.Background(), "provider-credential/deepseek")
+	if err != nil || len(events) != 1 || events[0].Type != "ProviderCredentialConfigured" ||
+		bytes.Contains(events[0].PayloadJSON, []byte("provider_account_id")) {
+		t.Fatalf("events=%#v error=%v", events, err)
 	}
 }
 

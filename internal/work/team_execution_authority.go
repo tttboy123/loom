@@ -11,13 +11,25 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/assets"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
+	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/teams"
 	"loom-pi-rebuild/internal/verification"
 )
+
+type FrozenExecutionBinding = loomruntime.FrozenExecutionBinding
+
+func validateAuthorityExecutionBinding(
+	input FrozenExecutionBinding,
+) (FrozenExecutionBinding, error) {
+	return loomruntime.ValidateFrozenExecutionBinding(input)
+}
 
 const (
 	teamRecoveryTriggerOutput               = "output"
@@ -34,16 +46,111 @@ var (
 	ErrInvalidTeamRecovery          = errors.New("invalid Team node recovery")
 	ErrTeamAttemptRecoveryRequired  = errors.New("Team node attempt recovery requires human action")
 	ErrLegacyAcceptanceUnbound      = errors.New("legacy Team acceptance binding is unavailable")
+	ErrInvalidTeamFallbackApproval  = errors.New("invalid Team fallback approval")
 )
 
+type TeamFallbackApprovalInput struct {
+	Version             int
+	ApprovalID          string
+	ActorRef            string
+	ApprovedAt          time.Time
+	SourceBindingDigest string
+	TargetBindingDigest string
+}
+
+type TeamFallbackApproval struct {
+	version             int
+	approvalID          string
+	actorRef            string
+	approvedAt          time.Time
+	sourceBindingDigest string
+	targetBindingDigest string
+	digest              string
+}
+
+func NewTeamFallbackApproval(
+	input TeamFallbackApprovalInput,
+) (TeamFallbackApproval, error) {
+	if input.Version < 1 || input.Version > 1_000_000 ||
+		!validOpaqueID(input.ApprovalID) ||
+		!validOpaqueID(input.ActorRef) ||
+		input.ApprovedAt.IsZero() || input.ApprovedAt.Location() != time.UTC ||
+		!validSHA256Hex(input.SourceBindingDigest) ||
+		!validSHA256Hex(input.TargetBindingDigest) ||
+		input.SourceBindingDigest == input.TargetBindingDigest {
+		return TeamFallbackApproval{}, ErrInvalidTeamFallbackApproval
+	}
+	approval := TeamFallbackApproval{
+		version:             input.Version,
+		approvalID:          input.ApprovalID,
+		actorRef:            input.ActorRef,
+		approvedAt:          input.ApprovedAt,
+		sourceBindingDigest: input.SourceBindingDigest,
+		targetBindingDigest: input.TargetBindingDigest,
+	}
+	approval.digest = canonicalTeamFallbackApprovalDigest(approval)
+	return approval, nil
+}
+
+func (approval TeamFallbackApproval) Version() int { return approval.version }
+func (approval TeamFallbackApproval) ApprovalID() string {
+	return approval.approvalID
+}
+func (approval TeamFallbackApproval) ActorRef() string { return approval.actorRef }
+func (approval TeamFallbackApproval) ApprovedAt() time.Time {
+	return approval.approvedAt
+}
+func (approval TeamFallbackApproval) SourceBindingDigest() string {
+	return approval.sourceBindingDigest
+}
+func (approval TeamFallbackApproval) TargetBindingDigest() string {
+	return approval.targetBindingDigest
+}
+func (approval TeamFallbackApproval) Digest() string { return approval.digest }
+func (approval TeamFallbackApproval) Valid() bool {
+	rebuilt, err := NewTeamFallbackApproval(TeamFallbackApprovalInput{
+		Version:             approval.version,
+		ApprovalID:          approval.approvalID,
+		ActorRef:            approval.actorRef,
+		ApprovedAt:          approval.approvedAt,
+		SourceBindingDigest: approval.sourceBindingDigest,
+		TargetBindingDigest: approval.targetBindingDigest,
+	})
+	return err == nil && rebuilt.digest == approval.digest
+}
+
+func canonicalTeamFallbackApprovalDigest(approval TeamFallbackApproval) string {
+	hash := sha256.New()
+	fields := []string{
+		"loom.team-fallback-approval.v1",
+		fmt.Sprint(approval.version),
+		approval.approvalID,
+		approval.actorRef,
+		approval.approvedAt.Format(time.RFC3339Nano),
+		approval.sourceBindingDigest,
+		approval.targetBindingDigest,
+	}
+	var length [8]byte
+	for _, field := range fields {
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(field))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 type TeamAttemptSelection struct {
-	LogicalNodeID string
-	AttemptNumber int
+	LogicalNodeID    string
+	AttemptNumber    int
+	ExecutionBinding loomruntime.FrozenExecutionBinding
+	ContextCapsule   contextcapsule.RoleContextCapsule
 }
 
 type TeamDispatchInput struct {
 	Plan                 teams.ExecutionPlan
 	ReadyAttempts        []TeamAttemptSelection
+	InitialBlocks        []teams.InitialExecutionBlock
+	RouteSummaries       []TeamNodeRouteSummary
 	SemanticBindings     []TeamNodeSemanticBinding
 	Materializations     []TeamAttemptMaterialization
 	AssetSourceHeads     []journal.StreamHead
@@ -52,6 +159,19 @@ type TeamDispatchInput struct {
 	AuthoritativeTime    time.Time
 	PrepareLeaseDuration time.Duration
 	CorrelationID        string
+}
+
+type TeamNodeRouteSummary struct {
+	LogicalNodeID      string
+	HarnessAdapter     string
+	ProviderID         string
+	ProviderAccountID  string
+	ModelID            string
+	ReasoningEffort    string
+	TimeoutNanoseconds int64
+	Budget             *int64
+	Capabilities       []string
+	CredentialRevision int64
 }
 
 type TeamAttemptMaterialization struct {
@@ -74,6 +194,8 @@ type TeamNodeSemanticBinding struct {
 	PrimaryWorkflowPath         string
 	WorkflowFallbackKey         string
 	RecoveryApprovalRequired    bool
+	FallbackApproval            TeamFallbackApproval
+	FallbackRuntimeInstanceID   string
 	AcceptanceContractVersion   int
 	AcceptanceContractDigest    string
 	AcceptanceRisk              string
@@ -145,23 +267,24 @@ type TeamRecoveryPolicy interface {
 }
 
 type TeamRecoveryDecisionRequest struct {
-	TeamInstanceID           string
-	PlanDigest               string
-	LogicalNodeID            string
-	AttemptNumber            int
-	MaxAttempts              int
-	AgentInstanceID          string
-	RuntimeInstanceID        string
-	EvidenceID               string
-	EvidenceDigest           string
-	OutputSummaryDigest      string
-	Classification           verification.Classification
-	PriorClassifications     []verification.OutputClassification
-	RemainingCredits         int
-	FallbackConsumed         bool
-	DecisionTime             time.Time
-	Trigger                  string
-	AcceptanceDecisionDigest string
+	TeamInstanceID            string
+	PlanDigest                string
+	LogicalNodeID             string
+	AttemptNumber             int
+	MaxAttempts               int
+	AgentInstanceID           string
+	RuntimeInstanceID         string
+	EvidenceID                string
+	EvidenceDigest            string
+	OutputSummaryDigest       string
+	Classification            verification.Classification
+	PriorClassifications      []verification.OutputClassification
+	RemainingCredits          int
+	FallbackConsumed          bool
+	FallbackRuntimeInstanceID string
+	DecisionTime              time.Time
+	Trigger                   string
+	AcceptanceDecisionDigest  string
 }
 
 type TeamRecoveryDecision interface {
@@ -207,6 +330,7 @@ type TeamAttemptRecord struct {
 	runtimeInstanceID             string
 	agentInstanceID               string
 	status                        string
+	terminalReason                string
 	workflowPath                  string
 	evidenceID                    string
 	evidenceDigest                string
@@ -219,10 +343,16 @@ type TeamAttemptRecord struct {
 	assetRevisionSetDigest        string
 	materializationManifestDigest string
 	materializationRootDigest     string
+	executionBinding              loomruntime.FrozenExecutionBinding
+	contextCapsule                contextcapsule.AuthorityRecord
+	routeSegment                  contextcapsule.RouteSegmentBinding
 }
 
 type TeamNodeRecord struct {
 	logicalNodeID            string
+	kind                     teams.ExecutionNodeKind
+	routeGroupID             string
+	dependsOn                []string
 	status                   string
 	dependencySatisfied      bool
 	currentAttempt           int
@@ -242,6 +372,12 @@ type TeamNodeRecord struct {
 	creditsAfter             int
 	fallbackConsumed         bool
 	priorClassifications     []verification.OutputClassification
+	initialBlockCode         string
+	initialBlockStage        string
+	initialBlockReason       string
+	initialBlockRetryable    bool
+	initialBlockSourceNodeID string
+	routeSummary             TeamNodeRouteSummary
 }
 
 type TeamExecutionRecord struct {
@@ -289,11 +425,23 @@ func (record TeamExecutionRecord) LegacyAcceptanceUnbound() bool {
 func (record TeamExecutionRecord) Nodes() []TeamNodeRecord {
 	return cloneTeamNodeRecords(record.nodes)
 }
-func (record TeamNodeRecord) LogicalNodeID() string     { return record.logicalNodeID }
-func (record TeamNodeRecord) Status() string            { return record.status }
-func (record TeamNodeRecord) DependencySatisfied() bool { return record.dependencySatisfied }
-func (record TeamNodeRecord) CurrentAttempt() int       { return record.currentAttempt }
-func (record TeamNodeRecord) RetryAt() time.Time        { return record.retryAt }
+func (record TeamNodeRecord) LogicalNodeID() string         { return record.logicalNodeID }
+func (record TeamNodeRecord) Kind() teams.ExecutionNodeKind { return record.kind }
+func (record TeamNodeRecord) RouteGroupID() string          { return record.routeGroupID }
+func (record TeamNodeRecord) Status() string                { return record.status }
+func (record TeamNodeRecord) DependencySatisfied() bool     { return record.dependencySatisfied }
+func (record TeamNodeRecord) CurrentAttempt() int           { return record.currentAttempt }
+func (record TeamNodeRecord) RetryAt() time.Time            { return record.retryAt }
+func (record TeamNodeRecord) InitialBlockCode() string      { return record.initialBlockCode }
+func (record TeamNodeRecord) InitialBlockStage() string     { return record.initialBlockStage }
+func (record TeamNodeRecord) InitialBlockReason() string    { return record.initialBlockReason }
+func (record TeamNodeRecord) InitialBlockRetryable() bool   { return record.initialBlockRetryable }
+func (record TeamNodeRecord) InitialBlockSourceNodeID() string {
+	return record.initialBlockSourceNodeID
+}
+func (record TeamNodeRecord) RouteSummary() TeamNodeRouteSummary {
+	return cloneTeamRouteSummary(record.routeSummary)
+}
 func (record TeamNodeRecord) AcceptanceDecisionDigest() string {
 	return record.acceptanceDecisionDigest
 }
@@ -324,6 +472,7 @@ func (record TeamAttemptRecord) MaterializationRootDigest() string {
 	return record.materializationRootDigest
 }
 func (record TeamAttemptRecord) Status() string         { return record.status }
+func (record TeamAttemptRecord) TerminalReason() string { return record.terminalReason }
 func (record TeamAttemptRecord) EvidenceID() string     { return record.evidenceID }
 func (record TeamAttemptRecord) EvidenceDigest() string { return record.evidenceDigest }
 func (record TeamAttemptRecord) WorkflowPath() string   { return record.workflowPath }
@@ -335,6 +484,27 @@ func (record TeamAttemptRecord) OutputClassificationDigest() string {
 }
 func (record TeamAttemptRecord) OutputSummaryDigest() string {
 	return record.outputSummaryDigest
+}
+func (record TeamAttemptRecord) ExecutionBinding() loomruntime.FrozenExecutionBinding {
+	return cloneTeamExecutionBinding(record.executionBinding)
+}
+func (record TeamAttemptRecord) ContextCapsuleDigest() string {
+	return record.contextCapsule.CapsuleDigest
+}
+func (record TeamAttemptRecord) ContextDisclosureReceiptDigest() string {
+	return record.contextCapsule.DisclosureReceiptDigest
+}
+func (record TeamAttemptRecord) ContextTokenCount() int {
+	return record.contextCapsule.TokenCount
+}
+func (record TeamAttemptRecord) ContextOmissionCount() int {
+	return record.contextCapsule.OmittedCount
+}
+func (record TeamAttemptRecord) ContextCapsuleAuthority() contextcapsule.AuthorityRecord {
+	return record.contextCapsule
+}
+func (record TeamAttemptRecord) RouteSegmentBinding() contextcapsule.RouteSegmentBinding {
+	return record.routeSegment
 }
 
 func (authority *Authority) DispatchTeamReadySet(
@@ -375,7 +545,12 @@ func (authority *Authority) DispatchTeamReadySet(
 		return TeamDispatchResult{}, err
 	}
 	if !exactTeamHeads(input.ExpectedHeads, snapshot.Heads()) {
-		return TeamDispatchResult{}, ErrStaleGlobalReadView
+		return TeamDispatchResult{}, fmt.Errorf(
+			"%w: expected streams=%v actual streams=%v",
+			ErrStaleGlobalReadView,
+			teamHeadStreamIDs(input.ExpectedHeads),
+			teamHeadStreamIDs(snapshot.Heads()),
+		)
 	}
 	state, err := replayTeamDispatchState(ctx, snapshot.Events())
 	if err != nil {
@@ -418,7 +593,13 @@ func (authority *Authority) DispatchTeamReadySet(
 	identitySequence := snapshotHead(snapshot, runIdentityStreamID).Sequence
 	capacitySequences := make(map[string]int64)
 	runtimeActive := make(map[string]int)
+	accountCapacitySequences := make(map[string]int64)
 	for _, selection := range selections {
+		accountID := selection.ExecutionBinding.ProviderAccountID
+		if accountID != "" {
+			accountCapacitySequences[accountID] =
+				state.heads[providerAccountCapacityStream(accountID)]
+		}
 		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
 		runtimeInstanceID := node.RuntimeInstanceID()
 		if nodeRecord := teamNodeByID(&team, selection.LogicalNodeID); nodeRecord != nil {
@@ -461,6 +642,7 @@ func (authority *Authority) DispatchTeamReadySet(
 				input.Plan,
 				input.ViewVersion,
 				input.SemanticBindings,
+				input.RouteSummaries,
 			),
 		))
 		team = plannedTeamRecord(
@@ -469,6 +651,21 @@ func (authority *Authority) DispatchTeamReadySet(
 			teamSequence,
 			plannedID,
 		)
+		for _, block := range input.InitialBlocks {
+			teamSequence++
+			blockedID := deterministicEventID(
+				"TeamNodeInitiallyBlocked", input.Plan.TeamInstanceID(),
+				input.Plan.Digest(), block.LogicalNodeID, block.Code,
+				block.Stage, block.SourceLogicalNodeID,
+			)
+			events = append(events, newEvent(
+				blockedID, teamStreamID, teamSequence,
+				"TeamNodeInitiallyBlocked", now, input.CorrelationID,
+				team.lastEventID, teamInitialBlockPayloadFrom(block),
+			))
+			applyInitialTeamBlock(&team, block)
+			team.lastEventID = blockedID
+		}
 		for _, selection := range selections {
 			node := nodeByLogicalID(nodes, selection.LogicalNodeID)
 			if selection.AttemptNumber != 1 {
@@ -499,12 +696,12 @@ func (authority *Authority) DispatchTeamReadySet(
 				"TeamNodeAttemptScheduled",
 				now,
 				input.CorrelationID,
-				plannedID,
+				team.lastEventID,
 				teamAttemptScheduledPayload(node.LogicalNodeID(), scheduled, time.Time{}),
 			))
 			applyScheduledAttempt(&team, node.LogicalNodeID(), scheduled, time.Time{})
 		}
-	} else if team.planDigest != input.Plan.Digest() {
+	} else if team.planDigest != input.Plan.Digest() || len(input.InitialBlocks) != 0 {
 		return TeamDispatchResult{}, ErrTeamExecutionConflict
 	}
 	if team.status != "" {
@@ -554,6 +751,11 @@ func (authority *Authority) DispatchTeamReadySet(
 	dispatchPayloads := make([]teamDispatchAttemptPayload, 0, len(selections))
 	for _, selection := range selections {
 		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
+		capsuleRecord := selection.ContextCapsule.AuthorityRecord()
+		routeSegment, routeSegmentErr := BuildTeamRouteSegmentBinding(selection)
+		if routeSegmentErr != nil {
+			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
 		assetBinding := teamSemanticBindingByID(input.SemanticBindings, selection.LogicalNodeID)
 		materialization := teamAttemptMaterializationByID(
 			input.Materializations, selection.LogicalNodeID, selection.AttemptNumber,
@@ -564,8 +766,37 @@ func (authority *Authority) DispatchTeamReadySet(
 			return TeamDispatchResult{}, ErrInvalidTeamAttempt
 		}
 		attemptRecord := teamAttemptByNumber(nodeRecord, selection.AttemptNumber)
-		if attemptRecord == nil || attemptRecord.status != "scheduled" {
+		if attemptRecord == nil || attemptRecord.status != "scheduled" ||
+			selection.ExecutionBinding.RuntimeInstanceID !=
+				attemptRecord.runtimeInstanceID {
 			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
+		if selection.AttemptNumber > 1 {
+			previous := teamAttemptByNumber(nodeRecord, selection.AttemptNumber-1)
+			if previous == nil || previous.executionBinding.BindingDigest == "" ||
+				previous.contextCapsule.CapsuleDigest == "" {
+				return TeamDispatchResult{}, ErrInvalidTeamAttempt
+			}
+			if previous.executionBinding.BindingDigest ==
+				selection.ExecutionBinding.BindingDigest &&
+				previous.contextCapsule.CapsuleDigest != capsuleRecord.CapsuleDigest {
+				return TeamDispatchResult{}, ErrInvalidTeamAttempt
+			}
+			if previous.executionBinding.BindingDigest !=
+				selection.ExecutionBinding.BindingDigest {
+				approval := nodeRecord.semanticBinding.FallbackApproval
+				if nodeRecord.recoveryAction != "fallback" ||
+					!nodeRecord.fallbackConsumed ||
+					!approval.Valid() ||
+					approval.SourceBindingDigest() !=
+						previous.executionBinding.BindingDigest ||
+					approval.TargetBindingDigest() !=
+						selection.ExecutionBinding.BindingDigest ||
+					attemptRecord.workflowPath !=
+						nodeRecord.semanticBinding.WorkflowFallbackKey {
+					return TeamDispatchResult{}, ErrInvalidTeamAttempt
+				}
+			}
 		}
 		for _, dependencyID := range node.DependsOn() {
 			dependency := teamNodeByID(&team, dependencyID)
@@ -594,6 +825,38 @@ func (authority *Authority) DispatchTeamReadySet(
 			return TeamDispatchResult{}, claimErr
 		}
 		expiresAt := now.Add(input.PrepareLeaseDuration)
+		provisionalRun := RunRecord{
+			id: attemptRecord.runID, workItemID: attemptRecord.workItemID,
+			agentInstanceID:  attemptRecord.agentInstanceID,
+			executionBinding: cloneTeamExecutionBinding(selection.ExecutionBinding),
+		}
+		accountPolicy, accountManaged := state.providerAccountPolicyAt(
+			selection.ExecutionBinding.ProviderID,
+			selection.ExecutionBinding.ProviderAccountID,
+			now,
+		)
+		var accountBinding providerAccountCapacityBinding
+		if accountManaged {
+			accountBinding, err = providerAccountCapacityBindingFor(
+				provisionalRun, claimID, 1,
+				attemptRecord.runtimeInstanceID, accountPolicy,
+			)
+			if err != nil {
+				return TeamDispatchResult{}, err
+			}
+			if admissionErr := validateProviderAccountCapacityAdmission(
+				state.providerAccountCapacity[accountBinding.providerAccountID],
+				accountPolicy, accountBinding, now, nil,
+			); admissionErr != nil {
+				return TeamDispatchResult{}, admissionErr
+			}
+		}
+		rateCard, rateCardAvailable := state.providerModelRateCardAt(
+			selection.ExecutionBinding.ProviderID,
+			selection.ExecutionBinding.ProviderAccountID,
+			selection.ExecutionBinding.ModelID,
+			now,
+		)
 		createdID := deterministicEventID(
 			"WorkItemCreated", attemptRecord.workItemID,
 			node.Title(), input.CorrelationID,
@@ -601,8 +864,16 @@ func (authority *Authority) DispatchTeamReadySet(
 		assignedID := deterministicEventID(
 			"WorkItemAssigned", attemptRecord.workItemID,
 			attemptRecord.runID, attemptRecord.agentInstanceID,
+			selection.ExecutionBinding.BindingDigest,
+			capsuleRecord.CapsuleDigest,
 			input.CorrelationID,
 		)
+		assignmentBinding, bindingErr := optionalTeamExecutionBindingPayload(
+			selection.ExecutionBinding,
+		)
+		if bindingErr != nil || assignmentBinding == nil {
+			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
 		events = append(events,
 			newEvent(
 				createdID, workItemStream(attemptRecord.workItemID), 1,
@@ -617,13 +888,15 @@ func (authority *Authority) DispatchTeamReadySet(
 				assignedID, workItemStream(attemptRecord.workItemID), 2,
 				"WorkItemAssigned", now, input.CorrelationID, createdID,
 				struct {
-					WorkItemID      string `json:"work_item_id"`
-					RunID           string `json:"run_id"`
-					AgentInstanceID string `json:"agent_instance_id"`
-					Status          string `json:"status"`
+					WorkItemID       string                       `json:"work_item_id"`
+					RunID            string                       `json:"run_id"`
+					AgentInstanceID  string                       `json:"agent_instance_id"`
+					Status           string                       `json:"status"`
+					ExecutionBinding *teamExecutionBindingPayload `json:"execution_binding,omitempty"`
 				}{
 					attemptRecord.workItemID, attemptRecord.runID,
 					attemptRecord.agentInstanceID, "assigned",
+					assignmentBinding,
 				},
 			),
 		)
@@ -645,28 +918,37 @@ func (authority *Authority) DispatchTeamReadySet(
 			}),
 		))
 		claimEventID := deterministicEventID(
-			"RunClaimed", attemptRecord.runID, claimID,
+			"RunClaimed.v2", attemptRecord.runID, claimID,
 			"1", input.CorrelationID,
 		)
 		statusReference := runtime.statusHead.payload()
+		assetBindings := toWorkAssetBindings(assetBinding.AssetRevisionBindings)
+		assetSetDigest := assetBinding.AssetRevisionSetDigest
+		manifestDigest := materialization.MaterializationManifestDigest
+		rootDigest := materialization.MaterializationRootDigest
+		claimPayload := runClaimV2Payload{
+			ClaimContractVersion: 2,
+			WorkItemID:           attemptRecord.workItemID, RunID: attemptRecord.runID,
+			ClaimID: claimID, ClaimGeneration: 1,
+			RuntimeInstanceID:             attemptRecord.runtimeInstanceID,
+			AgentInstanceID:               attemptRecord.agentInstanceID,
+			PrepareLeaseExpiresAt:         expiresAt.Format(time.RFC3339Nano),
+			AssetRevisionBindings:         &assetBindings,
+			AssetRevisionSetDigest:        &assetSetDigest,
+			MaterializationManifestDigest: &manifestDigest,
+			MaterializationRootDigest:     &rootDigest,
+			RateCardStatus:                frozenRateCardNotConfigured,
+			runtimeStatusReferencePayload: statusReference,
+		}
+		if rateCardAvailable {
+			frozen := frozenProviderModelRateCardPayloadFrom(rateCard)
+			claimPayload.RateCardStatus = frozenRateCardConfigured
+			claimPayload.RateCard = &frozen
+		}
 		events = append(events, newEvent(
 			claimEventID, runStream(attemptRecord.runID), 1,
 			"RunClaimed", now, input.CorrelationID, assignedID,
-			struct {
-				WorkItemID            string `json:"work_item_id"`
-				RunID                 string `json:"run_id"`
-				ClaimID               string `json:"claim_id"`
-				ClaimGeneration       int64  `json:"claim_generation"`
-				RuntimeInstanceID     string `json:"runtime_instance_id"`
-				AgentInstanceID       string `json:"agent_instance_id"`
-				PrepareLeaseExpiresAt string `json:"prepare_lease_expires_at"`
-				runtimeStatusReferencePayload
-			}{
-				attemptRecord.workItemID, attemptRecord.runID, claimID, 1,
-				attemptRecord.runtimeInstanceID, attemptRecord.agentInstanceID,
-				expiresAt.Format(time.RFC3339Nano),
-				statusReference,
-			},
+			claimPayload,
 		))
 		capacitySequences[attemptRecord.runtimeInstanceID]++
 		reserveID := deterministicEventID(
@@ -691,6 +973,29 @@ func (authority *Authority) DispatchTeamReadySet(
 				runtimeStatusReferencePayload: statusReference,
 			},
 		))
+		if accountManaged {
+			accountCapacitySequences[accountBinding.providerAccountID]++
+			accountReserveID := deterministicEventID(
+				"ProviderAccountCapacityReserved", attemptRecord.runID,
+				claimID, "1", claimEventID,
+			)
+			events = append(events, newEvent(
+				accountReserveID,
+				providerAccountCapacityStream(accountBinding.providerAccountID),
+				accountCapacitySequences[accountBinding.providerAccountID],
+				"ProviderAccountCapacityReserved", now,
+				input.CorrelationID, claimEventID, accountBinding.payload(),
+			))
+			capacity := state.providerAccountCapacity[accountBinding.providerAccountID]
+			if capacity.active == nil {
+				capacity.active = make(map[string]providerAccountCapacityBinding)
+			}
+			capacity.active[capacityKey(accountBinding.runID, 1)] = accountBinding
+			capacity.starts = append(capacity.starts, providerAccountDispatchStart{
+				reservedAt: now, binding: accountBinding,
+			})
+			state.providerAccountCapacity[accountBinding.providerAccountID] = capacity
+		}
 		runtimeActive[attemptRecord.runtimeInstanceID]++
 		attemptRecord.claimID = claimID
 		attemptRecord.claimGeneration = 1
@@ -699,6 +1004,9 @@ func (authority *Authority) DispatchTeamReadySet(
 		attemptRecord.assetRevisionSetDigest = assetBinding.AssetRevisionSetDigest
 		attemptRecord.materializationManifestDigest = materialization.MaterializationManifestDigest
 		attemptRecord.materializationRootDigest = materialization.MaterializationRootDigest
+		attemptRecord.executionBinding = cloneTeamExecutionBinding(selection.ExecutionBinding)
+		attemptRecord.contextCapsule = capsuleRecord
+		attemptRecord.routeSegment = routeSegment
 		nodeRecord.status = "running"
 		nodeRecord.retryAt = time.Time{}
 		workItem := WorkItemRecord{
@@ -712,12 +1020,21 @@ func (authority *Authority) DispatchTeamReadySet(
 			phase: "claimed", claimID: claimID, claimGeneration: 1,
 			runtimeInstanceID:     attemptRecord.runtimeInstanceID,
 			agentInstanceID:       attemptRecord.agentInstanceID,
+			executionBinding:      cloneTeamExecutionBinding(attemptRecord.executionBinding),
 			prepareLeaseExpiresAt: expiresAt,
 			lastEventID:           claimEventID, streamSequence: 1,
 			AssetRevisionBindings:         toWorkAssetBindings(assetBinding.AssetRevisionBindings),
 			AssetRevisionSetDigest:        assetBinding.AssetRevisionSetDigest,
 			MaterializationManifestDigest: materialization.MaterializationManifestDigest,
 			MaterializationRootDigest:     materialization.MaterializationRootDigest,
+		}
+		if accountManaged {
+			freezeRunProviderAccountPolicy(&run, accountPolicy)
+			run.providerAccountBudgetUnits = accountBinding.assignedBudgetUnits
+		}
+		run.providerModelRateCardAvailable = rateCardAvailable
+		if rateCardAvailable {
+			run.providerModelRateCard = rateCard
 		}
 		dispatched = append(dispatched, TeamDispatchedNode{
 			logicalNode: node, attempt: *attemptRecord,
@@ -736,33 +1053,61 @@ func (authority *Authority) DispatchTeamReadySet(
 			AssetRevisionSetDigest:        assetBinding.AssetRevisionSetDigest,
 			MaterializationManifestDigest: materialization.MaterializationManifestDigest,
 			MaterializationRootDigest:     materialization.MaterializationRootDigest,
+			ExecutionBinding:              teamExecutionBindingPayloadFrom(selection.ExecutionBinding),
+			ContextCapsule:                &capsuleRecord,
+			RouteSegment:                  &routeSegment,
 		})
 	}
 	sort.Slice(dispatchPayloads, func(i, j int) bool {
 		return dispatchPayloads[i].LogicalNodeID < dispatchPayloads[j].LogicalNodeID
 	})
-	teamSequence++
-	dispatchID := deterministicEventID(
-		"TeamReadySetDispatched",
-		input.Plan.TeamInstanceID(),
-		input.Plan.Digest(),
-		input.ViewVersion,
-		fmt.Sprint(teamSequence),
-	)
-	events = append(events, newEvent(
-		dispatchID, teamStreamID, teamSequence,
-		"TeamReadySetDispatched", now, input.CorrelationID,
-		team.lastEventID,
-		struct {
-			TeamInstanceID string                       `json:"team_instance_id"`
-			PlanDigest     string                       `json:"plan_digest"`
-			ViewVersion    string                       `json:"view_version"`
-			Attempts       []teamDispatchAttemptPayload `json:"attempts"`
-		}{
-			input.Plan.TeamInstanceID(), input.Plan.Digest(),
-			input.ViewVersion, dispatchPayloads,
-		},
-	))
+	if len(dispatchPayloads) == 0 {
+		if !teamIsTerminal(team) {
+			return TeamDispatchResult{}, ErrInvalidTeamAttempt
+		}
+		status, reason := aggregateTeamTerminal(team)
+		teamSequence++
+		terminalID := deterministicEventID(
+			"TeamExecutionTerminal", input.Plan.TeamInstanceID(),
+			input.Plan.Digest(), status, reason,
+		)
+		events = append(events, newEvent(
+			terminalID, teamStreamID, teamSequence,
+			"TeamExecutionTerminal", now, input.CorrelationID,
+			team.lastEventID, struct {
+				TeamInstanceID string `json:"team_instance_id"`
+				PlanDigest     string `json:"plan_digest"`
+				Status         string `json:"status"`
+				Reason         string `json:"reason"`
+			}{input.Plan.TeamInstanceID(), input.Plan.Digest(), status, reason},
+		))
+		team.status = status
+	} else {
+		teamSequence++
+		dispatchID := deterministicEventID(
+			"TeamReadySetDispatched",
+			input.Plan.TeamInstanceID(),
+			input.Plan.Digest(),
+			input.ViewVersion,
+			fmt.Sprint(teamSequence),
+			teamContextSelectionDigest(selections),
+		)
+		events = append(events, newEvent(
+			dispatchID, teamStreamID, teamSequence,
+			"TeamReadySetDispatched", now, input.CorrelationID,
+			team.lastEventID,
+			struct {
+				TeamInstanceID string                       `json:"team_instance_id"`
+				PlanDigest     string                       `json:"plan_digest"`
+				ViewVersion    string                       `json:"view_version"`
+				Attempts       []teamDispatchAttemptPayload `json:"attempts"`
+			}{
+				input.Plan.TeamInstanceID(), input.Plan.Digest(),
+				input.ViewVersion, dispatchPayloads,
+			},
+		))
+	}
+
 	expectations := make([]journal.StreamHeadExpectation, 0, len(snapshot.Heads()))
 	for _, head := range snapshot.Heads() {
 		expectations = append(expectations, journal.StreamHeadExpectation{
@@ -778,7 +1123,7 @@ func (authority *Authority) DispatchTeamReadySet(
 			errors.Is(err, journal.ErrIdempotencyConflict) ||
 			errors.Is(err, journal.ErrSequenceConflict) ||
 			errors.Is(err, journal.ErrPartialEventBatchConflict) {
-			return TeamDispatchResult{}, ErrTeamExecutionConflict
+			return TeamDispatchResult{}, fmt.Errorf("%w: append dispatch transaction: %v", ErrTeamExecutionConflict, err)
 		}
 		return TeamDispatchResult{}, mapJournalWriteError(err)
 	}
@@ -792,6 +1137,15 @@ func (authority *Authority) DispatchTeamReadySet(
 		viewVersion:    input.ViewVersion,
 		nodes:          dispatched,
 	}, nil
+}
+
+func teamHeadStreamIDs(heads []journal.StreamHead) []string {
+	ids := make([]string, len(heads))
+	for index, head := range heads {
+		ids[index] = head.StreamID
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (authority *Authority) TeamExecution(
@@ -1093,6 +1447,7 @@ func (authority *Authority) CommitTeamAttemptEvidence(
 		return TeamExecutionRecord{}, ErrInvalidTeamAttempt
 	}
 	terminalStatus := run.terminalStatus
+	terminalReason := safeTeamTerminalReason(terminalStatus, run.terminalReason)
 	if summary.TerminalStatus() != terminalStatus ||
 		classification.TerminalStatus() != terminalStatus {
 		return TeamExecutionRecord{}, ErrTeamExecutionConflict
@@ -1146,6 +1501,7 @@ func (authority *Authority) CommitTeamAttemptEvidence(
 			RuntimeInstanceID:          input.RuntimeInstanceID,
 			AgentInstanceID:            input.AgentInstanceID,
 			Status:                     terminalStatus,
+			Reason:                     &terminalReason,
 			EvidenceID:                 receipt.EvidenceID(),
 			EvidenceDigest:             receipt.Digest(),
 			OutputContractVersion:      classification.OutputContractVersion(),
@@ -1157,7 +1513,7 @@ func (authority *Authority) CommitTeamAttemptEvidence(
 	)
 	events := []journal.Event{evidenceEvent, terminalEvent}
 	applyAttemptTerminal(&team, input.LogicalNodeID, input.AttemptNumber,
-		terminalStatus, receipt.EvidenceID(), receipt.Digest(),
+		terminalStatus, terminalReason, receipt.EvidenceID(), receipt.Digest(),
 		classification.OutputContractVersion(),
 		classification.OutputContractDigest(),
 		classification.Kind(),
@@ -1281,23 +1637,24 @@ func (authority *Authority) ScheduleTeamNodeRecovery(
 	}
 	decision, err := input.RecoveryPolicy.Decide(
 		TeamRecoveryDecisionRequest{
-			TeamInstanceID:           input.TeamInstanceID,
-			PlanDigest:               input.PlanDigest,
-			LogicalNodeID:            input.LogicalNodeID,
-			AttemptNumber:            input.AttemptNumber,
-			MaxAttempts:              input.MaxAttempts,
-			AgentInstanceID:          input.AgentInstanceID,
-			RuntimeInstanceID:        input.RuntimeInstanceID,
-			EvidenceID:               input.EvidenceID,
-			EvidenceDigest:           input.EvidenceDigest,
-			OutputSummaryDigest:      input.OutputSummaryDigest,
-			Classification:           input.Classification,
-			PriorClassifications:     expectedPrior,
-			RemainingCredits:         expectedCredits,
-			FallbackConsumed:         fallbackConsumed,
-			DecisionTime:             now,
-			Trigger:                  expectedTrigger,
-			AcceptanceDecisionDigest: expectedAcceptanceDecisionDigest,
+			TeamInstanceID:            input.TeamInstanceID,
+			PlanDigest:                input.PlanDigest,
+			LogicalNodeID:             input.LogicalNodeID,
+			AttemptNumber:             input.AttemptNumber,
+			MaxAttempts:               input.MaxAttempts,
+			AgentInstanceID:           input.AgentInstanceID,
+			RuntimeInstanceID:         input.RuntimeInstanceID,
+			EvidenceID:                input.EvidenceID,
+			EvidenceDigest:            input.EvidenceDigest,
+			OutputSummaryDigest:       input.OutputSummaryDigest,
+			Classification:            input.Classification,
+			PriorClassifications:      expectedPrior,
+			RemainingCredits:          expectedCredits,
+			FallbackConsumed:          fallbackConsumed,
+			FallbackRuntimeInstanceID: node.semanticBinding.FallbackRuntimeInstanceID,
+			DecisionTime:              now,
+			Trigger:                   expectedTrigger,
+			AcceptanceDecisionDigest:  expectedAcceptanceDecisionDigest,
 		},
 	)
 	if err != nil || !validExactTeamRecoveryDecision(decision) ||
@@ -1386,6 +1743,16 @@ func buildTeamRecoveryTransaction(
 	for index, classification := range expectedPrior {
 		prior[index] = string(classification)
 	}
+	fallbackApproval := TeamFallbackApproval{}
+	if decision.ActionValue() == "fallback" {
+		fallbackApproval = node.semanticBinding.FallbackApproval
+		if fallbackApproval.Digest() != "" &&
+			(!fallbackApproval.Valid() ||
+				fallbackApproval.SourceBindingDigest() !=
+					attempt.executionBinding.BindingDigest) {
+			return nil, ErrInvalidTeamRecovery
+		}
+	}
 	dependencySatisfied := decision.ActionValue() == "degraded"
 	recoveryEvent := newEvent(
 		recoveryID,
@@ -1414,20 +1781,30 @@ func buildTeamRecoveryTransaction(
 			CreditsAfter:           decision.CreditsAfter(),
 			FallbackConsumed: fallbackConsumed ||
 				decision.ActionValue() == "fallback",
-			RecoveryApprovalRequired: decision.RecoveryApprovalRequired(),
-			DependencySatisfied:      dependencySatisfied,
-			RecoveryTrigger:          decision.TriggerValue(),
-			AcceptanceDecisionDigest: decision.AcceptanceDecisionDigest(),
+			RecoveryApprovalRequired:    decision.RecoveryApprovalRequired(),
+			DependencySatisfied:         dependencySatisfied,
+			RecoveryTrigger:             decision.TriggerValue(),
+			AcceptanceDecisionDigest:    decision.AcceptanceDecisionDigest(),
+			FallbackApprovalVersion:     fallbackApproval.Version(),
+			FallbackApprovalID:          fallbackApproval.ApprovalID(),
+			FallbackApprovalDigest:      fallbackApproval.Digest(),
+			FallbackSourceBindingDigest: fallbackApproval.SourceBindingDigest(),
+			FallbackTargetBindingDigest: fallbackApproval.TargetBindingDigest(),
 		},
 	)
 	transaction := []journal.Event{recoveryEvent}
 	switch decision.ActionValue() {
 	case "retry", "fallback":
+		nextRuntimeInstanceID := attempt.runtimeInstanceID
+		if decision.ActionValue() == "fallback" &&
+			node.semanticBinding.FallbackRuntimeInstanceID != "" {
+			nextRuntimeInstanceID = node.semanticBinding.FallbackRuntimeInstanceID
+		}
 		if decision.AttemptNumber() >= node.maxAttempts ||
 			decision.NextAttemptNumber() != decision.AttemptNumber()+1 ||
 			decision.CreditsAfter() != expectedCredits-1 ||
 			decision.NextAgentInstanceID() != attempt.agentInstanceID ||
-			decision.NextRuntimeInstanceID() != attempt.runtimeInstanceID ||
+			decision.NextRuntimeInstanceID() != nextRuntimeInstanceID ||
 			decision.RetryAt().IsZero() {
 			return nil, ErrTeamAttemptLimit
 		}
@@ -1542,10 +1919,34 @@ type teamPlanNodePayload struct {
 	AgentInstanceID        string                             `json:"agent_instance_id"`
 	RuntimeInstanceID      string                             `json:"runtime_instance_id"`
 	Role                   teams.ExecutionRole                `json:"role"`
+	Kind                   teams.ExecutionNodeKind            `json:"kind,omitempty"`
+	RouteGroupID           string                             `json:"route_group_id,omitempty"`
 	DependsOn              []string                           `json:"depends_on"`
 	MaxAttempts            int                                `json:"max_attempts"`
 	AssetRevisionBindings  []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
 	AssetRevisionSetDigest string                             `json:"asset_revision_set_digest"`
+}
+
+type teamNodeRouteSummaryPayload struct {
+	LogicalNodeID      string   `json:"logical_node_id"`
+	HarnessAdapter     string   `json:"harness_adapter"`
+	ProviderID         string   `json:"provider_id"`
+	ProviderAccountID  string   `json:"provider_account_id"`
+	ModelID            string   `json:"model_id"`
+	ReasoningEffort    string   `json:"reasoning_effort,omitempty"`
+	TimeoutNanoseconds int64    `json:"timeout_nanoseconds"`
+	Budget             *int64   `json:"budget"`
+	Capabilities       []string `json:"capabilities"`
+	CredentialRevision int64    `json:"credential_revision"`
+}
+
+type teamInitialBlockPayload struct {
+	LogicalNodeID       string `json:"logical_node_id"`
+	Code                string `json:"code"`
+	Stage               string `json:"stage"`
+	Reason              string `json:"reason"`
+	Retryable           bool   `json:"retryable"`
+	SourceLogicalNodeID string `json:"source_logical_node_id"`
 }
 
 type teamSemanticBindingPayload struct {
@@ -1558,6 +1959,8 @@ type teamSemanticBindingPayload struct {
 	PrimaryWorkflowPath         string                             `json:"primary_workflow_path"`
 	WorkflowFallbackKey         string                             `json:"workflow_fallback_key"`
 	RecoveryApprovalRequired    bool                               `json:"recovery_approval_required"`
+	FallbackApproval            *teamFallbackApprovalPayload       `json:"fallback_approval,omitempty"`
+	FallbackRuntimeInstanceID   string                             `json:"fallback_runtime_instance_id,omitempty"`
 	AcceptanceContractVersion   *int                               `json:"acceptance_contract_version,omitempty"`
 	AcceptanceContractDigest    *string                            `json:"acceptance_contract_digest,omitempty"`
 	AcceptanceRisk              *string                            `json:"risk,omitempty"`
@@ -1569,38 +1972,82 @@ type teamSemanticBindingPayload struct {
 	AssetRevisionSetDigest      string                             `json:"asset_revision_set_digest"`
 }
 
+type teamFallbackApprovalPayload struct {
+	Version             int    `json:"version"`
+	ApprovalID          string `json:"approval_id"`
+	ActorRef            string `json:"actor_ref"`
+	ApprovedAt          string `json:"approved_at"`
+	SourceBindingDigest string `json:"source_binding_digest"`
+	TargetBindingDigest string `json:"target_binding_digest"`
+	Digest              string `json:"digest"`
+}
+
 type teamDispatchAttemptPayload struct {
-	LogicalNodeID                 string                             `json:"logical_node_id"`
-	AttemptNumber                 int                                `json:"attempt_number"`
-	WorkItemID                    string                             `json:"work_item_id"`
-	RunID                         string                             `json:"run_id"`
-	ClaimID                       string                             `json:"claim_id"`
-	ClaimGeneration               int64                              `json:"claim_generation"`
-	RuntimeInstanceID             string                             `json:"runtime_instance_id"`
-	AgentInstanceID               string                             `json:"agent_instance_id"`
-	AssetRevisionBindings         []assets.ExactAssetRevisionBinding `json:"asset_revision_bindings"`
-	AssetRevisionSetDigest        string                             `json:"asset_revision_set_digest"`
-	MaterializationManifestDigest string                             `json:"materialization_manifest_digest"`
-	MaterializationRootDigest     string                             `json:"materialization_root_digest"`
+	LogicalNodeID                 string                              `json:"logical_node_id"`
+	AttemptNumber                 int                                 `json:"attempt_number"`
+	WorkItemID                    string                              `json:"work_item_id"`
+	RunID                         string                              `json:"run_id"`
+	ClaimID                       string                              `json:"claim_id"`
+	ClaimGeneration               int64                               `json:"claim_generation"`
+	RuntimeInstanceID             string                              `json:"runtime_instance_id"`
+	AgentInstanceID               string                              `json:"agent_instance_id"`
+	AssetRevisionBindings         []assets.ExactAssetRevisionBinding  `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest        string                              `json:"asset_revision_set_digest"`
+	MaterializationManifestDigest string                              `json:"materialization_manifest_digest"`
+	MaterializationRootDigest     string                              `json:"materialization_root_digest"`
+	ExecutionBinding              *teamExecutionBindingPayload        `json:"execution_binding,omitempty"`
+	ContextCapsule                *contextcapsule.AuthorityRecord     `json:"context_capsule,omitempty"`
+	RouteSegment                  *contextcapsule.RouteSegmentBinding `json:"route_segment,omitempty"`
+}
+
+func teamContextSelectionDigest(selections []TeamAttemptSelection) string {
+	fields := make([]string, 0, len(selections)*5+1)
+	fields = append(fields, "loom.team-context-selections.v1")
+	for _, selection := range selections {
+		record := selection.ContextCapsule.AuthorityRecord()
+		segment, _ := BuildTeamRouteSegmentBinding(selection)
+		fields = append(fields, selection.LogicalNodeID, fmt.Sprint(selection.AttemptNumber),
+			record.CapsuleDigest, record.DisclosureReceiptDigest, segment.Digest)
+	}
+	return deterministicEventID(fields...)
+}
+
+type teamExecutionBindingPayload struct {
+	ProfileID           string   `json:"profile_id"`
+	HarnessAdapter      string   `json:"harness_adapter"`
+	RuntimeInstanceID   string   `json:"runtime_instance_id"`
+	ProviderID          string   `json:"provider_id"`
+	ProviderAccountID   string   `json:"provider_account_id"`
+	ModelID             string   `json:"model_id"`
+	AuthMode            string   `json:"auth_mode"`
+	EndpointFingerprint string   `json:"endpoint_fingerprint"`
+	CredentialReference string   `json:"credential_reference"`
+	CredentialRevision  int64    `json:"credential_revision"`
+	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
+	TimeoutNanoseconds  int64    `json:"timeout_nanoseconds"`
+	Budget              *int64   `json:"budget"`
+	Capabilities        []string `json:"capabilities"`
+	BindingDigest       string   `json:"binding_digest"`
 }
 
 type teamAttemptTerminalPayload struct {
-	LogicalNodeID              string `json:"logical_node_id"`
-	AttemptNumber              int    `json:"attempt_number"`
-	WorkItemID                 string `json:"work_item_id"`
-	RunID                      string `json:"run_id"`
-	ClaimID                    string `json:"claim_id"`
-	ClaimGeneration            int64  `json:"claim_generation"`
-	RuntimeInstanceID          string `json:"runtime_instance_id"`
-	AgentInstanceID            string `json:"agent_instance_id"`
-	Status                     string `json:"status"`
-	EvidenceID                 string `json:"evidence_id"`
-	EvidenceDigest             string `json:"evidence_digest"`
-	OutputContractVersion      int    `json:"output_contract_version"`
-	OutputContractDigest       string `json:"output_contract_digest"`
-	OutputClassification       string `json:"output_classification"`
-	OutputClassificationDigest string `json:"output_classification_digest"`
-	OutputSummaryDigest        string `json:"output_summary_digest"`
+	LogicalNodeID              string  `json:"logical_node_id"`
+	AttemptNumber              int     `json:"attempt_number"`
+	WorkItemID                 string  `json:"work_item_id"`
+	RunID                      string  `json:"run_id"`
+	ClaimID                    string  `json:"claim_id"`
+	ClaimGeneration            int64   `json:"claim_generation"`
+	RuntimeInstanceID          string  `json:"runtime_instance_id"`
+	AgentInstanceID            string  `json:"agent_instance_id"`
+	Status                     string  `json:"status"`
+	Reason                     *string `json:"reason,omitempty"`
+	EvidenceID                 string  `json:"evidence_id"`
+	EvidenceDigest             string  `json:"evidence_digest"`
+	OutputContractVersion      int     `json:"output_contract_version"`
+	OutputContractDigest       string  `json:"output_contract_digest"`
+	OutputClassification       string  `json:"output_classification"`
+	OutputClassificationDigest string  `json:"output_classification_digest"`
+	OutputSummaryDigest        string  `json:"output_summary_digest"`
 }
 
 type teamAttemptReboundPayload struct {
@@ -1622,27 +2069,32 @@ type teamAttemptReboundPayload struct {
 }
 
 type teamRecoveryPayload struct {
-	LogicalNodeID            string   `json:"logical_node_id"`
-	AttemptNumber            int      `json:"attempt_number"`
-	Action                   string   `json:"action"`
-	DecisionTime             string   `json:"decision_time"`
-	RetryAt                  string   `json:"retry_at"`
-	NextAttemptNumber        int      `json:"next_attempt_number"`
-	NextAgentInstanceID      string   `json:"next_agent_instance_id"`
-	NextRuntimeInstanceID    string   `json:"next_runtime_instance_id"`
-	WorkflowFallbackKey      string   `json:"workflow_fallback_key"`
-	RecoveryPolicyVersion    int      `json:"recovery_policy_version"`
-	RecoveryPolicyDigest     string   `json:"recovery_policy_digest"`
-	RecoveryDecisionDigest   string   `json:"recovery_decision_digest"`
-	ClassificationDigest     string   `json:"classification_digest"`
-	PriorClassifications     []string `json:"prior_classifications"`
-	CreditsBefore            int      `json:"credits_before"`
-	CreditsAfter             int      `json:"credits_after"`
-	FallbackConsumed         bool     `json:"fallback_consumed"`
-	RecoveryApprovalRequired bool     `json:"recovery_approval_required"`
-	DependencySatisfied      bool     `json:"dependency_satisfied"`
-	RecoveryTrigger          string   `json:"recovery_trigger"`
-	AcceptanceDecisionDigest string   `json:"acceptance_decision_digest"`
+	LogicalNodeID               string   `json:"logical_node_id"`
+	AttemptNumber               int      `json:"attempt_number"`
+	Action                      string   `json:"action"`
+	DecisionTime                string   `json:"decision_time"`
+	RetryAt                     string   `json:"retry_at"`
+	NextAttemptNumber           int      `json:"next_attempt_number"`
+	NextAgentInstanceID         string   `json:"next_agent_instance_id"`
+	NextRuntimeInstanceID       string   `json:"next_runtime_instance_id"`
+	WorkflowFallbackKey         string   `json:"workflow_fallback_key"`
+	RecoveryPolicyVersion       int      `json:"recovery_policy_version"`
+	RecoveryPolicyDigest        string   `json:"recovery_policy_digest"`
+	RecoveryDecisionDigest      string   `json:"recovery_decision_digest"`
+	ClassificationDigest        string   `json:"classification_digest"`
+	PriorClassifications        []string `json:"prior_classifications"`
+	CreditsBefore               int      `json:"credits_before"`
+	CreditsAfter                int      `json:"credits_after"`
+	FallbackConsumed            bool     `json:"fallback_consumed"`
+	RecoveryApprovalRequired    bool     `json:"recovery_approval_required"`
+	DependencySatisfied         bool     `json:"dependency_satisfied"`
+	RecoveryTrigger             string   `json:"recovery_trigger"`
+	AcceptanceDecisionDigest    string   `json:"acceptance_decision_digest"`
+	FallbackApprovalVersion     int      `json:"fallback_approval_version,omitempty"`
+	FallbackApprovalID          string   `json:"fallback_approval_id,omitempty"`
+	FallbackApprovalDigest      string   `json:"fallback_approval_digest,omitempty"`
+	FallbackSourceBindingDigest string   `json:"fallback_source_binding_digest,omitempty"`
+	FallbackTargetBindingDigest string   `json:"fallback_target_binding_digest,omitempty"`
 }
 
 func validateTeamDispatchInput(
@@ -1659,8 +2111,7 @@ func validateTeamDispatchInput(
 	if !validOpaqueID(input.Plan.TeamInstanceID()) ||
 		!validSHA256Hex(input.Plan.Digest()) ||
 		!validSHA256Hex(input.ViewVersion) ||
-		len(nodes) == 0 || len(nodes) > 3 ||
-		len(input.ReadyAttempts) == 0 ||
+		len(nodes) == 0 || len(nodes) > teams.MaxExecutionNodeCount ||
 		len(input.ReadyAttempts) > len(nodes) ||
 		input.AuthoritativeTime.IsZero() ||
 		input.AuthoritativeTime.Location() != time.UTC ||
@@ -1669,6 +2120,16 @@ func validateTeamDispatchInput(
 		!validCanonicalUUID(input.CorrelationID) {
 		return nil, nil, ErrInvalidTeamExecution
 	}
+	blocks, blockErr := teams.ValidateInitialExecutionBlocks(input.Plan, input.InitialBlocks)
+	if blockErr != nil || len(input.ReadyAttempts) == 0 && len(blocks) != len(nodes) {
+		return nil, nil, ErrInvalidTeamExecution
+	}
+	input.InitialBlocks = blocks
+	routeSummaries, routeErr := validateTeamRouteSummaries(input.Plan, input.RouteSummaries)
+	if routeErr != nil {
+		return nil, nil, ErrInvalidTeamExecution
+	}
+	input.RouteSummaries = routeSummaries
 	if !validTeamAssetSourceHeads(input.AssetSourceHeads, input.ExpectedHeads) {
 		return nil, nil, ErrInvalidTeamExecution
 	}
@@ -1678,7 +2139,8 @@ func validateTeamDispatchInput(
 			LogicalNodeID: node.LogicalNodeID(), Title: node.Title(),
 			AgentInstanceID:   node.AgentInstanceID(),
 			RuntimeInstanceID: node.RuntimeInstanceID(),
-			Role:              node.Role(), DependsOn: node.DependsOn(),
+			Role:              node.Role(), Kind: node.Kind(), RouteGroupID: node.RouteGroupID(),
+			DependsOn:              node.DependsOn(),
 			MaxAttempts:            node.MaxAttempts(),
 			AssetRevisionBindings:  node.AssetRevisionBindings(),
 			AssetRevisionSetDigest: node.AssetRevisionSetDigest(),
@@ -1712,6 +2174,11 @@ func validateTeamDispatchInput(
 				(!validOpaqueID(binding.WorkflowFallbackKey) ||
 					binding.WorkflowFallbackKey ==
 						binding.PrimaryWorkflowPath) ||
+			!validOptionalTeamFallbackApproval(binding) ||
+			binding.FallbackApproval.Digest() != "" &&
+				binding.FallbackApproval.ApprovedAt().After(
+					input.AuthoritativeTime,
+				) ||
 			!validTeamAcceptanceBinding(binding, node.AgentInstanceID()) {
 			return nil, nil, ErrInvalidTeamExecution
 		}
@@ -1726,13 +2193,33 @@ func validateTeamDispatchInput(
 	})
 	for index, selection := range selections {
 		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
-		if node.LogicalNodeID() == "" ||
+		binding, bindingErr := loomruntime.ValidateFrozenExecutionBinding(
+			selection.ExecutionBinding,
+		)
+		capsuleRecord := selection.ContextCapsule.AuthorityRecord()
+		_, capsuleErr := contextcapsule.ValidateAuthorityRecord(capsuleRecord)
+		routeSegment, routeSegmentErr := BuildTeamRouteSegmentBinding(selection)
+		if node.LogicalNodeID() == "" || initialBlockByNode(blocks, selection.LogicalNodeID).LogicalNodeID != "" ||
 			selection.AttemptNumber < 1 ||
 			selection.AttemptNumber > node.MaxAttempts() ||
 			index > 0 &&
-				selection.LogicalNodeID == selections[index-1].LogicalNodeID {
+				selection.LogicalNodeID == selections[index-1].LogicalNodeID ||
+			bindingErr != nil ||
+			capsuleErr != nil ||
+			routeSegmentErr != nil ||
+			selection.AttemptNumber == 1 &&
+				binding.RuntimeInstanceID != node.RuntimeInstanceID() ||
+			capsuleRecord.TeamID != input.Plan.TeamInstanceID() ||
+			capsuleRecord.AgentID != node.AgentInstanceID() ||
+			capsuleRecord.RoleID != selection.LogicalNodeID ||
+			capsuleRecord.ProviderID != binding.ProviderID ||
+			capsuleRecord.ProviderAccountID != binding.ProviderAccountID ||
+			capsuleRecord.ModelID != binding.ModelID ||
+			capsuleRecord.AuthMode != string(binding.AuthMode) ||
+			routeSegment.ExecutionBindingDigest != binding.BindingDigest {
 			return nil, nil, ErrInvalidTeamAttempt
 		}
+		selections[index].ExecutionBinding = binding
 		materialization := teamAttemptMaterializationByID(
 			input.Materializations, selection.LogicalNodeID, selection.AttemptNumber,
 		)
@@ -1782,6 +2269,58 @@ func validateTeamDispatchInput(
 	return nodes, selections, nil
 }
 
+// BuildTeamRouteSegmentBinding deterministically binds one exact Team Attempt
+// route beside its Capsule and Frozen Execution Binding.
+func BuildTeamRouteSegmentBinding(
+	selection TeamAttemptSelection,
+) (contextcapsule.RouteSegmentBinding, error) {
+	capsule := selection.ContextCapsule.AuthorityRecord()
+	binding, err := loomruntime.ValidateFrozenExecutionBinding(selection.ExecutionBinding)
+	if err != nil {
+		return contextcapsule.RouteSegmentBinding{}, err
+	}
+	return teamRouteSegmentBindingFromAuthority(
+		capsule, binding, selection.LogicalNodeID, selection.AttemptNumber,
+	)
+}
+
+func teamRouteSegmentBindingFromAuthority(
+	capsule contextcapsule.AuthorityRecord,
+	binding loomruntime.FrozenExecutionBinding,
+	logicalNodeID string,
+	attemptNumber int,
+) (contextcapsule.RouteSegmentBinding, error) {
+	segmentID := "segment-" + deterministicEventID(
+		"RouteSegmentBinding",
+		capsule.ConversationID,
+		capsule.TeamID,
+		capsule.AgentID,
+		logicalNodeID,
+		fmt.Sprint(attemptNumber),
+		capsule.CapsuleDigest,
+		binding.BindingDigest,
+	)
+	return contextcapsule.NewRouteSegmentBinding(
+		contextcapsule.RouteSegmentBindingInput{
+			SegmentID: segmentID, ConversationID: capsule.ConversationID,
+			TeamID: capsule.TeamID, AgentID: capsule.AgentID,
+			RoleID: logicalNodeID, AttemptNumber: attemptNumber,
+			CapsuleDigest:          capsule.CapsuleDigest,
+			ExecutionBindingDigest: binding.BindingDigest,
+		},
+	)
+}
+
+func validOptionalTeamFallbackApproval(binding TeamNodeSemanticBinding) bool {
+	if binding.FallbackApproval.Digest() == "" {
+		return !binding.FallbackApproval.Valid() &&
+			binding.FallbackRuntimeInstanceID == ""
+	}
+	return binding.WorkflowFallbackKey != "" &&
+		binding.FallbackApproval.Valid() &&
+		validOpaqueID(binding.FallbackRuntimeInstanceID)
+}
+
 func teamAttemptMaterializationByID(
 	values []TeamAttemptMaterialization,
 	logicalNodeID string,
@@ -1795,6 +2334,74 @@ func teamAttemptMaterializationByID(
 		}
 	}
 	return TeamAttemptMaterialization{}
+}
+
+func initialBlockByNode(
+	blocks []teams.InitialExecutionBlock,
+	logicalNodeID string,
+) teams.InitialExecutionBlock {
+	for _, block := range blocks {
+		if block.LogicalNodeID == logicalNodeID {
+			return block
+		}
+	}
+	return teams.InitialExecutionBlock{}
+}
+
+func validateTeamRouteSummaries(
+	plan teams.ExecutionPlan,
+	values []TeamNodeRouteSummary,
+) ([]TeamNodeRouteSummary, error) {
+	if len(values) == 0 {
+		return []TeamNodeRouteSummary{}, nil
+	}
+	if len(values) != len(plan.Nodes()) {
+		return nil, ErrInvalidTeamExecution
+	}
+	routes := make([]TeamNodeRouteSummary, len(values))
+	for index, value := range values {
+		routes[index] = cloneTeamRouteSummary(value)
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].LogicalNodeID < routes[j].LogicalNodeID })
+	for index, route := range routes {
+		node := nodeByLogicalID(plan.Nodes(), route.LogicalNodeID)
+		if node.LogicalNodeID() == "" || index > 0 && route.LogicalNodeID == routes[index-1].LogicalNodeID ||
+			!validOpaqueID(route.HarnessAdapter) || !validOpaqueID(route.ProviderID) ||
+			!validTeamRouteCredentialIdentity(route) || !validOpaqueID(route.ModelID) ||
+			route.ReasoningEffort != "" && !validOpaqueID(route.ReasoningEffort) ||
+			route.TimeoutNanoseconds <= 0 ||
+			route.Budget != nil && *route.Budget < 0 ||
+			!validTeamRouteCapabilities(route.Capabilities) {
+			return nil, ErrInvalidTeamExecution
+		}
+	}
+	return routes, nil
+}
+
+func validTeamRouteCapabilities(values []string) bool {
+	if len(values) > 64 {
+		return false
+	}
+	for index, value := range values {
+		if !validOpaqueID(value) || index > 0 && values[index-1] >= value {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneTeamRouteSummary(value TeamNodeRouteSummary) TeamNodeRouteSummary {
+	value.Budget = cloneTeamBudget(value.Budget)
+	value.Capabilities = append([]string(nil), value.Capabilities...)
+	return value
+}
+
+func cloneTeamBudget(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func validateTeamEvidenceInput(
@@ -1937,21 +2544,26 @@ func teamPlanPayload(
 	plan teams.ExecutionPlan,
 	viewVersion string,
 	bindings []TeamNodeSemanticBinding,
+	routeSummaries []TeamNodeRouteSummary,
 ) struct {
-	TeamInstanceID   string                       `json:"team_instance_id"`
-	PlanDigest       string                       `json:"plan_digest"`
-	ViewVersion      string                       `json:"view_version"`
-	Nodes            []teamPlanNodePayload        `json:"nodes"`
-	SemanticBindings []teamSemanticBindingPayload `json:"semantic_bindings"`
+	TeamInstanceID   string                        `json:"team_instance_id"`
+	PlanDigest       string                        `json:"plan_digest"`
+	ViewVersion      string                        `json:"view_version"`
+	Nodes            []teamPlanNodePayload         `json:"nodes"`
+	SemanticBindings []teamSemanticBindingPayload  `json:"semantic_bindings"`
+	RouteSummaries   []teamNodeRouteSummaryPayload `json:"route_summaries,omitempty"`
 } {
 	nodes := plan.Nodes()
 	payloadNodes := make([]teamPlanNodePayload, len(nodes))
 	for index, node := range nodes {
 		payloadNodes[index] = teamPlanNodePayload{
 			LogicalNodeID: node.LogicalNodeID(), Title: node.Title(),
-			AgentInstanceID:   node.AgentInstanceID(),
-			RuntimeInstanceID: node.RuntimeInstanceID(),
-			Role:              node.Role(), DependsOn: node.DependsOn(),
+			AgentInstanceID:        node.AgentInstanceID(),
+			RuntimeInstanceID:      node.RuntimeInstanceID(),
+			Role:                   node.Role(),
+			Kind:                   node.Kind(),
+			RouteGroupID:           node.RouteGroupID(),
+			DependsOn:              node.DependsOn(),
 			MaxAttempts:            node.MaxAttempts(),
 			AssetRevisionBindings:  node.AssetRevisionBindings(),
 			AssetRevisionSetDigest: node.AssetRevisionSetDigest(),
@@ -1961,15 +2573,78 @@ func teamPlanPayload(
 	for index, binding := range bindings {
 		payloadBindings[index] = teamSemanticBindingPayloadFrom(binding)
 	}
+	payloadRoutes := make([]teamNodeRouteSummaryPayload, len(routeSummaries))
+	for index, route := range routeSummaries {
+		payloadRoutes[index] = teamRouteSummaryPayloadFrom(route)
+	}
 	return struct {
-		TeamInstanceID   string                       `json:"team_instance_id"`
-		PlanDigest       string                       `json:"plan_digest"`
-		ViewVersion      string                       `json:"view_version"`
-		Nodes            []teamPlanNodePayload        `json:"nodes"`
-		SemanticBindings []teamSemanticBindingPayload `json:"semantic_bindings"`
+		TeamInstanceID   string                        `json:"team_instance_id"`
+		PlanDigest       string                        `json:"plan_digest"`
+		ViewVersion      string                        `json:"view_version"`
+		Nodes            []teamPlanNodePayload         `json:"nodes"`
+		SemanticBindings []teamSemanticBindingPayload  `json:"semantic_bindings"`
+		RouteSummaries   []teamNodeRouteSummaryPayload `json:"route_summaries,omitempty"`
 	}{
 		plan.TeamInstanceID(), plan.Digest(), viewVersion,
-		payloadNodes, payloadBindings,
+		payloadNodes, payloadBindings, payloadRoutes,
+	}
+}
+
+func teamRouteSummaryPayloadFrom(route TeamNodeRouteSummary) teamNodeRouteSummaryPayload {
+	return teamNodeRouteSummaryPayload{
+		LogicalNodeID: route.LogicalNodeID, HarnessAdapter: route.HarnessAdapter,
+		ProviderID: route.ProviderID, ProviderAccountID: route.ProviderAccountID,
+		ModelID: route.ModelID, ReasoningEffort: route.ReasoningEffort,
+		TimeoutNanoseconds: route.TimeoutNanoseconds, Budget: cloneTeamBudget(route.Budget),
+		Capabilities:       append([]string(nil), route.Capabilities...),
+		CredentialRevision: route.CredentialRevision,
+	}
+}
+
+func teamRouteSummaryFromPayload(route teamNodeRouteSummaryPayload) TeamNodeRouteSummary {
+	return TeamNodeRouteSummary{
+		LogicalNodeID: route.LogicalNodeID, HarnessAdapter: route.HarnessAdapter,
+		ProviderID: route.ProviderID, ProviderAccountID: route.ProviderAccountID,
+		ModelID: route.ModelID, ReasoningEffort: route.ReasoningEffort,
+		TimeoutNanoseconds: route.TimeoutNanoseconds, Budget: cloneTeamBudget(route.Budget),
+		Capabilities:       append([]string(nil), route.Capabilities...),
+		CredentialRevision: route.CredentialRevision,
+	}
+}
+
+func validTeamRouteSummary(route TeamNodeRouteSummary) bool {
+	return validOpaqueID(route.LogicalNodeID) && validOpaqueID(route.HarnessAdapter) &&
+		validOpaqueID(route.ProviderID) && validTeamRouteCredentialIdentity(route) &&
+		validOpaqueID(route.ModelID) &&
+		(route.ReasoningEffort == "" || validOpaqueID(route.ReasoningEffort)) &&
+		route.TimeoutNanoseconds > 0 &&
+		(route.Budget == nil || *route.Budget >= 0) && validTeamRouteCapabilities(route.Capabilities)
+}
+
+func validTeamRouteCredentialIdentity(route TeamNodeRouteSummary) bool {
+	if route.ProviderAccountID == "" {
+		return route.CredentialRevision == 0
+	}
+	return validOpaqueID(route.ProviderAccountID) && route.CredentialRevision > 0
+}
+
+func teamRouteSummaryMatchesBinding(
+	route TeamNodeRouteSummary,
+	binding loomruntime.FrozenExecutionBinding,
+) bool {
+	return route.HarnessAdapter == binding.HarnessAdapter &&
+		route.ProviderID == binding.ProviderID &&
+		route.ProviderAccountID == binding.ProviderAccountID &&
+		route.ModelID == binding.ModelID && route.ReasoningEffort == binding.ReasoningEffort &&
+		route.TimeoutNanoseconds == int64(binding.Timeout) && route.CredentialRevision == binding.CredentialRevision &&
+		reflect.DeepEqual(route.Budget, binding.Budget) && reflect.DeepEqual(route.Capabilities, binding.Capabilities)
+}
+
+func teamInitialBlockPayloadFrom(block teams.InitialExecutionBlock) teamInitialBlockPayload {
+	return teamInitialBlockPayload{
+		LogicalNodeID: block.LogicalNodeID, Code: block.Code,
+		Stage: block.Stage, Reason: block.Reason, Retryable: block.Retryable,
+		SourceLogicalNodeID: block.SourceLogicalNodeID,
 	}
 }
 
@@ -1983,6 +2658,18 @@ func teamSemanticBindingPayloadFrom(
 	verifierAgent := binding.VerifierAgentInstanceID
 	verifierRuntime := binding.VerifierRuntimeInstanceID
 	verifierWorkflow := binding.VerifierWorkflowPath
+	var fallbackApproval *teamFallbackApprovalPayload
+	if binding.FallbackApproval.Valid() {
+		fallbackApproval = &teamFallbackApprovalPayload{
+			Version:             binding.FallbackApproval.Version(),
+			ApprovalID:          binding.FallbackApproval.ApprovalID(),
+			ActorRef:            binding.FallbackApproval.ActorRef(),
+			ApprovedAt:          binding.FallbackApproval.ApprovedAt().Format(time.RFC3339Nano),
+			SourceBindingDigest: binding.FallbackApproval.SourceBindingDigest(),
+			TargetBindingDigest: binding.FallbackApproval.TargetBindingDigest(),
+			Digest:              binding.FallbackApproval.Digest(),
+		}
+	}
 	return teamSemanticBindingPayload{
 		LogicalNodeID:               binding.LogicalNodeID,
 		OutputContractVersion:       binding.OutputContractVersion,
@@ -1993,6 +2680,8 @@ func teamSemanticBindingPayloadFrom(
 		PrimaryWorkflowPath:         binding.PrimaryWorkflowPath,
 		WorkflowFallbackKey:         binding.WorkflowFallbackKey,
 		RecoveryApprovalRequired:    binding.RecoveryApprovalRequired,
+		FallbackApproval:            fallbackApproval,
+		FallbackRuntimeInstanceID:   binding.FallbackRuntimeInstanceID,
 		AcceptanceContractVersion:   &version,
 		AcceptanceContractDigest:    &digest,
 		AcceptanceRisk:              &risk,
@@ -2003,6 +2692,30 @@ func teamSemanticBindingPayloadFrom(
 		AssetRevisionBindings:       cloneTeamAssetBindings(binding.AssetRevisionBindings),
 		AssetRevisionSetDigest:      binding.AssetRevisionSetDigest,
 	}
+}
+
+func teamFallbackApprovalFromPayload(
+	payload *teamFallbackApprovalPayload,
+) (TeamFallbackApproval, error) {
+	if payload == nil {
+		return TeamFallbackApproval{}, nil
+	}
+	approvedAt, err := time.Parse(time.RFC3339Nano, payload.ApprovedAt)
+	if err != nil || approvedAt.Location() != time.UTC {
+		return TeamFallbackApproval{}, ErrInvalidTeamFallbackApproval
+	}
+	approval, err := NewTeamFallbackApproval(TeamFallbackApprovalInput{
+		Version:             payload.Version,
+		ApprovalID:          payload.ApprovalID,
+		ActorRef:            payload.ActorRef,
+		ApprovedAt:          approvedAt,
+		SourceBindingDigest: payload.SourceBindingDigest,
+		TargetBindingDigest: payload.TargetBindingDigest,
+	})
+	if err != nil || approval.Digest() != payload.Digest {
+		return TeamFallbackApproval{}, ErrInvalidTeamFallbackApproval
+	}
+	return approval, nil
 }
 
 func toWorkAssetBindings(bindings []assets.ExactAssetRevisionBinding) []AssetRevisionBinding {
@@ -2048,6 +2761,65 @@ func teamAttemptScheduledPayload(
 	}
 }
 
+func teamExecutionBindingPayloadFrom(
+	input loomruntime.FrozenExecutionBinding,
+) *teamExecutionBindingPayload {
+	validated, err := loomruntime.ValidateFrozenExecutionBinding(input)
+	if err != nil {
+		return nil
+	}
+	payload := &teamExecutionBindingPayload{
+		ProfileID:           validated.ProfileID,
+		HarnessAdapter:      validated.HarnessAdapter,
+		RuntimeInstanceID:   validated.RuntimeInstanceID,
+		ProviderID:          validated.ProviderID,
+		ProviderAccountID:   validated.ProviderAccountID,
+		ModelID:             validated.ModelID,
+		AuthMode:            string(validated.AuthMode),
+		EndpointFingerprint: validated.EndpointFingerprint,
+		CredentialReference: validated.CredentialReference,
+		CredentialRevision:  validated.CredentialRevision,
+		ReasoningEffort:     validated.ReasoningEffort,
+		TimeoutNanoseconds:  int64(validated.Timeout),
+		Capabilities:        append([]string(nil), validated.Capabilities...),
+		BindingDigest:       validated.BindingDigest,
+	}
+	if validated.Budget != nil {
+		budget := *validated.Budget
+		payload.Budget = &budget
+	}
+	return payload
+}
+
+func frozenExecutionBindingFromPayload(
+	input *teamExecutionBindingPayload,
+) (loomruntime.FrozenExecutionBinding, error) {
+	if input == nil {
+		return loomruntime.FrozenExecutionBinding{}, nil
+	}
+	binding := loomruntime.FrozenExecutionBinding{
+		ProfileID:           input.ProfileID,
+		HarnessAdapter:      input.HarnessAdapter,
+		RuntimeInstanceID:   input.RuntimeInstanceID,
+		ProviderID:          input.ProviderID,
+		ProviderAccountID:   input.ProviderAccountID,
+		ModelID:             input.ModelID,
+		AuthMode:            loomruntime.AuthMode(input.AuthMode),
+		EndpointFingerprint: input.EndpointFingerprint,
+		CredentialReference: input.CredentialReference,
+		CredentialRevision:  input.CredentialRevision,
+		ReasoningEffort:     input.ReasoningEffort,
+		Timeout:             time.Duration(input.TimeoutNanoseconds),
+		Capabilities:        append([]string(nil), input.Capabilities...),
+		BindingDigest:       input.BindingDigest,
+	}
+	if input.Budget != nil {
+		budget := *input.Budget
+		binding.Budget = &budget
+	}
+	return loomruntime.ValidateFrozenExecutionBinding(binding)
+}
+
 func formatOptionalUTC(value time.Time) string {
 	if value.IsZero() {
 		return ""
@@ -2079,6 +2851,17 @@ func teamDispatchStreams(
 		}
 	}
 	for _, selection := range selections {
+		if selection.ExecutionBinding.ProviderAccountID != "" {
+			streams[providerAccountPolicyStream(selection.ExecutionBinding.ProviderAccountID)] = struct{}{}
+			streams[providerAccountCapacityStream(selection.ExecutionBinding.ProviderAccountID)] = struct{}{}
+			if rateCardStreamID, err := ProviderModelRateCardStreamID(
+				selection.ExecutionBinding.ProviderID,
+				selection.ExecutionBinding.ProviderAccountID,
+				selection.ExecutionBinding.ModelID,
+			); err == nil {
+				streams[rateCardStreamID] = struct{}{}
+			}
+		}
 		node := nodeByLogicalID(nodes, selection.LogicalNodeID)
 		for _, binding := range node.AssetRevisionBindings() {
 			streams["evolution-asset-revision/"+string(binding.AssetKind)+"/"+binding.DefinitionID+"/"+binding.RevisionID] = struct{}{}
@@ -2196,6 +2979,9 @@ func plannedTeamRecord(
 		binding := teamSemanticBindingByID(bindings, node.LogicalNodeID())
 		records[index] = TeamNodeRecord{
 			logicalNodeID: node.LogicalNodeID(),
+			kind:          node.Kind(),
+			routeGroupID:  node.RouteGroupID(),
+			dependsOn:     node.DependsOn(),
 			status:        "pending", maxAttempts: node.MaxAttempts(),
 			attempts:        []TeamAttemptRecord{},
 			semanticBinding: binding,
@@ -2206,6 +2992,19 @@ func plannedTeamRecord(
 		status: "pending", nodes: records,
 		streamSequence: sequence, lastEventID: eventID,
 	}
+}
+
+func applyInitialTeamBlock(team *TeamExecutionRecord, block teams.InitialExecutionBlock) {
+	node := teamNodeByID(team, block.LogicalNodeID)
+	if node == nil {
+		return
+	}
+	node.status = "blocked"
+	node.initialBlockCode = block.Code
+	node.initialBlockStage = block.Stage
+	node.initialBlockReason = block.Reason
+	node.initialBlockRetryable = block.Retryable
+	node.initialBlockSourceNodeID = block.SourceLogicalNodeID
 }
 
 func teamSemanticBindingByID(
@@ -2257,6 +3056,14 @@ func canonicalTeamSemanticDigest(
 			binding.PrimaryWorkflowPath,
 			binding.WorkflowFallbackKey,
 			fmt.Sprint(binding.RecoveryApprovalRequired),
+			fmt.Sprint(binding.FallbackApproval.Version()),
+			binding.FallbackApproval.ApprovalID(),
+			binding.FallbackApproval.ActorRef(),
+			formatOptionalUTC(binding.FallbackApproval.ApprovedAt()),
+			binding.FallbackApproval.SourceBindingDigest(),
+			binding.FallbackApproval.TargetBindingDigest(),
+			binding.FallbackApproval.Digest(),
+			binding.FallbackRuntimeInstanceID,
 			fmt.Sprint(binding.AcceptanceContractVersion),
 			binding.AcceptanceContractDigest,
 			binding.AcceptanceRisk,
@@ -2396,11 +3203,14 @@ func replayTeamDispatchState(
 	events []journal.Event,
 ) (authorityState, error) {
 	state := authorityState{
-		workItems:     make(map[string]WorkItemRecord),
-		runs:          make(map[string]RunRecord),
-		runtimes:      make(map[string]authorityRuntime),
-		heads:         make(map[string]int64),
-		runIdentities: make(map[string]runIdentityReservation),
+		workItems:               make(map[string]WorkItemRecord),
+		runs:                    make(map[string]RunRecord),
+		runtimes:                make(map[string]authorityRuntime),
+		heads:                   make(map[string]int64),
+		runIdentities:           make(map[string]runIdentityReservation),
+		providerAccountPolicies: make(map[string][]providerAccountPolicyState),
+		providerAccountCapacity: make(map[string]providerAccountCapacity),
+		providerModelRateCards:  make(map[string][]providerModelRateCardState),
 	}
 	ordered := append([]journal.Event(nil), events...)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -2424,6 +3234,12 @@ func replayTeamDispatchState(
 		if err := replayRunIdentityStream(&state, identityEvents); err != nil {
 			return authorityState{}, err
 		}
+	}
+	if err := replayProviderAccountPolicyStreams(&state, byStream); err != nil {
+		return authorityState{}, err
+	}
+	if err := replayProviderModelRateCardStreams(&state, byStream); err != nil {
+		return authorityState{}, err
 	}
 	for streamID, streamEvents := range byStream {
 		if strings.HasPrefix(streamID, "runtime_instance:") {
@@ -2490,6 +3306,17 @@ func replayTeamDispatchState(
 		}
 		state.runtimes[runtimeID] = runtime
 	}
+	for streamID, streamEvents := range byStream {
+		if !strings.HasPrefix(streamID, "provider-account-capacity/") {
+			continue
+		}
+		if err := replayProviderAccountCapacityStream(
+			&state, streamID, streamEvents,
+			map[string]*claimReplay{}, map[string]*terminalReplay{}, true,
+		); err != nil {
+			return authorityState{}, err
+		}
+	}
 	return state, nil
 }
 
@@ -2509,11 +3336,12 @@ func replayTeamExecution(
 		switch event.Type {
 		case "TeamExecutionPlanned":
 			var payload struct {
-				TeamInstanceID   string                        `json:"team_instance_id"`
-				PlanDigest       string                        `json:"plan_digest"`
-				ViewVersion      string                        `json:"view_version"`
-				Nodes            []teamPlanNodePayload         `json:"nodes"`
-				SemanticBindings *[]teamSemanticBindingPayload `json:"semantic_bindings"`
+				TeamInstanceID   string                         `json:"team_instance_id"`
+				PlanDigest       string                         `json:"plan_digest"`
+				ViewVersion      string                         `json:"view_version"`
+				Nodes            []teamPlanNodePayload          `json:"nodes"`
+				SemanticBindings *[]teamSemanticBindingPayload  `json:"semantic_bindings"`
+				RouteSummaries   *[]teamNodeRouteSummaryPayload `json:"route_summaries"`
 			}
 			decodeErr := decodeExactPayload(event.PayloadJSON, &payload)
 			if team.status != "" ||
@@ -2521,8 +3349,27 @@ func replayTeamExecution(
 				payload.TeamInstanceID != teamInstanceID ||
 				!validSHA256Hex(payload.PlanDigest) ||
 				!validSHA256Hex(payload.ViewVersion) ||
-				len(payload.Nodes) == 0 || len(payload.Nodes) > 3 {
+				len(payload.Nodes) == 0 ||
+				len(payload.Nodes) > teams.MaxExecutionNodeCount {
 				return TeamExecutionRecord{}, fmt.Errorf("%w: planned %s decode=%v", ErrTeamExecutionConflict, event.ID, decodeErr)
+			}
+			planInput := teams.ExecutionPlanInput{
+				TeamInstanceID: payload.TeamInstanceID,
+				Nodes:          make([]teams.ExecutionNodeInput, len(payload.Nodes)),
+			}
+			for index, node := range payload.Nodes {
+				planInput.Nodes[index] = teams.ExecutionNodeInput{
+					LogicalNodeID: node.LogicalNodeID, Title: node.Title,
+					AgentInstanceID: node.AgentInstanceID, RuntimeInstanceID: node.RuntimeInstanceID,
+					Role: node.Role, Kind: node.Kind, RouteGroupID: node.RouteGroupID,
+					DependsOn: append([]string(nil), node.DependsOn...), MaxAttempts: node.MaxAttempts,
+					AssetRevisionBindings:  cloneTeamAssetBindings(node.AssetRevisionBindings),
+					AssetRevisionSetDigest: node.AssetRevisionSetDigest,
+				}
+			}
+			rebuiltPlan, planErr := teams.BuildExecutionPlan(planInput)
+			if planErr != nil || rebuiltPlan.Digest() != payload.PlanDigest {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
 			}
 			team = TeamExecutionRecord{
 				teamInstanceID:        teamInstanceID,
@@ -2532,6 +3379,20 @@ func replayTeamExecution(
 				legacySemanticUnbound: payload.SemanticBindings == nil,
 			}
 			bindings := make(map[string]TeamNodeSemanticBinding)
+			routes := make(map[string]TeamNodeRouteSummary)
+			if payload.RouteSummaries != nil {
+				if len(*payload.RouteSummaries) != len(payload.Nodes) {
+					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				}
+				for index, route := range *payload.RouteSummaries {
+					public := teamRouteSummaryFromPayload(route)
+					if index > 0 && (*payload.RouteSummaries)[index-1].LogicalNodeID >= route.LogicalNodeID ||
+						!validTeamRouteSummary(public) {
+						return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					}
+					routes[public.LogicalNodeID] = public
+				}
+			}
 			if payload.SemanticBindings != nil {
 				if len(*payload.SemanticBindings) != len(payload.Nodes) {
 					return TeamExecutionRecord{}, ErrTeamExecutionConflict
@@ -2551,18 +3412,25 @@ func replayTeamExecution(
 					if index == 0 {
 						team.legacyAcceptanceUnbound = !acceptancePresent
 					}
+					fallbackApproval, fallbackErr :=
+						teamFallbackApprovalFromPayload(binding.FallbackApproval)
+					if fallbackErr != nil {
+						return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					}
 					public := TeamNodeSemanticBinding{
-						LogicalNodeID:            binding.LogicalNodeID,
-						OutputContractVersion:    binding.OutputContractVersion,
-						OutputContractDigest:     binding.OutputContractDigest,
-						RecoveryPolicyVersion:    binding.RecoveryPolicyVersion,
-						RecoveryPolicyDigest:     binding.RecoveryPolicyDigest,
-						AttemptCredits:           binding.AttemptCredits,
-						PrimaryWorkflowPath:      binding.PrimaryWorkflowPath,
-						WorkflowFallbackKey:      binding.WorkflowFallbackKey,
-						RecoveryApprovalRequired: binding.RecoveryApprovalRequired,
-						AssetRevisionBindings:    cloneTeamAssetBindings(binding.AssetRevisionBindings),
-						AssetRevisionSetDigest:   binding.AssetRevisionSetDigest,
+						LogicalNodeID:             binding.LogicalNodeID,
+						OutputContractVersion:     binding.OutputContractVersion,
+						OutputContractDigest:      binding.OutputContractDigest,
+						RecoveryPolicyVersion:     binding.RecoveryPolicyVersion,
+						RecoveryPolicyDigest:      binding.RecoveryPolicyDigest,
+						AttemptCredits:            binding.AttemptCredits,
+						PrimaryWorkflowPath:       binding.PrimaryWorkflowPath,
+						WorkflowFallbackKey:       binding.WorkflowFallbackKey,
+						RecoveryApprovalRequired:  binding.RecoveryApprovalRequired,
+						FallbackApproval:          fallbackApproval,
+						FallbackRuntimeInstanceID: binding.FallbackRuntimeInstanceID,
+						AssetRevisionBindings:     cloneTeamAssetBindings(binding.AssetRevisionBindings),
+						AssetRevisionSetDigest:    binding.AssetRevisionSetDigest,
 					}
 					if acceptancePresent {
 						public.AcceptanceContractVersion = *binding.AcceptanceContractVersion
@@ -2583,7 +3451,12 @@ func replayTeamExecution(
 						public.WorkflowFallbackKey != "" &&
 							(!validOpaqueID(public.WorkflowFallbackKey) ||
 								public.WorkflowFallbackKey ==
-									public.PrimaryWorkflowPath) {
+									public.PrimaryWorkflowPath) ||
+						!validOptionalTeamFallbackApproval(public) {
+						return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					}
+					if public.FallbackApproval.Digest() != "" &&
+						public.FallbackApproval.ApprovedAt().After(event.EmittedAt) {
 						return TeamExecutionRecord{}, ErrTeamExecutionConflict
 					}
 					bindings[public.LogicalNodeID] = public
@@ -2605,15 +3478,41 @@ func replayTeamExecution(
 				}
 				team.nodes[index] = TeamNodeRecord{
 					logicalNodeID:   node.LogicalNodeID,
+					kind:            node.Kind,
+					routeGroupID:    node.RouteGroupID,
+					dependsOn:       append([]string(nil), node.DependsOn...),
 					status:          "pending",
 					maxAttempts:     node.MaxAttempts,
 					attempts:        []TeamAttemptRecord{},
 					semanticBinding: binding,
+					routeSummary:    routes[node.LogicalNodeID],
+				}
+				if payload.RouteSummaries != nil && team.nodes[index].routeSummary.LogicalNodeID == "" {
+					return TeamExecutionRecord{}, ErrTeamExecutionConflict
 				}
 			}
 			sort.Slice(team.nodes, func(i, j int) bool {
 				return team.nodes[i].logicalNodeID < team.nodes[j].logicalNodeID
 			})
+		case "TeamNodeInitiallyBlocked":
+			var payload teamInitialBlockPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				team.status == "" || teamIsTerminal(team) ||
+				event.CausationID != team.lastEventID {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			node := teamNodeByID(&team, payload.LogicalNodeID)
+			block := teams.InitialExecutionBlock{
+				LogicalNodeID: payload.LogicalNodeID, Code: payload.Code,
+				Stage: payload.Stage, Reason: payload.Reason,
+				Retryable:           payload.Retryable,
+				SourceLogicalNodeID: payload.SourceLogicalNodeID,
+			}
+			if node == nil || node.status != "pending" || node.currentAttempt != 0 ||
+				!validReplayedInitialTeamBlock(team, block) {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			applyInitialTeamBlock(&team, block)
 		case "TeamNodeAttemptScheduled":
 			var payload struct {
 				LogicalNodeID     string  `json:"logical_node_id"`
@@ -2665,6 +3564,7 @@ func replayTeamExecution(
 					}
 				} else {
 					expectedWorkflow := ""
+					expectedRuntimeInstanceID := ""
 					switch node.recoveryAction {
 					case "retry":
 						previous := teamAttemptByNumber(
@@ -2673,13 +3573,25 @@ func replayTeamExecution(
 						)
 						if previous != nil {
 							expectedWorkflow = previous.workflowPath
+							expectedRuntimeInstanceID = previous.runtimeInstanceID
 						}
 					case "fallback":
 						expectedWorkflow =
 							node.semanticBinding.WorkflowFallbackKey
+						previous := teamAttemptByNumber(
+							node, payload.AttemptNumber-1,
+						)
+						if previous != nil {
+							expectedRuntimeInstanceID = previous.runtimeInstanceID
+						}
+						if node.semanticBinding.FallbackRuntimeInstanceID != "" {
+							expectedRuntimeInstanceID =
+								node.semanticBinding.FallbackRuntimeInstanceID
+						}
 					}
 					if expectedWorkflow == "" ||
 						attempt.workflowPath != expectedWorkflow ||
+						attempt.runtimeInstanceID != expectedRuntimeInstanceID ||
 						!retryAt.Equal(node.retryAt) {
 						return TeamExecutionRecord{}, ErrTeamExecutionConflict
 					}
@@ -2700,16 +3612,66 @@ func replayTeamExecution(
 				return TeamExecutionRecord{}, fmt.Errorf("%w: dispatched %s decode=%v", ErrTeamExecutionConflict, event.ID, decodeErr)
 			}
 			for _, dispatched := range payload.Attempts {
+				executionBinding, bindingErr :=
+					frozenExecutionBindingFromPayload(dispatched.ExecutionBinding)
+				contextRecord := contextcapsule.AuthorityRecord{}
+				var contextErr error
+				if dispatched.ContextCapsule == nil {
+					contextErr = contextcapsule.ErrInvalidCapsule
+				} else {
+					contextRecord, contextErr = contextcapsule.ValidateAuthorityRecord(
+						*dispatched.ContextCapsule,
+					)
+				}
+				routeSegment := contextcapsule.RouteSegmentBinding{}
+				var routeSegmentErr error
+				if dispatched.RouteSegment == nil {
+					routeSegmentErr = contextcapsule.ErrInvalidRouteSegmentBinding
+				} else {
+					routeSegment, routeSegmentErr = contextcapsule.ValidateRouteSegmentBinding(
+						*dispatched.RouteSegment,
+					)
+				}
+				expectedRouteSegment, expectedRouteSegmentErr :=
+					teamRouteSegmentBindingFromAuthority(
+						contextRecord, executionBinding, dispatched.LogicalNodeID,
+						dispatched.AttemptNumber,
+					)
 				node := teamNodeByID(&team, dispatched.LogicalNodeID)
 				attempt := teamAttemptByNumber(node, dispatched.AttemptNumber)
-				if attempt == nil ||
+				if node == nil || attempt == nil ||
 					attempt.workItemID != dispatched.WorkItemID ||
 					attempt.runID != dispatched.RunID ||
 					attempt.runtimeInstanceID != dispatched.RuntimeInstanceID ||
 					attempt.agentInstanceID != dispatched.AgentInstanceID ||
 					!reflect.DeepEqual(node.semanticBinding.AssetRevisionBindings, dispatched.AssetRevisionBindings) ||
-					node.semanticBinding.AssetRevisionSetDigest != dispatched.AssetRevisionSetDigest {
+					node.semanticBinding.AssetRevisionSetDigest != dispatched.AssetRevisionSetDigest ||
+					bindingErr != nil ||
+					contextErr != nil ||
+					routeSegmentErr != nil || expectedRouteSegmentErr != nil ||
+					routeSegment != expectedRouteSegment ||
+					dispatched.ExecutionBinding != nil &&
+						executionBinding.RuntimeInstanceID != dispatched.RuntimeInstanceID ||
+					contextRecord.TeamID != team.teamInstanceID ||
+					contextRecord.AgentID != attempt.agentInstanceID ||
+					contextRecord.RoleID != dispatched.LogicalNodeID ||
+					contextRecord.ProviderID != executionBinding.ProviderID ||
+					contextRecord.ProviderAccountID != executionBinding.ProviderAccountID ||
+					contextRecord.ModelID != executionBinding.ModelID ||
+					contextRecord.AuthMode != string(executionBinding.AuthMode) {
 					return TeamExecutionRecord{}, fmt.Errorf("%w: dispatched attempt lineage %s semantic=%#v dispatch=%#v", ErrTeamExecutionConflict, dispatched.LogicalNodeID, node.semanticBinding.AssetRevisionBindings, dispatched.AssetRevisionBindings)
+				}
+				if dispatched.AttemptNumber == 1 && node.routeSummary.LogicalNodeID != "" &&
+					!teamRouteSummaryMatchesBinding(node.routeSummary, executionBinding) {
+					return TeamExecutionRecord{}, ErrTeamExecutionConflict
+				}
+				if dispatched.AttemptNumber > 1 {
+					previous := teamAttemptByNumber(node, dispatched.AttemptNumber-1)
+					if previous == nil || previous.contextCapsule.CapsuleDigest == "" ||
+						previous.executionBinding.BindingDigest == executionBinding.BindingDigest &&
+							previous.contextCapsule.CapsuleDigest != contextRecord.CapsuleDigest {
+						return TeamExecutionRecord{}, ErrTeamExecutionConflict
+					}
 				}
 				attempt.claimID = dispatched.ClaimID
 				attempt.claimGeneration = dispatched.ClaimGeneration
@@ -2718,6 +3680,9 @@ func replayTeamExecution(
 				attempt.assetRevisionSetDigest = dispatched.AssetRevisionSetDigest
 				attempt.materializationManifestDigest = dispatched.MaterializationManifestDigest
 				attempt.materializationRootDigest = dispatched.MaterializationRootDigest
+				attempt.executionBinding = executionBinding
+				attempt.contextCapsule = contextRecord
+				attempt.routeSegment = routeSegment
 				node.status = "running"
 				node.retryAt = time.Time{}
 			}
@@ -2760,6 +3725,10 @@ func replayTeamExecution(
 			}
 			node := teamNodeByID(&team, payload.LogicalNodeID)
 			attempt := teamAttemptByNumber(node, payload.AttemptNumber)
+			reason := ""
+			if payload.Reason != nil {
+				reason = *payload.Reason
+			}
 			if node == nil ||
 				attempt == nil ||
 				node.currentAttempt != payload.AttemptNumber ||
@@ -2773,6 +3742,7 @@ func replayTeamExecution(
 				payload.Status != "succeeded" &&
 					payload.Status != "failed" &&
 					payload.Status != "cancelled" ||
+				payload.Reason != nil && !validTeamTerminalReason(payload.Status, reason) ||
 				!validOpaqueID(payload.EvidenceID) ||
 				!validSHA256Hex(payload.EvidenceDigest) {
 				return TeamExecutionRecord{}, ErrTeamExecutionConflict
@@ -2794,7 +3764,7 @@ func replayTeamExecution(
 			}
 			applyAttemptTerminal(
 				&team, payload.LogicalNodeID, payload.AttemptNumber,
-				payload.Status, payload.EvidenceID, payload.EvidenceDigest,
+				payload.Status, reason, payload.EvidenceID, payload.EvidenceDigest,
 				payload.OutputContractVersion,
 				payload.OutputContractDigest,
 				verification.OutputClassification(
@@ -2923,6 +3893,7 @@ func replayTeamExecution(
 				payloadTrigger != expectedTrigger ||
 				payload.AcceptanceDecisionDigest !=
 					node.acceptanceDecisionDigest ||
+				!exactRecoveryFallbackApproval(payload, node, attempt) ||
 				retryErr != nil {
 				return TeamExecutionRecord{}, ErrTeamExecutionConflict
 			}
@@ -2947,11 +3918,15 @@ func replayTeamExecution(
 					return TeamExecutionRecord{}, ErrTeamExecutionConflict
 				}
 			case "fallback":
+				expectedRuntimeInstanceID := attempt.runtimeInstanceID
+				if node.semanticBinding.FallbackRuntimeInstanceID != "" {
+					expectedRuntimeInstanceID =
+						node.semanticBinding.FallbackRuntimeInstanceID
+				}
 				if payload.NextAttemptNumber != payload.AttemptNumber+1 ||
 					payload.NextAgentInstanceID !=
 						attempt.agentInstanceID ||
-					payload.NextRuntimeInstanceID !=
-						attempt.runtimeInstanceID ||
+					payload.NextRuntimeInstanceID != expectedRuntimeInstanceID ||
 					payload.WorkflowFallbackKey == "" ||
 					payload.WorkflowFallbackKey !=
 						node.semanticBinding.WorkflowFallbackKey ||
@@ -3055,11 +4030,40 @@ func replayTeamExecution(
 	return team, nil
 }
 
+func exactRecoveryFallbackApproval(
+	payload teamRecoveryPayload,
+	node *TeamNodeRecord,
+	attempt *TeamAttemptRecord,
+) bool {
+	if node == nil || attempt == nil {
+		return false
+	}
+	approval := node.semanticBinding.FallbackApproval
+	if payload.Action != "fallback" || approval.Digest() == "" {
+		return payload.FallbackApprovalVersion == 0 &&
+			payload.FallbackApprovalID == "" &&
+			payload.FallbackApprovalDigest == "" &&
+			payload.FallbackSourceBindingDigest == "" &&
+			payload.FallbackTargetBindingDigest == ""
+	}
+	return approval.Valid() &&
+		payload.FallbackApprovalVersion == approval.Version() &&
+		payload.FallbackApprovalID == approval.ApprovalID() &&
+		payload.FallbackApprovalDigest == approval.Digest() &&
+		payload.FallbackSourceBindingDigest ==
+			approval.SourceBindingDigest() &&
+		payload.FallbackTargetBindingDigest ==
+			approval.TargetBindingDigest() &&
+		attempt.executionBinding.BindingDigest ==
+			approval.SourceBindingDigest()
+}
+
 func applyAttemptTerminal(
 	team *TeamExecutionRecord,
 	logicalNodeID string,
 	attemptNumber int,
 	status string,
+	reason string,
 	evidenceID string,
 	evidenceDigest string,
 	outputContractVersion int,
@@ -3074,6 +4078,7 @@ func applyAttemptTerminal(
 		return
 	}
 	attempt.status = status
+	attempt.terminalReason = reason
 	attempt.evidenceID = evidenceID
 	attempt.evidenceDigest = evidenceDigest
 	attempt.outputContractVersion = outputContractVersion
@@ -3094,6 +4099,35 @@ func applyAttemptTerminal(
 	if node.status == "awaiting_recovery" {
 		team.status = "awaiting_recovery"
 	}
+}
+
+func safeTeamTerminalReason(status, reason string) string {
+	if validTeamTerminalReason(status, reason) {
+		return reason
+	}
+	if status == "failed" || status == "cancelled" {
+		return "agent_attempt_failed"
+	}
+	return ""
+}
+
+func validTeamTerminalReason(status, reason string) bool {
+	if status == "succeeded" {
+		return reason == ""
+	}
+	if status != "failed" && status != "cancelled" ||
+		reason == "" || len(reason) > 64 {
+		return false
+	}
+	for _, current := range reason {
+		if current >= 'a' && current <= 'z' ||
+			current >= '0' && current <= '9' ||
+			current == '_' || current == '-' || current == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validOutputClassificationString(value string) bool {
@@ -3253,23 +4287,24 @@ func matchExistingTeamRecovery(
 	}
 	decision, decisionErr := input.RecoveryPolicy.Decide(
 		TeamRecoveryDecisionRequest{
-			TeamInstanceID:           input.TeamInstanceID,
-			PlanDigest:               input.PlanDigest,
-			LogicalNodeID:            input.LogicalNodeID,
-			AttemptNumber:            input.AttemptNumber,
-			MaxAttempts:              input.MaxAttempts,
-			AgentInstanceID:          input.AgentInstanceID,
-			RuntimeInstanceID:        input.RuntimeInstanceID,
-			EvidenceID:               input.EvidenceID,
-			EvidenceDigest:           input.EvidenceDigest,
-			OutputSummaryDigest:      input.OutputSummaryDigest,
-			Classification:           input.Classification,
-			PriorClassifications:     prior,
-			RemainingCredits:         credits,
-			FallbackConsumed:         fallbackConsumed,
-			DecisionTime:             decisionTime,
-			Trigger:                  trigger,
-			AcceptanceDecisionDigest: node.acceptanceDecisionDigest,
+			TeamInstanceID:            input.TeamInstanceID,
+			PlanDigest:                input.PlanDigest,
+			LogicalNodeID:             input.LogicalNodeID,
+			AttemptNumber:             input.AttemptNumber,
+			MaxAttempts:               input.MaxAttempts,
+			AgentInstanceID:           input.AgentInstanceID,
+			RuntimeInstanceID:         input.RuntimeInstanceID,
+			EvidenceID:                input.EvidenceID,
+			EvidenceDigest:            input.EvidenceDigest,
+			OutputSummaryDigest:       input.OutputSummaryDigest,
+			Classification:            input.Classification,
+			PriorClassifications:      prior,
+			RemainingCredits:          credits,
+			FallbackConsumed:          fallbackConsumed,
+			FallbackRuntimeInstanceID: node.semanticBinding.FallbackRuntimeInstanceID,
+			DecisionTime:              decisionTime,
+			Trigger:                   trigger,
+			AcceptanceDecisionDigest:  node.acceptanceDecisionDigest,
 		},
 	)
 	if decisionErr != nil ||
@@ -3317,6 +4352,62 @@ func exactJournalEvent(left, right journal.Event) bool {
 		left.CorrelationID == right.CorrelationID &&
 		left.CausationID == right.CausationID &&
 		string(left.PayloadJSON) == string(right.PayloadJSON)
+}
+
+func validReplayedInitialTeamBlock(
+	team TeamExecutionRecord,
+	block teams.InitialExecutionBlock,
+) bool {
+	node := teamNodeByID(&team, block.LogicalNodeID)
+	if node == nil || !validInitialTeamBlockToken(block.Code) ||
+		!validInitialTeamBlockToken(block.Stage) ||
+		!validInitialTeamBlockReason(block.Reason) {
+		return false
+	}
+	if block.Code == "dependency_blocked" {
+		if block.Stage != "agent_attempt_dispatch" ||
+			block.Reason != "A required Agent is blocked." ||
+			block.SourceLogicalNodeID == "" {
+			return false
+		}
+		dependencyDeclared := false
+		for _, dependency := range node.dependsOn {
+			if dependency == block.SourceLogicalNodeID {
+				dependencyDeclared = true
+				break
+			}
+		}
+		source := teamNodeByID(&team, block.SourceLogicalNodeID)
+		return dependencyDeclared && source != nil && source.status == "blocked" &&
+			block.Retryable == source.initialBlockRetryable
+	}
+	return block.SourceLogicalNodeID == ""
+}
+
+func validInitialTeamBlockToken(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, current := range value {
+		if current != '_' && (current < 'a' || current > 'z') &&
+			(current < '0' || current > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validInitialTeamBlockReason(value string) bool {
+	if value == "" || len(value) > 512 || !utf8.ValidString(value) ||
+		strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, current := range value {
+		if unicode.IsControl(current) {
+			return false
+		}
+	}
+	return true
 }
 
 func validExactTeamRecoveryDecision(decision TeamRecoveryDecision) bool {
@@ -3431,10 +4522,12 @@ func cloneTeamNodeRecords(records []TeamNodeRecord) []TeamNodeRecord {
 	cloned := make([]TeamNodeRecord, len(records))
 	for index, record := range records {
 		cloned[index] = record
+		cloned[index].routeSummary = cloneTeamRouteSummary(record.routeSummary)
 		cloned[index].attempts = append([]TeamAttemptRecord(nil), record.attempts...)
 		cloned[index].semanticBinding.AssetRevisionBindings = cloneTeamAssetBindings(record.semanticBinding.AssetRevisionBindings)
 		for attemptIndex := range cloned[index].attempts {
 			cloned[index].attempts[attemptIndex].assetRevisionBindings = cloneTeamAssetBindings(record.attempts[attemptIndex].assetRevisionBindings)
+			cloned[index].attempts[attemptIndex].executionBinding = cloneTeamExecutionBinding(record.attempts[attemptIndex].executionBinding)
 		}
 		cloned[index].priorClassifications = append(
 			[]verification.OutputClassification(nil),
@@ -3442,6 +4535,18 @@ func cloneTeamNodeRecords(records []TeamNodeRecord) []TeamNodeRecord {
 		)
 	}
 	return cloned
+}
+
+func cloneTeamExecutionBinding(
+	input loomruntime.FrozenExecutionBinding,
+) loomruntime.FrozenExecutionBinding {
+	clone := input
+	clone.Capabilities = append([]string(nil), input.Capabilities...)
+	if input.Budget != nil {
+		budget := *input.Budget
+		clone.Budget = &budget
+	}
+	return clone
 }
 
 func cloneTeamAssetBindings(values []assets.ExactAssetRevisionBinding) []assets.ExactAssetRevisionBinding {

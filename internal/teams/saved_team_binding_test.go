@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"loom-pi-rebuild/internal/agents"
@@ -68,15 +69,62 @@ func TestBuildSavedTeamRuntimeBinding(t *testing.T) {
 	selections[0].RuntimeInstanceID = "mutated"
 	returned := got.SubAgentBindings()
 	returned[0].RuntimeInstanceID = "mutated"
+	returned[0].ExecutionBinding.Capabilities[0] = "mutated"
+	*returned[0].ExecutionBinding.Budget = 999
+	returnedMain := got.MainBinding()
+	returnedMain.ExecutionBinding.Capabilities[0] = "mutated"
+	*returnedMain.ExecutionBinding.Budget = 999
 	if got.MainBinding().RuntimeInstanceID != "runtime.shared" ||
-		got.SubAgentBindings()[0].RuntimeInstanceID != "runtime.shared" {
+		got.SubAgentBindings()[0].RuntimeInstanceID != "runtime.shared" ||
+		got.MainBinding().ExecutionBinding.Capabilities[0] != "text" ||
+		*got.MainBinding().ExecutionBinding.Budget != 100 ||
+		got.SubAgentBindings()[0].ExecutionBinding.Capabilities[0] != "text" ||
+		*got.SubAgentBindings()[0].ExecutionBinding.Budget != 100 {
 		t.Fatal("input/accessor mutation changed binding Candidate")
 	}
 }
 
+func TestBuildSavedTeamRuntimeBindingFreezesProviderAccountPerRole(t *testing.T) {
+	definitions, profiles, input := teamDefinitionFixture()
+	for index := range profiles {
+		profiles[index].ProviderID = "anthropic"
+		profiles[index].ProviderAccountID = "anthropic.account." + profiles[index].ID
+		profiles[index].ModelID = "model.test"
+		profiles[index].EndpointFingerprint = strings.Repeat(string(rune('a'+index)), 64)
+		profiles[index].CredentialReference = "credential-ref-" + strings.ReplaceAll(profiles[index].ID, ".", "-")
+		profiles[index].CredentialRevision = int64(index + 1)
+	}
+	team := mustBuildTeamDefinition(t, input, definitions, profiles)
+	discovery := savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, 3, []string{"model.test"})
+
+	got, err := BuildSavedTeamRuntimeBinding(
+		[]TeamDefinition{team}, input.ID, input.ScopeIdentity,
+		definitions, profiles, discovery, savedTeamBindingSelections(),
+	)
+	if err != nil {
+		t.Fatalf("BuildSavedTeamRuntimeBinding() error = %v", err)
+	}
+	bindings := append([]SavedTeamRuntimeRoleBinding{got.MainBinding()}, got.SubAgentBindings()...)
+	accounts := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		frozen := binding.ExecutionBinding
+		if frozen.ProfileID != binding.RuntimeProfileID ||
+			frozen.RuntimeInstanceID != binding.RuntimeInstanceID ||
+			frozen.ProviderID != "anthropic" ||
+			frozen.ProviderAccountID == "" || frozen.CredentialReference == "" ||
+			frozen.CredentialRevision <= 0 || frozen.BindingDigest == "" {
+			t.Fatalf("role binding did not freeze account identity: %#v", binding)
+		}
+		accounts[frozen.ProviderAccountID] = struct{}{}
+	}
+	if len(accounts) != len(bindings) {
+		t.Fatalf("Provider Accounts = %#v, want one independent account per role", accounts)
+	}
+}
+
 func TestBuildSavedTeamRuntimeBindingCardinalityDormantCapacityResolutionAndReorder(t *testing.T) {
-	definitions, profiles, baseInput := teamDefinitionFixture()
-	for _, roleCount := range []int{1, 2, 3} {
+	definitions, profiles, baseInput := fourRoleTeamDefinitionFixture()
+	for _, roleCount := range []int{1, 2, 3, 4} {
 		t.Run(string(rune('0'+roleCount))+"_roles", func(t *testing.T) {
 			input := baseInput
 			input.ID = "team.cardinality"
@@ -86,6 +134,7 @@ func TestBuildSavedTeamRuntimeBindingCardinalityDormantCapacityResolutionAndReor
 				{AgentDefinitionID: "agent.main", RuntimeInstanceID: "runtime.shared"},
 				{AgentDefinitionID: "agent.sub.one", RuntimeInstanceID: "runtime.shared"},
 				{AgentDefinitionID: "agent.sub.two", RuntimeInstanceID: "runtime.shared"},
+				{AgentDefinitionID: "agent.sub.three", RuntimeInstanceID: "runtime.shared"},
 			}
 			selections = selections[:roleCount]
 			discovery := savedTeamBindingDiscovery(t, loomruntime.RuntimeOnline, 1, []string{"model.test"})

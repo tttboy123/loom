@@ -457,6 +457,7 @@ const swiftTimelineFixture = `{
     "status":"ready",
     "view_version":"view-1",
     "nodes":[],
+    "provider_accounts":[],
     "cost":{"observed":false,"amount_microunits":null,"currency":""}
   },
   "attention":[]
@@ -576,7 +577,41 @@ const swiftExecutionPreflightFixture = `{
     "side_effects":[],
     "permission_scopes":[],
     "approval_points":[],
-    "nodes":[{"logical_node_id":"main","title":"Verify the strict Swift execution contract","role":"main","depends_on":[],"max_attempts":1}]
+    "nodes":[{
+      "logical_node_id":"main",
+      "title":"Verify the strict Swift execution contract",
+      "role":"main",
+      "depends_on":[],
+      "max_attempts":1,
+      "harness_adapter":"pi",
+      "provider_id":"loom-local",
+      "provider_account_id":"",
+      "model_id":"qwen",
+      "auth_mode":"native_auth",
+      "credential_revision":0,
+      "reasoning_effort":"",
+      "timeout_seconds":60,
+      "budget_credits":null,
+      "capabilities":[],
+      "status":"ready",
+      "block_reason":"",
+      "fallback_configured":false,
+      "fallback_harness_adapter":"",
+      "fallback_provider_id":"",
+      "fallback_provider_account_id":"",
+      "fallback_model_id":"",
+      "fallback_auth_mode":"",
+      "fallback_credential_revision":0,
+      "fallback_reasoning_effort":"",
+      "fallback_timeout_seconds":0,
+      "fallback_budget_credits":null,
+      "fallback_capabilities":[],
+      "fallback_status":"",
+      "fallback_block_reason":"",
+      "fallback_approval_required":false,
+      "fallback_approval_available":false,
+      "fallback_approval_version":0
+    }]
   }
 }`
 
@@ -594,14 +629,16 @@ const swiftExecutionStartFixture = `{
 }`
 
 type swiftFixtureHandler struct {
-	mu                   sync.Mutex
-	errorCode            string
-	snapshot             json.RawMessage
-	executionOperations  []string
-	executionIDs         []string
-	credentialOperations []string
-	timelinePages        map[string]json.RawMessage
-	timelineCursors      []string
+	mu                           sync.Mutex
+	errorCode                    string
+	snapshot                     json.RawMessage
+	executionOperations          []string
+	executionIDs                 []string
+	credentialOperations         []string
+	credentialConfigureProviders []string
+	credentialConfigureDigests   [][sha256.Size]byte
+	timelinePages                map[string]json.RawMessage
+	timelineCursors              []string
 }
 
 func (handler *swiftFixtureHandler) setTimelinePages(
@@ -668,6 +705,44 @@ func (handler *swiftFixtureHandler) Handle(
 		}
 	case "builder_start":
 		return Response{OK: true, Result: json.RawMessage(swiftBuilderFixture)}
+	case "credential_configure":
+		var input struct {
+			ProviderID          string `json:"provider_id"`
+			ProviderAccountID   string `json:"provider_account_id"`
+			CredentialReference string `json:"credential_reference"`
+			ExpectedRevision    int64  `json:"expected_revision"`
+			OperationID         string `json:"operation_id"`
+			Secret              string `json:"secret"`
+		}
+		if err := json.Unmarshal(request.Params, &input); err != nil ||
+			input.ProviderID != "deepseek" ||
+			input.ProviderAccountID != "deepseek.primary" ||
+			input.CredentialReference != "" ||
+			input.ExpectedRevision != 0 || input.OperationID != "" ||
+			input.Secret != "sk-deepseek-contract" {
+			return Response{Error: safeProtocolError(
+				"invalid_request",
+				errors.New("credential configure operation"),
+			)}
+		}
+		digest := sha256.Sum256([]byte(input.Secret))
+		input.Secret = ""
+		handler.mu.Lock()
+		handler.credentialConfigureProviders = append(
+			handler.credentialConfigureProviders,
+			input.ProviderID,
+		)
+		handler.credentialConfigureDigests = append(
+			handler.credentialConfigureDigests,
+			digest,
+		)
+		handler.mu.Unlock()
+		return Response{OK: true, Result: json.RawMessage(`{
+  "provider_id":"deepseek",
+  "revision":1,
+  "status":"configured",
+  "reason":""
+}`)}
 	case "credential_verify":
 		var input struct {
 			ProviderID          string `json:"provider_id"`
@@ -937,12 +1012,14 @@ func (handler *swiftCredentialLiveHandler) Handle(
 	}
 	var input struct {
 		ProviderID          string `json:"provider_id"`
+		ProviderAccountID   string `json:"provider_account_id"`
 		CredentialReference string `json:"credential_reference"`
 		ExpectedRevision    int64  `json:"expected_revision"`
 		OperationID         string `json:"operation_id"`
 		Secret              string `json:"secret"`
 	}
 	if err := json.Unmarshal(request.Params, &input); err != nil ||
+		input.ProviderAccountID != input.ProviderID+".primary" ||
 		input.Secret != "" || !validSwiftOperationID(input.OperationID) {
 		return Response{Error: safeProtocolError(
 			"invalid_request",
@@ -952,8 +1029,9 @@ func (handler *swiftCredentialLiveHandler) Handle(
 	result, err := handler.setup.VerifyCredential(
 		ctx,
 		app.CredentialSetupCommand{
-			ProviderID: input.ProviderID, CredentialReference: input.CredentialReference,
-			ExpectedRevision: input.ExpectedRevision, OperationID: input.OperationID,
+			ProviderID: input.ProviderID, ProviderAccountID: input.ProviderAccountID,
+			CredentialReference: input.CredentialReference,
+			ExpectedRevision:    input.ExpectedRevision, OperationID: input.OperationID,
 		},
 	)
 	if err != nil {
@@ -1390,6 +1468,12 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 		"--socket",
 		socketPath,
 	).CombinedOutput()
+	deepSeekOutput, deepSeekErr := exec.Command(
+		probe,
+		"--socket",
+		socketPath,
+		"--deepseek-configure",
+	).CombinedOutput()
 	cancel()
 	if closeErr := server.Close(); closeErr != nil {
 		t.Errorf("Close() error = %v", closeErr)
@@ -1404,6 +1488,10 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 	}
 	if runErr != nil {
 		t.Fatalf("Swift setup probe error = %v, output = %q", runErr, output)
+	}
+	if deepSeekErr != nil {
+		t.Fatalf("Swift DeepSeek configure probe error = %v, output = %q",
+			deepSeekErr, deepSeekOutput)
 	}
 	var actual struct {
 		SchemaVersion int    `json:"schema_version"`
@@ -1434,11 +1522,34 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 	}
 	handler.mu.Lock()
 	operations := append([]string(nil), handler.credentialOperations...)
+	configureProviders := append(
+		[]string(nil),
+		handler.credentialConfigureProviders...,
+	)
+	configureDigests := append(
+		[][sha256.Size]byte(nil),
+		handler.credentialConfigureDigests...,
+	)
 	handler.mu.Unlock()
 	if len(operations) != 2 || operations[0] == operations[1] ||
 		!validSwiftOperationID(operations[0]) ||
 		!validSwiftOperationID(operations[1]) {
 		t.Fatalf("Swift credential operation IDs = %#v", operations)
+	}
+	var deepSeekResult struct {
+		ProviderID string `json:"provider_id"`
+		Revision   int64  `json:"revision"`
+		Status     string `json:"status"`
+	}
+	wantDigest := sha256.Sum256([]byte("sk-deepseek-contract"))
+	if err := json.Unmarshal(deepSeekOutput, &deepSeekResult); err != nil ||
+		deepSeekResult.ProviderID != "deepseek" ||
+		deepSeekResult.Revision != 1 ||
+		deepSeekResult.Status != "configured" ||
+		!equalStrings(configureProviders, []string{"deepseek"}) ||
+		len(configureDigests) != 1 || configureDigests[0] != wantDigest {
+		t.Fatalf("DeepSeek result=%#v providers=%#v digests=%d error=%v",
+			deepSeekResult, configureProviders, len(configureDigests), err)
 	}
 	assertStrictSwiftCredentialClosesThroughRealServiceAndBroker(t, probe)
 }
@@ -1892,6 +2003,28 @@ struct SetupContractProbe {
             let arguments = CommandLine.arguments
             if arguments.count == 4,
                 arguments[1] == "--socket",
+                arguments[3] == "--deepseek-configure"
+            {
+                let client = try LocalIPCClient(socketPath: arguments[2])
+                let secret = "sk-" + ["deepseek", "contract"].joined(separator: "-") + "\n"
+                let configured = try await client.configureCredential(
+                    providerID: "deepseek",
+                    secret: secret
+                )
+                let result: [String: Any] = [
+                    "provider_id": configured.providerID,
+                    "revision": configured.revision,
+                    "status": configured.status,
+                ]
+                let encoded = try JSONSerialization.data(
+                    withJSONObject: result,
+                    options: [.sortedKeys]
+                )
+                FileHandle.standardOutput.write(encoded)
+                return
+            }
+            if arguments.count == 4,
+                arguments[1] == "--socket",
                 arguments[3] == "--credential"
             {
                 let client = try LocalIPCClient(socketPath: arguments[2])
@@ -1968,6 +2101,10 @@ struct SetupContractProbe {
 		filepath.Join(sourceRoot, "LocalPermissionModels.swift"),
 		filepath.Join(sourceRoot, "LocalExecutionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductionModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductAgentInputModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductAgentRecoveryModels.swift"),
+		filepath.Join(sourceRoot, "LocalProductToolRecoveryModels.swift"),
+		filepath.Join(sourceRoot, "LocalOperationalDiagnostics.swift"),
 		filepath.Join(sourceRoot, "LocalProductStore.swift"),
 		filepath.Join(sourceRoot, "LocalIPCClient.swift"),
 		mainPath,

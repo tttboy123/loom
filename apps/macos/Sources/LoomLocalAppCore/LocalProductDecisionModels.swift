@@ -6,6 +6,7 @@ public enum LocalProductDecisionKind:
     case authorization
     case review
     case recovery
+    case fallback
 }
 
 public struct LocalProductDecisionSheet:

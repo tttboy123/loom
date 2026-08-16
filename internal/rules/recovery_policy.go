@@ -66,23 +66,24 @@ type RecoveryPolicy struct {
 }
 
 type RecoveryInput struct {
-	TeamInstanceID           string
-	PlanDigest               string
-	LogicalNodeID            string
-	AttemptNumber            int
-	MaxAttempts              int
-	AgentInstanceID          string
-	RuntimeInstanceID        string
-	EvidenceID               string
-	EvidenceDigest           string
-	OutputSummaryDigest      string
-	Classification           verification.Classification
-	PriorClassifications     []verification.OutputClassification
-	RemainingCredits         int
-	FallbackConsumed         bool
-	DecisionTime             time.Time
-	Trigger                  RecoveryTrigger
-	AcceptanceDecisionDigest string
+	TeamInstanceID            string
+	PlanDigest                string
+	LogicalNodeID             string
+	AttemptNumber             int
+	MaxAttempts               int
+	AgentInstanceID           string
+	RuntimeInstanceID         string
+	FallbackRuntimeInstanceID string
+	EvidenceID                string
+	EvidenceDigest            string
+	OutputSummaryDigest       string
+	Classification            verification.Classification
+	PriorClassifications      []verification.OutputClassification
+	RemainingCredits          int
+	FallbackConsumed          bool
+	DecisionTime              time.Time
+	Trigger                   RecoveryTrigger
+	AcceptanceDecisionDigest  string
 }
 
 type RecoveryDecision struct {
@@ -214,6 +215,9 @@ func DecideRecovery(
 		decision.creditsAfter--
 		decision.retryAt = input.DecisionTime.Add(policy.retryDelay)
 		if action == RecoveryFallback {
+			if input.FallbackRuntimeInstanceID != "" {
+				decision.nextRuntimeInstanceID = input.FallbackRuntimeInstanceID
+			}
 			decision.workflowFallbackKey = policy.workflowFallbackKey
 		}
 	}
@@ -479,7 +483,7 @@ func (decision RecoveryDecision) Valid() bool {
 	case RecoveryFallback:
 		if decision.nextAttemptNumber != decision.attemptNumber+1 ||
 			decision.nextAgentInstanceID != decision.agentInstanceID ||
-			decision.nextRuntimeInstanceID != decision.runtimeInstanceID ||
+			!validRecoveryID(decision.nextRuntimeInstanceID) ||
 			!validRecoveryID(decision.workflowFallbackKey) ||
 			decision.creditsAfter != decision.creditsBefore-1 ||
 			decision.retryAt.IsZero() ||
@@ -528,6 +532,8 @@ func validRecoveryInput(policy RecoveryPolicy, input RecoveryInput) bool {
 		input.MaxAttempts < input.AttemptNumber || input.MaxAttempts > 3 ||
 		!validRecoveryID(input.AgentInstanceID) ||
 		!validRecoveryID(input.RuntimeInstanceID) ||
+		input.FallbackRuntimeInstanceID != "" &&
+			!validRecoveryID(input.FallbackRuntimeInstanceID) ||
 		!validRecoveryID(input.EvidenceID) ||
 		!validRecoveryDigest(input.EvidenceDigest) ||
 		!validRecoveryDigest(input.OutputSummaryDigest) ||

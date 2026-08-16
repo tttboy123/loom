@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -16,6 +17,7 @@ type stubPermissionClient struct {
 	snapshot  app.PermissionSnapshot
 	attention app.PermissionAttention
 	result    app.PermissionCommandResult
+	commands  int
 }
 
 func (client *stubPermissionClient) PermissionSnapshot(
@@ -36,6 +38,7 @@ func (client *stubPermissionClient) PermissionCommand(
 	context.Context,
 	app.PermissionCommandRequest,
 ) (app.PermissionCommandResult, error) {
+	client.commands++
 	return client.result, nil
 }
 
@@ -114,6 +117,28 @@ func TestPermissionsScreenKeyDefineBindAndValidate(t *testing.T) {
 	model = updated.(Model)
 	if model.entryMode != entryPermissionProfile {
 		t.Fatalf("entryMode = %q, want permission_profile", model.entryMode)
+	}
+}
+
+func TestP2DPermissionApprovalWithoutAuthenticatedDetailsFailsClosed(t *testing.T) {
+	client := &stubPermissionClient{}
+	model := Model{
+		permissionClient: client,
+		ctx:              context.Background(),
+		permissionAttention: app.PermissionAttention{
+			Approvals: []app.PermissionApprovalView{{
+				ApprovalID: "approval-content-free", Digest: "digest",
+				JobID: "job-content-free", Status: "pending",
+			}},
+		},
+	}
+	message, ok := model.permissionResolveDecision("allow")().(permissionCommandDoneMsg)
+	if !ok || !errors.Is(message.err, app.ErrInvalidPermissionRequest) || client.commands != 0 {
+		t.Fatalf("content-free approval result = %#v, commands=%d", message, client.commands)
+	}
+	message, ok = model.permissionResolveDecision("deny")().(permissionCommandDoneMsg)
+	if !ok || message.err != nil || client.commands != 1 {
+		t.Fatalf("content-free rejection result = %#v, commands=%d", message, client.commands)
 	}
 }
 

@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/journal"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/work"
@@ -89,6 +91,34 @@ func (sink *recordingFrameSink) AcceptFrame(_ context.Context, frame bridgev1.Fr
 type recordingAuthorizedFrameObserver struct {
 	frames []AuthorizedFrame
 	err    error
+}
+
+type managedContextRetrieverFixture struct{}
+
+func (*managedContextRetrieverFixture) Retrieve(
+	context.Context,
+	contextcapsule.RetrievalProposal,
+) (contextcapsule.RetrievedItem, error) {
+	return contextcapsule.RetrievedItem{}, contextcapsule.ErrContextItemNotRetrievable
+}
+
+type managedContextDeliveryFixture struct{}
+
+func (*managedContextDeliveryFixture) Prepare(
+	context.Context,
+	contextcapsule.RetrievalProposal,
+	contextcapsule.DeliveryRequest,
+	contextcapsule.DeliveryEncoder,
+) (attemptpayload.Payload, error) {
+	return attemptpayload.Payload{}, contextcapsule.ErrInvalidContextDelivery
+}
+
+func (*managedContextDeliveryFixture) Acknowledge(
+	context.Context,
+	attemptpayload.Binding,
+	attemptpayload.DeliveryProof,
+) error {
+	return contextcapsule.ErrInvalidContextDelivery
 }
 
 func (observer *recordingAuthorizedFrameObserver) ObserveAuthorizedFrame(
@@ -172,6 +202,16 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 		ExitCode:             0,
 		DispatchAcknowledged: true,
 		ResultAcknowledged:   true,
+		Accounting: &work.RunAccounting{
+			UsageObserved:  true,
+			InputTokens:    80,
+			OutputTokens:   20,
+			TotalTokens:    100,
+			CostObserved:   true,
+			CostMicrounits: 99,
+			CostCurrency:   "USD",
+			CostSource:     work.CostSourceProviderReported,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewAdapterResult() error = %v", err)
@@ -222,6 +262,11 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 			outcome.Run().TerminalReason(),
 		)
 	}
+	accounting, accountingAvailable := outcome.Run().Accounting()
+	if !accountingAvailable || accounting.TotalTokens != 100 ||
+		accounting.CostMicrounits != 99 || accounting.CostCurrency != "USD" {
+		t.Fatalf("outcome accounting = %#v, %v", accounting, accountingAvailable)
+	}
 	if len(observer.frames) != len(frames) {
 		t.Fatalf(
 			"authorized observer frames=%d want=%d",
@@ -265,6 +310,16 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 	}
 	if adapter.lastGrantValue != fixture.grant.Token().Value() {
 		t.Fatal("adapter did not receive exact grant")
+	}
+	wantExecutionBinding := fixture.run.ExecutionBinding()
+	if len(adapter.requests) != 1 ||
+		adapter.requests[0].ClaimID != fixture.generation.ClaimID ||
+		adapter.requests[0].IncidentID != fixture.generation.CorrelationID ||
+		adapter.requests[0].ExecutionBinding.BindingDigest !=
+			wantExecutionBinding.BindingDigest ||
+		adapter.requests[0].ExecutionBinding.ProviderID != "loom-local" ||
+		adapter.requests[0].ExecutionBinding.ModelID != "fixture-model" {
+		t.Fatalf("adapter execution binding = %#v", adapter.requests)
 	}
 	if _, statErr := os.Lstat(adapter.lastWorkspace); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("managed workspace remains after Execute: %v", statErr)
@@ -430,6 +485,329 @@ func TestSupervisorManagedSuccessAndFrameAuthorization(t *testing.T) { // s3_w4_
 		}
 		assertManagedGrantRevoked(t, failed, authorization.RevocationTerminal)
 	})
+}
+
+func TestSupervisorUsesFrozenRateCardOnlyWhenAdapterDoesNotReportCost(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		accounting work.RunAccounting
+		wantCost   int64
+		wantSource string
+	}{
+		{
+			name: "estimate native usage",
+			accounting: work.RunAccounting{
+				UsageObserved: true, InputTokens: 80, OutputTokens: 20,
+				TotalTokens: 100,
+			},
+			wantCost: 120, wantSource: work.CostSourceRateCardEstimate,
+		},
+		{
+			name: "preserve provider reported cost",
+			accounting: work.RunAccounting{
+				UsageObserved: true, InputTokens: 80, OutputTokens: 20,
+				TotalTokens: 100, CostObserved: true, CostMicrounits: 99,
+				CostCurrency: "USD", CostSource: work.CostSourceProviderReported,
+			},
+			wantCost: 99, wantSource: work.CostSourceProviderReported,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newManagedExecutionFixtureWithRateCard(
+				t, "rate-card-"+strings.ReplaceAll(testCase.name, " ", "-"),
+			)
+			frames := managedInboundFrames(t, fixture, "succeeded", "")
+			result, err := NewAdapterResult(AdapterResultInput{
+				InboundFrames: frames, ExitCode: 0,
+				DispatchAcknowledged: true, ResultAcknowledged: true,
+				Accounting: &testCase.accounting,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := &fakeRuntimeAdapter{
+				adapterType: fixture.instance.AdapterType,
+				instanceID:  fixture.instance.ID, result: result,
+				hook: func(request AdapterRequest) error {
+					return os.WriteFile(
+						filepath.Join(request.WorkspacePath, "result.txt"),
+						[]byte("managed output\n"), 0o600,
+					)
+				},
+			}
+			controller, err := New(
+				Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+				fixture.workAuthority, fixture.grantAuthority, adapter,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, executeErr := controller.Execute(context.Background(), fixture.input())
+			if executeErr != nil {
+				snapshot, snapshotErr := fixture.workAuthority.Snapshot(context.Background())
+				t.Fatalf(
+					"Execute() outcome phase=%q terminal=%q/%q error=%v snapshot_error=%v runs=%#v",
+					outcome.Run().Phase(), outcome.Run().TerminalStatus(),
+					outcome.Run().TerminalReason(), executeErr, snapshotErr, snapshot.Runs(),
+				)
+			}
+			accounting, ok := outcome.Run().Accounting()
+			if !ok || !accounting.CostObserved ||
+				accounting.CostMicrounits != testCase.wantCost ||
+				accounting.CostCurrency != "USD" ||
+				accounting.CostSource != testCase.wantSource {
+				t.Fatalf("terminal accounting = %#v, ok=%t", accounting, ok)
+			}
+			if rateCard, ok := outcome.Run().ProviderModelRateCard(); !ok || rateCard.Revision() != 1 || rateCard.ModelID() != "deepseek-chat" {
+				t.Fatalf("frozen Rate Card = %#v, ok=%t", rateCard, ok)
+			}
+		})
+	}
+}
+
+func TestSupervisorRejectsProfileDriftBeforeAdapterDispatch(t *testing.T) {
+	fixture := newManagedExecutionFixture(t, "profile-drift")
+	adapter := &fakeRuntimeAdapter{
+		adapterType: fixture.instance.AdapterType,
+		instanceID:  fixture.instance.ID,
+	}
+	controller, err := New(
+		Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+		fixture.workAuthority,
+		fixture.grantAuthority,
+		adapter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input()
+	input.Profile.ModelID = "silently-changed-model"
+
+	outcome, executeErr := controller.Execute(context.Background(), input)
+	if !errors.Is(executeErr, ErrInvalidManagedExecution) ||
+		outcome.Run().ID() != "" || adapter.executionCalled {
+		t.Fatalf(
+			"profile drift = outcome %#v adapter_called=%v error=%v",
+			outcome,
+			adapter.executionCalled,
+			executeErr,
+		)
+	}
+}
+
+func TestSupervisorCarriesOnlyExactAttemptBoundContextRetriever(t *testing.T) {
+	fixture := newManagedExecutionFixture(t, "context-retriever")
+	capsule := managedContextCapsule(t, fixture, "fixture-model")
+	segment := managedRouteSegmentBinding(t, fixture, capsule)
+	payload, err := contextcapsule.RenderDispatchPayload(capsule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retriever := &managedContextRetrieverFixture{}
+	delivery := &managedContextDeliveryFixture{}
+	result, err := NewAdapterResult(AdapterResultInput{
+		InboundFrames: managedInboundFrames(t, fixture, "succeeded", ""),
+		ExitCode:      0, DispatchAcknowledged: true, ResultAcknowledged: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeRuntimeAdapter{
+		adapterType: fixture.instance.AdapterType, instanceID: fixture.instance.ID,
+		result: result,
+		hook: func(request AdapterRequest) error {
+			if request.ContextCapsule != capsule.AuthorityRecord() ||
+				request.RouteSegment != segment ||
+				request.ContextRetriever != retriever ||
+				request.ContextDelivery != delivery {
+				return errors.New("context retrieval capability drifted")
+			}
+			return nil
+		},
+	}
+	controller, err := New(
+		Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+		fixture.workAuthority, fixture.grantAuthority, adapter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input()
+	input.Dispatch = managedFrame(t, fixture.generation, 1, bridgev1.MessageDispatch, payload)
+	input.ContextCapsule = capsule.AuthorityRecord()
+	input.RouteSegment = segment
+	input.ContextRetriever = retriever
+	input.ContextDelivery = delivery
+	if _, err := controller.Execute(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func managedRouteSegmentBinding(
+	t *testing.T,
+	fixture *managedExecutionFixture,
+	capsule contextcapsule.RoleContextCapsule,
+) contextcapsule.RouteSegmentBinding {
+	t.Helper()
+	binding, err := loomruntime.FreezeExecutionBinding(fixture.profile, fixture.instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segment, err := contextcapsule.NewRouteSegmentBinding(
+		contextcapsule.RouteSegmentBindingInput{
+			SegmentID:      "segment-" + fixture.generation.RunID,
+			ConversationID: capsule.Target().ConversationID,
+			TeamID:         capsule.Target().TeamID, AgentID: capsule.Target().AgentID,
+			RoleID: capsule.Target().RoleID, AttemptNumber: 1,
+			CapsuleDigest: capsule.Digest(), ExecutionBindingDigest: binding.BindingDigest,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return segment
+}
+
+func TestSupervisorRejectsUnpairedContextDeliveryBeforeAdapterDispatch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		retriever contextcapsule.Retriever
+		delivery  contextcapsule.DeliveryBroker
+	}{
+		{name: "retriever only", retriever: &managedContextRetrieverFixture{}},
+		{name: "delivery only", delivery: &managedContextDeliveryFixture{}},
+		{name: "typed nil retriever", retriever: (*managedContextRetrieverFixture)(nil), delivery: &managedContextDeliveryFixture{}},
+		{name: "typed nil delivery", retriever: &managedContextRetrieverFixture{}, delivery: (*managedContextDeliveryFixture)(nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newManagedExecutionFixture(t, "unpaired-context-"+strings.ReplaceAll(test.name, " ", "-"))
+			capsule := managedContextCapsule(t, fixture, "fixture-model")
+			payload, err := contextcapsule.RenderDispatchPayload(capsule)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := &fakeRuntimeAdapter{
+				adapterType: fixture.instance.AdapterType, instanceID: fixture.instance.ID,
+			}
+			controller, err := New(
+				Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+				fixture.workAuthority, fixture.grantAuthority, adapter,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := fixture.input()
+			input.Dispatch = managedFrame(t, fixture.generation, 1, bridgev1.MessageDispatch, payload)
+			input.ContextCapsule = capsule.AuthorityRecord()
+			input.ContextRetriever = test.retriever
+			input.ContextDelivery = test.delivery
+			if outcome, err := controller.Execute(context.Background(), input); !errors.Is(err, ErrInvalidManagedExecution) || outcome.Run().ID() != "" ||
+				adapter.executionCalled {
+				t.Fatalf("unpaired Context = %#v, %v, adapter=%#v", outcome, err, adapter)
+			}
+		})
+	}
+}
+
+func TestSupervisorCarriesExactCapsuleWithoutOptionalRetriever(t *testing.T) {
+	fixture := newManagedExecutionFixture(t, "context-capsule-only")
+	capsule := managedContextCapsule(t, fixture, "fixture-model")
+	segment := managedRouteSegmentBinding(t, fixture, capsule)
+	payload, err := contextcapsule.RenderDispatchPayload(capsule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAdapterResult(AdapterResultInput{
+		InboundFrames: managedInboundFrames(t, fixture, "succeeded", ""),
+		ExitCode:      0, DispatchAcknowledged: true, ResultAcknowledged: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeRuntimeAdapter{
+		adapterType: fixture.instance.AdapterType, instanceID: fixture.instance.ID,
+		result: result,
+		hook: func(request AdapterRequest) error {
+			if request.ContextCapsule != capsule.AuthorityRecord() ||
+				request.RouteSegment != segment ||
+				request.ContextRetriever != nil {
+				return errors.New("optional context retrieval capability drifted")
+			}
+			return nil
+		},
+	}
+	controller, err := New(
+		Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+		fixture.workAuthority, fixture.grantAuthority, adapter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input()
+	input.Dispatch = managedFrame(t, fixture.generation, 1, bridgev1.MessageDispatch, payload)
+	input.ContextCapsule = capsule.AuthorityRecord()
+	input.RouteSegment = segment
+	if _, err := controller.Execute(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorRejectsValidForeignCapsuleBeforeAdapterDispatch(t *testing.T) {
+	fixture := newManagedExecutionFixture(t, "foreign-context-capsule")
+	selected := managedContextCapsule(t, fixture, "fixture-model")
+	payload, err := contextcapsule.RenderDispatchPayload(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := managedContextCapsule(t, fixture, "other-model")
+	adapter := &fakeRuntimeAdapter{
+		adapterType: fixture.instance.AdapterType, instanceID: fixture.instance.ID,
+	}
+	controller, err := New(
+		Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+		fixture.workAuthority, fixture.grantAuthority, adapter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input()
+	input.Dispatch = managedFrame(t, fixture.generation, 1, bridgev1.MessageDispatch, payload)
+	input.ContextCapsule = foreign.AuthorityRecord()
+	input.ContextRetriever = &managedContextRetrieverFixture{}
+	input.ContextDelivery = &managedContextDeliveryFixture{}
+	if outcome, err := controller.Execute(context.Background(), input); !errors.Is(err, ErrInvalidManagedExecution) || outcome.Run().ID() != "" ||
+		adapter.executionCalled {
+		t.Fatalf("foreign Capsule = %#v, %v, adapter=%#v", outcome, err, adapter)
+	}
+}
+
+func managedContextCapsule(
+	t *testing.T,
+	fixture *managedExecutionFixture,
+	modelID string,
+) contextcapsule.RoleContextCapsule {
+	t.Helper()
+	capsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "mission:managed-context", TeamID: "team-managed-context",
+			AgentID: fixture.generation.AgentInstanceID, RoleID: "reviewer",
+			ProviderID: "loom-local", ModelID: modelID, AuthMode: "native_auth",
+			ContextAdapterID:        "context:pi:v1",
+			DisclosurePolicyID:      "loom.local-team-disclosure",
+			DisclosurePolicyVersion: 1, TokenBudget: 32,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal", Kind: contextcapsule.KindConversationGoal,
+			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Content:    []byte("Execute the exact governed attempt."),
+			SourceType: contextcapsule.SourceAuthority, SourceRef: "goal:managed-context",
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capsule
 }
 
 func TestManagedExecutionValidationMatrix(t *testing.T) {
@@ -699,7 +1077,15 @@ func TestSupervisorTerminalFailureAlwaysRevokes(t *testing.T) { // s3_w4_termina
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			fixture := newManagedExecutionFixture(t, strings.ReplaceAll(testCase.name, " ", "-"))
+			profileTimeout := 3 * time.Second
+			if testCase.profileTimeout > 0 {
+				profileTimeout = testCase.profileTimeout
+			}
+			fixture := newManagedExecutionFixtureWithTimeout(
+				t,
+				strings.ReplaceAll(testCase.name, " ", "-"),
+				profileTimeout,
+			)
 			adapter := &fakeRuntimeAdapter{
 				adapterType:    fixture.instance.AdapterType,
 				instanceID:     fixture.instance.ID,
@@ -716,9 +1102,6 @@ func TestSupervisorTerminalFailureAlwaysRevokes(t *testing.T) { // s3_w4_termina
 				bounded, cancel := context.WithTimeout(ctx, testCase.callerTimeout)
 				defer cancel()
 				ctx = bounded
-			}
-			if testCase.profileTimeout > 0 {
-				fixture.profile.Timeout = testCase.profileTimeout
 			}
 			controller, err := New(
 				Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
@@ -1082,6 +1465,7 @@ func TestSupervisorTerminalFailureAlwaysRevokes(t *testing.T) { // s3_w4_termina
 			"external_failure",
 			authorization.RevocationTerminal,
 			nil,
+			nil,
 		)
 		if !errors.Is(finishErr, authorization.ErrGrantAlreadyRevoked) ||
 			outcome.Run().TerminalStatus() != "failed" ||
@@ -1131,6 +1515,7 @@ func TestSupervisorTerminalFailureAlwaysRevokes(t *testing.T) { // s3_w4_termina
 			"bridge_protocol_failed",
 			authorization.RevocationTerminal,
 			ErrBridgeSession,
+			nil,
 		)
 		if !errors.Is(finishErr, work.ErrRunAlreadyTerminal) ||
 			!errors.Is(finishErr, ErrBridgeSession) ||
@@ -1325,6 +1710,42 @@ func TestSupervisorStaleGenerationAndSourceChanged(t *testing.T) { // s3_w4_stal
 		assertManagedGrantRevoked(t, fixture, authorization.RevocationTerminal)
 	})
 
+	t.Run("compiled source digest drift never invokes adapter", func(t *testing.T) {
+		fixture := newManagedExecutionFixture(t, "compiled-source-drift")
+		snapshot, err := ObserveSourceSnapshot(fixture.sourcePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(fixture.sourcePath, "input.txt"),
+			[]byte("changed before dispatch\n"),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		adapter := &fakeRuntimeAdapter{
+			adapterType: fixture.instance.AdapterType,
+			instanceID:  fixture.instance.ID,
+		}
+		controller, err := New(
+			Config{WorkspaceRoot: fixture.workspaceRoot, CleanupTimeout: time.Second},
+			fixture.workAuthority,
+			fixture.grantAuthority,
+			adapter,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := fixture.input()
+		input.ExpectedSourceDigest = snapshot.TreeDigest()
+		outcome, executeErr := controller.Execute(context.Background(), input)
+		if !errors.Is(executeErr, ErrSourceChanged) || adapter.executionCalled ||
+			outcome.Run().TerminalReason() != "source_changed" {
+			t.Fatalf("compiled source drift = %#v, %v, adapter=%#v", outcome, executeErr, adapter)
+		}
+		assertManagedGrantRevoked(t, fixture, authorization.RevocationTerminal)
+	})
+
 	t.Run("same-content source root replacement is detected", func(t *testing.T) {
 		fixture := newManagedExecutionFixture(t, "source-root-change")
 		result, err := NewAdapterResult(AdapterResultInput{
@@ -1373,7 +1794,36 @@ func TestSupervisorStaleGenerationAndSourceChanged(t *testing.T) { // s3_w4_stal
 	})
 }
 
-func newManagedExecutionFixture(t testing.TB, suffix string) *managedExecutionFixture {
+func newManagedExecutionFixture(
+	t testing.TB,
+	suffix string,
+) *managedExecutionFixture {
+	return newManagedExecutionFixtureWithTimeout(t, suffix, 3*time.Second)
+}
+
+func newManagedExecutionFixtureWithTimeout(
+	t testing.TB,
+	suffix string,
+	profileTimeout time.Duration,
+) *managedExecutionFixture {
+	return newManagedExecutionFixtureWithOptions(
+		t, suffix, profileTimeout, false,
+	)
+}
+
+func newManagedExecutionFixtureWithRateCard(
+	t testing.TB,
+	suffix string,
+) *managedExecutionFixture {
+	return newManagedExecutionFixtureWithOptions(t, suffix, 3*time.Second, true)
+}
+
+func newManagedExecutionFixtureWithOptions(
+	t testing.TB,
+	suffix string,
+	profileTimeout time.Duration,
+	withRateCard bool,
+) *managedExecutionFixture {
 	t.Helper()
 	values := url.Values{}
 	values.Add("_pragma", "foreign_keys(1)")
@@ -1395,6 +1845,43 @@ func newManagedExecutionFixture(t testing.TB, suffix string) *managedExecutionFi
 	}
 	store := journal.NewStore(db)
 	seedManagedRuntime(t, store)
+	profileInput := loomruntime.RuntimeProfile{
+		ID:          "profile-1",
+		AdapterType: "pi",
+		ProviderID:  "loom-local",
+		ModelID:     "fixture-model",
+		AuthMode:    loomruntime.AuthNative,
+		Timeout:     profileTimeout,
+	}
+	if withRateCard {
+		profileInput.ProviderID = "deepseek"
+		profileInput.ProviderAccountID = "deepseek.work"
+		profileInput.ModelID = "deepseek-chat"
+		profileInput.AuthMode = loomruntime.AuthBrokered
+		profileInput.EndpointFingerprint = strings.Repeat("a", 64)
+		profileInput.CredentialReference = "credential-ref-deepseek-work"
+		profileInput.CredentialRevision = 3
+	}
+	profile, err := loomruntime.NewRuntimeProfile(profileInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID:                "runtime-1",
+		DeviceID:          "device-1",
+		AdapterType:       "pi",
+		DisplayName:       "Pi Fixture",
+		ExecutableVersion: "1.0.0",
+		Status:            loomruntime.RuntimeOnline,
+		Capacity:          1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionBinding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
 	clock := &managedTestClock{now: managedTestNow}
 	workAuthority, err := work.NewAuthority(
 		store,
@@ -1407,14 +1894,32 @@ func newManagedExecutionFixture(t testing.TB, suffix string) *managedExecutionFi
 	if err := workAuthority.InitializeRunIdentityIndex(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if withRateCard {
+		if _, err := workAuthority.ConfigureProviderModelRateCard(
+			context.Background(),
+			work.ProviderModelRateCardCommand{
+				CommandID:  "configure-rate-card-" + suffix,
+				ProviderID: "deepseek", ProviderAccountID: "deepseek.work",
+				ModelID: "deepseek-chat", ExpectedRevision: 0, Currency: "USD",
+				InputTokenBasis:            work.RateCardInputExcludesCache,
+				InputMicrounitsPerMillion:  1_000_000,
+				OutputMicrounitsPerMillion: 2_000_000,
+				RoundingMode:               work.RateCardRoundingCeilingPerAttempt,
+				CorrelationID:              "rate-card-supervisor-" + suffix,
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 	workItem, run, err := workAuthority.CreateAndAssign(
 		context.Background(),
 		work.WorkItemAssignmentInput{
-			WorkItemID:      "S3-W4-" + suffix,
-			Title:           "managed execution " + suffix,
-			RunID:           "run-" + suffix,
-			AgentInstanceID: "agent-1",
-			CorrelationID:   "11111111-1111-4111-8111-111111111111",
+			WorkItemID:       "S3-W4-" + suffix,
+			Title:            "managed execution " + suffix,
+			RunID:            "run-" + suffix,
+			AgentInstanceID:  "agent-1",
+			ExecutionBinding: executionBinding,
+			CorrelationID:    "11111111-1111-4111-8111-111111111111",
 		},
 	)
 	if err != nil {
@@ -1467,27 +1972,6 @@ func newManagedExecutionFixture(t testing.TB, suffix string) *managedExecutionFi
 			CorrelationID:     "11111111-1111-4111-8111-111111111111",
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
-		ID:          "profile-1",
-		AdapterType: "pi",
-		AuthMode:    loomruntime.AuthBrokered,
-		Timeout:     3 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
-		ID:                "runtime-1",
-		DeviceID:          "device-1",
-		AdapterType:       "pi",
-		DisplayName:       "Pi Fixture",
-		ExecutableVersion: "1.0.0",
-		Status:            loomruntime.RuntimeOnline,
-		Capacity:          1,
-	})
 	if err != nil {
 		t.Fatal(err)
 	}

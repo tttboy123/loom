@@ -10,6 +10,7 @@
 | [Deployment](c4-deployment.md) | 开发与运维 | 本地进程、SQLite、Agent 子进程和外部网络如何部署 |
 | [Explicit Agent Flow](c4-dynamic-agent-mode.md) | 产品与开发 | 用户显式使用 Agent 后的完整动态链路 |
 | [Run Dispatch Flow](c4-dynamic-run-dispatch.md) | 开发与安全 | Runtime 选择、认领代次、准备租约、AgentGrant 和终态提交 |
+| [Attempt Tool Loop](attempt-tool-loop.md) | 产品、架构与安全 | 多 Provider、多 Agent 如何完成受鉴权的多轮 Web/MCP/本地工具调用 |
 | [Trust Boundaries](trust-boundaries.md) | 安全与开发 | 哪些进程和数据可以相互信任 |
 | [Multica Comparison](multica-comparison.md) | 产品与架构 | 已吸收的成熟机制和刻意不复制的边界 |
 

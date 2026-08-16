@@ -112,6 +112,7 @@ type ProposedCall struct {
 	Tool    ToolKind `json:"tool"`
 	Command string   `json:"command"`
 	Path    string   `json:"path"`
+	Pattern string   `json:"pattern,omitempty"`
 }
 
 // EffectiveProfile is the only input to Evaluate: the Job-bound profile merged
@@ -267,6 +268,14 @@ func clonePaths(paths []string) []string {
 	out := make([]string, len(paths))
 	copy(out, paths)
 	return out
+}
+
+// ProposedCallDigest is the canonical, content-free identity for one exact
+// tool proposal. Journal facts use this digest instead of persisting arguments.
+func ProposedCallDigest(call ProposedCall) string {
+	body, _ := json.Marshal(call)
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // digestProfile computes the canonical profile digest over sorted rules so

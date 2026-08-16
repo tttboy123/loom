@@ -22,6 +22,8 @@ func TestRecoveryPolicyProducesBoundedExactDecisions(t *testing.T) {
 		fallbackConsumed bool
 		wantAction       RecoveryAction
 		wantNextAttempt  int
+		fallbackRuntime  string
+		wantNextRuntime  string
 		wantFallback     string
 		wantCreditsAfter int
 		wantRetryAt      time.Time
@@ -39,7 +41,8 @@ func TestRecoveryPolicyProducesBoundedExactDecisions(t *testing.T) {
 			policy:         testRecoveryPolicyInput(),
 			attempt:        1, credits: 2, wantAction: RecoveryRetry,
 			wantNextAttempt: 2, wantCreditsAfter: 1,
-			wantRetryAt: recoveryDecisionTime.Add(5 * time.Second),
+			wantNextRuntime: "runtime-a",
+			wantRetryAt:     recoveryDecisionTime.Add(5 * time.Second),
 		},
 		{
 			name:           "invalid uses explicit workflow fallback",
@@ -47,6 +50,7 @@ func TestRecoveryPolicyProducesBoundedExactDecisions(t *testing.T) {
 			policy:         testRecoveryPolicyInput(),
 			attempt:        1, credits: 2, wantAction: RecoveryFallback,
 			wantNextAttempt: 2, wantFallback: "cached-source",
+			fallbackRuntime: "runtime-b", wantNextRuntime: "runtime-b",
 			wantCreditsAfter: 1,
 			wantRetryAt:      recoveryDecisionTime.Add(5 * time.Second),
 		},
@@ -76,6 +80,7 @@ func TestRecoveryPolicyProducesBoundedExactDecisions(t *testing.T) {
 				test.credits,
 			)
 			input.FallbackConsumed = test.fallbackConsumed
+			input.FallbackRuntimeInstanceID = test.fallbackRuntime
 			first, err := DecideRecovery(policy, input)
 			if err != nil {
 				t.Fatal(err)
@@ -99,7 +104,7 @@ func TestRecoveryPolicyProducesBoundedExactDecisions(t *testing.T) {
 			if test.wantAction == RecoveryRetry ||
 				test.wantAction == RecoveryFallback {
 				if first.NextAgentInstanceID() != "agent-main" ||
-					first.NextRuntimeInstanceID() != "runtime-a" {
+					first.NextRuntimeInstanceID() != test.wantNextRuntime {
 					t.Fatalf("next binding = %#v", first)
 				}
 			}

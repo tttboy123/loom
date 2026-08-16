@@ -275,7 +275,7 @@ func validSavedTeamInstanceRecordSetShape(input SavedTeamInstanceRecordSetCandid
 		input.mainAgent.Binding.Accepted &&
 		input.mainAgent.Binding.ProfileID == input.mainAgent.RuntimeProfileID &&
 		input.mainAgent.Binding.InstanceID == input.mainAgent.RuntimeInstanceID &&
-		len(input.dormantSubAgents) <= 2 &&
+		len(input.dormantSubAgents) <= MaxTeamAgentCount-1 &&
 		input.teamInstanceCount == 1 &&
 		input.agentInstanceCount == 1 &&
 		input.activeSubAgentCount == 0 &&

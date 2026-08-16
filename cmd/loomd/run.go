@@ -96,9 +96,11 @@ func daemonBuildFailureReason(err error) string {
 }
 
 type daemonBuildConfig struct {
-	Observer        app.LocalRuntimeObservationDaemonConfig
-	SocketPath      string
-	CodexExecutable string
+	Observer           app.LocalRuntimeObservationDaemonConfig
+	SocketPath         string
+	CodexExecutable    string
+	ClaudeExecutable   string
+	OpenCodeExecutable string
 }
 
 type daemonBuilder func(daemonBuildConfig) (daemonRunner, error)
@@ -136,8 +138,11 @@ func productionDaemonBuilder(
 		config.Observer.StatePath,
 		config.SocketPath,
 		productSetupRuntimeConfig{
-			CodexExecutable: config.CodexExecutable,
-			Execution:       missionExecutionConfigFromDaemonBuild(config),
+			CodexExecutable:    config.CodexExecutable,
+			ClaudeExecutable:   config.ClaudeExecutable,
+			OpenCodeExecutable: config.OpenCodeExecutable,
+			UseCredentialVault: true,
+			Execution:          missionExecutionConfigFromDaemonBuild(config),
 		},
 	)
 }
@@ -154,8 +159,11 @@ func missionExecutionConfigFromDaemonBuild(
 			[]string(nil),
 			config.Observer.RuntimeSearchPaths...,
 		),
-		RuntimeInstanceID: config.Observer.RuntimeInstanceID,
-		LocalModelCatalog: &catalog,
+		RuntimeInstanceID:  config.Observer.RuntimeInstanceID,
+		LocalModelCatalog:  &catalog,
+		CodexExecutable:    config.CodexExecutable,
+		ClaudeExecutable:   config.ClaudeExecutable,
+		OpenCodeExecutable: config.OpenCodeExecutable,
 	}
 }
 
@@ -188,6 +196,8 @@ func run(
 	maxCycles := fs.Int("max-cycles", 0, "")
 	socketPath := fs.String("socket", "", "")
 	codexExecutable := fs.String("codex-executable", "", "")
+	opencodeExecutable := fs.String("opencode-executable", "", "")
+	claudeExecutable := fs.String("claude-executable", "", "")
 	localModelPrivateRoot := fs.String("local-model-private-root", "", "")
 	localModelExecutable := fs.String("local-model-executable", "", "")
 	localModelPath := fs.String("local-model-path", "", "")
@@ -241,8 +251,10 @@ func run(
 			MaxCycles:           *maxCycles,
 			LocalModelCatalog:   localModelCatalog,
 		},
-		SocketPath:      *socketPath,
-		CodexExecutable: *codexExecutable,
+		SocketPath:         *socketPath,
+		CodexExecutable:    *codexExecutable,
+		ClaudeExecutable:   *claudeExecutable,
+		OpenCodeExecutable: *opencodeExecutable,
 	}
 	daemon, err := builder(config)
 	if err != nil || daemon == nil {

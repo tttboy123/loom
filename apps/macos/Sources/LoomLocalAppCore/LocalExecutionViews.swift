@@ -37,6 +37,15 @@ public struct ExecutionExplorerView: View {
                             .font(.caption)
                             .foregroundStyle(LoomGraphite.statusDanger)
                     }
+                    if record.status == "recovery_required" {
+                        Text("Result unknown · Review before retrying")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(LoomGraphite.statusWarning)
+                        Text("Incident \(record.journeyID)")
+                            .font(.caption2)
+                            .foregroundStyle(LoomGraphite.textSecondary)
+                            .monospaced()
+                    }
                 }
                 .padding(.vertical, 4)
             }

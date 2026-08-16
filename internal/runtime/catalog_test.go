@@ -19,8 +19,12 @@ func TestRuntimeProfileAndRuntimeInstanceValidateFrozenContractsAndCopyMutableIn
 		ID:                   "runtime.profile.local",
 		AdapterType:          "local-shell",
 		ProviderID:           "provider.local",
+		ProviderAccountID:    "provider-account.local.primary",
 		ModelID:              "model.local",
 		AuthMode:             AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("a", 64),
+		CredentialReference:  "credential-ref-local-primary",
+		CredentialRevision:   7,
 		RequiredCapabilities: []string{"apply_patch", "go_test"},
 		Timeout:              30 * time.Second,
 		Budget:               &budget,
@@ -99,11 +103,254 @@ func TestRuntimeProfileAndRuntimeInstanceValidateFrozenContractsAndCopyMutableIn
 		})
 	}
 
-	forbiddenProfileFields := []string{"instance", "device", "executable", "online", "capacity", "raw", "refresh", "cli", "credential", "grant", "token", "run"}
+	forbiddenProfileFields := []string{"instance", "device", "executable", "online", "capacity", "secret", "rawkey", "apikey", "grant", "token", "run"}
 	assertNoFieldsContaining(t, profile, forbiddenProfileFields)
 
 	forbiddenInstanceFields := []string{"role", "modelpolicy", "budgetpolicy", "timeoutpolicy", "credential", "grant", "run"}
 	assertNoFieldsContaining(t, instance, forbiddenInstanceFields)
+}
+
+func TestFreezeExecutionBindingCapturesProviderAccountWithoutSecretBody(t *testing.T) {
+	budget := int64(250)
+	profile := mustRuntimeProfile(t, RuntimeProfile{
+		ID: "profile.claude.primary", AdapterType: "claude-code",
+		ProviderID: "anthropic", ProviderAccountID: "anthropic.work",
+		ModelID: "claude-sonnet-4-5", AuthMode: AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("b", 64),
+		CredentialReference:  "credential-ref-anthropic-work",
+		CredentialRevision:   11,
+		RequiredCapabilities: []string{"edit", "terminal"},
+		Timeout:              2 * time.Minute, Budget: &budget,
+	})
+	instance := mustRuntimeInstance(t, RuntimeInstance{
+		ID: "runtime.claude-code.local", DeviceID: "device.mac",
+		AdapterType: "claude-code", DisplayName: "Claude Code",
+		Status:               RuntimeOnline,
+		ObservedCapabilities: []string{"terminal", "edit", "review"},
+		Capacity:             2,
+	})
+
+	binding, err := FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatalf("FreezeExecutionBinding() error = %v", err)
+	}
+	if binding.ProfileID != profile.ID ||
+		binding.HarnessAdapter != "claude-code" ||
+		binding.RuntimeInstanceID != instance.ID ||
+		binding.ProviderID != "anthropic" ||
+		binding.ProviderAccountID != "anthropic.work" ||
+		binding.ModelID != "claude-sonnet-4-5" ||
+		binding.EndpointFingerprint != strings.Repeat("b", 64) ||
+		binding.CredentialReference != "credential-ref-anthropic-work" ||
+		binding.CredentialRevision != 11 ||
+		binding.Timeout != 2*time.Minute || binding.Budget == nil ||
+		*binding.Budget != 250 ||
+		!reflect.DeepEqual(binding.Capabilities, []string{"edit", "terminal"}) ||
+		len(binding.BindingDigest) != 64 {
+		t.Fatalf("frozen binding = %#v", binding)
+	}
+	encoded := strings.ToLower(binding.BindingDigest + binding.CredentialReference)
+	if strings.Contains(encoded, "sk-ant-secret-body") {
+		t.Fatal("frozen binding contains secret body")
+	}
+
+	second := profile
+	second.ProviderAccountID = "anthropic.personal"
+	second.CredentialReference = "credential-ref-anthropic-personal"
+	second.CredentialRevision = 3
+	secondBinding, err := FreezeExecutionBinding(second, instance)
+	if err != nil {
+		t.Fatalf("FreezeExecutionBinding(second account) error = %v", err)
+	}
+	if secondBinding.BindingDigest == binding.BindingDigest {
+		t.Fatal("different Provider Accounts produced the same binding digest")
+	}
+}
+
+func TestFreezeExecutionBindingPreservesLegacyDigest(t *testing.T) {
+	profile := mustRuntimeProfile(t, RuntimeProfile{
+		ID: "profile.legacy.v1", AdapterType: "loom-native",
+		ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+		ModelID: "deepseek-chat", AuthMode: AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("a", 64),
+		CredentialReference:  "credential-ref-deepseek-primary",
+		CredentialRevision:   2,
+		RequiredCapabilities: []string{"chat"},
+		Timeout:              45 * time.Second,
+	})
+	instance := mustRuntimeInstance(t, RuntimeInstance{
+		ID: "runtime.loom-native", DeviceID: "device.mac",
+		AdapterType: "loom-native", DisplayName: "Loom Native",
+		Status: RuntimeOnline, ObservedCapabilities: []string{"chat"},
+		Capacity: 1,
+	})
+
+	binding, err := FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const publishedDigest = "88e49a903c70d6dce01d466d00699eb5a33b4c5251b63c6cecc8d4fda8e68ffe"
+	if binding.BindingDigest != publishedDigest {
+		t.Fatalf("legacy binding digest = %q, want %q", binding.BindingDigest, publishedDigest)
+	}
+}
+
+func TestFreezeExecutionBindingCapturesReasoningEffortAndRejectsMutation(t *testing.T) {
+	profile := mustRuntimeProfile(t, RuntimeProfile{
+		ID: "profile.codex.reasoning", AdapterType: "codex",
+		ProviderID: "openai", ProviderAccountID: "openai.primary",
+		ModelID: "gpt-5.5-codex", AuthMode: AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("b", 64),
+		CredentialReference:  "credential-ref-openai-primary",
+		CredentialRevision:   4,
+		ReasoningEffort:      "high",
+		RequiredCapabilities: []string{CapabilityReasoningEffort, "tools"},
+		Timeout:              2 * time.Minute,
+	})
+	instance := mustRuntimeInstance(t, RuntimeInstance{
+		ID: "runtime.codex", DeviceID: "device.mac",
+		AdapterType: "codex", DisplayName: "Codex",
+		Status:               RuntimeOnline,
+		ObservedCapabilities: []string{CapabilityReasoningEffort, "tools"},
+		Capacity:             1,
+	})
+
+	binding, err := FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ReasoningEffort != "high" || binding.BindingDigest == "" {
+		t.Fatalf("frozen binding = %#v", binding)
+	}
+	if _, err := ValidateFrozenExecutionBinding(binding); err != nil {
+		t.Fatalf("ValidateFrozenExecutionBinding() error = %v", err)
+	}
+
+	mutated := binding
+	mutated.ReasoningEffort = "low"
+	if _, err := ValidateFrozenExecutionBinding(mutated); !errors.Is(err, ErrInvalidExecutionProfile) {
+		t.Fatalf("reasoning mutation error = %v, want ErrInvalidExecutionProfile", err)
+	}
+}
+
+func TestRuntimeProfileRejectsReasoningEffortWithoutRuntimeCapability(t *testing.T) {
+	profile := mustRuntimeProfile(t, RuntimeProfile{
+		ID: "profile.codex.reasoning", AdapterType: "codex",
+		ProviderID: "openai", ProviderAccountID: "openai.primary",
+		ModelID: "gpt-5.5-codex", AuthMode: AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("c", 64),
+		CredentialReference:  "credential-ref-openai-primary",
+		CredentialRevision:   4,
+		ReasoningEffort:      "high",
+		RequiredCapabilities: []string{CapabilityReasoningEffort},
+		Timeout:              time.Minute,
+	})
+	instance := mustRuntimeInstance(t, RuntimeInstance{
+		ID: "runtime.codex", DeviceID: "device.mac",
+		AdapterType: "codex", DisplayName: "Codex",
+		Status: RuntimeOnline, Capacity: 1,
+	})
+
+	if _, err := FreezeExecutionBinding(profile, instance); !errors.Is(err, ErrMissingCapability) {
+		t.Fatalf("FreezeExecutionBinding() error = %v, want ErrMissingCapability", err)
+	}
+}
+
+func TestFreezeExecutionBindingRejectsIncompleteBrokeredAccount(t *testing.T) {
+	base := RuntimeProfile{
+		ID: "profile.codex.primary", AdapterType: "codex",
+		ProviderID: "openai", ProviderAccountID: "openai.primary",
+		ModelID: "gpt-5.5-codex", AuthMode: AuthBrokered,
+		EndpointFingerprint: strings.Repeat("c", 64),
+		CredentialReference: "credential-ref-openai-primary",
+		CredentialRevision:  4, Timeout: time.Minute,
+	}
+	instance := mustRuntimeInstance(t, RuntimeInstance{
+		ID: "runtime.codex.local", DeviceID: "device.mac", AdapterType: "codex",
+		DisplayName: "Codex", Status: RuntimeOnline, Capacity: 1,
+	})
+	tests := []struct {
+		name   string
+		mutate func(*RuntimeProfile)
+	}{
+		{name: "account", mutate: func(p *RuntimeProfile) { p.ProviderAccountID = "" }},
+		{name: "endpoint", mutate: func(p *RuntimeProfile) { p.EndpointFingerprint = "" }},
+		{name: "credential reference", mutate: func(p *RuntimeProfile) { p.CredentialReference = "" }},
+		{name: "non opaque credential reference", mutate: func(p *RuntimeProfile) { p.CredentialReference = "sk-secret-body" }},
+		{name: "credential revision", mutate: func(p *RuntimeProfile) { p.CredentialRevision = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := base
+			tt.mutate(&profile)
+			if binding, err := FreezeExecutionBinding(profile, instance); !errors.Is(err, ErrInvalidExecutionProfile) || binding.BindingDigest != "" {
+				t.Fatalf("FreezeExecutionBinding() = (%#v, %v), want ErrInvalidExecutionProfile", binding, err)
+			}
+		})
+	}
+}
+
+func TestValidateExecutionProfileRequiresFreezeReadyAccountBinding(t *testing.T) {
+	profile := RuntimeProfile{
+		ID: "profile.deepseek.primary", AdapterType: "loom-native",
+		ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+		ModelID: "deepseek-chat", AuthMode: AuthBrokered,
+		EndpointFingerprint: strings.Repeat("d", 64),
+		CredentialReference: "credential-ref-deepseek-primary",
+		CredentialRevision:  7, Timeout: time.Minute,
+	}
+	validated, err := ValidateExecutionProfile(profile)
+	if err != nil || validated.ProviderAccountID != "deepseek.primary" ||
+		validated.CredentialRevision != 7 {
+		t.Fatalf("ValidateExecutionProfile(valid) = (%#v, %v)", validated, err)
+	}
+	invalidNative := profile
+	invalidNative.AuthMode = AuthNative
+	if _, err := ValidateExecutionProfile(invalidNative); !errors.Is(
+		err,
+		ErrInvalidExecutionProfile,
+	) {
+		t.Fatalf("ValidateExecutionProfile(invalid native) error = %v", err)
+	}
+}
+
+func TestValidateFrozenExecutionBindingRejectsAnyPostFreezeMutation(t *testing.T) {
+	budget := int64(300)
+	profile := mustRuntimeProfile(t, RuntimeProfile{
+		ID: "profile.deepseek.primary", AdapterType: "loom-native",
+		ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+		ModelID: "deepseek-chat", AuthMode: AuthBrokered,
+		EndpointFingerprint: strings.Repeat("d", 64),
+		CredentialReference: "credential-ref-deepseek-primary",
+		CredentialRevision:  9, Timeout: 90 * time.Second,
+		Budget: &budget, RequiredCapabilities: []string{"chat", "tools"},
+	})
+	instance := mustRuntimeInstance(t, RuntimeInstance{
+		ID: "runtime.loom.local", DeviceID: "device.mac",
+		AdapterType: "loom-native", DisplayName: "Loom Native",
+		Status: RuntimeOnline, ObservedCapabilities: []string{"chat", "tools"},
+		Capacity: 2,
+	})
+	binding, err := FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated, err := ValidateFrozenExecutionBinding(binding); err != nil ||
+		validated.BindingDigest != binding.BindingDigest {
+		t.Fatalf("ValidateFrozenExecutionBinding() = (%#v, %v)", validated, err)
+	}
+
+	mutated := binding
+	mutated.CredentialRevision++
+	if validated, err := ValidateFrozenExecutionBinding(mutated); !errors.Is(err, ErrInvalidExecutionProfile) || validated.BindingDigest != "" {
+		t.Fatalf("mutated binding validation = (%#v, %v)", validated, err)
+	}
+
+	mutated = binding
+	mutated.Capabilities[0] = "changed-after-freeze"
+	if _, err := ValidateFrozenExecutionBinding(mutated); !errors.Is(err, ErrInvalidExecutionProfile) {
+		t.Fatalf("mutated capability error = %v", err)
+	}
 }
 
 func TestValidateBindingAcceptsCompatibleOnlineCandidateWithoutSideEffects(t *testing.T) {
@@ -293,5 +540,111 @@ func assertNoForbiddenProductionImports(t *testing.T, dir string, forbidden map[
 				t.Fatalf("%s imports forbidden boundary package %q", path, importPath)
 			}
 		}
+	}
+}
+
+func baseEnrollmentProfile(t *testing.T) RuntimeProfile {
+	t.Helper()
+	profile := RuntimeProfile{
+		ID:                         "profile-enrolled",
+		AdapterType:                "codex",
+		ProviderID:                 "deepseek",
+		ProviderAccountID:          "deepseek.primary",
+		ModelID:                    "deepseek-chat",
+		AuthMode:                   AuthBrokered,
+		EndpointFingerprint:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		CredentialReference:        "credential-ref-enrolled-0001",
+		CredentialRevision:         7,
+		ReasoningEffort:            "high",
+		RequiredCapabilities:       []string{CapabilityGovernedToolLoop, CapabilityReasoningEffort},
+		Timeout:                    90 * time.Second,
+		RemoteToolEnrollmentID:     "enr.search.alpha",
+		RemoteToolEnrollmentDigest: "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+	}
+	budget := int64(5000)
+	profile.Budget = &budget
+	return profile
+}
+
+func TestExecutionProfileFreezesRemoteToolEnrollment(t *testing.T) {
+	profile := baseEnrollmentProfile(t)
+	instance := RuntimeInstance{
+		ID: "runtime-1", DeviceID: "device-1", AdapterType: "codex",
+		DisplayName: "Codex", Status: RuntimeOnline,
+		ObservedCapabilities: profile.RequiredCapabilities, Capacity: 1,
+	}
+	validated, err := ValidateExecutionProfile(profile)
+	if err != nil {
+		t.Fatalf("ValidateExecutionProfile error = %v", err)
+	}
+	if validated.RemoteToolEnrollmentID != "enr.search.alpha" ||
+		validated.RemoteToolEnrollmentDigest != profile.RemoteToolEnrollmentDigest {
+		t.Fatalf("enrollment fields lost: %#v", validated)
+	}
+	binding, err := FreezeExecutionBinding(validated, instance)
+	if err != nil {
+		t.Fatalf("FreezeExecutionBinding error = %v", err)
+	}
+	if binding.RemoteToolEnrollmentID != "enr.search.alpha" ||
+		binding.RemoteToolEnrollmentDigest != profile.RemoteToolEnrollmentDigest {
+		t.Fatalf("binding enrollment fields lost: %#v", binding)
+	}
+	// The enrollment must participate in the binding digest.
+	drifted := validated
+	drifted.RemoteToolEnrollmentDigest = strings.Repeat("f", 64)
+	driftedBinding, err := FreezeExecutionBinding(drifted, instance)
+	if err != nil {
+		t.Fatalf("drifted FreezeExecutionBinding error = %v", err)
+	}
+	if driftedBinding.BindingDigest == binding.BindingDigest {
+		t.Fatalf("enrollment digest drift did not change binding digest")
+	}
+	// Round-trip validation must accept the frozen binding.
+	revalidated, err := ValidateFrozenExecutionBinding(binding)
+	if err != nil {
+		t.Fatalf("ValidateFrozenExecutionBinding error = %v", err)
+	}
+	if revalidated.BindingDigest != binding.BindingDigest {
+		t.Fatalf("round-trip digest mismatch: %q vs %q",
+			revalidated.BindingDigest, binding.BindingDigest)
+	}
+	// A mutated enrollment digest must fail validation.
+	corrupt := binding
+	corrupt.RemoteToolEnrollmentDigest = strings.Repeat("e", 64)
+	if _, err := ValidateFrozenExecutionBinding(corrupt); err == nil {
+		t.Fatal("corrupt enrollment digest accepted")
+	}
+}
+
+func TestExecutionProfileEnrollmentBothOrNeither(t *testing.T) {
+	instance := RuntimeInstance{
+		ID: "runtime-1", DeviceID: "device-1", AdapterType: "codex",
+		DisplayName: "Codex", Status: RuntimeOnline,
+		ObservedCapabilities: []string{CapabilityGovernedToolLoop, CapabilityReasoningEffort}, Capacity: 1,
+	}
+	profile := baseEnrollmentProfile(t)
+	profile.ID = "profile-id-only"
+	profile.RemoteToolEnrollmentDigest = ""
+	if _, err := FreezeExecutionBinding(profile, instance); err == nil {
+		t.Fatal("enrollment id without digest accepted")
+	}
+	profile = baseEnrollmentProfile(t)
+	profile.ID = "profile-digest-only"
+	profile.RemoteToolEnrollmentID = ""
+	if _, err := FreezeExecutionBinding(profile, instance); err == nil {
+		t.Fatal("enrollment digest without id accepted")
+	}
+	profile = baseEnrollmentProfile(t)
+	profile.ID = "profile-bad-digest"
+	profile.RemoteToolEnrollmentDigest = "not-a-digest"
+	if _, err := FreezeExecutionBinding(profile, instance); err == nil {
+		t.Fatal("malformed enrollment digest accepted")
+	}
+	profile = baseEnrollmentProfile(t)
+	profile.ID = "profile-no-enrollment"
+	profile.RemoteToolEnrollmentID = ""
+	profile.RemoteToolEnrollmentDigest = ""
+	if _, err := FreezeExecutionBinding(profile, instance); err != nil {
+		t.Fatalf("profile without enrollment rejected: %v", err)
 	}
 }

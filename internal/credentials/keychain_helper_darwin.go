@@ -71,8 +71,8 @@ const (
 )
 
 var (
-	errKeychainHelperProtocol     = errors.New("credential helper protocol")
-	errKeychainHelperUnauthorized = errors.New("credential helper unauthorized")
+	errKeychainHelperProtocol     = ErrCredentialHelperProtocol
+	errKeychainHelperUnauthorized = ErrCredentialHelperUnauthorized
 	errKeychainHelperTimeout      = errors.New("credential helper timeout")
 	errKeychainHelperExit         = errors.New("credential helper exit")
 )
@@ -151,7 +151,10 @@ func newProcessKeychainStore(
 	if err != nil ||
 		!filepath.IsAbs(socketPath) ||
 		filepath.Clean(socketPath) != socketPath {
-		return nil, ErrCredentialStoreUnavailable
+		return nil, withCredentialFailureStage(
+			CredentialStageHelperValidation,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	return &processKeychainStore{
 		invoke: func(
@@ -183,7 +186,10 @@ func (store *processKeychainStore) Put(
 	secret []byte,
 ) error {
 	if len(secret) == 0 || len(secret) > 8192 {
-		return ErrCredentialStoreUnavailable
+		return withCredentialFailureStage(
+			CredentialStageHelperValidation,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	requestSecret := append([]byte(nil), secret...)
 	defer clearBytes(requestSecret)
@@ -210,7 +216,10 @@ func (store *processKeychainStore) Read(
 	}
 	if len(response.Secret) == 0 || len(response.Secret) > 8192 {
 		clearBytes(response.Secret)
-		return nil, ErrCredentialStoreUnavailable
+		return nil, withCredentialFailureStage(
+			CredentialStageHelperResponse,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	return response.Secret, nil
 }
@@ -235,21 +244,34 @@ func (store *processKeychainStore) invokeBounded(
 		store.invoke == nil ||
 		ctx == nil ||
 		!validCredentialIdentifier(request.Reference, 128) {
-		return keychainHelperResponse{}, ErrCredentialStoreUnavailable
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperValidation,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	if err := ctx.Err(); err != nil {
-		return keychainHelperResponse{}, ErrCredentialStoreUnavailable
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperTimeout,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	boundedCtx, cancel := context.WithTimeout(ctx, keychainHelperDeadline)
 	defer cancel()
 	response, err := store.invoke(boundedCtx, request)
 	if err != nil {
+		stage := CredentialFailureStage(err)
+		if stage == "" {
+			stage = CredentialStageHelperExit
+		}
 		if errors.Is(err, context.Canceled) ||
 			errors.Is(err, context.DeadlineExceeded) ||
 			errors.Is(err, errKeychainHelperTimeout) {
-			return keychainHelperResponse{}, ErrCredentialStoreUnavailable
+			stage = CredentialStageHelperTimeout
 		}
-		return keychainHelperResponse{}, ErrCredentialStoreUnavailable
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			stage,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	return response, nil
 }
@@ -260,22 +282,41 @@ func keychainHelperStoreError(
 	allowSecret bool,
 ) error {
 	if err != nil {
-		return ErrCredentialStoreUnavailable
+		stage := CredentialFailureStage(err)
+		if stage == "" {
+			stage = CredentialStageHelperExit
+		}
+		return withCredentialFailureStage(
+			stage,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 	switch response.Status {
 	case keychainHelperOK:
 		if !allowSecret && len(response.Secret) != 0 {
-			return ErrCredentialStoreUnavailable
+			return withCredentialFailureStage(
+				CredentialStageHelperResponse,
+				ErrCredentialStoreUnavailable,
+			)
 		}
 		return nil
 	case keychainHelperNotFound:
 		return ErrCredentialNotFound
 	case keychainHelperDenied:
-		return ErrCredentialStoreDenied
+		return withCredentialFailureStage(
+			CredentialStageKeychainAccess,
+			ErrCredentialStoreDenied,
+		)
 	case keychainHelperUnavailable:
-		return ErrCredentialStoreUnavailable
+		return withCredentialFailureStage(
+			CredentialStageKeychainAccess,
+			ErrCredentialStoreUnavailable,
+		)
 	default:
-		return ErrCredentialStoreUnavailable
+		return withCredentialFailureStage(
+			CredentialStageHelperResponse,
+			ErrCredentialStoreUnavailable,
+		)
 	}
 }
 
@@ -285,26 +326,41 @@ func invokeKeychainHelperProcess(
 	request keychainHelperRequest,
 ) (keychainHelperResponse, error) {
 	if ctx == nil {
-		return keychainHelperResponse{}, errKeychainHelperProtocol
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperValidation,
+			errKeychainHelperProtocol,
+		)
 	}
 	if err := ctx.Err(); err != nil {
-		return keychainHelperResponse{}, errKeychainHelperTimeout
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperTimeout,
+			errKeychainHelperTimeout,
+		)
 	}
 	encoded, err := encodeKeychainHelperRequest(request)
 	if err != nil {
-		return keychainHelperResponse{}, err
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperRequest,
+			err,
+		)
 	}
 	defer clearBytes(encoded)
 
 	requestRead, requestWrite, err := os.Pipe()
 	if err != nil {
-		return keychainHelperResponse{}, errKeychainHelperProtocol
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperStart,
+			errKeychainHelperProtocol,
+		)
 	}
 	responseRead, responseWrite, err := os.Pipe()
 	if err != nil {
 		_ = requestRead.Close()
 		_ = requestWrite.Close()
-		return keychainHelperResponse{}, errKeychainHelperProtocol
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperStart,
+			errKeychainHelperProtocol,
+		)
 	}
 	defer requestRead.Close()
 	defer requestWrite.Close()
@@ -318,8 +374,12 @@ func invokeKeychainHelperProcess(
 	command.Stdout = output
 	command.Stderr = output
 	command.ExtraFiles = []*os.File{requestRead, responseWrite}
+	recordProductKeychainHelperSpawnAttempt()
 	if err := command.Start(); err != nil {
-		return keychainHelperResponse{}, errKeychainHelperExit
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperStart,
+			errKeychainHelperExit,
+		)
 	}
 	_ = requestRead.Close()
 	_ = responseWrite.Close()
@@ -328,12 +388,18 @@ func invokeKeychainHelperProcess(
 		_ = requestWrite.Close()
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		return keychainHelperResponse{}, errKeychainHelperProtocol
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperRequest,
+			errKeychainHelperProtocol,
+		)
 	}
 	if err := requestWrite.Close(); err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
-		return keychainHelperResponse{}, errKeychainHelperProtocol
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperRequest,
+			errKeychainHelperProtocol,
+		)
 	}
 
 	type responseResult struct {
@@ -381,16 +447,51 @@ func invokeKeychainHelperProcess(
 				gotResponse = true
 			}
 			clearBytes(body)
-			return keychainHelperResponse{}, errKeychainHelperTimeout
+			return keychainHelperResponse{}, withCredentialFailureStage(
+				CredentialStageHelperTimeout,
+				errKeychainHelperTimeout,
+			)
 		}
 	}
 	defer clearBytes(body)
-	if responseErr != nil ||
-		waitErr != nil ||
-		output.HasOutput() {
-		return keychainHelperResponse{}, errKeychainHelperExit
+	if waitErr != nil {
+		stage := CredentialStageHelperExit
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			switch exitErr.ExitCode() {
+			case 4:
+				stage = CredentialStageHelperAuthorization
+			case 5:
+				stage = CredentialStageHelperRequest
+			case 6:
+				stage = CredentialStageKeychainAccess
+			}
+		}
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			stage,
+			errKeychainHelperExit,
+		)
 	}
-	return decodeKeychainHelperResponse(body)
+	if output.HasOutput() {
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperExit,
+			errKeychainHelperExit,
+		)
+	}
+	if responseErr != nil {
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperResponse,
+			errKeychainHelperProtocol,
+		)
+	}
+	decoded, err := decodeKeychainHelperResponse(body)
+	if err != nil {
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperResponse,
+			err,
+		)
+	}
+	return decoded, nil
 }
 
 type keychainHelperOutput struct {
@@ -427,7 +528,7 @@ func runDarwinProductKeychainHelper() error {
 	defer response.Close()
 	store, err := NewKeychainStore(KeychainStoreConfig{})
 	if err != nil {
-		return errKeychainHelperUnauthorized
+		return ErrCredentialStoreUnavailable
 	}
 	return runKeychainHelper(
 		request,

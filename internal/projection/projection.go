@@ -61,17 +61,21 @@ func (s journalSource) Events(ctx context.Context) ([]journal.Event, error) {
 }
 
 type Snapshot struct {
-	Modes            map[string]string
-	WorkItems        map[string]WorkItem
-	Runs             map[string]Run
-	AgentGrants      map[string]AgentGrant
-	Evidence         map[string]Evidence
-	RuleSets         map[string]ProjectedRuleSet
-	ApprovalRequests map[string]ProjectedApprovalRequest
-	Teams            map[string]TeamInstance
-	AgentInstances   map[string]AgentInstance
-	RuntimeInstances map[string]RuntimeInstance
-	EvolutionAssets  *EvolutionAssetSnapshot
+	Modes                        map[string]string
+	WorkItems                    map[string]WorkItem
+	Runs                         map[string]Run
+	AgentGrants                  map[string]AgentGrant
+	Evidence                     map[string]Evidence
+	RuleSets                     map[string]ProjectedRuleSet
+	ApprovalRequests             map[string]ProjectedApprovalRequest
+	Teams                        map[string]TeamInstance
+	AgentInstances               map[string]AgentInstance
+	RuntimeInstances             map[string]RuntimeInstance
+	MissionFallbackDecisions     map[string]MissionFallbackDecisionRecord
+	ProviderAccountPolicies      map[string]ProviderAccountPolicyRecord
+	ProviderModelRateCards       map[string]ProviderModelRateCardRecord
+	RemoteToolBackendEnrollments map[string]RemoteToolBackendEnrollmentRecord
+	EvolutionAssets              *EvolutionAssetSnapshot
 	localProductSetupSnapshotFields
 }
 
@@ -111,21 +115,48 @@ type WorkItem struct {
 }
 
 type Run struct {
-	ID                            string
-	WorkItemID                    string
-	Phase                         string
-	ClaimID                       string
-	ClaimGeneration               int64
-	RuntimeInstanceID             string
-	AgentInstanceID               string
-	PrepareLeaseExpiresAt         time.Time
-	TerminalStatus                string
-	TerminalReason                string
-	AssetLineageAvailable         bool
-	AssetRevisionBindings         []ProjectedAssetRevisionBinding
-	AssetRevisionSetDigest        string
-	MaterializationManifestDigest string
-	MaterializationRootDigest     string
+	ID                                 string
+	WorkItemID                         string
+	Phase                              string
+	ClaimID                            string
+	ClaimGeneration                    int64
+	RuntimeInstanceID                  string
+	AgentInstanceID                    string
+	ExecutionBindingAvailable          bool
+	ExecutionBinding                   projectedFrozenExecutionBinding
+	PrepareLeaseExpiresAt              time.Time
+	TerminalStatus                     string
+	TerminalReason                     string
+	AccountingAvailable                bool
+	Accounting                         RunAccounting
+	ProviderAccountPolicyAvailable     bool
+	ProviderAccountPolicyVersion       int
+	ProviderAccountPolicyRevision      int64
+	ProviderAccountPolicyDigest        string
+	ProviderAccountTrustDomain         string
+	ProviderAccountRetentionMode       string
+	ProviderAccountDataRegion          string
+	ProviderAccountAssignedBudgetUnits int64
+	ProviderModelRateCardAvailable     bool
+	ProviderModelRateCard              ProjectedProviderModelRateCard
+	AssetLineageAvailable              bool
+	AssetRevisionBindings              []ProjectedAssetRevisionBinding
+	AssetRevisionSetDigest             string
+	MaterializationManifestDigest      string
+	MaterializationRootDigest          string
+}
+
+type RunAccounting struct {
+	UsageObserved    bool
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalTokens      int64
+	CostObserved     bool
+	CostMicrounits   int64
+	CostCurrency     string
+	CostSource       string
 }
 
 // ProjectedAssetRevisionBinding is the Projection-owned immutable wire copy
@@ -322,7 +353,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		if err := ctx.Err(); err != nil {
 			return Snapshot{}, err
 		}
-		if event.SchemaVersion != 1 {
+		if !supportedProjectionEnvelopeVersion(event) {
 			return Snapshot{}, fmt.Errorf("%w: %d", ErrUnsupportedEventVersion, event.SchemaVersion)
 		}
 		if existing, ok := seenByID[event.ID]; ok {
@@ -360,6 +391,12 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 			runAuthorityEvents = append(runAuthorityEvents, event)
 			continue
 		}
+		if event.Type == "ProviderModelRateCardConfigured" {
+			if err := applyProviderModelRateCardProjection(&candidate, event); err != nil {
+				return Snapshot{}, err
+			}
+			continue
+		}
 		if isGrantAuthorityProjectionEvent(event) {
 			grantAuthorityEvents = append(grantAuthorityEvents, event)
 			continue
@@ -382,6 +419,7 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 		ctx,
 		&candidate,
 		normalizedRunEvents,
+		ordered,
 	); err != nil {
 		return Snapshot{}, fmt.Errorf("run authority: %w", err)
 	}
@@ -419,6 +457,32 @@ func replay(ctx context.Context, events []journal.Event) (Snapshot, error) {
 	return candidate, nil
 }
 
+// The global read projection validates Journal identity and sequence for every
+// stream, but dedicated authorities own their payload decoding. Schema v2 is
+// admitted only for exact content-free execution and permission-decision facts;
+// an unknown v2 event remains fail-closed.
+func supportedProjectionEnvelopeVersion(event journal.Event) bool {
+	if event.SchemaVersion == 1 {
+		return true
+	}
+	if event.SchemaVersion != 2 {
+		return false
+	}
+	if strings.HasPrefix(event.StreamID, "permission-decision/") {
+		return event.Type == "PermissionDecisionRecorded"
+	}
+	if !strings.HasPrefix(event.StreamID, "execution/") {
+		return false
+	}
+	switch event.Type {
+	case "ToolExecutionProposed", "ToolExecutionDenied", "ToolExecutionFailed",
+		"ToolExecutionRecoveryRequired", "ToolExecutionRecoveryResolved":
+		return true
+	default:
+		return false
+	}
+}
+
 func isEvolutionAssetProjectionEvent(event journal.Event) bool {
 	return strings.HasPrefix(event.Type, "EvolutionAsset") ||
 		event.Type == "EvolutionTemplateInstantiated" ||
@@ -427,6 +491,16 @@ func isEvolutionAssetProjectionEvent(event journal.Event) bool {
 }
 
 func (s *Snapshot) apply(event journal.Event) error {
+	if isMissionFallbackDecisionProjectionEvent(event) {
+		return applyMissionFallbackDecisionProjection(s, event)
+	}
+	if event.Type == "ProviderAccountPolicyConfigured" {
+		return applyProviderAccountPolicyProjection(s, event)
+	}
+	if event.Type == "RemoteToolBackendEnrollmentConfigured" ||
+		event.Type == "RemoteToolBackendEnrollmentRevoked" {
+		return applyRemoteToolBackendEnrollmentProjection(s, event)
+	}
 	if isLocalProductSetupProjectionEvent(event) {
 		ensureLocalProductSetupSnapshot(s)
 		return applyLocalProductSetupProjection(*s, event)
@@ -620,36 +694,47 @@ func projectSavedTeamInstance(event journal.Event) (TeamInstance, error) {
 	}
 	team := payload.Team
 	scopeIdentity, scopePresent := projectedScopeIdentity(team.ScopeIdentity)
-	if !validSavedTeamProjectionEnvelope(event) ||
-		event.Seq != 1 ||
-		event.CausationID != "" ||
-		team.ID == "" ||
-		event.StreamID != "team_instance:"+team.ID ||
-		team.WorkRequestID == "" ||
-		event.CorrelationID != team.WorkRequestID ||
-		team.SourceKind != "saved_team" ||
-		team.TeamDefinitionID == "" ||
-		team.TeamDefinitionVersion <= 0 ||
-		!scopePresent ||
-		!validProjectedScope(team.TeamDefinitionScope, scopeIdentity) ||
-		!validSHA256Digest(team.TeamDefinitionDigest) ||
-		!validSHA256Digest(team.SourcePlanDigest) ||
+	invalidReason := ""
+	switch {
+	case !validSavedTeamProjectionEnvelope(event):
+		invalidReason = "envelope"
+	case event.Seq != 1 || event.CausationID != "":
+		invalidReason = "stream position"
+	case team.ID == "" || event.StreamID != "team_instance:"+team.ID:
+		invalidReason = "team identity"
+	case team.WorkRequestID == "" || event.CorrelationID != team.WorkRequestID:
+		invalidReason = "work request correlation"
+	case team.SourceKind != "saved_team" || team.TeamDefinitionID == "" ||
+		team.TeamDefinitionVersion <= 0:
+		invalidReason = "definition identity"
+	case !scopePresent || !validProjectedScope(team.TeamDefinitionScope, scopeIdentity):
+		invalidReason = "scope"
+	case !validSHA256Digest(team.TeamDefinitionDigest):
+		invalidReason = "definition digest"
+	case !validSHA256Digest(team.SourcePlanDigest) ||
 		!validSHA256Digest(payload.SourcePlanDigest) ||
-		team.SourcePlanDigest != payload.SourcePlanDigest ||
-		!validSHA256Digest(payload.SourceRecordSetDigest) ||
-		team.State != "created" ||
-		team.CreatedAt <= 0 ||
-		payload.DormantSubAgents == nil ||
-		payload.TeamInstanceCount == nil ||
-		payload.AgentInstanceCount == nil ||
-		payload.ActiveSubAgentCount == nil ||
-		payload.WorkItemCount == nil ||
-		*payload.TeamInstanceCount != 1 ||
-		*payload.AgentInstanceCount != 1 ||
-		*payload.ActiveSubAgentCount != 0 ||
-		*payload.WorkItemCount != 0 ||
-		!validProjectedDormantSubAgents(*payload.DormantSubAgents) {
-		return TeamInstance{}, ErrInvalidProjectionEvent
+		team.SourcePlanDigest != payload.SourcePlanDigest:
+		invalidReason = "plan digest"
+	case !validSHA256Digest(payload.SourceRecordSetDigest):
+		invalidReason = "record set digest"
+	case team.State != "created" || team.CreatedAt <= 0:
+		invalidReason = "lifecycle"
+	case payload.DormantSubAgents == nil ||
+		payload.TeamInstanceCount == nil || payload.AgentInstanceCount == nil ||
+		payload.ActiveSubAgentCount == nil || payload.WorkItemCount == nil:
+		invalidReason = "required counters"
+	case *payload.TeamInstanceCount != 1 || *payload.AgentInstanceCount != 1 ||
+		*payload.ActiveSubAgentCount != 0 || *payload.WorkItemCount != 0:
+		invalidReason = "counter values"
+	case !validProjectedDormantSubAgents(*payload.DormantSubAgents):
+		invalidReason = "dormant subagents"
+	}
+	if invalidReason != "" {
+		return TeamInstance{}, fmt.Errorf(
+			"%w: invalid saved TeamInstance %s",
+			ErrInvalidProjectionEvent,
+			invalidReason,
+		)
 	}
 	return TeamInstance{
 		ID:                    team.ID,
@@ -783,7 +868,7 @@ func validProjectedScope(scope string, identity ScopeIdentity) bool {
 }
 
 func validProjectedDormantSubAgents(input []DormantSubAgent) bool {
-	if len(input) > 2 {
+	if len(input) > maxProjectedTeamAgentCount-1 {
 		return false
 	}
 	for index, current := range input {
@@ -929,6 +1014,7 @@ func (s Snapshot) clone() Snapshot {
 			[]ProjectedAssetRevisionBinding(nil),
 			run.AssetRevisionBindings...,
 		)
+		run.ExecutionBinding = cloneProjectedExecutionBinding(run.ExecutionBinding)
 		out.Runs[id] = run
 	}
 	for id, grant := range s.AgentGrants {
@@ -949,6 +1035,42 @@ func (s Snapshot) clone() Snapshot {
 	}
 	for id, agent := range s.AgentInstances {
 		out.AgentInstances[id] = agent
+	}
+	if s.MissionFallbackDecisions != nil {
+		out.MissionFallbackDecisions = make(
+			map[string]MissionFallbackDecisionRecord,
+			len(s.MissionFallbackDecisions),
+		)
+		for digest, decision := range s.MissionFallbackDecisions {
+			out.MissionFallbackDecisions[digest] = decision
+		}
+	}
+	if s.ProviderAccountPolicies != nil {
+		out.ProviderAccountPolicies = make(
+			map[string]ProviderAccountPolicyRecord,
+			len(s.ProviderAccountPolicies),
+		)
+		for accountID, policy := range s.ProviderAccountPolicies {
+			out.ProviderAccountPolicies[accountID] = policy
+		}
+	}
+	if s.ProviderModelRateCards != nil {
+		out.ProviderModelRateCards = make(
+			map[string]ProviderModelRateCardRecord,
+			len(s.ProviderModelRateCards),
+		)
+		for identity, rateCard := range s.ProviderModelRateCards {
+			out.ProviderModelRateCards[identity] = rateCard
+		}
+	}
+	if s.RemoteToolBackendEnrollments != nil {
+		out.RemoteToolBackendEnrollments = make(
+			map[string]RemoteToolBackendEnrollmentRecord,
+			len(s.RemoteToolBackendEnrollments),
+		)
+		for identity, enrollment := range s.RemoteToolBackendEnrollments {
+			out.RemoteToolBackendEnrollments[identity] = enrollment
+		}
 	}
 	for id, instance := range s.RuntimeInstances {
 		out.RuntimeInstances[id] = cloneProjectedRuntimeInstance(instance)

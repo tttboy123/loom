@@ -14,6 +14,8 @@ import (
 	"loom-pi-rebuild/internal/tui"
 )
 
+const productExtendedRequestTimeout = 15 * time.Second
+
 func runTUIApp(
 	ctx context.Context,
 	args []string,
@@ -31,8 +33,9 @@ func runTUIApp(
 		return err
 	}
 	client, err := localipc.NewClient(localipc.ClientConfig{
-		SocketPath: socketPath,
-		Timeout:    5 * time.Second,
+		SocketPath:      socketPath,
+		Timeout:         5 * time.Second,
+		ExtendedTimeout: productExtendedRequestTimeout,
 	})
 	if err != nil {
 		return err
@@ -87,8 +90,9 @@ func readProductTimeline(
 
 func newProductClient(socketPath string) (*localipc.Client, error) {
 	return localipc.NewClient(localipc.ClientConfig{
-		SocketPath: socketPath,
-		Timeout:    5 * time.Second,
+		SocketPath:      socketPath,
+		Timeout:         5 * time.Second,
+		ExtendedTimeout: productExtendedRequestTimeout,
 	})
 }
 

@@ -103,8 +103,8 @@ public struct LocalProductExperience: Equatable, Sendable {
         case .loading:
             state = .loading
             connection = .init(
-                title: "Connecting to Loom",
-                detail: "Checking the local service.",
+                title: "Starting local service",
+                detail: "Loom is checking the service on this Mac.",
                 systemImage: "arrow.triangle.2.circlepath",
                 offersRefresh: false
             )
@@ -134,8 +134,8 @@ public struct LocalProductExperience: Equatable, Sendable {
         case .stale:
             state = .stalePreserved
             connection = .init(
-                title: "Showing the last known view",
-                detail: "Refresh when the local service is available.",
+                title: "Showing last loaded state",
+                detail: "Reconnect to refresh this workspace.",
                 systemImage: "clock.badge.exclamationmark",
                 offersRefresh: true
             )
@@ -143,16 +143,16 @@ public struct LocalProductExperience: Equatable, Sendable {
             if snapshot == nil {
                 state = .offline
                 connection = .init(
-                    title: "Loom is not reachable",
-                    detail: "Check the local service, then refresh this view.",
+                    title: "Local service unavailable",
+                    detail: "Start the Loom service, then try again.",
                     systemImage: "bolt.slash.fill",
                     offersRefresh: true
                 )
             } else {
                 state = .offlinePreserved
                 connection = .init(
-                    title: "Loom is temporarily offline",
-                    detail: "Your last loaded view is still available.",
+                    title: "Showing last loaded state",
+                    detail: "The local service is unavailable. Your workspace is preserved.",
                     systemImage: "bolt.slash.fill",
                     offersRefresh: true
                 )
@@ -160,8 +160,8 @@ public struct LocalProductExperience: Equatable, Sendable {
         case .fatal:
             state = .fatal
             connection = .init(
-                title: "Connection needs attention",
-                detail: "Loom rejected the local connection. Check the service.",
+                title: "Local service rejected the connection",
+                detail: "Check the local service configuration, then try again.",
                 systemImage: "exclamationmark.octagon.fill",
                 offersRefresh: true
             )

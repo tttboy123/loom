@@ -21,30 +21,35 @@ import (
 )
 
 var (
-	ErrInvalidRunAuthorityInput = errors.New("invalid run authority input")
-	ErrRunAuthorityConflict     = errors.New("run authority conflict")
-	ErrRunNotClaimable          = errors.New("run not claimable")
-	ErrRunLeaseActive           = errors.New("run prepare lease active")
-	ErrRunLeaseExpired          = errors.New("run prepare lease expired")
-	ErrStaleClaimGeneration     = errors.New("stale claim generation")
-	ErrRunAlreadyTerminal       = errors.New("run already terminal")
-	ErrRuntimeUnavailable       = errors.New("runtime unavailable")
-	ErrRuntimeCapacityExhausted = errors.New("runtime capacity exhausted")
-	ErrRunIdentityIndexRequired = errors.New("Run identity index required")
+	ErrInvalidRunAuthorityInput             = errors.New("invalid run authority input")
+	ErrRunAuthorityConflict                 = errors.New("run authority conflict")
+	ErrRunNotClaimable                      = errors.New("run not claimable")
+	ErrRunLeaseActive                       = errors.New("run prepare lease active")
+	ErrRunLeaseExpired                      = errors.New("run prepare lease expired")
+	ErrStaleClaimGeneration                 = errors.New("stale claim generation")
+	ErrRunAlreadyTerminal                   = errors.New("run already terminal")
+	ErrRuntimeUnavailable                   = errors.New("runtime unavailable")
+	ErrRuntimeCapacityExhausted             = errors.New("runtime capacity exhausted")
+	ErrProviderAccountConcurrencyExhausted  = errors.New("Provider Account concurrency exhausted")
+	ErrProviderAccountDispatchRateExhausted = errors.New("Provider Account dispatch rate exhausted")
+	ErrProviderAccountBudgetExhausted       = errors.New("Provider Account assigned budget exhausted")
+	ErrRunIdentityIndexRequired             = errors.New("Run identity index required")
 )
 
 const (
-	maxAuthorityIDBytes = 128
-	maxPrepareLease     = 5 * time.Minute
-	runIdentityStreamID = "work-run-identity/v1"
+	maxAuthorityIDBytes   = 128
+	maxPrepareLease       = 5 * time.Minute
+	runIdentityStreamID   = "work-run-identity/v1"
+	maxRunAccountingInt64 = int64(1<<63 - 1)
 )
 
 type WorkItemAssignmentInput struct {
-	WorkItemID      string
-	Title           string
-	RunID           string
-	AgentInstanceID string
-	CorrelationID   string
+	WorkItemID       string
+	Title            string
+	RunID            string
+	AgentInstanceID  string
+	ExecutionBinding FrozenExecutionBinding
+	CorrelationID    string
 }
 
 type RunClaimInput struct {
@@ -68,8 +73,30 @@ type RunGenerationInput struct {
 
 type RunTerminalInput struct {
 	RunGenerationInput
-	Status string
-	Reason string
+	Status     string
+	Reason     string
+	Accounting *RunAccounting
+}
+
+// RunAccounting is the bounded, non-secret usage and cost fact frozen with a
+// terminal Run. Provider payloads and credentials never enter this record.
+const (
+	CostSourceProviderReported  = "provider_reported"
+	CostSourceHarnessReported   = "harness_reported"
+	CostSourceLegacyUnspecified = "legacy_unspecified"
+)
+
+type RunAccounting struct {
+	UsageObserved    bool   `json:"usage_observed"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	CostObserved     bool   `json:"cost_observed"`
+	CostMicrounits   int64  `json:"cost_microunits"`
+	CostCurrency     string `json:"cost_currency"`
+	CostSource       string `json:"cost_source"`
 }
 
 type WorkItemRecord struct {
@@ -93,22 +120,34 @@ type WorkItemRecord struct {
 }
 
 type RunRecord struct {
-	id                            string
-	workItemID                    string
-	phase                         string
-	claimID                       string
-	claimGeneration               int64
-	runtimeInstanceID             string
-	agentInstanceID               string
-	prepareLeaseExpiresAt         time.Time
-	terminalStatus                string
-	terminalReason                string
-	lastEventID                   string
-	streamSequence                int64
-	AssetRevisionBindings         []AssetRevisionBinding
-	AssetRevisionSetDigest        string
-	MaterializationManifestDigest string
-	MaterializationRootDigest     string
+	id                             string
+	workItemID                     string
+	phase                          string
+	claimID                        string
+	claimGeneration                int64
+	runtimeInstanceID              string
+	agentInstanceID                string
+	executionBinding               FrozenExecutionBinding
+	prepareLeaseExpiresAt          time.Time
+	terminalStatus                 string
+	terminalReason                 string
+	accountingAvailable            bool
+	accounting                     RunAccounting
+	providerAccountPolicyRevision  int64
+	providerAccountPolicyDigest    string
+	providerAccountPolicyVersion   int
+	providerAccountTrustDomain     string
+	providerAccountRetentionMode   string
+	providerAccountDataRegion      string
+	providerAccountBudgetUnits     int64
+	providerModelRateCardAvailable bool
+	providerModelRateCard          ProviderModelRateCard
+	lastEventID                    string
+	streamSequence                 int64
+	AssetRevisionBindings          []AssetRevisionBinding
+	AssetRevisionSetDigest         string
+	MaterializationManifestDigest  string
+	MaterializationRootDigest      string
 }
 
 // AssetRevisionBinding is the execution authority's immutable wire copy. The
@@ -137,12 +176,15 @@ type Authority struct {
 }
 
 type authorityState struct {
-	workItems              map[string]WorkItemRecord
-	runs                   map[string]RunRecord
-	runtimes               map[string]authorityRuntime
-	heads                  map[string]int64
-	runIdentities          map[string]runIdentityReservation
-	runIdentityInitialized bool
+	workItems               map[string]WorkItemRecord
+	runs                    map[string]RunRecord
+	runtimes                map[string]authorityRuntime
+	heads                   map[string]int64
+	runIdentities           map[string]runIdentityReservation
+	runIdentityInitialized  bool
+	providerAccountPolicies map[string][]providerAccountPolicyState
+	providerAccountCapacity map[string]providerAccountCapacity
+	providerModelRateCards  map[string][]providerModelRateCardState
 }
 
 type runIdentityReservation struct {
@@ -187,13 +229,20 @@ type capacityBinding struct {
 }
 
 type claimReplay struct {
-	binding         capacityBinding
-	previousBinding capacityBinding
-	statusReference runtimeStatusReference
-	eventID         string
-	needsOldRelease bool
-	reserved        bool
-	oldReleased     bool
+	binding                capacityBinding
+	previousBinding        capacityBinding
+	statusReference        runtimeStatusReference
+	eventID                string
+	needsOldRelease        bool
+	reserved               bool
+	oldReleased            bool
+	accountManaged         bool
+	accountReserved        bool
+	accountReleased        bool
+	needsOldAccountRelease bool
+	accountPolicy          ProviderAccountPolicy
+	accountBinding         providerAccountCapacityBinding
+	previousAccountBinding providerAccountCapacityBinding
 }
 
 type terminalReplay struct {
@@ -203,6 +252,9 @@ type terminalReplay struct {
 	status          string
 	released        bool
 	outcome         bool
+	accountManaged  bool
+	accountReleased bool
+	accountBinding  providerAccountCapacityBinding
 }
 
 func NewAuthority(
@@ -243,10 +295,11 @@ func (authority *Authority) InitializeRunIdentityIndex(ctx context.Context) erro
 			continue
 		}
 		var payload struct {
-			WorkItemID      *string `json:"work_item_id"`
-			RunID           *string `json:"run_id"`
-			AgentInstanceID *string `json:"agent_instance_id"`
-			Status          *string `json:"status"`
+			WorkItemID       *string                      `json:"work_item_id"`
+			RunID            *string                      `json:"run_id"`
+			AgentInstanceID  *string                      `json:"agent_instance_id"`
+			Status           *string                      `json:"status"`
+			ExecutionBinding *teamExecutionBindingPayload `json:"execution_binding,omitempty"`
 		}
 		if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
 			payload.WorkItemID == nil || payload.RunID == nil ||
@@ -371,6 +424,11 @@ func (authority *Authority) CreateAndAssign(
 	if err := validateContextAndAssignment(ctx, input); err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
+	validatedBinding, err := validateOptionalExecutionBinding(input.ExecutionBinding)
+	if err != nil {
+		return WorkItemRecord{}, RunRecord{}, err
+	}
+	input.ExecutionBinding = validatedBinding
 	if !authority.runIdentityReady() {
 		return WorkItemRecord{}, RunRecord{}, ErrRunIdentityIndexRequired
 	}
@@ -396,7 +454,8 @@ func (authority *Authority) CreateAndAssign(
 			existing.agentInstanceID == input.AgentInstanceID &&
 			run.id == input.RunID &&
 			run.workItemID == input.WorkItemID &&
-			run.agentInstanceID == input.AgentInstanceID {
+			run.agentInstanceID == input.AgentInstanceID &&
+			reflect.DeepEqual(run.executionBinding, input.ExecutionBinding) {
 			return existing.public(), run.public(), nil
 		}
 		return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
@@ -413,8 +472,15 @@ func (authority *Authority) CreateAndAssign(
 	)
 	assignedID := deterministicEventID(
 		"WorkItemAssigned", input.WorkItemID, input.RunID,
-		input.AgentInstanceID, input.CorrelationID,
+		input.AgentInstanceID, input.ExecutionBinding.BindingDigest,
+		input.CorrelationID,
 	)
+	assignmentBinding, err := optionalTeamExecutionBindingPayload(
+		input.ExecutionBinding,
+	)
+	if err != nil {
+		return WorkItemRecord{}, RunRecord{}, err
+	}
 	events := []journal.Event{
 		newEvent(
 			createdID, streamID, 1, "WorkItemCreated", now,
@@ -429,11 +495,15 @@ func (authority *Authority) CreateAndAssign(
 			assignedID, streamID, 2, "WorkItemAssigned", now,
 			input.CorrelationID, createdID,
 			struct {
-				WorkItemID      string `json:"work_item_id"`
-				RunID           string `json:"run_id"`
-				AgentInstanceID string `json:"agent_instance_id"`
-				Status          string `json:"status"`
-			}{input.WorkItemID, input.RunID, input.AgentInstanceID, "assigned"},
+				WorkItemID       string                       `json:"work_item_id"`
+				RunID            string                       `json:"run_id"`
+				AgentInstanceID  string                       `json:"agent_instance_id"`
+				Status           string                       `json:"status"`
+				ExecutionBinding *teamExecutionBindingPayload `json:"execution_binding,omitempty"`
+			}{
+				input.WorkItemID, input.RunID, input.AgentInstanceID,
+				"assigned", assignmentBinding,
+			},
 		),
 	}
 	identitySequence := state.heads[runIdentityStreamID] + 1
@@ -473,6 +543,7 @@ func (authority *Authority) CreateAndAssign(
 	run := RunRecord{
 		id: input.RunID, workItemID: input.WorkItemID, phase: "unclaimed",
 		agentInstanceID: input.AgentInstanceID, lastEventID: assignedID,
+		executionBinding: cloneTeamExecutionBinding(input.ExecutionBinding),
 	}
 	return workItem.public(), run.public(), nil
 }
@@ -491,11 +562,11 @@ func (authority *Authority) Claim(
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readStateFor(ctx, runCommandStreams(
+	state, err := authority.readRunStateWithProviderAccount(ctx, runCommandStreams(
 		input.WorkItemID,
 		input.RunID,
 		input.RuntimeInstanceID,
-	))
+	), input.RunID)
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -503,6 +574,12 @@ func (authority *Authority) Claim(
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
+	rateCard, rateCardAvailable := state.providerModelRateCardAt(
+		run.executionBinding.ProviderID,
+		run.executionBinding.ProviderAccountID,
+		run.executionBinding.ModelID,
+		now,
+	)
 	runtime, ok := state.runtimes[input.RuntimeInstanceID]
 	if !ok || runtime.status != "online" || runtime.capacity <= 0 {
 		return WorkItemRecord{}, RunRecord{}, ErrRuntimeUnavailable
@@ -522,6 +599,57 @@ func (authority *Authority) Claim(
 	}
 
 	generation := run.claimGeneration + 1
+	accountPolicy, accountManaged := state.providerAccountPolicyAt(
+		run.executionBinding.ProviderID,
+		run.executionBinding.ProviderAccountID,
+		now,
+	)
+	accountPolicyStreamID := ""
+	if run.executionBinding.ProviderAccountID != "" {
+		accountPolicyStreamID = providerAccountPolicyStream(
+			run.executionBinding.ProviderAccountID,
+		)
+		if !accountManaged && state.heads[accountPolicyStreamID] > 0 {
+			return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
+		}
+	}
+	var accountBinding providerAccountCapacityBinding
+	var previousAccountBinding *providerAccountCapacityBinding
+	if accountManaged {
+		accountBinding, err = providerAccountCapacityBindingFor(
+			run, claimID, generation, input.RuntimeInstanceID, accountPolicy,
+		)
+		if err != nil {
+			return WorkItemRecord{}, RunRecord{}, err
+		}
+		if run.providerAccountPolicyRevision > 0 {
+			previousPolicy, found := state.providerAccountPolicyRevision(
+				run.executionBinding.ProviderID,
+				run.executionBinding.ProviderAccountID,
+				run.providerAccountPolicyRevision,
+				run.providerAccountPolicyDigest,
+			)
+			if !found {
+				return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
+			}
+			previous, previousErr := providerAccountCapacityBindingFor(
+				run, run.claimID, run.claimGeneration,
+				run.runtimeInstanceID, previousPolicy,
+			)
+			if previousErr != nil || previous.assignedBudgetUnits !=
+				run.providerAccountBudgetUnits {
+				return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
+			}
+			previousAccountBinding = &previous
+		}
+		capacity := state.providerAccountCapacity[accountPolicy.ProviderAccountID()]
+		if err := validateProviderAccountCapacityAdmission(
+			capacity, accountPolicy, accountBinding, now,
+			previousAccountBinding,
+		); err != nil {
+			return WorkItemRecord{}, RunRecord{}, err
+		}
+	}
 	expiresAt := now.Add(input.PrepareLeaseDuration)
 	runStreamID := runStream(input.RunID)
 	statusStreamID := runtimeStatusStream(input.RuntimeInstanceID)
@@ -530,23 +658,22 @@ func (authority *Authority) Claim(
 	capacitySequence := state.heads[capacityStreamID] + 1
 	statusReference := runtime.statusHead.payload()
 	claimEventID := deterministicEventID(
-		"RunClaimed", input.RunID, claimID,
+		"RunClaimed.v2", input.RunID, claimID,
 		fmt.Sprint(generation), input.CorrelationID,
 	)
-	claimPayload := struct {
-		WorkItemID            string `json:"work_item_id"`
-		RunID                 string `json:"run_id"`
-		ClaimID               string `json:"claim_id"`
-		ClaimGeneration       int64  `json:"claim_generation"`
-		RuntimeInstanceID     string `json:"runtime_instance_id"`
-		AgentInstanceID       string `json:"agent_instance_id"`
-		PrepareLeaseExpiresAt string `json:"prepare_lease_expires_at"`
-		runtimeStatusReferencePayload
-	}{
-		input.WorkItemID, input.RunID, claimID, generation,
-		input.RuntimeInstanceID, input.AgentInstanceID,
-		expiresAt.Format(time.RFC3339Nano),
-		statusReference,
+	claimPayload := runClaimV2Payload{
+		ClaimContractVersion: 2,
+		WorkItemID:           input.WorkItemID, RunID: input.RunID, ClaimID: claimID,
+		ClaimGeneration: generation, RuntimeInstanceID: input.RuntimeInstanceID,
+		AgentInstanceID:               input.AgentInstanceID,
+		PrepareLeaseExpiresAt:         expiresAt.Format(time.RFC3339Nano),
+		RateCardStatus:                frozenRateCardNotConfigured,
+		runtimeStatusReferencePayload: statusReference,
+	}
+	if rateCardAvailable {
+		frozen := frozenProviderModelRateCardPayloadFrom(rateCard)
+		claimPayload.RateCardStatus = frozenRateCardConfigured
+		claimPayload.RateCard = &frozen
 	}
 	capacityPayload := capacityEventPayload{
 		WorkItemID: input.WorkItemID, RunID: input.RunID, ClaimID: claimID,
@@ -555,10 +682,11 @@ func (authority *Authority) Claim(
 		runtimeStatusReferencePayload: statusReference,
 	}
 	events := make([]journal.Event, 0, 3)
-	events = append(events, newEvent(
+	claimEvent := newEvent(
 		claimEventID, runStreamID, runSequence, "RunClaimed", now,
 		input.CorrelationID, run.lastEventID, claimPayload,
-	))
+	)
+	events = append(events, claimEvent)
 	if generation > 1 {
 		releaseID := deterministicEventID(
 			"RuntimeCapacityReleased", input.RunID,
@@ -586,11 +714,72 @@ func (authority *Authority) Claim(
 		"RuntimeCapacityReserved", now, input.CorrelationID, claimEventID,
 		capacityPayload,
 	))
+	accountCapacityStreamID := ""
+	if accountManaged {
+		accountCapacityStreamID = providerAccountCapacityStream(
+			accountPolicy.ProviderAccountID(),
+		)
+		accountSequence := state.heads[accountCapacityStreamID] + 1
+		if previousAccountBinding != nil {
+			accountReleaseID := deterministicEventID(
+				"ProviderAccountCapacityReleased", input.RunID,
+				previousAccountBinding.claimID,
+				fmt.Sprint(previousAccountBinding.claimGeneration), claimEventID,
+			)
+			events = append(events, newEvent(
+				accountReleaseID, accountCapacityStreamID, accountSequence,
+				"ProviderAccountCapacityReleased", now,
+				input.CorrelationID, claimEventID,
+				previousAccountBinding.payload(),
+			))
+			accountSequence++
+		}
+		accountReserveID := deterministicEventID(
+			"ProviderAccountCapacityReserved", input.RunID, claimID,
+			fmt.Sprint(generation), claimEventID,
+		)
+		events = append(events, newEvent(
+			accountReserveID, accountCapacityStreamID, accountSequence,
+			"ProviderAccountCapacityReserved", now,
+			input.CorrelationID, claimEventID, accountBinding.payload(),
+		))
+	}
 	expectations := []journal.StreamHeadExpectation{
 		{StreamID: workItemStream(input.WorkItemID), Sequence: state.heads[workItemStream(input.WorkItemID)]},
 		{StreamID: runStreamID, Sequence: state.heads[runStreamID]},
 		{StreamID: statusStreamID, Sequence: runtime.statusHead.sequence},
 		{StreamID: capacityStreamID, Sequence: state.heads[capacityStreamID]},
+	}
+	if accountPolicyStreamID != "" {
+		expectations = append(expectations,
+			journal.StreamHeadExpectation{
+				StreamID: accountPolicyStreamID,
+				Sequence: state.heads[accountPolicyStreamID],
+			},
+		)
+	}
+	rateCardStreamID, rateCardStreamErr := ProviderModelRateCardStreamID(
+		run.executionBinding.ProviderID,
+		run.executionBinding.ProviderAccountID,
+		run.executionBinding.ModelID,
+	)
+	if rateCardStreamErr == nil {
+		expectations = append(expectations, journal.StreamHeadExpectation{
+			StreamID: rateCardStreamID, Sequence: state.heads[rateCardStreamID],
+		})
+	}
+	if accountManaged {
+		expectations = append(expectations,
+			journal.StreamHeadExpectation{
+				StreamID: accountCapacityStreamID,
+				Sequence: state.heads[accountCapacityStreamID],
+			},
+		)
+	}
+	run.providerModelRateCardAvailable = rateCardAvailable
+	run.providerModelRateCard = ProviderModelRateCard{}
+	if rateCardAvailable {
+		run.providerModelRateCard = rateCard
 	}
 	if _, err := authority.store.AppendBatchIfStreamHeads(ctx, expectations, events); err != nil {
 		return WorkItemRecord{}, RunRecord{}, mapJournalWriteError(err)
@@ -601,6 +790,10 @@ func (authority *Authority) Claim(
 	run.runtimeInstanceID = input.RuntimeInstanceID
 	run.agentInstanceID = input.AgentInstanceID
 	run.prepareLeaseExpiresAt = expiresAt
+	if accountManaged {
+		freezeRunProviderAccountPolicy(&run, accountPolicy)
+		run.providerAccountBudgetUnits = accountBinding.assignedBudgetUnits
+	}
 	run.lastEventID = claimEventID
 	run.streamSequence = runSequence
 	return workItem.public(), run.public(), nil
@@ -622,11 +815,11 @@ func (authority *Authority) ExtendPrepareLease(
 	if err != nil {
 		return RunRecord{}, err
 	}
-	state, err := authority.readStateFor(ctx, runCommandStreams(
+	state, err := authority.readRunStateWithProviderAccount(ctx, runCommandStreams(
 		input.WorkItemID,
 		input.RunID,
 		input.RuntimeInstanceID,
-	))
+	), input.RunID)
 	if err != nil {
 		return RunRecord{}, err
 	}
@@ -694,11 +887,11 @@ func (authority *Authority) Start(
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readStateFor(ctx, runCommandStreams(
+	state, err := authority.readRunStateWithProviderAccount(ctx, runCommandStreams(
 		input.WorkItemID,
 		input.RunID,
 		input.RuntimeInstanceID,
-	))
+	), input.RunID)
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -719,6 +912,12 @@ func (authority *Authority) Start(
 	if !runtime.currentStatusHead(state.heads) {
 		return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
 	}
+	accountBinding, accountManaged, err := providerAccountActiveBindingForRun(
+		state, run,
+	)
+	if err != nil {
+		return WorkItemRecord{}, RunRecord{}, err
+	}
 	workItem := state.workItems[input.WorkItemID]
 	eventID := deterministicEventID(
 		"RunStarted", input.RunID, input.ClaimID,
@@ -735,6 +934,14 @@ func (authority *Authority) Start(
 		{StreamID: runtimeStatusStream(input.RuntimeInstanceID), Sequence: runtime.statusHead.sequence},
 		{StreamID: runtimeCapacityStream(input.RuntimeInstanceID), Sequence: state.heads[runtimeCapacityStream(input.RuntimeInstanceID)]},
 	}
+	if accountManaged {
+		accountStreamID := providerAccountCapacityStream(
+			accountBinding.providerAccountID,
+		)
+		expectations = append(expectations, journal.StreamHeadExpectation{
+			StreamID: accountStreamID, Sequence: state.heads[accountStreamID],
+		})
+	}
 	if _, err := authority.store.AppendBatchIfStreamHeads(ctx, expectations, []journal.Event{event}); err != nil {
 		return WorkItemRecord{}, RunRecord{}, mapJournalWriteError(err)
 	}
@@ -749,6 +956,7 @@ func (authority *Authority) CommitTerminal(
 	ctx context.Context,
 	input RunTerminalInput,
 ) (WorkItemRecord, RunRecord, error) {
+	input.Accounting = cloneRunAccounting(input.Accounting)
 	if err := validateTerminalInput(ctx, input); err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -759,11 +967,11 @@ func (authority *Authority) CommitTerminal(
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
-	state, err := authority.readStateFor(ctx, runCommandStreams(
+	state, err := authority.readRunStateWithProviderAccount(ctx, runCommandStreams(
 		input.WorkItemID,
 		input.RunID,
 		input.RuntimeInstanceID,
-	))
+	), input.RunID)
 	if err != nil {
 		return WorkItemRecord{}, RunRecord{}, err
 	}
@@ -778,7 +986,8 @@ func (authority *Authority) CommitTerminal(
 			run.runtimeInstanceID == input.RuntimeInstanceID &&
 			run.agentInstanceID == input.AgentInstanceID &&
 			run.terminalStatus == input.Status &&
-			run.terminalReason == input.Reason {
+			run.terminalReason == input.Reason &&
+			runAccountingMatches(run, input.Accounting) {
 			return workItem.public(), run.public(), nil
 		}
 		return WorkItemRecord{}, RunRecord{}, ErrRunAlreadyTerminal
@@ -797,29 +1006,41 @@ func (authority *Authority) CommitTerminal(
 	if !runtime.currentStatusHead(state.heads) {
 		return WorkItemRecord{}, RunRecord{}, ErrRunAuthorityConflict
 	}
+	accountBinding, accountManaged, err := providerAccountActiveBindingForRun(
+		state, run,
+	)
+	if err != nil {
+		return WorkItemRecord{}, RunRecord{}, err
+	}
 	statusReference := runtime.statusHead.payload()
 	workItem := state.workItems[input.WorkItemID]
 	terminalID := deterministicEventID(
 		"RunTerminalCommitted", input.RunID, input.ClaimID,
 		fmt.Sprint(input.ClaimGeneration), input.Status, input.Reason,
+		runAccountingIdentity(input.Accounting),
 	)
+	accounting := input.Accounting
 	runEvent := newEvent(
 		terminalID, runStream(input.RunID), run.streamSequence+1,
 		"RunTerminalCommitted", now, input.CorrelationID, run.lastEventID,
 		struct {
-			WorkItemID        string `json:"work_item_id"`
-			RunID             string `json:"run_id"`
-			ClaimID           string `json:"claim_id"`
-			ClaimGeneration   int64  `json:"claim_generation"`
-			RuntimeInstanceID string `json:"runtime_instance_id"`
-			AgentInstanceID   string `json:"agent_instance_id"`
-			Status            string `json:"status"`
-			Reason            string `json:"reason"`
+			WorkItemID        string         `json:"work_item_id"`
+			RunID             string         `json:"run_id"`
+			ClaimID           string         `json:"claim_id"`
+			ClaimGeneration   int64          `json:"claim_generation"`
+			RuntimeInstanceID string         `json:"runtime_instance_id"`
+			AgentInstanceID   string         `json:"agent_instance_id"`
+			Status            string         `json:"status"`
+			Reason            string         `json:"reason"`
+			Accounting        *RunAccounting `json:"accounting,omitempty"`
 			runtimeStatusReferencePayload
 		}{
-			input.WorkItemID, input.RunID, input.ClaimID, input.ClaimGeneration,
-			input.RuntimeInstanceID, input.AgentInstanceID, input.Status, input.Reason,
-			statusReference,
+			WorkItemID: input.WorkItemID, RunID: input.RunID,
+			ClaimID: input.ClaimID, ClaimGeneration: input.ClaimGeneration,
+			RuntimeInstanceID: input.RuntimeInstanceID,
+			AgentInstanceID:   input.AgentInstanceID,
+			Status:            input.Status, Reason: input.Reason, Accounting: accounting,
+			runtimeStatusReferencePayload: statusReference,
 		},
 	)
 	workSequence := state.heads[workItemStream(input.WorkItemID)] + 1
@@ -860,14 +1081,37 @@ func (authority *Authority) CommitTerminal(
 			runtimeStatusReferencePayload: statusReference,
 		},
 	)
+	events := []journal.Event{runEvent, workEvent, releaseEvent}
+	accountCapacityStreamID := ""
+	if accountManaged {
+		accountCapacityStreamID = providerAccountCapacityStream(
+			accountBinding.providerAccountID,
+		)
+		accountReleaseID := deterministicEventID(
+			"ProviderAccountCapacityReleased", input.RunID, input.ClaimID,
+			fmt.Sprint(input.ClaimGeneration), terminalID,
+		)
+		events = append(events, newEvent(
+			accountReleaseID, accountCapacityStreamID,
+			state.heads[accountCapacityStreamID]+1,
+			"ProviderAccountCapacityReleased", now,
+			input.CorrelationID, terminalID, accountBinding.payload(),
+		))
+	}
 	expectations := []journal.StreamHeadExpectation{
 		{StreamID: workItemStream(input.WorkItemID), Sequence: state.heads[workItemStream(input.WorkItemID)]},
 		{StreamID: runStream(input.RunID), Sequence: run.streamSequence},
 		{StreamID: runtimeStatusStream(input.RuntimeInstanceID), Sequence: runtime.statusHead.sequence},
 		{StreamID: capacityStreamID, Sequence: state.heads[capacityStreamID]},
 	}
+	if accountManaged {
+		expectations = append(expectations, journal.StreamHeadExpectation{
+			StreamID: accountCapacityStreamID,
+			Sequence: state.heads[accountCapacityStreamID],
+		})
+	}
 	if _, err := authority.store.AppendBatchIfStreamHeads(
-		ctx, expectations, []journal.Event{runEvent, workEvent, releaseEvent},
+		ctx, expectations, events,
 	); err != nil {
 		return WorkItemRecord{}, RunRecord{}, mapJournalWriteError(err)
 	}
@@ -877,6 +1121,10 @@ func (authority *Authority) CommitTerminal(
 	run.phase = "terminal"
 	run.terminalStatus = input.Status
 	run.terminalReason = input.Reason
+	run.accountingAvailable = accounting != nil
+	if accounting != nil {
+		run.accounting = *accounting
+	}
 	run.lastEventID = terminalID
 	run.streamSequence++
 	return workItem.public(), run.public(), nil
@@ -928,6 +1176,17 @@ func (record RunRecord) AgentInstanceID() string          { return record.agentI
 func (record RunRecord) PrepareLeaseExpiresAt() time.Time { return record.prepareLeaseExpiresAt }
 func (record RunRecord) TerminalStatus() string           { return record.terminalStatus }
 func (record RunRecord) TerminalReason() string           { return record.terminalReason }
+func (record RunRecord) Accounting() (RunAccounting, bool) {
+	return record.accounting, record.accountingAvailable
+}
+func (record RunRecord) ExecutionBinding() FrozenExecutionBinding {
+	return cloneTeamExecutionBinding(record.executionBinding)
+}
+
+func (record RunRecord) ProviderModelRateCard() (ProviderModelRateCard, bool) {
+	return record.providerModelRateCard, record.providerModelRateCardAvailable &&
+		record.providerModelRateCard.Valid()
+}
 
 func (snapshot AuthoritySnapshot) WorkItems() []WorkItemRecord {
 	return append([]WorkItemRecord(nil), snapshot.workItems...)
@@ -979,6 +1238,77 @@ func (authority *Authority) readStateFor(
 	return replayAuthorityEventsSelective(ctx, snapshot.Events())
 }
 
+func (authority *Authority) readRunStateWithProviderAccount(
+	ctx context.Context,
+	streamIDs []string,
+	runID string,
+) (authorityState, error) {
+	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return authorityState{}, err
+	}
+	binding, found, err := assignedExecutionBindingForRun(snapshot.Events(), runID)
+	if err != nil {
+		return authorityState{}, err
+	}
+	if !found || binding.ProviderAccountID == "" {
+		return replayAuthorityEventsSelective(ctx, snapshot.Events())
+	}
+	accountID := binding.ProviderAccountID
+	withAccount := append([]string(nil), streamIDs...)
+	withAccount = append(withAccount,
+		providerAccountPolicyStream(accountID),
+		providerAccountCapacityStream(accountID),
+	)
+	if rateCardStreamID, rateCardErr := ProviderModelRateCardStreamID(
+		binding.ProviderID, accountID, binding.ModelID,
+	); rateCardErr == nil {
+		withAccount = append(withAccount, rateCardStreamID)
+	}
+	return authority.readStateFor(ctx, withAccount)
+}
+
+func assignedExecutionBindingForRun(
+	events []journal.Event,
+	runID string,
+) (FrozenExecutionBinding, bool, error) {
+	if !validOpaqueID(runID) {
+		return FrozenExecutionBinding{}, false, ErrInvalidRunAuthorityInput
+	}
+	var binding FrozenExecutionBinding
+	found := false
+	for _, event := range events {
+		if event.Type != "WorkItemAssigned" ||
+			!strings.HasPrefix(event.StreamID, "work-item/") {
+			continue
+		}
+		var payload struct {
+			WorkItemID       *string                      `json:"work_item_id"`
+			RunID            *string                      `json:"run_id"`
+			AgentInstanceID  *string                      `json:"agent_instance_id"`
+			Status           *string                      `json:"status"`
+			ExecutionBinding *teamExecutionBindingPayload `json:"execution_binding,omitempty"`
+		}
+		if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+			payload.WorkItemID == nil || payload.RunID == nil ||
+			payload.AgentInstanceID == nil || payload.Status == nil ||
+			*payload.Status != "assigned" {
+			return FrozenExecutionBinding{}, false, ErrRunAuthorityConflict
+		}
+		if *payload.RunID != runID {
+			continue
+		}
+		candidate, candidateErr := optionalFrozenExecutionBindingFromPayload(
+			payload.ExecutionBinding,
+		)
+		if candidateErr != nil || found {
+			return FrozenExecutionBinding{}, false, ErrRunAuthorityConflict
+		}
+		binding, found = candidate, true
+	}
+	return binding, found, nil
+}
+
 func replayAuthorityEvents(
 	ctx context.Context,
 	events []journal.Event,
@@ -1012,11 +1342,14 @@ func replayAuthorityEventsMode(
 		return ordered[i].ID < ordered[j].ID
 	})
 	state := authorityState{
-		workItems:     make(map[string]WorkItemRecord),
-		runs:          make(map[string]RunRecord),
-		runtimes:      make(map[string]authorityRuntime),
-		heads:         make(map[string]int64),
-		runIdentities: make(map[string]runIdentityReservation),
+		workItems:               make(map[string]WorkItemRecord),
+		runs:                    make(map[string]RunRecord),
+		runtimes:                make(map[string]authorityRuntime),
+		heads:                   make(map[string]int64),
+		runIdentities:           make(map[string]runIdentityReservation),
+		providerAccountPolicies: make(map[string][]providerAccountPolicyState),
+		providerAccountCapacity: make(map[string]providerAccountCapacity),
+		providerModelRateCards:  make(map[string][]providerModelRateCardState),
 	}
 	byStream := make(map[string][]journal.Event)
 	for _, event := range ordered {
@@ -1039,6 +1372,12 @@ func replayAuthorityEventsMode(
 		if err := replayRunIdentityStream(&state, streamEvents); err != nil {
 			return authorityState{}, err
 		}
+	}
+	if err := replayProviderAccountPolicyStreams(&state, byStream); err != nil {
+		return authorityState{}, err
+	}
+	if err := replayProviderModelRateCardStreams(&state, byStream); err != nil {
+		return authorityState{}, err
 	}
 
 	outcomes := make(map[string]journal.Event)
@@ -1079,14 +1418,27 @@ func replayAuthorityEventsMode(
 			}
 		}
 	}
+	for streamID, streamEvents := range byStream {
+		if strings.HasPrefix(streamID, "provider-account-capacity/") {
+			if err := replayProviderAccountCapacityStream(
+				&state, streamID, streamEvents, claims, terminals,
+				allowOrphanCapacity,
+			); err != nil {
+				return authorityState{}, err
+			}
+		}
+	}
 	for cause, operation := range claims {
-		if !operation.reserved || operation.needsOldRelease && !operation.oldReleased {
+		if !operation.reserved || operation.needsOldRelease && !operation.oldReleased ||
+			operation.accountManaged && (!operation.accountReserved ||
+				operation.needsOldAccountRelease && !operation.accountReleased) {
 			return authorityState{}, fmt.Errorf("%w: incomplete claim %s", ErrRunAuthorityConflict, cause)
 		}
 	}
 	for cause, terminal := range terminals {
 		outcome, ok := outcomes[cause]
-		if !terminal.released || !ok {
+		if !terminal.released || !ok ||
+			terminal.accountManaged && !terminal.accountReleased {
 			return authorityState{}, fmt.Errorf("%w: incomplete terminal %s", ErrRunAuthorityConflict, cause)
 		}
 		if err := validateOutcome(outcome, terminal); err != nil {
@@ -1196,16 +1548,23 @@ func replayWorkItemStream(
 			}
 		case "WorkItemAssigned":
 			var payload struct {
-				WorkItemID      *string `json:"work_item_id"`
-				RunID           *string `json:"run_id"`
-				AgentInstanceID *string `json:"agent_instance_id"`
-				Status          *string `json:"status"`
+				WorkItemID       *string                      `json:"work_item_id"`
+				RunID            *string                      `json:"run_id"`
+				AgentInstanceID  *string                      `json:"agent_instance_id"`
+				Status           *string                      `json:"status"`
+				ExecutionBinding *teamExecutionBindingPayload `json:"execution_binding,omitempty"`
 			}
 			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
 				record.id == "" || payload.WorkItemID == nil || payload.RunID == nil ||
 				payload.AgentInstanceID == nil || payload.Status == nil ||
 				*payload.WorkItemID != workItemID || *payload.Status != "assigned" ||
 				event.CausationID != record.lastEventID {
+				return ErrRunAuthorityConflict
+			}
+			binding, bindingErr := optionalFrozenExecutionBindingFromPayload(
+				payload.ExecutionBinding,
+			)
+			if bindingErr != nil {
 				return ErrRunAuthorityConflict
 			}
 			record.status = "assigned"
@@ -1215,8 +1574,9 @@ func replayWorkItemStream(
 			record.streamSequence = event.Seq
 			state.runs[*payload.RunID] = RunRecord{
 				id: *payload.RunID, workItemID: workItemID, phase: "unclaimed",
-				agentInstanceID: *payload.AgentInstanceID,
-				lastEventID:     event.ID,
+				agentInstanceID:  *payload.AgentInstanceID,
+				executionBinding: binding,
+				lastEventID:      event.ID,
 			}
 		case "WorkItemApprovalPaused":
 			var payload struct {
@@ -1485,11 +1845,15 @@ func replayRunStream(
 			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil {
 				return fmt.Errorf("%w: decode RunClaimed %s: %v", ErrRunAuthorityConflict, event.ID, err)
 			}
-			if !payload.valid(run, runID) {
+			if !payload.valid(run, runID) || !payload.validEventIdentity(event) {
 				return fmt.Errorf("%w: invalid RunClaimed %s", ErrRunAuthorityConflict, event.ID)
 			}
 			if payload.ClaimGeneration == nil || *payload.ClaimGeneration != run.claimGeneration+1 {
 				return fmt.Errorf("%w: RunClaimed generation %s", ErrRunAuthorityConflict, event.ID)
+			}
+			if run.executionBinding.BindingDigest != "" &&
+				run.executionBinding.RuntimeInstanceID != *payload.RuntimeInstanceID {
+				return fmt.Errorf("%w: RunClaimed execution binding %s", ErrRunAuthorityConflict, event.ID)
 			}
 			expiresAt, err := parseUTC(*payload.PrepareLeaseExpiresAt)
 			if err != nil || run.phase == "running" || run.phase == "terminal" ||
@@ -1500,6 +1864,63 @@ func replayRunStream(
 			runtime, exists := state.runtimes[*payload.RuntimeInstanceID]
 			if !exists || !runtime.validatesStatusReference(statusReference, true) {
 				return ErrRunAuthorityConflict
+			}
+			accountPolicy, accountManaged := state.providerAccountPolicyAt(
+				run.executionBinding.ProviderID,
+				run.executionBinding.ProviderAccountID,
+				event.EmittedAt,
+			)
+			rateCard, rateCardAvailable, rateCardErr := payload.rateCard()
+			if rateCardErr != nil {
+				return ErrRunAuthorityConflict
+			}
+			if payload.ClaimContractVersion != nil {
+				authoritative, available := state.providerModelRateCardAt(
+					run.executionBinding.ProviderID,
+					run.executionBinding.ProviderAccountID,
+					run.executionBinding.ModelID,
+					event.EmittedAt,
+				)
+				if available != rateCardAvailable ||
+					available && authoritative != rateCard {
+					return ErrRunAuthorityConflict
+				}
+			}
+			var accountBinding providerAccountCapacityBinding
+			if accountManaged {
+				accountBinding, err = providerAccountCapacityBindingFor(
+					run, *payload.ClaimID, *payload.ClaimGeneration,
+					*payload.RuntimeInstanceID, accountPolicy,
+				)
+				if err != nil {
+					return ErrRunAuthorityConflict
+				}
+			}
+			run.providerModelRateCardAvailable = rateCardAvailable
+			run.providerModelRateCard = ProviderModelRateCard{}
+			if rateCardAvailable {
+				run.providerModelRateCard = rateCard
+			}
+			var previousAccountBinding providerAccountCapacityBinding
+			needsOldAccountRelease := run.providerAccountPolicyRevision > 0
+			if needsOldAccountRelease {
+				previousPolicy, found := state.providerAccountPolicyRevision(
+					run.executionBinding.ProviderID,
+					run.executionBinding.ProviderAccountID,
+					run.providerAccountPolicyRevision,
+					run.providerAccountPolicyDigest,
+				)
+				if !found {
+					return ErrRunAuthorityConflict
+				}
+				previousAccountBinding, err = providerAccountCapacityBindingFor(
+					run, run.claimID, run.claimGeneration,
+					run.runtimeInstanceID, previousPolicy,
+				)
+				if err != nil || previousAccountBinding.assignedBudgetUnits !=
+					run.providerAccountBudgetUnits {
+					return ErrRunAuthorityConflict
+				}
 			}
 			previousBinding := capacityBinding{
 				workItemID: run.workItemID, runID: run.id,
@@ -1514,6 +1935,10 @@ func replayRunStream(
 			run.runtimeInstanceID = *payload.RuntimeInstanceID
 			run.agentInstanceID = *payload.AgentInstanceID
 			run.prepareLeaseExpiresAt = expiresAt
+			if accountManaged {
+				freezeRunProviderAccountPolicy(&run, accountPolicy)
+				run.providerAccountBudgetUnits = accountBinding.assignedBudgetUnits
+			}
 			if payload.AssetRevisionBindings != nil {
 				run.AssetRevisionBindings = append([]AssetRevisionBinding(nil), (*payload.AssetRevisionBindings)...)
 				run.AssetRevisionSetDigest = *payload.AssetRevisionSetDigest
@@ -1532,6 +1957,10 @@ func replayRunStream(
 				previousBinding: previousBinding,
 				statusReference: statusReference,
 				eventID:         event.ID, needsOldRelease: previousGeneration > 0,
+				accountManaged: accountManaged,
+				accountPolicy:  accountPolicy, accountBinding: accountBinding,
+				needsOldAccountRelease: needsOldAccountRelease,
+				previousAccountBinding: previousAccountBinding,
 			}
 		case "RunPrepareLeaseExtended":
 			var payload leaseExtendedPayload
@@ -1580,9 +2009,35 @@ func replayRunStream(
 			if !exists || !runtime.validatesStatusReference(statusReference, false) {
 				return ErrRunAuthorityConflict
 			}
+			var accountBinding providerAccountCapacityBinding
+			accountManaged := run.providerAccountPolicyRevision > 0
+			if accountManaged {
+				policy, found := state.providerAccountPolicyRevision(
+					run.executionBinding.ProviderID,
+					run.executionBinding.ProviderAccountID,
+					run.providerAccountPolicyRevision,
+					run.providerAccountPolicyDigest,
+				)
+				var err error
+				if !found {
+					return ErrRunAuthorityConflict
+				}
+				accountBinding, err = providerAccountCapacityBindingFor(
+					run, run.claimID, run.claimGeneration,
+					run.runtimeInstanceID, policy,
+				)
+				if err != nil || accountBinding.assignedBudgetUnits !=
+					run.providerAccountBudgetUnits {
+					return ErrRunAuthorityConflict
+				}
+			}
 			run.phase = "terminal"
 			run.terminalStatus = *payload.Status
 			run.terminalReason = *payload.Reason
+			run.accountingAvailable = payload.Accounting != nil
+			if payload.Accounting != nil {
+				run.accounting, _, _ = payload.Accounting.accounting()
+			}
 			run.lastEventID = event.ID
 			run.streamSequence = event.Seq
 			terminals[event.ID] = &terminalReplay{
@@ -1594,6 +2049,7 @@ func replayRunStream(
 				},
 				statusReference: statusReference,
 				eventID:         event.ID, status: run.terminalStatus,
+				accountManaged: accountManaged, accountBinding: accountBinding,
 			}
 		default:
 			return ErrRunAuthorityConflict
@@ -1740,18 +2196,39 @@ type runtimeStatusPayload struct {
 }
 
 type runClaimedPayload struct {
-	WorkItemID                    *string                 `json:"work_item_id"`
-	RunID                         *string                 `json:"run_id"`
-	ClaimID                       *string                 `json:"claim_id"`
-	ClaimGeneration               *int64                  `json:"claim_generation"`
-	RuntimeInstanceID             *string                 `json:"runtime_instance_id"`
-	AgentInstanceID               *string                 `json:"agent_instance_id"`
-	PrepareLeaseExpiresAt         *string                 `json:"prepare_lease_expires_at"`
-	AssetRevisionBindings         *[]AssetRevisionBinding `json:"asset_revision_bindings"`
-	AssetRevisionSetDigest        *string                 `json:"asset_revision_set_digest"`
-	MaterializationManifestDigest *string                 `json:"materialization_manifest_digest"`
-	MaterializationRootDigest     *string                 `json:"materialization_root_digest"`
+	ClaimContractVersion          *int                                `json:"claim_contract_version"`
+	WorkItemID                    *string                             `json:"work_item_id"`
+	RunID                         *string                             `json:"run_id"`
+	ClaimID                       *string                             `json:"claim_id"`
+	ClaimGeneration               *int64                              `json:"claim_generation"`
+	RuntimeInstanceID             *string                             `json:"runtime_instance_id"`
+	AgentInstanceID               *string                             `json:"agent_instance_id"`
+	PrepareLeaseExpiresAt         *string                             `json:"prepare_lease_expires_at"`
+	AssetRevisionBindings         *[]AssetRevisionBinding             `json:"asset_revision_bindings"`
+	AssetRevisionSetDigest        *string                             `json:"asset_revision_set_digest"`
+	MaterializationManifestDigest *string                             `json:"materialization_manifest_digest"`
+	MaterializationRootDigest     *string                             `json:"materialization_root_digest"`
+	RateCardStatus                *string                             `json:"rate_card_status"`
+	RateCard                      *frozenProviderModelRateCardPayload `json:"rate_card"`
 	runtimeStatusReferenceFields
+}
+
+type runClaimV2Payload struct {
+	ClaimContractVersion          int                                 `json:"claim_contract_version"`
+	WorkItemID                    string                              `json:"work_item_id"`
+	RunID                         string                              `json:"run_id"`
+	ClaimID                       string                              `json:"claim_id"`
+	ClaimGeneration               int64                               `json:"claim_generation"`
+	RuntimeInstanceID             string                              `json:"runtime_instance_id"`
+	AgentInstanceID               string                              `json:"agent_instance_id"`
+	PrepareLeaseExpiresAt         string                              `json:"prepare_lease_expires_at"`
+	AssetRevisionBindings         *[]AssetRevisionBinding             `json:"asset_revision_bindings,omitempty"`
+	AssetRevisionSetDigest        *string                             `json:"asset_revision_set_digest,omitempty"`
+	MaterializationManifestDigest *string                             `json:"materialization_manifest_digest,omitempty"`
+	MaterializationRootDigest     *string                             `json:"materialization_root_digest,omitempty"`
+	RateCardStatus                string                              `json:"rate_card_status"`
+	RateCard                      *frozenProviderModelRateCardPayload `json:"rate_card,omitempty"`
+	runtimeStatusReferencePayload
 }
 
 type generationPayload struct {
@@ -1776,14 +2253,15 @@ type leaseExtendedPayload struct {
 }
 
 type terminalPayload struct {
-	WorkItemID        *string `json:"work_item_id"`
-	RunID             *string `json:"run_id"`
-	ClaimID           *string `json:"claim_id"`
-	ClaimGeneration   *int64  `json:"claim_generation"`
-	RuntimeInstanceID *string `json:"runtime_instance_id"`
-	AgentInstanceID   *string `json:"agent_instance_id"`
-	Status            *string `json:"status"`
-	Reason            *string `json:"reason"`
+	WorkItemID        *string                     `json:"work_item_id"`
+	RunID             *string                     `json:"run_id"`
+	ClaimID           *string                     `json:"claim_id"`
+	ClaimGeneration   *int64                      `json:"claim_generation"`
+	RuntimeInstanceID *string                     `json:"runtime_instance_id"`
+	AgentInstanceID   *string                     `json:"agent_instance_id"`
+	Status            *string                     `json:"status"`
+	Reason            *string                     `json:"reason"`
+	Accounting        *replayRunAccountingPayload `json:"accounting"`
 	runtimeStatusReferenceFields
 }
 
@@ -1820,6 +2298,12 @@ func (payload runClaimedPayload) valid(run RunRecord, runID string) bool {
 		payload.MaterializationRootDigest == nil) {
 		return false
 	}
+	if payload.ClaimContractVersion == nil &&
+		(payload.RateCardStatus != nil || payload.RateCard != nil) ||
+		payload.ClaimContractVersion != nil &&
+			(*payload.ClaimContractVersion != 2 || payload.RateCardStatus == nil) {
+		return false
+	}
 	return payload.WorkItemID != nil && payload.RunID != nil &&
 		payload.ClaimID != nil && payload.ClaimGeneration != nil &&
 		payload.RuntimeInstanceID != nil && payload.AgentInstanceID != nil &&
@@ -1830,6 +2314,46 @@ func (payload runClaimedPayload) valid(run RunRecord, runID string) bool {
 		*payload.ClaimGeneration > 0 &&
 		validOpaqueID(*payload.RuntimeInstanceID) &&
 		*payload.AgentInstanceID == run.agentInstanceID
+}
+
+func (payload runClaimedPayload) validEventIdentity(event journal.Event) bool {
+	if payload.RunID == nil || payload.ClaimID == nil ||
+		payload.ClaimGeneration == nil {
+		return false
+	}
+	kind := "RunClaimed"
+	if payload.ClaimContractVersion != nil {
+		kind = "RunClaimed.v2"
+	}
+	expected := deterministicEventID(
+		kind, *payload.RunID, *payload.ClaimID,
+		fmt.Sprint(*payload.ClaimGeneration), event.CorrelationID,
+	)
+	return event.ID == expected && event.IdempotencyKey == expected
+}
+
+func (payload runClaimedPayload) rateCard() (ProviderModelRateCard, bool, error) {
+	if payload.RateCardStatus == nil {
+		if payload.RateCard != nil {
+			return ProviderModelRateCard{}, false, ErrRunAuthorityConflict
+		}
+		return ProviderModelRateCard{}, false, nil
+	}
+	switch *payload.RateCardStatus {
+	case frozenRateCardNotConfigured:
+		if payload.RateCard != nil {
+			return ProviderModelRateCard{}, false, ErrRunAuthorityConflict
+		}
+		return ProviderModelRateCard{}, false, nil
+	case frozenRateCardConfigured:
+		if payload.RateCard == nil {
+			return ProviderModelRateCard{}, false, ErrRunAuthorityConflict
+		}
+		rateCard, err := providerModelRateCardFromFrozenPayload(*payload.RateCard)
+		return rateCard, err == nil, err
+	default:
+		return ProviderModelRateCard{}, false, ErrRunAuthorityConflict
+	}
 }
 
 func (payload generationPayload) valid(run RunRecord) bool {
@@ -1859,7 +2383,8 @@ func (payload terminalPayload) valid(run RunRecord) bool {
 		payload.Status == nil || payload.Reason == nil {
 		return false
 	}
-	return validTerminal(*payload.Status, *payload.Reason)
+	return validTerminal(*payload.Status, *payload.Reason) &&
+		(payload.Accounting == nil || payload.Accounting.valid())
 }
 
 func validGenerationIdentity(
@@ -1944,6 +2469,42 @@ func validateContextAndAssignment(ctx context.Context, input WorkItemAssignmentI
 	return ctx.Err()
 }
 
+func validateOptionalExecutionBinding(
+	input FrozenExecutionBinding,
+) (FrozenExecutionBinding, error) {
+	if reflect.DeepEqual(input, FrozenExecutionBinding{}) {
+		return FrozenExecutionBinding{}, nil
+	}
+	validated, err := validateAuthorityExecutionBinding(input)
+	if err != nil {
+		return FrozenExecutionBinding{}, ErrInvalidRunAuthorityInput
+	}
+	return validated, nil
+}
+
+func optionalTeamExecutionBindingPayload(
+	input FrozenExecutionBinding,
+) (*teamExecutionBindingPayload, error) {
+	validated, err := validateOptionalExecutionBinding(input)
+	if err != nil || validated.BindingDigest == "" {
+		return nil, err
+	}
+	payload := teamExecutionBindingPayloadFrom(validated)
+	if payload == nil {
+		return nil, ErrInvalidRunAuthorityInput
+	}
+	return payload, nil
+}
+
+func optionalFrozenExecutionBindingFromPayload(
+	input *teamExecutionBindingPayload,
+) (FrozenExecutionBinding, error) {
+	if input == nil {
+		return FrozenExecutionBinding{}, nil
+	}
+	return frozenExecutionBindingFromPayload(input)
+}
+
 func validateContextAndClaim(ctx context.Context, input RunClaimInput) error {
 	if ctx == nil || !validOpaqueID(input.WorkItemID) ||
 		!validOpaqueID(input.RunID) || !validOpaqueID(input.RuntimeInstanceID) ||
@@ -1975,7 +2536,139 @@ func validateTerminalInput(ctx context.Context, input RunTerminalInput) error {
 	if !validTerminal(input.Status, input.Reason) {
 		return ErrInvalidRunAuthorityInput
 	}
+	if input.Accounting != nil && !validRunAccounting(*input.Accounting) {
+		return ErrInvalidRunAuthorityInput
+	}
 	return nil
+}
+
+func validRunAccounting(accounting RunAccounting) bool {
+	if accounting.UsageObserved {
+		if accounting.InputTokens < 0 || accounting.OutputTokens < 0 ||
+			accounting.CacheReadTokens < 0 || accounting.CacheWriteTokens < 0 ||
+			accounting.InputTokens > maxRunAccountingInt64-accounting.OutputTokens ||
+			accounting.TotalTokens != accounting.InputTokens+accounting.OutputTokens {
+			return false
+		}
+	} else if accounting.InputTokens != 0 || accounting.OutputTokens != 0 ||
+		accounting.CacheReadTokens != 0 || accounting.CacheWriteTokens != 0 ||
+		accounting.TotalTokens != 0 {
+		return false
+	}
+	if accounting.CostObserved {
+		return accounting.CostMicrounits >= 0 && validCurrency(accounting.CostCurrency) &&
+			validCurrentCostSource(accounting.CostSource)
+	}
+	return accounting.CostMicrounits == 0 && accounting.CostCurrency == "" &&
+		accounting.CostSource == ""
+}
+
+type replayRunAccountingPayload struct {
+	UsageObserved    bool            `json:"usage_observed"`
+	InputTokens      int64           `json:"input_tokens"`
+	OutputTokens     int64           `json:"output_tokens"`
+	CacheReadTokens  int64           `json:"cache_read_tokens"`
+	CacheWriteTokens int64           `json:"cache_write_tokens"`
+	TotalTokens      int64           `json:"total_tokens"`
+	CostObserved     bool            `json:"cost_observed"`
+	CostMicrounits   int64           `json:"cost_microunits"`
+	CostCurrency     string          `json:"cost_currency"`
+	CostSource       json.RawMessage `json:"cost_source"`
+}
+
+func (payload replayRunAccountingPayload) valid() bool {
+	accounting, present, valid := payload.accounting()
+	if !valid {
+		return false
+	}
+	if present {
+		return validRunAccounting(accounting)
+	}
+	return payload.CostObserved && payload.CostMicrounits >= 0 &&
+		validCurrency(payload.CostCurrency) && validRunUsageAccounting(accounting) ||
+		!payload.CostObserved && validRunAccounting(accounting)
+}
+
+func (payload replayRunAccountingPayload) accounting() (RunAccounting, bool, bool) {
+	accounting := RunAccounting{
+		UsageObserved: payload.UsageObserved, InputTokens: payload.InputTokens,
+		OutputTokens: payload.OutputTokens, CacheReadTokens: payload.CacheReadTokens,
+		CacheWriteTokens: payload.CacheWriteTokens, TotalTokens: payload.TotalTokens,
+		CostObserved: payload.CostObserved, CostMicrounits: payload.CostMicrounits,
+		CostCurrency: payload.CostCurrency,
+	}
+	present := len(payload.CostSource) > 0
+	if present {
+		if json.Unmarshal(payload.CostSource, &accounting.CostSource) != nil {
+			return RunAccounting{}, true, false
+		}
+	} else if payload.CostObserved {
+		accounting.CostSource = CostSourceLegacyUnspecified
+	}
+	return accounting, present, true
+}
+
+func validRunUsageAccounting(accounting RunAccounting) bool {
+	if accounting.UsageObserved {
+		return accounting.InputTokens >= 0 && accounting.OutputTokens >= 0 &&
+			accounting.CacheReadTokens >= 0 && accounting.CacheWriteTokens >= 0 &&
+			accounting.InputTokens <= maxRunAccountingInt64-accounting.OutputTokens &&
+			accounting.TotalTokens == accounting.InputTokens+accounting.OutputTokens
+	}
+	return accounting.InputTokens == 0 && accounting.OutputTokens == 0 &&
+		accounting.CacheReadTokens == 0 && accounting.CacheWriteTokens == 0 &&
+		accounting.TotalTokens == 0
+}
+
+func validCurrentCostSource(source string) bool {
+	switch source {
+	case CostSourceProviderReported, CostSourceHarnessReported,
+		CostSourceRateCardEstimate:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidateRunAccounting(accounting RunAccounting) error {
+	if !validRunAccounting(accounting) {
+		return ErrInvalidRunAuthorityInput
+	}
+	return nil
+}
+
+func cloneRunAccounting(accounting *RunAccounting) *RunAccounting {
+	if accounting == nil {
+		return nil
+	}
+	clone := *accounting
+	return &clone
+}
+
+func runAccountingMatches(record RunRecord, accounting *RunAccounting) bool {
+	if accounting == nil {
+		return !record.accountingAvailable
+	}
+	return record.accountingAvailable && record.accounting == *accounting
+}
+
+func runAccountingIdentity(accounting *RunAccounting) string {
+	if accounting == nil {
+		return "unavailable"
+	}
+	return fmt.Sprintf(
+		"%t:%d:%d:%d:%d:%d:%t:%d:%s:%s",
+		accounting.UsageObserved,
+		accounting.InputTokens,
+		accounting.OutputTokens,
+		accounting.CacheReadTokens,
+		accounting.CacheWriteTokens,
+		accounting.TotalTokens,
+		accounting.CostObserved,
+		accounting.CostMicrounits,
+		accounting.CostCurrency,
+		accounting.CostSource,
+	)
 }
 
 func validTerminal(status, reason string) bool {
@@ -2051,7 +2744,9 @@ func claimableRecords(
 	}
 	run, ok := state.runs[input.RunID]
 	if !ok || run.workItemID != input.WorkItemID ||
-		run.agentInstanceID != input.AgentInstanceID {
+		run.agentInstanceID != input.AgentInstanceID ||
+		run.executionBinding.BindingDigest != "" &&
+			run.executionBinding.RuntimeInstanceID != input.RuntimeInstanceID {
 		return WorkItemRecord{}, RunRecord{}, ErrRunNotClaimable
 	}
 	switch run.phase {
@@ -2132,7 +2827,10 @@ func isRunAuthorityStream(streamID string) bool {
 		strings.HasPrefix(streamID, "work-item/") ||
 		strings.HasPrefix(streamID, "run/") ||
 		strings.HasPrefix(streamID, "runtime_instance:") ||
-		strings.HasPrefix(streamID, "runtime_capacity:")
+		strings.HasPrefix(streamID, "runtime_capacity:") ||
+		strings.HasPrefix(streamID, "provider-account-policy/") ||
+		strings.HasPrefix(streamID, "provider-account-capacity/") ||
+		strings.HasPrefix(streamID, "provider-model-rate-card/")
 }
 
 func (authority *Authority) runIdentityReady() bool {
@@ -2395,5 +3093,6 @@ func nilInterface(value any) bool {
 func (record WorkItemRecord) public() WorkItemRecord { return record }
 func (record RunRecord) public() RunRecord {
 	record.AssetRevisionBindings = append([]AssetRevisionBinding(nil), record.AssetRevisionBindings...)
+	record.executionBinding = cloneTeamExecutionBinding(record.executionBinding)
 	return record
 }

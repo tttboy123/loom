@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"loom-pi-rebuild/internal/journal"
@@ -56,6 +57,7 @@ type LocalQueueService struct {
 	now         func() time.Time
 	viewVersion func() string
 	arbiter     *queue.ConflictArbiter
+	admissionMu sync.Mutex
 }
 
 func NewLocalQueueService(
@@ -168,6 +170,8 @@ func (service *LocalQueueService) createJob(
 	if err != nil {
 		return QueueCommandResult{}, err
 	}
+	service.admissionMu.Lock()
+	defer service.admissionMu.Unlock()
 	events, err := service.store.ReadAll(ctx)
 	if err != nil {
 		return QueueCommandResult{}, err

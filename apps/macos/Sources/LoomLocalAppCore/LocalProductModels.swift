@@ -30,11 +30,51 @@ func rejectUnknownKeys(
     }
 }
 
+private func validBoardCurrency(_ value: String) -> Bool {
+    value.utf8.count == 3 && value.unicodeScalars.allSatisfy {
+        $0.value >= 65 && $0.value <= 90
+    }
+}
+
+private func validBoardUsage(
+    observed: Bool,
+    input: Int64,
+    output: Int64,
+    cacheRead: Int64,
+    cacheWrite: Int64,
+    total: Int64
+) -> Bool {
+    if !observed {
+        return input == 0 && output == 0 && cacheRead == 0 && cacheWrite == 0
+            && total == 0
+    }
+    return input >= 0 && output >= 0 && cacheRead >= 0 && cacheWrite >= 0
+        && input <= Int64.max - output && total == input + output
+}
+
+private func validBoardCost(
+    observed: Bool,
+    microunits: Int64,
+    currency: String
+) -> Bool {
+    observed
+        ? microunits >= 0 && validBoardCurrency(currency)
+        : microunits == 0 && currency.isEmpty
+}
+
+private func validBoardCostSource(observed: Bool, source: String) -> Bool {
+    if !observed { return source.isEmpty }
+    return [
+		"provider_reported", "harness_reported", "rate_card_estimate",
+        "legacy_unspecified",
+    ].contains(source)
+}
+
 public struct LocalProductPageCursor: Codable, Equatable, Sendable {
     public let nextCursor: String
     public let hasMore: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case nextCursor = "next_cursor"
         case hasMore = "has_more"
     }
@@ -740,6 +780,8 @@ public struct LocalProductCost: Codable, Equatable, Sendable {
 public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
     public var id: String { logicalNodeID }
     public let logicalNodeID: String
+    public let nodeKind: String
+    public let routeGroupID: String
     public let status: String
     public let dependencySatisfied: Bool
     public let currentAttempt: Int
@@ -750,9 +792,78 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
     public let verificationStatus: String
     public let recoveryAction: String
     public let retryAt: String
+    public let fallbackConfigured: Bool
+    public let recoveryApprovalRequired: Bool
+    public let fallbackApprovalAvailable: Bool
+    public let fallbackApprovalVersion: Int
+    public let fallbackConsumed: Bool
+    public let executionBindingAvailable: Bool
+    public let harnessAdapter: String
+    public let providerID: String
+    public let providerAccountID: String
+    public let modelID: String
+    public let reasoningEffort: String
+    public let timeoutNanoseconds: Int64
+    public let bindingBudgetCredits: Int64?
+    public let capabilities: [String]
+    public let credentialRevision: Int64
+    public let contextCapsuleAvailable: Bool
+    public let contextCapsuleDigest: String
+    public let routeSegmentAvailable: Bool
+    public let routeSegmentID: String
+    public let routeSegmentDigest: String
+    public let contextDisclosureReceiptDigest: String
+    public let contextAdapterID: String
+    public let disclosurePolicyID: String
+    public let disclosurePolicyVersion: Int
+    public let contextTokenBudget: Int
+    public let contextTokenCount: Int
+    public let contextDisclosedCount: Int
+    public let contextOmissionCount: Int
+    public let providerAccountPolicyAvailable: Bool
+    public let providerAccountPolicyVersion: Int
+    public let providerAccountPolicyRevision: Int64
+    public let providerAccountPolicyDigest: String
+    public let providerAccountTrustDomain: String
+    public let providerAccountRetentionMode: String
+    public let providerAccountDataRegion: String
+    public let providerAccountAssignedBudgetUnits: Int64
+    public let providerModelRateCardAvailable: Bool
+    public let providerModelRateCardRevision: Int64
+    public let providerModelRateCardDigest: String
+    public let providerModelRateCardCurrency: String
+    public let providerModelRateCardInputBasis: String
+    public let terminalReason: String
+    public let incidentID: String
+    public let failureDiagnosticAvailable: Bool
+    public let failureStage: String
+    public let failureCode: String
+    public let failureRetryable: Bool
+    public let testReportAvailable: Bool
+    public let testReportCount: Int
+    public let testReportPassedCount: Int
+    public let testReportFailedCount: Int
+    public let testReportSetDigest: String
+    public let latestTestRunner: String
+    public let latestTestScope: String
+    public let latestTestOutcome: String
+    public let latestTestReportDigest: String
+    public let accountingAvailable: Bool
+    public let usageObserved: Bool
+    public let inputTokens: Int64
+    public let outputTokens: Int64
+    public let cacheReadTokens: Int64
+    public let cacheWriteTokens: Int64
+    public let totalTokens: Int64
+    public let costObserved: Bool
+    public let costMicrounits: Int64
+    public let costCurrency: String
+    public let costSource: String
 
     enum CodingKeys: String, CodingKey {
         case logicalNodeID = "logical_node_id"
+        case nodeKind = "node_kind"
+        case routeGroupID = "route_group_id"
         case status
         case dependencySatisfied = "dependency_satisfied"
         case currentAttempt = "current_attempt"
@@ -763,19 +874,129 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
         case verificationStatus = "verification_status"
         case recoveryAction = "recovery_action"
         case retryAt = "retry_at"
+        case fallbackConfigured = "fallback_configured"
+        case recoveryApprovalRequired = "recovery_approval_required"
+        case fallbackApprovalAvailable = "fallback_approval_available"
+        case fallbackApprovalVersion = "fallback_approval_version"
+        case fallbackConsumed = "fallback_consumed"
+        case executionBindingAvailable = "execution_binding_available"
+        case harnessAdapter = "harness_adapter"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
+        case timeoutNanoseconds = "timeout_nanoseconds"
+        case bindingBudgetCredits = "binding_budget_credits"
+        case capabilities
+        case credentialRevision = "credential_revision"
+        case contextCapsuleAvailable = "context_capsule_available"
+        case contextCapsuleDigest = "context_capsule_digest"
+        case routeSegmentAvailable = "route_segment_available"
+        case routeSegmentID = "route_segment_id"
+        case routeSegmentDigest = "route_segment_digest"
+        case contextDisclosureReceiptDigest = "context_disclosure_receipt_digest"
+        case contextAdapterID = "context_adapter_id"
+        case disclosurePolicyID = "disclosure_policy_id"
+        case disclosurePolicyVersion = "disclosure_policy_version"
+        case contextTokenBudget = "context_token_budget"
+        case contextTokenCount = "context_token_count"
+        case contextDisclosedCount = "context_disclosed_count"
+        case contextOmissionCount = "context_omission_count"
+        case providerAccountPolicyAvailable = "provider_account_policy_available"
+        case providerAccountPolicyVersion = "provider_account_policy_version"
+        case providerAccountPolicyRevision = "provider_account_policy_revision"
+        case providerAccountPolicyDigest = "provider_account_policy_digest"
+        case providerAccountTrustDomain = "provider_account_trust_domain"
+        case providerAccountRetentionMode = "provider_account_retention_mode"
+        case providerAccountDataRegion = "provider_account_data_region"
+        case providerAccountAssignedBudgetUnits = "provider_account_assigned_budget_units"
+        case providerModelRateCardAvailable = "provider_model_rate_card_available"
+        case providerModelRateCardRevision = "provider_model_rate_card_revision"
+        case providerModelRateCardDigest = "provider_model_rate_card_digest"
+        case providerModelRateCardCurrency = "provider_model_rate_card_currency"
+        case providerModelRateCardInputBasis = "provider_model_rate_card_input_basis"
+        case terminalReason = "terminal_reason"
+        case incidentID = "incident_id"
+        case failureDiagnosticAvailable = "failure_diagnostic_available"
+        case failureStage = "failure_stage"
+        case failureCode = "failure_code"
+        case failureRetryable = "failure_retryable"
+        case testReportAvailable = "test_report_available"
+        case testReportCount = "test_report_count"
+        case testReportPassedCount = "test_report_passed_count"
+        case testReportFailedCount = "test_report_failed_count"
+        case testReportSetDigest = "test_report_set_digest"
+        case latestTestRunner = "latest_test_runner"
+        case latestTestScope = "latest_test_scope"
+        case latestTestOutcome = "latest_test_outcome"
+        case latestTestReportDigest = "latest_test_report_digest"
+        case accountingAvailable = "accounting_available"
+        case usageObserved = "usage_observed"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
+        case totalTokens = "total_tokens"
+        case costObserved = "cost_observed"
+        case costMicrounits = "cost_microunits"
+        case costCurrency = "cost_currency"
+        case costSource = "cost_source"
     }
 
     public init(from decoder: Decoder) throws {
         try rejectUnknownKeys(
             decoder,
             allowed: [
-                "logical_node_id", "status", "dependency_satisfied",
+                "logical_node_id", "node_kind", "route_group_id",
+                "status", "dependency_satisfied",
                 "current_attempt", "work_item_id", "run_id",
                 "runtime_instance_id", "agent_instance_id",
                 "verification_status", "recovery_action", "retry_at",
+                "fallback_configured", "recovery_approval_required",
+                "fallback_approval_available", "fallback_approval_version",
+                "fallback_consumed",
+                "execution_binding_available", "harness_adapter", "provider_id",
+                "provider_account_id", "model_id", "reasoning_effort",
+                "timeout_nanoseconds", "binding_budget_credits", "capabilities",
+                "credential_revision", "provider_account_policy_available",
+                "context_capsule_available", "context_capsule_digest",
+                "route_segment_available", "route_segment_id", "route_segment_digest",
+                "context_disclosure_receipt_digest", "context_adapter_id",
+                "disclosure_policy_id", "disclosure_policy_version",
+                "context_token_budget", "context_token_count",
+                "context_disclosed_count", "context_omission_count",
+                "provider_account_policy_version", "provider_account_policy_revision",
+                "provider_account_policy_digest", "provider_account_trust_domain",
+                "provider_account_retention_mode", "provider_account_data_region",
+                "provider_account_assigned_budget_units", "terminal_reason", "incident_id",
+                "provider_model_rate_card_available",
+                "provider_model_rate_card_revision", "provider_model_rate_card_digest",
+                "provider_model_rate_card_currency", "provider_model_rate_card_input_basis",
+                "failure_diagnostic_available", "failure_stage", "failure_code",
+                "failure_retryable",
+                "test_report_available", "test_report_count",
+                "test_report_passed_count", "test_report_failed_count",
+                "test_report_set_digest", "latest_test_runner",
+                "latest_test_scope", "latest_test_outcome",
+                "latest_test_report_digest",
+                "accounting_available", "usage_observed",
+                "input_tokens", "output_tokens", "cache_read_tokens",
+                "cache_write_tokens", "total_tokens", "cost_observed",
+                "cost_microunits", "cost_currency", "cost_source",
             ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         logicalNodeID = try values.decode(String.self, forKey: .logicalNodeID)
+        nodeKind = try values.decodeIfPresent(String.self, forKey: .nodeKind) ?? ""
+        routeGroupID = try values.decodeIfPresent(
+            String.self, forKey: .routeGroupID
+        ) ?? ""
+        guard ["", "route_sibling", "aggregation"].contains(nodeKind),
+            nodeKind.isEmpty
+                ? routeGroupID.isEmpty
+                : LocalIPCClient.validIdentifier(routeGroupID)
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
         status = try values.decode(String.self, forKey: .status)
         dependencySatisfied = try values.decode(Bool.self, forKey: .dependencySatisfied)
         currentAttempt = try values.decode(Int.self, forKey: .currentAttempt)
@@ -786,6 +1007,376 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
         verificationStatus = try values.decode(String.self, forKey: .verificationStatus)
         recoveryAction = try values.decode(String.self, forKey: .recoveryAction)
         retryAt = try values.decode(String.self, forKey: .retryAt)
+        fallbackConfigured = try values.decodeIfPresent(
+            Bool.self, forKey: .fallbackConfigured
+        ) ?? false
+        recoveryApprovalRequired = try values.decodeIfPresent(
+            Bool.self, forKey: .recoveryApprovalRequired
+        ) ?? false
+        fallbackApprovalAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .fallbackApprovalAvailable
+        ) ?? false
+        fallbackApprovalVersion = try values.decodeIfPresent(
+            Int.self, forKey: .fallbackApprovalVersion
+        ) ?? 0
+        fallbackConsumed = try values.decodeIfPresent(
+            Bool.self, forKey: .fallbackConsumed
+        ) ?? false
+        guard fallbackApprovalVersion >= 0,
+            fallbackConfigured || (
+                !recoveryApprovalRequired && !fallbackApprovalAvailable
+                    && fallbackApprovalVersion == 0 && !fallbackConsumed
+            ),
+            fallbackApprovalAvailable == (fallbackApprovalVersion > 0),
+            !fallbackConsumed || !recoveryApprovalRequired
+                || fallbackApprovalAvailable
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        executionBindingAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .executionBindingAvailable
+        ) ?? false
+        harnessAdapter = try values.decodeIfPresent(
+            String.self, forKey: .harnessAdapter
+        ) ?? ""
+        providerID = try values.decodeIfPresent(String.self, forKey: .providerID) ?? ""
+        providerAccountID = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountID
+        ) ?? ""
+        modelID = try values.decodeIfPresent(String.self, forKey: .modelID) ?? ""
+        reasoningEffort = try values.decodeIfPresent(
+            String.self, forKey: .reasoningEffort
+        ) ?? ""
+        timeoutNanoseconds = try values.decodeIfPresent(
+            Int64.self, forKey: .timeoutNanoseconds
+        ) ?? 0
+        bindingBudgetCredits = try values.decodeIfPresent(
+            Int64.self, forKey: .bindingBudgetCredits
+        )
+        capabilities = try values.decodeIfPresent(
+            [String].self, forKey: .capabilities
+        ) ?? []
+        credentialRevision = try values.decodeIfPresent(
+            Int64.self, forKey: .credentialRevision
+        ) ?? 0
+        let validCapabilities = capabilities.allSatisfy(LocalIPCClient.validIdentifier)
+            && Set(capabilities).count == capabilities.count
+            && capabilities == capabilities.sorted()
+        let validBindingIdentity = LocalIPCClient.validIdentifier(harnessAdapter)
+            && LocalIPCClient.validIdentifier(providerID)
+            && LocalIPCClient.validIdentifier(modelID)
+            && (reasoningEffort.isEmpty || LocalIPCClient.validIdentifier(reasoningEffort))
+            && timeoutNanoseconds > 0
+            && (bindingBudgetCredits.map { $0 >= 0 } ?? true)
+            && validCapabilities
+        let validCredentialIdentity = providerAccountID.isEmpty
+            ? credentialRevision == 0
+            : LocalIPCClient.validProviderAccountID(
+                providerAccountID,
+                providerID: providerID
+            ) && credentialRevision > 0
+        guard executionBindingAvailable
+            ? validBindingIdentity && validCredentialIdentity
+            : harnessAdapter.isEmpty && providerID.isEmpty
+                && providerAccountID.isEmpty && modelID.isEmpty
+                && reasoningEffort.isEmpty && timeoutNanoseconds == 0
+                && bindingBudgetCredits == nil && capabilities.isEmpty
+                && credentialRevision == 0
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        contextCapsuleAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .contextCapsuleAvailable
+        ) ?? false
+        contextCapsuleDigest = try values.decodeIfPresent(
+            String.self, forKey: .contextCapsuleDigest
+        ) ?? ""
+        routeSegmentAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .routeSegmentAvailable
+        ) ?? false
+        routeSegmentID = try values.decodeIfPresent(
+            String.self, forKey: .routeSegmentID
+        ) ?? ""
+        routeSegmentDigest = try values.decodeIfPresent(
+            String.self, forKey: .routeSegmentDigest
+        ) ?? ""
+        contextDisclosureReceiptDigest = try values.decodeIfPresent(
+            String.self, forKey: .contextDisclosureReceiptDigest
+        ) ?? ""
+        contextAdapterID = try values.decodeIfPresent(
+            String.self, forKey: .contextAdapterID
+        ) ?? ""
+        disclosurePolicyID = try values.decodeIfPresent(
+            String.self, forKey: .disclosurePolicyID
+        ) ?? ""
+        disclosurePolicyVersion = try values.decodeIfPresent(
+            Int.self, forKey: .disclosurePolicyVersion
+        ) ?? 0
+        contextTokenBudget = try values.decodeIfPresent(
+            Int.self, forKey: .contextTokenBudget
+        ) ?? 0
+        contextTokenCount = try values.decodeIfPresent(
+            Int.self, forKey: .contextTokenCount
+        ) ?? 0
+        contextDisclosedCount = try values.decodeIfPresent(
+            Int.self, forKey: .contextDisclosedCount
+        ) ?? 0
+        contextOmissionCount = try values.decodeIfPresent(
+            Int.self, forKey: .contextOmissionCount
+        ) ?? 0
+        let validContextDigest: (String) -> Bool = { digest in
+            digest.count == 64 && digest.allSatisfy {
+                ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f")
+            }
+        }
+        guard contextCapsuleAvailable
+            ? executionBindingAvailable
+                && validContextDigest(contextCapsuleDigest)
+                && validContextDigest(contextDisclosureReceiptDigest)
+                && LocalIPCClient.validIdentifier(contextAdapterID)
+                && LocalIPCClient.validIdentifier(disclosurePolicyID)
+                && disclosurePolicyVersion > 0
+                && contextTokenBudget > 0
+                && contextTokenCount >= 0
+                && contextTokenCount <= contextTokenBudget
+                && contextDisclosedCount >= 0 && contextOmissionCount >= 0
+                && contextDisclosedCount + contextOmissionCount > 0
+            : contextCapsuleDigest.isEmpty
+                && contextDisclosureReceiptDigest.isEmpty
+                && contextAdapterID.isEmpty && disclosurePolicyID.isEmpty
+                && disclosurePolicyVersion == 0 && contextTokenBudget == 0
+                && contextTokenCount == 0 && contextDisclosedCount == 0
+                && contextOmissionCount == 0
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        guard routeSegmentAvailable
+            ? executionBindingAvailable && contextCapsuleAvailable
+                && LocalIPCClient.validIdentifier(routeSegmentID)
+                && validContextDigest(routeSegmentDigest)
+            : routeSegmentID.isEmpty && routeSegmentDigest.isEmpty
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        providerAccountPolicyAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .providerAccountPolicyAvailable
+        ) ?? false
+        providerAccountPolicyVersion = try values.decodeIfPresent(
+            Int.self, forKey: .providerAccountPolicyVersion
+        ) ?? 0
+        providerAccountPolicyRevision = try values.decodeIfPresent(
+            Int64.self, forKey: .providerAccountPolicyRevision
+        ) ?? 0
+        providerAccountPolicyDigest = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountPolicyDigest
+        ) ?? ""
+        providerAccountTrustDomain = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountTrustDomain
+        ) ?? ""
+        providerAccountRetentionMode = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountRetentionMode
+        ) ?? ""
+        providerAccountDataRegion = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountDataRegion
+        ) ?? ""
+        providerAccountAssignedBudgetUnits = try values.decodeIfPresent(
+            Int64.self, forKey: .providerAccountAssignedBudgetUnits
+        ) ?? 0
+        let validPolicyDigest = providerAccountPolicyDigest.count == 64
+            && providerAccountPolicyDigest.allSatisfy {
+                ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f")
+            }
+        let validPolicyDisclosure: Bool
+        switch providerAccountPolicyVersion {
+        case 1:
+            validPolicyDisclosure = providerAccountTrustDomain.isEmpty
+                && providerAccountRetentionMode.isEmpty
+                && providerAccountDataRegion.isEmpty
+        case 2:
+            validPolicyDisclosure = [
+                "external_provider", "enterprise_tenant", "local_runtime",
+            ].contains(providerAccountTrustDomain)
+                && [
+                    "provider_default", "zero_data_retention", "limited_retention",
+                ].contains(providerAccountRetentionMode)
+                && ["global", "us", "eu", "apac", "local"]
+                    .contains(providerAccountDataRegion)
+        default:
+            validPolicyDisclosure = false
+        }
+        guard providerAccountAssignedBudgetUnits >= 0,
+            !providerAccountPolicyAvailable || executionBindingAvailable,
+            providerAccountPolicyAvailable
+                ? providerAccountPolicyRevision > 0 && validPolicyDigest
+                    && validPolicyDisclosure
+                : providerAccountPolicyVersion == 0
+                    && providerAccountPolicyRevision == 0
+                    && providerAccountPolicyDigest.isEmpty
+                    && providerAccountTrustDomain.isEmpty
+                    && providerAccountRetentionMode.isEmpty
+                    && providerAccountDataRegion.isEmpty
+                    && providerAccountAssignedBudgetUnits == 0
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        providerModelRateCardAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .providerModelRateCardAvailable
+        ) ?? false
+        providerModelRateCardRevision = try values.decodeIfPresent(
+            Int64.self, forKey: .providerModelRateCardRevision
+        ) ?? 0
+        providerModelRateCardDigest = try values.decodeIfPresent(
+            String.self, forKey: .providerModelRateCardDigest
+        ) ?? ""
+        providerModelRateCardCurrency = try values.decodeIfPresent(
+            String.self, forKey: .providerModelRateCardCurrency
+        ) ?? ""
+        providerModelRateCardInputBasis = try values.decodeIfPresent(
+            String.self, forKey: .providerModelRateCardInputBasis
+        ) ?? ""
+        let validRateCardDigest = providerModelRateCardDigest.count == 64
+            && providerModelRateCardDigest.allSatisfy {
+                ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f")
+            }
+        let validRateCardBasis = [
+            "input_includes_cache", "input_excludes_cache",
+        ].contains(providerModelRateCardInputBasis)
+        guard !providerModelRateCardAvailable || executionBindingAvailable,
+            providerModelRateCardAvailable
+                ? providerModelRateCardRevision > 0 && validRateCardDigest
+                    && validBoardCurrency(providerModelRateCardCurrency)
+                    && validRateCardBasis
+                : providerModelRateCardRevision == 0
+                    && providerModelRateCardDigest.isEmpty
+                    && providerModelRateCardCurrency.isEmpty
+                    && providerModelRateCardInputBasis.isEmpty
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        terminalReason = try values.decodeIfPresent(
+            String.self, forKey: .terminalReason
+        ) ?? ""
+        incidentID = try values.decodeIfPresent(
+            String.self, forKey: .incidentID
+        ) ?? ""
+        guard incidentID.isEmpty || LocalIPCWire.validRequestID(incidentID) else {
+            throw LocalProductWireError.invalidJSON
+        }
+        failureDiagnosticAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .failureDiagnosticAvailable
+        ) ?? false
+        failureStage = try values.decodeIfPresent(String.self, forKey: .failureStage) ?? ""
+        failureCode = try values.decodeIfPresent(String.self, forKey: .failureCode) ?? ""
+        failureRetryable = try values.decodeIfPresent(
+            Bool.self, forKey: .failureRetryable
+        ) ?? false
+        let validFailureCode = !failureCode.isEmpty && failureCode.utf8.count <= 64
+            && failureCode.utf8.allSatisfy { byte in
+                (97...122).contains(byte) || byte == 95
+            }
+        guard failureDiagnosticAvailable
+            ? executionBindingAvailable && !incidentID.isEmpty
+                && LocalIPCRemoteError.Stage(rawValue: failureStage) != nil
+                && validFailureCode
+            : failureStage.isEmpty && failureCode.isEmpty && !failureRetryable
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        testReportAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .testReportAvailable
+        ) ?? false
+        testReportCount = try values.decodeIfPresent(
+            Int.self, forKey: .testReportCount
+        ) ?? 0
+        testReportPassedCount = try values.decodeIfPresent(
+            Int.self, forKey: .testReportPassedCount
+        ) ?? 0
+        testReportFailedCount = try values.decodeIfPresent(
+            Int.self, forKey: .testReportFailedCount
+        ) ?? 0
+        testReportSetDigest = try values.decodeIfPresent(
+            String.self, forKey: .testReportSetDigest
+        ) ?? ""
+        latestTestRunner = try values.decodeIfPresent(
+            String.self, forKey: .latestTestRunner
+        ) ?? ""
+        latestTestScope = try values.decodeIfPresent(
+            String.self, forKey: .latestTestScope
+        ) ?? ""
+        latestTestOutcome = try values.decodeIfPresent(
+            String.self, forKey: .latestTestOutcome
+        ) ?? ""
+        latestTestReportDigest = try values.decodeIfPresent(
+            String.self, forKey: .latestTestReportDigest
+        ) ?? ""
+        let validTestRunner = [
+            "go_test", "swift_test", "cargo_test", "pytest", "npm_test",
+            "pnpm_test", "yarn_test", "bun_test",
+        ].contains(latestTestRunner)
+        let validTestScope = ["default", "all", "selected"].contains(latestTestScope)
+        let validTestOutcome = ["passed", "failed"].contains(latestTestOutcome)
+        guard testReportAvailable
+            ? executionBindingAvailable && testReportCount > 0 && testReportCount <= 256
+                && testReportPassedCount >= 0 && testReportFailedCount >= 0
+                && testReportPassedCount + testReportFailedCount == testReportCount
+                && validContextDigest(testReportSetDigest)
+                && validTestRunner && validTestScope && validTestOutcome
+                && validContextDigest(latestTestReportDigest)
+            : testReportCount == 0 && testReportPassedCount == 0
+                && testReportFailedCount == 0 && testReportSetDigest.isEmpty
+                && latestTestRunner.isEmpty && latestTestScope.isEmpty
+                && latestTestOutcome.isEmpty && latestTestReportDigest.isEmpty
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        accountingAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .accountingAvailable
+        ) ?? false
+        usageObserved = try values.decodeIfPresent(Bool.self, forKey: .usageObserved) ?? false
+        inputTokens = try values.decodeIfPresent(Int64.self, forKey: .inputTokens) ?? 0
+        outputTokens = try values.decodeIfPresent(Int64.self, forKey: .outputTokens) ?? 0
+        cacheReadTokens = try values.decodeIfPresent(Int64.self, forKey: .cacheReadTokens) ?? 0
+        cacheWriteTokens = try values.decodeIfPresent(Int64.self, forKey: .cacheWriteTokens) ?? 0
+        totalTokens = try values.decodeIfPresent(Int64.self, forKey: .totalTokens) ?? 0
+        costObserved = try values.decodeIfPresent(Bool.self, forKey: .costObserved) ?? false
+        costMicrounits = try values.decodeIfPresent(Int64.self, forKey: .costMicrounits) ?? 0
+        costCurrency = try values.decodeIfPresent(String.self, forKey: .costCurrency) ?? ""
+        costSource = try values.decodeIfPresent(String.self, forKey: .costSource) ?? ""
+        let validTerminalReason = terminalReason.isEmpty ||
+            (failureDiagnosticAvailable && terminalReason.utf8.count <= 512
+                && terminalReason == terminalReason.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                && terminalReason.unicodeScalars.allSatisfy {
+                    !CharacterSet.controlCharacters.contains($0)
+                }) || LocalIPCClient.validIdentifier(terminalReason)
+        guard validTerminalReason,
+            accountingAvailable
+                ? validBoardUsage(
+                    observed: usageObserved,
+                    input: inputTokens,
+                    output: outputTokens,
+                    cacheRead: cacheReadTokens,
+                    cacheWrite: cacheWriteTokens,
+                    total: totalTokens
+                ) && validBoardCost(
+                    observed: costObserved,
+                    microunits: costMicrounits,
+                    currency: costCurrency
+                ) && validBoardCostSource(observed: costObserved, source: costSource)
+                : !usageObserved && inputTokens == 0 && outputTokens == 0
+                    && cacheReadTokens == 0 && cacheWriteTokens == 0
+                    && totalTokens == 0 && !costObserved && costMicrounits == 0
+                    && costCurrency.isEmpty && costSource.isEmpty
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        guard costSource != "rate_card_estimate" ||
+            (providerModelRateCardAvailable
+                && costCurrency == providerModelRateCardCurrency)
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
     }
 }
 
@@ -796,6 +1387,7 @@ public struct LocalProductBoard: Codable, Equatable, Sendable {
     public let status: String
     public let viewVersion: String
     public let nodes: [LocalProductNode]
+    public let providerAccounts: [LocalProductProviderAccountAccounting]
     public let cost: LocalProductCost
 
     enum CodingKeys: String, CodingKey {
@@ -804,7 +1396,9 @@ public struct LocalProductBoard: Codable, Equatable, Sendable {
         case planDigest = "plan_digest"
         case status
         case viewVersion = "view_version"
-        case nodes, cost
+        case nodes
+        case providerAccounts = "provider_accounts"
+        case cost
     }
 
     public init(from decoder: Decoder) throws {
@@ -812,7 +1406,7 @@ public struct LocalProductBoard: Codable, Equatable, Sendable {
             decoder,
             allowed: [
                 "schema_version", "team_instance_id", "plan_digest", "status",
-                "view_version", "nodes", "cost",
+                "view_version", "nodes", "provider_accounts", "cost",
             ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
@@ -821,7 +1415,210 @@ public struct LocalProductBoard: Codable, Equatable, Sendable {
         status = try values.decode(String.self, forKey: .status)
         viewVersion = try values.decode(String.self, forKey: .viewVersion)
         nodes = try values.decode([LocalProductNode].self, forKey: .nodes)
+        providerAccounts = try values.decodeIfPresent(
+            [LocalProductProviderAccountAccounting].self,
+            forKey: .providerAccounts
+        ) ?? []
         cost = try values.decode(LocalProductCost.self, forKey: .cost)
+    }
+}
+
+public struct LocalProductProviderAccountCost: Codable, Equatable, Sendable {
+    public let currency: String
+    public let source: String
+    public let amountMicrounits: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case currency
+        case source
+        case amountMicrounits = "amount_microunits"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: ["currency", "source", "amount_microunits"])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        currency = try values.decode(String.self, forKey: .currency)
+        source = try values.decode(String.self, forKey: .source)
+        amountMicrounits = try values.decode(Int64.self, forKey: .amountMicrounits)
+        guard validBoardCurrency(currency), validBoardCostSource(observed: true, source: source),
+            amountMicrounits >= 0 else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+}
+
+public struct LocalProductProviderAccountAccounting: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { "\(providerID):\(providerAccountID)" }
+    public let providerID: String
+    public let providerAccountID: String
+    public let activeAttempts: Int
+    public let attemptCount: Int
+    public let failedAttempts: Int
+    public let rateLimitedAttempts: Int
+    public let errorRateBasisPoints: Int
+    public let budgetAttemptCount: Int
+    public let budgetUnits: Int64
+    public let policyAvailable: Bool
+    public let policyRevision: Int64
+    public let policyDigest: String
+    public let maximumConcurrentAttempts: Int
+    public let dispatchWindowSeconds: Int64
+    public let maximumDispatchStarts: Int
+    public let maximumAssignedBudgetUnits: Int64
+    public let activeAssignedBudgetUnits: Int64
+    public let accountingAttemptCount: Int
+    public let usageAttemptCount: Int
+    public let inputTokens: Int64
+    public let outputTokens: Int64
+    public let cacheReadTokens: Int64
+    public let cacheWriteTokens: Int64
+    public let totalTokens: Int64
+    public let costAttemptCount: Int
+    public let costs: [LocalProductProviderAccountCost]
+    public let aggregationOverflow: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case activeAttempts = "active_attempts"
+        case attemptCount = "attempt_count"
+        case failedAttempts = "failed_attempts"
+        case rateLimitedAttempts = "rate_limited_attempts"
+        case errorRateBasisPoints = "error_rate_basis_points"
+        case budgetAttemptCount = "budget_attempt_count"
+        case budgetUnits = "budget_units"
+        case policyAvailable = "policy_available"
+        case policyRevision = "policy_revision"
+        case policyDigest = "policy_digest"
+        case maximumConcurrentAttempts = "maximum_concurrent_attempts"
+        case dispatchWindowSeconds = "dispatch_window_seconds"
+        case maximumDispatchStarts = "maximum_dispatch_starts"
+        case maximumAssignedBudgetUnits = "maximum_assigned_budget_units"
+        case activeAssignedBudgetUnits = "active_assigned_budget_units"
+        case accountingAttemptCount = "accounting_attempt_count"
+        case usageAttemptCount = "usage_attempt_count"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
+        case totalTokens = "total_tokens"
+        case costAttemptCount = "cost_attempt_count"
+        case costs
+        case aggregationOverflow = "aggregation_overflow"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "provider_id", "provider_account_id", "active_attempts",
+                "attempt_count", "failed_attempts", "rate_limited_attempts",
+                "error_rate_basis_points", "budget_attempt_count", "budget_units",
+                "policy_available", "policy_revision", "policy_digest",
+                "maximum_concurrent_attempts", "dispatch_window_seconds",
+                "maximum_dispatch_starts", "maximum_assigned_budget_units",
+                "active_assigned_budget_units",
+                "accounting_attempt_count", "usage_attempt_count", "input_tokens",
+                "output_tokens", "cache_read_tokens", "cache_write_tokens",
+                "total_tokens", "cost_attempt_count", "costs",
+                "aggregation_overflow",
+            ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        providerAccountID = try values.decode(String.self, forKey: .providerAccountID)
+        activeAttempts = try values.decode(Int.self, forKey: .activeAttempts)
+        attemptCount = try values.decode(Int.self, forKey: .attemptCount)
+        failedAttempts = try values.decode(Int.self, forKey: .failedAttempts)
+        rateLimitedAttempts = try values.decode(Int.self, forKey: .rateLimitedAttempts)
+        errorRateBasisPoints = try values.decode(Int.self, forKey: .errorRateBasisPoints)
+        budgetAttemptCount = try values.decode(Int.self, forKey: .budgetAttemptCount)
+        budgetUnits = try values.decode(Int64.self, forKey: .budgetUnits)
+        policyAvailable = try values.decodeIfPresent(Bool.self, forKey: .policyAvailable) ?? false
+        policyRevision = try values.decodeIfPresent(Int64.self, forKey: .policyRevision) ?? 0
+        policyDigest = try values.decodeIfPresent(String.self, forKey: .policyDigest) ?? ""
+        maximumConcurrentAttempts = try values.decodeIfPresent(
+            Int.self, forKey: .maximumConcurrentAttempts
+        ) ?? 0
+        dispatchWindowSeconds = try values.decodeIfPresent(
+            Int64.self, forKey: .dispatchWindowSeconds
+        ) ?? 0
+        maximumDispatchStarts = try values.decodeIfPresent(
+            Int.self, forKey: .maximumDispatchStarts
+        ) ?? 0
+        maximumAssignedBudgetUnits = try values.decodeIfPresent(
+            Int64.self, forKey: .maximumAssignedBudgetUnits
+        ) ?? 0
+        activeAssignedBudgetUnits = try values.decodeIfPresent(
+            Int64.self, forKey: .activeAssignedBudgetUnits
+        ) ?? 0
+        let validPolicyDigest = policyDigest.count == 64 && policyDigest.allSatisfy {
+            ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f")
+        }
+        guard activeAssignedBudgetUnits >= 0,
+            policyAvailable
+                ? policyRevision > 0 && validPolicyDigest
+                    && maximumConcurrentAttempts > 0
+                    && dispatchWindowSeconds > 0
+                    && maximumDispatchStarts > 0
+                    && maximumAssignedBudgetUnits >= activeAssignedBudgetUnits
+                : policyRevision == 0 && policyDigest.isEmpty
+                    && maximumConcurrentAttempts == 0
+                    && dispatchWindowSeconds == 0
+                    && maximumDispatchStarts == 0
+                    && maximumAssignedBudgetUnits == 0
+                    && activeAssignedBudgetUnits == 0
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        accountingAttemptCount = try values.decode(Int.self, forKey: .accountingAttemptCount)
+        usageAttemptCount = try values.decode(Int.self, forKey: .usageAttemptCount)
+        inputTokens = try values.decode(Int64.self, forKey: .inputTokens)
+        outputTokens = try values.decode(Int64.self, forKey: .outputTokens)
+        cacheReadTokens = try values.decode(Int64.self, forKey: .cacheReadTokens)
+        cacheWriteTokens = try values.decode(Int64.self, forKey: .cacheWriteTokens)
+        totalTokens = try values.decode(Int64.self, forKey: .totalTokens)
+        costAttemptCount = try values.decode(Int.self, forKey: .costAttemptCount)
+        costs = try values.decode([LocalProductProviderAccountCost].self, forKey: .costs)
+        aggregationOverflow = try values.decode(Bool.self, forKey: .aggregationOverflow)
+        let expectedErrorRate: Int
+        if attemptCount == 0 {
+            expectedErrorRate = 0
+        } else if failedAttempts <= Int.max / 10_000 {
+            expectedErrorRate = failedAttempts * 10_000 / attemptCount
+        } else {
+            throw LocalProductWireError.invalidJSON
+        }
+        let costKeys = costs.map { "\($0.currency)\u{0}\($0.source)" }
+        guard LocalIPCClient.validIdentifier(providerID),
+            LocalIPCClient.validProviderAccountID(
+                providerAccountID,
+                providerID: providerID
+            ),
+            activeAttempts >= 0, attemptCount >= 0, failedAttempts >= 0,
+            rateLimitedAttempts >= 0, budgetAttemptCount >= 0, budgetUnits >= 0,
+            activeAttempts <= attemptCount, failedAttempts <= attemptCount,
+            rateLimitedAttempts <= failedAttempts,
+            budgetAttemptCount <= attemptCount,
+            errorRateBasisPoints == expectedErrorRate,
+            accountingAttemptCount >= 0, accountingAttemptCount <= attemptCount,
+            usageAttemptCount >= 0, usageAttemptCount <= accountingAttemptCount,
+            costAttemptCount >= 0, costAttemptCount <= accountingAttemptCount,
+            costs.count <= costAttemptCount,
+            costKeys == costKeys.sorted(), Set(costKeys).count == costKeys.count,
+            inputTokens >= 0, outputTokens >= 0, cacheReadTokens >= 0,
+            cacheWriteTokens >= 0, totalTokens >= 0,
+            usageAttemptCount > 0 || (
+                inputTokens == 0 && outputTokens == 0 && cacheReadTokens == 0
+                    && cacheWriteTokens == 0 && totalTokens == 0
+            ),
+            aggregationOverflow || (
+                inputTokens <= Int64.max - outputTokens
+                    && totalTokens == inputTokens + outputTokens
+            ),
+            costAttemptCount > 0 || costs.isEmpty
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
     }
 }
 
@@ -1062,29 +1859,671 @@ public enum LocalProductChatRole: String, Codable, Sendable {
     case confirmation = "confirmation"
 }
 
+public enum LocalProductConversationContextMode:
+    String, Codable, CaseIterable, Identifiable, Sendable
+{
+    case continueWithContext = "continue_with_context"
+    case summaryOnly = "summary_only"
+    case startClean = "start_clean"
+
+    public var id: String { rawValue }
+}
+
 public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
+    public static let toolShapedWarning = "The conversation runtime returned tool-shaped text. Loom did not execute it."
+
     public let messageID: String
+    public let segmentID: String
     public let role: String
     public let content: String
     public let tentative: Bool
 
     enum CodingKeys: String, CodingKey {
         case messageID = "message_id"
+        case segmentID = "segment_id"
         case role, content, tentative
     }
+
+    public init(
+        messageID: String,
+        segmentID: String = "",
+        role: String,
+        content: String,
+        tentative: Bool
+    ) {
+        self.messageID = messageID
+        self.segmentID = segmentID
+        self.role = role
+        self.content = content
+        self.tentative = tentative
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        messageID = try values.decode(String.self, forKey: .messageID)
+        segmentID = try values.decodeIfPresent(
+            String.self,
+            forKey: .segmentID
+        ) ?? ""
+        role = try values.decode(String.self, forKey: .role)
+        content = try values.decode(String.self, forKey: .content)
+        tentative = try values.decode(Bool.self, forKey: .tentative)
+    }
+
+    public var displayContent: String {
+        guard tentative, Self.isToolShaped(content) else { return content }
+        return Self.toolShapedWarning
+    }
+
+    private static func isToolShaped(_ content: String) -> Bool {
+        var body = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if body.hasPrefix("```"), body.hasSuffix("```"),
+           let newline = body.firstIndex(of: "\n") {
+            body = String(body[body.index(after: newline)..<body.index(body.endIndex, offsetBy: -3)])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let first = body.first, let last = body.last,
+              (first == "{" && last == "}") || (first == "[" && last == "]") else {
+            return false
+        }
+        if let data = body.data(using: .utf8),
+           (try? JSONSerialization.jsonObject(with: data)) != nil {
+            return true
+        }
+        let lower = body.lowercased()
+        return [
+            "tool", "tool_name", "arguments", "command", "path",
+            "function_call", "tool_call",
+        ].contains { lower.contains("\"\($0)\"") || lower.contains("\($0):") }
+    }
+}
+
+public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
+    public let segmentID: String
+    public let profileID: String
+    public let contextMode: LocalProductConversationContextMode
+    public let contextCapsuleDigest: String
+    public let disclosureReceiptDigest: String
+    public let disclosedContextCount: Int
+    public let omittedContextCount: Int
+    public let executionBinding: LocalProductConversationExecutionBinding?
+    public let bindingDigest: String
+
+    enum CodingKeys: String, CodingKey {
+        case segmentID = "segment_id"
+        case profileID = "profile_id"
+        case contextMode = "context_mode"
+        case contextCapsuleDigest = "context_capsule_digest"
+        case disclosureReceiptDigest = "disclosure_receipt_digest"
+        case disclosedContextCount = "disclosed_context_count"
+        case omittedContextCount = "omitted_context_count"
+        case executionBinding = "execution_binding"
+        case bindingDigest = "binding_digest"
+    }
+
+    public init(
+        segmentID: String,
+        profileID: String,
+        contextMode: LocalProductConversationContextMode,
+        contextCapsuleDigest: String,
+        disclosureReceiptDigest: String = "",
+        disclosedContextCount: Int = 0,
+        omittedContextCount: Int = 0,
+        executionBinding: LocalProductConversationExecutionBinding? = nil,
+        bindingDigest: String
+    ) {
+        self.segmentID = segmentID
+        self.profileID = profileID
+        self.contextMode = contextMode
+        self.contextCapsuleDigest = contextCapsuleDigest
+        self.disclosureReceiptDigest = disclosureReceiptDigest
+        self.disclosedContextCount = disclosedContextCount
+        self.omittedContextCount = omittedContextCount
+        self.executionBinding = executionBinding
+        self.bindingDigest = bindingDigest
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        segmentID = try values.decode(String.self, forKey: .segmentID)
+        profileID = try values.decode(String.self, forKey: .profileID)
+        contextMode = try values.decode(
+            LocalProductConversationContextMode.self,
+            forKey: .contextMode
+        )
+        contextCapsuleDigest = try values.decode(
+            String.self,
+            forKey: .contextCapsuleDigest
+        )
+        disclosureReceiptDigest = try values.decodeIfPresent(
+            String.self,
+            forKey: .disclosureReceiptDigest
+        ) ?? ""
+        disclosedContextCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .disclosedContextCount
+        ) ?? 0
+        omittedContextCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .omittedContextCount
+        ) ?? 0
+        executionBinding = try values.decodeIfPresent(
+            LocalProductConversationExecutionBinding.self,
+            forKey: .executionBinding
+        )
+        bindingDigest = try values.decode(String.self, forKey: .bindingDigest)
+        guard validConversationDisclosure(
+            disclosureReceiptDigest,
+            disclosed: disclosedContextCount,
+            omitted: omittedContextCount
+        ) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public struct LocalProductConversationExecutionBinding:
+    Codable, Equatable, Sendable
+{
+    public let schemaVersion: Int
+    public let providerID: String
+    public let providerAccountID: String
+    public let providerAccountPolicyVersion: Int
+    public let providerAccountPolicyRevision: Int64
+    public let providerAccountPolicyDigest: String
+    public let trustDomain: String
+    public let retentionMode: String
+    public let dataRegion: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case providerAccountPolicyVersion = "provider_account_policy_version"
+        case providerAccountPolicyRevision = "provider_account_policy_revision"
+        case providerAccountPolicyDigest = "provider_account_policy_digest"
+        case trustDomain = "trust_domain"
+        case retentionMode = "retention_mode"
+        case dataRegion = "data_region"
+    }
+
+    public init(
+        schemaVersion: Int = 3,
+        providerID: String,
+        providerAccountID: String = "",
+        providerAccountPolicyVersion: Int = 0,
+        providerAccountPolicyRevision: Int64 = 0,
+        providerAccountPolicyDigest: String = "",
+        trustDomain: String = "",
+        retentionMode: String = "",
+        dataRegion: String = ""
+    ) {
+        self.schemaVersion = schemaVersion
+        self.providerID = providerID
+        self.providerAccountID = providerAccountID
+        self.providerAccountPolicyVersion = providerAccountPolicyVersion
+        self.providerAccountPolicyRevision = providerAccountPolicyRevision
+        self.providerAccountPolicyDigest = providerAccountPolicyDigest
+        self.trustDomain = trustDomain
+        self.retentionMode = retentionMode
+        self.dataRegion = dataRegion
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue))
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        providerAccountID = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountID
+        ) ?? ""
+        providerAccountPolicyVersion = try values.decodeIfPresent(
+            Int.self, forKey: .providerAccountPolicyVersion
+        ) ?? 0
+        providerAccountPolicyRevision = try values.decodeIfPresent(
+            Int64.self, forKey: .providerAccountPolicyRevision
+        ) ?? 0
+        providerAccountPolicyDigest = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountPolicyDigest
+        ) ?? ""
+        trustDomain = try values.decodeIfPresent(
+            String.self, forKey: .trustDomain
+        ) ?? ""
+        retentionMode = try values.decodeIfPresent(
+            String.self, forKey: .retentionMode
+        ) ?? ""
+        dataRegion = try values.decodeIfPresent(
+            String.self, forKey: .dataRegion
+        ) ?? ""
+        guard validConversationExecutionBinding(self) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
+    public let attemptID: String
+    public let segmentID: String
+    public let profileID: String
+    public let contextMode: LocalProductConversationContextMode
+    public let contextCapsuleDigest: String
+    public let disclosureReceiptDigest: String
+    public let disclosedContextCount: Int
+    public let omittedContextCount: Int
+    public let executionBinding: LocalProductConversationExecutionBinding?
+    public let bindingDigest: String
+    public let incidentID: String
+    public let status: String
+    public let failureCode: String
+    public let failureStage: String
+	public let httpStatus: Int
+	public let providerCode: String
+	public let failureMessage: String
+	public let retryAfterSeconds: Int64
+    public let retryable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case attemptID = "attempt_id"
+        case segmentID = "segment_id"
+        case profileID = "profile_id"
+        case contextMode = "context_mode"
+        case contextCapsuleDigest = "context_capsule_digest"
+        case disclosureReceiptDigest = "disclosure_receipt_digest"
+        case disclosedContextCount = "disclosed_context_count"
+        case omittedContextCount = "omitted_context_count"
+        case executionBinding = "execution_binding"
+        case bindingDigest = "binding_digest"
+        case incidentID = "incident_id"
+        case status
+        case failureCode = "failure_code"
+        case failureStage = "failure_stage"
+		case httpStatus = "http_status"
+		case providerCode = "provider_code"
+		case failureMessage = "failure_message"
+		case retryAfterSeconds = "retry_after_seconds"
+        case retryable
+    }
+
+    public init(
+        attemptID: String,
+        segmentID: String,
+        profileID: String,
+        contextMode: LocalProductConversationContextMode,
+        contextCapsuleDigest: String,
+        disclosureReceiptDigest: String = "",
+        disclosedContextCount: Int = 0,
+        omittedContextCount: Int = 0,
+        executionBinding: LocalProductConversationExecutionBinding? = nil,
+        bindingDigest: String,
+        incidentID: String = "",
+        status: String,
+        failureCode: String,
+        failureStage: String = "",
+		httpStatus: Int = 0,
+		providerCode: String = "",
+		failureMessage: String = "",
+		retryAfterSeconds: Int64 = 0,
+        retryable: Bool = false
+    ) {
+        self.attemptID = attemptID
+        self.segmentID = segmentID
+        self.profileID = profileID
+        self.contextMode = contextMode
+        self.contextCapsuleDigest = contextCapsuleDigest
+        self.disclosureReceiptDigest = disclosureReceiptDigest
+        self.disclosedContextCount = disclosedContextCount
+        self.omittedContextCount = omittedContextCount
+        self.executionBinding = executionBinding
+        self.bindingDigest = bindingDigest
+        self.incidentID = incidentID
+        self.status = status
+        self.failureCode = failureCode
+        self.failureStage = failureStage
+		self.httpStatus = httpStatus
+		self.providerCode = providerCode
+		self.failureMessage = failureMessage
+		self.retryAfterSeconds = retryAfterSeconds
+        self.retryable = retryable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        attemptID = try values.decode(String.self, forKey: .attemptID)
+        segmentID = try values.decode(String.self, forKey: .segmentID)
+        profileID = try values.decode(String.self, forKey: .profileID)
+        contextMode = try values.decode(
+            LocalProductConversationContextMode.self,
+            forKey: .contextMode
+        )
+        contextCapsuleDigest = try values.decode(
+            String.self,
+            forKey: .contextCapsuleDigest
+        )
+        disclosureReceiptDigest = try values.decodeIfPresent(
+            String.self,
+            forKey: .disclosureReceiptDigest
+        ) ?? ""
+        disclosedContextCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .disclosedContextCount
+        ) ?? 0
+        omittedContextCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .omittedContextCount
+        ) ?? 0
+        executionBinding = try values.decodeIfPresent(
+            LocalProductConversationExecutionBinding.self,
+            forKey: .executionBinding
+        )
+        bindingDigest = try values.decode(String.self, forKey: .bindingDigest)
+        incidentID = try values.decodeIfPresent(
+            String.self,
+            forKey: .incidentID
+        ) ?? ""
+        status = try values.decode(String.self, forKey: .status)
+        failureCode = try values.decode(String.self, forKey: .failureCode)
+        failureStage = try values.decodeIfPresent(
+            String.self,
+            forKey: .failureStage
+        ) ?? ""
+		httpStatus = try values.decodeIfPresent(Int.self, forKey: .httpStatus) ?? 0
+		providerCode = try values.decodeIfPresent(String.self, forKey: .providerCode) ?? ""
+		failureMessage = try values.decodeIfPresent(String.self, forKey: .failureMessage) ?? ""
+		retryAfterSeconds = try values.decodeIfPresent(
+			Int64.self,
+			forKey: .retryAfterSeconds
+		) ?? 0
+        retryable = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .retryable
+        ) ?? false
+        guard validConversationDisclosure(
+                disclosureReceiptDigest,
+                disclosed: disclosedContextCount,
+                omitted: omittedContextCount
+              ),
+              incidentID.isEmpty || LocalIPCWire.validRequestID(incidentID),
+              ["dispatching", "succeeded", "failed"].contains(status),
+			  Self.validFailure(
+				status: status,
+				code: failureCode,
+				stage: failureStage,
+				httpStatus: httpStatus,
+				providerCode: providerCode,
+				failureMessage: failureMessage,
+				retryAfterSeconds: retryAfterSeconds,
+				retryable: retryable
+			  ) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+
+    private static func validFailure(
+        status: String,
+        code: String,
+        stage: String,
+		httpStatus: Int,
+		providerCode: String,
+		failureMessage: String,
+		retryAfterSeconds: Int64,
+        retryable: Bool
+    ) -> Bool {
+        if status != "failed" {
+			return code.isEmpty && stage.isEmpty && httpStatus == 0 &&
+				providerCode.isEmpty && failureMessage.isEmpty &&
+				retryAfterSeconds == 0 && !retryable
+        }
+        let codes = Set([
+            "conversation_unavailable", "invalid_response", "invalid_request",
+            "credential_unavailable", "provider_auth", "provider_rate_limit",
+			"provider_rejected", "provider_insufficient_balance",
+			"provider_model_unavailable", "provider_invalid_request",
+			"provider_unavailable", "state_unavailable", "timeout",
+        ])
+        let stages = Set([
+            "conversation_dispatch", "credential_lease_issue",
+            "credential_lease_expire", "credential_lease_revoke", "vault_decrypt",
+            "vault_aad_validation", "provider_dns", "provider_tls",
+            "provider_connect", "provider_http", "provider_auth",
+            "provider_rate_limit",
+        ])
+		guard codes.contains(code),
+			(httpStatus == 0 || (100...599).contains(httpStatus)),
+			Self.validProviderCode(providerCode),
+			Self.validFailureMessage(failureMessage),
+			(0...86_400).contains(retryAfterSeconds) else { return false }
+        if stage.isEmpty {
+			return (code == "conversation_unavailable" || code == "invalid_response") &&
+				httpStatus == 0 && providerCode.isEmpty && failureMessage.isEmpty &&
+				retryAfterSeconds == 0
+        }
+        return stages.contains(stage)
+    }
+
+	private static func validProviderCode(_ value: String) -> Bool {
+		guard value.utf8.count <= 64 else { return false }
+		return value.utf8.allSatisfy { byte in
+			(48...57).contains(byte) || (65...90).contains(byte) ||
+				(97...122).contains(byte) || [45, 46, 95].contains(byte)
+		}
+	}
+
+	private static func validFailureMessage(_ value: String) -> Bool {
+		guard value.utf8.count <= 256 else { return false }
+		return value.unicodeScalars.allSatisfy { scalar in
+			scalar.value >= 0x20 && scalar.value != 0x7f
+		}
+	}
+}
+
+private func validConversationDisclosure(
+    _ receiptDigest: String,
+    disclosed: Int,
+    omitted: Int
+) -> Bool {
+    if receiptDigest.isEmpty {
+        return disclosed == 0 && omitted == 0
+    }
+    let digestIsValid = receiptDigest.utf8.count == 64 &&
+        receiptDigest.utf8.allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
+    return digestIsValid && (1...256).contains(disclosed) &&
+        (0...256).contains(omitted)
+}
+
+private func validConversationExecutionBinding(
+    _ binding: LocalProductConversationExecutionBinding
+) -> Bool {
+    guard binding.schemaVersion == 3,
+          LocalIPCClient.validIdentifier(binding.providerID) else {
+        return false
+    }
+    let digestIsValid = binding.providerAccountPolicyDigest.utf8.count == 64 &&
+        binding.providerAccountPolicyDigest.utf8.allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
+    if binding.providerAccountID.isEmpty {
+        return binding.providerAccountPolicyVersion == 0 &&
+            binding.providerAccountPolicyRevision == 0 &&
+            binding.providerAccountPolicyDigest.isEmpty &&
+            binding.trustDomain.isEmpty && binding.retentionMode.isEmpty &&
+            binding.dataRegion.isEmpty
+    }
+    guard LocalIPCClient.validProviderAccountID(
+        binding.providerAccountID,
+        providerID: binding.providerID
+    ) else { return false }
+    switch binding.providerAccountPolicyVersion {
+    case 0:
+        return binding.providerAccountPolicyRevision == 0 &&
+            binding.providerAccountPolicyDigest.isEmpty &&
+            binding.trustDomain.isEmpty && binding.retentionMode.isEmpty &&
+            binding.dataRegion.isEmpty
+    case 1:
+        return binding.providerAccountPolicyRevision > 0 && digestIsValid &&
+            binding.trustDomain.isEmpty && binding.retentionMode.isEmpty &&
+            binding.dataRegion.isEmpty
+    case 2:
+        return binding.providerAccountPolicyRevision > 0 && digestIsValid &&
+            ["external_provider", "enterprise_tenant", "local_runtime"]
+                .contains(binding.trustDomain) &&
+            ["provider_default", "zero_data_retention", "limited_retention"]
+                .contains(binding.retentionMode) &&
+            ["global", "us", "eu", "apac", "local"]
+                .contains(binding.dataRegion)
+    default:
+        return false
+    }
+}
+
+public struct LocalProductChatAvailabilityFailure: Codable, Equatable, Sendable {
+    public let code: LocalIPCRemoteError.Code
+    public let stage: LocalIPCRemoteError.Stage
+    public let incidentID: String
+    public let retryable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case code, stage
+        case incidentID = "incident_id"
+        case retryable
+    }
+
+    public init(
+        code: LocalIPCRemoteError.Code,
+        stage: LocalIPCRemoteError.Stage,
+        incidentID: String,
+        retryable: Bool
+    ) {
+        self.code = code
+        self.stage = stage
+        self.incidentID = incidentID
+        self.retryable = retryable
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: ["code", "stage", "incident_id", "retryable"]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        code = try values.decode(LocalIPCRemoteError.Code.self, forKey: .code)
+        stage = try values.decode(LocalIPCRemoteError.Stage.self, forKey: .stage)
+        incidentID = try values.decode(String.self, forKey: .incidentID)
+        retryable = try values.decode(Bool.self, forKey: .retryable)
+        guard code == .stateUnavailable,
+              [.migrationRead, .migrationCommit, .migrationCleanup].contains(stage),
+              LocalIPCWire.validRequestID(incidentID)
+        else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+// LocalProductChatSession is the app-level registry entry for one conversation
+// (one backend thread). It lets the user create and switch between multiple
+// distinct conversations instead of a single implicit thread.
+public struct LocalProductChatSession: Codable, Equatable, Identifiable, Sendable {
+  public var id: String { threadID }
+  public let threadID: String
+  public var title: String
+  public var createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    threadID: String,
+    title: String,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.threadID = threadID
+    self.title = title
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
 }
 
 public struct LocalProductChatThread: Codable, Equatable, Sendable {
     public let threadID: String
+    public let profileID: String
+    public let segments: [LocalProductConversationSegment]
+    public let attempts: [LocalProductConversationAttempt]
     public let messages: [LocalProductChatMessage]
     public let canReply: Bool
     public let requiresConfirmation: Bool
+    public let availabilityFailure: LocalProductChatAvailabilityFailure?
 
     enum CodingKeys: String, CodingKey {
         case threadID = "thread_id"
+        case profileID = "profile_id"
+        case segments, attempts
         case messages
         case canReply = "can_reply"
         case requiresConfirmation = "requires_confirmation"
+        case availabilityFailure = "availability_failure"
+    }
+
+    public init(
+        threadID: String,
+        profileID: String = "",
+        segments: [LocalProductConversationSegment] = [],
+        attempts: [LocalProductConversationAttempt] = [],
+        messages: [LocalProductChatMessage],
+        canReply: Bool,
+        requiresConfirmation: Bool,
+        availabilityFailure: LocalProductChatAvailabilityFailure? = nil
+    ) {
+        self.threadID = threadID
+        self.profileID = profileID
+        self.segments = segments
+        self.attempts = attempts
+        self.messages = messages
+        self.canReply = canReply
+        self.requiresConfirmation = requiresConfirmation
+        self.availabilityFailure = availabilityFailure
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "thread_id", "profile_id", "segments", "attempts", "messages",
+                "can_reply", "requires_confirmation", "availability_failure",
+            ]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        threadID = try values.decode(String.self, forKey: .threadID)
+        profileID = try values.decodeIfPresent(
+            String.self,
+            forKey: .profileID
+        ) ?? ""
+        segments = try values.decodeIfPresent(
+            [LocalProductConversationSegment].self,
+            forKey: .segments
+        ) ?? []
+        attempts = try values.decodeIfPresent(
+            [LocalProductConversationAttempt].self,
+            forKey: .attempts
+        ) ?? []
+        messages = try values.decode(
+            [LocalProductChatMessage].self,
+            forKey: .messages
+        )
+        canReply = try values.decode(Bool.self, forKey: .canReply)
+        requiresConfirmation = try values.decode(
+            Bool.self,
+            forKey: .requiresConfirmation
+        )
+        availabilityFailure = try values.decodeIfPresent(
+            LocalProductChatAvailabilityFailure.self,
+            forKey: .availabilityFailure
+        )
+        if availabilityFailure != nil && canReply {
+            throw LocalProductClientError.invalidResponse
+        }
     }
 }
 
@@ -1099,6 +2538,39 @@ public struct LocalProductChatThreadRequest: Encodable, Sendable {
 public struct LocalProductChatMessageRequest: Encodable, Sendable {
     public let threadID: String
     public let content: String
+    public let profileID: String
+    public let modelID: String
+    public let reasoningEffort: String
+    public let contextMode: LocalProductConversationContextMode?
+    public let expectedExecutionBinding: LocalProductConversationExecutionBinding?
+
+    public init(
+        threadID: String,
+        content: String,
+        profileID: String = "",
+        modelID: String = "",
+        reasoningEffort: String = "",
+        contextMode: LocalProductConversationContextMode? = nil,
+        expectedExecutionBinding: LocalProductConversationExecutionBinding? = nil
+    ) {
+        self.threadID = threadID
+        self.content = content
+        self.profileID = profileID
+        self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
+        self.contextMode = contextMode
+        self.expectedExecutionBinding = expectedExecutionBinding
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case content
+        case profileID = "profile_id"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
+        case contextMode = "context_mode"
+        case expectedExecutionBinding = "expected_execution_binding"
+    }
 }
 
 public enum LocalProductWire {
@@ -1267,4 +2739,90 @@ enum StrictJSONScanner {
             return true
         }
     }
+}
+
+// MARK: - Conversation model catalog (Provider -> Model -> Reasoning Effort)
+
+public struct LocalProductConversationModelOption: Identifiable, Equatable, Sendable {
+    public var id: String { modelID }
+    public let modelID: String
+    public let displayName: String
+    public let reasoningEfforts: [String]
+}
+
+public func localProductConversationModels(
+    providerID: String
+) -> [LocalProductConversationModelOption] {
+    switch providerID {
+    case "openai":
+        // Grounded in the Codex CLI 0.144.1 model catalog.
+        return [
+            .init(modelID: "codex-default", displayName: "GPT-5.5 (Codex default)", reasoningEfforts: []),
+            .init(modelID: "gpt-5.5", displayName: "GPT-5.5", reasoningEfforts: []),
+            .init(modelID: "gpt-5.5-pro", displayName: "GPT-5.5 Pro", reasoningEfforts: []),
+            .init(modelID: "gpt-5.4", displayName: "GPT-5.4", reasoningEfforts: []),
+            .init(modelID: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", reasoningEfforts: []),
+            .init(modelID: "gpt-5.2", displayName: "GPT-5.2", reasoningEfforts: []),
+            .init(modelID: "gpt-5.1-codex-max", displayName: "GPT-5.1 Codex Max", reasoningEfforts: []),
+            .init(modelID: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", reasoningEfforts: []),
+            .init(modelID: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", reasoningEfforts: []),
+            .init(modelID: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", reasoningEfforts: []),
+            .init(modelID: "o3", displayName: "o3", reasoningEfforts: []),
+            .init(
+                modelID: "deepseek-v4-flash",
+                displayName: "DeepSeek V4 Flash",
+                reasoningEfforts: ["none", "high"]
+            ),
+            .init(
+                modelID: "deepseek-v4-pro",
+                displayName: "DeepSeek V4 Pro",
+                reasoningEfforts: ["none", "high"]
+            ),
+        ]
+    case "deepseek":
+        return [
+            .init(modelID: "deepseek-chat", displayName: "DeepSeek Chat", reasoningEfforts: []),
+            .init(modelID: "deepseek-reasoner", displayName: "DeepSeek Reasoner", reasoningEfforts: []),
+        ]
+    case "kimi":
+        return [.init(modelID: "kimi-k2.6", displayName: "Kimi K2.6", reasoningEfforts: [])]
+    case "minimax":
+        return [.init(modelID: "MiniMax-M3", displayName: "MiniMax M3", reasoningEfforts: [])]
+    case "anthropic":
+        return [.init(modelID: "claude-sonnet-5", displayName: "Claude Sonnet 5", reasoningEfforts: [])]
+    case "opencode":
+        return [
+            .init(
+                modelID: "deepseek/deepseek-chat",
+                displayName: "DeepSeek Chat",
+                reasoningEfforts: ["low", "medium", "high", "minimal"]
+            ),
+            .init(
+                modelID: "minimax/MiniMax-M3",
+                displayName: "MiniMax M3",
+                reasoningEfforts: ["low", "medium", "high", "minimal"]
+            ),
+            .init(
+                modelID: "zhipu/glm-4.5",
+                displayName: "Zhipu GLM-4.5",
+                reasoningEfforts: ["low", "medium", "high", "minimal"]
+            ),
+            .init(
+                modelID: "openai/gpt-5.5",
+                displayName: "OpenAI GPT-5.5",
+                reasoningEfforts: ["low", "medium", "high", "minimal"]
+            ),
+        ]
+    default:
+        return []
+    }
+}
+
+public func localProductConversationReasoningEfforts(
+    providerID: String,
+    modelID: String
+) -> [String] {
+    localProductConversationModels(providerID: providerID)
+        .first { $0.modelID == modelID }?
+        .reasoningEfforts ?? []
 }

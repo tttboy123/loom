@@ -16,7 +16,12 @@
 | [0012](0012-native-app-host-over-shared-daemon-ipc.md) | Native app host over the shared daemon IPC | accepted | 2026-07-28 |
 | [0013](0013-versioned-evolution-assets-and-run-bound-materialization.md) | Versioned evolution assets and Run-bound Runtime materialization | accepted | 2026-08-03 |
 | [0014](0014-agent-scheduling-framework.md) | Agent Scheduling Framework — single-authority queue/Scheduler/worker/integration architecture | accepted (Gate 1 Contract Re-review PASS) | 2026-08-04 |
+| [0015](0015-chat-first-client-shell-with-governance-panels.md) | Chat-First Client Shell with Governance Panels | accepted | 2026-08-06 |
+| [0016](0016-bundled-local-service-lifecycle.md) | Bundled local service lifecycle | accepted | 2026-08-09 |
+| [0017](0017-codex-native-conversation-responder.md) | Codex native conversation responder | accepted | 2026-08-09 |
+| [0018](0018-provider-registry-and-run-bound-profiles.md) | Provider registry and Run-bound profiles | accepted | 2026-08-09 |
+| [0019](0019-per-agent-execution-profiles-and-provider-accounts.md) | Per-Agent execution profiles and Provider Accounts | accepted | 2026-08-09 |
+| [0020](0020-loom-owned-credential-vault.md) | Loom-owned Credential Vault | accepted | 2026-08-10 |
+| [0021](0021-governed-composition-kernel-and-daemon-strangler.md) | Governed composition kernel and daemon strangler migration | accepted | 2026-08-14 |
 
 New decisions use [template.md](template.md). Superseded decisions remain in this index and link to their replacement.
- | [0015](0015-chat-first-client-shell-with-governance-panels.md) | Chat-First Client Shell with Governance Panels | proposed | 2026-08-06 |
- 

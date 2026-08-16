@@ -1,0 +1,36 @@
+role=AXStaticText|value=Loom|desc=|help=
+role=AXButton|value=|desc=New Mission|help=New Mission
+role=AXButton|value=|desc=Conversation|help=Chat
+role=AXButton|value=|desc=Mission Board|help=Work
+role=AXButton|value=|desc=Agent Teams|help=Teams
+role=AXButton|value=|desc=Items needing attention|help=Attention
+role=AXButton|value=|desc=Agent library|help=Library
+role=AXButton|value=|desc=Runtime health|help=Runtimes
+role=AXStaticText|value=RECENT|desc=|help=
+role=AXButton|value=|desc=Open recent task Recent work|help=Open recent task Recent work
+role=AXButton|value=|desc=Open recent task Recent work|help=Open recent task Recent work
+role=AXButton|value=|desc=Open recent task Attempt 022 Review Team|help=Open recent task Attempt 022 Review Team
+role=AXButton|value=|desc=Open recent task Attempt 022 Review Team|help=Open recent task Attempt 022 Review Team
+role=AXButton|value=|desc=Open local service and runtime health|help=Some information is unavailable
+role=AXStaticText|value=New task|desc=|help=
+role=AXStaticText|value=workspace-j2|desc=|help=
+role=AXButton|value=|desc=Open governance inspector|help=Governance inspector
+role=AXStaticText|value=Some information is unavailable|desc=|help=
+role=AXStaticText|value=Loom is showing the information it could safely load.|desc=|help=
+role=AXButton|value=|desc=Try Again|help=Try Again
+role=AXStaticText|value=What are we working on?|desc=|help=
+role=AXStaticText|value=Describe the outcome in your own words. Bring in an Agent Team only when the work needs governed execution.|desc=|help=
+role=AXStaticText|value=1 active missions, 0 items need you|desc=|help=
+role=AXButton|value=|desc=Open Folder|help=Open Folder
+role=AXButton|value=|desc=Use Agent Team|help=Use Agent Team
+role=AXButton|value=|desc=Choose conversation folder|help=Choose folder
+role=AXButton|value=|desc=Use Agent Team|help=Use Agent Team
+role=AXButton|value=|desc=New Mission|help=New Mission
+role=AXStaticText|value=workspace-j2|desc=|help=
+role=AXTextField|value=Summarize how Loom separates conversation from governed execution.|desc=|help=
+role=AXButton|value=|desc=Send message|help=Send message
+role=AXStaticText|value=Agent work requires review and confirmation.|desc=|help=
+role=AXButton|value=|desc=|help=
+role=AXButton|value=|desc=|help=this button also has an action to zoom the window
+role=AXButton|value=|desc=|help=
+role=AXStaticText|value=Loom|desc=|help=

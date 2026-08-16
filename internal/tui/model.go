@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"loom-pi-rebuild/internal/api"
@@ -55,6 +56,9 @@ const (
 var screens = []Screen{
 	ScreenHome,
 	ScreenBoard,
+	ScreenTeams,
+	ScreenEvidence,
+	ScreenRuntimes,
 	ScreenNewMission,
 	ScreenMission,
 	ScreenTeamBuilder,
@@ -71,6 +75,16 @@ var screens = []Screen{
 	ScreenProduction,
 	ScreenCustomerRules,
 	ScreenAutonomy,
+}
+
+var governanceViews = []string{
+	"Overview",
+	"Board",
+	"Teams",
+	"Decisions",
+	"Evidence",
+	"Runtimes",
+	"Attention",
 }
 
 type ReadClient interface {
@@ -138,6 +152,17 @@ type ExecutionClient interface {
 		context.Context,
 		app.MissionExecutionCommand,
 	) (api.MissionExecutionEnvelope, error)
+}
+
+type MissionDecisionClient interface {
+	ReadMissionDecision(
+		context.Context,
+		app.MissionDecisionCommand,
+	) (app.MissionDecisionSheet, error)
+	DecideMission(
+		context.Context,
+		app.MissionDecisionCommand,
+	) (app.MissionDecisionResult, error)
 }
 
 type EvolutionAssetClient interface {
@@ -245,6 +270,24 @@ func (client *DaemonReadClient) SendChatMessage(
 	var thread api.LocalProductChatThread
 	err := client.client.Call(ctx, "chat_message", request, &thread)
 	return thread, err
+}
+
+func (client *DaemonReadClient) ReadMissionDecision(
+	ctx context.Context,
+	command app.MissionDecisionCommand,
+) (app.MissionDecisionSheet, error) {
+	var sheet app.MissionDecisionSheet
+	err := client.client.Call(ctx, "mission_decision", command, &sheet)
+	return sheet, err
+}
+
+func (client *DaemonReadClient) DecideMission(
+	ctx context.Context,
+	command app.MissionDecisionCommand,
+) (app.MissionDecisionResult, error) {
+	var result app.MissionDecisionResult
+	err := client.client.Call(ctx, "mission_decision", command, &result)
+	return result, err
 }
 
 func (client *DaemonReadClient) ProposeSideTask(ctx context.Context, request app.SideTaskProposalRequest) (app.SideTaskProposalResult, error) {
@@ -392,6 +435,15 @@ type snapshotFailedMsg struct {
 	err error
 }
 
+type attentionRefreshedMsg struct {
+	generation          uint64
+	snapshot            api.LocalProductSnapshot
+	snapshotErr         error
+	permissionAttention app.PermissionAttention
+	permissionErr       error
+	hasPermission       bool
+}
+
 type timelineLoadedMsg struct {
 	page api.LocalProductTimelinePage
 }
@@ -435,6 +487,10 @@ type builderUpdatedMsg struct {
 
 type builderConfirmedMsg struct {
 	confirmation app.BuilderConfirmation
+}
+
+type builderConfirmFailedMsg struct {
+	err error
 }
 
 type teamStatusUpdatedMsg struct {
@@ -481,10 +537,17 @@ type sideTaskProposedMsg struct {
 type sideTaskCreatedMsg struct{ result app.SideTaskCreateResult }
 type sideTaskDecidedMsg struct{ result app.SideTaskDecisionResult }
 type sideTaskFailedMsg struct{ err error }
+type missionDecisionLoadedMsg struct {
+	command app.MissionDecisionCommand
+	sheet   app.MissionDecisionSheet
+}
+type missionDecisionAppliedMsg struct{ result app.MissionDecisionResult }
+type missionDecisionFailedMsg struct{ err error }
 
 const (
 	entryBuilderAnswer      = "builder_answer"
 	entryChatDraft          = "chat_draft"
+	entryFolderPath         = "folder_path"
 	entryEditName           = "edit_name"
 	entryEditPurpose        = "edit_purpose"
 	entryCredentialPut      = "credential_put"
@@ -526,10 +589,14 @@ type Model struct {
 	loading                bool
 	offline                bool
 	lastError              string
+	governancePanelVisible bool
+	governancePanelPinned  bool
+	governanceViewIndex    int
 	snapshot               api.LocalProductSnapshot
 	timeline               api.LocalProductTimelinePage
 	setup                  app.SetupSnapshot
 	builder                app.BuilderSessionView
+	builderNotice          string
 	confirmation           app.BuilderConfirmation
 	credential             app.CredentialSetupResult
 	entryMode              string
@@ -543,9 +610,15 @@ type Model struct {
 	missionPackageIndex    int
 	missionPreflight       app.MissionExecutionPreflight
 	missionResult          app.MissionExecutionResult
+	decisionClient         MissionDecisionClient
+	decisionCommand        app.MissionDecisionCommand
+	decisionSheet          app.MissionDecisionSheet
+	decisionActionIndex    int
 	chatClient             ChatClient
 	chatThread             api.LocalProductChatThread
+	chatThreadID           string
 	chatDraft              []byte
+	workspaceFolder        string
 	sideTaskPurpose        string
 	sideTaskMode           string
 	sideTaskTitle          string
@@ -562,6 +635,7 @@ type Model struct {
 	integrationSnapshot    app.IntegrationSnapshot
 	permissionSnapshot     app.PermissionSnapshot
 	permissionAttention    app.PermissionAttention
+	attentionGeneration    uint64
 	executionSnapshot      app.ExecutionSnapshot
 	productionSnapshot     production.ProductionSnapshot
 	customerRuleSnapshot   app.CustomerRuleSnapshot
@@ -597,6 +671,7 @@ func newModelWithContext(
 	setupClient, _ := client.(SetupClient)
 	chatClient, _ := client.(ChatClient)
 	executionClient, _ := client.(ExecutionClient)
+	decisionClient, _ := client.(MissionDecisionClient)
 	handoffClient, _ := client.(HandoffClient)
 	assetClient, _ := client.(EvolutionAssetClient)
 	journeyID, err := newTUIJourneyID()
@@ -604,11 +679,21 @@ func newModelWithContext(
 		cancel()
 		return Model{}, err
 	}
+	workspaceIdentity, err := os.Getwd()
+	if err != nil {
+		cancel()
+		return Model{}, err
+	}
+	if physical, physicalErr := filepath.EvalSymlinks(workspaceIdentity); physicalErr == nil {
+		workspaceIdentity = physical
+	}
 	return Model{
 		client:                 client,
 		setupClient:            setupClient,
 		chatClient:             chatClient,
+		chatThreadID:           newTUIChatThreadID(workspaceIdentity),
 		executionClient:        executionClient,
+		decisionClient:         decisionClient,
 		handoffClient:          handoffClient,
 		assetClient:            assetClient,
 		queueClient:            queueClientFrom(client),
@@ -644,31 +729,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.offline = false
 		model.lastError = ""
-		model.snapshot = cloneSnapshot(message.snapshot)
-		if model.missionPreflight.PreflightDigest != "" &&
-			model.missionPreflight.ViewVersion != model.snapshot.ViewVersion {
-			model.missionPreflight = app.MissionExecutionPreflight{}
-			model.missionResult = app.MissionExecutionResult{}
-			model.lastError = "preflight_expired"
-		}
-		if model.currentMission != "" {
-			if _, ok := model.currentMissionRecord(); !ok {
-				model.currentMission = ""
-				if model.Screen() == ScreenMission {
-					model.switchScreen(indexOfScreen(ScreenBoard))
-				}
-			}
-		}
-		if len(model.snapshot.Teams) == 0 {
-			model.currentTeam = ""
-			model.timeline = api.LocalProductTimelinePage{}
-		}
-		if model.Screen() == ScreenBoard &&
-			model.selected == 0 &&
-			len(model.snapshot.Missions) > 0 {
-			model.selected = 1
-		}
-		model.clampSelection()
+		model.applySnapshot(message.snapshot)
 		return model, nil
 	case snapshotFailedMsg:
 		model.loading = false
@@ -677,6 +738,38 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			localipc.ErrLocalProductUnavailable,
 		)
 		model.lastError = safeClientState(message.err)
+		return model, nil
+	case attentionRefreshedMsg:
+		if message.generation != model.attentionGeneration {
+			return model, nil
+		}
+		model.loading = false
+		if message.snapshotErr != nil {
+			model.permissionAttention = app.PermissionAttention{}
+			model.offline = errors.Is(
+				message.snapshotErr,
+				localipc.ErrLocalProductUnavailable,
+			)
+			model.lastError = safeClientState(message.snapshotErr)
+			return model, nil
+		}
+		model.offline = false
+		model.lastError = ""
+		model.applySnapshot(message.snapshot)
+		if !message.hasPermission {
+			model.permissionAttention = app.PermissionAttention{}
+			return model, nil
+		}
+		if message.permissionErr != nil {
+			model.permissionAttention = app.PermissionAttention{}
+			model.offline = errors.Is(
+				message.permissionErr,
+				localipc.ErrLocalProductUnavailable,
+			)
+			model.lastError = safeClientState(message.permissionErr)
+			return model, nil
+		}
+		model.permissionAttention = message.permissionAttention
 		return model, nil
 	case timelineLoadedMsg:
 		model.loading = false
@@ -730,6 +823,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.offline = false
 		model.lastError = ""
+		model.builderNotice = ""
 		model.builder = cloneBuilderSession(message.session)
 		return model, nil
 	case builderUpdatedMsg:
@@ -743,12 +837,32 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.offline = false
 		model.lastError = ""
+		model.builderNotice = ""
 		model.confirmation = message.confirmation
 		model.builder = app.BuilderSessionView{}
 		if message.confirmation.TeamInstanceCreated {
 			return model, tea.Batch(model.loadSetup(), model.loadSnapshot())
 		}
 		return model, model.loadSetup()
+	case builderConfirmFailedMsg:
+		model.loading = false
+		model.offline = errors.Is(
+			message.err,
+			localipc.ErrLocalProductUnavailable,
+		)
+		if isRemoteConflict(message.err) || isRemoteNotFound(message.err) {
+			model.builder = app.BuilderSessionView{}
+			model.confirmation = app.BuilderConfirmation{}
+			model.lastError = ""
+			if isRemoteNotFound(message.err) {
+				model.builderNotice = "This Agent Team draft is no longer available. Review the latest Teams, then press n to start a new draft."
+			} else {
+				model.builderNotice = "This Agent Team draft changed in another client. Review the latest Teams, then press n to start a new draft."
+			}
+			return model, model.loadSetup()
+		}
+		model.lastError = safeClientState(message.err)
+		return model, nil
 	case teamStatusUpdatedMsg:
 		model.loading = false
 		model.offline = false
@@ -772,6 +886,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.loading = false
 		model.offline = false
 		model.lastError = ""
+		model.missionPreflight = app.MissionExecutionPreflight{}
 		model.missionResult = message.result
 		model.currentMission = message.result.MissionID
 		model.currentTeam = message.result.TeamInstanceID
@@ -782,6 +897,32 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			message.err,
 			localipc.ErrLocalProductUnavailable,
 		)
+		model.lastError = safeClientState(message.err)
+		return model, nil
+	case missionDecisionLoadedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.decisionCommand = message.command
+		model.decisionSheet = message.sheet
+		model.decisionActionIndex = 0
+		model.decisionOpen = true
+		return model, nil
+	case missionDecisionAppliedMsg:
+		model.loading = false
+		model.offline = false
+		model.lastError = ""
+		model.decisionOpen = false
+		model.decisionCommand = app.MissionDecisionCommand{}
+		model.decisionSheet = app.MissionDecisionSheet{}
+		model.decisionActionIndex = 0
+		return model, model.loadSnapshot()
+	case missionDecisionFailedMsg:
+		model.loading = false
+		model.decisionOpen = false
+		model.decisionCommand = app.MissionDecisionCommand{}
+		model.decisionSheet = app.MissionDecisionSheet{}
+		model.decisionActionIndex = 0
 		model.lastError = safeClientState(message.err)
 		return model, nil
 	case sideTaskProposedMsg:
@@ -1041,7 +1182,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			if (model.Screen() == ScreenPermissions ||
 				model.Screen() == ScreenAttention) &&
-				model.permissionClient != nil {
+				model.permissionClient != nil &&
+				len(model.permissionAttention.Decisions) > 0 {
 				model.loading = true
 				return model, model.permissionGrantAlways()
 			}
@@ -1101,9 +1243,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadStandingOrders()
 			}
-			if model.Screen() == ScreenAttention && model.permissionClient != nil {
-				model.loading = true
-				return model, model.loadPermissionAttention()
+			if model.Screen() == ScreenAttention {
+				return model.beginAttentionRefresh()
 			}
 			return model, nil
 		case "shift+tab", "left":
@@ -1148,9 +1289,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadStandingOrders()
 			}
-			if model.Screen() == ScreenAttention && model.permissionClient != nil {
-				model.loading = true
-				return model, model.loadPermissionAttention()
+			if model.Screen() == ScreenAttention {
+				return model.beginAttentionRefresh()
 			}
 			return model, nil
 		case "down", "j":
@@ -1199,8 +1339,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if model.Screen() == ScreenAutonomy && model.standingOrderClient != nil {
 				return model, model.loadStandingOrders()
 			}
-			if model.Screen() == ScreenAttention && model.permissionClient != nil {
-				return model, model.loadPermissionAttention()
+			if model.Screen() == ScreenAttention {
+				return model.beginAttentionRefresh()
 			}
 			if model.Screen() == ScreenTeamBuilder {
 				return model, model.loadSetup()
@@ -1232,6 +1372,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if model.Screen() == ScreenMission && model.decisionOpen {
 				model.decisionOpen = false
+				model.decisionCommand = app.MissionDecisionCommand{}
+				model.decisionSheet = app.MissionDecisionSheet{}
+				model.decisionActionIndex = 0
 				return model, nil
 			}
 			if model.Screen() == ScreenMission ||
@@ -1245,6 +1388,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.entry = nil
 				model.entryMode = ""
 				model.builder = app.BuilderSessionView{}
+				model.builderNotice = ""
 			}
 			return model, nil
 		case "enter":
@@ -1312,6 +1456,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "n":
+			if model.Screen() == ScreenHome {
+				model.resetMissionDraft()
+				model.switchScreen(indexOfScreen(ScreenNewMission))
+				return model, nil
+			}
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
 				model.loading = true
 				return model, model.customerRuleDefineBuiltin()
@@ -1382,7 +1531,7 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if (model.Screen() == ScreenPermissions ||
 				model.Screen() == ScreenAttention) &&
 				model.permissionClient != nil &&
-				len(model.permissionAttention.Decisions) > 0 {
+				model.hasInspectablePermissionApproval() {
 				model.loading = true
 				return model, model.permissionResolveDecision("allow")
 			}
@@ -1395,8 +1544,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 			if model.Screen() == ScreenMission {
-				if _, ok := model.currentMissionAttention(); ok {
-					model.decisionOpen = true
+				if _, ok := model.preparedMissionDecision(model.currentMission); ok &&
+					model.decisionClient != nil {
+					model.loading = true
+					return model, model.readMissionDecision()
 				}
 				return model, nil
 			}
@@ -1408,6 +1559,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.setSelectedTeamStatus(false)
 			}
 		case "u":
+			if model.Screen() == ScreenHome {
+				model.switchScreen(indexOfScreen(ScreenTeamBuilder))
+				model.loading = true
+				return model, model.loadSetup()
+			}
 			if model.Screen() == ScreenAssets && len(model.evolutionAssets.Definitions) > 0 {
 				model.pendingEvolutionAction = "rollback"
 				return model, nil
@@ -1451,6 +1607,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "p":
+			if model.Screen() == ScreenHome {
+				model.governancePanelVisible = true
+				model.governancePanelPinned = !model.governancePanelPinned
+				return model, nil
+			}
 			if model.Screen() == ScreenExecution && model.boundedExecutionClient != nil {
 				model.loading = true
 				return model, model.proposeExecutionProbe()
@@ -1519,6 +1680,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "v":
+			if model.Screen() == ScreenHome && model.governancePanelVisible {
+				model.governanceViewIndex =
+					(model.governanceViewIndex + 1) % len(governanceViews)
+				return model, nil
+			}
 			if (model.Screen() == ScreenPermissions ||
 				model.Screen() == ScreenAttention) &&
 				model.permissionClient != nil {
@@ -1593,6 +1759,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "o":
+			if model.Screen() == ScreenHome {
+				model.entryMode = entryFolderPath
+				model.entry = nil
+				return model, nil
+			}
 			if model.Screen() == ScreenMission && model.sideTaskProposal.ProposalDigest == "" {
 				model.cycleSideTaskMode()
 				return model, nil
@@ -1603,16 +1774,33 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.createSideTask()
 			}
 		case "[":
+			if model.Screen() == ScreenMission && model.decisionOpen &&
+				model.decisionActionIndex > 0 {
+				model.decisionActionIndex--
+				return model, nil
+			}
 			if model.Screen() == ScreenMission && model.sideTaskDecision > 0 {
 				model.sideTaskDecision--
 				return model, nil
 			}
 		case "]":
+			if model.Screen() == ScreenHome {
+				model.governancePanelVisible = !model.governancePanelVisible
+				return model, nil
+			}
 			if model.Screen() == ScreenAssets && model.evolutionAssets.NextCursor != "" {
 				model.loading = true
 				return model, model.loadEvolutionAssets(model.evolutionAssets.NextCursor)
 			}
 			if model.Screen() == ScreenMission {
+				if model.decisionOpen {
+					choices := model.decisionSheet.PreparedActions
+					if len(choices) > 0 {
+						model.decisionActionIndex =
+							(model.decisionActionIndex + 1) % len(choices)
+					}
+					return model, nil
+				}
 				if sideTask, ok := model.currentDecisionSideTask(); ok && len(sideTask.AvailableDecisions) > 0 {
 					model.sideTaskDecision = (model.sideTaskDecision + 1) % len(sideTask.AvailableDecisions)
 				}
@@ -1636,6 +1824,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 			if model.Screen() == ScreenMission {
+				if model.decisionOpen && len(model.decisionSheet.PreparedActions) > 0 {
+					model.loading = true
+					return model, model.submitMissionDecision()
+				}
 				if _, ok := model.currentDecisionSideTask(); ok {
 					model.loading = true
 					return model, model.decideSideTask()
@@ -1664,6 +1856,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, nil
 			}
 		case "i":
+			if model.Screen() == ScreenHome {
+				model.entryMode = entryChatDraft
+				model.entry = append([]byte(nil), model.chatDraft...)
+				return model, nil
+			}
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
 				model.entryMode = entryCustomerRuleImport
 				model.entry = []byte{}
@@ -1706,19 +1903,23 @@ func (model Model) View() string {
 	builder.WriteByte('\n')
 	switch {
 	case model.loading:
-		builder.WriteString(styleLoading("Loading your local workspace…") + "\n")
+		builder.WriteString(styleLoading("Starting local service...") + "\n")
 	case model.offline:
-		builder.WriteString(styleError("Daemon offline · read view unavailable") + "\n")
+		builder.WriteString(styleError("Local service unavailable · press r to try again") + "\n")
 	case model.lastError != "":
 		builder.WriteString(styleError("State unavailable · "))
 		builder.WriteString(styleError(sanitizeCell(model.lastError, 80)))
 		builder.WriteByte('\n')
 	default:
-		builder.WriteString(model.screenBody())
+		body := model.screenBody()
+		if model.Screen() == ScreenHome && model.governancePanelVisible {
+			body = model.renderHomeGovernanceLayout(body)
+		}
+		builder.WriteString(body)
 	}
 	if model.snapshot.Stale {
 		builder.WriteString("\n")
-		builder.WriteString(styleWarningBanner("stale · showing the last preserved view · " + sanitizeCell(model.snapshot.Reason, 80)))
+		builder.WriteString(styleWarningBanner("Showing last loaded state · press r to refresh"))
 		builder.WriteByte('\n')
 	}
 	if model.snapshot.Partial {
@@ -1735,6 +1936,129 @@ func (model Model) View() string {
 	builder.WriteString(styleKeyHint(screenKeyHint(model.Screen())))
 	builder.WriteString("\n")
 	return clipView(builder.String(), model.width, model.height)
+}
+
+func (model Model) renderHomeGovernanceLayout(conversation string) string {
+	conversation = strings.Replace(conversation, styleSection("Chat"), styleSection("Conversation"), 1)
+	governance := model.renderGovernanceSummary()
+	if model.width < 120 {
+		return strings.TrimRight(conversation, "\n") + "\n" +
+			styleDivider(min(model.width, 72)) + "\n" + governance
+	}
+
+	leftWidth := model.width - 42
+	rightWidth := 38
+	left := lipgloss.NewStyle().
+		Width(leftWidth).
+		MaxWidth(leftWidth).
+		PaddingRight(2).
+		Render(strings.TrimRight(conversation, "\n"))
+	right := lipgloss.NewStyle().
+		Width(rightWidth).
+		MaxWidth(rightWidth).
+		BorderLeft(true).
+		BorderForeground(loomTextMuted).
+		PaddingLeft(2).
+		Render(strings.TrimRight(governance, "\n"))
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n"
+}
+
+func (model Model) renderGovernanceSummary() string {
+	viewIndex := model.governanceViewIndex
+	if viewIndex < 0 || viewIndex >= len(governanceViews) {
+		viewIndex = 0
+	}
+	active := 0
+	for _, mission := range model.snapshot.Missions {
+		if mission.Lane != api.MissionLaneComplete {
+			active++
+		}
+	}
+	lines := []string{styleSection("Governance · " + governanceViews[viewIndex])}
+	switch governanceViews[viewIndex] {
+	case "Overview":
+		lines = append(
+			lines,
+			fmt.Sprintf("Active missions · %d", active),
+			fmt.Sprintf("Needs you · %d", len(model.snapshot.Attention)),
+			fmt.Sprintf("Teams · %d", len(model.snapshot.Teams)),
+			fmt.Sprintf("Runtimes · %d", len(model.snapshot.Runtimes)),
+		)
+	case "Board":
+		for _, mission := range model.snapshot.Missions[:min(6, len(model.snapshot.Missions))] {
+			lines = append(lines, fmt.Sprintf(
+				"· %s · %s",
+				sanitizeCell(model.missionDisplayTitle(mission), 22),
+				sanitizeCell(string(mission.Lane), 14),
+			))
+		}
+		if len(model.snapshot.Missions) == 0 {
+			lines = append(lines, "No missions yet")
+		}
+	case "Teams":
+		for _, team := range model.snapshot.Teams[:min(8, len(model.snapshot.Teams))] {
+			lines = append(lines, "· "+sanitizeCell(model.teamDisplayName(team), 28))
+		}
+		if len(model.snapshot.Teams) == 0 {
+			lines = append(lines, "No Agent Teams yet")
+		}
+	case "Decisions":
+		for _, decision := range model.snapshot.PreparedDecisions[:min(8, len(model.snapshot.PreparedDecisions))] {
+			lines = append(lines, fmt.Sprintf(
+				"· %s · %s",
+				humanizeStatus(decision.Kind),
+				humanizeStatus(decision.Action),
+			))
+		}
+		if len(model.snapshot.PreparedDecisions) == 0 {
+			lines = append(lines, "No decisions need review")
+		}
+	case "Evidence":
+		for index, evidence := range model.snapshot.Evidence[:min(8, len(model.snapshot.Evidence))] {
+			lines = append(lines, fmt.Sprintf(
+				"· Evidence %d · %s",
+				index+1,
+				shortTUIDigest(evidence.Digest),
+			))
+		}
+		if len(model.snapshot.Evidence) == 0 {
+			lines = append(lines, "No accepted Evidence yet")
+		}
+	case "Runtimes":
+		for _, runtime := range model.snapshot.Runtimes[:min(8, len(model.snapshot.Runtimes))] {
+			lines = append(lines, fmt.Sprintf(
+				"· %s · %s",
+				sanitizeCell(model.runtimeDisplayName(runtime.RuntimeInstanceID), 22),
+				humanizeStatus(runtime.Status),
+			))
+		}
+		if len(model.snapshot.Runtimes) == 0 {
+			lines = append(lines, "No runtimes discovered")
+		}
+	case "Attention":
+		for _, item := range model.snapshot.Attention[:min(8, len(model.snapshot.Attention))] {
+			lines = append(lines, "· "+sanitizeCell(item.ActionRequired, 30))
+		}
+		if len(model.snapshot.Attention) == 0 {
+			lines = append(lines, "Nothing needs you")
+		}
+	}
+	if governanceViews[viewIndex] == "Overview" && len(model.snapshot.Missions) > 0 {
+		lines = append(lines, "", styleSection("Mission pulse"))
+		for _, mission := range model.snapshot.Missions[:min(3, len(model.snapshot.Missions))] {
+			lines = append(lines, fmt.Sprintf(
+				"· %s · %s",
+				sanitizeCell(model.missionDisplayTitle(mission), 22),
+				sanitizeCell(string(mission.Lane), 14),
+			))
+		}
+	}
+	mode := "not pinned"
+	if model.governancePanelPinned {
+		mode = "pinned"
+	}
+	lines = append(lines, "", styleHelp("v next view · ] close · p "+mode+" · g b Board"))
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func (model Model) Screen() Screen {
@@ -1762,14 +2086,30 @@ func (model Model) screenBody() string {
 				prefix := "Loom"
 				if message.Role == "user" {
 					prefix = "You"
+				} else if message.Tentative {
+					prefix = "Loom proposal (untrusted)"
 				}
-				lines = append(lines, fmt.Sprintf("%s · %s", prefix, sanitizeCell(message.Content, 72)))
+				content := message.DisplayContent()
+				if content == api.ToolShapedChatWarning {
+					lines = append(
+						lines,
+						prefix+" · The conversation runtime returned tool-shaped text.",
+						"  Loom did not execute it.",
+					)
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("%s · %s", prefix, sanitizeCell(content, 72)))
 			}
 		}
 		if model.entryMode == entryChatDraft {
 			lines = append(lines, "", "Draft · "+sanitizeCell(string(model.entry), 72))
 		}
-		lines = append(lines, "", styleHelp("i message · u Agent Team · g b Board · r refresh · q quit"))
+		if model.entryMode == entryFolderPath {
+			lines = append(lines, "", "Folder path · "+sanitizeCell(string(model.entry), 72))
+		} else if model.workspaceFolder != "" {
+			lines = append(lines, "", "Folder · "+sanitizeCell(model.workspaceFolder, 72))
+		}
+		lines = append(lines, "", styleHelp("i message · n New Mission · o folder · u Agent Team · g b Board · r refresh · q quit"))
 		return strings.Join(lines, "\n") + "\n"
 	case ScreenBoard:
 		lines := []string{
@@ -1836,9 +2176,14 @@ func (model Model) screenBody() string {
 				model.missionNodeDisplayTitle(mission, mission.CurrentNodeID))
 			if decision, available :=
 				model.preparedMissionDecision(mission.MissionID); available {
+				action := ""
+				if model.decisionClient != nil {
+					action = " · a open"
+				}
 				lines = append(lines, fmt.Sprintf(
-					styleSection("Decision")+" · %s prepared · a open",
+					styleSection("Decision")+" · %s prepared%s",
 					styleStatus(humanizeStatus(decision.Kind)),
+					action,
 				))
 			} else if mission.AttentionCount > 0 {
 				lines = append(
@@ -1879,19 +2224,7 @@ func (model Model) screenBody() string {
 			return "Mission Detail\nChoose a Mission from the Board.\n"
 		}
 		if model.decisionOpen {
-			attention, ok := model.currentMissionAttention()
-			if !ok {
-				return "Decision unavailable\nNo prepared decision is available.\n"
-			}
-			return strings.Join([]string{
-				"Authorization Decision",
-				"Mission · " + model.missionDisplayTitle(mission),
-				"Action · " + humanizeStatus(attention.ActionRequired),
-				"Request · Prepared authorization request",
-				"Status · " + humanizeStatus(attention.Status),
-				"Prepared command unavailable · mutation actions disabled",
-				"Esc · Not now",
-			}, "\n") + "\n"
+			return model.renderMissionDecision(mission)
 		}
 		lines := []string{
 			"Mission Detail",
@@ -1928,10 +2261,15 @@ func (model Model) screenBody() string {
 				)
 			}
 		}
-		if mission.AttentionCount > 0 {
+		if _, prepared := model.preparedMissionDecision(mission.MissionID); prepared && model.decisionClient != nil {
 			lines = append(
 				lines,
 				"Needs You · prepared decision required · a open Approval",
+			)
+		} else if mission.AttentionCount > 0 {
+			lines = append(
+				lines,
+				"Needs You · review in a supported decision client",
 			)
 		}
 		for _, pulse := range mission.TeamPulse {
@@ -2166,7 +2504,14 @@ func (model Model) screenBody() string {
 	case ScreenCompare:
 		return model.renderCompare()
 	case ScreenAttention:
-		lines := []string{"Needs your attention · a approve · x reject · g grant-always · v view"}
+		lines := []string{"Needs your attention"}
+		if model.permissionClient != nil && len(model.permissionAttention.Approvals) > 0 {
+			lines[0] += " · x reject"
+			if model.hasInspectablePermissionApproval() {
+				lines[0] += " · a approve"
+			}
+			lines[0] += " · v view"
+		}
 		for _, item := range model.snapshot.Attention {
 			lines = append(lines, fmt.Sprintf(
 				"• %s",
@@ -2265,10 +2610,27 @@ func (model Model) screenBody() string {
 	}
 }
 
+func (model Model) hasInspectablePermissionApproval() bool {
+	return len(model.permissionAttention.Approvals) > 0 &&
+		model.permissionAttention.Approvals[0].DetailsAvailable
+}
+
 func (model Model) renderTeamBuilder() string {
 	lines := []string{
 		"What would you like Loom to help with?",
 		"Build your team one step at a time.",
+	}
+	if model.builderNotice != "" {
+		notice := "Draft changed in another client."
+		if strings.Contains(model.builderNotice, "no longer available") {
+			notice = "Agent Team draft no longer available."
+		}
+		lines = append(
+			lines,
+			"",
+			notice,
+			"Latest Teams refreshed. Press n to start a new draft.",
+		)
 	}
 	if model.setupClient == nil {
 		lines = append(lines, "Setup service unavailable")
@@ -2915,6 +3277,140 @@ func (model Model) cancelMission() tea.Cmd {
 	}
 }
 
+func (model Model) readMissionDecision() tea.Cmd {
+	client := model.decisionClient
+	ctx := model.ctx
+	command, ok := model.preparedMissionDecision(model.currentMission)
+	return func() tea.Msg {
+		if client == nil || !ok || command.Operation != "read" ||
+			command.Action != "read" || command.ViewVersion != model.snapshot.ViewVersion {
+			return missionDecisionFailedMsg{err: app.ErrMissionDecisionConflict}
+		}
+		sheet, err := client.ReadMissionDecision(ctx, command)
+		if err != nil {
+			return missionDecisionFailedMsg{err: err}
+		}
+		if sheet.SchemaVersion != 1 || !sheet.Prepared ||
+			sheet.MissionID != command.MissionID ||
+			sheet.TeamInstanceID != command.TeamInstanceID ||
+			sheet.ViewVersion != command.ViewVersion ||
+			sheet.DecisionID != command.DecisionID ||
+			sheet.DecisionDigest != command.DecisionDigest ||
+			sheet.LogicalNodeID != command.LogicalNodeID ||
+			sheet.AttemptNumber != command.AttemptNumber ||
+			sheet.ClaimGeneration != command.ClaimGeneration {
+			return missionDecisionFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return missionDecisionLoadedMsg{command: command, sheet: sheet}
+	}
+}
+
+func (model Model) submitMissionDecision() tea.Cmd {
+	client := model.decisionClient
+	ctx := model.ctx
+	command := model.decisionCommand
+	sheet := model.decisionSheet
+	index := model.decisionActionIndex
+	return func() tea.Msg {
+		if client == nil || index < 0 || index >= len(sheet.PreparedActions) ||
+			command.DecisionID == "" || command.ViewVersion != sheet.ViewVersion {
+			return missionDecisionFailedMsg{err: app.ErrMissionDecisionConflict}
+		}
+		action := sheet.PreparedActions[index]
+		if !containsTUIString(sheet.Actions, action) {
+			return missionDecisionFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		correlationID, err := newTUICorrelationID()
+		if err != nil {
+			return missionDecisionFailedMsg{err: err}
+		}
+		command.Operation = "submit"
+		command.Action = action
+		command.CorrelationID = correlationID
+		result, err := client.DecideMission(ctx, command)
+		if err != nil {
+			return missionDecisionFailedMsg{err: err}
+		}
+		if result.SchemaVersion != 1 || !result.Authoritative ||
+			result.MissionID != command.MissionID ||
+			result.DecisionID != command.DecisionID ||
+			len(result.ViewVersion) != 64 {
+			return missionDecisionFailedMsg{err: localipc.ErrInvalidProtocol}
+		}
+		return missionDecisionAppliedMsg{result: result}
+	}
+}
+
+func (model Model) renderMissionDecision(
+	mission api.LocalProductMissionSummary,
+) string {
+	sheet := model.decisionSheet
+	lines := []string{
+		humanizeStatus(sheet.Kind) + " Decision",
+		"Mission · " + model.missionDisplayTitle(mission),
+		"Request · " + sanitizeCell(sheet.Summary, 72),
+		"Expected Evidence · " + sanitizeCell(sheet.ExpectedEvidence, 72),
+	}
+	if len(sheet.PreparedActions) == 0 {
+		lines = append(
+			lines,
+			"No authoritative action is prepared",
+			"Esc · Not now",
+		)
+		return strings.Join(lines, "\n") + "\n"
+	}
+	index := model.decisionActionIndex
+	if index < 0 || index >= len(sheet.PreparedActions) {
+		index = 0
+	}
+	for actionIndex, action := range sheet.PreparedActions {
+		marker := " "
+		if actionIndex == index {
+			marker = "›"
+		}
+		lines = append(lines, marker+" "+humanizeStatus(action))
+	}
+	lines = append(lines, "[ ] choose · d Apply exact action · Esc Not now")
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func containsTUIString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (model *Model) applySnapshot(snapshot api.LocalProductSnapshot) {
+	model.snapshot = cloneSnapshot(snapshot)
+	if model.missionPreflight.PreflightDigest != "" &&
+		model.missionPreflight.ViewVersion != model.snapshot.ViewVersion {
+		model.missionPreflight = app.MissionExecutionPreflight{}
+		model.missionResult = app.MissionExecutionResult{}
+		model.lastError = "preflight_expired"
+	}
+	if model.currentMission != "" {
+		if _, ok := model.currentMissionRecord(); !ok {
+			model.currentMission = ""
+			if model.Screen() == ScreenMission {
+				model.switchScreen(indexOfScreen(ScreenBoard))
+			}
+		}
+	}
+	if len(model.snapshot.Teams) == 0 {
+		model.currentTeam = ""
+		model.timeline = api.LocalProductTimelinePage{}
+	}
+	if model.Screen() == ScreenBoard &&
+		model.selected == 0 &&
+		len(model.snapshot.Missions) > 0 {
+		model.selected = 1
+	}
+	model.clampSelection()
+}
+
 func (model Model) loadSnapshot() tea.Cmd {
 	client := model.client
 	ctx := model.ctx
@@ -2927,6 +3423,38 @@ func (model Model) loadSnapshot() tea.Cmd {
 			return snapshotFailedMsg{err: err}
 		}
 		return snapshotLoadedMsg{snapshot: snapshot}
+	}
+}
+
+func (model Model) beginAttentionRefresh() (Model, tea.Cmd) {
+	model.loading = true
+	model.permissionAttention = app.PermissionAttention{}
+	model.attentionGeneration++
+	return model, model.loadAttention(model.attentionGeneration)
+}
+
+func (model Model) loadAttention(generation uint64) tea.Cmd {
+	client, permissionClient, ctx := model.client, model.permissionClient, model.ctx
+	journeyID := model.evolutionJourneyID
+	return func() tea.Msg {
+		snapshot, snapshotErr := client.Snapshot(
+			ctx,
+			api.LocalProductSnapshotRequest{Limit: 64},
+		)
+		message := attentionRefreshedMsg{
+			generation:    generation,
+			snapshot:      snapshot,
+			snapshotErr:   snapshotErr,
+			hasPermission: permissionClient != nil,
+		}
+		if permissionClient != nil {
+			message.permissionAttention, message.permissionErr =
+				permissionClient.PermissionAttention(
+					ctx,
+					app.PermissionAttentionRequest{JourneyID: journeyID},
+				)
+		}
+		return message
 	}
 }
 
@@ -3487,7 +4015,12 @@ func (model Model) sendChatMessage(content string) tea.Cmd {
 }
 
 func (model Model) currentChatThreadID() string {
-	return "tui-thread"
+	return model.chatThreadID
+}
+
+func newTUIChatThreadID(workspaceIdentity string) string {
+	digest := sha256.Sum256([]byte(filepath.Clean(workspaceIdentity)))
+	return "thread-" + hex.EncodeToString(digest[:16])
 }
 
 func (model Model) startSelectedSetupAsset() tea.Cmd {
@@ -3686,6 +4219,27 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.loading = true
 			return model, model.sendChatMessage(content)
 		}
+		if model.entryMode == entryFolderPath {
+			path := strings.TrimSpace(string(model.entry))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			absolute, err := filepath.Abs(path)
+			if err != nil || path == "" {
+				model.lastError = "folder_unavailable"
+				return model, nil
+			}
+			info, err := os.Lstat(absolute)
+			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				model.lastError = "folder_unavailable"
+				return model, nil
+			}
+			model.workspaceFolder = sanitizeCell(filepath.Base(absolute), 128)
+			model.chatThreadID = newTUIChatThreadID(absolute)
+			model.chatThread = api.LocalProductChatThread{}
+			model.lastError = ""
+			return model, model.loadChatThread()
+		}
 		if len(model.entry) == 0 {
 			return model, nil
 		}
@@ -3715,16 +4269,25 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 	}
-	if message.Type != tea.KeyRunes {
-		return model, nil
-	}
 	maximum := 2048
+	if model.entryMode == entryFolderPath {
+		maximum = 1024
+	}
 	if model.entryMode == entryMissionObjective || model.entryMode == entrySideTaskRequest {
 		maximum = 4096
 	}
 	if model.entryMode == entryCredentialPut ||
 		model.entryMode == entryCredentialSwap {
 		maximum = 8192
+	}
+	if message.Type == tea.KeySpace {
+		if len(model.entry) < maximum {
+			model.entry = append(model.entry, ' ')
+		}
+		return model, nil
+	}
+	if message.Type != tea.KeyRunes {
+		return model, nil
 	}
 	for _, character := range message.Runes {
 		if unicode.IsControl(character) {
@@ -3798,11 +4361,11 @@ func (model Model) confirmBuilder() tea.Cmd {
 	session := cloneBuilderSession(model.builder)
 	return func() tea.Msg {
 		if client == nil {
-			return setupFailedMsg{err: localipc.ErrLocalProductUnavailable}
+			return builderConfirmFailedMsg{err: localipc.ErrLocalProductUnavailable}
 		}
 		definitionID, err := newTUITeamDefinitionID()
 		if err != nil {
-			return setupFailedMsg{err: err}
+			return builderConfirmFailedMsg{err: err}
 		}
 		confirmation, err := client.ConfirmBuilder(
 			ctx,
@@ -3818,7 +4381,7 @@ func (model Model) confirmBuilder() tea.Cmd {
 			},
 		)
 		if err != nil {
-			return setupFailedMsg{err: err}
+			return builderConfirmFailedMsg{err: err}
 		}
 		return builderConfirmedMsg{confirmation: confirmation}
 	}
@@ -4608,6 +5171,16 @@ func safeClientState(err error) string {
 		return "timeout"
 	}
 	return "state_unavailable"
+}
+
+func isRemoteConflict(err error) bool {
+	var remote *localipc.RemoteError
+	return errors.As(err, &remote) && remote.Code == "conflict"
+}
+
+func isRemoteNotFound(err error) bool {
+	var remote *localipc.RemoteError
+	return errors.As(err, &remote) && remote.Code == "not_found"
 }
 
 func cloneChatThread(thread api.LocalProductChatThread) api.LocalProductChatThread {

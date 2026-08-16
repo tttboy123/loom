@@ -1,7 +1,7 @@
 
  # P2C-W1 Contract — Workspace Shell & Entry
  
- **Status**: frozen — pending RED and implementation  
+ **Status**: Repair 2 contract reviewed; acceptance journey rerun pending
  **Date**: 2026-08-06  
  **Owner**: Phase 2C Candidate writer  
  **Parent**: `PHASE-2C-EXIT-CONTRACT.md`

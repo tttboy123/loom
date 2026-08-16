@@ -1,0 +1,2707 @@
+{
+  "schema": "loom.phase2c.post-signoff-final-acceptance-lock",
+  "schema_version": 1,
+  "generated_at": "2026-08-09T08:31:12Z",
+  "repository": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild",
+  "branch": "codex/loom-platform-slice2",
+  "baseline_head": "651f156afda37a8e703cbc0396f9f38b7912600b",
+  "goal_thread": "019fd20b-9fa2-7ae0-b601-0dd03c8f5ae7",
+  "acceptance_state": {
+    "product_owner_signoff": "APPROVED",
+    "p2c_w1": "accepted",
+    "p2c_w2": "accepted",
+    "p2c_w3": "accepted",
+    "phase_2c": "accepted",
+    "adr_0015": "accepted",
+    "final_lock_review": "pending",
+    "staged_path_count": 0,
+    "commit_push_merge_publication": "not authorized"
+  },
+  "review_bindings": {
+    "product_owner_signoff": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-PRODUCT-OWNER-SIGNOFF.md",
+      "sha256": "7bf196cb9bd601a23a456c77f50d5c37d26ed13cb4131ffbf36ac911b0fa800e"
+    },
+    "original_boundary": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-ACCEPTANCE-BOUNDARY.md",
+      "sha256": "64ee5f6006001d6ff07879366df4b8a54bafca8e07226d6c066c1c177209b09c"
+    },
+    "failed_boundary_review": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-BOUNDARY-REVIEW-1.md",
+      "sha256": "177558ce3ac0f4c4c16da224421271b30fc1f0f342b3030d216b597f24c2dc68"
+    },
+    "boundary_correction": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-BOUNDARY-CORRECTION-1.md",
+      "sha256": "e498ddfc785502be60826d85637aee6f335de43bf61c79fb7cacb4dcdf0d8389"
+    },
+    "boundary_rereview": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-BOUNDARY-REREVIEW-2.md",
+      "sha256": "a65b7a164fe94fdc368fc86afda699ddc7b033617173b035cebe9ef71a25925f"
+    },
+    "a4_lock": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-A4-FINAL-EVIDENCE-LOCK.json",
+      "sha256": "cb34838825433533a51abce8e07d4522fa310c2de2d90234717bed6c2a7c629e"
+    },
+    "a4_review": {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-A4-FINAL-EVIDENCE-LOCK-REVIEW-1.md",
+      "sha256": "13cd02991366a384b5df4b841efe9c0a107d973f647112b532186185d129617f"
+    }
+  },
+  "source_transition": {
+    "repair20_source_lock_path": ".loom-evidence/phase2c/repair-source-lock.json",
+    "repair20_source_lock_sha256": "7ad412e6b0122f3f37dfbbdaa3b5127f22d8b850963a1f1949fd14bf38ec2f1b",
+    "source_path_count": 51,
+    "unchanged_source_path_count": 50,
+    "changed_source_path_count": 1,
+    "changed_source_path": "docs/CURRENT.md",
+    "append_marker": "## Phase 2C Final Acceptance (2026-08-09)",
+    "append_marker_offset_bytes": 433212,
+    "pretransition_current_bytes": 433212,
+    "pretransition_current_sha256": "fbd9a7f7152f987208c97bf42c1b5f31371082d6db981647db4e66ceb0be4147",
+    "posttransition_current_bytes": 436097,
+    "posttransition_current_sha256": "3dfffa96e895ec3fca3e9d726b3d366d1054af45c97722ca5e37270e35937bb0",
+    "pretransition_ordered_digest_stored": "6fa2f269fefdaed41e60da0c64faf8f173924c427f23c1c5b0937693fab6cfa7",
+    "pretransition_ordered_digest_recomputed": "6fa2f269fefdaed41e60da0c64faf8f173924c427f23c1c5b0937693fab6cfa7",
+    "posttransition_ordered_digest": "a1b7e62c813ae20fe48cea2ff1e70362976fdf0c48a2d49ed010463182b24647",
+    "method": "Strip the one unique EOF acceptance marker and suffix; hash the exact prefix as prior CURRENT bytes; combine with 50 current unchanged source hashes in sorted <sha256><two spaces><path><newline> lines.",
+    "paths": [
+      {
+        "path": ".loom-evidence/phase2c/contracts/P2C-W1-CONTRACT.md",
+        "bytes": 3056,
+        "sha256": "b8f4ace3d4c2e480120a788fc1b995d44690942584e5c0de839df7e3db4eb77e",
+        "transition": "unchanged"
+      },
+      {
+        "path": ".loom-evidence/phase2c/contracts/P2C-W2-CONTRACT.md",
+        "bytes": 3219,
+        "sha256": "bc7073ba84f9abe6917d0ec53dc91dc5042d151a233bcce8e98d9747e66d63f9",
+        "transition": "unchanged"
+      },
+      {
+        "path": ".loom-evidence/phase2c/contracts/P2C-W3-CONTRACT.md",
+        "bytes": 3105,
+        "sha256": "aac649e5faff9f7af358d8542c7b7e42efa748824da207afe1f6101ef89e7aa5",
+        "transition": "unchanged"
+      },
+      {
+        "path": ".loom-evidence/phase2c/contracts/PHASE-2C-EXIT-CONTRACT.md",
+        "bytes": 5014,
+        "sha256": "dec78a8788aaa0fbb63768b72e52d33926f53efe92702ed5dc8c03e6c1db19d4",
+        "transition": "unchanged"
+      },
+      {
+        "path": ".loom-evidence/phase2c/contracts/PHASE-2C-REPAIR-AMENDMENT.md",
+        "bytes": 71106,
+        "sha256": "90ec79b5e3de2d84e7e7b0c0766253f1922940db1ff725cc84aa9185e3540cce",
+        "transition": "unchanged"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/JOURNEY-MANIFEST.md",
+        "bytes": 3162,
+        "sha256": "c968c4ced1067c71e3a42af198afd51d4c6bc6e62f1ac4a16303be8a285341cc",
+        "transition": "unchanged"
+      },
+      {
+        "path": ".loom-evidence/phase2c/repair-candidate-boundary.md",
+        "bytes": 24921,
+        "sha256": "b3460b5abc33b3abd9da311c8959d99efb824a07a3185dcd5ebc5ddf0a602c63",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalApp/LoomLocalApp.swift",
+        "bytes": 2097,
+        "sha256": "74930d58d8d06fa0dea948c51e46b1bc23ca7de48265f8359643cb235df990ef",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalIPCClient.swift",
+        "bytes": 47152,
+        "sha256": "e4a3d020d31bac144d122e5527742335352111df7990b15a6640cff0bde6c887",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductExperience.swift",
+        "bytes": 6637,
+        "sha256": "fc318f834e0553c6b3a6867c8270b3d8f7cca8ec5e863c916ff5128b5b69285a",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductModels.swift",
+        "bytes": 50749,
+        "sha256": "cc5aa0a08e1844d7eccfc1b58371652f7629653fca509b28eccf1029ef0a75a9",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppCore/LocalProductStore.swift",
+        "bytes": 95694,
+        "sha256": "1197eba6b06abfb4eb13af64bc747dde3dd7fc4437cce0f5396f486015040383",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppUI/ContentView.swift",
+        "bytes": 1027,
+        "sha256": "312704fdad388142ef5d56f43d4ebb32a233d71d3bdf9c83567564256a96eaed",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppUI/LoomWorkspaceShell.swift",
+        "bytes": 46014,
+        "sha256": "ab152eb0101269ae85e9ca90a17d0b4447883ab755c98e8aa6bd6eb6ffd71e5c",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppUI/LoomWorkspaceShellState.swift",
+        "bytes": 2827,
+        "sha256": "8c083f95e397f3a4a1d4ee49ea2e51a92603b8af04388943273eff14630bf4ba",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Sources/LoomLocalAppUI/MissionWorkbench.swift",
+        "bytes": 104832,
+        "sha256": "7f2f5a1deec2e6966c1c814d3208e7e6b8d730e87e88c38466ba1f5be2954ce7",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/InteractionContinuityTests.swift",
+        "bytes": 11742,
+        "sha256": "b2423502b131356473da4610e6a971e8943566e6c3b5c4afb9d0c262bff1faa8",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalIPCClientTests.swift",
+        "bytes": 10083,
+        "sha256": "6ec35019250bf9c9111721630e6f01652fbc4e20fcb4774e718973c354f30385",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductExperienceTests.swift",
+        "bytes": 8868,
+        "sha256": "d75c7b81a1b5a80a9b5a7d47293bf1e3c07bc26001310fc439b21d3919ec7a2d",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductModelsTests.swift",
+        "bytes": 5233,
+        "sha256": "88bded820a018662f7c8524c1c40dd21b61f6f87a419ce0e09a63928afb7eaaa",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LocalProductStoreTests.swift",
+        "bytes": 92015,
+        "sha256": "56d54c22435fb49cd38374097dde2b7e7af33d748b9221fdd90db74623142fe7",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LoomGraphiteViewTests.swift",
+        "bytes": 18441,
+        "sha256": "422fe485ac9b1e601d54db08726b8a312ddcfa41aafa67ae369646ce8bd1bc1c",
+        "transition": "unchanged"
+      },
+      {
+        "path": "apps/macos/Tests/LoomLocalAppTests/LoomWorkspaceShellStateTests.swift",
+        "bytes": 2928,
+        "sha256": "074044b21a7cd3655384399930b44f0b3246ab42aef06f13ce2e37b508a3bd1c",
+        "transition": "unchanged"
+      },
+      {
+        "path": "cmd/loom/tui.go",
+        "bytes": 3015,
+        "sha256": "94a83fc57e5f9340ec9951c9b76a8914773d26c5bcdcbd56ac12376b467bc4ac",
+        "transition": "unchanged"
+      },
+      {
+        "path": "cmd/loomd/product_daemon.go",
+        "bytes": 200646,
+        "sha256": "607ee62c9ab19f79016eac7caa546103e6d1804e08040e665d759f1fadfa5047",
+        "transition": "unchanged"
+      },
+      {
+        "path": "cmd/loomd/product_daemon_test.go",
+        "bytes": 265589,
+        "sha256": "d6b3526a5dcf12541cf971064f689477f4f766e525d7d3601052eea3843fc561",
+        "transition": "unchanged"
+      },
+      {
+        "path": "docs/CURRENT.md",
+        "bytes": 436097,
+        "sha256": "3dfffa96e895ec3fca3e9d726b3d366d1054af45c97722ca5e37270e35937bb0",
+        "transition": "acceptance-only EOF append"
+      },
+      {
+        "path": "internal/api/local_product_chat.go",
+        "bytes": 13440,
+        "sha256": "613ae27522aa28b3c8ce7b20dbae5aa20f747c5a0eea446f3c121d787cca18f9",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/api/local_product_chat_test.go",
+        "bytes": 6613,
+        "sha256": "9c5d37d99428e1567aca015024cf2665db4baa4b5b5429e671e84f82fa6ec06b",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/local_product_execution.go",
+        "bytes": 72641,
+        "sha256": "a39f99e8e10b19a9d980225e40465e054d1f27b155c6244b5fd720dc9f0b2842",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/local_product_execution_test.go",
+        "bytes": 65678,
+        "sha256": "0bcb3a8eaf580aeb1d68c61953960a37bb0ffd9aeb5d8d3dce57d28cec2455b8",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/local_queue.go",
+        "bytes": 14846,
+        "sha256": "caa827acfc6e956b80ebb5b786b1b7190a5b13cb6420a8983053df1e7b9f0f58",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/local_queue_test.go",
+        "bytes": 9559,
+        "sha256": "8bfc3936e5bdbfe1b9bf8dc7e30668bb6e4c7dde7c137a962902e56b47988e75",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/phase1_engineering_demo_test.go",
+        "bytes": 61257,
+        "sha256": "2a5805bc59248420a67700533a3e73492ea503d3be60148f119f0ddb6f58c487",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/team_execution.go",
+        "bytes": 77432,
+        "sha256": "5f079ad96269849524a2eef145d97ea2ad6ddeab5664849076c7bbc7b86e3cde",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/app/team_execution_test.go",
+        "bytes": 63982,
+        "sha256": "66211ec9c4e998953a95a8d8d03942395585e25a7fc3d5849df386a18ee23b74",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/localipc/client.go",
+        "bytes": 5280,
+        "sha256": "c0313b63ab2caa05466641b4d1f5c45390cf96693cb183dcdd69e0fb8b6117fd",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/localipc/client_test.go",
+        "bytes": 10427,
+        "sha256": "674060c36d5b8be726845fa5984ead9fcac06403326d420b2d01e512630cda12",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/localipc/server.go",
+        "bytes": 11007,
+        "sha256": "427c22b6f1881dc13b9d206fbdd559f0fc8421606581c2e85643940a4d35bf2e",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/localipc/server_test.go",
+        "bytes": 18234,
+        "sha256": "a161a0acd23f6704d32cb9f805f26ed6a6dc0d8052937229f41d03775182f1f6",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/localipc/socket.go",
+        "bytes": 9348,
+        "sha256": "bd2753cef9a2927350ac044959be38c1e2d3f9ebeaef1bb686347d59f59971fe",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/production/service.go",
+        "bytes": 15691,
+        "sha256": "6766187751d994a8065a12bcc3718ca817c50e5a61ad641e428b6794c10b311f",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/production/service_test.go",
+        "bytes": 13516,
+        "sha256": "d4bd120ff97983f942f4bbaf2a02704953437cb952a89a895c81ae66c58e7618",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/provider/codex_native_auth_test.go",
+        "bytes": 17050,
+        "sha256": "8b7dfccf51ba9b07c3c40a9f1bcf72dadf411f83187d09261377328c88311ae4",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/runtime/piadapter/conversation_adapter.go",
+        "bytes": 11570,
+        "sha256": "8ee873258a01cafd5467f898e41f63f56aeb8406c888209ae3ccce1e729de742",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/runtime/piadapter/conversation_adapter_test.go",
+        "bytes": 5037,
+        "sha256": "0d2bc78512c0bac9b323697dbf09757ab8b89505e8cd586d9efe1c70cdf75c28",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/runtime/piadapter/rpc_bridge_adapter.go",
+        "bytes": 68684,
+        "sha256": "20b46ed14d272d68ea1007f5299122e619104158faa8e8d253bd756c309ad1f0",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/runtime/piadapter/rpc_bridge_adapter_test.go",
+        "bytes": 64099,
+        "sha256": "04bffbe95f05ccdae20372a410a62e8b76e94f84541a65af5e006c8817c3cf0b",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/tui/model.go",
+        "bytes": 168656,
+        "sha256": "ab0e47aa4503bfd815ce11ad729e6d718d477a9f43b756ebe779f96773c73276",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/tui/model_test.go",
+        "bytes": 101557,
+        "sha256": "53d7c0921afa12c9f9f6e685512ffc48e6457a8476bb2adeeabc785bbf908322",
+        "transition": "unchanged"
+      },
+      {
+        "path": "internal/tui/style.go",
+        "bytes": 7243,
+        "sha256": "304cefb2b19344ae1f07304bec0d5dce976e9cca0958bcb3292334ad04f18315",
+        "transition": "unchanged"
+      }
+    ]
+  },
+  "acceptance_metadata": {
+    "path_count": 3,
+    "allowed_changes": [
+      "docs/CURRENT.md append-only final acceptance reconciliation",
+      "ADR-0015 proposed-to-accepted status plus one evidence reference",
+      "ADR README ADR-0015 proposed-to-accepted status cell"
+    ],
+    "paths": [
+      {
+        "path": "docs/CURRENT.md",
+        "bytes": 436097,
+        "sha256": "3dfffa96e895ec3fca3e9d726b3d366d1054af45c97722ca5e37270e35937bb0"
+      },
+      {
+        "path": "docs/adr/0015-chat-first-client-shell-with-governance-panels.md",
+        "bytes": 5764,
+        "sha256": "2ebe3cf835d94f46b42e6e6eebc2d08e819de8e0adde142730160bedc8520191"
+      },
+      {
+        "path": "docs/adr/README.md",
+        "bytes": 2303,
+        "sha256": "939c33f7cc4e189026f51c186afad9ca81a50fb6145b858eedcffa80f71d07b6"
+      }
+    ]
+  },
+  "evidence_inventory": {
+    "method": "LC_ALL=C path order; exact byte size and SHA-256; self and sole post-lock attestation enumerated separately.",
+    "hashed_path_count": 450,
+    "final_enumerated_path_count": 452,
+    "root_counts_before_self_and_attestation": {
+      "repair_deterministic_verification": 1,
+      "repair_journeys": 359,
+      "reviews": 90
+    },
+    "expected_final_root_counts": {
+      "repair_deterministic_verification": 1,
+      "repair_journeys": 359,
+      "reviews": 92,
+      "total": 452
+    },
+    "ordered_sha256_lines_digest": "f9373a8a31f223787a4bfe09f47070b50d1ff12ad78e3ee83567e8c9e74fffda",
+    "ordered_sha256_size_path_lines_digest": "ef0fb076faa3fce03eb52f3ec7f9c144da22f95ac1c956a46ef300f0e4a75716",
+    "paths": [
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-001/FAILURE.md",
+        "bytes": 2397,
+        "sha256": "9c74be76b8d31e58b3f54eb48941d06c86bf3d084deaaa62165b95e98628739c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-002/FAILURE.md",
+        "bytes": 2130,
+        "sha256": "691d2f51e135b1d28d91caff23b7918e91a741cad3e4537f387169a51c4049e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-003/FAILURE.md",
+        "bytes": 3455,
+        "sha256": "0db15521264391716371234a37f7f820d3f8549f7f43a168c724287e591bbbc4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-004/FAILURE.md",
+        "bytes": 4052,
+        "sha256": "b24b4ebb64a8054de7e73cbccc9d9e645264665edbf4e69da89d550f6059e9af"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-005/FAILURE.md",
+        "bytes": 7710,
+        "sha256": "8aee04973884e24a3de93fe310e9386b6c8a276f685472e862c5812c578a463c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-006/FAILURE.md",
+        "bytes": 7556,
+        "sha256": "fe1aeab2e51c8f0aac5beacedeb4e365b0db75130d2a1b94782d6eb42dd891bc"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-007/FAILURE.md",
+        "bytes": 1144,
+        "sha256": "db5f515b801d52005f305de72e1d210fcf571ac914c2a9087594a75dd5bca66e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-008/FAILURE.md",
+        "bytes": 2597,
+        "sha256": "5765c86406c7f2c4f5aaee58984f323185b40977fdfdec7bb2438937c2c2f5a1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-009/FAILURE.md",
+        "bytes": 4281,
+        "sha256": "9f8021e66d93c94fc075712bfd40114436c7e4fa72a7ba0a766635220e8a9ac3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-010/FAILURE.md",
+        "bytes": 1088,
+        "sha256": "374eac41548b5d11b58956cf0aa594aaa77fcbb3ba2e03bb59896e7763b7fece"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-011/FAILURE.md",
+        "bytes": 1077,
+        "sha256": "61eb7b98ceb8521ffbfb58b1322b4dda2146987b0e4483b88040b4afd21b5d29"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-012/FAILURE.md",
+        "bytes": 1529,
+        "sha256": "b62a3c5260dda516aaa7ce6e1bdc3d2b14e3bf2ab74e26e2adfebd811ed507bf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-013/FAILURE.md",
+        "bytes": 1454,
+        "sha256": "b96ec03a5eb061d9569c06d1e38833934bba8db6067a961c0be4ef28268d3a1a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-014/FAILURE.md",
+        "bytes": 1840,
+        "sha256": "4fd8f29f73075e3a43abbfd6e054dfe3180dc4b8bd9bbcbc0ca296eda8ae2737"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-015/FAILURE.md",
+        "bytes": 2627,
+        "sha256": "23a8d09766b6156b801624d609378df45372f68cb3d5aa0e1a1e8dc91d7fe81e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-015/accessibility/after-unlabeled-recent-selection.png",
+        "bytes": 618067,
+        "sha256": "d7f5dba6b5037461e61c87a9b7098f400813891935d8295a7bde3f0f4ae5ca6a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-015/accessibility/ax-button-details-rich.txt",
+        "bytes": 4683,
+        "sha256": "70f734bca9dca7c5fce4f1cf6903466705682fdef5cce5543370fd11e739cc5d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-015/accessibility/before-unlabeled-recent-selection.png",
+        "bytes": 616611,
+        "sha256": "27bc997063cd4d7a9a5a89e112af21b444c0c74afa31aa81715ca3eee058a335"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-016/FAILURE.md",
+        "bytes": 2778,
+        "sha256": "d281d0d42c93d4b6597de386c7a5eb17b5ed5cbe8f093648fd47d07e2d009bc7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/FAILURE.md",
+        "bytes": 1874,
+        "sha256": "563f6c84ec4cce3b7c2b8f23d61b5ca4ffdccfc2a592219b0a6ce435ff639f30"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/artifacts/sha256/bf/bff6e80013e34027b5313318e72774c790703182a8ce71099555ccde94fcd86e",
+        "bytes": 2281,
+        "sha256": "bff6e80013e34027b5313318e72774c790703182a8ce71099555ccde94fcd86e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/artifacts/sha256/c9/c9e34af5cd3e17ce3d4b6f1c706e6d480f7b8499879d1ed17479bfbb2161ce1a",
+        "bytes": 2287,
+        "sha256": "c9e34af5cd3e17ce3d4b6f1c706e6d480f7b8499879d1ed17479bfbb2161ce1a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/artifacts/sha256/f7/f708847a1cbb4959f9cd79c589929a819dd028ba22464dbb6ad00a5762ea6119",
+        "bytes": 2275,
+        "sha256": "f708847a1cbb4959f9cd79c589929a819dd028ba22464dbb6ad00a5762ea6119"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/attempts/captures/evidence-team-recovery",
+        "bytes": 2336,
+        "sha256": "9f10e6f272c451b1eff5665708d3d49f5bd685edecf3a10c34dc9d8eb0f12359"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/attempts/captures/evidence-team-review-missing",
+        "bytes": 2342,
+        "sha256": "68f47d401147d005418d07b0a4ffc81aa2c558ff2677b7b3d1c9030b55ebfda9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/attempts/captures/evidence-team-review-ready",
+        "bytes": 2330,
+        "sha256": "f354669a8f88c07090ad30b359738e455af2ebd63166d53759e1a7443d2423af"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/attempts/receipts/evidence-team-recovery",
+        "bytes": 326,
+        "sha256": "50b31891747826ffba11157be2a4748d130481bbd2b80bc54321f7b0945130f1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/attempts/receipts/evidence-team-review-missing",
+        "bytes": 335,
+        "sha256": "035ea91a0968adbb5a20c1a937945c05a9b99ff2ad3604d3cb854ad69309afe4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/artifacts/mission-fixture/attempts/receipts/evidence-team-review-ready",
+        "bytes": 333,
+        "sha256": "34fb9666353103fde465bd54f34bf14ee998cff4df272ce8d3351cafe5238faa"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/daemon/structured-log.jsonl",
+        "bytes": 3647,
+        "sha256": "b234b8031b26eab615aaa98ad6f8a9a580c906c0a83660ae2c756ad587a519d9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/ipc/request-response-summary.jsonl",
+        "bytes": 2744,
+        "sha256": "66109aa686608df1b384b69b3f8a34bc33ad1687be80127f12198ad31eae5285"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/manifest/journey-harness.json",
+        "bytes": 424,
+        "sha256": "eb02e8e69e9703bd0fcc98892ff821d73735acd886af69f552b4007b2dfce9d8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/manifest/mission-fixture.json",
+        "bytes": 478,
+        "sha256": "1134eff8423bce9d3b8594fee684f7d5c6cd4393ffb9acb3e2751b199f93d44c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/source/source-lock.json",
+        "bytes": 6972,
+        "sha256": "53f26fcf94ea727bbe75cee29f225eadf6ac6fb4a2164e4077633cb6e67ed60a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/state/loom.db",
+        "bytes": 81920,
+        "sha256": "55beb2b5325b0c7754ab0fab48beb47a4321612df15e3bd5f0fd518c561a6184"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/tui/events-after-decision.json",
+        "bytes": 1073,
+        "sha256": "95a9800d566259b4cffd6f42209d716f9b73a0a2d546feda58be0677c91e9d25"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/tui/session-decision.log",
+        "bytes": 3401,
+        "sha256": "5f8149b1d74fcd7a036678fc3bbd1bf463ecc4d4fccf1203fb107b0fb1036d5e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/tui/status-after-decision.json",
+        "bytes": 10757,
+        "sha256": "960cc3c403804ef6142d392731dea62611cbcf3d348acb791edce18a271f2bb8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/decision/tui/status-initial.json",
+        "bytes": 11690,
+        "sha256": "382bc833921e79350f4c5bae9bc9f45640715d26ffe1cc05525ebc58f6264913"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/daemon/structured-log.jsonl",
+        "bytes": 64263,
+        "sha256": "b7127f5f51cf1dfb31ce2f43f6b4b83457d8acc6918f375b9d305250a64305b3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/ipc/request-response-summary.jsonl",
+        "bytes": 47099,
+        "sha256": "363b543107f031734549d15a3be1b5c65b98ecd797c434ea6d94ab9693bc3e65"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/manifest/journey-harness.json",
+        "bytes": 412,
+        "sha256": "75ec913239a5ec7b4db8ebefc1dbc317a2f870c25d666650a8943ef5b000518b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/manifest/runtime-status-fixture.json",
+        "bytes": 492,
+        "sha256": "6c34dc870e3cc0b8ed2b67f639a53bd6c8375b97feaf3d3603e06a2dac4b1f55"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/source/source-lock.json",
+        "bytes": 6972,
+        "sha256": "53f26fcf94ea727bbe75cee29f225eadf6ac6fb4a2164e4077633cb6e67ed60a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/chat-threads.json",
+        "bytes": 1000,
+        "sha256": "c9b513d290c6cb910f5be6583695ad318850deb4ec30d383daf37b8f6b4fc90b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/artifacts/sha256/a3/a3e59e51096701f7c5a83c548119335d72c795462006b4fbbd44b154f28d439e",
+        "bytes": 13581,
+        "sha256": "a3e59e51096701f7c5a83c548119335d72c795462006b4fbbd44b154f28d439e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/artifacts/sha256/dc/dc8844dd963bf076609228ea232e30e737fa9881dda9585160aa72e62fca458a",
+        "bytes": 3745,
+        "sha256": "dc8844dd963bf076609228ea232e30e737fa9881dda9585160aa72e62fca458a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/artifacts/sha256/ea/ea604f44161c2c9c71661fadc6d32f4d5683b7fa93b0887ec99a22efd7f2bbd5",
+        "bytes": 59188,
+        "sha256": "ea604f44161c2c9c71661fadc6d32f4d5683b7fa93b0887ec99a22efd7f2bbd5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/artifacts/sha256/eb/eb403b13e496d6af8141bca6b34d36c9b1382728aac3fa44bd8fb392e61b9a27",
+        "bytes": 3745,
+        "sha256": "eb403b13e496d6af8141bca6b34d36c9b1382728aac3fa44bd8fb392e61b9a27"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/captures/team-evidence-a6199a01b081aef4fd4114c571aaf399",
+        "bytes": 13636,
+        "sha256": "6eefea2c5d6cd1cf8249cd2621c1b4634e784bd78f49c365b5afbcb35b475c94"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/captures/team-evidence-e835a2fc59b2e7359a7f4d263f2625b5",
+        "bytes": 59243,
+        "sha256": "c4757da408b4f32a85d371dd10c6a4b3441dadf1f13a16faaf99b116d028d984"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/captures/verifier-evidence-149eb646c4716c50e158f2650b7cfdaa78840c4ba90eb29ac71707b8e7864032",
+        "bytes": 3800,
+        "sha256": "530bd26c977793ff3df3a9ae33b9db9766397354ea9af5b178d843d4951c3411"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/captures/verifier-evidence-f108adbae8bfd31805bd6484c02c90cfe8d1b70737f1b0dcccc683c3e1fc5989",
+        "bytes": 3800,
+        "sha256": "e4f1f9b7ccdc86476302ca51f9366847109d2e0f8f5420723681db94736bafcf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/receipts/team-evidence-a6199a01b081aef4fd4114c571aaf399",
+        "bytes": 356,
+        "sha256": "63aea89fe521e175692da193f28638ac7a45d5da01f0cc210e31426f35d6dad4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/receipts/team-evidence-e835a2fc59b2e7359a7f4d263f2625b5",
+        "bytes": 359,
+        "sha256": "a32d4526fd56705f125b22020187970f8b4bd8bfe96bc3b7caba57dc7914942d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/receipts/verifier-evidence-149eb646c4716c50e158f2650b7cfdaa78840c4ba90eb29ac71707b8e7864032",
+        "bytes": 387,
+        "sha256": "5bb95bfd018531562965000445192f2456d16594edd15a9c17a0e38bda73f1f8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/evidence/attempts/receipts/verifier-evidence-f108adbae8bfd31805bd6484c02c90cfe8d1b70737f1b0dcccc683c3e1fc5989",
+        "bytes": 387,
+        "sha256": "0b3e64a24d9737c813a7c2c4d165fb6a7c583c96c8b4d7f01008f665d41b7721"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/loom.db",
+        "bytes": 290816,
+        "sha256": "1130bb8bd57b543d57fd490e1a5231b6f21e3d7ac2b5de8272d6ab004883bbf0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/ax-product-buttons.txt",
+        "bytes": 31,
+        "sha256": "8d96b9b2e5c3d4212bb998cf923b00e718e242c5990e171082d395be6d9adf77"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/events-after-execution.json",
+        "bytes": 1450,
+        "sha256": "1cc781dc8f902c09efa786ab0a4f815263eec565699f6c04223dd38b913aed2d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/events-before-final-restart.json",
+        "bytes": 1558,
+        "sha256": "a70d8b13d93fecb9b8650c049145f6b36f4660515319b1903995219b31fa3929"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/events-mission-preflight-before-start.json",
+        "bytes": 115,
+        "sha256": "471ea277d18345ecd8534d60c605a76ba7943fabdbfc0a1018fdb2ace9826a17"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/events-team-after-confirm.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/events-team-draft-before-confirm.json",
+        "bytes": 178,
+        "sha256": "a128347d26b87df2035d195d0b2275ed401f5988181bdf192e803663bad9795a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/session-j2-j4.log",
+        "bytes": 6971,
+        "sha256": "31367833f892076d013b766b5f3d68ff06299cbd81dde0be987eb8e8fc3cde5f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/session-main.log",
+        "bytes": 1380,
+        "sha256": "7168b8ded1b25259800045d0b9c94c9b43ab21b00bb0b5668bfda705d975b924"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/session-mission.log",
+        "bytes": 3274,
+        "sha256": "03642a906ae1346ed7741e9169a761628cd2c066f045563f1c8a94e13346c4aa"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/session-runtime-recovery.log",
+        "bytes": 1395,
+        "sha256": "d7d86f93b96e2e49403ba18ad33253b8cdf2b62083b3f2b5ea9d2ad31f2e31b2"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-after-execution.json",
+        "bytes": 4589,
+        "sha256": "2c4e642fad29ff1c3764c09ab7922fd97967a837cad50815fb325de84e5a1b25"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-after-final-restart.json",
+        "bytes": 6462,
+        "sha256": "62aa891c883b116f0765d88ba44b847b16922ef73ba8a7474c9be3604e93acbc"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-after-j1.json",
+        "bytes": 1015,
+        "sha256": "37011f754817f54d722a0b2364444f6c9999169096cf222dab42995afc982246"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-after-service-restart.json",
+        "bytes": 1015,
+        "sha256": "37011f754817f54d722a0b2364444f6c9999169096cf222dab42995afc982246"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-before-final-restart.json",
+        "bytes": 6462,
+        "sha256": "62aa891c883b116f0765d88ba44b847b16922ef73ba8a7474c9be3604e93acbc"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-before-team-confirm.json",
+        "bytes": 1015,
+        "sha256": "37011f754817f54d722a0b2364444f6c9999169096cf222dab42995afc982246"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-initial.json",
+        "bytes": 641,
+        "sha256": "052feec9c639984d9807599634bb7a9abc35122ae2cfbc2dc5436aabcf428543"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-mission-preflight-before-start.json",
+        "bytes": 1269,
+        "sha256": "73faf5ced121c414e54d9b6d154884be868ce7d1ee303118fd0163f19aca323c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-runtime-offline-controlled-restart.json",
+        "bytes": 6937,
+        "sha256": "30a85cc509ac80abd0b2df9b859583660eaa5dff51431364fc4f2d795c54e333"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-runtime-offline-controlled.json",
+        "bytes": 6937,
+        "sha256": "30a85cc509ac80abd0b2df9b859583660eaa5dff51431364fc4f2d795c54e333"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-runtime-recovered.json",
+        "bytes": 6462,
+        "sha256": "62aa891c883b116f0765d88ba44b847b16922ef73ba8a7474c9be3604e93acbc"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-team-after-confirm.json",
+        "bytes": 1269,
+        "sha256": "73faf5ced121c414e54d9b6d154884be868ce7d1ee303118fd0163f19aca323c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/status-team-draft-before-confirm.json",
+        "bytes": 1015,
+        "sha256": "37011f754817f54d722a0b2364444f6c9999169096cf222dab42995afc982246"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/timeline-after-final-restart.json",
+        "bytes": 77522,
+        "sha256": "4be13188e39934bd68e052be642f9cce7b47d7888c85f34ba9a47902213ec67e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/timeline-before-final-restart.json",
+        "bytes": 77522,
+        "sha256": "4be13188e39934bd68e052be642f9cce7b47d7888c85f34ba9a47902213ec67e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/timeline-runtime-offline-controlled-restart.json",
+        "bytes": 77996,
+        "sha256": "55efd3753555d362f8e3aa9a619ae384e3568f7416eb4e6e3230f1e45a804737"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/timeline-runtime-offline-controlled.err",
+        "bytes": 28,
+        "sha256": "5ff5ae36b8c72c486d29bec3de5835d426dae0f66ec510e5d8ef9ede68b28e13"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-017/main/tui/timeline-runtime-offline-controlled.json",
+        "bytes": 77996,
+        "sha256": "55efd3753555d362f8e3aa9a619ae384e3568f7416eb4e6e3230f1e45a804737"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/FAILURE.md",
+        "bytes": 2135,
+        "sha256": "0f82586da1e6d9a84d7fd9d8fa36a8a5241963a7c9b63e603f4fec2505365748"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/artifacts/sha256/19/19f73aa53b41cd9a6c8b1ebfdcedec1479f125f75b85b753e883b59a24421c96",
+        "bytes": 2281,
+        "sha256": "19f73aa53b41cd9a6c8b1ebfdcedec1479f125f75b85b753e883b59a24421c96"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/artifacts/sha256/23/233e6a25fed03f3631906c566d54310c581d40d982610f89f7ead3554972098e",
+        "bytes": 2287,
+        "sha256": "233e6a25fed03f3631906c566d54310c581d40d982610f89f7ead3554972098e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/artifacts/sha256/ed/ed9876a168d5796d1cb52dd51edfd5804fa681266713845140eed5d703fce9de",
+        "bytes": 2275,
+        "sha256": "ed9876a168d5796d1cb52dd51edfd5804fa681266713845140eed5d703fce9de"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/attempts/captures/evidence-team-recovery",
+        "bytes": 2336,
+        "sha256": "a40430d300d27803e97a12979338f7df794b3c0e9995d24dd674108209fe9cd3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/attempts/captures/evidence-team-review-missing",
+        "bytes": 2342,
+        "sha256": "29b400014ea22f238c9563dde997153f73037f4465ca42c55c077009265b926d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/attempts/captures/evidence-team-review-ready",
+        "bytes": 2330,
+        "sha256": "6cf9d6fedd07940b00e08f6acb3d7a21466b30da61e8d9d898a64297b000c946"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/attempts/receipts/evidence-team-recovery",
+        "bytes": 326,
+        "sha256": "734a5c466362651d56c1f1fa5b1bce5c70a96ca13b13988a6511cc38e2fa6bfd"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/attempts/receipts/evidence-team-review-missing",
+        "bytes": 335,
+        "sha256": "17ca146bc3baa4f9526d3d54bfb5e3a1060cae7c3f3ab45c3725aca2e0eac4e3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/artifacts/mission-fixture/attempts/receipts/evidence-team-review-ready",
+        "bytes": 333,
+        "sha256": "20084bf1359523da626c2cf2443d254fd3abbceea6815a94034b447b2c593119"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/daemon/structured-log.jsonl",
+        "bytes": 3132,
+        "sha256": "ed0f1e61d851170718ace3bb8de3596df648aa6d0ce30bfa6a2749eb219fbe60"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/ipc/request-response-summary.jsonl",
+        "bytes": 2357,
+        "sha256": "229a8f41882cfcc769fa38c3e63d0857cd74ee5ccac1e273b8e70fb1bc21f9ae"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/manifest/journey-harness.json",
+        "bytes": 424,
+        "sha256": "d21c2283910a230be541ad24f532105292cc39cee7abe302ac30d161fa0e1223"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/manifest/mission-fixture.json",
+        "bytes": 478,
+        "sha256": "7d77e94350f16a3e7df5e0dcc5b549c3ae22c578c0df1eaaf35dff377d9a7310"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/source/source-lock.json",
+        "bytes": 6972,
+        "sha256": "53f26fcf94ea727bbe75cee29f225eadf6ac6fb4a2164e4077633cb6e67ed60a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/state/loom.db",
+        "bytes": 81920,
+        "sha256": "7ade6f150815dde2546b90cac405a8b4a263dd014c724517b3f400f6ed2b2a1d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/tui/events-after-decision.json",
+        "bytes": 1073,
+        "sha256": "95a9800d566259b4cffd6f42209d716f9b73a0a2d546feda58be0677c91e9d25"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/tui/session-decision.log",
+        "bytes": 3313,
+        "sha256": "85e0f9e77a40b4ab823cdc678d7242e5a73e6c40d7444cb97f4ebdb742571190"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/decision/tui/status-after-decision.json",
+        "bytes": 10757,
+        "sha256": "8537cadc89ee3bcd96379251ae9dbf0b82ab85ec4087a22d05fa540a06d292aa"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/daemon/structured-log.jsonl",
+        "bytes": 62869,
+        "sha256": "09d61275ff0f08b9391258f30fba9c1ac6ff0a94c119d5874c2a4d84374cf2f1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/ipc/request-response-summary.jsonl",
+        "bytes": 47185,
+        "sha256": "8d72f44c3e2fb0e4ef19cc37bd46b0356b63fe63c1051dfcfd7ec4ac6cd836af"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/manifest/journey-harness.json",
+        "bytes": 412,
+        "sha256": "9eb917f242f18e6f54d870029cc63eb8d2c4a1701b9e85daad7763a78ff104fe"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/manifest/runtime-status-fixture.json",
+        "bytes": 492,
+        "sha256": "9ac803bcd11f56f96491a8643efb233ce0ecaaa822cbd510d0c0af1f82a9a273"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/source/source-lock.json",
+        "bytes": 6972,
+        "sha256": "53f26fcf94ea727bbe75cee29f225eadf6ac6fb4a2164e4077633cb6e67ed60a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/chat-threads.json",
+        "bytes": 992,
+        "sha256": "e92b6cc78da7b50006196fd856d938b2e822f3957c9c7e761c10171e17b54dc8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/evidence/artifacts/sha256/20/2091c074694e051c45af62c4bfa3a4903d8331ffc6dd12a44628a6747e8ef95b",
+        "bytes": 3741,
+        "sha256": "2091c074694e051c45af62c4bfa3a4903d8331ffc6dd12a44628a6747e8ef95b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/evidence/artifacts/sha256/cf/cf43ace07359812e1b6757aa171afb92549e8bbe4276b0f699ea14794da26a9a",
+        "bytes": 55122,
+        "sha256": "cf43ace07359812e1b6757aa171afb92549e8bbe4276b0f699ea14794da26a9a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/evidence/attempts/captures/team-evidence-a68b0aae37818c6e8d1f62e68aa05c73",
+        "bytes": 55177,
+        "sha256": "41eedeb588e6d2bf653945989fbdfbd208b52ed781253254249b4b901af2f543"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/evidence/attempts/captures/verifier-evidence-6bb9646b3b8d8213c9947885dadc758b8abcadce6590b750f6edb23a0681ed5c",
+        "bytes": 3796,
+        "sha256": "864650145704519098e2ade4b51835062e0b4f6ecf52506a9ecfb88650c599d5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/evidence/attempts/receipts/team-evidence-a68b0aae37818c6e8d1f62e68aa05c73",
+        "bytes": 357,
+        "sha256": "05ddc1cc06939405773211b0ffbaaba24ed41f289132581f813898b1050dd135"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/evidence/attempts/receipts/verifier-evidence-6bb9646b3b8d8213c9947885dadc758b8abcadce6590b750f6edb23a0681ed5c",
+        "bytes": 387,
+        "sha256": "7a507e273bef881f939c119fba5c43e8532e64d97d4e6a6aa641eaea3ce5cafa"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/loom.db",
+        "bytes": 204800,
+        "sha256": "a8559366629b18c24e55ca4e20afb861cab629a63d3141f450c06a6bbc17e9b3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/events-after-execution.json",
+        "bytes": 1239,
+        "sha256": "76d7b94000c5399bf48f00cca129408f796a7c99bb00305ef4c701f509c76a39"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/events-mission-before-start.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/events-team-after-confirm.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/events-team-before-confirm.json",
+        "bytes": 178,
+        "sha256": "a128347d26b87df2035d195d0b2275ed401f5988181bdf192e803663bad9795a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/session-j1.log",
+        "bytes": 8613,
+        "sha256": "2648ac2afae027dfd24077a37b19b0e18cd59ea57a74a58dbfa1b762d0740c60"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/session-mission.log",
+        "bytes": 2730,
+        "sha256": "59b561471410964e842930350f4f154bcc7a3a8354fae041479ab0b179c4a3f2"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/session-runtime-recovery.log",
+        "bytes": 1355,
+        "sha256": "5f6e1ae2aa370f6700d5001e0219e7066361e3338bd58eba578f743ed82d34fc"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/status-after-execution.json",
+        "bytes": 3523,
+        "sha256": "8a36fd1b6d9d4798d7d9d44e635faa79cd4cfde997458897454db9bd0afe7ec3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/status-mission-before-start.json",
+        "bytes": 1269,
+        "sha256": "731a03111328a5b20d9d323b6e2045dc08aa2df1c2b4101a1589ba8e61f44a4b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/status-runtime-offline-restart.json",
+        "bytes": 3997,
+        "sha256": "b51a856cdc5fda03c51ad18d47d980cc72bf84c05c0dd9142d8f91c2e45d3635"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/status-runtime-offline.json",
+        "bytes": 3997,
+        "sha256": "b51a856cdc5fda03c51ad18d47d980cc72bf84c05c0dd9142d8f91c2e45d3635"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/status-team-after-confirm.json",
+        "bytes": 1269,
+        "sha256": "731a03111328a5b20d9d323b6e2045dc08aa2df1c2b4101a1589ba8e61f44a4b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/status-team-before-confirm.json",
+        "bytes": 1015,
+        "sha256": "e3d72d92eb9093257c238f6e26d4b31ac661f8d2ead5ae751fdd43e3bc0af5b8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/timeline-runtime-offline-restart.json",
+        "bytes": 17738,
+        "sha256": "29b5da5f3dd7c1e5a9a788b0ef35a433d37385eeef5a95867d8586e364a11bc9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-018/main/tui/timeline-runtime-offline.json",
+        "bytes": 17738,
+        "sha256": "29b5da5f3dd7c1e5a9a788b0ef35a433d37385eeef5a95867d8586e364a11bc9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/FAILURE.md",
+        "bytes": 1038,
+        "sha256": "6237398c44ef1693fc0b115f6e45035e305812a24924c41ad33eac6b4648cb0a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/main/manifest/journey-harness.json",
+        "bytes": 412,
+        "sha256": "714044fecf16c0a7ac58a5cedf621ba8a344204e4a4951eba810fcd69888bc48"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/main/manifest/runtime-status-fixture.json",
+        "bytes": 492,
+        "sha256": "097cd0378df0ba406c12fe51cbd6e98441fc57807e00978e5a56727fd44eba91"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/main/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/main/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/main/state/loom.db",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-019/main/workspace-j2/SENTINEL-DO-NOT-READ.txt",
+        "bytes": 53,
+        "sha256": "102dee786cd6c699aee76b24ede7960715239afa6c2696c9d91195bbff07d980"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/FAILURE.md",
+        "bytes": 1430,
+        "sha256": "54819178c1fdc3a69f6c02ef8634b02d9626442e9977de369b38559615dbda75"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/decision/manifest/journey-harness.json",
+        "bytes": 424,
+        "sha256": "d49587ce3edf1a02ad637238e65643ac89ea937eb74ada335ef6f2d701a28161"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/decision/manifest/mission-fixture.json",
+        "bytes": 478,
+        "sha256": "b3a1ad817c58352d4a435ee3af5ecaad80cfd812d25a4c94d7af1c8cb1c7ea90"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/decision/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/decision/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/decision/state/loom.db",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/daemon/structured-log.jsonl",
+        "bytes": 74273,
+        "sha256": "38231fae9d094394f98bb1a1fa87d6a2fc425d8b876d21aefbbd38acf1c22193"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/ipc/request-response-summary.jsonl",
+        "bytes": 55758,
+        "sha256": "97c79eb0523d3c46376701d754bdeebe970a1e14b32ecb3291c270d499a04f32"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/manifest/journey-harness.json",
+        "bytes": 412,
+        "sha256": "633a2b56dcf1f613cee47d0c3663abd884c368cfd34a7c67aa2f7101b1985ebb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/manifest/runtime-status-fixture.json",
+        "bytes": 492,
+        "sha256": "46f0d4851f8aa51d7ba02bbbb594e78ae972fa97c4fd10dd2cba1eff8a6ceb3d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/chat-threads.json",
+        "bytes": 992,
+        "sha256": "6fec90801ec2e4280e64ef1184fc518ca213e1d78631009d263759850ebe9a3d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/evidence/artifacts/sha256/95/95591cdabe1b068b702aa017b6f5357e7a5ad7ed2a85df6f83477f08a3a02b07",
+        "bytes": 672,
+        "sha256": "95591cdabe1b068b702aa017b6f5357e7a5ad7ed2a85df6f83477f08a3a02b07"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/evidence/artifacts/sha256/fe/fefb403efbe1ad3a0ab9bbe8644c56672e44dcfb4ad8ecd587d22316101e27c5",
+        "bytes": 672,
+        "sha256": "fefb403efbe1ad3a0ab9bbe8644c56672e44dcfb4ad8ecd587d22316101e27c5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/evidence/attempts/captures/team-evidence-3ca3683d1c88590dcc9ccf2d98a01616",
+        "bytes": 724,
+        "sha256": "833d31a5610df747e793f76d36d425500b8bbc2d79825c431bb26857c00aad6f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/evidence/attempts/captures/team-evidence-f3839b49d3dda1904e235589ce5a9275",
+        "bytes": 724,
+        "sha256": "e03750f3fa1d6404f02d13e74b846b330d3229602ef35f90f4eceb178c1d1b41"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/evidence/attempts/receipts/team-evidence-3ca3683d1c88590dcc9ccf2d98a01616",
+        "bytes": 350,
+        "sha256": "d7abb7ffdb07e1cd7f624959a37e410d3ea04502f35c32c3dbf32b8bf0a62110"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/evidence/attempts/receipts/team-evidence-f3839b49d3dda1904e235589ce5a9275",
+        "bytes": 350,
+        "sha256": "7ddd6bed3bf65bd21cc58a000aec016681fbdf9c83456c49117e4ded15bf424e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/loom.db",
+        "bytes": 61440,
+        "sha256": "33d0ae9ebeeed46bce472a276d25c33027f8ee2a11efd633aa5d6cbe40edafa3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/events-mission-before-start.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/events-team-after-confirm.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/events-team-before-confirm.json",
+        "bytes": 178,
+        "sha256": "a128347d26b87df2035d195d0b2275ed401f5988181bdf192e803663bad9795a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/session-main.log",
+        "bytes": 11625,
+        "sha256": "68810d21d0d2a33ef8124df648f6865f2199e7c08f714b8b5848210ab3a5a276"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/session-mission.log",
+        "bytes": 4656,
+        "sha256": "407c461c747ac70b5ce74cc65a59745fe47eb19b1baa575696e5ff23b8ffab45"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/status-j1.json",
+        "bytes": 1038,
+        "sha256": "38454a8d4b258fdd875d1ae8fad8c157e64844c95b36e590d5d19e541454df53"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/status-mission-before-start.json",
+        "bytes": 1292,
+        "sha256": "2c4218a2fb06da48b42cc06a85b15668e01b344ea545f56dec9bb2af6abb3c25"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/status-team-after-confirm.json",
+        "bytes": 1292,
+        "sha256": "2c4218a2fb06da48b42cc06a85b15668e01b344ea545f56dec9bb2af6abb3c25"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/tui/status-team-before-confirm.json",
+        "bytes": 1038,
+        "sha256": "38454a8d4b258fdd875d1ae8fad8c157e64844c95b36e590d5d19e541454df53"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-020/main/workspace-j2/SENTINEL-DO-NOT-READ.txt",
+        "bytes": 53,
+        "sha256": "990caf8720427f1ca053dade81328af2bb607656d3eec84d8500af3d118e968d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/FAILURE.md",
+        "bytes": 1539,
+        "sha256": "eea4111ec478d4b98c347685719b2fcce309dcf6f66b8bce2549b47f07df5914"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/artifacts/sha256/3e/3ef99897fc480fc98c3fbda5eb41336cca42e2aeb684c86baf09239fbe55304c",
+        "bytes": 2285,
+        "sha256": "3ef99897fc480fc98c3fbda5eb41336cca42e2aeb684c86baf09239fbe55304c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/artifacts/sha256/88/88877393eb4d0c7c4376953024982b5b5e0673fdd74b9b0fdc29b6e55593fe39",
+        "bytes": 2279,
+        "sha256": "88877393eb4d0c7c4376953024982b5b5e0673fdd74b9b0fdc29b6e55593fe39"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/artifacts/sha256/b1/b1617c140a68415ff151e242fa033b1cc44401558409093d1c5f98ed5c06fd58",
+        "bytes": 2291,
+        "sha256": "b1617c140a68415ff151e242fa033b1cc44401558409093d1c5f98ed5c06fd58"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/attempts/captures/evidence-team-recovery",
+        "bytes": 2340,
+        "sha256": "651064788d801d0d6f2a509b3668119edc0899cbd88b35f682939ee5f077cf14"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/attempts/captures/evidence-team-review-missing",
+        "bytes": 2346,
+        "sha256": "1fd80a0e39863a4f73a852a347147619d0fb9d1e3fb25e09396aabc7d90c0550"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/attempts/captures/evidence-team-review-ready",
+        "bytes": 2334,
+        "sha256": "1c81b3fc12eb6fe59137f70dd605199a9a021203e464aa4877f8e6f1e2813659"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/attempts/receipts/evidence-team-recovery",
+        "bytes": 326,
+        "sha256": "597a68fc45d1b11eb02c0948d12de40c17390fd30c987714ccbdded506746c76"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/attempts/receipts/evidence-team-review-missing",
+        "bytes": 335,
+        "sha256": "2e91458f513d00d9796a0cda72fb0ff3da5e7f08cf27ca74c4edf7175d2af932"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/artifacts/mission-fixture/attempts/receipts/evidence-team-review-ready",
+        "bytes": 333,
+        "sha256": "9b3cd0ecbd208d31b332dab3f896a6a57c61b8cd187ead9f52f7690be900e663"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/daemon/structured-log.jsonl",
+        "bytes": 3134,
+        "sha256": "1f95794c44ce6bef43cc7ff6ff323b54498b30706fa9f84db84291ef4fe70e12"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/ipc/request-response-summary.jsonl",
+        "bytes": 2358,
+        "sha256": "778dfbd6be26cc1e6469650173c871b0df4cb1c6f035a1d28214a57751087412"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/manifest/journey-harness.json",
+        "bytes": 442,
+        "sha256": "ef30a42f844ebef9130cfe98b2d80fdcab3d478178123e384fe0922b535b12c1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/manifest/mission-fixture.json",
+        "bytes": 497,
+        "sha256": "011c4331bf7eea597bd173d50cd705d8a9af642637ff7569afd8403cfc4f4835"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/state/loom.db",
+        "bytes": 81920,
+        "sha256": "c081c10fb6ac784f8f7071f728e7485be52d5ee7e7f778a4a4f1ca7e0ca3f951"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/tui/events-after-decision.json",
+        "bytes": 838,
+        "sha256": "72315c6bf59e9fa5bec4504244394444c4d6010bb5b8b286dd810ea8dbd881e6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/tui/session-decision-allow.log",
+        "bytes": 3347,
+        "sha256": "c96a8dc123c248aa1e690121dc7138c2e0e5ff8a2cf245b3b8e8d4167dc3981d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-canonical-allow/tui/status-after-decision.json",
+        "bytes": 10791,
+        "sha256": "73d634b98db612c5e223a1fdc7512a8259581804724b0837dd8125273d9ccc82"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/artifacts/sha256/6a/6aba10e4398194f218f61a70c539aa86397031943123c49760db9fc97f0ea3ae",
+        "bytes": 2275,
+        "sha256": "6aba10e4398194f218f61a70c539aa86397031943123c49760db9fc97f0ea3ae"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/artifacts/sha256/96/96d7e4cb59f67d9a3f9c8321f09bfd090216d9295d47596cf09bad25749bc17f",
+        "bytes": 2287,
+        "sha256": "96d7e4cb59f67d9a3f9c8321f09bfd090216d9295d47596cf09bad25749bc17f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/artifacts/sha256/98/98570b50fdda97b5753b2e3c9d4fde4e5f0f659cd96517283528210d324fad48",
+        "bytes": 2281,
+        "sha256": "98570b50fdda97b5753b2e3c9d4fde4e5f0f659cd96517283528210d324fad48"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/attempts/captures/evidence-team-recovery",
+        "bytes": 2336,
+        "sha256": "1fd245761c7da2e1f30b6c0897811d5fc5340856bea252ca7f677f33431c9eeb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/attempts/captures/evidence-team-review-missing",
+        "bytes": 2342,
+        "sha256": "e7cedefd0ac548dd1d94e3b457af5294421a3ab31097e35a3738285f7ea6d1fd"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/attempts/captures/evidence-team-review-ready",
+        "bytes": 2330,
+        "sha256": "cc30f3d23e4dd6473621eaae6babbac349deeb136a62b8cf9c5981602fd5b26c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/attempts/receipts/evidence-team-recovery",
+        "bytes": 326,
+        "sha256": "48db21f826ef8d8eaa2cd282be39cdb865cf5c6a28132276ace8806d45054fe3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/attempts/receipts/evidence-team-review-missing",
+        "bytes": 335,
+        "sha256": "815873b73072583cd6d51875420529b51c46cb9131140ffa642ecd66b4ea9ca6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/artifacts/mission-fixture/attempts/receipts/evidence-team-review-ready",
+        "bytes": 333,
+        "sha256": "b8e8eba696ab2425010a672798054e563e71d275c8f4cd3b41be5f33155b19e8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/daemon/structured-log.jsonl",
+        "bytes": 3653,
+        "sha256": "ae34c790399d35e5b1cd892b2ad1fbc9d741cf25a19bace575a12044df246543"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/ipc/request-response-summary.jsonl",
+        "bytes": 2747,
+        "sha256": "55c217376dee9a7499161a307fda71f84565cb6e7554814899b2e097f716823e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/manifest/journey-harness.json",
+        "bytes": 424,
+        "sha256": "2a35121cc4787c289149153f43b072194d6e2ee588e300c89c2c425358399b8e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/manifest/mission-fixture.json",
+        "bytes": 478,
+        "sha256": "c411cfa80088b81c7385d1c3798f0b81925529715916d41159f86199c1a215c7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/state/loom.db",
+        "bytes": 81920,
+        "sha256": "6289b16224d05e29071ce263718d552d1b6a303697a2afe89438c040fbc95e67"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/tui/events-after-decision.json",
+        "bytes": 838,
+        "sha256": "ae19ef540946c3c9e6a1d9a1a2d7d597b662e6b1e98ac0d96d438cb0ece95606"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/tui/session-decision.log",
+        "bytes": 3366,
+        "sha256": "537e54f7acdd74ad12c94a507e447feea20d672a86881f73b2721feafb3a3f74"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/decision-deny-rehearsal/tui/status-after-decision.json",
+        "bytes": 10780,
+        "sha256": "a36910769f0dad8887db0a1a5601a5bea309af2ebc805e33ad5ffeb7c655b831"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/daemon/structured-log.jsonl",
+        "bytes": 18755,
+        "sha256": "5c2a230853a26def481b8d47752bb4346d4ed90baa191da24e9db6becf28b393"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/ipc/request-response-summary.jsonl",
+        "bytes": 14085,
+        "sha256": "d4dd42e285fd948706aec14961c8a7579fca614c38bb844e2cf3b5a53f6a2796"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/manifest/journey-harness.json",
+        "bytes": 412,
+        "sha256": "d2ba947865eeaa704c77d635982c2e94ec8139834244e6bc858888c173b0b98a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/manifest/runtime-status-fixture.json",
+        "bytes": 492,
+        "sha256": "e6ca85fa7d282a99f628d57e5f243ccb32284b9c12952fb0ead543ca6f31ba7d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/chat-threads.json",
+        "bytes": 992,
+        "sha256": "ba8e4fc45013288a775f4ff012e2b705b79b0cc75c0e128d69241b485d03f70e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/evidence/artifacts/sha256/04/0439147c1aea13a58cfa9b496b64c1e3be1501fee2ad51060576a579ed02fc21",
+        "bytes": 27998,
+        "sha256": "0439147c1aea13a58cfa9b496b64c1e3be1501fee2ad51060576a579ed02fc21"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/evidence/attempts/captures/team-evidence-df944acd23447e4c59e28c9d1175a251",
+        "bytes": 28053,
+        "sha256": "d3f52c39d17f24bef7037051f6738ae40ee49db2340bc413a0b5d44b14991c38"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/evidence/attempts/captures/verifier-evidence-69df129cf756c133159befea4ef245e76a6050f5c928a6b5cc6637506804cbc5",
+        "bytes": 819,
+        "sha256": "aa492ed2fb5e1538cc3163136ddec204c019430a7503a930ef1e8760aa1cec46"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/evidence/attempts/receipts/team-evidence-df944acd23447e4c59e28c9d1175a251",
+        "bytes": 356,
+        "sha256": "3952cd68a05092a6826f886d7e98de062b5131f6a6e9f2eef75a8d15bbe66c3d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/loom.db",
+        "bytes": 135168,
+        "sha256": "3aeee38599ebbd4034b618c778c41ac5d90f1ef865db4f1493ac2f09a21ef1bf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/events-after-execution.json",
+        "bytes": 1238,
+        "sha256": "3ebbfd1ecd4dbf992ca45235eab947f9d653d149d6212c0b1accc81751ad5673"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/events-mission-before-start.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/events-team-after-confirm.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/events-team-before-confirm.json",
+        "bytes": 178,
+        "sha256": "a128347d26b87df2035d195d0b2275ed401f5988181bdf192e803663bad9795a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/identity-before-restart.json",
+        "bytes": 94,
+        "sha256": "a432b3443adb9c6168ced8bea1c1e36cb46b886667da72912b8354ad2223bd95"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/session-main.log",
+        "bytes": 9030,
+        "sha256": "8c04ddabfe623572ace73754b8b17f9ba4c870637c63e5ae2681c0ef40b957eb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/session-mission.log",
+        "bytes": 3443,
+        "sha256": "81cf90d299f6c1c8eaa19488bb40d450bb817987e17fdc08f866955b4889b7de"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/status-after-execution.json",
+        "bytes": 3523,
+        "sha256": "1e4c924f430b3bf6ecf184aa28588277acf47bd4296182a9f57478d288f3e2b5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/status-mission-before-start.json",
+        "bytes": 1269,
+        "sha256": "5792318c439c37d61c5a83051cf95992f35800a623fc6b6c00f1df19d9f70ea4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/status-team-after-confirm.json",
+        "bytes": 1269,
+        "sha256": "5792318c439c37d61c5a83051cf95992f35800a623fc6b6c00f1df19d9f70ea4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/tui/status-team-before-confirm.json",
+        "bytes": 1015,
+        "sha256": "d06f61941e091aa7089615a35d404527eaa458d8518247ff5c11a8da5c82bb5f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-021/main/workspace-j2/SENTINEL-DO-NOT-READ.txt",
+        "bytes": 53,
+        "sha256": "8e0a596432afd6151cef216311508f66f944931b1d564abf6f52b7150f687d53"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/FAILURE.md",
+        "bytes": 2189,
+        "sha256": "f6fdded0755908377fdbe233989561ef2923ececaca9189c2b74fa705989d636"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/artifacts/sha256/94/94df619eab570dcff8ed8c68641a0e28fc96816f1131dfa55f8b01637042d3a7",
+        "bytes": 2285,
+        "sha256": "94df619eab570dcff8ed8c68641a0e28fc96816f1131dfa55f8b01637042d3a7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/artifacts/sha256/cc/cc054b6324e0fd177369b85861c7bdbda934e673f3bf1a770fbcca0cfc45a347",
+        "bytes": 2279,
+        "sha256": "cc054b6324e0fd177369b85861c7bdbda934e673f3bf1a770fbcca0cfc45a347"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/artifacts/sha256/ce/cecc6f73034b493f5f7617e469f71d07f4942c86f98602ddb7375cd493ecde56",
+        "bytes": 2291,
+        "sha256": "cecc6f73034b493f5f7617e469f71d07f4942c86f98602ddb7375cd493ecde56"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/attempts/captures/evidence-team-recovery",
+        "bytes": 2340,
+        "sha256": "42f0d1ebc43452bd9083a1896a090c4aedc8d3d59a5331b54526eaffa20331aa"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/attempts/captures/evidence-team-review-missing",
+        "bytes": 2346,
+        "sha256": "11037aa2c466e122982504896f2f5eaed4cc575351d869326b36197b609f0af7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/attempts/captures/evidence-team-review-ready",
+        "bytes": 2334,
+        "sha256": "2e38b5fc4f2a18e70ade640d6c1211b215e0af29172b2c1a850ce722c7221e37"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/attempts/receipts/evidence-team-recovery",
+        "bytes": 326,
+        "sha256": "36fceef2f739e65c2a519d9e0558e9654d651bbe5b5d87a5eb4de935d772331a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/attempts/receipts/evidence-team-review-missing",
+        "bytes": 335,
+        "sha256": "ef56c28642d0cc959d301f23dde5e4eeb595998b043259f25815a5e925ab5275"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/artifacts/mission-fixture/attempts/receipts/evidence-team-review-ready",
+        "bytes": 333,
+        "sha256": "0c33a546be991248738def47e29d5a2b1cc4ebdc09ed843efb62d8da453790f2"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/daemon/structured-log.jsonl",
+        "bytes": 3142,
+        "sha256": "6bae81b89384b0b38f9edc7b70229ca4b43de2d5ec1a8d72adb88dcfa507303b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/ipc/request-response-summary.jsonl",
+        "bytes": 2362,
+        "sha256": "4078feca08e3fd993c0688ef170c7184e3faf10bf87232e761b52c43a14f323b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/manifest/journey-harness.json",
+        "bytes": 442,
+        "sha256": "3b424774a89faab298d827562087925b64ca7ef89d575539aa82bd9e810a9502"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/manifest/mission-fixture.json",
+        "bytes": 497,
+        "sha256": "271af286e5db2dfd63dbc5eccd06edfa9cfd9c48a2f08721cbcb58d4d16d0218"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/state/loom.db",
+        "bytes": 81920,
+        "sha256": "024d76fae1ade6a3ebdd7ccad2cd1d2ecbf7ee2949d7958537008887c2ec2fba"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/tui/events-after-decision.json",
+        "bytes": 839,
+        "sha256": "ce220add8849a6dbfa21a8ffc307eb0ec21f298d53bad3254522ce920a748cd3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/tui/session-decision-allow.log",
+        "bytes": 3704,
+        "sha256": "aceaf7cbbbf4377162a5e0d4bf7e931cf2efbd408414b33803da9b1d65ca915c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/decision-canonical-allow/tui/status-after-decision.json",
+        "bytes": 10791,
+        "sha256": "6f7a1c47f05ca45ebd3a7e54da0ed56b668880ff0cccf83d47e95fa562ad4f20"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/daemon/structured-log.jsonl",
+        "bytes": 53694,
+        "sha256": "2115290c09f2b81f2fa6df8896a2a4f3e7dc665fe679c1da835f24eb749d90ef"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/ipc/request-response-summary.jsonl",
+        "bytes": 39597,
+        "sha256": "9a4a1a7ce78754d222b8a1ed27b01c65fc57214be861278076801d1f89f1e2fe"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/manifest/journey-harness.json",
+        "bytes": 412,
+        "sha256": "b9c0918bc7beb95604f8f49232cfd95ef27698a6b958c34aacb322061dccc5c6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/manifest/runtime-status-fixture.json",
+        "bytes": 492,
+        "sha256": "1dc74ebb6de2226b65c9e496d71bbdf9c7583af95dc84d368191330044f000a6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/ax/action-audit.json",
+        "bytes": 6187,
+        "sha256": "85042039def7b66cb43df736737d36c1d322f348992e2493faeea145998d5a45"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/ax/after-chat-elements.txt",
+        "bytes": 2404,
+        "sha256": "dc1070d4e5ba3b81c0a4469c0b0e40c84cf23efa17c312f21e4d254424c26ba0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/ax/apple-interface-style.before",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/ax/folder-picker-elements.txt",
+        "bytes": 15306,
+        "sha256": "c4660c9830ed3abd13f87aa4397f79866609235856e3b35f6d9732472011bfcb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/ax/initial-elements.txt",
+        "bytes": 25261,
+        "sha256": "71ad81abe4d36c9807c49bca76b1dfcc845ef8f6bce5c16daaa63f80b69be48e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/ax/system-dark-mode.before",
+        "bytes": 6,
+        "sha256": "2ed27c1421e6928dbe13dbfdb5c59e1045b30341fe7ebe05700006bc5ac572c0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/after-controlled-picker.png",
+        "bytes": 644749,
+        "sha256": "799460def79b782b04ecbf26a481a0b9661b13762c2f0b7b9c30582ca1f27341"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/after-retry.png",
+        "bytes": 644749,
+        "sha256": "799460def79b782b04ecbf26a481a0b9661b13762c2f0b7b9c30582ca1f27341"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/compact-900x640.png",
+        "bytes": 513222,
+        "sha256": "ca964483ade07024d40e81bc15e853e668c5e6ddae2f7b2b8b1590d97b0eac9b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/dark-app-domain.png",
+        "bytes": 683875,
+        "sha256": "38122c35eaf113c469b3d02131e976210b83c91afc75893ea7694ec65deb0490"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/dark-chat.png",
+        "bytes": 546891,
+        "sha256": "703f0ca7344cd165d1b2473eb37cf397776f435cfd98b4eef59d1fb3d8c49be1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/dark-system.png",
+        "bytes": 702152,
+        "sha256": "e055a43e0ec6ee4423b859b1457dcc47263822eb40da63b4ebf19af58d41bb08"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/escape-closes-board.png",
+        "bytes": 699583,
+        "sha256": "cd464b3274f64fda1ef850fd8cc18c5c92bfc50426da58ea88a5a4163b2650e0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/full-mission-board.png",
+        "bytes": 755613,
+        "sha256": "fa0728f16d4721f32ed2bf1180fbcd674d844bf6a55fefc640d11a17d831a429"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/governance-inspector.png",
+        "bytes": 700997,
+        "sha256": "04d6ded49f874c3184220637d47ce920838b08d95936dc6c1b0ff2448526e39b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/native-chat-complete.png",
+        "bytes": 669158,
+        "sha256": "3c6356dc458bf92a0f24ba26174302821d3787aaedca7677d6cc94509cc5e4ed"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/native-chat-pasted.png",
+        "bytes": 651907,
+        "sha256": "0bfe26c480588e653f0a45cbc6aa0259c027a485496de43931ed0ed250713163"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/native-chat-response.png",
+        "bytes": 506330,
+        "sha256": "c5ed820e484320eaf8e9fde5684f970feeb7be290dd299387a37b417f577b3bd"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/native-chat-typed.png",
+        "bytes": 642493,
+        "sha256": "a71abea13656802494cfd13f37af0229eab1543df1503a2f85143606bfaf8450"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/window-46133.png",
+        "bytes": 481773,
+        "sha256": "51d572ee150ac478beea82d76f56cc046c61acc84ec2e42900f4dc54e828ddef"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/window-46134.png",
+        "bytes": 432153,
+        "sha256": "ee4db33999a77d281dfe293361980486f33033b0afd320d0cd7e14d743818528"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/window-46135.png",
+        "bytes": 432949,
+        "sha256": "4c91432edc048b7c091f11a2366672f00e6772e716cbc1df5c4e1b600e72cad3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/screenshots/work-board-with-inspector.png",
+        "bytes": 699736,
+        "sha256": "61b9e31d7159679577dd062faf808798438f084d8cf205f4fba5eec23d7c155b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/status-after-native-chat.json",
+        "bytes": 3545,
+        "sha256": "37eb4882f15b45562ab6c7fe44571c73cad3ec3a557e30d017fba12370fbc622"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/status-after-native-conversation.json",
+        "bytes": 3545,
+        "sha256": "37eb4882f15b45562ab6c7fe44571c73cad3ec3a557e30d017fba12370fbc622"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/status-before-native-chat.json",
+        "bytes": 3545,
+        "sha256": "37eb4882f15b45562ab6c7fe44571c73cad3ec3a557e30d017fba12370fbc622"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/native/status-during-gui.json",
+        "bytes": 3545,
+        "sha256": "37eb4882f15b45562ab6c7fe44571c73cad3ec3a557e30d017fba12370fbc622"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/source/runtime-fixture.json",
+        "bytes": 1752,
+        "sha256": "157f277e1d046bccb6e03ae9bf21339c2e8a5bc321deea6836b6ecc9619a6c28"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/source/source-lock.json",
+        "bytes": 7248,
+        "sha256": "b02d23b7091b16f783ab8e503b65afa85a14a8875fcade1e55b8af4ab110d715"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/chat-threads.json",
+        "bytes": 2618,
+        "sha256": "3e14c75a53c0224bb3ecaa42ca83712d5c221d46677584056573c7302f9602eb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/evidence/artifacts/sha256/ff/ff8898cc0cec4ed5e28e453f7caf8e75d918a9aa666a9733365872e6ee71c379",
+        "bytes": 73393,
+        "sha256": "ff8898cc0cec4ed5e28e453f7caf8e75d918a9aa666a9733365872e6ee71c379"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/evidence/attempts/captures/team-evidence-49f8dd7a62e5f4e3be692a33288da75a",
+        "bytes": 73448,
+        "sha256": "b12893ef0886e09a639c64881baf09806ef2363cc3e6139350e2faaeca1db03a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/evidence/attempts/captures/verifier-evidence-1130e67ccefff1a000f75df952aab8270e1c89f683125ce4f15a75cd1a07f9fa",
+        "bytes": 819,
+        "sha256": "b65c652b9ce15300ce09f1bf546029f1e899eb2653e7389da48e8ba14d3ca5e7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/evidence/attempts/receipts/team-evidence-49f8dd7a62e5f4e3be692a33288da75a",
+        "bytes": 359,
+        "sha256": "0a9de1c5b9add6abc85132661946f8db6be5737f94ae37ffe4c04ec5c2f7c602"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/loom.db",
+        "bytes": 233472,
+        "sha256": "02b9e9a0f6f0256a0d0e2eb5c183680b9c130bde75a112f770a0dd997cfefd75"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/state/loom.db.lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/events-after-execution.json",
+        "bytes": 1239,
+        "sha256": "3f44a2a0f19501318d93c01638bab3084323ffbfebf364f1bef925e10e13e98e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/events-mission-before-start.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/events-team-after-confirm.json",
+        "bytes": 323,
+        "sha256": "dd7ac2b91f56042d31b9343dd82e05944f6f7874603a660a20ae5d9d9e0ca1e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/events-team-before-confirm.json",
+        "bytes": 178,
+        "sha256": "a128347d26b87df2035d195d0b2275ed401f5988181bdf192e803663bad9795a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/identity-after-restart.json",
+        "bytes": 71,
+        "sha256": "b5230b0b3b27c160c0a083a5400c7d98c071b4c2ff02210ee99a1edb9cf08e09"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/identity-before-offline.json",
+        "bytes": 44,
+        "sha256": "bd0faf0c48619d46d759c0fc8daed962725a4023aa61bcf87638e00883c51b1a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/journey-assertions.json",
+        "bytes": 1337,
+        "sha256": "706b6305785a4a59e5de9a1e62b972d1234a24fb57aba4d064ff23d5f35471a8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/session-main.log",
+        "bytes": 9580,
+        "sha256": "4dc99cc0537185193a307209c5382e5c2c6894d4112e89aaf38c2ca563f947dd"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/session-mission.log",
+        "bytes": 5580,
+        "sha256": "1e2d01e8af281369e169d96812cb9ddee6a26448777c51ba6bece58abf53245b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/status-after-execution.json",
+        "bytes": 3523,
+        "sha256": "1fca831a869116b308e5d38dc0a9ebe357e0875da4e4722fa78d5610e37f32dc"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/status-after-restart.json",
+        "bytes": 3523,
+        "sha256": "020a4c90292239956193409f0fca376f54d12c6d2a2c529865c2d2beef533e9f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/status-mission-before-start.json",
+        "bytes": 1269,
+        "sha256": "c987d915288c25bd29280e01aa65fdf40519fca5b8065476129ff7a0769102ca"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/status-runtime-offline.json",
+        "bytes": 3997,
+        "sha256": "37facc968e263f4a2fd43d044b88de2cef148204ef017700324fc5a24d7e2f63"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/status-team-after-confirm.json",
+        "bytes": 1269,
+        "sha256": "c987d915288c25bd29280e01aa65fdf40519fca5b8065476129ff7a0769102ca"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/tui/status-team-before-confirm.json",
+        "bytes": 1015,
+        "sha256": "68b0d9a1afa26cf79e94f7002c0ad17b8c3896838550bc2b00a82e02a6b7a34f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-022/main/workspace-j2/SENTINEL-DO-NOT-READ.txt",
+        "bytes": 53,
+        "sha256": "991d78870138de2dffa2472ebd66fc077aee258e70ceeaaed54ed2c4cb530e79"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/ARTIFACT-SHA256.txt",
+        "bytes": 5930,
+        "sha256": "be1d556e66833b5855aab5a90a1f10b8f544496773906a84858dab626a43cc5e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/CONTROLLER-RESULT.md",
+        "bytes": 4370,
+        "sha256": "940213f62f613e68480110db4608638757760afd54126a5ae2a9bbfc54c679d7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/EVIDENCE-MANIFEST.json",
+        "bytes": 2262,
+        "sha256": "7f2f91b1a788e1165afcc58e59be349779834b0fdf8eeb64cd18d094f9a71db3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/STARTUP-DIAGNOSTIC.md",
+        "bytes": 1048,
+        "sha256": "fad9f5682877573dcc8a86097932bc98831fbc012dde62f34b5cd000072c89d2"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/daemon/structured-log.jsonl",
+        "bytes": 14017,
+        "sha256": "ad4648af8468d9c05d05f0f9824bd464ff0feb813e67227b8c90e9c173748a75"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/ipc/request-response-summary.jsonl",
+        "bytes": 10136,
+        "sha256": "7d17d7c57265cb7bb75f4446aa935feeab5186387ffa96bb0b0bc551035367be"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/action-audit-wide.json",
+        "bytes": 7956,
+        "sha256": "f073300b8b03425105cce66cfa5af3b1de0247b19058fc72578abbfa34b324d1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/after-activated-escape-action-audit.json",
+        "bytes": 7956,
+        "sha256": "f073300b8b03425105cce66cfa5af3b1de0247b19058fc72578abbfa34b324d1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/after-board-escape-action-audit.json",
+        "bytes": 9390,
+        "sha256": "444ecffc1bc04336661161452a56bb8b55d0c6f6d83ba54c38cdf2a358a42a0e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/after-board-escape-window-count.txt",
+        "bytes": 8,
+        "sha256": "5f9f7eb670cc72cb394b15217690abc8ff7c43498a0f851b369755c66a248c55"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/dark-action-audit.json",
+        "bytes": 7956,
+        "sha256": "f073300b8b03425105cce66cfa5af3b1de0247b19058fc72578abbfa34b324d1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/full-mission-board-action-audit-v2.json",
+        "bytes": 11743,
+        "sha256": "c37f0ab20ab0730e1247e372a02ed8074123d8d05ebdebe83e2722b44d1c2791"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/governance-open-action-audit.json",
+        "bytes": 8664,
+        "sha256": "476766264f9294ab7d460608155e15aa20c754defa100346990f6dfa3ffb536f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/shift-tab-focused.txt",
+        "bytes": 85,
+        "sha256": "074cea81dba6039ea0a261f6b5ac8f4bddad094efb58bc2cff1fb9fcc99d1cb0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/system-dark-mode-during.txt",
+        "bytes": 5,
+        "sha256": "a17fcf0a2f50e2d495e4f90ce263410edc183add6c62699a2facbccf60410f74"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/ax/work-board-action-audit.json",
+        "bytes": 9390,
+        "sha256": "444ecffc1bc04336661161452a56bb8b55d0c6f6d83ba54c38cdf2a358a42a0e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/environment-restored.txt",
+        "bytes": 82,
+        "sha256": "c557df8f7a0431d20cd8fea3433063c773f0a5ccac0497c9927930b06b94194a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/process-postflight.txt",
+        "bytes": 73,
+        "sha256": "069a84ba7ac244b1c2dc3b34af840ccf639380cca764b36f4a5bae9aa6ed1300"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/dark-1080x720.png",
+        "bytes": 502538,
+        "sha256": "ae6ce2e36f0e2f76fe2d2c1c4439bdf9fbc2af1baef8a160a03837f669ec1161"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/dark-1440x850.png",
+        "bytes": 591272,
+        "sha256": "39c6d69c5bf06a350176153524832c8fc40753bd42ab3e7586cfe5c4575f3552"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/dark-900x640.png",
+        "bytes": 401239,
+        "sha256": "c40859169ebf89f927fa1eb356b82c319ca710b944509ce8fed4f3bb1ff7178d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/escape-closes-full-board.png",
+        "bytes": 760680,
+        "sha256": "4f65011368a53d66a8da84f99080364ca6047ab73fa8f5085a74fa71d99af1bf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/escape-closes-governance-activated.png",
+        "bytes": 730478,
+        "sha256": "f4cb1d29e478edf4e8be9045a78d6cf659315470753327b88aad4571064566e9"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/full-mission-board.png",
+        "bytes": 883651,
+        "sha256": "f5267eb8fb4d505694b84da2c703c6b896b102b0c82fc51f9cba2c10339e28a4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/full-work-board.png",
+        "bytes": 760680,
+        "sha256": "4f65011368a53d66a8da84f99080364ca6047ab73fa8f5085a74fa71d99af1bf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/governance-keyboard-space.png",
+        "bytes": 762726,
+        "sha256": "beaa456720906264ee9d18cb3fd309862e2a9ee048b7f8a15a964146c8d52652"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/keyboard-shift-tab-focus.png",
+        "bytes": 762808,
+        "sha256": "2e2a68f003439b2b25015594add6978f347a0aab4dacbd0998183be5d6ef0601"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/keyboard-tab-focus.png",
+        "bytes": 730368,
+        "sha256": "0c8c2fd2f50a997358586d7648092ec5ca683d4b809cb7de03d78dfa27e4de41"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/light-1080x720.png",
+        "bytes": 491696,
+        "sha256": "13cdb97ef366a614ae664879a60496957683cda38176f527a3a78c3139d0814c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/light-1440x850.png",
+        "bytes": 573014,
+        "sha256": "51797d3a1e3db8edf716cfe2c87dd10ac48f8339766fa6c639e2d9df05098aee"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/screenshots/light-900x640.png",
+        "bytes": 394832,
+        "sha256": "59a522a7552b71cc8fe1cd7fff3a877fa051fb9f55291663f23fab7b60bcf36b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/sqlite-postflight.txt",
+        "bytes": 15,
+        "sha256": "7348c49747142fabeef66de6e0322be1fa738fb01e52c2b37fec572b9d24bbd5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/state-hashes-postflight.txt",
+        "bytes": 158,
+        "sha256": "e48f78becd021d5db7a71aa05ef3340a20f925a39ca0e8df006e1ed79821fa24"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/native/status-after-j9-j10.json",
+        "bytes": 3546,
+        "sha256": "006722bebea597dba272ec5ec28ccfa44b0448d4ed6e0cac2668514dc4f6aea0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/source/journey-id.txt",
+        "bytes": 37,
+        "sha256": "cc31cb72e604be48c3412588e99099e30c89f13cfc452bf750167c6f35f1ffc0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/source/loom_ax_audit.swift",
+        "bytes": 12085,
+        "sha256": "c1ffbb809b2ae003fa8d2d74e4d0461a2f83955dd251aec5bde0ec06b4ef411b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-023/source/source-lock.json",
+        "bytes": 7655,
+        "sha256": "7ad412e6b0122f3f37dfbbdaa3b5127f22d8b850963a1f1949fd14bf38ec2f1b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/repair-deterministic-verification.md",
+        "bytes": 75147,
+        "sha256": "2068ce2a8b133e3102adfac2916f9e4263773c6e4cad013389d429041044957c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/P2C-W1-IMPLEMENTATION-EVIDENCE.md",
+        "bytes": 3420,
+        "sha256": "a18440a5875815101ed28a0d3a11de35a08153f19746720eecf68320a9ee4d98"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/P2C-W2-IMPLEMENTATION-EVIDENCE.md",
+        "bytes": 4216,
+        "sha256": "0ee1929b10961b100b9efd8f7639e4733aa4342eb62157c7f3ec6b36369fd708"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-A4-FINAL-EVIDENCE-LOCK-REVIEW-1.md",
+        "bytes": 3223,
+        "sha256": "13cd02991366a384b5df4b841efe9c0a107d973f647112b532186185d129617f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-A4-FINAL-EVIDENCE-LOCK.json",
+        "bytes": 113283,
+        "sha256": "cb34838825433533a51abce8e07d4522fa310c2de2d90234717bed6c2a7c629e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-FINAL-CONTROLLER-RESULT-CORRECTION-1.md",
+        "bytes": 1386,
+        "sha256": "a89f7db8fdf8c77590d6ed60d583c8fbe2ffe36be37fcac500dad82032b5fb68"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-FINAL-CONTROLLER-RESULT.md",
+        "bytes": 7310,
+        "sha256": "e3ba677ca0affb8588ff6bc7aa56625fa59d07dc35e1765eabd2be5a62b74419"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-FINAL-REREVIEW-2.md",
+        "bytes": 2906,
+        "sha256": "1d3d7ffe3388a3fb886ff41e6ba0a5e673f1ecb2e7912bffdcecef3ae1c076db"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-FINAL-REVIEW-1.md",
+        "bytes": 2903,
+        "sha256": "c926ea73b0f8e532d5ff6cfcbfddc9afbc5b91f2325c528da5b98ba38dabcef0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-ACCEPTANCE-BOUNDARY.md",
+        "bytes": 2958,
+        "sha256": "64ee5f6006001d6ff07879366df4b8a54bafca8e07226d6c066c1c177209b09c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-BOUNDARY-CORRECTION-1.md",
+        "bytes": 2898,
+        "sha256": "e498ddfc785502be60826d85637aee6f335de43bf61c79fb7cacb4dcdf0d8389"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-BOUNDARY-REREVIEW-2.md",
+        "bytes": 3122,
+        "sha256": "a65b7a164fe94fdc368fc86afda699ddc7b033617173b035cebe9ef71a25925f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-BOUNDARY-REVIEW-1.md",
+        "bytes": 2185,
+        "sha256": "177558ce3ac0f4c4c16da224421271b30fc1f0f342b3030d216b597f24c2dc68"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-PRODUCT-OWNER-SIGNOFF.md",
+        "bytes": 1369,
+        "sha256": "7bf196cb9bd601a23a456c77f50d5c37d26ed13cb4131ffbf36ac911b0fa800e"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-10-CONTRACT-REVIEW.md",
+        "bytes": 3533,
+        "sha256": "2491129d677f6482379faadd91d5df724b8f90d43a7c1a4444f268eae17db70f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-10-JOURNEY-UI-REVIEW.md",
+        "bytes": 3252,
+        "sha256": "9ba3a4bd7e15c55d50afc5e7667bf3cb220cbb6511a44fcc77673eb174cff408"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-CONTRACT-REREVIEW-2.md",
+        "bytes": 985,
+        "sha256": "9fca875a0596564f80d8200d0e0225c2f5f756f022d01c55491a645d894d4718"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-CONTRACT-REVIEW.md",
+        "bytes": 1866,
+        "sha256": "05e4e8f93d55d933683829a11e05d9f388127e5a2a3df98980d1b75511fa0e05"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-CONTRACT-STATUS-REREVIEW-3.md",
+        "bytes": 605,
+        "sha256": "c6ded63f20259ebb47b82311d1dafd727905e20180bba41f71ed0d09649c2f45"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-MATRIX-REMEDIATION-REVIEW.md",
+        "bytes": 915,
+        "sha256": "e1947491c81939fe329cd6f3ed126b039529a85605dff27ff540272557a995c8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-SOURCE-LOCK-REVIEW.md",
+        "bytes": 647,
+        "sha256": "695e4420a624e09ab9945a029b28ff216e727fba0d8793c108059c92fe315ce3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-SOURCE-REREVIEW-2.md",
+        "bytes": 984,
+        "sha256": "2e1fb29ba896675261ce20f387c5e5581f052b7f256d3bfe841eda63b787d0ea"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-SOURCE-REREVIEW-3.md",
+        "bytes": 1195,
+        "sha256": "77c2813edcbc11143438d4a419a6bfc26320cd42c6b29078abd0e93cb3140ab8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-SOURCE-REVIEW.md",
+        "bytes": 1201,
+        "sha256": "c5fd8ea8430613f9c07ae5abc94828a848ce5c3ac8741cf83bc65929a8ce65e8"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-STATUS-REREVIEW-2.md",
+        "bytes": 792,
+        "sha256": "f44182f5ff60e2e0d42ad9f6e2cc5a4005bf0bef8b32cf83eead33add1691032"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-11-STATUS-REVIEW.md",
+        "bytes": 659,
+        "sha256": "03e0941eae9fc11d4f142031a74e0f7726e21a1abe7eed95d7173b39f2ef3329"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-12-SOURCE-LOCK-REVIEW.md",
+        "bytes": 675,
+        "sha256": "041c3c7e4084931dfec9627cddaac9812c4b9a916e878279046b756fdd73f019"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-12-SOURCE-REVIEW.md",
+        "bytes": 820,
+        "sha256": "a7463bd92249f3c19f0155c1695ce9b7b24c314c51d58ce4e4c232cd9ff09721"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-13-SOURCE-LOCK-REVIEW.md",
+        "bytes": 805,
+        "sha256": "ae582caf69a7ea4517a9a5a963ec4b3e99a3cead6ed976968cd954e9fec2cceb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-13-SOURCE-REREVIEW-2.md",
+        "bytes": 751,
+        "sha256": "6808205360511ff33ad9b41cfc3dbe794b304785b96aa2f1328bf4b25e3a545c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-13-SOURCE-REVIEW.md",
+        "bytes": 656,
+        "sha256": "41aea8965aa90523a6928558f0b65c5d8b2218cf9027a7e8c6bc7078680fd5b0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-13-STATUS-REREVIEW-2.md",
+        "bytes": 541,
+        "sha256": "9d4daab89d337ad6913c8f13df385b33a57bcf2b0772f7623889a857654401c0"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-13-STATUS-REVIEW.md",
+        "bytes": 417,
+        "sha256": "7fda35e618be6ebfe6d2828a671365ac340307cb5331d86aa6fc4653fe492bc6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-14-SOURCE-LOCK-REVIEW.md",
+        "bytes": 1314,
+        "sha256": "00b3aa3fded9738d93e5303a7516804bfaa68fdbb75189d88d2c9ada9625cd8a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-14-SOURCE-REVIEW.md",
+        "bytes": 1859,
+        "sha256": "1695800d0dd6cf9c3ef97ea4c61b733ede606b8be1181db6ed652f335048ee79"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-14-STATUS-REREVIEW-2.md",
+        "bytes": 1024,
+        "sha256": "4a386e224bf62e8f60b2f58b05a71e03a62d30d24abff30496102d320aeff68b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-14-STATUS-REREVIEW-3.md",
+        "bytes": 940,
+        "sha256": "0958634ab51fdbb6425a252af4194098647fbd68db0124e00a28b6c405c13697"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-14-STATUS-REVIEW.md",
+        "bytes": 897,
+        "sha256": "e43e05ebdec46075e75f34ee214c7e2dcf86399be556fea44f9c4d9a9c0a3ef3"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-CONTRACT-REREVIEW-2.md",
+        "bytes": 638,
+        "sha256": "4affe71a4575a9841cb8513ac587dd94f30c1d9f8e35cacc0c080426d0614810"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-CONTRACT-REVIEW.md",
+        "bytes": 843,
+        "sha256": "cd0339e335a31b235650dffef829bfd2f781fcc2014e12856d3afde1faeb8cd6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-SOURCE-LOCK-REVIEW.md",
+        "bytes": 768,
+        "sha256": "1811b0b5444104f4f3d254c934bc48bad137ccbf1fe45e723d2394fd2aa332b5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-SOURCE-REREVIEW-2.md",
+        "bytes": 732,
+        "sha256": "5369d807b3783f76ba864397c503e5edfb351abf8ef7b178098aedebae3a2226"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-SOURCE-REREVIEW-3.md",
+        "bytes": 575,
+        "sha256": "9bd5fc98a15ba395d0191711635b6cd095a0065b4579c4f56b18624c089da111"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-SOURCE-REVIEW.md",
+        "bytes": 772,
+        "sha256": "2876227f19817067463c69f8e56fa9b1729740575edff88502a8e679f5202e1a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-STATUS-REREVIEW-2.md",
+        "bytes": 478,
+        "sha256": "6619d875aee9b2896378ee8623e9eec71d6619bb63207ea8a07e6b9b31b5cafb"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-15-STATUS-REVIEW.md",
+        "bytes": 611,
+        "sha256": "f63c18ec59a3654b2db55fbbaf2129e36735649498b78de713c1299a6fe529b1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-16-CONTRACT-REVIEW.md",
+        "bytes": 510,
+        "sha256": "7b92339c67b21a7e4f8ebec5db712ac0719457781017ee1f30656d7fd7fbc8bf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-16-SOURCE-LOCK-REVIEW.md",
+        "bytes": 536,
+        "sha256": "8f505ae7a635798a3306a7855305127fefa87263933cc7b7103b9878446f1878"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-16-SOURCE-REREVIEW-2.md",
+        "bytes": 441,
+        "sha256": "2714351e1b10755b8d2fffc7f4aef6b1adcd6fcf0190fe2e02f221103ab2b6e1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-16-SOURCE-REVIEW.md",
+        "bytes": 686,
+        "sha256": "0f70e19e048ba1c00db98bda71d2d8cb88e46219bc221869d684816596426f17"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-16-STATUS-REREVIEW-2.md",
+        "bytes": 453,
+        "sha256": "333696af1663668afa0ae5ba60d1020e1397dd4c285773d49bdceef5f30f4e6b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-16-STATUS-REVIEW.md",
+        "bytes": 467,
+        "sha256": "a3679aaffc415d433ba321fa099e8ae09fcb239bde68cc6171f9dc14c73ea860"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-17-CONTRACT-SOURCE-REREVIEW-2.md",
+        "bytes": 1185,
+        "sha256": "31f93e57673106615fe9ae007e6c3352179a27f09f25d2926e06740aa79a4490"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-17-CONTRACT-SOURCE-REVIEW.md",
+        "bytes": 1546,
+        "sha256": "54f3c41af32386fd6885a22362cdcb7854f273ac4484894cd439384b1d5e0c5d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-17-SOURCE-LOCK-REVIEW.md",
+        "bytes": 996,
+        "sha256": "89e15d8d3bbf286aba8e42965f39451fcdcec83e6600c54f88e9fbda635ed7dd"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-17-STATUS-REVIEW-3.md",
+        "bytes": 594,
+        "sha256": "d7d5cd45d75500e74c8271d83ba7c2ce20137028c4336a0c8a2a86e22f84a23c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-CONTRACT-REREVIEW-2.md",
+        "bytes": 567,
+        "sha256": "33f4cfed10f0a7b9aef488ad1ed02231f3fd07d23db0fef4c4ddc5ec97c4212c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-CONTRACT-REVIEW.md",
+        "bytes": 871,
+        "sha256": "2dceb8766398d8daa2c555cb28b299d36ea4451e3e41b53f79e33eef9194e100"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-SOURCE-LOCK-REREVIEW-2.md",
+        "bytes": 841,
+        "sha256": "1c8700653e13da16070d6a429d2af970203bcba714cfaf1f01884cabe7e3a1c6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-SOURCE-LOCK-REVIEW.md",
+        "bytes": 449,
+        "sha256": "aa9ff25aa7824e47f0b1f8ba10aad6c436cd70e29b89239549655cefa60ca374"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-SOURCE-REREVIEW-2.md",
+        "bytes": 755,
+        "sha256": "dbb3eca505876e009a7f3ae7645707e8aaa6c1c7f24fa210f2fb830b535fdb6a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-SOURCE-REVIEW.md",
+        "bytes": 1133,
+        "sha256": "d8f16576a3341d82b309af5da4338848713281641816eb2b38dc75dd00768b2f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-STATUS-REREVIEW-4.md",
+        "bytes": 569,
+        "sha256": "b67f7e55bbc81b4eba857140306111e0eb02a6a698f207c9eceed43184c88be6"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-18-STATUS-REVIEW-3.md",
+        "bytes": 684,
+        "sha256": "a24375fa785a269c1dd007611824f5afb7d30e898952cff046dcd458a55168e5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-19-CONTRACT-SOURCE-STATUS-REREVIEW-2.md",
+        "bytes": 2847,
+        "sha256": "34d1daeccf3b4dc8b9334cc0668972cdcad7545206d546dd797498d1ae6b40a1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-19-CONTRACT-SOURCE-STATUS-REVIEW-1.md",
+        "bytes": 2208,
+        "sha256": "a398ea0e858b0497b1bedf53bb7303f5baeb89a5bc8e362adb90f8ec41121857"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-19-SOURCE-LOCK-REVIEW-1.md",
+        "bytes": 1875,
+        "sha256": "1bda3fe690143fd0830d7a02e713d6d5e905907ee0fbe3d4f77d7472d2e06f5a"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-2-CONTRACT-REREVIEW-2.md",
+        "bytes": 1910,
+        "sha256": "25c947653fad2eabeab6c123514ee2d709a1cceb2380c446fe07c9231b757fe7"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-2-CONTRACT-REVIEW.md",
+        "bytes": 2005,
+        "sha256": "f0ad89a8ff2c01b38b4425c4a72c79aa39969a5877047cb7f8ac8606bbf4f746"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-20-CONTRACT-REVIEW-1.md",
+        "bytes": 2096,
+        "sha256": "0693c5b9fc32955b85e275c9ea2c61099830883f12d6af690141e24eac5abf96"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-20-JOURNEY-UI-CARRY-REVIEW-1.md",
+        "bytes": 3541,
+        "sha256": "6d2bbac4e4ce770ea972675bbe4c03628eba217723371a38760fc04a02458439"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-20-SOURCE-LOCK-REVIEW-1.md",
+        "bytes": 1489,
+        "sha256": "b10b6eb8deea63a1deb2d15808f7532aa737e60e8437a8f93731eb7206cf2128"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-20-SOURCE-STATUS-REVIEW-1.md",
+        "bytes": 2205,
+        "sha256": "36a27558df4079cc371ad09f491a3589a7ef82deda0362c5362ed3bc890772ea"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-3-CONTRACT-REREVIEW-2.md",
+        "bytes": 1268,
+        "sha256": "40d58f4c594a901b4e6a0f69aa273f8f808f403209b5e59a030100faf8655745"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-3-CONTRACT-REVIEW.md",
+        "bytes": 1898,
+        "sha256": "964f7fa0b607166ac368a971d6be3e289cebeebb241b73042c8628e6e88456ef"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-4-CONTRACT-REREVIEW-2.md",
+        "bytes": 1304,
+        "sha256": "e00695c1a92334557a8fbf319dda7a53c96261cd665453a5fe332351131c6876"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-4-CONTRACT-REVIEW.md",
+        "bytes": 2000,
+        "sha256": "7951dbb9c10822ab5de3b6a736eae187ec5128fd7a5a28d2bfce512e6bbcc19f"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-5-CONTRACT-REREVIEW-2.md",
+        "bytes": 1839,
+        "sha256": "b3b1659568ccb232c90bd597d08d1c404472a1300b8d6618d8743839eae09f0c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-5-CONTRACT-REVIEW.md",
+        "bytes": 2990,
+        "sha256": "bfe5c67e9a5cae8b0c7277b3685564b35ac3fe0fb08cce0180538e8fde852ce4"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-5-FINAL-BYTES-REREVIEW-4.md",
+        "bytes": 1908,
+        "sha256": "5631d8ecf64eb609dc8d3037e38012dfe55aab5fdeb8908611dbbb84436a89a1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-5-FINAL-BYTES-REVIEW-3.md",
+        "bytes": 1649,
+        "sha256": "e7ab4064859359630dd5648a323289582ac6900517395df003baded747b06ecf"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-6-CONTRACT-REREVIEW-2.md",
+        "bytes": 1049,
+        "sha256": "5b9d8ade29250b37eee5368e16c4fbc03a063e3c4a9a4faf9348c8ed157fe5ca"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-6-CONTRACT-REVIEW.md",
+        "bytes": 1280,
+        "sha256": "8f63a06701679672a11a54120a80d040af1e2d80cf2866bdd9898267242e7037"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-6-SOURCE-LOCK-REVIEW-3.md",
+        "bytes": 1094,
+        "sha256": "8b8b38e7360ce53766ce4dc45c5913696ac4aaf52272aa82a34e4a0a8a535c0c"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-7-CONTRACT-REVIEW.md",
+        "bytes": 1817,
+        "sha256": "883d87cbe3f31389e1664cb877da0f6a41a4ec4974e2944ec35af8e98f05ed7d"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-8-CONTRACT-REVIEW.md",
+        "bytes": 1489,
+        "sha256": "99208476bbf8769cc452876768bf80b2893885c41e4f6c36f174f4cbe188db6b"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-9-CONTRACT-REREVIEW-2.md",
+        "bytes": 1673,
+        "sha256": "08bc7be4f3368aa91c4533f54753b4b9becb33361c303be6100dd17ed7c56fce"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-9-CONTRACT-REVIEW.md",
+        "bytes": 2063,
+        "sha256": "c3d59e2e118a028bc5faf3aa005aec81088d965c0e1deac1ba0f27da7c98ccb5"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-9-FINAL-REREVIEW-3.md",
+        "bytes": 2037,
+        "sha256": "99ce0ce1fda571fbd974ce1db6c26bdc71bd7618d78e0e1795a9b99992bb6c84"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-CONTRACT-REREVIEW-2.md",
+        "bytes": 1908,
+        "sha256": "a0941ace0b880b1feb2a0f7081b11290906b34175a142f9015fcbdd36994bdb1"
+      },
+      {
+        "path": ".loom-evidence/phase2c/reviews/PHASE-2C-REPAIR-CONTRACT-REVIEW.md",
+        "bytes": 2264,
+        "sha256": "468f47bd991bef0877fe2bf56cfcdb349eb95279841faf97f87657fb28393ce7"
+      }
+    ]
+  },
+  "declared_unhashed_entries": [
+    {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-FINAL-ACCEPTANCE-LOCK.json",
+      "classification": "self-referential final acceptance lock",
+      "sha256": null,
+      "rule": "Final Lock Review 1 recomputes and records this lock SHA-256."
+    },
+    {
+      "path": ".loom-evidence/phase2c/reviews/PHASE-2C-POST-SIGNOFF-FINAL-ACCEPTANCE-LOCK-REVIEW-1.md",
+      "classification": "sole post-lock independent attestation",
+      "sha256": null,
+      "rule": "Exact predeclared path; no evidence path may be appended after it."
+    }
+  ],
+  "durable_delivery": {
+    "app_path": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2c-2026-08-09/Loom.app",
+    "architecture": "arm64",
+    "bundle_identifier": "com.earendilworks.loom.local",
+    "signature": "adhoc",
+    "codesign_strict_verification": "PASS",
+    "executable_path": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2c-2026-08-09/Loom.app/Contents/MacOS/LoomLocalApp",
+    "executable_sha256": "a9b02d9e60afa96f8c79e18a73e8e8ca15bde61b1564ae0e1d5086dc7203bc4f",
+    "zip_path": "/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2c-2026-08-09/Loom-Phase2C-macOS-arm64.zip",
+    "zip_sha256": "bd6abcb0e66c5febdf024fb52537e3be68538bd2252215ad5569f6113fc54a7d",
+    "ordered_bundle_digest": "cbef8c096504bb4c6264833c8c0afc0ed5414e94952a8076cf6a5dbeb78a6844",
+    "public_notarization": "not claimed"
+  },
+  "final_review_requirements": [
+    "Recompute all 450 hashed evidence paths and both ordered digests.",
+    "Confirm final evidence set is exactly 452 paths after the sole attestation.",
+    "Reconstruct the Repair 20 pretransition source digest and verify 50 unchanged paths plus one CURRENT EOF append.",
+    "Verify exact ADR and CURRENT acceptance metadata only.",
+    "Verify durable delivery hashes and strict code-sign result.",
+    "Confirm zero staged paths and no product, test, contract, Journey, authority, process, or environment drift.",
+    "Return PASS with P0=P1=P2=0 before goal completion."
+  ]
+}

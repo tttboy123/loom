@@ -97,6 +97,17 @@ type decisionPayload struct {
 	RecordedAt        string   `json:"recorded_at"`
 }
 
+type decisionPayloadV2 struct {
+	JobID          string   `json:"job_id"`
+	ApprovalID     string   `json:"approval_id,omitempty"`
+	Verdict        Verdict  `json:"verdict"`
+	Tool           ToolKind `json:"tool"`
+	CallDigest     string   `json:"call_digest"`
+	ReasonCode     string   `json:"reason_code"`
+	RecoveryAction string   `json:"recovery_action"`
+	RecordedAt     string   `json:"recorded_at"`
+}
+
 // Replay rebuilds the permission projection strictly from Journal events in
 // order. Any invalid, unknown or inconsistent event returns an error; callers
 // must keep the previous view (no swap) on failure.
@@ -163,7 +174,8 @@ func isPermissionStream(streamID string) bool {
 }
 
 func applyEvent(projection *Projection, event journal.Event) error {
-	if event.SchemaVersion != 1 {
+	if event.SchemaVersion != 1 &&
+		!(event.SchemaVersion == 2 && event.Type == "PermissionDecisionRecorded") {
 		return fmt.Errorf("%w: schema_version=%d", ErrInvalidEventPayload, event.SchemaVersion)
 	}
 	switch event.Type {
@@ -309,23 +321,49 @@ func applyEvent(projection *Projection, event journal.Event) error {
 		projection.AdminLock = event.Type == "PermissionAdminLockEnabled"
 		return nil
 	case "PermissionDecisionRecorded":
-		var payload decisionPayload
-		if err := decodeStrict(event.PayloadJSON, &payload); err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrInvalidEventPayload, event.Type, err)
+		jobID, verdict, tool := "", Verdict(""), ToolKind("")
+		if event.SchemaVersion == 1 {
+			var payload decisionPayload
+			if err := decodeStrict(event.PayloadJSON, &payload); err != nil {
+				return fmt.Errorf("%w: %s: %v", ErrInvalidEventPayload, event.Type, err)
+			}
+			jobID, verdict, tool = payload.JobID, payload.Verdict, payload.Tool
+		} else {
+			var payload decisionPayloadV2
+			if err := decodeStrict(event.PayloadJSON, &payload); err != nil {
+				return fmt.Errorf("%w: %s: %v", ErrInvalidEventPayload, event.Type, err)
+			}
+			if payload.CallDigest == "" || !validDecisionCode(payload.Verdict, payload.ReasonCode, payload.RecoveryAction) {
+				return fmt.Errorf("%w: invalid content-free decision", ErrInvalidEventPayload)
+			}
+			jobID, verdict, tool = payload.JobID, payload.Verdict, payload.Tool
 		}
-		if payload.JobID == "" ||
-			(payload.Verdict != VerdictAllow && payload.Verdict != VerdictAsk && payload.Verdict != VerdictDeny) {
+		if jobID == "" ||
+			(verdict != VerdictAllow && verdict != VerdictAsk && verdict != VerdictDeny) {
 			return fmt.Errorf("%w: invalid decision", ErrInvalidEventPayload)
 		}
-		if !ValidToolKind(string(payload.Tool)) {
+		if !ValidToolKind(string(tool)) {
 			return fmt.Errorf("%w: invalid decision tool", ErrInvalidEventPayload)
 		}
-		if event.StreamID != streamDecision+payload.JobID {
+		if event.StreamID != streamDecision+jobID {
 			return fmt.Errorf("%w: stream mismatch", ErrInvalidEventPayload)
 		}
 		return nil
 	default:
 		return fmt.Errorf("%w: %s", ErrUnknownEvent, event.Type)
+	}
+}
+
+func validDecisionCode(verdict Verdict, reasonCode, recoveryAction string) bool {
+	switch verdict {
+	case VerdictAllow:
+		return reasonCode == "allowed" && recoveryAction == "none"
+	case VerdictAsk:
+		return reasonCode == "approval_required" && recoveryAction == "review_permission_request"
+	case VerdictDeny:
+		return reasonCode == "permission_denied" && recoveryAction == "review_permission_profile"
+	default:
+		return false
 	}
 }
 

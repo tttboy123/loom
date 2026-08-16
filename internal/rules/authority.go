@@ -33,6 +33,7 @@ var (
 	ErrApprovalExpired               = errors.New("approval expired")
 	ErrApprovalStale                 = errors.New("approval stale")
 	ErrApprovalRunAlreadyClaimed     = errors.New("approval Run already claimed")
+	ErrPermissionApprovalConsumed    = errors.New("permission approval already consumed")
 )
 
 const (
@@ -785,6 +786,9 @@ type ApprovalRequestRecord struct {
 	correlationID         string
 	terminalCorrelationID string
 	resumeCandidate       ResumeCandidate
+	consumedBy            string
+	consumedOperationID   string
+	consumedAt            time.Time
 	lastEventID           string
 	streamSequence        int64
 }
@@ -797,6 +801,10 @@ func (record ApprovalRequestRecord) ClaimGeneration() int64     { return record.
 func (record ApprovalRequestRecord) ContinuationDigest() string { return record.continuationDigest }
 func (record ApprovalRequestRecord) Status() string             { return record.status }
 func (record ApprovalRequestRecord) DecisionActorRef() string   { return record.decisionActorRef }
+func (record ApprovalRequestRecord) ConsumedBy() string         { return record.consumedBy }
+func (record ApprovalRequestRecord) ConsumedOperationID() string {
+	return record.consumedOperationID
+}
 func (record ApprovalRequestRecord) ResumeCandidate() ResumeCandidate {
 	return ResumeCandidate{
 		continuationDigest: record.resumeCandidate.continuationDigest,
@@ -1112,6 +1120,16 @@ type PermissionApprovalInput struct {
 	CorrelationID string
 }
 
+type PermissionApprovalConsumptionInput struct {
+	ApprovalID     string
+	ApprovalDigest string
+	JobID          string
+	CallDigest     string
+	ConsumerID     string
+	OperationID    string
+	CorrelationID  string
+}
+
 const (
 	// PermissionApprovalProjectID marks approval requests created by the
 	// permission layer. It is the stable discriminator used by permission
@@ -1119,8 +1137,8 @@ const (
 	// never see or resolve approvals owned by another rules flow.
 	PermissionApprovalProjectID = "permission"
 	permissionApprovalActor     = PermissionApprovalProjectID
-	permissionApproverRef     = "approver:permission-owner"
-	permissionApprovalTimeout = 24 * time.Hour
+	permissionApproverRef       = "approver:permission-owner"
+	permissionApprovalTimeout   = 24 * time.Hour
 )
 
 func (authority *Authority) RequestPermissionApproval(
@@ -1336,6 +1354,83 @@ func (authority *Authority) RequestPermissionApproval(
 	}
 	record.lastEventID = approvalEventID
 	record.streamSequence = 1
+	return record, nil
+}
+
+func (authority *Authority) ConsumePermissionApproval(
+	ctx context.Context,
+	input PermissionApprovalConsumptionInput,
+) (ApprovalRequestRecord, error) {
+	if authority == nil || ctx == nil || ctx.Err() != nil ||
+		!validRuleText(input.ApprovalID) || !validSHA256(input.ApprovalDigest) ||
+		!validRuleText(input.JobID) || !validSHA256(input.CallDigest) ||
+		!validRuleText(input.ConsumerID) || !validRuleText(input.OperationID) ||
+		!validCorrelationID(input.CorrelationID) {
+		return ApprovalRequestRecord{}, ErrInvalidApprovalInput
+	}
+	streamID := approvalStream(input.ApprovalID)
+	events, err := authority.store.ReadStream(ctx, streamID)
+	if err != nil {
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	record, found, err := replayApprovalStream(input.ApprovalID, events)
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	if !found || record.context.ProjectID() != PermissionApprovalProjectID ||
+		record.digest != input.ApprovalDigest ||
+		record.context.WorkItemID() != input.JobID ||
+		record.continuationDigest != input.CallDigest {
+		return ApprovalRequestRecord{}, ErrApprovalStale
+	}
+	if record.status == "consumed" {
+		if record.consumedBy == input.ConsumerID &&
+			record.consumedOperationID == input.OperationID {
+			return record, nil
+		}
+		return ApprovalRequestRecord{}, ErrPermissionApprovalConsumed
+	}
+	if record.status != "approved" {
+		return ApprovalRequestRecord{}, ErrApprovalNotPending
+	}
+	now, err := authority.operationTime()
+	if err != nil {
+		return ApprovalRequestRecord{}, err
+	}
+	payload := permissionApprovalConsumedPayload{
+		ApprovalRequestID: input.ApprovalID, ApprovalRequestDigest: input.ApprovalDigest,
+		ContinuationDigest: input.CallDigest, ConsumerID: input.ConsumerID,
+		OperationID: input.OperationID, ConsumedAt: now.Format(time.RFC3339Nano),
+	}
+	eventID := deterministicEventID(
+		"PermissionApprovalConsumed", input.ApprovalID, input.ConsumerID,
+		input.OperationID, input.CorrelationID,
+	)
+	event := newRulesEvent(
+		eventID, streamID, record.streamSequence+1,
+		"PermissionApprovalConsumed", now, input.CorrelationID,
+		record.lastEventID, payload,
+	)
+	if _, err := authority.store.AppendBatchIfStreamHeads(
+		ctx,
+		[]journal.StreamHeadExpectation{{
+			StreamID: streamID, Sequence: record.streamSequence,
+		}},
+		[]journal.Event{event},
+	); err != nil {
+		if errors.Is(err, journal.ErrStreamHeadConflict) ||
+			errors.Is(err, journal.ErrIdempotencyConflict) {
+			return ApprovalRequestRecord{}, ErrPermissionApprovalConsumed
+		}
+		return ApprovalRequestRecord{}, mapRulesJournalError(err)
+	}
+	record.status = "consumed"
+	record.consumedBy = input.ConsumerID
+	record.consumedOperationID = input.OperationID
+	record.consumedAt = now
+	record.lastEventID = eventID
+	record.streamSequence++
+	record.resumeCandidate = ResumeCandidate{}
 	return record, nil
 }
 
@@ -1724,6 +1819,15 @@ type approvalResolutionPayload struct {
 	DecidedAt             string `json:"decided_at"`
 }
 
+type permissionApprovalConsumedPayload struct {
+	ApprovalRequestID     string `json:"approval_request_id"`
+	ApprovalRequestDigest string `json:"approval_request_digest"`
+	ContinuationDigest    string `json:"continuation_digest"`
+	ConsumerID            string `json:"consumer_id"`
+	OperationID           string `json:"operation_id"`
+	ConsumedAt            string `json:"consumed_at"`
+}
+
 type workItemApprovalPayload struct {
 	WorkItemID            string `json:"work_item_id"`
 	ApprovalRequestID     string `json:"approval_request_id"`
@@ -1785,7 +1889,7 @@ func replayApprovalStream(
 	if len(events) == 0 {
 		return ApprovalRequestRecord{}, false, nil
 	}
-	if len(events) > 2 {
+	if len(events) > 3 {
 		return ApprovalRequestRecord{}, false, ErrRuleAuthorityConflict
 	}
 	first := events[0]
@@ -1843,6 +1947,36 @@ func replayApprovalStream(
 	if record.status == "approved" {
 		record.resumeCandidate.continuationDigest = record.continuationDigest
 	}
+	if len(events) == 2 {
+		return record, true, nil
+	}
+	third := events[2]
+	if third.StreamID != first.StreamID || third.Seq != 3 ||
+		third.SchemaVersion != 1 || third.Type != "PermissionApprovalConsumed" ||
+		third.CausationID != second.ID || !validCorrelationID(third.CorrelationID) ||
+		record.status != "approved" {
+		return ApprovalRequestRecord{}, false, ErrRuleAuthorityConflict
+	}
+	var consumed permissionApprovalConsumedPayload
+	if decodeExact(third.PayloadJSON, &consumed) != nil ||
+		consumed.ApprovalRequestID != approvalID ||
+		consumed.ApprovalRequestDigest != record.digest ||
+		consumed.ContinuationDigest != record.continuationDigest ||
+		!validRuleText(consumed.ConsumerID) ||
+		!validRuleText(consumed.OperationID) {
+		return ApprovalRequestRecord{}, false, ErrRuleAuthorityConflict
+	}
+	consumedAt, err := time.Parse(time.RFC3339Nano, consumed.ConsumedAt)
+	if err != nil || consumedAt.IsZero() {
+		return ApprovalRequestRecord{}, false, ErrRuleAuthorityConflict
+	}
+	record.status = "consumed"
+	record.consumedBy = consumed.ConsumerID
+	record.consumedOperationID = consumed.OperationID
+	record.consumedAt = consumedAt
+	record.lastEventID = third.ID
+	record.streamSequence = 3
+	record.resumeCandidate = ResumeCandidate{}
 	return record, true, nil
 }
 

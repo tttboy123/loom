@@ -1,0 +1,3 @@
+system_dark_mode=false
+global_keyboard_mode=absent
+app_appearance_override=absent

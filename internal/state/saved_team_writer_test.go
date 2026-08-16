@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -781,8 +782,12 @@ func savedTeamWriterProfiles() []loomruntime.RuntimeProfile {
 			ID:                   "profile." + suffix,
 			AdapterType:          "test",
 			ProviderID:           "provider.test",
+			ProviderAccountID:    "provider-account.test." + suffix,
 			ModelID:              "model.test",
 			AuthMode:             loomruntime.AuthBrokered,
+			EndpointFingerprint:  strings.Repeat("a", 64),
+			CredentialReference:  "credential-ref-test-" + strings.ReplaceAll(suffix, ".", "-"),
+			CredentialRevision:   1,
 			RequiredCapabilities: []string{"text"},
 			Timeout:              time.Minute,
 			Budget:               &currentBudget,

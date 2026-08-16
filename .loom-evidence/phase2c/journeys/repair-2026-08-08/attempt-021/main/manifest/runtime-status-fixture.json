@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "purpose": "phase2c-runtime-status-controlled-live",
+  "attempt_id": "loom-phase2c-chat-20260809-021",
+  "state_path": "/private/tmp/loom-phase2c-chat-20260809-021/state/loom.db",
+  "source_commit": "651f156afda37a8e703cbc0396f9f38b7912600b",
+  "authoritative_time": "2026-08-09T04:31:00Z",
+  "fixture_id": "phase2c-attempt021-runtime-offline",
+  "runtime_instance_id": "runtime.pi.phase2c-attempt021",
+  "expected_status": "online",
+  "target_status": "offline"
+}

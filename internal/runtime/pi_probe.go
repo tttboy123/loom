@@ -99,6 +99,22 @@ type SkillMaterializationConformanceProvider interface {
 	SkillMaterializationConformance() (SkillMaterializationConformance, bool)
 }
 
+type ContextRetrievalConformance interface {
+	VerifyContextRetrieval(context.Context) error
+}
+
+type ContextRetrievalConformanceProvider interface {
+	ContextRetrievalConformance() (ContextRetrievalConformance, bool)
+}
+
+type GovernedToolLoopConformance interface {
+	VerifyGovernedToolLoop(context.Context) error
+}
+
+type GovernedToolLoopConformanceProvider interface {
+	GovernedToolLoopConformance() (GovernedToolLoopConformance, bool)
+}
+
 type PiRuntimeProbeConfig struct {
 	ProbeID                         string
 	InstanceID                      string
@@ -106,6 +122,8 @@ type PiRuntimeProbeConfig struct {
 	DisplayName                     string
 	Runner                          PiMetadataRunner
 	SkillMaterializationConformance SkillMaterializationConformance
+	ContextRetrievalConformance     ContextRetrievalConformance
+	GovernedToolLoopConformance     GovernedToolLoopConformance
 }
 
 type piRuntimeProbe struct {
@@ -115,6 +133,8 @@ type piRuntimeProbe struct {
 	displayName                     string
 	runner                          PiMetadataRunner
 	skillMaterializationConformance SkillMaterializationConformance
+	contextRetrievalConformance     ContextRetrievalConformance
+	governedToolLoopConformance     GovernedToolLoopConformance
 }
 
 func NewPiRuntimeProbe(config PiRuntimeProbeConfig) (RuntimeProbe, error) {
@@ -133,6 +153,28 @@ func NewPiRuntimeProbe(config PiRuntimeProbeConfig) (RuntimeProbe, error) {
 			}
 		}
 	}
+	contextConformance := config.ContextRetrievalConformance
+	if contextConformance == nil {
+		if provider, ok := config.Runner.(ContextRetrievalConformanceProvider); ok {
+			if provided, available := provider.ContextRetrievalConformance(); available {
+				contextConformance = provided
+			}
+		}
+	}
+	if isNilContextRetrievalConformance(contextConformance) {
+		return nil, ErrInvalidPiRuntimeProbe
+	}
+	toolConformance := config.GovernedToolLoopConformance
+	if toolConformance == nil {
+		if provider, ok := config.Runner.(GovernedToolLoopConformanceProvider); ok {
+			if provided, available := provider.GovernedToolLoopConformance(); available {
+				toolConformance = provided
+			}
+		}
+	}
+	if isNilGovernedToolLoopConformance(toolConformance) {
+		return nil, ErrInvalidPiRuntimeProbe
+	}
 	return &piRuntimeProbe{
 		probeID:                         config.ProbeID,
 		instanceID:                      config.InstanceID,
@@ -140,6 +182,8 @@ func NewPiRuntimeProbe(config PiRuntimeProbeConfig) (RuntimeProbe, error) {
 		displayName:                     config.DisplayName,
 		runner:                          config.Runner,
 		skillMaterializationConformance: conformance,
+		contextRetrievalConformance:     contextConformance,
+		governedToolLoopConformance:     toolConformance,
 	}, nil
 }
 
@@ -192,13 +236,25 @@ func (p *piRuntimeProbe) ObserveRuntime(ctx context.Context) ([]RuntimeObservati
 	}
 
 	capabilities := []string{"pi.metadata.models", "pi.metadata.version"}
+	if version == "0.82.1" && p.contextRetrievalConformance != nil {
+		if err := p.contextRetrievalConformance.VerifyContextRetrieval(ctx); err != nil {
+			return nil, ErrInvalidPiRuntimeProbe
+		}
+		capabilities = append(capabilities, CapabilityContextRetrieval)
+	}
+	if version == "0.82.1" && p.governedToolLoopConformance != nil {
+		if err := p.governedToolLoopConformance.VerifyGovernedToolLoop(ctx); err != nil {
+			return nil, ErrInvalidPiRuntimeProbe
+		}
+		capabilities = append(capabilities, CapabilityGovernedToolLoop)
+	}
 	if p.skillMaterializationConformance != nil {
 		if err := p.skillMaterializationConformance.VerifySkillMaterialization(ctx); err != nil {
 			return nil, ErrInvalidPiRuntimeProbe
 		}
 		capabilities = append(capabilities, "loom.skill-materialization.pi.v1")
-		sort.Strings(capabilities)
 	}
+	sort.Strings(capabilities)
 	instance, err := NewRuntimeInstance(RuntimeInstance{
 		ID:                   p.instanceID,
 		DeviceID:             p.deviceID,
@@ -273,6 +329,34 @@ func isNilPiMetadataRunner(runner PiMetadataRunner) bool {
 	value := reflect.ValueOf(runner)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func isNilContextRetrievalConformance(conformance ContextRetrievalConformance) bool {
+	if conformance == nil {
+		return false
+	}
+	value := reflect.ValueOf(conformance)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func isNilGovernedToolLoopConformance(conformance GovernedToolLoopConformance) bool {
+	if conformance == nil {
+		return false
+	}
+	value := reflect.ValueOf(conformance)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Ptr, reflect.Slice:
 		return value.IsNil()
 	default:
 		return false

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "resolved_pre_live",
+  "runtime": {
+    "instance_id": "runtime.pi.earendil-works.0.82.1",
+    "adapter_type": "pi-cli",
+    "version": "0.82.1",
+    "git_head": "b4f293684bba718d59cc1157679bcf6157b3a7f5",
+    "package_integrity": "sha512-zbkAhoIuDPMF3pKuja0ajZabrMWU29FUMV9A/XMXT/XC1yXs5xt6t6t13GogQFsDrDqbFP4DkZQO1w8rWRAzYA==",
+    "executable_name": "pi",
+    "executable_sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
+  },
+  "local_model_server": {
+    "release": "b10107",
+    "commit": "c0bc8591e8815c63cb01dd3f051a8b0df02501c9",
+    "release_asset_sha256": "b9554ab4c9f6e91199f48387cb4ab27466fb1d724881f81463ef03f6370cfa32",
+    "executable_name": "llama-server",
+    "executable_sha256": "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b",
+    "host": "127.0.0.1",
+    "port": 18427
+  },
+  "model": {
+    "repository": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+    "revision": "2ab9f8f42af02fc212effaef7c4850c885e965f4",
+    "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
+  },
+  "canary": {
+    "team_instance_id": "team-final-live-gate",
+    "logical_node_id": "main",
+    "attempt_number": 1,
+    "prompt_sha256": "900c15046aa4b3d8f5b8d6d0a8aaca7a8b5b565034ba9f5bb6994ba87374726b",
+    "run_deadline_seconds": 120,
+    "whole_canary_deadline_seconds": 180
+  },
+  "authorization": {
+    "approval_decision": "approved",
+    "execution_scope": "controlled-local"
+  },
+  "created_at": "2026-07-27T13:15:42.695026Z"
+}

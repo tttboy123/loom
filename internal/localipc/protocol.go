@@ -43,6 +43,7 @@ type ProtocolError struct {
 	Code        string `json:"code"`
 	Message     string `json:"message"`
 	Recoverable bool   `json:"recoverable,omitempty"`
+	Stage       string `json:"stage,omitempty"`
 }
 
 type Response struct {
@@ -268,6 +269,26 @@ func protocolErrorDefinition(code string) (string, bool, bool) {
 			"credential rollback failed",
 			false,
 		},
+		"conversation_unavailable": {
+			"conversation unavailable",
+			true,
+		},
+		"invalid_response": {
+			"invalid response",
+			false,
+		},
+		"provider_auth": {
+			"provider authentication failed",
+			false,
+		},
+		"provider_rate_limit": {
+			"provider rate limit reached",
+			true,
+		},
+		"provider_rejected": {
+			"provider rejected request",
+			false,
+		},
 		"cursor_conflict":   {"cursor conflict", true},
 		"stream_gap":        {"stream gap", true},
 		"state_unavailable": {"state unavailable", true},
@@ -299,6 +320,9 @@ func validRequestID(value string) bool {
 func validMethod(method string) bool {
 	switch method {
 	case "ping",
+		"agent_attempt_recovery",
+		"tool_recovery",
+		"agent_input",
 		"snapshot",
 		"timeline_page",
 		"chat_thread",
@@ -307,6 +331,7 @@ func validMethod(method string) bool {
 		"mission_execution",
 		"side_task_handoff",
 		"setup_snapshot",
+		"provider_account_policy_configure",
 		"codex_connect",
 		"builder_start",
 		"builder_answer",
@@ -319,6 +344,11 @@ func validMethod(method string) bool {
 		"credential_verify",
 		"credential_replace",
 		"credential_revoke",
+		"credential_vault_rotate",
+		"credential_vault_lock",
+		"credential_vault_unlock",
+		"credential_vault_reset",
+		"credential_vault_export",
 		"evolution_asset_snapshot",
 		"evolution_asset_diff",
 		"evolution_asset_command",

@@ -2,18 +2,18 @@ import XCTest
 @testable import LoomLocalAppCore
 
 final class LocalProductDecisionModelsTests: XCTestCase {
-    func testStrictDecisionWireDecodesAllThreeSheetKinds() throws {
-        for kind in ["authorization", "review", "recovery"] {
+    func testStrictDecisionWireDecodesAllFourSheetKinds() throws {
+        for kind in ["authorization", "review", "recovery", "fallback"] {
             let decision = try LocalProductDecisionWire.decodeSheet(
                 Data(Self.sheetJSON(kind: kind).utf8)
             )
             XCTAssertEqual(decision.kind.rawValue, kind)
             XCTAssertEqual(decision.missionID, "mission/team-1")
             XCTAssertFalse(decision.actions.isEmpty)
-            XCTAssertEqual(
-                decision.preparedActions,
-                ["deny", "allow_once"]
-            )
+            let expected = kind == "fallback"
+                ? ["reject_fallback", "approve_fallback"]
+                : ["deny", "allow_once"]
+            XCTAssertEqual(decision.preparedActions, expected)
         }
     }
 
@@ -49,7 +49,13 @@ final class LocalProductDecisionModelsTests: XCTestCase {
     }
 
     private static func sheetJSON(kind: String) -> String {
-        """
+        let actions = kind == "fallback"
+            ? "\"not_now\",\"reject_fallback\",\"approve_fallback\""
+            : "\"not_now\",\"deny\",\"allow_once\""
+        let prepared = kind == "fallback"
+            ? "\"reject_fallback\",\"approve_fallback\""
+            : "\"deny\",\"allow_once\""
+        return """
         {
           "schema_version":1,
           "kind":"\(kind)",
@@ -69,8 +75,8 @@ final class LocalProductDecisionModelsTests: XCTestCase {
           "attempt_scope":"attempt 1",
           "expected_evidence":"verified result",
           "technical_details":[],
-          "actions":["not_now","deny","allow_once"],
-          "prepared_actions":["deny","allow_once"],
+          "actions":[\(actions)],
+          "prepared_actions":[\(prepared)],
           "prepared":true,
           "logical_node_id":"main",
           "attempt_number":1,

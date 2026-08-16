@@ -121,8 +121,8 @@ func TestBuildSavedTeamInstanceRecordSetReusableShadowAndCardinality(t *testing.
 		t.Fatalf("reusable-shadow record set = %#v", got)
 	}
 
-	definitions, profiles, baseInput := teamDefinitionFixture()
-	for roleCount := 1; roleCount <= 3; roleCount++ {
+	definitions, profiles, baseInput := fourRoleTeamDefinitionFixture()
+	for roleCount := 1; roleCount <= 4; roleCount++ {
 		input := baseInput
 		input.ID = "team.cardinality"
 		input.Roles = append([]TeamDefinitionRole(nil), baseInput.Roles[:roleCount]...)
@@ -142,6 +142,7 @@ func TestBuildSavedTeamInstanceRecordSetReusableShadowAndCardinality(t *testing.
 			{AgentDefinitionID: "agent.main", RuntimeInstanceID: "runtime.shared"},
 			{AgentDefinitionID: "agent.sub.one", RuntimeInstanceID: "runtime.shared"},
 			{AgentDefinitionID: "agent.sub.two", RuntimeInstanceID: "runtime.shared"},
+			{AgentDefinitionID: "agent.sub.three", RuntimeInstanceID: "runtime.shared"},
 		}[:roleCount]
 		currentBinding, err := BuildSavedTeamRuntimeBinding(
 			currentCatalog.TeamDefinitions, input.ID, input.ScopeIdentity,

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/rules"
+	"loom-pi-rebuild/internal/toolproposal"
 	"loom-pi-rebuild/internal/work"
 
 	_ "modernc.org/sqlite"
@@ -165,9 +167,14 @@ func TestValidateCallAllowAndAskDecisionFact(t *testing.T) {
 	if len(attention.Decisions) != 1 || attention.Decisions[0].JobID != "job-vc" {
 		t.Fatalf("attention decisions = %+v", attention.Decisions)
 	}
-	if attention.Decisions[0].Command != "curl https://example.com" ||
-		attention.Decisions[0].Tool != permissions.ToolBash {
-		t.Fatalf("decision fact missing call details: %+v", attention.Decisions[0])
+	if attention.Decisions[0].Command != "" ||
+		attention.Decisions[0].Tool != permissions.ToolBash ||
+		attention.Decisions[0].CallDigest != permissions.ProposedCallDigest(
+			permissions.ProposedCall{Tool: permissions.ToolBash, Command: "curl https://example.com"},
+		) ||
+		attention.Decisions[0].Reason != "approval_required" ||
+		attention.Decisions[0].AuthorizationPath != "review_permission_request" {
+		t.Fatalf("decision fact contains unsafe or invalid details: %+v", attention.Decisions[0])
 	}
 }
 
@@ -238,6 +245,126 @@ func TestA48ApprovalLifecycleWiredThroughRulesPort(t *testing.T) {
 	}
 	if len(after.Approvals) != 0 {
 		t.Fatalf("resolved approval must leave attention: %+v", after.Approvals)
+	}
+}
+
+type permissionProposalStoreFixture struct {
+	lookup toolproposal.ApprovalLookup
+	record toolproposal.Record
+}
+
+func (*permissionProposalStoreFixture) PutToolProposal(context.Context, toolproposal.Record) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (*permissionProposalStoreFixture) ReadToolProposal(
+	context.Context,
+	toolproposal.Binding,
+) (toolproposal.Record, error) {
+	return toolproposal.Record{}, fmt.Errorf("not implemented")
+}
+
+func (fixture *permissionProposalStoreFixture) LookupToolProposal(
+	_ context.Context,
+	lookup toolproposal.ApprovalLookup,
+) (toolproposal.Record, error) {
+	if lookup != fixture.lookup {
+		return toolproposal.Record{}, fmt.Errorf("binding mismatch")
+	}
+	return toolproposal.Record{
+		Binding: fixture.record.Binding,
+		Content: append([]byte(nil), fixture.record.Content...),
+	}, nil
+}
+
+func (*permissionProposalStoreFixture) DeleteToolProposal(
+	context.Context,
+	toolproposal.Binding,
+) error {
+	return fmt.Errorf("not implemented")
+}
+
+func TestP2DPermissionAttentionDecryptsExactProposalDetail(t *testing.T) {
+	store := openPermAppStore(t)
+	clock := func() time.Time { return time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC) }
+	port := mustAppApprovalPort(t, store, clock)
+	service, err := NewLocalPermissionService(store, clock, func() string { return "view-vault" }, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "define_profile", permissions.ProfileInput{
+		ProfileID: "profile-vault-detail", Mode: permissions.ModeDefault,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "bind_job", struct {
+		JobID     string `json:"job_id"`
+		ProfileID string `json:"profile_id"`
+	}{JobID: "job-vault-detail", ProfileID: "profile-vault-detail"}); err != nil {
+		t.Fatal(err)
+	}
+	call := permissions.ProposedCall{
+		Tool: permissions.ToolBash, Command: "printf inspect-before-approve",
+	}
+	ask, err := permissionCommand(t, service, "validate_call", struct {
+		JobID string                   `json:"job_id"`
+		Call  permissions.ProposedCall `json:"call"`
+	}{JobID: "job-vault-detail", Call: call})
+	if err != nil || ask.ApprovalID == "" {
+		t.Fatalf("ask = %#v, %v", ask, err)
+	}
+	if err := service.SetToolProposalStore(&permissionProposalStoreFixture{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionCommand(t, service, "resolve_approval", struct {
+		ApprovalID     string `json:"approval_id"`
+		ApprovalDigest string `json:"approval_digest"`
+		Resolution     string `json:"resolution"`
+		ResolvedBy     string `json:"resolved_by"`
+	}{
+		ApprovalID: ask.ApprovalID, ApprovalDigest: ask.ApprovalDigest,
+		Resolution: "allow", ResolvedBy: "user-vault",
+	}); !errors.Is(err, ErrInvalidPermissionRequest) {
+		t.Fatalf("approval without authenticated detail = %v", err)
+	}
+	content, err := json.Marshal(call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := permissions.ProposedCallDigest(call)
+	proposalStore := &permissionProposalStoreFixture{
+		lookup: toolproposal.ApprovalLookup{
+			ApprovalID: ask.ApprovalID, ApprovalDigest: ask.ApprovalDigest,
+			WorkItemID: "job-vault-detail", CallDigest: digest,
+		},
+		record: toolproposal.Record{
+			Binding: toolproposal.Binding{Tool: string(call.Tool), CallDigest: digest},
+			Content: content,
+		},
+	}
+	if err := service.SetToolProposalStore(proposalStore); err != nil {
+		t.Fatal(err)
+	}
+	attention, err := service.PermissionAttention(context.Background(), PermissionAttentionRequest{})
+	if err != nil || len(attention.Approvals) != 1 {
+		t.Fatalf("attention = %#v, %v", attention, err)
+	}
+	approval := attention.Approvals[0]
+	if !approval.DetailsAvailable || approval.DetailStatus != "encrypted_vault" ||
+		approval.CallDigest != digest || approval.Command != call.Command || approval.Tool != call.Tool {
+		t.Fatalf("approval detail = %#v", approval)
+	}
+	resolved, err := permissionCommand(t, service, "resolve_approval", struct {
+		ApprovalID     string `json:"approval_id"`
+		ApprovalDigest string `json:"approval_digest"`
+		Resolution     string `json:"resolution"`
+		ResolvedBy     string `json:"resolved_by"`
+	}{
+		ApprovalID: ask.ApprovalID, ApprovalDigest: ask.ApprovalDigest,
+		Resolution: "allow", ResolvedBy: "user-vault",
+	})
+	if err != nil || resolved.Note != "approval approved" {
+		t.Fatalf("resolved exact encrypted proposal = %#v, %v", resolved, err)
 	}
 }
 

@@ -176,7 +176,7 @@ func TestAppendValidatesFrozenEventContract(t *testing.T) {
 		{name: "nonpositive seq", event: withEvent(valid, func(e *Event) { e.Seq = 0 })},
 		{name: "empty idempotency key", event: withEvent(valid, func(e *Event) { e.IdempotencyKey = "" })},
 		{name: "empty type", event: withEvent(valid, func(e *Event) { e.Type = "" })},
-		{name: "unsupported version", event: withEvent(valid, func(e *Event) { e.SchemaVersion = 2 })},
+		{name: "unsupported version", event: withEvent(valid, func(e *Event) { e.SchemaVersion = 3 })},
 		{name: "zero emitted at", event: withEvent(valid, func(e *Event) { e.EmittedAt = time.Time{} })},
 		{name: "empty payload", event: withEvent(valid, func(e *Event) { e.PayloadJSON = nil })},
 		{name: "invalid payload json", event: withEvent(valid, func(e *Event) { e.PayloadJSON = []byte(`{`) })},
@@ -188,6 +188,15 @@ func TestAppendValidatesFrozenEventContract(t *testing.T) {
 				t.Fatal("Append() error = nil, want validation error")
 			}
 		})
+	}
+}
+
+func TestAppendAcceptsSupportedSchemaVersionTwo(t *testing.T) {
+	store := newMigratedStore(t)
+	event := testEvent("evt-schema-v2", "stream-schema-v2", 1, "idem-schema-v2")
+	event.SchemaVersion = 2
+	if _, err := store.Append(context.Background(), event); err != nil {
+		t.Fatalf("Append() schema v2 error = %v", err)
 	}
 }
 
@@ -612,14 +621,13 @@ func TestAppendBatchIfStreamHeadsContract(t *testing.T) { // s3_w2_journal_multi
 			{{StreamID: "", Sequence: 0}},
 			{{StreamID: "x", Sequence: -1}},
 			{{StreamID: "x", Sequence: 0}, {StreamID: "x", Sequence: 0}},
-			{
-				{StreamID: "1"}, {StreamID: "2"}, {StreamID: "3"},
-				{StreamID: "4"}, {StreamID: "5"}, {StreamID: "6"},
-				{StreamID: "7"}, {StreamID: "8"}, {StreamID: "9"},
-				{StreamID: "10"}, {StreamID: "11"}, {StreamID: "12"},
-				{StreamID: "13"}, {StreamID: "14"}, {StreamID: "15"},
-				{StreamID: "16"}, {StreamID: "17"},
-			},
+			func() []StreamHeadExpectation {
+				heads := make([]StreamHeadExpectation, maxAtomicStreamSetSize+1)
+				for index := range heads {
+					heads[index].StreamID = fmt.Sprintf("too-many-%02d", index)
+				}
+				return heads
+			}(),
 		}
 		for index, heads := range cases {
 			if _, err := store.AppendBatchIfStreamHeads(context.Background(), heads, []Event{event}); !errors.Is(err, ErrInvalidEventBatch) {
@@ -778,7 +786,7 @@ func TestReadStreamSetReturnsCanonicalDeepCopiedEventsAndEveryHead(t *testing.T)
 	}
 }
 
-func TestReadStreamSetValidationCancellationAndSixteenHeadCASLimit(t *testing.T) {
+func TestReadStreamSetValidationCancellationAndBoundedHeadCASLimit(t *testing.T) {
 	store := newMigratedStore(t)
 	if _, err := store.ReadStreamSet(context.Background(), nil); !errors.Is(err, ErrInvalidEventBatch) {
 		t.Fatalf("empty ReadStreamSet() error = %v", err)
@@ -792,7 +800,7 @@ func TestReadStreamSetValidationCancellationAndSixteenHeadCASLimit(t *testing.T)
 		t.Fatalf("cancelled ReadStreamSet() error = %v", err)
 	}
 
-	expectations := make([]StreamHeadExpectation, 16)
+	expectations := make([]StreamHeadExpectation, maxAtomicStreamSetSize)
 	for index := range expectations {
 		expectations[index] = StreamHeadExpectation{
 			StreamID: fmt.Sprintf("stream-%02d", index),
@@ -801,12 +809,12 @@ func TestReadStreamSetValidationCancellationAndSixteenHeadCASLimit(t *testing.T)
 	}
 	event := testEvent("44444444-4444-4444-8444-444444444444", "stream-00", 1, "idem-set-4")
 	if _, err := store.AppendBatchIfStreamHeads(context.Background(), expectations, []Event{event}); err != nil {
-		t.Fatalf("sixteen-head CAS error = %v", err)
+		t.Fatalf("bounded head CAS error = %v", err)
 	}
-	expectations = append(expectations, StreamHeadExpectation{StreamID: "stream-16", Sequence: 0})
-	event = testEvent("55555555-5555-4555-8555-555555555555", "stream-16", 1, "idem-set-5")
+	expectations = append(expectations, StreamHeadExpectation{StreamID: "stream-over-limit", Sequence: 0})
+	event = testEvent("55555555-5555-4555-8555-555555555555", "stream-over-limit", 1, "idem-set-5")
 	if _, err := store.AppendBatchIfStreamHeads(context.Background(), expectations, []Event{event}); !errors.Is(err, ErrInvalidEventBatch) {
-		t.Fatalf("seventeen-head CAS error = %v", err)
+		t.Fatalf("over-limit head CAS error = %v", err)
 	}
 }
 

@@ -34,6 +34,15 @@ func TestP3ATUIProductionClientExposesAssetJourneyMethods(t *testing.T) {
 	}
 }
 
+func TestTUIDaemonClientExposesTypedMissionDecisionMethods(t *testing.T) {
+	clientType := reflect.TypeOf(&DaemonReadClient{})
+	for _, method := range []string{"ReadMissionDecision", "DecideMission"} {
+		if _, found := clientType.MethodByName(method); !found {
+			t.Fatalf("DaemonReadClient.%s is missing", method)
+		}
+	}
+}
+
 type fakeReadClient struct {
 	snapshot      api.LocalProductSnapshot
 	timeline      api.LocalProductTimelinePage
@@ -48,6 +57,74 @@ type fakeReadClient struct {
 	proposal      app.SideTaskProposalResult
 	created       app.SideTaskCreateResult
 	decided       app.SideTaskDecisionResult
+}
+
+type attentionRefreshClient struct {
+	fakeReadClient
+	permissionAttention app.PermissionAttention
+	permissionErr       error
+	snapshotCalls       int
+	attentionCalls      int
+}
+
+func (client *attentionRefreshClient) Snapshot(
+	context.Context,
+	api.LocalProductSnapshotRequest,
+) (api.LocalProductSnapshot, error) {
+	client.snapshotCalls++
+	return client.snapshot, client.err
+}
+
+func (client *attentionRefreshClient) PermissionSnapshot(
+	context.Context,
+	app.PermissionSnapshotRequest,
+) (app.PermissionSnapshot, error) {
+	return app.PermissionSnapshot{}, nil
+}
+
+func (client *attentionRefreshClient) PermissionAttention(
+	context.Context,
+	app.PermissionAttentionRequest,
+) (app.PermissionAttention, error) {
+	client.attentionCalls++
+	return client.permissionAttention, client.permissionErr
+}
+
+func (client *attentionRefreshClient) PermissionCommand(
+	context.Context,
+	app.PermissionCommandRequest,
+) (app.PermissionCommandResult, error) {
+	return app.PermissionCommandResult{}, nil
+}
+
+type fakeMissionDecisionClient struct {
+	fakeReadClient
+	sheet     app.MissionDecisionSheet
+	result    app.MissionDecisionResult
+	read      []app.MissionDecisionCommand
+	submitted []app.MissionDecisionCommand
+}
+
+func (client *fakeMissionDecisionClient) ReadMissionDecision(
+	_ context.Context,
+	command app.MissionDecisionCommand,
+) (app.MissionDecisionSheet, error) {
+	client.read = append(client.read, command)
+	return client.sheet, nil
+}
+
+func (client *fakeMissionDecisionClient) DecideMission(
+	_ context.Context,
+	command app.MissionDecisionCommand,
+) (app.MissionDecisionResult, error) {
+	client.submitted = append(client.submitted, command)
+	if command.Operation != "submit" {
+		return app.MissionDecisionResult{}, &localipc.RemoteError{
+			Code:        "invalid_request",
+			Recoverable: true,
+		}
+	}
+	return client.result, nil
 }
 
 func (client *fakeReadClient) IntegrationSnapshot(
@@ -421,6 +498,8 @@ func TestLoomStartsOnHomeAndUsesExactNavigation(t *testing.T) {
 		!strings.Contains(view, "Team · Main · Waiting · Attempt 1") ||
 		!strings.Contains(view, "Current node · Verify release") ||
 		!strings.Contains(view, "Decision · Authorization prepared") ||
+		strings.Contains(view, "a open") ||
+		strings.Contains(view, "%!(EXTRA") ||
 		strings.Contains(view, "› New Mission") ||
 		strings.Contains(view, "Needs You lane") ||
 		strings.Contains(view, "mission/team-1") ||
@@ -447,6 +526,469 @@ func TestLoomStartsOnHomeAndUsesExactNavigation(t *testing.T) {
 	}
 	if model.Screen() != ScreenBoard {
 		t.Fatalf("g b screen = %q, want %q", model.Screen(), ScreenBoard)
+	}
+}
+
+func TestAttentionHidesPermissionShortcutsWithoutPermissionClient(t *testing.T) {
+	model, err := NewModel(&fakeReadClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.snapshot = api.LocalProductSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+		Attention: []api.AttentionItem{{
+			AttentionID:    "attention-1",
+			ActionRequired: "Review exact Mission decision",
+		}},
+	}
+	model.switchScreen(indexOfScreen(ScreenAttention))
+
+	view := model.View()
+	for _, falseAction := range []string{
+		"a approve", "x reject", "g grant-always", "v view",
+	} {
+		if strings.Contains(view, falseAction) {
+			t.Fatalf("attention exposed unavailable %q: %q", falseAction, view)
+		}
+	}
+}
+
+func TestAttentionRefreshAtomicallyReloadsEveryRenderedSource(t *testing.T) {
+	client := &attentionRefreshClient{fakeReadClient: fakeReadClient{
+		snapshot: api.LocalProductSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("b", 64),
+			Attention:     []api.AttentionItem{},
+		},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.snapshot = api.LocalProductSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+		Attention: []api.AttentionItem{{
+			AttentionID:    "attention-runtime-offline",
+			ActionRequired: "Restore Runtime",
+		}},
+	}
+	model.switchScreen(indexOfScreen(ScreenAttention))
+
+	updated, command := model.Update(teaKeyString("r"))
+	if command == nil {
+		t.Fatal("Attention r command = nil")
+	}
+	model = updated.(Model)
+	if !model.loading {
+		t.Fatal("Attention stopped loading before both sources settled")
+	}
+	message, ok := command().(attentionRefreshedMsg)
+	if !ok || !message.hasPermission {
+		t.Fatalf("Attention r command = %#v, want coherent two-source result", message)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	if client.snapshotCalls != 1 || client.attentionCalls != 1 {
+		t.Fatalf(
+			"Attention refresh calls snapshot=%d permission=%d, want 1/1",
+			client.snapshotCalls,
+			client.attentionCalls,
+		)
+	}
+	if view := model.View(); strings.Contains(view, "Restore Runtime") {
+		t.Fatalf("Attention retained stale Runtime action after r: %q", view)
+	}
+}
+
+func TestAttentionEntryInBothDirectionsStartsCoherentRefresh(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		from Screen
+		key  tea.KeyMsg
+	}{
+		{name: "tab", from: ScreenCompare, key: teaKeyString("tab")},
+		{name: "shift-tab", from: ScreenTimeline, key: teaKeyString("shift+tab")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &attentionRefreshClient{}
+			model, err := NewModel(client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model.switchScreen(indexOfScreen(test.from))
+			updated, command := model.Update(test.key)
+			model = updated.(Model)
+			if model.Screen() != ScreenAttention || command == nil ||
+				!model.loading || model.attentionGeneration != 1 {
+				t.Fatalf(
+					"Attention entry = screen %q loading=%v generation=%d command=%v",
+					model.Screen(), model.loading, model.attentionGeneration, command,
+				)
+			}
+			message, ok := command().(attentionRefreshedMsg)
+			if !ok || !message.hasPermission ||
+				client.snapshotCalls != 1 || client.attentionCalls != 1 {
+				t.Fatalf("Attention entry result = %#v calls=%d/%d", message, client.snapshotCalls, client.attentionCalls)
+			}
+		})
+	}
+}
+
+func TestAttentionRefreshWithoutPermissionUsesOnlySnapshot(t *testing.T) {
+	client := &fakeReadClient{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("b", 64),
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.snapshot.ViewVersion = strings.Repeat("a", 64)
+	model.permissionAttention = app.PermissionAttention{
+		Decisions: []app.PermissionDecisionView{{JobID: "stale-job"}},
+	}
+	model.switchScreen(indexOfScreen(ScreenAttention))
+
+	model, command := model.beginAttentionRefresh()
+	message, ok := command().(attentionRefreshedMsg)
+	if !ok || message.hasPermission {
+		t.Fatalf("snapshot-only Attention result = %#v", message)
+	}
+	updated, _ := model.Update(message)
+	model = updated.(Model)
+	if model.loading || model.snapshot.ViewVersion != strings.Repeat("b", 64) ||
+		len(model.permissionAttention.Decisions) != 0 {
+		t.Fatalf("snapshot-only Attention state = %#v", model)
+	}
+}
+
+func TestAttentionRefreshFailureClearsPermissionActionsAndPreservesSnapshot(t *testing.T) {
+	client := &attentionRefreshClient{
+		fakeReadClient: fakeReadClient{
+			snapshot: api.LocalProductSnapshot{
+				SchemaVersion: 1,
+				ViewVersion:   strings.Repeat("b", 64),
+			},
+		},
+		permissionErr: errors.New("permission attention unavailable"),
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.snapshot.ViewVersion = strings.Repeat("a", 64)
+	model.permissionAttention = app.PermissionAttention{
+		Decisions: []app.PermissionDecisionView{{JobID: "stale-job"}},
+	}
+	model, command := model.beginAttentionRefresh()
+	updated, _ := model.Update(command())
+	model = updated.(Model)
+	if model.loading || model.snapshot.ViewVersion != strings.Repeat("b", 64) ||
+		len(model.permissionAttention.Decisions) != 0 || model.lastError == "" {
+		t.Fatalf("permission failure state = %#v", model)
+	}
+
+	preserved := cloneSnapshot(model.snapshot)
+	client.err = errors.New("snapshot unavailable")
+	client.permissionErr = nil
+	client.permissionAttention = app.PermissionAttention{
+		Decisions: []app.PermissionDecisionView{{JobID: "new-job"}},
+	}
+	model, command = model.beginAttentionRefresh()
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.loading || !reflect.DeepEqual(model.snapshot, preserved) ||
+		len(model.permissionAttention.Decisions) != 0 || model.lastError == "" {
+		t.Fatalf("snapshot failure state = %#v", model)
+	}
+}
+
+func TestAttentionRefreshIgnoresOlderOverlappingCompletion(t *testing.T) {
+	client := &attentionRefreshClient{fakeReadClient: fakeReadClient{
+		snapshot: api.LocalProductSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("b", 64),
+		},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ = model.beginAttentionRefresh()
+	olderGeneration := model.attentionGeneration
+	model, latestCommand := model.beginAttentionRefresh()
+	olderMessage := attentionRefreshedMsg{
+		generation:    olderGeneration,
+		snapshot:      api.LocalProductSnapshot{ViewVersion: strings.Repeat("a", 64)},
+		hasPermission: true,
+		permissionAttention: app.PermissionAttention{
+			Decisions: []app.PermissionDecisionView{{JobID: "stale-job"}},
+		},
+	}
+	updated, _ := model.Update(olderMessage)
+	model = updated.(Model)
+	if !model.loading || len(model.permissionAttention.Decisions) != 0 {
+		t.Fatalf("older Attention completion settled current refresh = %#v", model)
+	}
+
+	updated, _ = model.Update(latestCommand())
+	model = updated.(Model)
+	latest := cloneSnapshot(model.snapshot)
+	updated, _ = model.Update(olderMessage)
+	model = updated.(Model)
+	if model.loading || !reflect.DeepEqual(model.snapshot, latest) ||
+		len(model.permissionAttention.Decisions) != 0 {
+		t.Fatalf("older Attention completion changed latest state = %#v", model)
+	}
+}
+
+func TestAttentionRefreshDisablesStalePermissionActionsWhileLoading(t *testing.T) {
+	client := &attentionRefreshClient{}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.permissionAttention = app.PermissionAttention{
+		Decisions: []app.PermissionDecisionView{{JobID: "stale-job"}},
+		Approvals: []app.PermissionApprovalView{{
+			ApprovalID: "stale-approval",
+			JobID:      "stale-job",
+		}},
+	}
+	model.switchScreen(indexOfScreen(ScreenAttention))
+	model, _ = model.beginAttentionRefresh()
+	if len(model.permissionAttention.Decisions) != 0 ||
+		len(model.permissionAttention.Approvals) != 0 {
+		t.Fatalf("Attention retained stale permission actions while loading: %#v", model.permissionAttention)
+	}
+	for _, key := range []string{"g", "a", "x"} {
+		updated, command := model.Update(teaKeyString(key))
+		model = updated.(Model)
+		if command != nil {
+			t.Fatalf("Attention %q produced stale permission command while loading", key)
+		}
+	}
+}
+
+func TestHomeNewMissionAffordanceOpensMissionComposer(t *testing.T) {
+	model, err := NewModel(&fakeReadClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(snapshotLoadedMsg{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+	}})
+	model = updated.(Model)
+	if model.Screen() != ScreenHome ||
+		!strings.Contains(model.View(), "New Mission") {
+		t.Fatalf("home did not expose New Mission: %q", model.View())
+	}
+
+	updated, command := model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("n"),
+	})
+	model = updated.(Model)
+	if command != nil || model.Screen() != ScreenNewMission {
+		t.Fatalf(
+			"home New Mission result = screen %q command %v",
+			model.Screen(), command,
+		)
+	}
+}
+
+func TestHomeMessageAffordanceSendsThroughChatClient(t *testing.T) {
+	client := &fakeSetupClient{chatThread: api.LocalProductChatThread{
+		ThreadID: "thread-fixture",
+		Messages: []api.LocalProductChatMessage{{
+			MessageID: "message-1",
+			Role:      string(api.ChatRoleLoom),
+			Content:   `{"tool_call":"read","path":"/private/sentinel"}`,
+			Tentative: true,
+		}},
+		CanReply: true,
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.chatThread = cloneChatThread(client.chatThread)
+	if !strings.Contains(model.View(), "Loom proposal (untrusted)") {
+		t.Fatalf("tentative response was not visibly untrusted: %q", model.View())
+	}
+	if !strings.Contains(model.View(), "Loom did not execute it") ||
+		strings.Contains(model.View(), "/private/sentinel") {
+		t.Fatalf("tool-shaped response was not replaced: %q", model.View())
+	}
+
+	updated, command := model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("i"),
+	})
+	model = updated.(Model)
+	if command != nil || model.entryMode != entryChatDraft ||
+		!strings.Contains(model.View(), "Draft") {
+		t.Fatalf(
+			"home message did not open a draft: mode=%q command=%v view=%q",
+			model.entryMode,
+			command,
+			model.View(),
+		)
+	}
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("Pair")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("on")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("the")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("entry")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("flow")},
+	} {
+		updated, _ = model.Update(key)
+		model = updated.(Model)
+	}
+	if !strings.Contains(model.View(), "Draft · Pair on the entry flow") {
+		t.Fatalf("real PTY space sequence produced view %q", model.View())
+	}
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("home message send command = nil")
+	}
+	message, ok := command().(chatMessageSentMsg)
+	if !ok {
+		t.Fatalf("home message result = %#v", message)
+	}
+	if len(client.chatSends) != 1 ||
+		client.chatSends[0].Content != "Pair on the entry flow" ||
+		client.chatSends[0].ThreadID != model.currentChatThreadID() {
+		t.Fatalf("home message requests = %#v", client.chatSends)
+	}
+}
+
+func TestHomeAgentTeamAffordanceOpensBuilderAndLoadsSetup(t *testing.T) {
+	client := &fakeSetupClient{setup: app.SetupSnapshot{
+		SchemaVersion: 1,
+		ViewVersion:   strings.Repeat("a", 64),
+		Runtimes:      []app.SetupRuntimePreview{},
+		SavedTeams:    []app.SetupSavedTeamPreview{},
+		Templates:     []app.SetupTeamTemplatePreview{},
+		RoleOptions:   []app.SetupRoleOptionPreview{},
+		Skills:        []app.SetupSkillRevision{},
+		Permissions:   []string{},
+		Resources:     []app.SetupResourcePointer{},
+	}}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+
+	updated, command := model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("u"),
+	})
+	model = updated.(Model)
+	if model.Screen() != ScreenTeamBuilder || command == nil {
+		t.Fatalf(
+			"home Agent Team result = screen %q command=%v",
+			model.Screen(),
+			command,
+		)
+	}
+	message, ok := command().(setupLoadedMsg)
+	if !ok {
+		t.Fatalf("home Agent Team setup result = %#v", message)
+	}
+}
+
+func TestMissionDecisionReadsEvidenceThenSubmitsExactPreparedAction(t *testing.T) {
+	viewVersion := strings.Repeat("a", 64)
+	decisionDigest := strings.Repeat("b", 64)
+	command := app.MissionDecisionCommand{
+		SchemaVersion: 1, Operation: "read", Kind: "review", Action: "read",
+		MissionID: "mission/team-1", TeamInstanceID: "team-1",
+		ViewVersion: viewVersion, DecisionID: "decision-1",
+		DecisionDigest: decisionDigest, LogicalNodeID: "main",
+		AttemptNumber: 1, ClaimGeneration: 2,
+	}
+	client := &fakeMissionDecisionClient{
+		fakeReadClient: fakeReadClient{snapshot: api.LocalProductSnapshot{
+			SchemaVersion: 2, ViewVersion: viewVersion,
+			Missions: []api.LocalProductMissionSummary{
+				testMission("team-1", "Release review", api.MissionLaneReview, "human_required"),
+			},
+			PreparedDecisions: []app.MissionDecisionCommand{command},
+		}},
+		sheet: app.MissionDecisionSheet{
+			SchemaVersion: 1, Kind: "review", MissionID: command.MissionID,
+			TeamInstanceID: command.TeamInstanceID, ViewVersion: viewVersion,
+			DecisionID: command.DecisionID, DecisionDigest: decisionDigest,
+			Title: "Review result", Summary: "Verified release changes",
+			ExpectedEvidence: "Accepted Evidence receipt evidence-1",
+			Actions:          []string{"not_now", "request_changes", "accept_result"},
+			PreparedActions:  []string{"request_changes", "accept_result"},
+			Prepared:         true, LogicalNodeID: "main", AttemptNumber: 1,
+			ClaimGeneration: 2,
+		},
+		result: app.MissionDecisionResult{
+			SchemaVersion: 1, MissionID: command.MissionID,
+			DecisionID: command.DecisionID, Status: "accepted",
+			Authoritative: true, ViewVersion: strings.Repeat("c", 64),
+		},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.snapshot = client.snapshot
+	model.currentMission = command.MissionID
+	model.currentTeam = command.TeamInstanceID
+	model.switchScreen(indexOfScreen(ScreenMission))
+
+	updated, readCommand := model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("a"),
+	})
+	model = updated.(Model)
+	if readCommand == nil || model.decisionOpen {
+		t.Fatalf("decision read started incorrectly: open=%t command=%v", model.decisionOpen, readCommand)
+	}
+	updated, _ = model.Update(readCommand())
+	model = updated.(Model)
+	if len(client.read) != 1 || client.read[0] != command ||
+		!strings.Contains(model.View(), "Accepted Evidence receipt evidence-1") ||
+		!strings.Contains(model.View(), "Accept result") {
+		t.Fatalf("decision sheet did not load exactly: reads=%#v view=%q", client.read, model.View())
+	}
+
+	updated, submitCommand := model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("d"),
+	})
+	model = updated.(Model)
+	if submitCommand == nil {
+		t.Fatal("prepared decision action did not produce a command")
+	}
+	updated, refreshCommand := model.Update(submitCommand())
+	model = updated.(Model)
+	if len(client.submitted) != 1 ||
+		client.submitted[0].Operation != "submit" ||
+		client.submitted[0].Action != "request_changes" ||
+		client.submitted[0].DecisionDigest != decisionDigest ||
+		client.submitted[0].CorrelationID == "" ||
+		refreshCommand == nil || model.decisionOpen {
+		t.Fatalf(
+			"decision submit=%#v refresh=%v open=%t",
+			client.submitted, refreshCommand, model.decisionOpen,
+		)
 	}
 }
 
@@ -704,8 +1246,40 @@ func TestNewMissionRequiresExactPreflightBeforeExplicitStart(t *testing.T) {
 	updated, refresh := model.Update(message)
 	model = updated.(Model)
 	if refresh == nil || model.currentMission != preflight.MissionID ||
-		model.currentTeam != preflight.TeamInstanceID {
+		model.currentTeam != preflight.TeamInstanceID ||
+		model.missionPreflight.PreflightDigest != "" ||
+		model.missionResult.Status != "running" {
 		t.Fatalf("started model = %#v refresh=%v", model, refresh)
+	}
+	refreshedSnapshot := client.snapshot
+	refreshedSnapshot.ViewVersion = strings.Repeat("9", 64)
+	refreshedSnapshot.Missions = []api.LocalProductMissionSummary{
+		testMission(
+			preflight.TeamInstanceID,
+			"Ship the reviewed release",
+			api.MissionLaneOrchestrating,
+			"running",
+		),
+	}
+	updated, _ = model.Update(snapshotLoadedMsg{snapshot: refreshedSnapshot})
+	model = updated.(Model)
+	if model.lastError != "" || model.missionResult.Status != "running" {
+		t.Fatalf(
+			"accepted start was replaced during refresh: error=%q result=%#v",
+			model.lastError,
+			model.missionResult,
+		)
+	}
+	updated, repeatStart := model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("s"),
+	})
+	model = updated.(Model)
+	if repeatStart != nil || model.missionResult.Status != "running" {
+		t.Fatalf(
+			"consumed start became actionable again: command=%v result=%#v",
+			repeatStart,
+			model.missionResult,
+		)
 	}
 }
 
@@ -738,6 +1312,36 @@ func TestMissionTimelineLabelsTentativeOutputAndMilestones(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Mission timeline missing %q: %q", want, view)
 		}
+	}
+}
+
+func TestNewMissionPreflightExpiresBeforeStartWhenAuthorityViewChanges(t *testing.T) {
+	model, err := NewModel(&fakeReadClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.missionPreflight = app.MissionExecutionPreflight{
+		MissionID:       "mission/team-1",
+		TeamInstanceID:  "team-1",
+		ViewVersion:     strings.Repeat("a", 64),
+		PreflightDigest: strings.Repeat("b", 64),
+	}
+
+	updated, _ := model.Update(snapshotLoadedMsg{snapshot: api.LocalProductSnapshot{
+		SchemaVersion: 2,
+		ViewVersion:   strings.Repeat("c", 64),
+	}})
+	model = updated.(Model)
+	if model.lastError != "preflight_expired" ||
+		model.missionPreflight.PreflightDigest != "" ||
+		model.missionResult.Status != "" {
+		t.Fatalf(
+			"stale preflight remained actionable: error=%q preflight=%#v result=%#v",
+			model.lastError,
+			model.missionPreflight,
+			model.missionResult,
+		)
 	}
 }
 
@@ -851,7 +1455,7 @@ func exportTUISnapshotIfRequested(t *testing.T, view string) {
 	}
 }
 
-func TestMissionApprovalKeyOpensReadOnlyDecisionWhenCommandIsNotPrepared(
+func TestMissionWithoutPreparedDecisionDoesNotExposeApprovalAffordance(
 	t *testing.T,
 ) {
 	mission := testMission(
@@ -908,24 +1512,21 @@ func TestMissionApprovalKeyOpensReadOnlyDecisionWhenCommandIsNotPrepared(
 	) {
 		t.Fatalf("Mission semantic view = %q", view)
 	}
-	updated, _ = model.Update(tea.KeyMsg{
+	before := model.View()
+	updated, command := model.Update(tea.KeyMsg{
 		Type:  tea.KeyRunes,
 		Runes: []rune("a"),
 	})
 	model = updated.(Model)
 	view := model.View()
-	if !strings.Contains(view, "Authorization Decision") ||
-		!strings.Contains(view, "mutation actions disabled") ||
-		!strings.Contains(view, "Esc · Not now") {
-		t.Fatalf("decision view = %q", view)
-	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	model = updated.(Model)
-	if model.Screen() != ScreenMission || model.decisionOpen {
+	if command != nil || model.Screen() != ScreenMission || model.decisionOpen ||
+		view != before || strings.Contains(view, "a approval") ||
+		strings.Contains(view, "a open") {
 		t.Fatalf(
-			"Esc did not restore Mission: screen=%q open=%v",
+			"unprepared decision exposed an action: screen=%q open=%v view=%q",
 			model.Screen(),
 			model.decisionOpen,
+			view,
 		)
 	}
 }
@@ -1720,6 +2321,9 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	}
 
 	wantScreens := []Screen{
+		ScreenTeams,
+		ScreenEvidence,
+		ScreenRuntimes,
 		ScreenNewMission,
 		ScreenMission,
 		ScreenTeamBuilder,
@@ -1742,13 +2346,15 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 		if cmd != nil && want != ScreenAssets && want != ScreenQueue &&
 			want != ScreenWorkers && want != ScreenIntegration &&
-			want != ScreenExecution && want != ScreenProduction {
+			want != ScreenExecution && want != ScreenProduction &&
+			want != ScreenAttention {
 			t.Fatalf("screen navigation produced command for %s", want)
 		}
 		if cmd == nil && (want == ScreenAssets || want == ScreenQueue ||
 			want == ScreenWorkers || want == ScreenIntegration ||
-			want == ScreenExecution || want == ScreenProduction) {
-			t.Fatalf("%s navigation omitted production IPC refresh", want)
+			want == ScreenExecution || want == ScreenProduction ||
+			want == ScreenAttention) {
+			t.Fatalf("%s navigation omitted read IPC refresh", want)
 		}
 		model = updated.(Model)
 		if model.Screen() != want {
@@ -1776,8 +2382,9 @@ func TestModelRendersOfflineStaleResizeAndSanitizesUntrustedText(t *testing.T) {
 		err: localipc.ErrLocalProductUnavailable,
 	})
 	model = updated.(Model)
-	if !strings.Contains(model.View(), "offline") {
-		t.Fatalf("offline view = %q", model.View())
+	if !strings.Contains(model.View(), "Local service unavailable") ||
+		strings.Contains(model.View(), "Daemon offline") {
+		t.Fatalf("service unavailable view = %q", model.View())
 	}
 
 	unsafe := "safe\x1b[31m-red\u202ehidden\nnext"
@@ -1794,7 +2401,8 @@ func TestModelRendersOfflineStaleResizeAndSanitizesUntrustedText(t *testing.T) {
 	}})
 	model = updated.(Model)
 	view := model.View()
-	if !strings.Contains(view, "stale") ||
+	if !strings.Contains(view, "Showing last loaded state") ||
+		strings.Contains(view, "projection_refresh_failed") ||
 		strings.Contains(view, "\x1b[31m") ||
 		strings.Contains(view, "[31m") ||
 		strings.Contains(view, "\u202e") ||
@@ -1803,23 +2411,181 @@ func TestModelRendersOfflineStaleResizeAndSanitizesUntrustedText(t *testing.T) {
 	}
 }
 
+func TestHomeGovernancePanelSplitsWideStacksNarrowAndSurvivesRefresh(t *testing.T) {
+	client := &fakeReadClient{}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	model.snapshot = api.LocalProductSnapshot{
+		SchemaVersion: 2,
+		ViewVersion:   strings.Repeat("a", 64),
+		Missions: []api.LocalProductMissionSummary{
+			testMission("team-1", "Release review", api.MissionLaneOrchestrating, "running"),
+		},
+		Teams: []api.LocalProductTeamSummary{{
+			TeamInstanceID: "team-1",
+			DisplayName:    "Release Team",
+		}},
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.WindowSizeMsg{Width: 140, Height: 36})
+	model = updated.(Model)
+	wide := model.View()
+	if !strings.Contains(wide, "Conversation") ||
+		!strings.Contains(wide, "Governance · Overview") ||
+		!strings.Contains(wide, "Release review") {
+		t.Fatalf("wide governance view = %q", wide)
+	}
+
+	wantViews := []string{
+		"Governance · Board",
+		"Governance · Teams",
+		"Governance · Decisions",
+		"Governance · Evidence",
+		"Governance · Runtimes",
+		"Governance · Attention",
+		"Governance · Overview",
+	}
+	for _, want := range wantViews {
+		updated, _ = model.Update(tea.KeyMsg{
+			Type:  tea.KeyRunes,
+			Runes: []rune("v"),
+		})
+		model = updated.(Model)
+		if !strings.Contains(model.View(), want) {
+			t.Fatalf("governance switcher missing %q: %q", want, model.View())
+		}
+	}
+
+	updated, _ = model.Update(snapshotLoadedMsg{snapshot: model.snapshot})
+	model = updated.(Model)
+	if !strings.Contains(model.View(), "Governance") {
+		t.Fatalf("governance panel was lost after refresh: %q", model.View())
+	}
+
+	updated, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 36})
+	model = updated.(Model)
+	narrow := model.View()
+	if !strings.Contains(narrow, "Conversation") ||
+		!strings.Contains(narrow, "Governance") {
+		t.Fatalf("narrow governance view = %q", narrow)
+	}
+}
+
+func TestHomeFolderChooserKeepsOnlyValidatedDisplayName(t *testing.T) {
+	client := &fakeReadClient{}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	folder := filepath.Join(t.TempDir(), "loom-workspace")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(folder)})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if model.workspaceFolder != "loom-workspace" || len(model.entry) != 0 ||
+		strings.Contains(model.View(), folder) ||
+		!strings.Contains(model.View(), "Folder · loom-workspace") {
+		t.Fatalf("folder context = %q, view = %q", model.workspaceFolder, model.View())
+	}
+}
+
+func TestTUIChatThreadIdentityIsStableOpaqueAndWorkspaceScoped(t *testing.T) {
+	first := newTUIChatThreadID("/private/workspaces/alpha")
+	restarted := newTUIChatThreadID("/private/workspaces/alpha")
+	second := newTUIChatThreadID("/private/workspaces/beta")
+
+	if first != restarted {
+		t.Fatalf("thread identity changed across restart: %q != %q", first, restarted)
+	}
+	if first == second {
+		t.Fatalf("distinct workspaces shared thread identity %q", first)
+	}
+	if !strings.HasPrefix(first, "thread-") || len(first) != len("thread-")+32 ||
+		strings.Contains(first, "alpha") || strings.Contains(first, "/") {
+		t.Fatalf("thread identity is not opaque: %q", first)
+	}
+}
+
+func TestHomeFolderChooserMovesConversationToSelectedWorkspace(t *testing.T) {
+	client := &fakeReadClient{}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.loading = false
+	previousThreadID := model.currentChatThreadID()
+	folder := filepath.Join(t.TempDir(), "another-workspace")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(folder)})
+	model = updated.(Model)
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if command == nil {
+		t.Fatal("folder selection did not load the workspace conversation")
+	}
+	if got := model.currentChatThreadID(); got == previousThreadID ||
+		got != newTUIChatThreadID(folder) {
+		t.Fatalf("selected workspace thread = %q, previous = %q", got, previousThreadID)
+	}
+}
+
 type fakeSetupClient struct {
 	fakeReadClient
 	setup       app.SetupSnapshot
 	session     app.BuilderSessionView
+	chatThread  api.LocalProductChatThread
+	chatSends   []api.LocalProductChatMessageRequest
 	starts      int
 	answers     int
 	credentials int
 	statuses    int
 	edits       int
+	confirms    int
+	setupReads  int
+	confirmErr  error
 	lastStart   app.BuilderStartCommand
 	lastStatus  app.TeamStatusCommand
 	lastEdit    app.BuilderEditCommand
 }
 
+func (client *fakeSetupClient) ChatThread(
+	context.Context,
+	api.LocalProductChatThreadRequest,
+) (api.LocalProductChatThread, error) {
+	return client.chatThread, client.err
+}
+
+func (client *fakeSetupClient) SendChatMessage(
+	_ context.Context,
+	request api.LocalProductChatMessageRequest,
+) (api.LocalProductChatThread, error) {
+	client.chatSends = append(client.chatSends, request)
+	return client.chatThread, client.err
+}
+
 func (client *fakeSetupClient) SetupSnapshot(
 	context.Context,
 ) (app.SetupSnapshot, error) {
+	client.setupReads++
 	return client.setup, client.err
 }
 
@@ -1853,6 +2619,10 @@ func (client *fakeSetupClient) ConfirmBuilder(
 	_ context.Context,
 	_ app.BuilderConfirmCommand,
 ) (app.BuilderConfirmation, error) {
+	client.confirms++
+	if client.confirmErr != nil {
+		return app.BuilderConfirmation{}, client.confirmErr
+	}
 	return app.BuilderConfirmation{
 		TeamDefinitionID: "team-fixture",
 		Status:           "active",
@@ -2226,6 +2996,159 @@ func TestModelTeamBuilderUsesDaemonSetupClientWithoutTerminalInput(t *testing.T)
 			client.starts,
 			model.View(),
 		)
+	}
+}
+
+func TestModelTeamBuilderConflictDiscardsStaleDraftAndRefreshesOnce(t *testing.T) {
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("a", 64),
+		},
+		confirmErr: &localipc.RemoteError{
+			Code:        "conflict",
+			Recoverable: true,
+		},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.loading = false
+	model.builder = app.BuilderSessionView{
+		SchemaVersion: 1,
+		DraftID:       "draft-stale",
+		Revision:      4,
+		CatalogDigest: strings.Repeat("b", 64),
+		ViewVersion:   strings.Repeat("c", 64),
+		BindingDigest: strings.Repeat("d", 64),
+		CanConfirm:    true,
+	}
+
+	updated, command := model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("c"),
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("confirm did not submit the stale draft")
+	}
+	message, ok := command().(builderConfirmFailedMsg)
+	if !ok {
+		t.Fatalf("confirm result = %#v", message)
+	}
+	updated, command = model.Update(message)
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("conflict did not refresh authoritative Teams")
+	}
+	if client.confirms != 1 || model.builder.DraftID != "" ||
+		model.lastError != "" || model.builderNotice == "" {
+		t.Fatalf(
+			"conflict state: confirms=%d builder=%#v error=%q notice=%q",
+			client.confirms,
+			model.builder,
+			model.lastError,
+			model.builderNotice,
+		)
+	}
+
+	updated, next := model.Update(command())
+	model = updated.(Model)
+	if next != nil || client.setupReads != 1 ||
+		!strings.Contains(model.View(), "Draft changed in another client.") ||
+		!strings.Contains(model.View(), "Press n to start a new draft.") {
+		t.Fatalf(
+			"refresh state: reads=%d next=%v view=%q",
+			client.setupReads,
+			next,
+			model.View(),
+		)
+	}
+
+	updated, command = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("c"),
+	})
+	model = updated.(Model)
+	if command != nil || client.confirms != 1 {
+		t.Fatalf("stale draft was submitted again: confirms=%d", client.confirms)
+	}
+}
+
+func TestModelTeamBuilderNotFoundDiscardsExpiredDraftAndRefreshesOnce(t *testing.T) {
+	client := &fakeSetupClient{
+		setup: app.SetupSnapshot{
+			SchemaVersion: 1,
+			ViewVersion:   strings.Repeat("a", 64),
+		},
+		confirmErr: &localipc.RemoteError{
+			Code:        "not_found",
+			Recoverable: true,
+		},
+	}
+	model, err := NewModel(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.screenIndex = indexOfScreen(ScreenTeamBuilder)
+	model.loading = false
+	model.builder = app.BuilderSessionView{
+		SchemaVersion: 1,
+		DraftID:       "draft-expired",
+		Revision:      4,
+		CatalogDigest: strings.Repeat("b", 64),
+		ViewVersion:   strings.Repeat("c", 64),
+		BindingDigest: strings.Repeat("d", 64),
+		CanConfirm:    true,
+	}
+
+	updated, command := model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("c"),
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("confirm did not submit the expired draft")
+	}
+	message, ok := command().(builderConfirmFailedMsg)
+	if !ok {
+		t.Fatalf("confirm result = %#v", message)
+	}
+	updated, command = model.Update(message)
+	model = updated.(Model)
+	if command == nil || client.confirms != 1 || model.builder.DraftID != "" ||
+		model.lastError != "" ||
+		!strings.Contains(model.builderNotice, "no longer available") {
+		t.Fatalf(
+			"expired state: confirms=%d builder=%#v error=%q notice=%q refresh=%v",
+			client.confirms,
+			model.builder,
+			model.lastError,
+			model.builderNotice,
+			command,
+		)
+	}
+
+	updated, next := model.Update(command())
+	model = updated.(Model)
+	if next != nil || client.setupReads != 1 ||
+		!strings.Contains(model.View(), "Agent Team draft no longer available.") ||
+		!strings.Contains(model.View(), "Press n to start a new draft.") {
+		t.Fatalf(
+			"refresh state: reads=%d next=%v view=%q",
+			client.setupReads,
+			next,
+			model.View(),
+		)
+	}
+
+	updated, command = model.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("c"),
+	})
+	model = updated.(Model)
+	if command != nil || client.confirms != 1 {
+		t.Fatalf("expired draft was submitted again: confirms=%d", client.confirms)
 	}
 }
 

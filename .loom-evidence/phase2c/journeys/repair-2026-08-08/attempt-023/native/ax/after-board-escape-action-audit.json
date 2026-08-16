@@ -1,0 +1,381 @@
+{
+  "bundle_id" : "com.earendilworks.loom.local",
+  "controls" : [
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "New Mission",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "New Mission",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Conversation",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Chat",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Mission Board",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Work",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Agent Teams",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Teams",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Items needing attention",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Attention",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Agent library",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Library",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Runtime health",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Runtimes",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task 1, Recent work, Succeeded",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Open recent task 1, Recent work, Succeeded",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task 2, Recent work, Cancelled",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Open recent task 2, Recent work, Cancelled",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task 3, Attempt 022 Review Team, Created",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Open recent task 3, Attempt 022 Review Team, Created",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task 4, Attempt 022 Review Team, Active",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Open recent task 4, Attempt 022 Review Team, Active",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open local service and runtime health",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Some information is unavailable",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Close governance inspector",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Governance inspector",
+      "identifier" : "sidebar.trailing",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Try Again",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Try Again",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Choose conversation folder",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Choose folder",
+      "identifier" : "folder",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Use Agent Team",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Use Agent Team",
+      "identifier" : "person.3",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "New Mission",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "New Mission",
+      "identifier" : "plus.square",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Pin inspector",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Pin inspector",
+      "identifier" : "pin",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Close governance inspector",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "Close",
+      "identifier" : "xmark",
+      "labeled" : true,
+      "parent_role" : "AXGroup",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Attempt 022 Review Team, Review · ready_for_review",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open full Mission Board",
+      "enabled" : true,
+      "excluded_standard_chrome" : false,
+      "help" : "",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXScrollArea",
+      "role" : "AXButton",
+      "subrole" : "",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "",
+      "enabled" : true,
+      "excluded_standard_chrome" : true,
+      "help" : "",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXWindow",
+      "role" : "AXButton",
+      "subrole" : "AXCloseButton",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress",
+        "AXZoomWindow",
+        "AXShowMenu"
+      ],
+      "description" : "",
+      "enabled" : true,
+      "excluded_standard_chrome" : true,
+      "help" : "this button also has an action to zoom the window",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXWindow",
+      "role" : "AXButton",
+      "subrole" : "AXFullScreenButton",
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "",
+      "enabled" : true,
+      "excluded_standard_chrome" : true,
+      "help" : "",
+      "identifier" : "",
+      "labeled" : true,
+      "parent_role" : "AXWindow",
+      "role" : "AXButton",
+      "subrole" : "AXMinimizeButton",
+      "title" : ""
+    }
+  ],
+  "schema_version" : 1,
+  "summary" : {
+    "product_control_count" : 21,
+    "recent_control_count" : 4,
+    "recent_help_matches_label" : true,
+    "recent_labels" : [
+      "Open recent task 1, Recent work, Succeeded",
+      "Open recent task 2, Recent work, Cancelled",
+      "Open recent task 3, Attempt 022 Review Team, Created",
+      "Open recent task 4, Attempt 022 Review Team, Active"
+    ],
+    "recent_unique_label_count" : 4,
+    "unlabeled_product_control_count" : 0
+  }
+}

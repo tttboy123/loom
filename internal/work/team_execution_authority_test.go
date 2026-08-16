@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"loom-pi-rebuild/internal/assets"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/rules"
+	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/teams"
 	"loom-pi-rebuild/internal/verification"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
@@ -40,6 +42,384 @@ func TestP3ATeamDispatchAndSemanticBindingCarryExactAssetSet(t *testing.T) {
 			t.Fatalf("TeamAttemptMaterialization field %s is missing", field)
 		}
 	}
+}
+
+func TestPhase2DTeamDispatchFreezesIndependentExecutionBindingPerAttempt(t *testing.T) {
+	store := openAuthorityStore(t)
+	authority := newAuthority(t, store, &mutableClock{now: testNow}, 0x65)
+	seedRuntime(t, store, "runtime-a", "online", 2)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-mixed-provider",
+		Nodes: []teams.ExecutionNodeInput{
+			{
+				LogicalNodeID: "claude", Title: "Review",
+				AgentInstanceID: "agent-claude", RuntimeInstanceID: "runtime-a",
+				Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+			},
+			{
+				LogicalNodeID: "codex", Title: "Implement",
+				AgentInstanceID: "agent-codex", RuntimeInstanceID: "runtime-a",
+				Role: teams.ExecutionRoleSubAgent, MaxAttempts: 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeBinding := testFrozenExecutionBinding(
+		t, "profile.claude", "anthropic", "anthropic.work",
+		"claude-sonnet", "credential-ref-anthropic-work", 7,
+	)
+	codexBinding := testReasoningFrozenExecutionBinding(
+		t, "profile.codex", "openai", "openai.primary",
+		"gpt-5.5-codex", "credential-ref-openai-primary", 12, "high",
+	)
+	selections := []TeamAttemptSelection{
+		{
+			LogicalNodeID: "claude", AttemptNumber: 1, ExecutionBinding: claudeBinding,
+			ContextCapsule: testRoleContextCapsule(t, plan, "claude", claudeBinding),
+		},
+		{
+			LogicalNodeID: "codex", AttemptNumber: 1, ExecutionBinding: codexBinding,
+			ContextCapsule: testRoleContextCapsule(t, plan, "codex", codexBinding),
+		},
+	}
+	snapshot, err := store.ReadStreamSet(
+		context.Background(),
+		teamDispatchStreams(plan, plan.Nodes(), selections, TeamExecutionRecord{}, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := authority.DispatchTeamReadySet(
+		context.Background(),
+		TeamDispatchInput{
+			Plan: plan, ReadyAttempts: selections,
+			SemanticBindings:     testTeamSemanticBindings(plan),
+			ViewVersion:          strings.Repeat("9", 64),
+			ExpectedHeads:        snapshot.Heads(),
+			AuthoritativeTime:    testNow,
+			PrepareLeaseDuration: time.Minute,
+			CorrelationID:        testCorrelation,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := dispatched.Nodes()
+	if len(nodes) != 2 {
+		t.Fatalf("dispatched nodes = %d", len(nodes))
+	}
+	bindings := map[string]loomruntime.FrozenExecutionBinding{}
+	for _, node := range nodes {
+		bindings[node.LogicalNode().LogicalNodeID()] = node.Attempt().ExecutionBinding()
+	}
+	if bindings["claude"].ProviderAccountID != "anthropic.work" ||
+		bindings["claude"].CredentialRevision != 7 ||
+		bindings["codex"].ProviderAccountID != "openai.primary" ||
+		bindings["codex"].CredentialRevision != 12 ||
+		bindings["codex"].ReasoningEffort != "high" ||
+		bindings["claude"].BindingDigest == bindings["codex"].BindingDigest {
+		t.Fatalf("attempt bindings = %#v", bindings)
+	}
+	replayed, err := authority.TeamExecution(context.Background(), plan.TeamInstanceID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range replayed.Nodes() {
+		attempts := node.Attempts()
+		if len(attempts) != 1 ||
+			attempts[0].ExecutionBinding().BindingDigest !=
+				bindings[node.LogicalNodeID()].BindingDigest ||
+			attempts[0].ExecutionBinding().ReasoningEffort !=
+				bindings[node.LogicalNodeID()].ReasoningEffort {
+			t.Fatalf("replayed binding for %s = %#v", node.LogicalNodeID(), attempts)
+		}
+	}
+	events, err := store.ReadStream(
+		context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payloads strings.Builder
+	for _, event := range events {
+		payloads.Write(event.PayloadJSON)
+	}
+	text := payloads.String()
+	if !strings.Contains(text, "credential-ref-anthropic-work") ||
+		!strings.Contains(text, "credential-ref-openai-primary") ||
+		strings.Contains(text, "sk-ant-secret-body") ||
+		strings.Contains(text, "authorization") {
+		t.Fatal("unsafe or incomplete Team Attempt journal payload")
+	}
+}
+
+func TestPhase2DTeamDispatchFreezesRoleContextCapsuleThroughReplay(t *testing.T) {
+	store := openAuthorityStore(t)
+	authority := newAuthority(t, store, &mutableClock{now: testNow}, 0x66)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-role-capsule",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	selection := testTeamAttemptSelection(t, plan, "main", 1)
+	dispatched := dispatchTeamAttemptForTest(t, store, authority, plan, 1, testNow)
+	attempt := dispatched.Attempt()
+	want := selection.ContextCapsule
+	if attempt.ContextCapsuleDigest() != want.Digest() ||
+		attempt.ContextDisclosureReceiptDigest() != want.DisclosureReceiptDigest() ||
+		attempt.ContextTokenCount() != want.TokenCount() ||
+		attempt.ContextOmissionCount() != len(want.Omitted()) {
+		t.Fatalf("dispatched capsule authority = %#v", attempt)
+	}
+	segment := attempt.RouteSegmentBinding()
+	if _, err := contextcapsule.ValidateRouteSegmentBinding(segment); err != nil ||
+		segment.ConversationID != want.Target().ConversationID ||
+		segment.TeamID != plan.TeamInstanceID() || segment.AgentID != "agent-main" ||
+		segment.RoleID != "main" || segment.AttemptNumber != 1 ||
+		segment.CapsuleDigest != want.Digest() ||
+		segment.ExecutionBindingDigest != attempt.ExecutionBinding().BindingDigest {
+		t.Fatalf("dispatched Route Segment = %#v err=%v", segment, err)
+	}
+
+	events, err := store.ReadStream(context.Background(), teamExecutionStream(plan.TeamInstanceID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := replayTeamExecution(plan.TeamInstanceID(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAttempt := replayed.Nodes()[0].Attempts()[0]
+	if replayedAttempt.ContextCapsuleDigest() != want.Digest() ||
+		replayedAttempt.ContextDisclosureReceiptDigest() != want.DisclosureReceiptDigest() ||
+		replayedAttempt.RouteSegmentBinding() != segment {
+		t.Fatalf("replayed capsule authority = %#v", replayedAttempt)
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "Execute the governed Team objective.") {
+		t.Fatal("authoritative Journal leaked Role Context Capsule content")
+	}
+}
+
+func testReasoningFrozenExecutionBinding(
+	t testing.TB,
+	profileID string,
+	providerID string,
+	accountID string,
+	modelID string,
+	credentialReference string,
+	credentialRevision int64,
+	reasoningEffort string,
+) loomruntime.FrozenExecutionBinding {
+	t.Helper()
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: profileID, AdapterType: "loom-native",
+		ProviderID: providerID, ProviderAccountID: accountID,
+		ModelID: modelID, AuthMode: loomruntime.AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("a", 64),
+		CredentialReference:  credentialReference,
+		CredentialRevision:   credentialRevision,
+		ReasoningEffort:      reasoningEffort,
+		RequiredCapabilities: []string{"chat", loomruntime.CapabilityReasoningEffort, "tools"},
+		Timeout:              90 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-a", DeviceID: "device.local",
+		AdapterType: "loom-native", DisplayName: "Loom Native",
+		Status: loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{
+			"chat", loomruntime.CapabilityReasoningEffort, "tools",
+		},
+		Capacity: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
+}
+
+func TestPhase2DTeamDispatchRejectsTamperedExecutionBindingBeforeMutation(t *testing.T) {
+	store := openAuthorityStore(t)
+	authority := newAuthority(t, store, &mutableClock{now: testNow}, 0x64)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-binding-tamper",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validBinding := testFrozenExecutionBinding(
+		t, "profile.openai", "openai", "openai.primary",
+		"gpt-5.5-codex", "credential-ref-openai-primary", 3,
+	)
+	binding := validBinding
+	binding.CredentialRevision = 4
+	selection := TeamAttemptSelection{
+		LogicalNodeID: "main", AttemptNumber: 1, ExecutionBinding: binding,
+		ContextCapsule: testRoleContextCapsule(t, plan, "main", validBinding),
+	}
+	snapshot, err := store.ReadStreamSet(
+		context.Background(),
+		teamDispatchStreams(
+			plan, plan.Nodes(), []TeamAttemptSelection{selection},
+			TeamExecutionRecord{}, nil,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = authority.DispatchTeamReadySet(
+		context.Background(),
+		TeamDispatchInput{
+			Plan: plan, ReadyAttempts: []TeamAttemptSelection{selection},
+			SemanticBindings:     testTeamSemanticBindings(plan),
+			ViewVersion:          strings.Repeat("8", 64),
+			ExpectedHeads:        snapshot.Heads(),
+			AuthoritativeTime:    testNow,
+			PrepareLeaseDuration: time.Minute,
+			CorrelationID:        testCorrelation,
+		},
+	)
+	if !errors.Is(err, ErrInvalidTeamAttempt) {
+		t.Fatalf("tampered binding error = %v", err)
+	}
+	events, readErr := store.ReadStream(
+		context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+	)
+	if readErr != nil || len(events) != 0 {
+		t.Fatalf("team events after rejected binding = %d, %v", len(events), readErr)
+	}
+}
+
+func TestPhase2DTeamDispatchRejectsMissingAndRouteMismatchedContextCapsule(t *testing.T) {
+	store := openAuthorityStore(t)
+	authority := newAuthority(t, store, &mutableClock{now: testNow}, 0x63)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-context-capsule-rejection",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testFrozenExecutionBinding(
+		t, "profile.openai", "openai", "openai.primary",
+		"gpt-5.5-codex", "credential-ref-openai-primary", 3,
+	)
+	mismatchedTarget := binding
+	mismatchedTarget.ProviderAccountID = "openai.other"
+
+	for name, capsule := range map[string]contextcapsule.RoleContextCapsule{
+		"missing": {},
+		"route mismatch": testRoleContextCapsule(
+			t, plan, "main", mismatchedTarget,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			selection := TeamAttemptSelection{
+				LogicalNodeID: "main", AttemptNumber: 1,
+				ExecutionBinding: binding, ContextCapsule: capsule,
+			}
+			snapshot, readErr := store.ReadStreamSet(
+				context.Background(),
+				teamDispatchStreams(
+					plan, plan.Nodes(), []TeamAttemptSelection{selection},
+					TeamExecutionRecord{}, nil,
+				),
+			)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			_, dispatchErr := authority.DispatchTeamReadySet(
+				context.Background(),
+				TeamDispatchInput{
+					Plan: plan, ReadyAttempts: []TeamAttemptSelection{selection},
+					SemanticBindings: testTeamSemanticBindings(plan),
+					ViewVersion:      strings.Repeat("6", 64), ExpectedHeads: snapshot.Heads(),
+					AuthoritativeTime: testNow, PrepareLeaseDuration: time.Minute,
+					CorrelationID: testCorrelation,
+				},
+			)
+			if !errors.Is(dispatchErr, ErrInvalidTeamAttempt) {
+				t.Fatalf("dispatch error = %v", dispatchErr)
+			}
+			events, readErr := store.ReadStream(
+				context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+			)
+			if readErr != nil || len(events) != 0 {
+				t.Fatalf("events after rejected capsule = %d, %v", len(events), readErr)
+			}
+		})
+	}
+}
+
+func testFrozenExecutionBinding(
+	t testing.TB,
+	profileID string,
+	providerID string,
+	accountID string,
+	modelID string,
+	credentialReference string,
+	credentialRevision int64,
+) loomruntime.FrozenExecutionBinding {
+	t.Helper()
+	budget := int64(250)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: profileID, AdapterType: "loom-native",
+		ProviderID: providerID, ProviderAccountID: accountID,
+		ModelID: modelID, AuthMode: loomruntime.AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("a", 64),
+		CredentialReference:  credentialReference,
+		CredentialRevision:   credentialRevision,
+		RequiredCapabilities: []string{"chat", "tools"},
+		Timeout:              90 * time.Second, Budget: &budget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-a", DeviceID: "device.local",
+		AdapterType: "loom-native", DisplayName: "Loom Native",
+		Status:               loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{"chat", "tools"}, Capacity: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
 }
 
 func TestP3ATeamDispatchCASReadsEveryBoundAssetAuthorityStream(t *testing.T) {
@@ -163,10 +543,9 @@ func TestTeamDispatchCASHasOneWinnerAndIndependentAttemptLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mainSelection := []TeamAttemptSelection{{
-		LogicalNodeID: "main",
-		AttemptNumber: 1,
-	}}
+	mainSelection := []TeamAttemptSelection{
+		testTeamAttemptSelection(t, plan, "main", 1),
+	}
 	mainSnapshot, err := store.ReadStreamSet(
 		context.Background(),
 		teamDispatchStreams(
@@ -194,29 +573,21 @@ func TestTeamDispatchCASHasOneWinnerAndIndependentAttemptLineage(t *testing.T) {
 	); !errors.Is(err, ErrInvalidTeamAttempt) {
 		t.Fatalf("dependency-blocked Main dispatch error = %v", err)
 	}
-	streamIDs := []string{
-		"team-execution/team-instance-1",
-		runIdentityStreamID,
-		workItemStream(teamAttemptIdentity("work", plan, "sub-a", 1)),
-		runStream(teamAttemptIdentity("run", plan, "sub-a", 1)),
-		runtimeStatusStream("runtime-a"),
-		runtimeCapacityStream("runtime-a"),
-		workItemStream(teamAttemptIdentity("work", plan, "sub-b", 1)),
-		runStream(teamAttemptIdentity("run", plan, "sub-b", 1)),
-		runtimeStatusStream("runtime-b"),
-		runtimeCapacityStream("runtime-b"),
+	selections := []TeamAttemptSelection{
+		testTeamAttemptSelection(t, plan, "sub-a", 1),
+		testTeamAttemptSelection(t, plan, "sub-b", 1),
 	}
+	streamIDs := teamDispatchStreams(
+		plan, plan.Nodes(), selections, TeamExecutionRecord{}, nil,
+	)
 	snapshot, err := store.ReadStreamSet(context.Background(), streamIDs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input := TeamDispatchInput{
-		Plan:             plan,
-		SemanticBindings: testTeamSemanticBindings(plan),
-		ReadyAttempts: []TeamAttemptSelection{
-			{LogicalNodeID: "sub-a", AttemptNumber: 1},
-			{LogicalNodeID: "sub-b", AttemptNumber: 1},
-		},
+		Plan:                 plan,
+		SemanticBindings:     testTeamSemanticBindings(plan),
+		ReadyAttempts:        selections,
 		ViewVersion:          strings.Repeat("a", 64),
 		ExpectedHeads:        snapshot.Heads(),
 		AuthoritativeTime:    testNow,
@@ -245,7 +616,11 @@ func TestTeamDispatchCASHasOneWinnerAndIndependentAttemptLineage(t *testing.T) {
 	close(results)
 	close(failures)
 	if len(results) != 1 || len(failures) != 1 {
-		t.Fatalf("successes=%d failures=%d", len(results), len(failures))
+		failureList := make([]error, 0, len(failures))
+		for failure := range failures {
+			failureList = append(failureList, failure)
+		}
+		t.Fatalf("successes=%d failures=%d errors=%v", len(results), len(failureList), failureList)
 	}
 	if conflict := <-failures; !errors.Is(conflict, ErrTeamExecutionConflict) &&
 		!errors.Is(conflict, ErrStaleGlobalReadView) {
@@ -293,10 +668,9 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := func(attempt int) []TeamAttemptSelection {
-		return []TeamAttemptSelection{{
-			LogicalNodeID: "main",
-			AttemptNumber: attempt,
-		}}
+		return []TeamAttemptSelection{
+			testTeamAttemptSelection(t, plan, "main", attempt),
+		}
 	}
 	dispatchInput := func(attempt int, at time.Time) TeamDispatchInput {
 		selected := selection(attempt)
@@ -501,6 +875,26 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 	}
 
 	clock.Set(retryAt)
+	changedBindingInput := dispatchInput(2, retryAt)
+	changedBindingInput.ReadyAttempts[0].ExecutionBinding = testFrozenExecutionBinding(
+		t, "profile.changed", "anthropic", "anthropic.fallback",
+		"claude-sonnet", "credential-ref-anthropic-fallback", 2,
+	)
+	if _, err := authority.DispatchTeamReadySet(
+		context.Background(), changedBindingInput,
+	); !errors.Is(err, ErrInvalidTeamAttempt) {
+		t.Fatalf("silent retry binding change error = %v", err)
+	}
+	changedContextInput := dispatchInput(2, retryAt)
+	changedContextInput.ReadyAttempts[0].ContextCapsule = testRoleContextCapsuleWithContent(
+		t, plan, "main", changedContextInput.ReadyAttempts[0].ExecutionBinding,
+		"Changed context requires an explicit Attempt transition.",
+	)
+	if _, err := authority.DispatchTeamReadySet(
+		context.Background(), changedContextInput,
+	); !errors.Is(err, ErrInvalidTeamAttempt) {
+		t.Fatalf("silent retry context change error = %v", err)
+	}
 	retryInput := dispatchInput(2, retryAt)
 	var wait sync.WaitGroup
 	wait.Add(2)
@@ -534,6 +928,10 @@ func TestTeamRecoveryIsExplicitTimeBoundedAndStopsAtMaxAttempts(t *testing.T) {
 	if secondAttempt.Attempt().WorkItemID() == firstAttempt.Attempt().WorkItemID() ||
 		secondAttempt.Attempt().RunID() == firstAttempt.Attempt().RunID() {
 		t.Fatal("retry reused WorkItem or Run identity")
+	}
+	if secondAttempt.Attempt().ContextCapsuleDigest() !=
+		firstAttempt.Attempt().ContextCapsuleDigest() {
+		t.Fatal("ordinary retry changed the admitted Role Context Capsule")
 	}
 	team, secondClassification := commitFailedAttempt(secondAttempt, 2)
 	if team.Nodes()[0].Status() != "awaiting_recovery" {
@@ -1151,6 +1549,114 @@ func TestTeamAttemptRebindFencesExpiredGenerationAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestTeamFallbackApprovalIsImmutableVersionedAndDigestBound(t *testing.T) {
+	input := TeamFallbackApprovalInput{
+		Version:             3,
+		ApprovalID:          "fallback-approval-main-v3",
+		ActorRef:            "user:local-owner",
+		ApprovedAt:          testNow,
+		SourceBindingDigest: strings.Repeat("a", 64),
+		TargetBindingDigest: strings.Repeat("b", 64),
+	}
+	approval, err := NewTeamFallbackApproval(input)
+	if err != nil || !approval.Valid() || approval.Version() != 3 ||
+		approval.ApprovalID() != input.ApprovalID ||
+		approval.ActorRef() != input.ActorRef ||
+		!approval.ApprovedAt().Equal(testNow) ||
+		approval.SourceBindingDigest() != input.SourceBindingDigest ||
+		approval.TargetBindingDigest() != input.TargetBindingDigest ||
+		!validSHA256Hex(approval.Digest()) {
+		t.Fatalf("fallback approval = %#v, %v", approval, err)
+	}
+	changed := input
+	changed.TargetBindingDigest = strings.Repeat("c", 64)
+	other, err := NewTeamFallbackApproval(changed)
+	if err != nil || other.Digest() == approval.Digest() {
+		t.Fatalf("target-insensitive approval digest = %q/%q, %v", approval.Digest(), other.Digest(), err)
+	}
+	changed = input
+	changed.ApprovedAt = testNow.Local()
+	if _, err := NewTeamFallbackApproval(changed); !errors.Is(err, ErrInvalidTeamFallbackApproval) {
+		t.Fatalf("non-UTC approval error = %v", err)
+	}
+}
+
+func TestTeamDispatchPersistsParallelRouteSiblingAndAggregationIdentity(t *testing.T) {
+	store := openAuthorityStore(t)
+	authority := newAuthority(t, store, &mutableClock{now: testNow}, 0x6d)
+	seedRuntime(t, store, "runtime-openai", "online", 1)
+	seedRuntime(t, store, "runtime-deepseek", "online", 1)
+	seedRuntime(t, store, "runtime-aggregate", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-parallel-routes",
+		Nodes: []teams.ExecutionNodeInput{
+			{
+				LogicalNodeID: "route-openai", Title: "OpenAI route",
+				AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-openai",
+				Role: teams.ExecutionRoleMain, Kind: teams.ExecutionNodeRouteSibling,
+				RouteGroupID: "route-group-main", MaxAttempts: 1,
+			},
+			{
+				LogicalNodeID: "route-deepseek", Title: "DeepSeek route",
+				AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-deepseek",
+				Role: teams.ExecutionRoleMain, Kind: teams.ExecutionNodeRouteSibling,
+				RouteGroupID: "route-group-main", MaxAttempts: 1,
+			},
+			{
+				LogicalNodeID: "main", Title: "Aggregate",
+				AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-aggregate",
+				Role: teams.ExecutionRoleMain, Kind: teams.ExecutionNodeAggregation,
+				RouteGroupID: "route-group-main",
+				DependsOn:    []string{"route-openai", "route-deepseek"}, MaxAttempts: 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selections := []TeamAttemptSelection{
+		testTeamAttemptSelection(t, plan, "route-deepseek", 1),
+		testTeamAttemptSelection(t, plan, "route-openai", 1),
+	}
+	snapshot, err := store.ReadStreamSet(
+		context.Background(),
+		teamDispatchStreams(plan, plan.Nodes(), selections, TeamExecutionRecord{}, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := authority.DispatchTeamReadySet(context.Background(), TeamDispatchInput{
+		Plan: plan, ReadyAttempts: selections,
+		SemanticBindings: testTeamSemanticBindings(plan),
+		ViewVersion:      strings.Repeat("8", 64), ExpectedHeads: snapshot.Heads(),
+		AuthoritativeTime: testNow, PrepareLeaseDuration: time.Minute,
+		CorrelationID: testCorrelation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes()) != 2 ||
+		result.Nodes()[0].Attempt().ExecutionBinding().BindingDigest ==
+			result.Nodes()[1].Attempt().ExecutionBinding().BindingDigest {
+		t.Fatalf("sibling dispatch = %#v", result.Nodes())
+	}
+	replayed, err := authority.TeamExecution(context.Background(), plan.TeamInstanceID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]TeamNodeRecord)
+	for _, node := range replayed.Nodes() {
+		byID[node.LogicalNodeID()] = node
+	}
+	if byID["route-openai"].Kind() != teams.ExecutionNodeRouteSibling ||
+		byID["route-deepseek"].Kind() != teams.ExecutionNodeRouteSibling ||
+		byID["main"].Kind() != teams.ExecutionNodeAggregation ||
+		byID["main"].RouteGroupID() != "route-group-main" ||
+		byID["main"].CurrentAttempt() != 0 {
+		t.Fatalf("replayed parallel identity = %#v", byID)
+	}
+}
+
 func dispatchTeamAttemptForTest(
 	t testing.TB,
 	store *journal.Store,
@@ -1160,10 +1666,9 @@ func dispatchTeamAttemptForTest(
 	at time.Time,
 ) TeamDispatchedNode {
 	t.Helper()
-	selections := []TeamAttemptSelection{{
-		LogicalNodeID: "main",
-		AttemptNumber: attemptNumber,
-	}}
+	selections := []TeamAttemptSelection{
+		testTeamAttemptSelection(t, plan, "main", attemptNumber),
+	}
 	teamEvents, err := store.ReadStream(
 		context.Background(),
 		teamExecutionStream(plan.TeamInstanceID()),
@@ -1335,7 +1840,7 @@ func TestTeamDispatchFreezesSemanticBindingsBeforeLaterWorkWrites(t *testing.T) 
 		return dispatchErr
 	}
 	if err := dispatch(
-		TeamAttemptSelection{LogicalNodeID: "first", AttemptNumber: 1},
+		testTeamAttemptSelection(t, plan, "first", 1),
 		bindings,
 		testNow,
 	); err != nil {
@@ -1344,7 +1849,7 @@ func TestTeamDispatchFreezesSemanticBindingsBeforeLaterWorkWrites(t *testing.T) 
 	changed := append([]TeamNodeSemanticBinding(nil), bindings...)
 	changed[1].RecoveryPolicyDigest = strings.Repeat("f", 64)
 	if err := dispatch(
-		TeamAttemptSelection{LogicalNodeID: "second", AttemptNumber: 1},
+		testTeamAttemptSelection(t, plan, "second", 1),
 		changed,
 		testNow.Add(time.Second),
 	); !errors.Is(err, ErrTeamExecutionConflict) {
@@ -1357,6 +1862,103 @@ func TestTeamDispatchFreezesSemanticBindingsBeforeLaterWorkWrites(t *testing.T) 
 	if err != nil || len(events) != 0 {
 		t.Fatalf("later WorkItem events = %d, %v", len(events), err)
 	}
+}
+
+func testTeamAttemptSelection(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	logicalNodeID string,
+	attemptNumber int,
+) TeamAttemptSelection {
+	t.Helper()
+	node := nodeByLogicalID(plan.Nodes(), logicalNodeID)
+	if node.LogicalNodeID() == "" {
+		t.Fatalf("unknown plan node %q", logicalNodeID)
+	}
+	budget := int64(100)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:                   fmt.Sprintf("profile.%s", logicalNodeID),
+		AdapterType:          "loom-native",
+		ProviderID:           "openai",
+		ProviderAccountID:    "openai.test",
+		ModelID:              "gpt-test",
+		AuthMode:             loomruntime.AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("b", 64),
+		CredentialReference:  "credential-ref-test-" + logicalNodeID,
+		CredentialRevision:   1,
+		RequiredCapabilities: []string{"chat"},
+		Timeout:              time.Minute,
+		Budget:               &budget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: node.RuntimeInstanceID(), DeviceID: "device.test",
+		AdapterType: "loom-native", DisplayName: node.RuntimeInstanceID(),
+		Status: loomruntime.RuntimeOnline, ObservedCapabilities: []string{"chat"},
+		Capacity: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return TeamAttemptSelection{
+		LogicalNodeID: logicalNodeID, AttemptNumber: attemptNumber,
+		ExecutionBinding: binding,
+		ContextCapsule:   testRoleContextCapsule(t, plan, logicalNodeID, binding),
+	}
+}
+
+func testRoleContextCapsule(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	logicalNodeID string,
+	binding loomruntime.FrozenExecutionBinding,
+) contextcapsule.RoleContextCapsule {
+	return testRoleContextCapsuleWithContent(
+		t, plan, logicalNodeID, binding,
+		"Execute the governed Team objective.",
+	)
+}
+
+func testRoleContextCapsuleWithContent(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	logicalNodeID string,
+	binding loomruntime.FrozenExecutionBinding,
+	content string,
+) contextcapsule.RoleContextCapsule {
+	t.Helper()
+	node := nodeByLogicalID(plan.Nodes(), logicalNodeID)
+	capsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
+			TeamID:         plan.TeamInstanceID(), AgentID: node.AgentInstanceID(),
+			RoleID: logicalNodeID, ProviderID: binding.ProviderID,
+			ProviderAccountID: binding.ProviderAccountID, ModelID: binding.ModelID,
+			AuthMode:           string(binding.AuthMode),
+			ContextAdapterID:   "loom-native-context-v1",
+			DisclosurePolicyID: "policy.local-default", DisclosurePolicyVersion: 1,
+			TokenBudget: 64,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+			Trust:    contextcapsule.TrustAuthoritative,
+			Scope:    contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 8, Required: true,
+			Content:    []byte(content),
+			SourceType: contextcapsule.SourceAuthority,
+			SourceRef:  "team-plan:" + plan.Digest(),
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capsule
 }
 
 func TestTeamAttemptCommitRejectsZeroAndMismatchedAuthorityValues(t *testing.T) {

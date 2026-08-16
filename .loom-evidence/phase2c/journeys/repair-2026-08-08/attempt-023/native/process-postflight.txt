@@ -1,0 +1,3 @@
+test_product_processes=absent
+test_socket=absent
+test_socket_lock=absent

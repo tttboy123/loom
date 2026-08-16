@@ -101,6 +101,15 @@ func TestPiExecutionAdapterConfigEnvironmentAndBinding(t *testing.T) { // s3_w4_
 	if err != nil || second.ExitCode() != 0 {
 		t.Fatalf("adapter aliased config: %#v, %v", second, err)
 	}
+	drifted := fixture.request(t)
+	drifted.ExecutionBinding.ModelID = "silent-model-drift"
+	if result, executeErr := adapter.Execute(
+		context.Background(),
+		drifted,
+	); !errors.Is(executeErr, ErrPiExecutionBindingChanged) ||
+		len(result.InboundFrames()) != 0 {
+		t.Fatalf("drifted execution binding = %#v, %v", result, executeErr)
+	}
 	fastExit, err := adapter.Execute(
 		context.Background(),
 		fixture.requestForMode(t, "fast-stderr"),
@@ -765,6 +774,33 @@ func newPiSupervisorFixture(t testing.TB) *piSupervisorFixture {
 	}
 	store := journal.NewStore(db)
 	seedPiSupervisorRuntime(t, store)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:          "profile-1",
+		AdapterType: "pi",
+		ProviderID:  "loom-local",
+		ModelID:     "fixture-model",
+		AuthMode:    loomruntime.AuthNative,
+		Timeout:     10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID:                "runtime-1",
+		DeviceID:          "device-1",
+		AdapterType:       "pi",
+		DisplayName:       "Pi Integration",
+		ExecutableVersion: "1.0.0",
+		Status:            loomruntime.RuntimeOnline,
+		Capacity:          1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionBinding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workAuthority, err := work.NewAuthority(
 		store,
 		func() time.Time { return managedPiTestNow },
@@ -779,11 +815,12 @@ func newPiSupervisorFixture(t testing.TB) *piSupervisorFixture {
 	workItem, run, err := workAuthority.CreateAndAssign(
 		context.Background(),
 		work.WorkItemAssignmentInput{
-			WorkItemID:      "S3-W4",
-			Title:           "real adapter integration",
-			RunID:           "run-1",
-			AgentInstanceID: "agent-1",
-			CorrelationID:   "22222222-2222-4222-8222-222222222222",
+			WorkItemID:       "S3-W4",
+			Title:            "real adapter integration",
+			RunID:            "run-1",
+			AgentInstanceID:  "agent-1",
+			ExecutionBinding: executionBinding,
+			CorrelationID:    "22222222-2222-4222-8222-222222222222",
 		},
 	)
 	if err != nil {
@@ -845,27 +882,6 @@ func newPiSupervisorFixture(t testing.TB) *piSupervisorFixture {
 	}
 	if grant.Token().Value() != piTestTokenValue {
 		t.Fatalf("integration token = %q", grant.Token().Value())
-	}
-	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
-		ID:          "profile-1",
-		AdapterType: "pi",
-		AuthMode:    loomruntime.AuthBrokered,
-		Timeout:     10 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
-		ID:                "runtime-1",
-		DeviceID:          "device-1",
-		AdapterType:       "pi",
-		DisplayName:       "Pi Integration",
-		ExecutableVersion: "1.0.0",
-		Status:            loomruntime.RuntimeOnline,
-		Capacity:          1,
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	sourcePath := piPrivateDirectory(t, "supervisor-source")
 	if err := os.WriteFile(
@@ -1111,10 +1127,55 @@ func (fixture *piAdapterFixture) request(t testing.TB) supervisor.AdapterRequest
 		HomePath:      fixture.homePath,
 		TempPath:      fixture.tempPath,
 		Binding:       fixture.binding,
-		Dispatch:      fixture.dispatch,
-		Grant:         fixture.token,
-		FrameSink:     &piRecordingFrameSink{},
+		ExecutionBinding: piFixtureExecutionBinding(
+			t,
+			"pi",
+			"loom-local",
+			"fixture-model",
+			fixture.binding.RuntimeInstanceID,
+		),
+		Dispatch:  fixture.dispatch,
+		Grant:     fixture.token,
+		FrameSink: &piRecordingFrameSink{},
 	}
+}
+
+func piFixtureExecutionBinding(
+	t testing.TB,
+	adapterType,
+	providerID,
+	modelID,
+	runtimeInstanceID string,
+) loomruntime.FrozenExecutionBinding {
+	t.Helper()
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:          "profile-" + adapterType,
+		AdapterType: adapterType,
+		ProviderID:  providerID,
+		ModelID:     modelID,
+		AuthMode:    loomruntime.AuthNative,
+		Timeout:     time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID:                runtimeInstanceID,
+		DeviceID:          "device-fixture",
+		AdapterType:       adapterType,
+		DisplayName:       "Pi fixture",
+		ExecutableVersion: "1.0.0",
+		Status:            loomruntime.RuntimeOnline,
+		Capacity:          1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
 }
 
 func (fixture *piAdapterFixture) requestForMode(

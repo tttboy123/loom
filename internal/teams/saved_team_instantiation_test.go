@@ -81,8 +81,8 @@ func TestBuildSavedTeamInstantiationPlan(t *testing.T) {
 }
 
 func TestBuildSavedTeamInstantiationPlanCardinality(t *testing.T) {
-	definitions, profiles, baseInput := teamDefinitionFixture()
-	for roleCount := 1; roleCount <= 3; roleCount++ {
+	definitions, profiles, baseInput := fourRoleTeamDefinitionFixture()
+	for roleCount := 1; roleCount <= 4; roleCount++ {
 		input := baseInput
 		input.ID = "team.cardinality"
 		input.Roles = append([]TeamDefinitionRole(nil), baseInput.Roles[:roleCount]...)
@@ -100,6 +100,7 @@ func TestBuildSavedTeamInstantiationPlanCardinality(t *testing.T) {
 			{AgentDefinitionID: "agent.main", RuntimeInstanceID: "runtime.shared"},
 			{AgentDefinitionID: "agent.sub.one", RuntimeInstanceID: "runtime.shared"},
 			{AgentDefinitionID: "agent.sub.two", RuntimeInstanceID: "runtime.shared"},
+			{AgentDefinitionID: "agent.sub.three", RuntimeInstanceID: "runtime.shared"},
 		}[:roleCount]
 		binding, err := BuildSavedTeamRuntimeBinding(
 			[]TeamDefinition{team}, input.ID, input.ScopeIdentity,

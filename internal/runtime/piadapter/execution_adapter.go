@@ -20,6 +20,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
@@ -153,7 +154,7 @@ func (adapter *piExecutionAdapter) Execute(
 	if adapter == nil || ctx == nil {
 		return supervisor.AdapterResult{}, ErrInvalidPiExecutionAdapter
 	}
-	if err := adapter.validateRequest(request); err != nil {
+	if err := adapter.validateRequest(request, adapter.AdapterType()); err != nil {
 		return supervisor.AdapterResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -444,8 +445,16 @@ processExit:
 
 func (adapter *piExecutionAdapter) validateRequest(
 	request supervisor.AdapterRequest,
+	harnessAdapter string,
 ) error {
-	if request.Binding.RuntimeInstanceID != adapter.instanceID ||
+	executionBinding, bindingErr := loomruntime.ValidateFrozenExecutionBinding(
+		request.ExecutionBinding,
+	)
+	if bindingErr != nil ||
+		executionBinding.HarnessAdapter != harnessAdapter ||
+		executionBinding.RuntimeInstanceID != adapter.instanceID ||
+		executionBinding.AuthMode != loomruntime.AuthNative ||
+		request.Binding.RuntimeInstanceID != adapter.instanceID ||
 		request.Dispatch.WorkItemID() != request.Binding.WorkItemID ||
 		request.Dispatch.RunID() != request.Binding.RunID ||
 		request.Dispatch.ClaimGeneration() != request.Binding.ClaimGeneration ||

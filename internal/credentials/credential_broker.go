@@ -13,22 +13,159 @@ import (
 )
 
 var (
-	ErrInvalidCredentialCommand   = errors.New("invalid credential command")
-	ErrCredentialNotFound         = errors.New("credential not found")
-	ErrCredentialStoreUnavailable = errors.New("credential store unavailable")
-	ErrCredentialStoreDenied      = errors.New("credential store denied")
-	ErrCredentialMetadataConflict = errors.New("credential metadata conflict")
-	ErrCredentialRollbackFailed   = errors.New("credential rollback failed")
-	ErrCredentialRejected         = errors.New("credential rejected")
+	ErrInvalidCredentialCommand     = errors.New("invalid credential command")
+	ErrCredentialNotFound           = errors.New("credential not found")
+	ErrCredentialStoreUnavailable   = errors.New("credential store unavailable")
+	ErrCredentialStoreDenied        = errors.New("credential store denied")
+	ErrCredentialMetadataConflict   = errors.New("credential metadata conflict")
+	ErrCredentialRollbackFailed     = errors.New("credential rollback failed")
+	ErrCredentialRejected           = errors.New("credential rejected")
+	ErrCredentialHelperProtocol     = errors.New("credential helper protocol")
+	ErrCredentialHelperUnauthorized = errors.New("credential helper unauthorized")
 )
+
+const (
+	CredentialStageHelperValidation    = "helper_validation"
+	CredentialStageHelperStart         = "helper_start"
+	CredentialStageHelperAuthorization = "helper_authorization"
+	CredentialStageHelperRequest       = "helper_request"
+	CredentialStageHelperTimeout       = "helper_timeout"
+	CredentialStageHelperResponse      = "helper_response"
+	CredentialStageHelperExit          = "helper_exit"
+	CredentialStageKeychainAccess      = "keychain_access"
+	CredentialStageMetadataCommit      = "metadata_commit"
+	CredentialStageVaultKeyLoad        = "vault_key_load"
+	CredentialStageVaultOpen           = "vault_open"
+	CredentialStageVaultEncrypt        = "vault_encrypt"
+	CredentialStageVaultCommit         = "vault_commit"
+	CredentialStageVaultDecrypt        = "vault_decrypt"
+	CredentialStageVaultAADValidation  = "vault_aad_validation"
+	CredentialStageVaultRotation       = "vault_rotation"
+	CredentialStageVaultRecovery       = "vault_recovery"
+	CredentialStageVaultExport         = "vault_export"
+	CredentialStageLeaseIssue          = "credential_lease_issue"
+	CredentialStageLeaseExpire         = "credential_lease_expire"
+	CredentialStageLeaseRevoke         = "credential_lease_revoke"
+	CredentialStageMigrationRead       = "migration_read"
+	CredentialStageMigrationCommit     = "migration_commit"
+	CredentialStageMigrationCleanup    = "migration_cleanup"
+)
+
+type credentialFailureStageError struct {
+	stage string
+	err   error
+}
+
+func (failure *credentialFailureStageError) Error() string {
+	if failure == nil || failure.err == nil {
+		return ErrCredentialStoreUnavailable.Error()
+	}
+	return failure.err.Error()
+}
+
+func (failure *credentialFailureStageError) Unwrap() error {
+	if failure == nil {
+		return nil
+	}
+	return failure.err
+}
+
+func (failure *credentialFailureStageError) CredentialFailureStage() string {
+	if failure == nil {
+		return ""
+	}
+	return failure.stage
+}
+
+func validCredentialFailureStage(stage string) bool {
+	switch stage {
+	case CredentialStageHelperValidation,
+		CredentialStageHelperStart,
+		CredentialStageHelperAuthorization,
+		CredentialStageHelperRequest,
+		CredentialStageHelperTimeout,
+		CredentialStageHelperResponse,
+		CredentialStageHelperExit,
+		CredentialStageKeychainAccess,
+		CredentialStageMetadataCommit,
+		CredentialStageVaultKeyLoad,
+		CredentialStageVaultOpen,
+		CredentialStageVaultEncrypt,
+		CredentialStageVaultCommit,
+		CredentialStageVaultDecrypt,
+		CredentialStageVaultAADValidation,
+		CredentialStageVaultRotation,
+		CredentialStageVaultRecovery,
+		CredentialStageVaultExport,
+		CredentialStageLeaseIssue,
+		CredentialStageLeaseExpire,
+		CredentialStageLeaseRevoke,
+		CredentialStageMigrationRead,
+		CredentialStageMigrationCommit,
+		CredentialStageMigrationCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func withCredentialFailureStage(stage string, err error) error {
+	if err == nil || !validCredentialFailureStage(stage) {
+		return err
+	}
+	return &credentialFailureStageError{stage: stage, err: err}
+}
+
+// WithCredentialFailureStage attaches only a closed, non-secret stage.
+func WithCredentialFailureStage(stage string, err error) error {
+	return withCredentialFailureStage(stage, err)
+}
+
+// CredentialFailureStage returns only a bounded non-secret stage identifier.
+func CredentialFailureStage(err error) string {
+	var failure interface{ CredentialFailureStage() string }
+	if !errors.As(err, &failure) ||
+		!validCredentialFailureStage(failure.CredentialFailureStage()) {
+		return ""
+	}
+	return failure.CredentialFailureStage()
+}
+
+// CredentialFailureRetryable reports whether repeating an operation can
+// reasonably recover without first repairing or unlocking durable Vault state.
+func CredentialFailureRetryable(stage string) bool {
+	switch stage {
+	case CredentialStageLeaseIssue,
+		CredentialStageLeaseExpire,
+		CredentialStageLeaseRevoke:
+		return true
+	default:
+		return false
+	}
+}
+
+// ProductKeychainHelperExitCode maps internal helper failures to fixed,
+// non-secret process evidence. No system error text crosses this boundary.
+func ProductKeychainHelperExitCode(err error) int {
+	switch {
+	case errors.Is(err, ErrCredentialHelperProtocol):
+		return 5
+	case errors.Is(err, ErrCredentialStoreUnavailable):
+		return 6
+	default:
+		return 4
+	}
+}
 
 type CredentialStatus string
 
 const (
-	CredentialConfigured CredentialStatus = "configured"
-	CredentialVerified   CredentialStatus = "verified"
-	CredentialRejected   CredentialStatus = "rejected"
-	CredentialRevoked    CredentialStatus = "revoked"
+	CredentialConfigured        CredentialStatus = "configured"
+	CredentialVerified          CredentialStatus = "verified"
+	CredentialRejected          CredentialStatus = "rejected"
+	CredentialRevoked           CredentialStatus = "revoked"
+	CredentialMigrationRequired CredentialStatus = "migration_required"
+	CredentialRecoveryRequired  CredentialStatus = "recovery_required"
 )
 
 type VerificationStatus string
@@ -42,10 +179,12 @@ const (
 type VerificationReason string
 
 const (
-	VerificationReasonNone             VerificationReason = ""
-	VerificationReasonProviderRejected VerificationReason = "provider_rejected"
-	VerificationReasonUnavailable      VerificationReason = "unavailable"
-	VerificationReasonTimeout          VerificationReason = "timeout"
+	VerificationReasonNone              VerificationReason = ""
+	VerificationReasonProviderRejected  VerificationReason = "provider_rejected"
+	VerificationReasonUnavailable       VerificationReason = "unavailable"
+	VerificationReasonTimeout           VerificationReason = "timeout"
+	VerificationReasonVaultEntryMissing VerificationReason = "vault_entry_missing"
+	VerificationReasonVaultUnavailable  VerificationReason = "vault_unavailable"
 )
 
 type VerificationResult struct {
@@ -57,6 +196,7 @@ type VerificationResult struct {
 type CredentialCommand struct {
 	CommandID           string
 	ProviderID          string
+	ProviderAccountID   string
 	CredentialReference string
 	ExpectedRevision    int64
 	OccurredAt          time.Time
@@ -66,6 +206,7 @@ type CredentialCommand struct {
 type MetadataCommand struct {
 	CommandID           string
 	ProviderID          string
+	ProviderAccountID   string
 	CredentialReference string
 	ExpectedRevision    int64
 	OccurredAt          time.Time
@@ -75,6 +216,7 @@ type MetadataCommand struct {
 
 type MetadataResult struct {
 	ProviderID          string
+	ProviderAccountID   string
 	CredentialReference string
 	Revision            int64
 	Status              CredentialStatus
@@ -192,6 +334,7 @@ func (broker *CredentialBroker) Configure(
 	if err == nil {
 		return result, nil
 	}
+	err = withCredentialFailureStage(CredentialStageMetadataCommit, err)
 	if rollbackErr := broker.store.Delete(
 		context.WithoutCancel(ctx),
 		command.CredentialReference,
@@ -257,10 +400,11 @@ func (broker *CredentialBroker) commitVerificationMetadata(
 		time.Second,
 	)
 	defer cancelCommit()
-	return broker.committer.CommitCredentialMetadata(
+	result, err := broker.committer.CommitCredentialMetadata(
 		commitCtx,
 		metadataFor(command, status, reason),
 	)
+	return result, withCredentialFailureStage(CredentialStageMetadataCommit, err)
 }
 
 func (broker *CredentialBroker) Replace(
@@ -298,6 +442,10 @@ func (broker *CredentialBroker) Replace(
 	if commitErr == nil {
 		return result, nil
 	}
+	commitErr = withCredentialFailureStage(
+		CredentialStageMetadataCommit,
+		commitErr,
+	)
 	if rollbackErr := broker.store.Put(
 		context.WithoutCancel(ctx),
 		command.CredentialReference,
@@ -342,6 +490,10 @@ func (broker *CredentialBroker) Revoke(
 	if commitErr == nil {
 		return result, nil
 	}
+	commitErr = withCredentialFailureStage(
+		CredentialStageMetadataCommit,
+		commitErr,
+	)
 	if rollbackErr := broker.store.Put(
 		context.WithoutCancel(ctx),
 		command.CredentialReference,
@@ -372,6 +524,7 @@ func metadataFor(
 	return MetadataCommand{
 		CommandID:           commandID,
 		ProviderID:          command.ProviderID,
+		ProviderAccountID:   command.ProviderAccountID,
 		CredentialReference: command.CredentialReference,
 		ExpectedRevision:    command.ExpectedRevision,
 		OccurredAt:          command.OccurredAt,
@@ -384,7 +537,9 @@ func validateCredentialCommand(
 	command CredentialCommand,
 	requireSecret bool,
 ) error {
-	if command.ProviderID != "minimax" ||
+	if !ValidProviderIdentifier(command.ProviderID) ||
+		command.ProviderAccountID != "" &&
+			!ValidProviderAccountIdentifier(command.ProviderID, command.ProviderAccountID) ||
 		!validCredentialReference(command.CredentialReference) ||
 		command.ExpectedRevision < 0 ||
 		command.OccurredAt.IsZero() ||
@@ -394,6 +549,61 @@ func validateCredentialCommand(
 		return ErrInvalidCredentialCommand
 	}
 	return nil
+}
+
+// ValidateCredentialCommand applies the shared Broker boundary validation.
+func ValidateCredentialCommand(command CredentialCommand, requireSecret bool) error {
+	return validateCredentialCommand(command, requireSecret)
+}
+
+// ValidProviderIdentifier validates the durable identifier shape shared by
+// credential metadata writers and projections. Provider availability remains
+// owned by the Provider registry at the product boundary.
+func ValidProviderIdentifier(value string) bool {
+	if value == "" || len(value) > 64 || value[0] == '-' ||
+		value[len(value)-1] == '-' {
+		return false
+	}
+	previousHyphen := false
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= '0' && character <= '9':
+			previousHyphen = false
+		case character == '-' && !previousHyphen:
+			previousHyphen = true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidProviderAccountIdentifier validates a durable, non-secret account ID
+// scoped to one Provider. Account IDs never carry endpoint or credential data.
+func ValidProviderAccountIdentifier(providerID, value string) bool {
+	if !ValidProviderIdentifier(providerID) || len(value) > 128 ||
+		!strings.HasPrefix(value, providerID+".") {
+		return false
+	}
+	suffix := value[len(providerID)+1:]
+	if suffix == "" || suffix[0] == '.' || suffix[len(suffix)-1] == '.' ||
+		suffix[0] == '-' || suffix[len(suffix)-1] == '-' {
+		return false
+	}
+	previousSeparator := false
+	for _, character := range suffix {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= '0' && character <= '9':
+			previousSeparator = false
+		case (character == '.' || character == '-') && !previousSeparator:
+			previousSeparator = true
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validCredentialReference(value string) bool {
@@ -443,17 +653,25 @@ func validVerification(result VerificationResult) bool {
 	}
 }
 
+// ValidateVerificationResult rejects unbounded or inconsistent Provider status.
+func ValidateVerificationResult(result VerificationResult) bool {
+	return validVerification(result)
+}
+
 func closedStoreError(err error) error {
+	stage := CredentialFailureStage(err)
+	var closed error
 	switch {
 	case errors.Is(err, ErrCredentialNotFound):
-		return ErrCredentialNotFound
+		closed = ErrCredentialNotFound
 	case errors.Is(err, ErrCredentialStoreDenied):
-		return ErrCredentialStoreDenied
+		closed = ErrCredentialStoreDenied
 	case errors.Is(err, ErrCredentialStoreUnavailable):
-		return ErrCredentialStoreUnavailable
+		closed = ErrCredentialStoreUnavailable
 	default:
-		return ErrCredentialStoreUnavailable
+		closed = ErrCredentialStoreUnavailable
 	}
+	return withCredentialFailureStage(stage, closed)
 }
 
 func closedVerificationError(err error) error {
@@ -461,6 +679,11 @@ func closedVerificationError(err error) error {
 		return context.DeadlineExceeded
 	}
 	return ErrCredentialRejected
+}
+
+// ClosedVerificationError maps Provider errors to the bounded public set.
+func ClosedVerificationError(err error) error {
+	return closedVerificationError(err)
 }
 
 func clearBytes(input []byte) {

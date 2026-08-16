@@ -1,0 +1,66 @@
+{
+  "schema": "loom.phase2c.replacement-j9-j10-evidence.v1",
+  "schema_version": 1,
+  "attempt": "023",
+  "journey_id": "d6f1b491-bcbc-43a0-9ea7-09a397aa7038",
+  "surface": "macos",
+  "workitem": "cross",
+  "controller_verdict": "PASS_INDEPENDENT_REVIEW_PENDING",
+  "source_lock_sha256": "7ad412e6b0122f3f37dfbbdaa3b5127f22d8b850963a1f1949fd14bf38ec2f1b",
+  "ordered_source_digest_sha256": "6fa2f269fefdaed41e60da0c64faf8f173924c427f23c1c5b0937693fab6cfa7",
+  "release": {
+    "bundle_id": "com.earendilworks.loom.local",
+    "version": "0.2.0",
+    "architecture": "arm64",
+    "executable_sha256": "a9b02d9e60afa96f8c79e18a73e8e8ca15bde61b1564ae0e1d5086dc7203bc4f",
+    "ordered_bundle_digest_sha256": "cbef8c096504bb4c6264833c8c0afc0ed5414e94952a8076cf6a5dbeb78a6844"
+  },
+  "carry_candidate": {
+    "source_attempt": "022",
+    "journeys": ["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"],
+    "requires_independent_exact_delta_review": true
+  },
+  "replacement_results": {
+    "J9": "PASS",
+    "J10": "PASS"
+  },
+  "accessibility": {
+    "wide_product_controls": 17,
+    "wide_unlabeled_product_controls": 0,
+    "recent_controls": 4,
+    "recent_unique_labels": 4,
+    "recent_help_matches_label": true,
+    "full_board_product_controls": 29,
+    "full_board_unlabeled_product_controls": 0,
+    "tab_visible_focus": true,
+    "shift_tab_focus": true,
+    "space_opens_governance": true,
+    "escape_closes_governance": true,
+    "escape_closes_full_board": true
+  },
+  "visual_matrix": {
+    "appearances": ["light", "dark"],
+    "sizes": ["900x640", "1080x720", "1440x850"],
+    "overlap_findings": 0,
+    "clipping_findings": 0
+  },
+  "ipc": {
+    "records": 24,
+    "failed_responses": 0,
+    "gui_records": 20,
+    "tui_records": 4,
+    "read_only_methods_only": true
+  },
+  "postflight": {
+    "sqlite_integrity": "ok",
+    "event_count": 168,
+    "unique_event_id_count": 168,
+    "unique_idempotency_key_count": 168,
+    "database_sha256": "02b9e9a0f6f0256a0d0e2eb5c183680b9c130bde75a112f770a0dd997cfefd75",
+    "chat_threads_sha256": "3e14c75a53c0224bb3ecaa42ca83712d5c221d46677584056573c7302f9602eb",
+    "test_processes_absent": true,
+    "test_socket_absent": true,
+    "environment_restored": true,
+    "resident_daemon_untouched": true
+  }
+}

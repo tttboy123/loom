@@ -117,7 +117,7 @@ func BuildTeamDraftContent(
 	if len(references.SubAgentDefinitionIDs) == 0 {
 		return TeamDraftContentSnapshot{}, ErrMissingTeamDraftRole
 	}
-	if len(references.SubAgentDefinitionIDs) > 2 {
+	if len(references.SubAgentDefinitionIDs) > MaxTeamAgentCount-1 {
 		return TeamDraftContentSnapshot{}, ErrTeamDraftContentLimitExceeded
 	}
 

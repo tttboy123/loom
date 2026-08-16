@@ -2,8 +2,9 @@
  # ADR-0015: Chat-First Client Shell with Governance Panels
  
  **Date**: 2026-08-06
- **Status**: proposed
+ **Status**: accepted
  **Deciders**: Product Owner, Loom Architecture Controller
+ **Acceptance evidence**: `.loom-evidence/phase2c/reviews/PHASE-2C-PRODUCT-OWNER-SIGNOFF.md`
  
  ## Context
  

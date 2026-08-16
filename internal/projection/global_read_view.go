@@ -11,7 +11,10 @@ import (
 	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/assets"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/journal"
+	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/work"
 )
 
 type TeamExecution struct {
@@ -30,9 +33,27 @@ type TeamExecutionNode struct {
 	AgentInstanceID             string
 	RuntimeInstanceID           string
 	Role                        string
+	Kind                        string
+	RouteGroupID                string
 	DependsOn                   []string
 	MaxAttempts                 int
 	Status                      string
+	InitialBlockIncidentID      string
+	InitialBlockCode            string
+	InitialBlockStage           string
+	InitialBlockReason          string
+	InitialBlockRetryable       bool
+	InitialBlockSourceNodeID    string
+	InitialRouteAvailable       bool
+	InitialHarnessAdapter       string
+	InitialProviderID           string
+	InitialProviderAccountID    string
+	InitialModelID              string
+	InitialReasoningEffort      string
+	InitialTimeoutNanoseconds   int64
+	InitialBudget               *int64
+	InitialCapabilities         []string
+	InitialCredentialRevision   int64
 	DependencySatisfied         bool
 	CurrentAttempt              int
 	RetryAt                     time.Time
@@ -45,6 +66,15 @@ type TeamExecutionNode struct {
 	PrimaryWorkflowPath         string
 	WorkflowFallbackKey         string
 	RecoveryApprovalRequired    bool
+	FallbackApprovalAvailable   bool
+	FallbackApprovalVersion     int
+	FallbackApprovalID          string
+	FallbackApprovalActorRef    string
+	FallbackApprovedAt          time.Time
+	FallbackSourceBindingDigest string
+	FallbackTargetBindingDigest string
+	FallbackApprovalDigest      string
+	FallbackRuntimeInstanceID   string
 	AcceptanceContractVersion   int
 	AcceptanceContractDigest    string
 	AcceptanceRisk              string
@@ -69,27 +99,47 @@ type TeamExecutionNode struct {
 }
 
 type TeamExecutionAttempt struct {
-	AttemptNumber                 int
-	WorkItemID                    string
-	RunID                         string
-	ClaimID                       string
-	ClaimGeneration               int64
-	RuntimeInstanceID             string
-	AgentInstanceID               string
-	Status                        string
-	EvidenceID                    string
-	EvidenceDigest                string
-	WorkflowPath                  string
-	OutputContractVersion         int
-	OutputContractDigest          string
-	OutputClassification          string
-	OutputClassificationDigest    string
-	OutputSummaryDigest           string
-	AssetLineageAvailable         bool
-	AssetRevisionBindings         []assets.ExactAssetRevisionBinding
-	AssetRevisionSetDigest        string
-	MaterializationManifestDigest string
-	MaterializationRootDigest     string
+	AttemptNumber                      int
+	IncidentID                         string
+	WorkItemID                         string
+	RunID                              string
+	ClaimID                            string
+	ClaimGeneration                    int64
+	RuntimeInstanceID                  string
+	AgentInstanceID                    string
+	Status                             string
+	TerminalReason                     string
+	EvidenceID                         string
+	EvidenceDigest                     string
+	WorkflowPath                       string
+	OutputContractVersion              int
+	OutputContractDigest               string
+	OutputClassification               string
+	OutputClassificationDigest         string
+	OutputSummaryDigest                string
+	AssetLineageAvailable              bool
+	AssetRevisionBindings              []assets.ExactAssetRevisionBinding
+	AssetRevisionSetDigest             string
+	MaterializationManifestDigest      string
+	MaterializationRootDigest          string
+	ExecutionBindingAvailable          bool
+	ExecutionBinding                   loomruntime.FrozenExecutionBinding
+	ContextCapsuleAvailable            bool
+	ContextCapsule                     contextcapsule.AuthorityRecord
+	RouteSegmentAvailable              bool
+	RouteSegment                       contextcapsule.RouteSegmentBinding
+	AccountingAvailable                bool
+	Accounting                         RunAccounting
+	ProviderAccountPolicyAvailable     bool
+	ProviderAccountPolicyVersion       int
+	ProviderAccountPolicyRevision      int64
+	ProviderAccountPolicyDigest        string
+	ProviderAccountTrustDomain         string
+	ProviderAccountRetentionMode       string
+	ProviderAccountDataRegion          string
+	ProviderAccountAssignedBudgetUnits int64
+	ProviderModelRateCardAvailable     bool
+	ProviderModelRateCard              ProjectedProviderModelRateCard
 }
 
 type TeamTimelineAnchor struct {
@@ -115,6 +165,10 @@ type GlobalReadView struct {
 	runtimeInstances             map[string]RuntimeInstance
 	teamDefinitions              map[string]TeamDefinitionRecord
 	providerCredentials          map[string]ProviderCredentialRecord
+	providerAccountCredentials   map[string]ProviderCredentialRecord
+	providerAccountPolicies      map[string]work.ProviderAccountPolicy
+	providerModelRateCards       map[string]work.ProviderModelRateCard
+	remoteToolBackendEnrollments map[string]work.RemoteToolBackendEnrollment
 	teamExecutions               map[string]TeamExecution
 	sideTaskHandoffs             map[string]SideTaskHandoff
 	activeRunCount               map[string]int
@@ -160,6 +214,7 @@ func (view GlobalReadView) Run(id string) (Run, bool) {
 		[]ProjectedAssetRevisionBinding(nil),
 		record.AssetRevisionBindings...,
 	)
+	record.ExecutionBinding = cloneProjectedExecutionBinding(record.ExecutionBinding)
 	return record, ok
 }
 
@@ -261,6 +316,116 @@ func (view GlobalReadView) ProviderCredential(
 ) (ProviderCredentialRecord, bool) {
 	record, ok := view.providerCredentials[providerID]
 	return record, ok
+}
+
+func (view GlobalReadView) ProviderAccountCredential(
+	providerID,
+	providerAccountID string,
+) (ProviderCredentialRecord, bool) {
+	record, ok := view.providerAccountCredentials[providerAccountID]
+	if !ok || record.ProviderID != providerID ||
+		record.ProviderAccountID != providerAccountID {
+		return ProviderCredentialRecord{}, false
+	}
+	return record, true
+}
+
+func (view GlobalReadView) ProviderAccountCredentials(
+	providerID string,
+) []ProviderCredentialRecord {
+	records := make([]ProviderCredentialRecord, 0)
+	for _, record := range view.providerAccountCredentials {
+		if record.ProviderID == providerID {
+			records = append(records, record)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].ProviderAccountID < records[j].ProviderAccountID
+	})
+	return records
+}
+
+func (view GlobalReadView) ProviderAccountPolicy(
+	providerID,
+	providerAccountID string,
+) (work.ProviderAccountPolicy, bool) {
+	policy, ok := view.providerAccountPolicies[providerAccountID]
+	if !ok || policy.ProviderID() != providerID ||
+		policy.ProviderAccountID() != providerAccountID || !policy.Valid() {
+		return work.ProviderAccountPolicy{}, false
+	}
+	return policy, true
+}
+
+func (view GlobalReadView) ProviderAccountPolicies(
+	providerID string,
+) []work.ProviderAccountPolicy {
+	policies := make([]work.ProviderAccountPolicy, 0)
+	for _, policy := range view.providerAccountPolicies {
+		if policy.ProviderID() == providerID && policy.Valid() {
+			policies = append(policies, policy)
+		}
+	}
+	sort.Slice(policies, func(i, j int) bool {
+		return policies[i].ProviderAccountID() < policies[j].ProviderAccountID()
+	})
+	return policies
+}
+
+func (view GlobalReadView) ProviderModelRateCards(
+	providerID,
+	providerAccountID string,
+) []work.ProviderModelRateCard {
+	rateCards := make([]work.ProviderModelRateCard, 0)
+	for _, rateCard := range view.providerModelRateCards {
+		if rateCard.ProviderID() == providerID &&
+			rateCard.ProviderAccountID() == providerAccountID && rateCard.Valid() {
+			rateCards = append(rateCards, rateCard)
+		}
+	}
+	sort.Slice(rateCards, func(i, j int) bool {
+		return rateCards[i].ModelID() < rateCards[j].ModelID()
+	})
+	return rateCards
+}
+
+// RemoteToolBackendEnrollmentCatalog returns every valid persisted Enrollment
+// across all Provider Accounts, sorted deterministically. The production
+// composition uses it to materialize trusted Work Bundle clients.
+func (view GlobalReadView) RemoteToolBackendEnrollmentCatalog() []work.RemoteToolBackendEnrollment {
+	enrollments := make([]work.RemoteToolBackendEnrollment, 0)
+	for _, enrollment := range view.remoteToolBackendEnrollments {
+		if enrollment.Valid() {
+			enrollments = append(enrollments, enrollment)
+		}
+	}
+	sort.Slice(enrollments, func(i, j int) bool {
+		if enrollments[i].ProviderID() != enrollments[j].ProviderID() {
+			return enrollments[i].ProviderID() < enrollments[j].ProviderID()
+		}
+		if enrollments[i].ProviderAccountID() != enrollments[j].ProviderAccountID() {
+			return enrollments[i].ProviderAccountID() < enrollments[j].ProviderAccountID()
+		}
+		return enrollments[i].EnrollmentID() < enrollments[j].EnrollmentID()
+	})
+	return enrollments
+}
+
+func (view GlobalReadView) RemoteToolBackendEnrollments(
+	providerID,
+	providerAccountID string,
+) []work.RemoteToolBackendEnrollment {
+	enrollments := make([]work.RemoteToolBackendEnrollment, 0)
+	for _, enrollment := range view.remoteToolBackendEnrollments {
+		if enrollment.ProviderID() == providerID &&
+			enrollment.ProviderAccountID() == providerAccountID && enrollment.Valid() {
+			enrollments = append(enrollments, enrollment)
+		}
+	}
+	sort.Slice(enrollments, func(i, j int) bool {
+		return enrollments[i].EnrollmentID() < enrollments[j].EnrollmentID()
+	})
+	return enrollments
 }
 
 func (view GlobalReadView) TeamDefinitions(
@@ -662,6 +827,27 @@ func buildGlobalReadView(
 	if err != nil {
 		return GlobalReadView{}, err
 	}
+	providerAccountPolicies := make(
+		map[string]work.ProviderAccountPolicy,
+		len(cloned.ProviderAccountPolicies),
+	)
+	for accountID, record := range cloned.ProviderAccountPolicies {
+		providerAccountPolicies[accountID] = record.Policy
+	}
+	providerModelRateCards := make(
+		map[string]work.ProviderModelRateCard,
+		len(cloned.ProviderModelRateCards),
+	)
+	for identity, record := range cloned.ProviderModelRateCards {
+		providerModelRateCards[identity] = record.RateCard
+	}
+	remoteToolBackendEnrollments := make(
+		map[string]work.RemoteToolBackendEnrollment,
+		len(cloned.RemoteToolBackendEnrollments),
+	)
+	for identity, record := range cloned.RemoteToolBackendEnrollments {
+		remoteToolBackendEnrollments[identity] = record.Enrollment
+	}
 	view := GlobalReadView{
 		version:                      hex.EncodeToString(sum[:]),
 		heads:                        heads,
@@ -677,6 +863,10 @@ func buildGlobalReadView(
 		runtimeInstances:             cloned.RuntimeInstances,
 		teamDefinitions:              cloned.TeamDefinitions,
 		providerCredentials:          cloned.ProviderCredentials,
+		providerAccountCredentials:   cloned.ProviderAccountCredentials,
+		providerAccountPolicies:      providerAccountPolicies,
+		providerModelRateCards:       providerModelRateCards,
+		remoteToolBackendEnrollments: remoteToolBackendEnrollments,
 		teamExecutions:               make(map[string]TeamExecution, len(teamExecutions)),
 		sideTaskHandoffs:             sideTaskHandoffs,
 		activeRunCount:               active,
@@ -698,11 +888,35 @@ func buildGlobalReadView(
 	}
 	for id, record := range teamExecutions {
 		clonedTeam := cloneGlobalTeamExecution(record)
-		view.teamExecutions[id] = clonedTeam
-		for _, node := range clonedTeam.Nodes {
-			for _, attempt := range node.Attempts {
+		for nodeIndex := range clonedTeam.Nodes {
+			for attemptIndex := range clonedTeam.Nodes[nodeIndex].Attempts {
+				attempt := &clonedTeam.Nodes[nodeIndex].Attempts[attemptIndex]
 				run, exists := view.runs[attempt.RunID]
-				if !exists || !attempt.AssetLineageAvailable {
+				if !exists {
+					continue
+				}
+				attempt.AccountingAvailable = run.AccountingAvailable
+				attempt.Accounting = run.Accounting
+				attempt.ProviderAccountPolicyAvailable =
+					run.ProviderAccountPolicyAvailable
+				attempt.ProviderAccountPolicyVersion =
+					run.ProviderAccountPolicyVersion
+				attempt.ProviderAccountPolicyRevision =
+					run.ProviderAccountPolicyRevision
+				attempt.ProviderAccountPolicyDigest =
+					run.ProviderAccountPolicyDigest
+				attempt.ProviderAccountTrustDomain =
+					run.ProviderAccountTrustDomain
+				attempt.ProviderAccountRetentionMode =
+					run.ProviderAccountRetentionMode
+				attempt.ProviderAccountDataRegion =
+					run.ProviderAccountDataRegion
+				attempt.ProviderAccountAssignedBudgetUnits =
+					run.ProviderAccountAssignedBudgetUnits
+				attempt.ProviderModelRateCardAvailable =
+					run.ProviderModelRateCardAvailable
+				attempt.ProviderModelRateCard = run.ProviderModelRateCard
+				if !attempt.AssetLineageAvailable {
 					continue
 				}
 				run.AssetLineageAvailable = true
@@ -716,6 +930,7 @@ func buildGlobalReadView(
 				view.runs[attempt.RunID] = run
 			}
 		}
+		view.teamExecutions[id] = clonedTeam
 	}
 	return view, nil
 }
@@ -731,6 +946,14 @@ func cloneGlobalTeamExecution(record TeamExecution) TeamExecution {
 			[]string(nil),
 			record.Nodes[index].PriorClassifications...,
 		)
+		record.Nodes[index].InitialCapabilities = append(
+			[]string(nil),
+			record.Nodes[index].InitialCapabilities...,
+		)
+		if record.Nodes[index].InitialBudget != nil {
+			budget := *record.Nodes[index].InitialBudget
+			record.Nodes[index].InitialBudget = &budget
+		}
 		record.Nodes[index].Attempts = append(
 			[]TeamExecutionAttempt(nil),
 			record.Nodes[index].Attempts...,
@@ -744,7 +967,23 @@ func cloneGlobalTeamExecution(record TeamExecution) TeamExecution {
 				[]assets.ExactAssetRevisionBinding(nil),
 				record.Nodes[index].Attempts[attemptIndex].AssetRevisionBindings...,
 			)
+			record.Nodes[index].Attempts[attemptIndex].ExecutionBinding =
+				cloneProjectedExecutionBinding(
+					record.Nodes[index].Attempts[attemptIndex].ExecutionBinding,
+				)
 		}
 	}
 	return record
+}
+
+func cloneProjectedExecutionBinding(
+	input loomruntime.FrozenExecutionBinding,
+) loomruntime.FrozenExecutionBinding {
+	clone := input
+	clone.Capabilities = append([]string(nil), input.Capabilities...)
+	if input.Budget != nil {
+		budget := *input.Budget
+		clone.Budget = &budget
+	}
+	return clone
 }

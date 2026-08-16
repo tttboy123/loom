@@ -1,0 +1,220 @@
+# Optimized GoalSpec for Loom Phase 1 Slice 1
+# 2026-07-24 · 优化版 v2
+# 对比 v1：references 替代内嵌；work_items 加 corresponds_to；
+#         execution_requirements 15 条 → 5 条；evidence 11 项 → 5 项；
+#         team 角色 responsibilities 全部下放到 toml + DEVELOPMENT.md §1.2；
+#         修角色文件名错 code-analyst → code_analyst；
+#         删 non_goals / evidence.prohibited_substitutions / loop_engineering.rules
+#
+# 写盘路径: .loom-drafts/phase1-slice1.optimized.goalspec.yaml
+# 不 commit（per AGENTS.md governance 规则 + memory §6 状态同步硬规则）
+
+{
+  "api_version": "loom.dev/v1",
+  "kind": "GoalSpec",
+  "metadata": {
+    "id": "goal-loom-phase1-slice1",
+    "approved_by": "lune",
+    "approved_at": "2026-07-24",
+    "source": "human",
+    "status": "approved",
+    "supersedes": "goal-loom-platform-phase1-slice1-loop-engineering-v1"
+  },
+
+  "spec": {
+    "objective": "完成 Loom Phase 1 Slice 1：Go 工程初始化、显式模式路由、SQLite Event Journal、Evidence Artifact Store、可重建投影、最小只读 CLI，并形成可复用的 Codex 开发闭环。",
+    "terminal_boundary": "phase1_slice1_only",
+
+    "references": {
+      "workflow": "docs/DEVELOPMENT.md §4.1 (Codex bootstrap development flow)",
+      "team_roles": ".codex/agents/*.toml",
+      "role_responsibilities": "docs/DEVELOPMENT.md §1.2",
+      "concurrency": "docs/DEVELOPMENT.md §2",
+      "risk_levels": "docs/DEVELOPMENT.md §3",
+      "failure_handling": "docs/DEVELOPMENT.md §5",
+      "engineering_defaults": "docs/DEVELOPMENT.md §6",
+      "completion_report": "docs/DEVELOPMENT.md §7",
+      "fastcontext_integration": "docs/adr/0006 + docs/integrations/fastcontext.md",
+      "event_journal_contract": "docs/adr/0002 + TECH-PLAN.md §5, §6",
+      "phase1_slice_scope": "TECH-PLAN.md §14 Slice 1",
+      "phase1_acceptance": "TECH-PLAN.md §15",
+      "phase1_non_goals": "TECH-PLAN.md §16",
+      "invariants": "AGENTS.md (root) + docs/AGENTS.md",
+      "current_state": "docs/CURRENT.md"
+    },
+
+    "controller_briefing": [
+      "工作区 /Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild，HEAD 0ccb31b，代码事实 implementation-not-started。",
+      "Workflow = Loop Engineering（DEVELOPMENT.md §4.1 的别名），不构建第二套元编排平台。",
+      "每个 WorkItem 流程：冻结合同 → RED → 最小实现 → focused GREEN → impact → independent review → 同一 lineage 修复或升级。",
+      "保留所有 untracked / modified 工作树差异；不切到旧 agent-platform。",
+      "不 commit / push / merge / 装 FastContext / 改凭证 / 跑 paid remote work / 激活 autonomous execution。"
+    ],
+
+    "team": {
+      "controller":        { "role": "primary_codex_controller" },
+      "code_analyst":      { "role": ".codex/agents/code_analyst.toml",       "activation": "代码面不明确或跨模块定位时" },
+      "developer":         { "role": ".codex/agents/developer.toml",          "activation": "每个实现 WorkItem" },
+      "reviewer":          { "role": ".codex/agents/reviewer.toml",           "activation": "每个 Standard/Strict WorkItem GREEN 后" },
+      "docs_researcher":   { "role": ".codex/agents/docs-researcher.toml",    "activation": "外部 API/SDK/协议当前行为影响实现时" },
+      "problem_analyst":   { "role": ".codex/agents/problem-analyst.toml",    "activation": "同类失败两次、跨三层矛盾或终态证据矛盾时" },
+      "test_executor":     { "role": "controller_owned_process",              "is_agent": false }
+    },
+
+    "work_items": [
+      {
+        "id": "S1-W1",
+        "title": "Go bootstrap and explicit Mode Router",
+        "risk": "standard",
+        "depends_on": [],
+        "corresponds_to": "TECH-PLAN.md §14 Slice 1.1-1.2, §13.1 package layout",
+        "owned_files": [
+          "go.mod", "go.sum",
+          "cmd/loom/main.go",
+          "internal/mode/router.go", "internal/mode/router_test.go"
+        ],
+        "objective": "初始化 Go 1.22+ 工程，实现普通对话与显式 Agent 意图的纯领域路由。",
+        "acceptance": [
+          "go.mod 存在，无无关框架依赖",
+          "包结构遵循 TECH-PLAN §13.1 依赖方向",
+          "普通输入不创建/请求 TeamDraft/TeamInstance/AgentInstance",
+          "只有结构化显式 Agent trigger 进入 Agent 模式",
+          "未知/模糊 trigger 默认保持普通对话模式",
+          "RED → GREEN 完整；focused + go test ./... + -race + go vet 全部通过"
+        ]
+      },
+      {
+        "id": "S1-W2",
+        "title": "Append-only SQLite Event Journal",
+        "risk": "strict",
+        "depends_on": ["S1-W1"],
+        "corresponds_to": "TECH-PLAN.md §14 Slice 1.3, §5 Schema, §6 Journal; TECH-PLAN §15.16; ADR-0002",
+        "owned_files": [
+          "internal/journal/*.go",
+          "migrations/0001_init.sql",
+          "internal/journal/*_test.go"
+        ],
+        "objective": "SQLite Event Journal、版本化迁移、事务追加、幂等事件写入。",
+        "acceptance": [
+          "Event 有稳定 ID、类型、版本、时间、关联标识",
+          "同幂等键重复提交只产一条物理事实",
+          "已追加 Event 不允许原地更新/删除",
+          "并发追加不产生重复事件或部分事务",
+          "SQLite 写失败 fail closed，不回退到内存状态权威",
+          "迁移、事务、并发、失败路径均有测试"
+        ]
+      },
+      {
+        "id": "S1-W3",
+        "title": "Immutable Evidence Artifact Store",
+        "risk": "strict",
+        "depends_on": ["S1-W2"],
+        "corresponds_to": "TECH-PLAN.md §14 Slice 1.4, §15.21; ADR-0002",
+        "owned_files": [
+          "internal/evidence/*.go",
+          "internal/evidence/*_test.go"
+        ],
+        "objective": "daemon-owned 内容寻址 Artifact Store 的 staging、digest、原子发布。",
+        "acceptance": [
+          "Artifact 按内容摘要寻址",
+          "发布用临时文件 + 原子替换",
+          "摘要不匹配时拒绝 Evidence",
+          "重复发布同内容保持幂等",
+          "状态目录 0700，文件 0600",
+          "失败不留下可被误认为已提交的 artifact"
+        ]
+      },
+      {
+        "id": "S1-W4",
+        "title": "Rebuildable projections",
+        "risk": "strict",
+        "depends_on": ["S1-W2", "S1-W3"],
+        "corresponds_to": "TECH-PLAN.md §14 Slice 1.3 '状态投影', §6; ADR-0002",
+        "owned_files": [
+          "internal/projection/*.go",
+          "internal/projection/*_test.go"
+        ],
+        "objective": "从 Event Journal 构建可重建的最小模式、任务和 Evidence 投影（从 TECH-PLAN §14 '状态投影' 拆出，独立可审查）。",
+        "acceptance": [
+          "Projection 只由已提交 Event 导出",
+          "删除 Projection 后可由 Journal 重建为相同结果",
+          "乱序/重复/未知版本 Event 按冻结策略处理",
+          "Projection 不是第二状态权威",
+          "重建中断不覆盖上一份有效 Projection",
+          "测试覆盖 replay、幂等、故障恢复"
+        ]
+      },
+      {
+        "id": "S1-W5",
+        "title": "Minimal read-only CLI query",
+        "risk": "standard",
+        "depends_on": ["S1-W4"],
+        "corresponds_to": "TECH-PLAN.md §14 Slice 1.5, §15.1-§15.4",
+        "owned_files": [
+          "cmd/loom/main.go",
+          "cmd/loom/query.go",
+          "cmd/loom/*_test.go"
+        ],
+        "objective": "最小 CLI，只提交结构化模式命令、读取投影状态。",
+        "acceptance": [
+          "CLI 不直接写 SQLite",
+          "普通输入路径与显式 Agent trigger 路径可观察地区分",
+          "查询只读 Projection",
+          "daemon/状态不可用时返回明确错误，不伪造空成功",
+          "CLI 测试覆盖成功/非法输入/不可用状态",
+          "不存在未声明的后台进程或网络访问"
+        ]
+      }
+    ],
+
+    "acceptance": [
+      "S1-W1 至 S1-W5 按依赖顺序完成，各有冻结合同、RED、GREEN、确定性 Evidence、独立审查",
+      "普通对话不创建任何 Agent 团队相关实例（对应 §15.1）",
+      "显式 Agent trigger 结构化识别；Slice 1 不提前实现 Team Draft 或真实 Agent 执行（对应 §15.2-§15.4）",
+      "Event Journal 是追加写事实权威；Projection 可完整重建（对应 §15.21, ADR-0002）",
+      "Evidence Artifact Store 用内容摘要 + 原子发布（对应 §15.21）",
+      "最小 CLI 通过应用层接口提交命令、读取投影（对应 §15.1-§15.4）",
+      "go test ./... + -race + go vet 在最终 digest 通过；git diff --check 通过",
+      "docs/CURRENT.md 如实更新实现状态",
+      "不进入 Slice 2 / 不装 FastContext / 不构建第二套状态系统（对应 §16）"
+    ],
+
+    "budget": {
+      "max_parallel_child_agents": 3,
+      "max_candidate_writers_per_lineage": 1,
+      "max_product_repairs_per_lineage": 3
+    },
+
+    "fallback": {
+      "first_failure": "diagnose and repair in same lineage",
+      "second_same_failure_or_cross_layer": "fresh problem_analyst",
+      "third_repair_failure": "HUMAN_REQUIRED",
+      "unknown_external_behavior": "docs_researcher via official sources before another live attempt",
+      "code_localization_unknown": "code_analyst with bounded include/exclude; deterministic rg fallback"
+    },
+
+    "evidence_required": [
+      "preflight branch + dirty-worktree inventory",
+      "WorkItem contract + owned-file list",
+      "RED command and failure summary",
+      "focused GREEN command and terminal result",
+      "race + vet result (where applicable)",
+      "fresh reviewer verdict with file:line evidence",
+      "git diff --check + changed-file list",
+      "remaining risks and unverified live boundaries"
+    ],
+
+    "governance": {
+      "preserve_existing_worktree_changes": true,
+      "autopilot_restart": false,
+      "push": false,
+      "merge": false,
+      "release": false,
+      "production_activation": false,
+      "credential_read_or_change": false,
+      "paid_remote_work": false,
+      "fastcontext_download_or_install": false,
+      "source_history_rewrite": false
+    }
+  }
+}

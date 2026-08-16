@@ -185,7 +185,7 @@ func buildInstantiationRoleSeeds(
 ) (TeamInstantiationRoleSeed, []TeamInstantiationRoleSeed, error) {
 	if references.MainAgentDefinitionID == "" ||
 		len(references.SubAgentDefinitionIDs) == 0 ||
-		len(references.SubAgentDefinitionIDs) > 2 {
+		len(references.SubAgentDefinitionIDs) > MaxTeamAgentCount-1 {
 		return TeamInstantiationRoleSeed{}, nil, ErrTeamInstantiationRoleTaskMismatch
 	}
 	roleByID := make(map[string]TeamDraftRoleSelection, len(roles))
@@ -298,7 +298,7 @@ func validateTeamInstantiationPlanShape(input TeamInstantiationPlanCandidate) er
 		input.mainRole.Kind != TeamInstantiationRoleMain ||
 		input.mainRole.AgentDefinitionID == "" ||
 		len(input.subAgentRoles) == 0 ||
-		len(input.subAgentRoles) > 2 ||
+		len(input.subAgentRoles) > MaxTeamAgentCount-1 ||
 		len(input.workItems) == 0 ||
 		input.customerRuleSummary == "" ||
 		input.requestedBudget < 0 ||

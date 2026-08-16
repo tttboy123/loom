@@ -1,22 +1,31 @@
 
  # Phase 2C Exit Contract — Chat-First Client Experience
  
- **Status**: frozen — pending independent Contract Review  
- **Date**: 2026-08-06  
- **Baseline**: accepted v0.4.1 whole-slice (`7e24ec29`), branch `codex/loom-platform-slice2`  
- **Parent decision**: ADR-0015  
- **Audit input**: `.loom-evidence/phase2c/CLIENT-EXPERIENCE-AUDIT.md`  
- **Plan input**: `.loom-drafts/phase2c-chat-first-experience-plan.md`
+**Status**: frozen with reviewed Repair 2 amendment; Phase not accepted
+**Date**: 2026-08-06
+**Baseline**: accepted v0.4.1 whole-slice (`7e24ec29`), branch `codex/loom-platform-slice2`
+**Parent decision**: ADR-0015
+**Audit input**: `.loom-evidence/phase2c/CLIENT-EXPERIENCE-AUDIT.md`
+**Plan input**: `.loom-drafts/phase2c-chat-first-experience-plan.md`
+ **Repair input**: `PHASE-2C-REPAIR-AMENDMENT.md`
  
  ## 1. Phase Scope
  
  Deliver a chat-first three-pane client experience for the native macOS app and
  the Bubble Tea TUI. The center conversation is the default entry; the Mission
  Board and related governance surfaces become a collapsible right panel. The
- left rail provides navigation, recents, Teams, Runtimes, Skills, and Library.
+ left rail provides Chat, Work, Teams, Attention, Library, Runtimes, recent
+ tasks, and an explicit New Mission action. Skills are governed assets inside
+ Library rather than a duplicate top-level destination.
  
  No Event Journal, one-writer, Projection, Scheduler, policy, Grant, Evidence,
- or daemon authority model is changed.
+ or daemon authority model is changed. The narrowly scoped Queue admission
+ prerequisite in the Repair Amendment enforces an existing invariant and does
+ not add a fourth WorkItem or change Scheduler semantics.
+
+The historical P2C-W1 and P2C-W2 commits remain recorded, but their affected
+acceptance journeys are reopened by `PHASE-2C-REPAIR-AMENDMENT.md`. No earlier
+green result is evidence for behavior changed by a repair round.
  
  ## 2. WorkItems
  
@@ -45,7 +54,7 @@
  | J2 | Open Folder → first chat | W1 |
  | J3 | Offline → reconnect → continue | W1 |
  | J4 | Plain chat → explicit “use Agent” → Team Draft | W2 |
- | J5 | Confirm Team Draft → Mission starts → governance panel | W2 + W3 |
+ | J5 | Confirm Team Draft → explicit New Mission → governance panel | W2 + W3 |
  | J6 | Mission running → inspect Evidence → approve decision | W3 |
  | J7 | Runtime offline | W3 |
  | J8 | Restart daemon → reconnect → view preserved | W1–W3 |
@@ -60,6 +69,8 @@
    PASS.
  - Phase: all three WorkItems accepted, all ten journeys pass, whole-Phase
    review PASS, Product Owner sign-off.
+ - Repair amendment: every P0/P1 row is closed with its listed proof; no inert
+   or placeholder-only affordance remains in an accepted journey.
  - Phase 3A source lock and entry review are refreshed only after Phase 2C is
    accepted.
  

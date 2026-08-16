@@ -221,3 +221,42 @@ and missing explicit `PrivateRoot`, was correctly treated as bounded repair
 work rather than a contract defect.
 
 VERDICT: PASS
+
+## Source Provenance Amendment Review
+
+- Date: `2026-07-27`
+- Reviewer: fresh independent read-only Contract Reviewer
+- Amendment: `PHASE1-FINAL-LIVE-SOURCE-PROVENANCE-1`
+- Atomic model installation performed: no
+- Pre-live manifest created: no
+- Live canary performed: no
+
+No blocking findings.
+
+The Reviewer independently confirmed:
+
+1. `hf-mirror.com` is an untrusted byte transport only and receives no
+   repository, revision, Runtime, Provider, policy, retry, fallback, or
+   execution authority.
+2. The `resolve/main` URL is explicitly not treated as proof of frozen revision
+   ancestry.
+3. Content identity remains bound to the exact reviewed filename,
+   `1117320768` bytes, GGUF v3 header, and full frozen SHA-256.
+4. Incoming and post-install owner, mode, regular-file, containment, size,
+   format, and digest checks are mandatory.
+5. Installation is a same-filesystem atomic rename with no overwrite.
+6. Shared inspector and sanitized pre-live manifest must pass before any
+   process starts.
+7. The one-attempt, no-retry, no-fallback, offline live boundary and excluded
+   user dirt remain unchanged.
+
+Independent command evidence confirmed the incoming file as a current-user
+owned regular `0600` file on the same device as the `0700` private root, exact
+size and SHA-256, with `GGUF` little-endian version 3. The final model path did
+not exist, port `18427` had no listener, and no final-live process was running.
+
+Atomic installation and read-only preflight may proceed. Live execution remains
+closed until post-install verification and the shared inspector/pre-live
+manifest pass.
+
+VERDICT: PASS

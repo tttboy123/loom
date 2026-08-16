@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -265,12 +266,23 @@ func TestSystemCodexLoginControllerStartsExactSingletonAndJoinsOnClose(
 		t.Fatalf("concurrent Start() error = %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
+	pid := 0
+	var pidErr error
 	for {
-		if _, err := os.Stat(pidPath); err == nil {
-			break
+		pidBytes, err := os.ReadFile(pidPath)
+		if err == nil {
+			pid, pidErr = strconv.Atoi(string(pidBytes))
+			if pidErr == nil && pid > 0 {
+				break
+			}
+			if pidErr == nil {
+				pidErr = fmt.Errorf("non-positive pid %d", pid)
+			}
+		} else {
+			pidErr = err
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("login fixture did not start")
+			t.Fatalf("login fixture pid not ready: %v", pidErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -283,14 +295,6 @@ func TestSystemCodexLoginControllerStartsExactSingletonAndJoinsOnClose(
 	}
 	if err := controller.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
-	}
-	pidBytes, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pid int
-	if _, err := fmt.Sscanf(string(pidBytes), "%d", &pid); err != nil {
-		t.Fatal(err)
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("login process %d survived Close(): %v", pid, err)
@@ -401,9 +405,12 @@ func TestSystemCodexStatusRunnerBoundsOutputAndCancelsProcessGroup(
 	}
 
 	pidFile := filepath.Join(root, "child.pid")
+	pidTempFile := pidFile + ".tmp"
 	cancelExecutable := filepath.Join(root, "codex-cancel")
 	script := fmt.Sprintf(
-		"#!/bin/sh\n/bin/sleep 30 &\nchild=$!\nprintf '%%s' \"$child\" > %q\nwait \"$child\"\n",
+		"#!/bin/sh\n/bin/sleep 30 &\nchild=$!\nprintf '%%s' \"$child\" > %q\n/bin/mv %q %q\nwait \"$child\"\n",
+		pidTempFile,
+		pidTempFile,
 		pidFile,
 	)
 	if err := os.WriteFile(cancelExecutable, []byte(script), 0o700); err != nil {

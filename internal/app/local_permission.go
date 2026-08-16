@@ -3,8 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +13,7 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/rules"
+	"loom-pi-rebuild/internal/toolproposal"
 )
 
 var (
@@ -45,6 +44,7 @@ type PermissionDecisionView struct {
 	ApprovalID        string               `json:"approval_id,omitempty"`
 	Verdict           permissions.Verdict  `json:"verdict"`
 	Tool              permissions.ToolKind `json:"tool"`
+	CallDigest        string               `json:"call_digest,omitempty"`
 	Command           string               `json:"command,omitempty"`
 	Path              string               `json:"path,omitempty"`
 	Reason            string               `json:"reason"`
@@ -59,11 +59,16 @@ type PermissionAttention struct {
 }
 
 type PermissionApprovalView struct {
-	ApprovalID string `json:"approval_id"`
-	Digest     string `json:"digest"`
-	JobID      string `json:"job_id"`
-	Status     string `json:"status"`
-	Command    string `json:"command,omitempty"`
+	ApprovalID       string               `json:"approval_id"`
+	Digest           string               `json:"digest"`
+	JobID            string               `json:"job_id"`
+	Status           string               `json:"status"`
+	CallDigest       string               `json:"call_digest,omitempty"`
+	Tool             permissions.ToolKind `json:"tool,omitempty"`
+	Command          string               `json:"command,omitempty"`
+	Path             string               `json:"path,omitempty"`
+	DetailsAvailable bool                 `json:"details_available"`
+	DetailStatus     string               `json:"detail_status"`
 }
 
 type PermissionCommandRequest struct {
@@ -91,6 +96,15 @@ type LocalPermissionService struct {
 	viewVersion func() string
 	authority   *permissions.Authority
 	approvals   ApprovalPort
+	proposals   toolproposal.Store
+}
+
+func (service *LocalPermissionService) SetToolProposalStore(store toolproposal.Store) error {
+	if service == nil || store == nil {
+		return ErrInvalidPermissionRequest
+	}
+	service.proposals = store
+	return nil
 }
 
 // ApprovalPort reuses the internal/rules approval lifecycle for permission
@@ -200,10 +214,13 @@ func (service *LocalPermissionService) PermissionAttention(
 			ApprovalID        string `json:"approval_id,omitempty"`
 			Verdict           string `json:"verdict"`
 			Tool              string `json:"tool"`
+			CallDigest        string `json:"call_digest"`
 			Command           string `json:"command"`
 			Path              string `json:"path"`
 			Reason            string `json:"reason"`
 			AuthorizationPath string `json:"authorization_path"`
+			ReasonCode        string `json:"reason_code"`
+			RecoveryAction    string `json:"recovery_action"`
 			RecordedAt        string `json:"recorded_at"`
 		}
 		if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
@@ -212,15 +229,20 @@ func (service *LocalPermissionService) PermissionAttention(
 		if payload.Verdict != string(permissions.VerdictAsk) {
 			continue
 		}
+		if event.SchemaVersion == 2 {
+			payload.Reason = payload.ReasonCode
+			payload.AuthorizationPath = payload.RecoveryAction
+		}
 		decisions = append(decisions, PermissionDecisionView{
 			JobID: payload.JobID, ApprovalID: payload.ApprovalID,
 			Verdict: permissions.VerdictAsk, Tool: permissions.ToolKind(payload.Tool),
-			Command: payload.Command, Path: payload.Path, Reason: payload.Reason,
+			CallDigest: payload.CallDigest, Command: payload.Command,
+			Path: payload.Path, Reason: payload.Reason,
 			AuthorizationPath: payload.AuthorizationPath, RecordedAt: payload.RecordedAt,
 		})
 	}
 	sort.Slice(decisions, func(i, j int) bool { return decisions[i].RecordedAt < decisions[j].RecordedAt })
-	approvals, err := service.pendingApprovals(events)
+	approvals, err := service.pendingApprovals(ctx, events)
 	if err != nil {
 		return PermissionAttention{}, err
 	}
@@ -231,15 +253,18 @@ func (service *LocalPermissionService) PermissionAttention(
 	}, nil
 }
 
-func (service *LocalPermissionService) pendingApprovals(events []journal.Event) ([]PermissionApprovalView, error) {
+func (service *LocalPermissionService) pendingApprovals(
+	ctx context.Context,
+	events []journal.Event,
+) ([]PermissionApprovalView, error) {
 	type approvalRecord struct {
 		approvalID string
 		digest     string
 		jobID      string
+		callDigest string
 		resolved   bool
 	}
 	records := make(map[string]*approvalRecord)
-	jobCommand := make(map[string]string)
 	for _, event := range events {
 		switch event.Type {
 		case "ApprovalRequested":
@@ -250,6 +275,7 @@ func (service *LocalPermissionService) pendingApprovals(events []journal.Event) 
 					WorkItemID string `json:"work_item_id"`
 					ProjectID  string `json:"project_id"`
 				} `json:"context"`
+				ContinuationDigest string `json:"continuation_digest"`
 			}
 			if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
 				continue
@@ -264,6 +290,7 @@ func (service *LocalPermissionService) pendingApprovals(events []journal.Event) 
 				approvalID: payload.ApprovalRequestID,
 				digest:     payload.ApprovalRequestDigest,
 				jobID:      payload.Context.WorkItemID,
+				callDigest: payload.ContinuationDigest,
 			}
 		case "ApprovalDecided", "ApprovalExpired":
 			var payload struct {
@@ -275,15 +302,6 @@ func (service *LocalPermissionService) pendingApprovals(events []journal.Event) 
 			if record, ok := records[payload.ApprovalRequestID]; ok {
 				record.resolved = true
 			}
-		case "PermissionDecisionRecorded":
-			var payload struct {
-				JobID   string `json:"job_id"`
-				Command string `json:"command"`
-			}
-			if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
-				continue
-			}
-			jobCommand[payload.JobID] = payload.Command
 		}
 	}
 	var approvals []PermissionApprovalView
@@ -291,13 +309,35 @@ func (service *LocalPermissionService) pendingApprovals(events []journal.Event) 
 		if record.resolved || record.jobID == "" {
 			continue
 		}
-		approvals = append(approvals, PermissionApprovalView{
-			ApprovalID: record.approvalID,
-			Digest:     record.digest,
-			JobID:      record.jobID,
-			Status:     "pending",
-			Command:    jobCommand[record.jobID],
-		})
+		view := PermissionApprovalView{
+			ApprovalID:   record.approvalID,
+			Digest:       record.digest,
+			JobID:        record.jobID,
+			Status:       "pending",
+			CallDigest:   record.callDigest,
+			DetailStatus: "unavailable",
+		}
+		if service.proposals != nil && record.callDigest != "" {
+			proposal, lookupErr := service.proposals.LookupToolProposal(
+				ctx,
+				toolproposal.ApprovalLookup{
+					ApprovalID: record.approvalID, ApprovalDigest: record.digest,
+					WorkItemID: record.jobID, CallDigest: record.callDigest,
+				},
+			)
+			if lookupErr == nil {
+				var call permissions.ProposedCall
+				if decodeExactPermissionParams(proposal.Content, &call) == nil &&
+					permissions.ProposedCallDigest(call) == record.callDigest &&
+					string(call.Tool) == proposal.Binding.Tool {
+					view.Tool, view.Command, view.Path = call.Tool, call.Command, call.Path
+					view.DetailsAvailable = true
+					view.DetailStatus = "encrypted_vault"
+				}
+				proposal.Close()
+			}
+		}
+		approvals = append(approvals, view)
 	}
 	sort.Slice(approvals, func(i, j int) bool { return approvals[i].JobID < approvals[j].JobID })
 	return approvals, nil
@@ -415,6 +455,18 @@ func (service *LocalPermissionService) PermissionCommand(
 		}
 		decision := "rejected"
 		if input.Resolution == "allow" {
+			if service.proposals != nil {
+				currentEvents, readErr := service.store.ReadAll(ctx)
+				if readErr != nil {
+					return PermissionCommandResult{}, readErr
+				}
+				pending, pendingErr := service.pendingApprovals(ctx, currentEvents)
+				if pendingErr != nil || !inspectableApproval(
+					pending, input.ApprovalID, input.ApprovalDigest,
+				) {
+					return PermissionCommandResult{}, ErrInvalidPermissionRequest
+				}
+			}
 			decision = "approved"
 		} else if input.Resolution != "deny" {
 			return PermissionCommandResult{}, ErrInvalidPermissionRequest
@@ -448,6 +500,19 @@ func (service *LocalPermissionService) PermissionCommand(
 		OperationID: request.OperationID, Action: request.Action,
 		ViewVersion: service.viewVersion(), EventIDs: eventIDs,
 	}, nil
+}
+
+func inspectableApproval(
+	approvals []PermissionApprovalView,
+	approvalID string,
+	approvalDigest string,
+) bool {
+	for _, approval := range approvals {
+		if approval.ApprovalID == approvalID && approval.Digest == approvalDigest {
+			return approval.DetailsAvailable && approval.DetailStatus == "encrypted_vault"
+		}
+	}
+	return false
 }
 
 func (service *LocalPermissionService) validateCall(
@@ -512,9 +577,7 @@ func (service *LocalPermissionService) validateCall(
 }
 
 func permissionCallDigest(call permissions.ProposedCall) string {
-	body, _ := json.Marshal(call)
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
+	return permissions.ProposedCallDigest(call)
 }
 
 func decodeExactPermissionParams(data []byte, target any) error {

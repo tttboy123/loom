@@ -10,7 +10,212 @@ import (
 	"time"
 
 	"loom-pi-rebuild/internal/journal"
+	loomruntime "loom-pi-rebuild/internal/runtime"
 )
+
+func TestPhase2DTeamExecutionProjectionCarriesAndValidatesFrozenBinding(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	viewVersion := strings.Repeat("b", 64)
+	budget := int64(175)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "profile.claude", AdapterType: "claude-code",
+		ProviderID: "anthropic", ProviderAccountID: "anthropic.work",
+		ModelID: "claude-sonnet", AuthMode: loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("c", 64),
+		CredentialReference: "credential-ref-anthropic-work",
+		CredentialRevision:  7, ReasoningEffort: "high",
+		RequiredCapabilities: []string{
+			"edit", loomruntime.CapabilityReasoningEffort, "terminal",
+		},
+		Timeout: 2 * time.Minute, Budget: &budget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-main", DeviceID: "device.local", AdapterType: "claude-code",
+		DisplayName: "Claude Code", Status: loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{
+			"edit", loomruntime.CapabilityReasoningEffort, "terminal",
+		}, Capacity: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsFor := func(bindingDigest string) []journal.Event {
+		bindingPayload := map[string]any{
+			"profile_id": profile.ID, "harness_adapter": profile.AdapterType,
+			"runtime_instance_id": instance.ID, "provider_id": profile.ProviderID,
+			"provider_account_id": profile.ProviderAccountID, "model_id": profile.ModelID,
+			"auth_mode": string(profile.AuthMode), "endpoint_fingerprint": profile.EndpointFingerprint,
+			"credential_reference": profile.CredentialReference,
+			"credential_revision":  profile.CredentialRevision,
+			"reasoning_effort":     profile.ReasoningEffort,
+			"timeout_nanoseconds":  int64(profile.Timeout), "budget": budget,
+			"capabilities": []string{
+				"edit", loomruntime.CapabilityReasoningEffort, "terminal",
+			}, "binding_digest": bindingDigest,
+		}
+		return []journal.Event{
+			teamProjectionEvent(t, "plan-binding", "team-execution/team-binding", 1, "plan-binding", "TeamExecutionPlanned", map[string]any{
+				"team_instance_id": "team-binding", "plan_digest": digest, "view_version": viewVersion,
+				"nodes": []map[string]any{{
+					"logical_node_id": "main", "title": "Main", "agent_instance_id": "agent-main",
+					"runtime_instance_id": "runtime-main", "role": "main",
+					"depends_on": []string{}, "max_attempts": 1,
+				}},
+			}),
+			teamProjectionEvent(t, "scheduled-binding", "team-execution/team-binding", 2, "scheduled-binding", "TeamNodeAttemptScheduled", map[string]any{
+				"logical_node_id": "main", "attempt_number": 1,
+				"work_item_id": "team-work-binding", "run_id": "team-run-binding",
+				"runtime_instance_id": "runtime-main", "agent_instance_id": "agent-main",
+				"retry_at": "",
+			}),
+			teamProjectionEvent(t, "dispatch-binding", "team-execution/team-binding", 3, "dispatch-binding", "TeamReadySetDispatched", map[string]any{
+				"team_instance_id": "team-binding", "plan_digest": digest, "view_version": viewVersion,
+				"attempts": []map[string]any{{
+					"logical_node_id": "main", "attempt_number": 1,
+					"work_item_id": "team-work-binding", "run_id": "team-run-binding",
+					"claim_id": "11111111-1111-4111-8111-111111111111", "claim_generation": 1,
+					"runtime_instance_id": "runtime-main", "agent_instance_id": "agent-main",
+					"execution_binding": bindingPayload,
+				}},
+			}),
+		}
+	}
+	const incidentID = "22222222-2222-4222-8222-222222222222"
+	events := eventsFor(binding.BindingDigest)
+	events[2].CorrelationID = incidentID
+	record, err := projectTeamExecutionStream(
+		"team-binding", events, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := record.Nodes[0].Attempts[0]
+	if !attempt.ExecutionBindingAvailable ||
+		attempt.IncidentID != incidentID ||
+		attempt.ExecutionBinding.ProviderAccountID != "anthropic.work" ||
+		attempt.ExecutionBinding.CredentialRevision != 7 ||
+		attempt.ExecutionBinding.ModelID != "claude-sonnet" ||
+		attempt.ExecutionBinding.ReasoningEffort != "high" ||
+		attempt.ExecutionBinding.Budget == nil ||
+		*attempt.ExecutionBinding.Budget != budget {
+		t.Fatalf("projected execution binding = %#v", attempt.ExecutionBinding)
+	}
+	if _, err := projectTeamExecutionStream(
+		"team-binding", eventsFor(strings.Repeat("f", 64)), nil, nil,
+	); !errors.Is(err, ErrInvalidProjectionEvent) {
+		t.Fatalf("tampered projected binding error = %v", err)
+	}
+}
+
+func TestPhase2DTeamExecutionProjectionCarriesParallelRouteIdentity(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	events := []journal.Event{
+		teamProjectionEvent(t, "plan-parallel", "team-execution/team-parallel", 1, "plan-parallel", "TeamExecutionPlanned", map[string]any{
+			"team_instance_id": "team-parallel", "plan_digest": digest,
+			"view_version": strings.Repeat("b", 64),
+			"nodes": []map[string]any{
+				{"logical_node_id": "main", "title": "Synthesis", "agent_instance_id": "agent-main", "runtime_instance_id": "runtime-main", "role": "main", "kind": "aggregation", "route_group_id": "route-group-main", "depends_on": []string{"route-a", "route-b"}, "max_attempts": 1},
+				{"logical_node_id": "route-a", "title": "Route A", "agent_instance_id": "agent-main", "runtime_instance_id": "runtime-a", "role": "main", "kind": "route_sibling", "route_group_id": "route-group-main", "depends_on": []string{}, "max_attempts": 1},
+				{"logical_node_id": "route-b", "title": "Route B", "agent_instance_id": "agent-main", "runtime_instance_id": "runtime-b", "role": "main", "kind": "route_sibling", "route_group_id": "route-group-main", "depends_on": []string{}, "max_attempts": 1},
+			},
+		}),
+	}
+	record, err := projectTeamExecutionStream("team-parallel", events, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Nodes) != 3 ||
+		record.Nodes[0].Kind != "aggregation" || record.Nodes[0].RouteGroupID != "route-group-main" ||
+		record.Nodes[1].Kind != "route_sibling" || record.Nodes[2].Kind != "route_sibling" {
+		t.Fatalf("parallel route projection = %#v", record.Nodes)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	nodes := payload["nodes"].([]any)
+	nodes[0].(map[string]any)["route_group_id"] = "forged-group"
+	events[0].PayloadJSON, _ = json.Marshal(payload)
+	if _, err := projectTeamExecutionStream("team-parallel", events, nil, nil); !errors.Is(err, ErrInvalidProjectionEvent) {
+		t.Fatalf("forged route group projection error = %v", err)
+	}
+}
+
+func TestPhase2DTeamExecutionProjectionReplaysInitialAgentBlocks(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	viewVersion := strings.Repeat("b", 64)
+	incidentID := "11111111-1111-4111-8111-111111111111"
+	events := []journal.Event{
+		teamProjectionEvent(t, "plan-isolation", "team-execution/team-isolation", 1, "plan-isolation", "TeamExecutionPlanned", map[string]any{
+			"team_instance_id": "team-isolation", "plan_digest": digest, "view_version": viewVersion,
+			"nodes": []map[string]any{
+				{"logical_node_id": "blocked", "title": "Blocked", "agent_instance_id": "agent-blocked", "runtime_instance_id": "runtime-blocked", "role": "subagent", "depends_on": []string{}, "max_attempts": 1},
+				{"logical_node_id": "main", "title": "Main", "agent_instance_id": "agent-main", "runtime_instance_id": "runtime-main", "role": "main", "depends_on": []string{"blocked"}, "max_attempts": 1},
+			},
+			"route_summaries": []map[string]any{
+				{"logical_node_id": "blocked", "harness_adapter": "loom-native", "provider_id": "deepseek", "provider_account_id": "deepseek.primary", "model_id": "deepseek-chat", "timeout_nanoseconds": int64(time.Minute), "budget": nil, "capabilities": []string{"chat"}, "credential_revision": int64(6)},
+				{"logical_node_id": "main", "harness_adapter": "codex", "provider_id": "openai", "provider_account_id": "", "model_id": "codex", "timeout_nanoseconds": int64(time.Minute), "budget": nil, "capabilities": []string{"terminal"}, "credential_revision": int64(0)},
+			},
+		}),
+		teamProjectionEvent(t, "blocked-isolation", "team-execution/team-isolation", 2, "blocked-isolation", "TeamNodeInitiallyBlocked", map[string]any{
+			"logical_node_id": "blocked", "code": "credential_unavailable", "stage": "credential_lease_issue",
+			"reason": "Credential is not verified.", "retryable": true, "source_logical_node_id": "",
+		}, "plan-isolation"),
+		teamProjectionEvent(t, "main-isolation", "team-execution/team-isolation", 3, "main-isolation", "TeamNodeInitiallyBlocked", map[string]any{
+			"logical_node_id": "main", "code": "dependency_blocked", "stage": "agent_attempt_dispatch",
+			"reason": "A required Agent is blocked.", "retryable": true, "source_logical_node_id": "blocked",
+		}, "blocked-isolation"),
+		teamProjectionEvent(t, "terminal-isolation", "team-execution/team-isolation", 4, "terminal-isolation", "TeamExecutionTerminal", map[string]any{
+			"team_instance_id": "team-isolation", "plan_digest": digest, "status": "blocked", "reason": "node_blocked_blocked",
+		}, "main-isolation"),
+	}
+	events[1].CorrelationID = incidentID
+	events[2].CorrelationID = incidentID
+	record, err := projectTeamExecutionStream("team-isolation", events, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != "blocked" || record.Nodes[0].InitialBlockCode != "credential_unavailable" ||
+		record.Nodes[0].InitialBlockStage != "credential_lease_issue" ||
+		record.Nodes[0].InitialBlockIncidentID != incidentID || !record.Nodes[0].InitialBlockRetryable ||
+		!record.Nodes[0].InitialRouteAvailable || record.Nodes[0].InitialProviderAccountID != "deepseek.primary" ||
+		record.Nodes[0].InitialCredentialRevision != 6 || !record.Nodes[1].InitialRouteAvailable ||
+		record.Nodes[1].InitialProviderID != "openai" || record.Nodes[1].InitialCredentialRevision != 0 ||
+		record.Nodes[1].InitialBlockCode != "dependency_blocked" ||
+		record.Nodes[1].InitialBlockSourceNodeID != "blocked" {
+		t.Fatalf("projected initial blocks = %#v", record)
+	}
+	tampered := append([]journal.Event(nil), events...)
+	var payload map[string]any
+	if err := json.Unmarshal(tampered[2].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["source_logical_node_id"] = "missing"
+	tampered[2].PayloadJSON, _ = json.Marshal(payload)
+	if _, err := projectTeamExecutionStream("team-isolation", tampered, nil, nil); !errors.Is(err, ErrInvalidProjectionEvent) {
+		t.Fatalf("forged dependency block error = %v", err)
+	}
+	tampered = append([]journal.Event(nil), events...)
+	var planPayload map[string]any
+	if err := json.Unmarshal(tampered[0].PayloadJSON, &planPayload); err != nil {
+		t.Fatal(err)
+	}
+	routes := planPayload["route_summaries"].([]any)
+	route := routes[0].(map[string]any)
+	route["credential_revision"] = float64(0)
+	tampered[0].PayloadJSON, _ = json.Marshal(planPayload)
+	if _, err := projectTeamExecutionStream("team-isolation", tampered, nil, nil); !errors.Is(err, ErrInvalidProjectionEvent) {
+		t.Fatalf("forged credential revision error = %v", err)
+	}
+}
 
 func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T) {
 	digest := strings.Repeat("a", 64)
@@ -91,6 +296,9 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 			"reason":           "",
 		}, "team-attempt-terminal"),
 	}
+	events[2].CorrelationID = "11111111-1111-4111-8111-111111111111"
+	events[3].CorrelationID = "22222222-2222-4222-8222-222222222222"
+	events[4].CorrelationID = "22222222-2222-4222-8222-222222222222"
 	record, err := projectTeamExecutionStream(
 		"team-1",
 		events,
@@ -119,6 +327,7 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 	}
 	want := TeamExecutionAttempt{
 		AttemptNumber:     1,
+		IncidentID:        "22222222-2222-4222-8222-222222222222",
 		WorkItemID:        "team-work-1",
 		RunID:             "team-run-1",
 		ClaimID:           "22222222-2222-4222-8222-222222222222",

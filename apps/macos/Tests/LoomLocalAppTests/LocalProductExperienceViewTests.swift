@@ -7,6 +7,112 @@ import XCTest
 
 @MainActor
 final class LocalProductExperienceViewTests: XCTestCase {
+
+    func testToolRecoveryActionsDescribeBoundedAuthorityWithoutRerun() {
+        XCTAssertEqual(
+            missionToolRecoveryActionLabel(.abortAttempt),
+            "Abort Attempt"
+        )
+        XCTAssertEqual(
+            missionToolRecoveryActionIcon(.acceptObservedEffect),
+            "checkmark.seal"
+        )
+        XCTAssertTrue(
+            missionToolRecoveryConfirmationDetail(.abortAttempt)
+                .contains("will not rerun the original ToolCall")
+        )
+        XCTAssertTrue(
+            missionToolRecoveryConfirmationDetail(.retryInNewAttempt)
+                .contains("original ToolCall remains closed")
+        )
+    }
+
+    func testAgentRestartRecoveryLabelsDoNotInventRetryAuthority() {
+        XCTAssertEqual(
+            missionAgentFailureLabel(
+                stage: "agent_attempt_reconcile",
+                code: "agent_input_resume_required",
+                retryable: false
+            ),
+            "Resume approval required"
+        )
+        XCTAssertEqual(
+            missionAgentFailureLabel(
+                stage: "agent_attempt_reconcile",
+                code: "provider_outcome_uncertain",
+                retryable: false
+            ),
+            "Provider outcome uncertain"
+        )
+        XCTAssertEqual(
+            missionAgentFailureLabel(
+                stage: "agent_attempt_reconcile",
+                code: "agent_input_recovery_unavailable",
+                retryable: false
+            ),
+            "Encrypted input unavailable"
+        )
+        XCTAssertEqual(
+            missionAgentFailureLabel(
+                stage: "agent_attempt_reconcile",
+                code: "agent_input_recovery_conflict",
+                retryable: false
+            ),
+            "Recovery state conflict"
+        )
+        XCTAssertEqual(
+            missionAgentFailureLabel(
+                stage: "provider_connect", code: "timeout", retryable: true
+            ),
+            "Retry available"
+        )
+        let section = MissionInspectorSection(
+            heading: "Team Pulse",
+            rows: ["needs approval", "provider retry"],
+            emptyMessage: "empty",
+            agentRecoveryActions: [true, false]
+        )
+        XCTAssertTrue(section.canRecoverAgentAttempt(at: 0))
+        XCTAssertFalse(section.canRecoverAgentAttempt(at: 1))
+        XCTAssertTrue(missionAttemptRecoveryAvailable(
+            stage: "agent_attempt_reconcile",
+            code: "agent_input_resume_required",
+            diagnosticAvailable: true,
+            retryable: false
+        ))
+        XCTAssertFalse(missionAttemptRecoveryAvailable(
+            stage: "agent_attempt_reconcile",
+            code: "provider_outcome_uncertain",
+            diagnosticAvailable: true,
+            retryable: false
+        ))
+    }
+    func testProviderAccountPolicySheetRendersAccountScopedGovernance() throws {
+        let account = try JSONDecoder().decode(
+            LocalProductProviderAccountDirectoryEntry.self,
+            from: Data(
+                """
+                {"provider_id":"deepseek","provider_account_id":"deepseek.work","auth_mode":"brokered","credential_reference":"credential-ref-hidden","revision":3,"status":"verified","reason":"","policy_available":true,"policy_version":2,"policy_revision":2,"policy_digest":"\(String(repeating: "b", count: 64))","maximum_concurrent_attempts":4,"dispatch_window_seconds":60,"maximum_dispatch_starts":20,"maximum_assigned_budget_units":12000,"trust_domain":"external_provider","retention_mode":"zero_data_retention","data_region":"apac","rate_cards":[{"model_id":"deepseek-chat","revision":2,"rate_card_digest":"\(String(repeating: "d", count: 64))","currency":"USD","input_token_basis":"input_excludes_cache","input_microunits_per_million":270000,"output_microunits_per_million":1100000,"cache_read_microunits_per_million":70000,"cache_write_microunits_per_million":0,"rounding_mode":"ceiling_per_attempt","configured_at":"2026-08-12T05:00:00Z"}],"remote_tool_backends":[{"enrollment_version":1,"enrollment_id":"mcp-deepseek-work","backend_kind":"mcp_server","adapter_id":"builtin.mcp.stdio.v1","provider_account_policy_version":2,"provider_account_policy_revision":2,"provider_account_policy_digest":"\(String(repeating: "b", count: 64))","policy_current":true,"endpoint_fingerprint":"\(String(repeating: "c", count: 64))","mcp_server_id":"work-tools","allowed_tools":["get_issue","search_docs"],"revision":1,"status":"active","maximum_concurrent_calls":2,"maximum_calls_per_attempt":4,"timeout_seconds":30,"maximum_result_bytes":32768,"maximum_budget_units":2000,"configured_at":"2026-08-15T05:00:00Z","enrollment_digest":"\(String(repeating: "e", count: 64))"}]}
+                """.utf8
+            )
+        )
+        let store = LocalProductStore(
+            client: ExperienceViewStubClient(results: [.success(.empty(viewVersion: "view-1"))])
+        )
+
+        let image = try XCTUnwrap(render(
+            ProviderAccountPolicySheet(store: store, account: account),
+            colorScheme: .light,
+            dynamicTypeSize: .large,
+            width: 520,
+            height: 620
+        ))
+
+        XCTAssertEqual(image.pixelWidth, 520)
+        XCTAssertEqual(image.pixelHeight, 620)
+        XCTAssertGreaterThan(image.png.count, 10_000)
+    }
+
     func testExplicitRecoveryTargetMeetsNativeAccessibilityMinimum() {
         XCTAssertGreaterThanOrEqual(
             LoomGraphite.minimumActionTarget,
@@ -135,7 +241,78 @@ final class LocalProductExperienceViewTests: XCTestCase {
             "plan_digest":"",
             "status":"succeeded",
             "view_version":"view-1",
-            "nodes":[],
+            "nodes":[{
+              "logical_node_id":"main","node_kind":"route_sibling",
+              "route_group_id":"route-group-main","status":"succeeded","dependency_satisfied":true,
+              "current_attempt":1,"work_item_id":"work-1","run_id":"run-1",
+              "runtime_instance_id":"runtime-1","agent_instance_id":"agent-main",
+              "verification_status":"accepted","recovery_action":"","retry_at":"",
+              "fallback_configured":true,"recovery_approval_required":true,
+              "fallback_approval_available":true,"fallback_approval_version":3,
+              "fallback_consumed":false,
+              "execution_binding_available":true,"harness_adapter":"claude-code",
+              "provider_id":"anthropic","provider_account_id":"anthropic.production",
+              "model_id":"claude-sonnet","timeout_nanoseconds":300000000000,
+              "binding_budget_credits":1200,"capabilities":["workspace_edit"],
+              "credential_revision":7,
+              "provider_account_policy_available":true,
+              "provider_account_policy_version":2,
+              "provider_account_policy_revision":3,
+              "provider_account_policy_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "provider_account_trust_domain":"external_provider",
+              "provider_account_retention_mode":"limited_retention",
+              "provider_account_data_region":"eu",
+              "provider_account_assigned_budget_units":1000,
+              "terminal_reason":"provider_rejected",
+              "incident_id":"22222222-2222-4222-8222-222222222222",
+              "failure_diagnostic_available":true,
+              "failure_stage":"provider_auth","failure_code":"provider_rejected",
+              "failure_retryable":true,
+              "test_report_available":true,"test_report_count":3,
+              "test_report_passed_count":2,"test_report_failed_count":1,
+              "test_report_set_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "latest_test_runner":"go_test","latest_test_scope":"all",
+              "latest_test_outcome":"passed",
+              "latest_test_report_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },{
+              "logical_node_id":"review","node_kind":"aggregation",
+              "route_group_id":"route-group-main","status":"succeeded","dependency_satisfied":true,
+              "current_attempt":1,"work_item_id":"work-2","run_id":"run-2",
+              "runtime_instance_id":"runtime-2","agent_instance_id":"agent-review",
+              "verification_status":"accepted","recovery_action":"","retry_at":"",
+              "execution_binding_available":true,"harness_adapter":"codex",
+              "provider_id":"openai","provider_account_id":"openai.primary",
+              "model_id":"gpt-5.5-codex","timeout_nanoseconds":300000000000,
+              "capabilities":["workspace_edit"],"credential_revision":5,
+              "terminal_reason":"","incident_id":"",
+              "failure_diagnostic_available":false,"failure_stage":"",
+              "failure_code":"","failure_retryable":false
+            },{
+              "logical_node_id":"native","status":"blocked","dependency_satisfied":false,
+              "current_attempt":0,"work_item_id":"","run_id":"",
+              "runtime_instance_id":"","agent_instance_id":"",
+              "verification_status":"","recovery_action":"","retry_at":"",
+              "execution_binding_available":true,"harness_adapter":"codex",
+              "provider_id":"openai","provider_account_id":"",
+              "model_id":"codex","timeout_nanoseconds":60000000000,
+              "capabilities":["workspace_edit"],"credential_revision":0,
+              "terminal_reason":"Runtime is not online.",
+              "incident_id":"44444444-4444-4444-8444-444444444444",
+              "failure_diagnostic_available":true,
+              "failure_stage":"agent_attempt_dispatch",
+              "failure_code":"runtime_unavailable","failure_retryable":true
+            }],
+            "provider_accounts":[{
+              "provider_id":"anthropic","provider_account_id":"anthropic.production",
+              "active_attempts":0,"attempt_count":1,"failed_attempts":1,
+              "rate_limited_attempts":0,"error_rate_basis_points":10000,
+              "budget_attempt_count":1,"budget_units":100,
+              "accounting_attempt_count":1,"usage_attempt_count":1,
+              "input_tokens":90,"output_tokens":10,"cache_read_tokens":0,
+              "cache_write_tokens":0,"total_tokens":100,"cost_attempt_count":1,
+              "costs":[{"currency":"USD","source":"harness_reported","amount_microunits":450}],
+              "aggregation_overflow":true
+            }],
             "cost":{"observed":false,"amount_microunits":null,"currency":""}
           },
           "attention":[]
@@ -155,6 +332,74 @@ final class LocalProductExperienceViewTests: XCTestCase {
         )
         XCTAssertEqual(Set(sections.map(\.rows)).count, 4)
         XCTAssertTrue(sections[0].rows.joined().contains("Attempt 1"))
+        XCTAssertTrue(sections[0].rows[0].contains("Parallel provider route"))
+        XCTAssertTrue(sections[0].rows[1].contains("Synthesis"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Claude-Code"))
+        XCTAssertTrue(sections[0].rows.joined().contains("anthropic.production"))
+        XCTAssertTrue(sections[0].rows.joined().contains("claude-sonnet"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Credential v7"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Timeout 300s"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Binding budget 1200"))
+        XCTAssertTrue(sections[0].rows.joined().contains("workspace_edit"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Account policy v2 r3"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Trust External provider"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Retention Limited retention"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Region EU"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Fallback approved v3"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Incident 22222222"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Provider Auth"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Retry available"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Tests 2 passed, 1 failed"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Latest Go Test All Passed"))
+        XCTAssertTrue(sections[0].rows.joined().contains("Accounting incomplete"))
+        let accountRow = try XCTUnwrap(
+            sections[0].rows.last(where: { $0.contains("anthropic.production") })
+        )
+        XCTAssertTrue(accountRow.contains("Anthropic / anthropic.production"))
+        XCTAssertTrue(accountRow.contains("1/1 failed"))
+        XCTAssertTrue(accountRow.contains("100% error rate"))
+        XCTAssertTrue(accountRow.contains("0 rate limited"))
+        XCTAssertTrue(accountRow.contains("Accounting 1/1 attempts"))
+		XCTAssertTrue(accountRow.contains("Harness reported cost 0.00045 USD"))
+        XCTAssertFalse(accountRow.contains("450 microunits"))
+        XCTAssertEqual(
+            sections[0].systemImage(at: 0, fallback: "fallback"),
+            "person.crop.circle"
+        )
+        XCTAssertEqual(
+            sections[0].systemImage(at: 1, fallback: "fallback"),
+            "arrow.triangle.merge"
+        )
+        XCTAssertEqual(
+            sections[0].systemImage(at: 3, fallback: "fallback"),
+            "server.rack"
+        )
+        XCTAssertEqual(sections[0].accessibilityLabel(at: 0), "Agent status")
+        XCTAssertEqual(sections[0].accessibilityLabel(at: 1), "Synthesis status")
+        XCTAssertEqual(
+            sections[0].accessibilityLabel(at: 3),
+            "Provider Account governance"
+        )
+        XCTAssertEqual(
+            sections[0].incidentIDs.first,
+            "22222222-2222-4222-8222-222222222222"
+        )
+        XCTAssertTrue(sections[0].canViewDiagnostics(at: 0))
+        XCTAssertTrue(sections[0].canReviewRetry(at: 0))
+        XCTAssertFalse(sections[0].canViewDiagnostics(at: 1))
+        XCTAssertFalse(sections[0].canReviewRetry(at: 1))
+        XCTAssertFalse(sections[0].canRecoverCredentialVault(at: 1))
+        XCTAssertTrue(sections[0].rows[1].contains("openai.primary"))
+        XCTAssertTrue(sections[0].rows[1].contains("Succeeded"))
+        XCTAssertTrue(sections[0].rows[2].contains("Not started"))
+        XCTAssertTrue(sections[0].rows[2].contains("Native auth"))
+        XCTAssertFalse(sections[0].rows[2].contains("Attempt 0"))
+        XCTAssertFalse(sections[0].rows[2].contains("Credential v0"))
+        XCTAssertTrue(sections[0].canViewDiagnostics(at: 2))
+        XCTAssertTrue(sections[0].canReviewRetry(at: 2))
+        XCTAssertFalse(sections[0].canRecoverCredentialVault(at: 2))
+        XCTAssertFalse(sections[1].canViewDiagnostics(at: 0))
+        XCTAssertFalse(sections[1].canReviewRetry(at: 0))
         XCTAssertTrue(sections[1].rows.joined().contains("Main"))
         XCTAssertEqual(
             sections[2].rows,
@@ -176,6 +421,8 @@ final class LocalProductExperienceViewTests: XCTestCase {
             timeline: nil
         )
         XCTAssertEqual(unavailable.rows, [])
+        XCTAssertFalse(unavailable.canViewDiagnostics(at: 0))
+        XCTAssertFalse(unavailable.canReviewRetry(at: 0))
         XCTAssertEqual(
             unavailable.emptyMessage,
             "Evidence is unavailable until complete authoritative activity loads."
@@ -227,6 +474,64 @@ final class LocalProductExperienceViewTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testVaultRecoveryActionIsLimitedToDurableVaultFailures() {
+        let section = MissionInspectorSection(
+            heading: "Team Pulse",
+            rows: ["blocked", "healthy"],
+            emptyMessage: "empty",
+            credentialVaultRecoveryActions: [true, false]
+        )
+        XCTAssertTrue(section.canRecoverCredentialVault(at: 0))
+        XCTAssertFalse(section.canRecoverCredentialVault(at: 1))
+        XCTAssertFalse(section.canRecoverCredentialVault(at: 2))
+
+        XCTAssertTrue(missionVaultRecoveryAvailable(
+            stage: "vault_decrypt",
+            diagnosticAvailable: true,
+            retryable: false
+        ))
+        XCTAssertTrue(missionVaultRecoveryAvailable(
+            stage: "vault_aad_validation",
+            diagnosticAvailable: true,
+            retryable: false
+        ))
+        XCTAssertFalse(missionVaultRecoveryAvailable(
+            stage: "credential_lease_issue",
+            diagnosticAvailable: true,
+            retryable: true
+        ))
+        XCTAssertFalse(missionVaultRecoveryAvailable(
+            stage: "provider_auth",
+            diagnosticAvailable: true,
+            retryable: false
+        ))
+        XCTAssertFalse(missionVaultRecoveryAvailable(
+            stage: "vault_decrypt",
+            diagnosticAvailable: false,
+            retryable: false
+        ))
+    }
+
+    func testProviderAccountGovernanceFormattingIsExactAndLocaleIndependent() {
+        XCTAssertEqual(missionErrorRateLabel(basisPoints: 0), "0% error rate")
+        XCTAssertEqual(missionErrorRateLabel(basisPoints: 1), "0.01% error rate")
+        XCTAssertEqual(missionErrorRateLabel(basisPoints: 1_250), "12.5% error rate")
+        XCTAssertEqual(missionErrorRateLabel(basisPoints: 10_000), "100% error rate")
+
+        XCTAssertEqual(missionCostLabel(microunits: 0, currency: "USD"), "Cost 0 USD")
+        XCTAssertEqual(missionCostLabel(microunits: 1, currency: "USD"), "Cost 0.000001 USD")
+        XCTAssertEqual(missionCostLabel(microunits: 450, currency: "USD"), "Cost 0.00045 USD")
+        XCTAssertEqual(missionCostLabel(microunits: 1_250_000, currency: "USD"), "Cost 1.25 USD")
+		XCTAssertEqual(missionProviderPolicyValue("external_provider"), "External provider")
+		XCTAssertEqual(missionProviderPolicyValue("zero_data_retention"), "Zero data retention")
+		XCTAssertEqual(missionProviderPolicyValue("apac"), "APAC")
+		XCTAssertEqual(
+			missionCostSourceLabel(
+				source: "rate_card_estimate", microunits: 450, currency: "USD"),
+			"Rate-card estimate 0.00045 USD"
+		)
     }
 
     func testSideTaskDrawerAlwaysPresentsEveryContractField() throws {

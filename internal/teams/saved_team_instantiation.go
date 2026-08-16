@@ -105,7 +105,8 @@ func BuildSavedTeamInstantiationPlan(
 
 	mainBinding := binding.MainBinding()
 	subBindings := binding.SubAgentBindings()
-	if binding.RoleCount() != 1+len(subBindings) || len(subBindings) > 2 ||
+	if binding.RoleCount() != 1+len(subBindings) ||
+		len(subBindings) > MaxTeamAgentCount-1 ||
 		mainBinding.Kind != TeamDefinitionRoleMain {
 		return SavedTeamInstantiationPlanCandidate{}, ErrInvalidSavedTeamInstantiationPlan
 	}
@@ -227,7 +228,7 @@ func validSavedTeamInstantiationPlanShape(input SavedTeamInstantiationPlanCandid
 		input.mainSeed.Binding.Accepted &&
 		input.mainSeed.Binding.ProfileID == input.mainSeed.RuntimeProfileID &&
 		input.mainSeed.Binding.InstanceID == input.mainSeed.RuntimeInstanceID &&
-		len(input.dormantSubAgents) <= 2 &&
+		len(input.dormantSubAgents) <= MaxTeamAgentCount-1 &&
 		input.createTeamInstance &&
 		input.createMainAgentInstance &&
 		!input.createSubAgentInstances &&

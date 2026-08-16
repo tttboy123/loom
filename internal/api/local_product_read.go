@@ -38,7 +38,14 @@ type LocalProductReadConfig struct {
 	Decisions     MissionDecisionCommandSource
 	RuntimeHealth RuntimeObservationHealthSource
 	SideTasks     SideTaskSnapshotSource
-	Chat          *LocalProductChatAPI
+	Diagnostics   AgentAttemptDiagnosticSource
+	TestReports   GovernedTestReportSource
+	Chat          LocalProductChatSource
+}
+
+type LocalProductChatSource interface {
+	ChatThread(context.Context, string) (LocalProductChatThread, error)
+	SendMessage(context.Context, LocalProductChatMessageRequest) (LocalProductChatThread, error)
 }
 
 type LocalProductReadService struct {
@@ -48,6 +55,8 @@ type LocalProductReadService struct {
 	decisions     MissionDecisionCommandSource
 	runtimeHealth RuntimeObservationHealthSource
 	sideTasks     SideTaskSnapshotSource
+	diagnostics   AgentAttemptDiagnosticSource
+	testReports   GovernedTestReportSource
 
 	mu                    sync.Mutex
 	lastView              *projection.GlobalReadView
@@ -58,7 +67,7 @@ type LocalProductReadService struct {
 	executionObservers map[string]*localProductMissionObserver
 	tentativeRecords   map[string][]LocalProductTimelineRecord
 	tentativeGaps      map[string]*LocalProductStreamGap
-	chat               *LocalProductChatAPI
+	chat               LocalProductChatSource
 }
 
 type localProductMissionObserver struct {
@@ -99,11 +108,43 @@ func NewLocalProductReadService(
 		decisions:          config.Decisions,
 		runtimeHealth:      config.RuntimeHealth,
 		sideTasks:          config.SideTasks,
+		diagnostics:        config.Diagnostics,
+		testReports:        config.TestReports,
 		chat:               config.Chat,
 		executionObservers: make(map[string]*localProductMissionObserver),
 		tentativeRecords:   make(map[string][]LocalProductTimelineRecord),
 		tentativeGaps:      make(map[string]*LocalProductStreamGap),
 	}, nil
+}
+
+func (service *LocalProductReadService) SetAgentAttemptDiagnosticSource(
+	source AgentAttemptDiagnosticSource,
+) error {
+	if service == nil || source == nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.diagnostics != nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.diagnostics = source
+	return nil
+}
+
+func (service *LocalProductReadService) SetGovernedTestReportSource(
+	source GovernedTestReportSource,
+) error {
+	if service == nil || source == nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.testReports != nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.testReports = source
+	return nil
 }
 
 func (service *LocalProductReadService) SetSideTaskSnapshotSource(source SideTaskSnapshotSource) error {
@@ -726,13 +767,14 @@ type LocalProductStreamGap struct {
 }
 
 type LocalProductTeamBoard struct {
-	SchemaVersion  int                         `json:"schema_version"`
-	TeamInstanceID string                      `json:"team_instance_id"`
-	PlanDigest     string                      `json:"plan_digest"`
-	Status         string                      `json:"status"`
-	ViewVersion    string                      `json:"view_version"`
-	Nodes          []NodeBoardRow              `json:"nodes"`
-	Cost           LocalProductCostObservation `json:"cost"`
+	SchemaVersion    int                         `json:"schema_version"`
+	TeamInstanceID   string                      `json:"team_instance_id"`
+	PlanDigest       string                      `json:"plan_digest"`
+	Status           string                      `json:"status"`
+	ViewVersion      string                      `json:"view_version"`
+	Nodes            []NodeBoardRow              `json:"nodes"`
+	ProviderAccounts []ProviderAccountBoardRow   `json:"provider_accounts"`
+	Cost             LocalProductCostObservation `json:"cost"`
 }
 
 type LocalProductTimelinePage struct {
@@ -799,6 +841,8 @@ func (observer *localProductMissionObserver) ObserveNodeOutput(
 			TeamInstanceID: observer.teamInstanceID,
 			Journal:        observer.service.journal,
 			Projection:     observer.service.projection,
+			Diagnostics:    observer.service.diagnostics,
+			TestReports:    observer.service.testReports,
 			Now:            observer.service.now,
 		})
 		if err != nil {
@@ -1033,6 +1077,8 @@ func (service *LocalProductReadService) ReadLocalProductTimeline(
 		TeamInstanceID: request.TeamInstanceID,
 		Journal:        service.journal,
 		Projection:     service.projection,
+		Diagnostics:    service.diagnostics,
+		TestReports:    service.testReports,
 		Now:            service.now,
 	})
 	if err != nil {

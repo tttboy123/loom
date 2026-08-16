@@ -214,6 +214,46 @@ func (r *piMetadataProcessRunner) SkillMaterializationConformance() (
 	return r, true
 }
 
+func (r *piMetadataProcessRunner) ContextRetrievalConformance() (
+	loomruntime.ContextRetrievalConformance,
+	bool,
+) {
+	if r == nil ||
+		hex.EncodeToString(r.executable.digest[:]) != pi0821LockedExecutableSHA256 {
+		return nil, false
+	}
+	return r, true
+}
+
+func (r *piMetadataProcessRunner) GovernedToolLoopConformance() (
+	loomruntime.GovernedToolLoopConformance,
+	bool,
+) {
+	if r == nil ||
+		hex.EncodeToString(r.executable.digest[:]) != pi0821LockedExecutableSHA256 {
+		return nil, false
+	}
+	return r, true
+}
+
+func (r *piMetadataProcessRunner) VerifyContextRetrieval(ctx context.Context) error {
+	if ctx == nil || r == nil || ctx.Err() != nil ||
+		hex.EncodeToString(r.executable.digest[:]) != pi0821LockedExecutableSHA256 ||
+		r.validateBindings() != nil {
+		return ErrPiMetadataBindingChanged
+	}
+	return nil
+}
+
+func (r *piMetadataProcessRunner) VerifyGovernedToolLoop(ctx context.Context) error {
+	if ctx == nil || r == nil || ctx.Err() != nil ||
+		hex.EncodeToString(r.executable.digest[:]) != pi0821LockedExecutableSHA256 ||
+		r.validateBindings() != nil {
+		return ErrPiMetadataBindingChanged
+	}
+	return nil
+}
+
 func (r *piMetadataProcessRunner) VerifySkillMaterialization(ctx context.Context) error {
 	if ctx == nil || r == nil {
 		return ErrInvalidPiMetadataProcessRunner

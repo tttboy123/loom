@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "purpose": "phase3a-cross-client-e2e",
+  "journey_id": "934b7224-e98e-4952-95a3-113a059c7bbb",
+  "state_path": "/private/tmp/loom-phase2c-chat-20260809-019/state/loom.db",
+  "socket_path": "/private/tmp/loom-phase2c-chat-20260809-019/loomd.sock",
+  "evidence_root": "/private/tmp/loom-phase2c-chat-20260809-019",
+  "fault_kind": "none",
+  "fault_action": "none",
+  "delay_millis": 0
+}

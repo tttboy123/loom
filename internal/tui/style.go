@@ -157,13 +157,13 @@ func styleDivider(width int) string {
 func screenKeyHint(screen Screen) string {
 	switch screen {
 	case ScreenHome:
-		return "i draft · enter send · u Agent Team · g b Board · r refresh · q quit"
+		return "i draft · enter send · o folder · u Agent Team · ] governance · p pin · r refresh · q quit"
 	case ScreenBoard:
 		return "/ filter · enter open · g b Board · g t Mission · r refresh · q quit"
 	case ScreenNewMission:
 		return "enter edit · t Team · w Work type · p preflight · s start · esc cancel"
 	case ScreenMission:
-		return "n side-task · a approval · [ ] decisions · c cancel · esc Board"
+		return "esc Board · r refresh · q quit"
 	case ScreenTeamBuilder:
 		return "n new · enter answer · c confirm · m/s roles · e/p edit · g credential · esc cancel"
 	case ScreenAssets:
@@ -177,7 +177,7 @@ func screenKeyHint(screen Screen) string {
 	case ScreenCompare:
 		return "r refresh · q quit"
 	case ScreenAttention:
-		return "j/k select · a approve · x reject · g grant · v view · r refresh · q quit"
+		return "j/k select · r refresh · q quit"
 	case ScreenTimeline:
 		return "r refresh · ] next page · q quit"
 	case ScreenQueue:

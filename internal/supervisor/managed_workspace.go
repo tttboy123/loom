@@ -56,6 +56,73 @@ type managedWorkspace struct {
 	tempInfo               fs.FileInfo
 }
 
+// SourceSnapshot is a content-addressed, path-free observation of the source
+// tree that will be copied into a managed workspace.
+type SourceSnapshot struct {
+	treeDigest     string
+	entryCount     int
+	fileCount      int
+	directoryCount int
+	totalBytes     int64
+}
+
+func ObserveSourceSnapshot(sourcePath string) (SourceSnapshot, error) {
+	entries, digest, err := scanManagedTree(
+		sourcePath,
+		maxManagedSourceEntries,
+		maxManagedSourceBytes,
+		maxManagedSourceFileBytes,
+		true,
+	)
+	if err != nil {
+		return SourceSnapshot{}, err
+	}
+	snapshot := SourceSnapshot{
+		treeDigest: digest,
+		entryCount: len(entries),
+	}
+	for _, entry := range entries {
+		if entry.directory {
+			snapshot.directoryCount++
+			continue
+		}
+		snapshot.fileCount++
+		snapshot.totalBytes += entry.size
+	}
+	if !snapshot.Valid() {
+		return SourceSnapshot{}, ErrManagedWorkspace
+	}
+	return snapshot, nil
+}
+
+func (snapshot SourceSnapshot) Valid() bool {
+	if !validManagedTreeDigest(snapshot.treeDigest) || snapshot.entryCount < 0 ||
+		snapshot.fileCount < 0 || snapshot.directoryCount < 0 ||
+		snapshot.totalBytes < 0 ||
+		snapshot.fileCount+snapshot.directoryCount != snapshot.entryCount {
+		return false
+	}
+	return true
+}
+
+func validManagedTreeDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func (snapshot SourceSnapshot) TreeDigest() string { return snapshot.treeDigest }
+
+func (snapshot SourceSnapshot) EntryCount() int { return snapshot.entryCount }
+
+func (snapshot SourceSnapshot) FileCount() int { return snapshot.fileCount }
+
+func (snapshot SourceSnapshot) DirectoryCount() int { return snapshot.directoryCount }
+
+func (snapshot SourceSnapshot) TotalBytes() int64 { return snapshot.totalBytes }
+
 func prepareManagedWorkspace(
 	workspaceRoot string,
 	sourcePath string,

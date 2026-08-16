@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/journal"
+	"loom-pi-rebuild/internal/work"
 )
 
 type runProjectionStatusReference struct {
@@ -76,13 +78,34 @@ type runProjectionBinding struct {
 	agentInstanceID   string
 }
 
+type runProjectionProviderAccountBinding struct {
+	runProjectionBinding
+	providerID             string
+	providerAccountID      string
+	policyRevision         int64
+	policyDigest           string
+	executionBindingDigest string
+	assignedBudgetUnits    int64
+}
+
+type runProjectionProviderAccountStart struct {
+	reservedAt time.Time
+	binding    runProjectionProviderAccountBinding
+}
+
 type runProjectionClaim struct {
-	binding         runProjectionBinding
-	previousBinding runProjectionBinding
-	statusReference runProjectionStatusReference
-	needsOldRelease bool
-	reserved        bool
-	oldReleased     bool
+	binding                runProjectionBinding
+	previousBinding        runProjectionBinding
+	statusReference        runProjectionStatusReference
+	needsOldRelease        bool
+	reserved               bool
+	oldReleased            bool
+	accountManaged         bool
+	accountReserved        bool
+	accountReleased        bool
+	needsOldAccountRelease bool
+	accountBinding         runProjectionProviderAccountBinding
+	previousAccountBinding runProjectionProviderAccountBinding
 }
 
 type runProjectionTerminal struct {
@@ -91,6 +114,9 @@ type runProjectionTerminal struct {
 	status          string
 	released        bool
 	outcome         bool
+	accountManaged  bool
+	accountReleased bool
+	accountBinding  runProjectionProviderAccountBinding
 }
 
 type runProjectionWork struct {
@@ -107,6 +133,7 @@ type runProjectionRun struct {
 }
 
 type runProjectionClaimedPayload struct {
+	ClaimContractVersion          *int                                `json:"claim_contract_version"`
 	WorkItemID                    *string                             `json:"work_item_id"`
 	RunID                         *string                             `json:"run_id"`
 	ClaimID                       *string                             `json:"claim_id"`
@@ -118,6 +145,8 @@ type runProjectionClaimedPayload struct {
 	AssetRevisionSetDigest        *string                             `json:"asset_revision_set_digest"`
 	MaterializationManifestDigest *string                             `json:"materialization_manifest_digest"`
 	MaterializationRootDigest     *string                             `json:"materialization_root_digest"`
+	RateCardStatus                *string                             `json:"rate_card_status"`
+	RateCard                      json.RawMessage                     `json:"rate_card"`
 	runProjectionStatusReferenceFields
 }
 
@@ -143,15 +172,29 @@ type runProjectionLeasePayload struct {
 }
 
 type runProjectionTerminalPayload struct {
-	WorkItemID        *string `json:"work_item_id"`
-	RunID             *string `json:"run_id"`
-	ClaimID           *string `json:"claim_id"`
-	ClaimGeneration   *int64  `json:"claim_generation"`
-	RuntimeInstanceID *string `json:"runtime_instance_id"`
-	AgentInstanceID   *string `json:"agent_instance_id"`
-	Status            *string `json:"status"`
-	Reason            *string `json:"reason"`
+	WorkItemID        *string                         `json:"work_item_id"`
+	RunID             *string                         `json:"run_id"`
+	ClaimID           *string                         `json:"claim_id"`
+	ClaimGeneration   *int64                          `json:"claim_generation"`
+	RuntimeInstanceID *string                         `json:"runtime_instance_id"`
+	AgentInstanceID   *string                         `json:"agent_instance_id"`
+	Status            *string                         `json:"status"`
+	Reason            *string                         `json:"reason"`
+	Accounting        *runProjectionAccountingPayload `json:"accounting"`
 	runProjectionStatusReferenceFields
+}
+
+type runProjectionAccountingPayload struct {
+	UsageObserved    bool            `json:"usage_observed"`
+	InputTokens      int64           `json:"input_tokens"`
+	OutputTokens     int64           `json:"output_tokens"`
+	CacheReadTokens  int64           `json:"cache_read_tokens"`
+	CacheWriteTokens int64           `json:"cache_write_tokens"`
+	TotalTokens      int64           `json:"total_tokens"`
+	CostObserved     bool            `json:"cost_observed"`
+	CostMicrounits   int64           `json:"cost_microunits"`
+	CostCurrency     string          `json:"cost_currency"`
+	CostSource       json.RawMessage `json:"cost_source"`
 }
 
 type runProjectionCapacityPayload struct {
@@ -164,6 +207,21 @@ type runProjectionCapacityPayload struct {
 	RuntimeStatusStreamID *string `json:"runtime_status_stream_id"`
 	RuntimeStatusSequence *int64  `json:"runtime_status_sequence"`
 	RuntimeStatusEventID  *string `json:"runtime_status_event_id"`
+}
+
+type runProjectionProviderAccountCapacityPayload struct {
+	WorkItemID             *string `json:"work_item_id"`
+	RunID                  *string `json:"run_id"`
+	ClaimID                *string `json:"claim_id"`
+	ClaimGeneration        *int64  `json:"claim_generation"`
+	RuntimeInstanceID      *string `json:"runtime_instance_id"`
+	AgentInstanceID        *string `json:"agent_instance_id"`
+	ProviderID             *string `json:"provider_id"`
+	ProviderAccountID      *string `json:"provider_account_id"`
+	PolicyRevision         *int64  `json:"policy_revision"`
+	PolicyDigest           *string `json:"policy_digest"`
+	ExecutionBindingDigest *string `json:"execution_binding_digest"`
+	AssignedBudgetUnits    *int64  `json:"assigned_budget_units"`
 }
 
 type runProjectionVerificationPayload struct {
@@ -232,6 +290,8 @@ func isRunAuthorityProjectionEvent(event journal.Event) bool {
 		return true
 	case strings.HasPrefix(event.StreamID, "runtime_capacity:"):
 		return true
+	case strings.HasPrefix(event.StreamID, "provider-account-capacity/"):
+		return true
 	default:
 		return false
 	}
@@ -247,6 +307,7 @@ func applyRunAuthorityProjection(
 	ctx context.Context,
 	snapshot *Snapshot,
 	events []journal.Event,
+	authorityEvents []journal.Event,
 ) error {
 	if snapshot == nil {
 		return ErrInvalidProjectionEvent
@@ -261,8 +322,20 @@ func applyRunAuthorityProjection(
 	}
 	claims := make(map[string]*runProjectionClaim)
 	terminals := make(map[string]*runProjectionTerminal)
+	accountPolicies, err := indexRunProjectionProviderAccountPolicies(
+		ctx, authorityEvents,
+	)
+	if err != nil {
+		return fmt.Errorf("Provider Account policies: %w", err)
+	}
+	rateCards, err := indexRunProjectionProviderModelRateCards(ctx, authorityEvents)
+	if err != nil {
+		return fmt.Errorf("Provider model Rate Cards: %w", err)
+	}
 	runs, err := replayRunProjectionRuns(
-		ctx, events, runsByAssignment, workItems, statusFacts, claims, terminals,
+		ctx, events, runsByAssignment, workItems, statusFacts, accountPolicies,
+		rateCards,
+		claims, terminals,
 	)
 	if err != nil {
 		return fmt.Errorf("runs: %w", err)
@@ -272,14 +345,22 @@ func applyRunAuthorityProjection(
 	); err != nil {
 		return fmt.Errorf("capacity: %w", err)
 	}
+	if err := replayRunProjectionProviderAccountCapacity(
+		ctx, events, accountPolicies, runs, claims, terminals,
+	); err != nil {
+		return fmt.Errorf("Provider Account capacity: %w", err)
+	}
 	for eventID, claim := range claims {
-		if !claim.reserved || claim.needsOldRelease && !claim.oldReleased {
+		if !claim.reserved || claim.needsOldRelease && !claim.oldReleased ||
+			claim.accountManaged && (!claim.accountReserved ||
+				claim.needsOldAccountRelease && !claim.accountReleased) {
 			return fmt.Errorf("%w: incomplete claim %s", ErrInvalidProjectionEvent, eventID)
 		}
 	}
 	for eventID, terminal := range terminals {
 		outcome, ok := outcomes[eventID]
-		if !ok || !terminal.released {
+		if !ok || !terminal.released ||
+			terminal.accountManaged && !terminal.accountReleased {
 			return fmt.Errorf("%w: incomplete terminal %s", ErrInvalidProjectionEvent, eventID)
 		}
 		workItem := workItems[terminal.binding.workItemID]
@@ -418,10 +499,11 @@ func indexRunProjectionWorkItems(
 				}
 			case "WorkItemAssigned":
 				var payload struct {
-					WorkItemID      *string `json:"work_item_id"`
-					RunID           *string `json:"run_id"`
-					AgentInstanceID *string `json:"agent_instance_id"`
-					Status          *string `json:"status"`
+					WorkItemID       *string                           `json:"work_item_id"`
+					RunID            *string                           `json:"run_id"`
+					AgentInstanceID  *string                           `json:"agent_instance_id"`
+					Status           *string                           `json:"status"`
+					ExecutionBinding *projectedExecutionBindingPayload `json:"execution_binding,omitempty"`
 				}
 				if err := decodeRunProjectionPayload(event, &payload); err != nil ||
 					workItem.record.ID == "" || payload.WorkItemID == nil ||
@@ -436,6 +518,18 @@ func indexRunProjectionWorkItems(
 				if _, duplicate := runs[*payload.RunID]; duplicate {
 					return nil, nil, nil, ErrInvalidProjectionEvent
 				}
+				var bindingAvailable bool
+				var binding projectedFrozenExecutionBinding
+				if payload.ExecutionBinding != nil {
+					var bindingErr error
+					binding, bindingErr = projectedExecutionBinding(
+						payload.ExecutionBinding,
+					)
+					if bindingErr != nil {
+						return nil, nil, nil, ErrInvalidProjectionEvent
+					}
+					bindingAvailable = true
+				}
 				workItem.record.Status = "assigned"
 				workItem.record.RunID = *payload.RunID
 				workItem.record.AgentInstanceID = *payload.AgentInstanceID
@@ -444,8 +538,10 @@ func indexRunProjectionWorkItems(
 				runs[*payload.RunID] = runProjectionRun{
 					record: Run{
 						ID: *payload.RunID, WorkItemID: workItemID,
-						Phase:           "unclaimed",
-						AgentInstanceID: *payload.AgentInstanceID,
+						Phase:                     "unclaimed",
+						AgentInstanceID:           *payload.AgentInstanceID,
+						ExecutionBindingAvailable: bindingAvailable,
+						ExecutionBinding:          binding,
 					},
 					lastEventID: event.ID,
 				}
@@ -693,12 +789,209 @@ func indexRunProjectionWorkItems(
 	return workItems, runs, outcomes, nil
 }
 
+func indexRunProjectionProviderAccountPolicies(
+	ctx context.Context,
+	events []journal.Event,
+) (map[string][]work.ProviderAccountPolicy, error) {
+	byStream := make(map[string][]journal.Event)
+	seen := make(map[string]struct{})
+	for _, event := range events {
+		if !strings.HasPrefix(event.StreamID, "provider-account-policy/") {
+			continue
+		}
+		if _, duplicate := seen[event.ID]; duplicate {
+			continue
+		}
+		seen[event.ID] = struct{}{}
+		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	history := make(map[string][]work.ProviderAccountPolicy)
+	for streamID, streamEvents := range byStream {
+		sort.SliceStable(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Seq < streamEvents[j].Seq
+		})
+		accountID := strings.TrimPrefix(streamID, "provider-account-policy/")
+		previousEventID := ""
+		for index, event := range streamEvents {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			policy, _, err := work.DecodeProviderAccountPolicyConfiguredEvent(
+				event, previousEventID,
+			)
+			if err != nil || event.Seq != int64(index+1) ||
+				policy.ProviderAccountID() != accountID ||
+				(len(history[accountID]) > 0 && policy.ConfiguredAt().Before(
+					history[accountID][len(history[accountID])-1].ConfiguredAt(),
+				)) {
+				return nil, ErrInvalidProjectionEvent
+			}
+			history[accountID] = append(history[accountID], policy)
+			previousEventID = event.ID
+		}
+	}
+	return history, nil
+}
+
+func indexRunProjectionProviderModelRateCards(
+	ctx context.Context,
+	events []journal.Event,
+) (map[string][]work.ProviderModelRateCard, error) {
+	byStream := make(map[string][]journal.Event)
+	seen := make(map[string]struct{})
+	for _, event := range events {
+		if event.Type != "ProviderModelRateCardConfigured" {
+			continue
+		}
+		if _, duplicate := seen[event.ID]; duplicate {
+			continue
+		}
+		seen[event.ID] = struct{}{}
+		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	history := make(map[string][]work.ProviderModelRateCard)
+	for streamID, streamEvents := range byStream {
+		sort.SliceStable(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Seq < streamEvents[j].Seq
+		})
+		previousEventID := ""
+		for index, event := range streamEvents {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			rateCard, _, err := work.DecodeProviderModelRateCardConfiguredEvent(
+				event, previousEventID,
+			)
+			if err != nil || event.Seq != int64(index+1) ||
+				(len(history[streamID]) > 0 && !rateCard.ConfiguredAt().After(
+					history[streamID][len(history[streamID])-1].ConfiguredAt(),
+				)) {
+				return nil, ErrInvalidProjectionEvent
+			}
+			history[streamID] = append(history[streamID], rateCard)
+			previousEventID = event.ID
+		}
+	}
+	return history, nil
+}
+
+func runProjectionProviderModelRateCardAt(
+	history map[string][]work.ProviderModelRateCard,
+	providerID, accountID, modelID string,
+	at time.Time,
+) (work.ProviderModelRateCard, bool) {
+	streamID, err := work.ProviderModelRateCardStreamID(providerID, accountID, modelID)
+	if err != nil {
+		return work.ProviderModelRateCard{}, false
+	}
+	cards := history[streamID]
+	for index := len(cards) - 1; index >= 0; index-- {
+		if !cards[index].ConfiguredAt().After(at) {
+			return cards[index], true
+		}
+	}
+	return work.ProviderModelRateCard{}, false
+}
+
+func runProjectionProviderAccountPolicyAt(
+	history map[string][]work.ProviderAccountPolicy,
+	providerID string,
+	providerAccountID string,
+	at time.Time,
+) (work.ProviderAccountPolicy, bool) {
+	policies := history[providerAccountID]
+	for index := len(policies) - 1; index >= 0; index-- {
+		policy := policies[index]
+		if policy.ProviderID() == providerID && !policy.ConfiguredAt().After(at) {
+			return policy, true
+		}
+	}
+	return work.ProviderAccountPolicy{}, false
+}
+
+func runProjectionProviderAccountPolicyRevision(
+	history map[string][]work.ProviderAccountPolicy,
+	providerID string,
+	providerAccountID string,
+	revision int64,
+	digest string,
+) (work.ProviderAccountPolicy, bool) {
+	for _, policy := range history[providerAccountID] {
+		if policy.ProviderID() == providerID && policy.Revision() == revision &&
+			policy.Digest() == digest {
+			return policy, true
+		}
+	}
+	return work.ProviderAccountPolicy{}, false
+}
+
+func freezeProjectedRunProviderAccountPolicy(
+	run *Run,
+	policy work.ProviderAccountPolicy,
+) {
+	run.ProviderAccountPolicyVersion = policy.Version()
+	run.ProviderAccountPolicyRevision = policy.Revision()
+	run.ProviderAccountPolicyDigest = policy.Digest()
+	run.ProviderAccountTrustDomain = policy.TrustDomain()
+	run.ProviderAccountRetentionMode = policy.RetentionMode()
+	run.ProviderAccountDataRegion = policy.DataRegion()
+}
+
+func projectedRunProviderAccountPolicyMatches(
+	run Run,
+	policy work.ProviderAccountPolicy,
+) bool {
+	return run.ProviderAccountPolicyVersion == policy.Version() &&
+		run.ProviderAccountPolicyRevision == policy.Revision() &&
+		run.ProviderAccountPolicyDigest == policy.Digest() &&
+		run.ProviderAccountTrustDomain == policy.TrustDomain() &&
+		run.ProviderAccountRetentionMode == policy.RetentionMode() &&
+		run.ProviderAccountDataRegion == policy.DataRegion()
+}
+
+func runProjectionProviderAccountBindingForRun(
+	run Run,
+	claimID string,
+	claimGeneration int64,
+	runtimeInstanceID string,
+	policy work.ProviderAccountPolicy,
+) (runProjectionProviderAccountBinding, error) {
+	if !run.ExecutionBindingAvailable || !policy.Valid() ||
+		run.ExecutionBinding.BindingDigest == "" ||
+		run.ExecutionBinding.ProviderID != policy.ProviderID() ||
+		run.ExecutionBinding.ProviderAccountID != policy.ProviderAccountID() ||
+		run.ExecutionBinding.RuntimeInstanceID != runtimeInstanceID {
+		return runProjectionProviderAccountBinding{}, ErrInvalidProjectionEvent
+	}
+	budget := int64(0)
+	if run.ExecutionBinding.Budget != nil {
+		budget = *run.ExecutionBinding.Budget
+	}
+	if budget < 0 {
+		return runProjectionProviderAccountBinding{}, ErrInvalidProjectionEvent
+	}
+	return runProjectionProviderAccountBinding{
+		runProjectionBinding: runProjectionBinding{
+			workItemID: run.WorkItemID, runID: run.ID, claimID: claimID,
+			claimGeneration:   claimGeneration,
+			runtimeInstanceID: runtimeInstanceID,
+			agentInstanceID:   run.AgentInstanceID,
+		},
+		providerID: policy.ProviderID(), providerAccountID: policy.ProviderAccountID(),
+		policyRevision: policy.Revision(), policyDigest: policy.Digest(),
+		executionBindingDigest: run.ExecutionBinding.BindingDigest,
+		assignedBudgetUnits:    budget,
+	}, nil
+}
+
 func replayRunProjectionRuns(
 	ctx context.Context,
 	events []journal.Event,
 	assigned map[string]runProjectionRun,
 	workItems map[string]runProjectionWork,
 	statusFacts map[runProjectionStatusReference]runProjectionStatusFact,
+	accountPolicies map[string][]work.ProviderAccountPolicy,
+	rateCards map[string][]work.ProviderModelRateCard,
 	claims map[string]*runProjectionClaim,
 	terminals map[string]*runProjectionTerminal,
 ) (map[string]runProjectionRun, error) {
@@ -754,7 +1047,10 @@ func replayRunProjectionRuns(
 				if err != nil || run.record.Phase == "running" ||
 					run.record.Phase == "terminal" ||
 					run.record.Phase == "claimed" &&
-						event.EmittedAt.Before(run.prepareLeaseExpiresAt) {
+						event.EmittedAt.Before(run.prepareLeaseExpiresAt) ||
+					run.record.ExecutionBindingAvailable &&
+						run.record.ExecutionBinding.RuntimeInstanceID !=
+							*payload.RuntimeInstanceID {
 					return nil, ErrInvalidProjectionEvent
 				}
 				reference := payload.runProjectionStatusReferenceFields.reference()
@@ -762,6 +1058,72 @@ func replayRunProjectionRuns(
 					statusFacts, reference, *payload.RuntimeInstanceID, true,
 				) {
 					return nil, ErrInvalidProjectionEvent
+				}
+				accountPolicy, accountManaged := runProjectionProviderAccountPolicyAt(
+					accountPolicies,
+					run.record.ExecutionBinding.ProviderID,
+					run.record.ExecutionBinding.ProviderAccountID,
+					event.EmittedAt,
+				)
+				rateCard, rateCardAvailable, rateCardErr := projectedClaimRateCard(payload)
+				authoritativeRateCard, authoritativeRateCardAvailable :=
+					runProjectionProviderModelRateCardAt(
+						rateCards,
+						run.record.ExecutionBinding.ProviderID,
+						run.record.ExecutionBinding.ProviderAccountID,
+						run.record.ExecutionBinding.ModelID,
+						event.EmittedAt,
+					)
+				if rateCardErr != nil || payload.ClaimContractVersion != nil &&
+					authoritativeRateCardAvailable != rateCardAvailable ||
+					rateCardAvailable && authoritativeRateCard != rateCard ||
+					rateCardAvailable &&
+						(!run.record.ExecutionBindingAvailable ||
+							rateCard.ProviderID() != run.record.ExecutionBinding.ProviderID ||
+							rateCard.ProviderAccountID() != run.record.ExecutionBinding.ProviderAccountID ||
+							rateCard.ModelID() != run.record.ExecutionBinding.ModelID ||
+							rateCard.ConfiguredAt().After(event.EmittedAt)) {
+					return nil, ErrInvalidProjectionEvent
+				}
+				var accountBinding runProjectionProviderAccountBinding
+				if accountManaged {
+					var bindingErr error
+					accountBinding, bindingErr = runProjectionProviderAccountBindingForRun(
+						run.record, *payload.ClaimID, *payload.ClaimGeneration,
+						*payload.RuntimeInstanceID, accountPolicy,
+					)
+					if bindingErr != nil {
+						return nil, bindingErr
+					}
+				}
+				run.record.ProviderModelRateCardAvailable = rateCardAvailable
+				run.record.ProviderModelRateCard = ProjectedProviderModelRateCard{}
+				if rateCardAvailable {
+					run.record.ProviderModelRateCard = projectedProviderModelRateCard(rateCard)
+				}
+				var previousAccountBinding runProjectionProviderAccountBinding
+				needsOldAccountRelease := run.record.ProviderAccountPolicyAvailable
+				if needsOldAccountRelease {
+					previousPolicy, found := runProjectionProviderAccountPolicyRevision(
+						accountPolicies,
+						run.record.ExecutionBinding.ProviderID,
+						run.record.ExecutionBinding.ProviderAccountID,
+						run.record.ProviderAccountPolicyRevision,
+						run.record.ProviderAccountPolicyDigest,
+					)
+					if !found {
+						return nil, ErrInvalidProjectionEvent
+					}
+					previousAccountBinding, err =
+						runProjectionProviderAccountBindingForRun(
+							run.record, run.record.ClaimID,
+							run.record.ClaimGeneration,
+							run.record.RuntimeInstanceID, previousPolicy,
+						)
+					if err != nil || previousAccountBinding.assignedBudgetUnits !=
+						run.record.ProviderAccountAssignedBudgetUnits {
+						return nil, ErrInvalidProjectionEvent
+					}
 				}
 				previousBinding := bindingFromRun(run.record)
 				previousGeneration := run.record.ClaimGeneration
@@ -771,6 +1133,14 @@ func replayRunProjectionRuns(
 				run.record.RuntimeInstanceID = *payload.RuntimeInstanceID
 				run.record.AgentInstanceID = *payload.AgentInstanceID
 				run.record.PrepareLeaseExpiresAt = expiresAt
+				if accountManaged {
+					run.record.ProviderAccountPolicyAvailable = true
+					freezeProjectedRunProviderAccountPolicy(
+						&run.record, accountPolicy,
+					)
+					run.record.ProviderAccountAssignedBudgetUnits =
+						accountBinding.assignedBudgetUnits
+				}
 				lineagePresent := payload.AssetRevisionBindings != nil ||
 					payload.AssetRevisionSetDigest != nil ||
 					payload.MaterializationManifestDigest != nil ||
@@ -794,10 +1164,14 @@ func replayRunProjectionRuns(
 				run.lastEventID = event.ID
 				run.sequence = event.Seq
 				claims[event.ID] = &runProjectionClaim{
-					binding:         bindingFromRun(run.record),
-					previousBinding: previousBinding,
-					statusReference: reference,
-					needsOldRelease: previousGeneration > 0,
+					binding:                bindingFromRun(run.record),
+					previousBinding:        previousBinding,
+					statusReference:        reference,
+					needsOldRelease:        previousGeneration > 0,
+					accountManaged:         accountManaged,
+					accountBinding:         accountBinding,
+					needsOldAccountRelease: needsOldAccountRelease,
+					previousAccountBinding: previousAccountBinding,
 				}
 			case "RunPrepareLeaseExtended":
 				var payload runProjectionLeasePayload
@@ -862,15 +1236,56 @@ func replayRunProjectionRuns(
 				) {
 					return nil, ErrInvalidProjectionEvent
 				}
+				var accountBinding runProjectionProviderAccountBinding
+				accountManaged := run.record.ProviderAccountPolicyAvailable
+				if accountManaged {
+					policy, found := runProjectionProviderAccountPolicyRevision(
+						accountPolicies,
+						run.record.ExecutionBinding.ProviderID,
+						run.record.ExecutionBinding.ProviderAccountID,
+						run.record.ProviderAccountPolicyRevision,
+						run.record.ProviderAccountPolicyDigest,
+					)
+					if !found {
+						return nil, ErrInvalidProjectionEvent
+					}
+					var bindingErr error
+					accountBinding, bindingErr = runProjectionProviderAccountBindingForRun(
+						run.record, run.record.ClaimID,
+						run.record.ClaimGeneration,
+						run.record.RuntimeInstanceID, policy,
+					)
+					if bindingErr != nil || accountBinding.assignedBudgetUnits !=
+						run.record.ProviderAccountAssignedBudgetUnits {
+						return nil, ErrInvalidProjectionEvent
+					}
+				}
 				run.record.Phase = "terminal"
 				run.record.TerminalStatus = *payload.Status
 				run.record.TerminalReason = *payload.Reason
+				run.record.AccountingAvailable = payload.Accounting != nil
+				if payload.Accounting != nil {
+					run.record.Accounting = RunAccounting{
+						UsageObserved:    payload.Accounting.UsageObserved,
+						InputTokens:      payload.Accounting.InputTokens,
+						OutputTokens:     payload.Accounting.OutputTokens,
+						CacheReadTokens:  payload.Accounting.CacheReadTokens,
+						CacheWriteTokens: payload.Accounting.CacheWriteTokens,
+						TotalTokens:      payload.Accounting.TotalTokens,
+						CostObserved:     payload.Accounting.CostObserved,
+						CostMicrounits:   payload.Accounting.CostMicrounits,
+						CostCurrency:     payload.Accounting.CostCurrency,
+						CostSource:       payload.Accounting.projectedCostSource(),
+					}
+				}
 				run.lastEventID = event.ID
 				run.sequence = event.Seq
 				terminals[event.ID] = &runProjectionTerminal{
 					binding:         bindingFromRun(run.record),
 					statusReference: reference,
 					status:          run.record.TerminalStatus,
+					accountManaged:  accountManaged,
+					accountBinding:  accountBinding,
 				}
 			default:
 				return nil, ErrInvalidProjectionEvent
@@ -990,6 +1405,177 @@ func replayRunProjectionCapacity(
 	return nil
 }
 
+func replayRunProjectionProviderAccountCapacity(
+	ctx context.Context,
+	events []journal.Event,
+	accountPolicies map[string][]work.ProviderAccountPolicy,
+	runs map[string]runProjectionRun,
+	claims map[string]*runProjectionClaim,
+	terminals map[string]*runProjectionTerminal,
+) error {
+	byStream := make(map[string][]journal.Event)
+	for _, event := range events {
+		if strings.HasPrefix(event.StreamID, "provider-account-capacity/") {
+			byStream[event.StreamID] = append(byStream[event.StreamID], event)
+		}
+	}
+	for streamID, streamEvents := range byStream {
+		sort.SliceStable(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Seq < streamEvents[j].Seq
+		})
+		accountID := strings.TrimPrefix(
+			streamID, "provider-account-capacity/",
+		)
+		active := make(map[string]runProjectionProviderAccountBinding)
+		starts := make([]runProjectionProviderAccountStart, 0)
+		for _, event := range streamEvents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !validRunProjectionEnvelope(event) {
+				return ErrInvalidProjectionEvent
+			}
+			var payload runProjectionProviderAccountCapacityPayload
+			if decodeRunProjectionPayload(event, &payload) != nil {
+				return ErrInvalidProjectionEvent
+			}
+			binding, valid := payload.binding()
+			if !valid || binding.providerAccountID != accountID {
+				return ErrInvalidProjectionEvent
+			}
+			policy, found := runProjectionProviderAccountPolicyRevision(
+				accountPolicies, binding.providerID, binding.providerAccountID,
+				binding.policyRevision, binding.policyDigest,
+			)
+			if !found {
+				return ErrInvalidProjectionEvent
+			}
+			key := runProjectionCapacityKey(binding.runProjectionBinding)
+			switch event.Type {
+			case "ProviderAccountCapacityReserved":
+				current, currentFound := runProjectionProviderAccountPolicyAt(
+					accountPolicies, binding.providerID,
+					binding.providerAccountID, event.EmittedAt,
+				)
+				claim, claimFound := claims[event.CausationID]
+				if !currentFound || current.Digest() != policy.Digest() ||
+					!claimFound || !claim.accountManaged ||
+					claim.accountBinding != binding || active[key].runID != "" ||
+					!validRunProjectionProviderAccountAdmission(
+						active, starts, policy, binding, event.EmittedAt,
+					) {
+					return ErrInvalidProjectionEvent
+				}
+				run, ok := runs[binding.runID]
+				if !ok || !run.record.ProviderAccountPolicyAvailable ||
+					run.record.ProviderAccountPolicyRevision != binding.policyRevision ||
+					run.record.ProviderAccountPolicyDigest != binding.policyDigest ||
+					!projectedRunProviderAccountPolicyMatches(
+						run.record, policy,
+					) ||
+					run.record.ProviderAccountAssignedBudgetUnits != binding.assignedBudgetUnits {
+					return ErrInvalidProjectionEvent
+				}
+				active[key] = binding
+				starts = append(starts, runProjectionProviderAccountStart{
+					reservedAt: event.EmittedAt, binding: binding,
+				})
+				claim.accountReserved = true
+			case "ProviderAccountCapacityReleased":
+				current, exists := active[key]
+				if !exists || current != binding {
+					return ErrInvalidProjectionEvent
+				}
+				delete(active, key)
+				if terminal, ok := terminals[event.CausationID]; ok {
+					if !terminal.accountManaged || terminal.accountBinding != binding {
+						return ErrInvalidProjectionEvent
+					}
+					terminal.accountReleased = true
+				} else if claim, ok := claims[event.CausationID]; ok {
+					if !claim.needsOldAccountRelease ||
+						claim.previousAccountBinding != binding {
+						return ErrInvalidProjectionEvent
+					}
+					claim.accountReleased = true
+				} else {
+					return ErrInvalidProjectionEvent
+				}
+			default:
+				return ErrInvalidProjectionEvent
+			}
+		}
+	}
+	return nil
+}
+
+func (payload runProjectionProviderAccountCapacityPayload) binding() (
+	runProjectionProviderAccountBinding,
+	bool,
+) {
+	if payload.WorkItemID == nil || payload.RunID == nil ||
+		payload.ClaimID == nil || payload.ClaimGeneration == nil ||
+		payload.RuntimeInstanceID == nil || payload.AgentInstanceID == nil ||
+		payload.ProviderID == nil || payload.ProviderAccountID == nil ||
+		payload.PolicyRevision == nil || payload.PolicyDigest == nil ||
+		payload.ExecutionBindingDigest == nil ||
+		payload.AssignedBudgetUnits == nil ||
+		*payload.WorkItemID == "" || *payload.RunID == "" ||
+		!validRunProjectionCanonicalUUID(*payload.ClaimID) ||
+		*payload.ClaimGeneration <= 0 || *payload.RuntimeInstanceID == "" ||
+		*payload.AgentInstanceID == "" || *payload.ProviderID == "" ||
+		*payload.ProviderAccountID == "" || *payload.PolicyRevision <= 0 ||
+		!validSHA256Digest(*payload.PolicyDigest) ||
+		!validSHA256Digest(*payload.ExecutionBindingDigest) ||
+		*payload.AssignedBudgetUnits < 0 {
+		return runProjectionProviderAccountBinding{}, false
+	}
+	return runProjectionProviderAccountBinding{
+		runProjectionBinding: runProjectionBinding{
+			workItemID: *payload.WorkItemID, runID: *payload.RunID,
+			claimID:           *payload.ClaimID,
+			claimGeneration:   *payload.ClaimGeneration,
+			runtimeInstanceID: *payload.RuntimeInstanceID,
+			agentInstanceID:   *payload.AgentInstanceID,
+		},
+		providerID:             *payload.ProviderID,
+		providerAccountID:      *payload.ProviderAccountID,
+		policyRevision:         *payload.PolicyRevision,
+		policyDigest:           *payload.PolicyDigest,
+		executionBindingDigest: *payload.ExecutionBindingDigest,
+		assignedBudgetUnits:    *payload.AssignedBudgetUnits,
+	}, true
+}
+
+func validRunProjectionProviderAccountAdmission(
+	active map[string]runProjectionProviderAccountBinding,
+	starts []runProjectionProviderAccountStart,
+	policy work.ProviderAccountPolicy,
+	binding runProjectionProviderAccountBinding,
+	now time.Time,
+) bool {
+	if len(active) >= policy.MaximumConcurrentAttempts() {
+		return false
+	}
+	assignedBudget := int64(0)
+	for _, reservation := range active {
+		assignedBudget += reservation.assignedBudgetUnits
+	}
+	if binding.assignedBudgetUnits >
+		policy.MaximumAssignedBudgetUnits()-assignedBudget {
+		return false
+	}
+	windowStart := now.Add(-policy.DispatchWindow())
+	dispatchStarts := 0
+	for _, start := range starts {
+		if !start.reservedAt.Before(windowStart) &&
+			!start.reservedAt.After(now) {
+			dispatchStarts++
+		}
+	}
+	return dispatchStarts < policy.MaximumDispatchStarts()
+}
+
 func validateRunProjectionOutcome(
 	event journal.Event,
 	terminal *runProjectionTerminal,
@@ -1086,6 +1672,12 @@ func validRunProjectionClaimPayload(
 		payload.PrepareLeaseExpiresAt == nil {
 		return false
 	}
+	if payload.ClaimContractVersion == nil &&
+		(payload.RateCardStatus != nil || len(payload.RateCard) > 0) ||
+		payload.ClaimContractVersion != nil &&
+			(*payload.ClaimContractVersion != 2 || payload.RateCardStatus == nil) {
+		return false
+	}
 	lineagePresent := payload.AssetRevisionBindings != nil ||
 		payload.AssetRevisionSetDigest != nil ||
 		payload.MaterializationManifestDigest != nil ||
@@ -1121,6 +1713,29 @@ func validRunProjectionClaimPayload(
 		payload.reference() != (runProjectionStatusReference{})
 }
 
+func projectedClaimRateCard(
+	payload runProjectionClaimedPayload,
+) (work.ProviderModelRateCard, bool, error) {
+	if payload.ClaimContractVersion == nil {
+		return work.ProviderModelRateCard{}, false, nil
+	}
+	switch *payload.RateCardStatus {
+	case "not_configured":
+		if len(payload.RateCard) != 0 {
+			return work.ProviderModelRateCard{}, false, ErrInvalidProjectionEvent
+		}
+		return work.ProviderModelRateCard{}, false, nil
+	case "configured":
+		rateCard, err := work.DecodeFrozenProviderModelRateCard(payload.RateCard)
+		if err != nil {
+			return work.ProviderModelRateCard{}, false, ErrInvalidProjectionEvent
+		}
+		return rateCard, true, nil
+	default:
+		return work.ProviderModelRateCard{}, false, ErrInvalidProjectionEvent
+	}
+}
+
 func validRunProjectionGenerationPayload(
 	payload runProjectionGenerationPayload,
 	run Run,
@@ -1144,6 +1759,20 @@ func validRunProjectionTerminalPayload(
 		payload.reference() == (runProjectionStatusReference{}) {
 		return false
 	}
+	if payload.Accounting != nil && !validProjectedRunAccounting(
+		payload.Accounting.UsageObserved,
+		payload.Accounting.InputTokens,
+		payload.Accounting.OutputTokens,
+		payload.Accounting.CacheReadTokens,
+		payload.Accounting.CacheWriteTokens,
+		payload.Accounting.TotalTokens,
+		payload.Accounting.CostObserved,
+		payload.Accounting.CostMicrounits,
+		payload.Accounting.CostCurrency,
+		payload.Accounting.CostSource,
+	) {
+		return false
+	}
 	switch *payload.Status {
 	case "succeeded":
 		return *payload.Reason == ""
@@ -1152,6 +1781,71 @@ func validRunProjectionTerminalPayload(
 	default:
 		return false
 	}
+}
+
+func validProjectedRunAccounting(
+	usageObserved bool,
+	inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens int64,
+	costObserved bool,
+	costMicrounits int64,
+	costCurrency string,
+	costSource json.RawMessage,
+) bool {
+	source, present, valid := projectedCostSourceValue(costSource)
+	if !valid {
+		return false
+	}
+	if usageObserved {
+		if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 ||
+			cacheWriteTokens < 0 || inputTokens > int64(1<<63-1)-outputTokens ||
+			totalTokens != inputTokens+outputTokens {
+			return false
+		}
+	} else if inputTokens != 0 || outputTokens != 0 || cacheReadTokens != 0 ||
+		cacheWriteTokens != 0 || totalTokens != 0 {
+		return false
+	}
+	if costObserved {
+		if costMicrounits < 0 || len(costCurrency) != 3 {
+			return false
+		}
+		for _, character := range costCurrency {
+			if character < 'A' || character > 'Z' {
+				return false
+			}
+		}
+		if !present {
+			return true
+		}
+		switch source {
+		case work.CostSourceProviderReported, work.CostSourceHarnessReported,
+			work.CostSourceRateCardEstimate:
+			return true
+		default:
+			return false
+		}
+	}
+	return costMicrounits == 0 && costCurrency == "" &&
+		(!present || source == "")
+}
+
+func (accounting runProjectionAccountingPayload) projectedCostSource() string {
+	source, present, _ := projectedCostSourceValue(accounting.CostSource)
+	if accounting.CostObserved && !present {
+		return work.CostSourceLegacyUnspecified
+	}
+	return source
+}
+
+func projectedCostSourceValue(raw json.RawMessage) (string, bool, bool) {
+	if len(raw) == 0 {
+		return "", false, true
+	}
+	var source string
+	if json.Unmarshal(raw, &source) != nil {
+		return "", true, false
+	}
+	return source, true, true
 }
 
 func validRunProjectionGeneration(

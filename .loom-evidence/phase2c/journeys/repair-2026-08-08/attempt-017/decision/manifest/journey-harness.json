@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "purpose": "phase3a-cross-client-e2e",
+  "journey_id": "1b9d763c-82ea-4b0e-83af-d9a3acb49279",
+  "state_path": "/private/tmp/loom-phase2c-decision-20260809-017/state/loom.db",
+  "socket_path": "/private/tmp/loom-phase2c-decision-20260809-017/loomd.sock",
+  "evidence_root": "/private/tmp/loom-phase2c-decision-20260809-017",
+  "fault_kind": "none",
+  "fault_action": "none",
+  "delay_millis": 0
+}

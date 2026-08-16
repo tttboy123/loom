@@ -106,6 +106,59 @@ final class InteractionContinuityTests: XCTestCase {
         )
     }
 
+    func testConversationThreadIdentityIsStableAndIsolatedPerTask() {
+        var workspace = LocalProductWorkspaceState()
+        let draftThread = workspace.currentThreadID()
+
+        let history = LocalProductWorkspaceTask(
+            id: "history:release",
+            title: "Release review",
+            subtitle: "Ready",
+            kind: .history
+        )
+        workspace.mergeAuthoritativeTasks([history])
+        workspace.selectTask(history.id)
+        let historyThread = workspace.currentThreadID()
+
+        XCTAssertTrue(draftThread.hasPrefix("thread-"))
+        XCTAssertTrue(historyThread.hasPrefix("thread-"))
+        XCTAssertNotEqual(draftThread, historyThread)
+
+        workspace.selectTask(LocalProductWorkspaceState.newTaskID)
+        XCTAssertEqual(workspace.currentThreadID(), draftThread)
+    }
+
+    func testConversationProfileSelectionIsIsolatedPerTask() {
+        var workspace = LocalProductWorkspaceState()
+        workspace.selectConversationProfile(
+            "conversation-deepseek-deepseek-chat-r2"
+        )
+        XCTAssertEqual(
+            workspace.selectedContinuity.conversationProfileID,
+            "conversation-deepseek-deepseek-chat-r2"
+        )
+
+        workspace.mergeAuthoritativeTasks([
+            LocalProductWorkspaceTask(
+                id: "task-second",
+                title: "Second",
+                subtitle: "Conversation",
+                kind: .draft
+            ),
+        ])
+        workspace.selectTask("task-second")
+        XCTAssertEqual(workspace.selectedContinuity.conversationProfileID, "")
+    }
+
+    func testFolderSelectionKeepsOnlySafeDisplayHandle() {
+        var workspace = LocalProductWorkspaceState()
+
+        workspace.selectFolderDisplayName("  loom-pi-rebuild\n/private/path  ")
+
+        XCTAssertEqual(workspace.selectedFolderDisplayName, "loom-pi-rebuild private path")
+        XCTAssertFalse(workspace.selectedFolderDisplayName?.contains("/") ?? true)
+    }
+
     @MainActor
     func testPreflightReviewIncludesBoundProviderModelAndLimits() throws {
         let session = try LocalProductSetupWire.decodeBuilderSession(
@@ -144,8 +197,31 @@ final class InteractionContinuityTests: XCTestCase {
                         "source_probe_id":"probe"
                       },
                       "runtime_profile_id":"profile",
+                      "harness_adapter":"pi",
+                      "provider_id":"openai",
+                      "provider_account_id":"openai.primary",
                       "model_id":"codex-model",
-                      "auth_mode":"native_auth",
+                      "auth_mode":"brokered",
+                      "credential_revision":3,
+                      "reasoning_effort":"high",
+                      "timeout_milliseconds":45000,
+                      "budget_available":true,
+                      "budget_units":80,
+                      "required_capabilities":["reasoning_effort","workspace.edit"],
+                      "fallback_configured":true,
+                      "fallback_runtime_profile_id":"profile-alt",
+                      "fallback_harness_adapter":"pi",
+                      "fallback_provider_id":"anthropic",
+                      "fallback_provider_account_id":"anthropic.review",
+                      "fallback_auth_mode":"brokered",
+                      "fallback_model_id":"claude-sonnet",
+                      "fallback_credential_revision":7,
+                      "fallback_reasoning_effort":"low",
+                      "fallback_timeout_milliseconds":30000,
+                      "fallback_budget_available":true,
+                      "fallback_budget_units":40,
+                      "fallback_required_capabilities":["reasoning_effort","rpc"],
+                      "fallback_approval_required":true,
                       "skills":[],
                       "permission_ids":["repo.read"],
                       "resource_ids":[],
@@ -166,9 +242,29 @@ final class InteractionContinuityTests: XCTestCase {
         )
         let review = LocalProductPreflightReview(preview: session.preview)
 
-        XCTAssertEqual(review.roles.first?.provider, "Codex")
-        XCTAssertEqual(review.roles.first?.model, "codex-model")
-        XCTAssertEqual(review.roles.first?.auth, "Native auth")
+		XCTAssertEqual(review.roles.first?.provider, "OpenAI")
+		XCTAssertEqual(review.roles.first?.providerAccount, "openai.primary")
+		XCTAssertEqual(review.roles.first?.harness, "Pi")
+		XCTAssertEqual(review.roles.first?.model, "codex-model")
+		XCTAssertEqual(review.roles.first?.auth, "Brokered")
+		XCTAssertEqual(review.roles.first?.credential, "Credential v3")
+		XCTAssertEqual(review.roles.first?.reasoning, "High reasoning")
+		XCTAssertEqual(review.roles.first?.timeout, "45s timeout")
+		XCTAssertEqual(review.roles.first?.budget, "80 units")
+		XCTAssertEqual(
+			review.roles.first?.fallback,
+			"Pi · Anthropic / anthropic.review · claude-sonnet"
+		)
+		XCTAssertEqual(review.roles.first?.fallbackApproval, "Approval required")
+		XCTAssertEqual(review.roles.first?.fallbackAuth, "Brokered")
+		XCTAssertEqual(review.roles.first?.fallbackCredential, "Credential v7")
+		XCTAssertEqual(review.roles.first?.fallbackReasoning, "Low reasoning")
+		XCTAssertEqual(review.roles.first?.fallbackTimeout, "30s timeout")
+		XCTAssertEqual(review.roles.first?.fallbackBudget, "40 units")
+		XCTAssertEqual(
+			review.roles.first?.fallbackCapabilities,
+			["Reasoning effort", "Rpc"]
+		)
         XCTAssertEqual(review.permissions, ["Repo read"])
         XCTAssertEqual(review.compatibility, "Compatible")
         XCTAssertEqual(review.maximumCost, "Up to 2 credits")
@@ -204,7 +300,7 @@ final class InteractionContinuityTests: XCTestCase {
                     "status":"online",
                     "capacity":1,
                     "model_id":"codex-model",
-                    "model_ids":["codex-model"],
+                    "model_ids":["codex-model","claude-sonnet"],
                     "observed_capabilities":[],
                     "source_probe_id":"probe"
                   },{
@@ -227,6 +323,17 @@ final class InteractionContinuityTests: XCTestCase {
                     "agent_definition_id":"agent-main",
                     "runtime_profile_id":"profile",
                     "runtime_instance_id":"runtime-pi",
+                    "harness_adapter":"pi",
+                    "provider_id":"openai",
+                    "provider_account_id":"openai.primary",
+                    "model_id":"codex-model",
+                    "auth_mode":"brokered",
+                    "credential_revision":3,
+                    "reasoning_effort":"high",
+                    "timeout_milliseconds":45000,
+                    "budget_available":true,
+                    "budget_units":80,
+                    "required_capabilities":["workspace.edit"],
                     "skill_revision_ids":[],
                     "permission_ids":["repo.read"],
                     "resource_ids":[],
@@ -236,7 +343,18 @@ final class InteractionContinuityTests: XCTestCase {
                     "kind":"main",
                     "agent_definition_id":"agent-main",
                     "runtime_profile_id":"profile-alt",
-                    "runtime_instance_id":"runtime-alt",
+                    "runtime_instance_id":"runtime-pi",
+                    "harness_adapter":"pi",
+                    "provider_id":"anthropic",
+                    "provider_account_id":"anthropic.review",
+                    "model_id":"claude-sonnet",
+                    "auth_mode":"brokered",
+                    "credential_revision":7,
+                    "reasoning_effort":"low",
+                    "timeout_milliseconds":30000,
+                    "budget_available":true,
+                    "budget_units":40,
+                    "required_capabilities":[],
                     "skill_revision_ids":[],
                     "permission_ids":[],
                     "resource_ids":[],
@@ -257,20 +375,106 @@ final class InteractionContinuityTests: XCTestCase {
             choices.first(where: { $0.id == "coordinator" })
         )
         XCTAssertEqual(choice.field, "main_role")
-        XCTAssertEqual(choice.provider, "Codex")
+		XCTAssertEqual(choice.provider, "OpenAI")
+		XCTAssertEqual(choice.providerAccount, "openai.primary")
         XCTAssertEqual(choice.model, "codex-model")
-        XCTAssertEqual(choice.auth, "Native auth")
+        XCTAssertEqual(choice.auth, "Brokered")
+		XCTAssertEqual(choice.reasoning, "High reasoning")
         XCTAssertTrue(choice.isCurrent)
         let alternate = try XCTUnwrap(
             choices.first(where: { $0.id == "reviewer" })
         )
-        XCTAssertEqual(alternate.model, "alternate-model")
-        XCTAssertEqual(alternate.provider, "")
-        XCTAssertEqual(alternate.auth, "")
+		XCTAssertEqual(alternate.model, "claude-sonnet")
+		XCTAssertEqual(alternate.provider, "Anthropic")
+		XCTAssertEqual(alternate.providerAccount, "anthropic.review")
+		XCTAssertEqual(alternate.auth, "Brokered")
+		XCTAssertEqual(alternate.reasoning, "Low reasoning")
         XCTAssertFalse(alternate.isCurrent)
+		let fallbackChoices = LocalProductRoleOptionChoice.fallbacks(
+			setup: setup,
+			role: try XCTUnwrap(session.preview.roles.first)
+		)
+		XCTAssertEqual(fallbackChoices.map(\.id), ["reviewer"])
+		XCTAssertEqual(fallbackChoices.first?.field, "main_fallback_role")
+		XCTAssertTrue(try XCTUnwrap(fallbackChoices.first).isCurrent)
+		let accountRoutes = LocalProductRoleOptionChoice.routes(
+			setup: setup,
+			role: try XCTUnwrap(session.preview.roles.first),
+			field: "main_provider_account_route"
+		)
+		XCTAssertEqual(accountRoutes.map(\.id), ["coordinator", "reviewer"])
+		XCTAssertEqual(
+			accountRoutes.map(\.field),
+			["main_provider_account_route", "main_provider_account_route"]
+		)
+		XCTAssertEqual(accountRoutes.map(\.providerAccount), ["openai.primary", "anthropic.review"])
+		XCTAssertTrue(try XCTUnwrap(accountRoutes.first).isCurrent)
+		let encodedSession = try JSONEncoder().encode(session)
+		var root = try XCTUnwrap(
+			JSONSerialization.jsonObject(with: encodedSession) as? [String: Any]
+		)
+		var customProfileRoot = root
+		var customProfilePreview = try XCTUnwrap(
+			customProfileRoot["preview"] as? [String: Any]
+		)
+		var customProfileRoles = try XCTUnwrap(
+			customProfilePreview["roles"] as? [[String: Any]]
+		)
+		customProfileRoles[0]["runtime_profile_id"] = "loom-profile-custom"
+		customProfilePreview["roles"] = customProfileRoles
+		customProfileRoot["preview"] = customProfilePreview
+		let customProfileSession = try LocalProductSetupWire.decodeBuilderSession(
+			JSONSerialization.data(withJSONObject: customProfileRoot)
+		)
+		let customAccountRoutes = LocalProductRoleOptionChoice.routes(
+			setup: setup,
+			role: try XCTUnwrap(customProfileSession.preview.roles.first),
+			field: "main_provider_account_route"
+		)
+		XCTAssertTrue(try XCTUnwrap(customAccountRoutes.first).isCurrent)
+		var preview = try XCTUnwrap(root["preview"] as? [String: Any])
+		var roles = try XCTUnwrap(preview["roles"] as? [[String: Any]])
+		roles[0]["fallback_approval_required"] = false
+		preview["roles"] = roles
+		root["preview"] = preview
+		let inconsistentFallback = try JSONSerialization.data(withJSONObject: root)
+		XCTAssertThrowsError(
+			try LocalProductSetupWire.decodeBuilderSession(inconsistentFallback)
+		)
         XCTAssertTrue(LocalProductStore.allowsBuilderEditField("main_role"))
         XCTAssertTrue(
             LocalProductStore.allowsBuilderEditField("subagent_role")
         )
+		for field in [
+			"subagent_add", "subagent_remove",
+			"main_fallback_role", "subagent_fallback_role",
+			"main_harness_route", "subagent_harness_route",
+			"main_provider_account_route", "subagent_provider_account_route",
+			"main_model", "subagent_model",
+			"main_reasoning_effort", "subagent_reasoning_effort",
+			"main_timeout_seconds", "subagent_timeout_seconds",
+			"main_budget_units", "subagent_budget_units",
+		] {
+			XCTAssertTrue(LocalProductStore.allowsBuilderEditField(field), field)
+		}
+		XCTAssertFalse(LocalProductStore.allowsBuilderEditField("provider"))
+		XCTAssertTrue(
+			LocalProductStore.validBuilderEditTarget(
+				field: "subagent_model",
+				roleAgentDefinitionID: "agent-reviewer"
+			)
+		)
+		XCTAssertFalse(
+			LocalProductStore.validBuilderEditTarget(
+				field: "subagent_model",
+				roleAgentDefinitionID: ""
+			)
+		)
+		XCTAssertFalse(
+			LocalProductStore.validBuilderEditTarget(
+				field: "main_model",
+				roleAgentDefinitionID: "agent-main"
+			)
+		)
     }
 }

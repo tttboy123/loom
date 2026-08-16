@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 2026-08-03
+Updated: 2026-08-16
 
 ## Product state
 
@@ -6321,15 +6321,18 @@ were made.
 
 ## Phase 2C Chat-First Client Experience (2026-08-06)
 
-`CURRENT`: the Phase 2C chat-first client experience is active on the accepted
-v0.4.1 baseline `7e24ec29`, branch `codex/loom-platform-slice2`. ADR-0015
+`CURRENT`: Phase 2C development is active on the accepted v0.4.1 baseline
+`7e24ec29`, branch `codex/loom-platform-slice2`; the Phase itself is not yet
+accepted. ADR-0015
 (`docs/adr/0015-chat-first-client-shell-with-governance-panels.md`) records
 the three-pane shell decision: conversation as the primary lane, Agent-team
 governance as an optional side panel, and no automatic Team/Mission/Run creation
 from ordinary chat.
 
-`CURRENT`: **P2C-W1 Workspace Shell & Entry** is accepted by atomic local commit
-`4219ef62`. The native macOS app and Bubble Tea TUI now open into a
+`HISTORICAL`: **P2C-W1 Workspace Shell & Entry** was recorded as accepted at
+atomic local commit `4219ef62`; the Phase 2C repair round has reopened its
+acceptance gates, so the results below are lineage context rather than current
+acceptance evidence. The native macOS app and Bubble Tea TUI open into a
 composer-first workspace rather than the Board-first Mission dashboard. The
 left rail provides navigation, recents, Teams, Runtimes, Skills, and Library; the
 center shows a blank composer, bounded recent work, and a prominent `Open
@@ -6344,8 +6347,10 @@ journey J1 (fresh launch) / J3 (offline recovery) / J10 (light/dark/compact
 screenshots) pass. No Event Journal, one-writer, Projection, Scheduler, policy,
 Grant, or daemon authority change.
 
-`CURRENT`: **P2C-W2 Chat-First Conversation** is accepted by atomic local commit
-`449ab719`. The center conversation surface is implemented across both clients:
+`HISTORICAL`: **P2C-W2 Chat-First Conversation** was recorded as accepted at
+atomic local commit `449ab719`; its repaired behavior remains `PARTIAL` until
+the current cross-client journeys and review gates pass. The center conversation
+surface at that historical checkpoint included:
 - Go daemon: `internal/api/local_product_chat.go` provides in-memory thread
   isolation, a 4 096-character content bound, and role-based responses. Plain
   messages return a `loom` role with no side effects; explicit agent triggers
@@ -6366,25 +6371,6302 @@ Grant, or daemon authority change.
   does not create Team or Mission facts and that explicit Agent triggers require
   confirmation.
 
-Verification: `go test ./...` green, `swift test` 103/0/1 green, `go vet ./...`
-quiet, P2C-W2 files `gofmt` clean, Swift TSAN/Release build green. No
-push/merge/network/paid/user-config action.
+Historical verification: `go test ./...` green, `swift test` 103/0/1 green,
+`go vet ./...` quiet, P2C-W2 files `gofmt` clean, Swift TSAN/Release build
+green. These results do not satisfy the reopened repair gates. No
+push/merge/network/paid/user-config action occurred.
 
-`PARTIAL`: **P2C-W3 Governance Side Panel** is frozen at
-`.loom-evidence/phase2c/contracts/P2C-W3-CONTRACT.md` and is the next
-implementation gate. It will consolidate the Mission Board, Team Topology,
-Timeline, Decisions, Evidence, Runtime health, and Attention views as a
-collapsible, context-aware right panel reachable from chat-first surface. No
-authority or policy change is in scope.
+`HISTORICAL`: P2C-W3 was previously recorded as the next implementation gate.
+That checkpoint predates the repair round below and does not describe the
+current Candidate or authorize acceptance.
 
-`TARGET`: complete Phase 2C with P2C-W3, run the full J1–J10 cross-client journey
-set, and obtain whole-Phase review acceptance.
+### Phase 2C Repair Round (2026-08-08)
 
-`CURRENT`: **P2C-W3 Governance Side Panel** is in progress. The first cleanup
-sub-task is complete: the legacy `taskSidebar`, `conversationWorkspace`,
-`workspaceInspector`, `sidebar`, and provider connection UI code have been
-removed from `ContentView.swift` (`b3080423`). `ContentView` is now a thin
-wrapper around `LoomWorkspaceShell`. Swift build and tests remain green (101
-pass, 1 skip). Remaining P2C-W3 work: right-panel container/switcher, first-
-class Decisions and Evidence views, TUI side-panel rendering, and J5–J9 cross-
-client journeys.
+`CURRENT`: whole-product review reopened Phase 2C acceptance while preserving
+the historical P2C-W1 (`4219ef62`) and P2C-W2 (`449ab719`) commits and their
+evidence. The reviewed repair matrix is at
+`.loom-evidence/phase2c/contracts/PHASE-2C-REPAIR-AMENDMENT.md`; independent
+Review 2 reported P0=P1=P2=0 for the first repaired lock, and Repair 2 Contract
+Review reports P0=P1=P2=0 for the test-fixture correction. Work remains in
+W1/W2/W3, plus narrow Queue admission and provider test-fixture prerequisites
+required to make the whole-repository gate deterministic without changing
+Scheduler, Provider, or authority semantics.
+
+`PARTIAL`: the repair Candidate removes the fake echo, derives stable opaque
+thread IDs per task, persists bounded conversation projections across daemon
+restart, opens a native folder picker, and presents one sanitized service state.
+The native shell is conversation-first with a compact left rail and a
+hidden/visible/pinned governance inspector. At 1080pt and above, opening the
+inspector contracts the rail so conversation and governance remain operable
+side by side; below 1040pt it becomes a dismissible overlay. Runtime & Providers
+routes to the existing management surface. The TUI has equivalent wide split,
+narrow stack, folder selection, panel continuity, and capability-gated actions.
+
+`PARTIAL`: the daemon Candidate injects a concrete tool-disabled Pi RPC
+conversation adapter when the validated local runtime tuple is configured. It
+uses bounded untrusted history, strict transcript validation, cancellation and
+private process roots; tool-call events fail closed. Conversation and governed
+mission execution share one lazily started daemon-owned local-model process.
+Ordinary configured chat returns tentative text without Supervisor frames,
+Grant authority, or Event Journal facts. Missing runtime remains a truthful
+recoverable state. Fresh source-lock-bound verification is pending.
+
+`PARTIAL`: UI repair now exposes the native Agent Team builder, New Mission from
+both rail and composer, distinct Topology and Timeline views, actionable
+Decisions and Attention rows, and a real Evidence-to-Mission path. The TUI now
+offers first-class Teams, Evidence, and Runtimes views and submits only exact
+daemon-prepared Mission Decision actions, defaulting to the first prepared
+action instead of the highest-authority choice. Unsupported actions and the
+previous synthetic approval page are hidden; native `Edit scope` is also hidden
+until a real editor exists. Focused Swift UI and TUI tests pass, but
+those runs predate the new source lock and are not acceptance evidence.
+
+`PARTIAL`: pre-lock diagnostic runs exercised configured conversation IPC,
+shared model ownership, restart-safe thread identity, daemon cleanup retry,
+Queue duplicate-work admission, and exact-path socket reclaim. Their results
+guided the repair but are intentionally not promoted to current acceptance
+claims. The complete Go/Swift/TSAN/Release matrix must be rerun after a fresh
+Contract Review PASS and regenerated source lock.
+
+`PARTIAL`: the first lock-bound serial Go normal matrix passed completely. The
+full race matrix then failed once in
+`TestSystemCodexStatusRunnerBoundsOutputAndCancelsProcessGroup`: the test saw a
+PID file after shell redirection created it but before `printf` wrote the PID,
+then reported `EOF`. Production cancellation returned `context.Canceled`; a
+focused race repetition passed 50/50. Repair 2 makes only the test fixture's PID
+publication atomic and adds that file to the Phase verification prerequisite.
+The failed attempt remains preserved; Repair 2 Contract Review reports
+P0=P1=P2=0, and a final status-only re-review plus new lock precede all reruns.
+
+`PARTIAL`: Repair 2 completed its regenerated source lock, full normal/race/vet/
+tidy/format matrix, Swift/TSAN suite, Release build, and independent contract
+re-reviews. The first subsequent native-plus-real-PTY attempt then found a
+product blocker: TUI Home rendered `i message` and `u Agent Team`, but its key
+handler implemented neither action. Attempt 001 stopped with zero Team/Mission
+facts and clean shutdown; its failure is preserved under
+`.loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-001/FAILURE.md`.
+Repair 3 added causal RED tests and the minimal typed-client key routes; focused
+tests and the full TUI package are GREEN. Fresh independent Repair 3 review
+returned `P0=0`, `P1=0`, `P2=0`. A new lock and complete deterministic matrix
+precede any replacement journey.
+
+`PARTIAL`: Repair 3's new lock and complete Go/Swift/TSAN/Release matrix passed.
+Replacement attempt 002 proved Home `i` operational, then showed that physical
+spaces disappeared from real PTY text input because `tea.KeySpace` was ignored
+by the shared entry parser. The attempt stopped before message submission with
+zero Team/Mission facts and clean shutdown; its failure is preserved under
+`journeys/repair-2026-08-08/attempt-002/FAILURE.md`. Repair 4 has a causal
+physical-key RED and minimal bounded parser fix; focused, full TUI, and race
+tests are GREEN. Fresh review, lock, and deterministic matrix precede attempt
+003.
+
+`PARTIAL`: the full J1-J10 native-plus-PTY rerun and independent
+implementation/contract/dual-Result/whole-Phase reviews remain open. The frozen
+journey contract requires one clean shared daemon fixture, restart comparison,
+screenshots, TUI transcripts, and accessibility evidence. No automated Phase 2C
+journey harness exists in the repository, and Computer-Use automation remains
+skipped until explicitly reauthorized. Therefore Phase 2C and ADR-0015 are not
+accepted yet.
+
+`TARGET`: rerun J1-J10 against one clean daemon fixture across native and TUI
+clients, capture the required redacted IPC/restart/visual/accessibility evidence,
+complete independent reviews, then request Product Owner acceptance. Runtime
+absence remains a supported recoverable state.
+
+`PARTIAL`: Phase 2C Repair 6 Candidate boundary is recorded at
+`.loom-evidence/phase2c/repair-candidate-boundary.md` on physical repository
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-pi-rebuild`, branch
+`codex/loom-platform-slice2`, baseline HEAD `651f156a`. The candidate inventory
+has 45 paths including Journey Manifest, Queue/provider verification
+prerequisites, the Go/Swift long-operation deadline policy, the native chat
+wire model and tests, and its
+self-describing lock; all pre-existing Phase 1, root-document, `.codex`,
+`.loom-drafts`, build-product, and other user changes remain excluded. Repair 4
+Review and status-only re-review returned `PASS`, its regenerated lock and full
+Go/race/Swift/TSAN/Release matrix passed, and replacement attempt 003 proved
+physical spaces render correctly in a real PTY. That attempt then exposed that
+`chat_message` completed in 5.270493 seconds after the five-second server/TUI
+deadlines; its failure record preserves three initialization/runtime facts,
+zero Team/Mission/Run facts, zero duplicates, integrity `ok`, and clean
+shutdown. Repair 5 classifies exactly `credential_verify`,
+`mission_execution`, and `chat_message` as ten-second operations across Go
+server, Go/TUI client, and Swift client while ordinary methods remain five
+seconds. Repair 5's final 43-path ordered source digest, independent byte review,
+complete Go normal/race/vet/tidy/format matrix, Swift/TSAN suites, and signed
+Release build passed. Replacement attempt 004 then passed real-PTY J1/J2 and
+the native system folder picker, but native `chat_message` encoded `threadID`
+instead of the daemon-required `thread_id`; five GUI requests failed strictly
+with `invalid_request` while both TUI requests passed. The attempt preserves
+three initialization/runtime facts, zero Team/Mission/execution-Run facts, zero
+duplicates, integrity `ok`, no sentinel leak, and clean shutdown. Repair 6 is
+limited to the missing Swift wire-key mapping and exact-shape regression test.
+Fresh RED/GREEN, independent review, expanded lock, deterministic matrix, and a
+new clean attempt 005 precede any Phase acceptance, staging, commit, or push.
+
+`CURRENT`: Repair 6 subsequently passed its causal Swift wire-key test,
+independent review, regenerated 44-path ordered source digest
+`2afe8693ac07ed12d21fcc981485c9e8d1f2b7a61cde519c87238294cbd31971`,
+complete Go normal/race/vet/tidy/format matrix, Swift/TSAN suites, and Release
+build. Attempt 005 passed native and real-PTY J1-J4 plus J5 Team confirmation
+and read-only Mission preflight. Its explicit `Start` then returned
+`state_unavailable` after `5.054680` seconds while the daemon-owned flight
+continued. The same Journey later committed eight execution facts through
+`TeamReadySetDispatched`, projected the Team as `running`, and stopped without
+an issued Grant, terminal Run, finalized Evidence, or Team terminal/recovery
+fact. Attempt 005 is preserved at
+`.loom-evidence/phase2c/journeys/repair-2026-08-08/attempt-005/FAILURE.md` with
+14 unique Journal facts, integrity `ok`, no sentinel leak, exact source-lock
+revalidation, and clean shutdown. No partial result is promoted.
+
+`CURRENT`: Repair 7 reopens the Phase 2C source boundary. Its P0 contract
+forbids a retry-shaped Mission start error while the same hidden flight can
+later write authority facts. The implementation must project the existing
+authoritative plan/dispatch lineage before slow local-model initialization;
+initialization then runs inside the authorized Supervisor lifecycle so failure
+or cancellation terminalizes Run, Grant, Evidence, and Team state. Raising
+timeouts or treating an in-memory flight as authority is explicitly
+insufficient. Repair 7 also owns the P1 stale cross-client Team Draft recovery
+observed when the TUI confirmed ahead of Native, and the P2 presentation of
+tool-shaped tentative model prose as untrusted non-actionable output. Causal
+RED tests, bounded GREEN, independent contract review, a new lock, full matrix,
+and clean attempt 006 precede any resumed J1-J10 acceptance claim.
+
+`CURRENT`: Repair 7 implementation now defers shared local-model startup until
+the Supervisor enters an already projected WorkItem/Run/capacity/capture/Grant
+lineage. A blocked-starter test proves `StartMission` returns authoritative
+`running` before release; controlled startup failure then exhausts two bounded
+attempts with paired Run terminal, Grant revocation, Evidence, recovery, and one
+Team terminal. Caller cancellation before first projection now cancels and
+joins the flight, detached-refreshes any resulting authority, and removes a
+zero-fact completed flight so an exact retry is possible. Native and TUI stale
+draft confirmation each submit once, discard the old revision, refresh once,
+and require an explicit new draft. Tool-shaped tentative chat is replaced by
+the fixed non-actionable warning in the API and both client render paths.
+Focused Go and Swift tests are green. Final-byte independent review, the new
+51-path Repair 7 source lock, complete deterministic matrix, and clean attempt
+006 remain required; Phase 2C and ADR-0015 remain `PARTIAL`.
+
+`CURRENT`: Repair 7 independent review passed with `P0=0`, `P1=0`, `P2=0`,
+and its 51-path lock was generated. The lock-bound serial Go normal matrix
+passed in `414.56s`. The subsequent race matrix failed in
+`TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage` after a
+shared five-second detached Team outcome context expired during a later
+Evidence commit. Repair 8 gives each attempt its own bounded 15-second capture
+and receipt commit budget; one attempt can no longer consume another's cleanup
+window. The failed race run remains evidence only and invalidates the Repair 7
+lock. Focused normal/race verification, independent re-review, a new lock, and
+the complete replacement matrix precede attempt 006. Phase 2C remains
+`PARTIAL`.
+
+`CURRENT`: Repair 8 independent review passed, its regenerated 51-path source
+lock bound ordered digest
+`e64e0ba41e84b04d0d0255497d94521383aaeebc8327845896d388435e49b745`,
+and the complete Go normal/race/vet/tidy/format, Swift, Thread Sanitizer, and
+signed Release matrix passed. Attempt 006 proved native and real-PTY chat-first
+entry, safe tentative conversation, explicit Team confirmation, explicit
+Mission start with complete governed terminalization, and exact Journal-backed
+restart recovery. Its controlled J6 authoritative action failed closed with
+`invalid_request`: the TUI sent operation `decide`, but the service contract
+accepts prepared authoritative actions only as `submit`. The attempt also
+exposed that typed `not_found` after daemon-restarted Team Drafts lacks the
+existing stale-draft recovery, and that a successful TUI Mission start can be
+overwritten by `preflight_expired` during its immediate snapshot refresh.
+Attempt 006 remains failed history with unique Journal identities, integrity
+`ok`, no sentinel leak, exact Repair 8 digest revalidation, and clean shutdown.
+
+`CURRENT`: Repair 9 is the active Phase 2C boundary. It is limited to the
+already-listed TUI and Swift Store/test paths. It must submit the exact prepared
+Mission action with operation `submit`; enforce Native prepared-action and
+authoritative identity-matched result boundaries; recover both `conflict` and
+`not_found` Team Draft confirmation with one discard, one setup refresh,
+actionable copy, and no retry; and consume a successful Mission preflight in
+both clients before snapshot refresh so accepted `running` state is neither
+replayed nor mislabeled as expired. The first independent review returned
+P1=2/P2=1; Re-review 2 returned P1=1/P2=1 for Native pre-start expiration and
+missing TUI repeated-start coverage. Both reviews are preserved, their causal
+RED tests and bounded fixes are now green, and the related Go TUI and 36 Swift
+Store tests pass. A passing final re-review, replacement source lock, complete
+matrix, and clean Attempt 007 precede any Phase 2C or ADR-0015 acceptance claim.
+
+`CURRENT`: Repair 9 final re-review passed with no P0/P1/P2 findings. Its
+replacement 51-path lock bound ordered digest
+`15696d1f7f59d3e64a80839e4021972a8661bacae5b6e115057ee581b18d5867`;
+the complete Go normal/race/vet/tidy/format, Swift, Thread Sanitizer, and signed
+Release matrix passed. Controlled J6 then committed real `ApprovalDecided` and
+`WorkItemApprovalResolved` facts through the TUI's exact `submit` path.
+Attempt 008 proved J1-J5 and J8, including one-shot `not_found` Draft recovery,
+accepted `running` continuity with inert repeated Start, governed execution
+terminalization, no folder-sentinel leak, and byte-identical restart
+projection. Its J7 setup correctly showed that probe absence does not imply
+offline and therefore wrote no status fact.
+
+`CURRENT`: Repair 10 now provides the missing deterministic J7 authority path.
+Its strict Phase 2C-only private manifest drives one existing Runtime discovery,
+baseline, reconciliation, prepared committer, and Event Journal transition from
+online to offline before IPC readiness. Exact post-commit daemon restart is a
+validated zero-append replay; any manifest, Event, payload, projection, source,
+path, permission, identity, or time drift fails closed. Omitting the fixture and
+restoring ordinary Pi observation authors the offline-to-online recovery fact.
+Causal focused normal/race tests and full `cmd/loomd` normal/race tests pass.
+Independent Review 1 returned `P1=2/P2=1`, Re-review 2 reduced this to `P2=1`,
+and Final Re-review 3 returned `PASS` with `P0=P1=P2=0`. The regenerated source
+lock now authorizes a fresh complete deterministic matrix; that matrix and a
+clean replacement journey remain required. Phase 2C and ADR-0015 remain
+unaccepted.
+
+`CURRENT`: Repair 10 subsequently passed its regenerated 51-path source lock,
+complete Go normal/race/vet/tidy/format, Swift, Thread Sanitizer, and signed
+Release matrix. Attempt 009 proved J1-J8, including exact Runtime
+online-to-offline authority, ordinary offline-to-online recovery, blocked
+Mission independence, byte-identical restart projection, and `408/408/408`
+unique Journal identities with integrity `ok`. A real signed-Release J10 matrix
+was captured in light and dark at 900/1080/1440 points. Independent final
+journey/UI review nevertheless returned `FAIL`: TUI Attention `r` refreshed
+permission attention while rendering stale product `snapshot.Attention`, and
+native J9 lacked live accessibility/keyboard traversal. It also admitted split
+TUI Journey traceability and generic native Recent labels as P2 findings.
+Attempt 009 is preserved as failed history.
+
+`CURRENT`: Repair 11 is the active Phase 2C acceptance boundary. It is limited
+to the already-listed TUI model/test and Swift Store/test paths. Attention must
+refresh both rendered sources in place; Recent attention items must expose safe
+existing action context; the replacement harness must supply one explicit main
+Journey UUID; and the signed Release must pass direct live macOS AX/keyboard
+traversal plus a recaptured J10 matrix. Exact contract/boundary review, causal
+RED, minimal GREEN, source re-review, a new lock, complete matrix, and clean
+J1-J10 replacement precede any Phase 2C or ADR-0015 acceptance claim. Repair 11
+contract re-review passed with `P0=P1=P2=0`; causal RED is the current gate.
+
+`CURRENT`: Repair 11 causal RED reproduced both defects. TUI Attention `r`
+returned only one permission-attention command instead of the required
+two-source refresh. Native Store mapped both an escaped
+`restore_runtime` action and an empty-action `inspect_failure` item to the same
+generic title. Native Recent now maps bounded `SafeText` action context with a
+deterministic kind fallback. The first independent implementation review found
+a TUI P1: the initial two-command batch could expose or retain stale permission
+actions before both rendered sources settled. The remediation returns one
+generation-bound aggregate, keeps loading true until both reads settle, ignores
+older completions, and removes permission actions on failure while preserving
+the last product snapshot. Tests cover `r`, Tab, Shift-Tab, no permission
+capability, both failure modes, and overlapping completions; full
+`internal/tui` and focused race checks pass. No IPC, Journal, authority,
+execution, persistence, or filesystem boundary changed. Independent Repair 11
+source re-review is the current gate; no source lock or journey is authorized.
+
+`CURRENT`: Repair 11 source Re-review 2 found one remaining TUI P1. Loading hid
+old permission rows visually, but the in-flight model still allowed `g`, `a`,
+or `x` to consume the cached actions. Attention refresh now removes permission
+actions at generation start, and a focused normal/race regression proves those
+keys cannot create a command until the current aggregate settles. A final
+independent source re-review is required; the Repair 10 lock remains invalid
+and no replacement journey is authorized.
+
+`CURRENT`: Repair 11 final independent source Re-review 3 passed with
+`P0=P1=P2=0`. Attention refresh is now one generation-bound aggregate, removes
+stale permission actions before loading, ignores old completions, and closes
+both failure paths without inventing authority. Native Recent uses bounded
+action context with kind fallback. Focused, full TUI, adjacent CLI, race, and
+Swift Store checks are green. Final status-byte review and a new source lock
+must precede the complete deterministic matrix; no J1-J10 replacement journey,
+ADR-0015 acceptance, or Phase 2C acceptance is authorized yet.
+
+`CURRENT`: Repair 11 final status review returned one P2 for stale Candidate
+Boundary Purpose wording. The header and all other current records were
+correctly bounded. The Purpose now marks contract review, causal RED, GREEN, and
+source review complete, leaving the replacement lock, deterministic matrix, and
+clean journey pending. Exact-byte status re-review is the current gate.
+
+`CURRENT`: Repair 11 status Re-review 2 and source-lock review passed with
+`P0=P1=P2=0`; the 50-path lock bound digest
+`b85242621bbd18719399db5108de3c1701f9edbbc67d49da416bda2b65f5df39`.
+The first lock-bound Go normal matrix then failed only in the real Go-to-Swift
+contract probe because its explicit compile unit includes
+`LocalProductStore.swift` but not the Store's new `SafeText.swift` dependency.
+The lock is invalidated. Remediation remains inside the declared Store path via
+an equivalent private bounded sanitizer; focused cross-language and Swift
+verification, independent source re-review, a new lock, and a complete fresh
+matrix are now required. No Journey is authorized.
+
+`CURRENT`: Repair 11 remediation subsequently passed independent review, a
+replacement 50-path lock, the complete Go normal/race/vet/tidy/format, Swift,
+Thread Sanitizer, and signed Release matrix. Attempt 011 proved J1-J8 with one
+explicit main Journey UUID, exact prepared-decision facts, authoritative
+Runtime offline/online recovery, in-place Attention refresh, and byte-identical
+restart state. Live signed-Release J9 then found that Space opened the uniquely
+named governance inspector but Escape did not close it. Repair 12 adds only a
+tested native governance dismissal transition and `onExitCommand` routing.
+Focused tests and independent source review pass with `P0=P1=P2=0`; the source
+lock is invalidated. A regenerated lock, complete matrix, fresh signed Release,
+and clean J1-J10 replacement remain required. Phase 2C and ADR-0015 remain
+unaccepted.
+
+`CURRENT`: Repair 12 subsequently passed its replacement source lock, complete
+Go/Swift/Thread Sanitizer/signed-Release matrix, and live governance
+Space/Escape verification. Attempt 012 proved J1-J8, exact Journey UUID
+correlation, one explicit Mission start, prepared decision facts, authoritative
+Runtime offline/online recovery, in-place Attention refresh, byte-identical
+restart state, and the light/dark 900/1080/1440-point matrix. Final live J9 AX
+enumeration found three enabled product actions without readable help labels:
+service `Try Again`, empty-chat `Open Folder...`, and empty-chat
+`Use Agent Team`. Attempt 012 is preserved as failed history. Repair 13 is
+limited to those native labels and existing structural regression coverage.
+Causal RED failed on all three missing-help conditions; minimal GREEN and
+independent exact-byte source re-review passed with `P0=P1=P2=0`. A replacement
+lock, complete matrix, fresh signed Release, and clean J1-J10 journey remain
+required. Phase 2C and ADR-0015 remain unaccepted.
+
+`CURRENT`: Repair 13 subsequently passed its replacement lock, complete
+Go/Swift/Thread Sanitizer/signed-Release matrix, and direct signed-Release AX
+smoke with zero unlabeled enabled product actions. Attempt 013 passed J1 and
+selected the J2 folder without reading its sentinel, then exposed an equal
+deadline race on the first post-restart folder chat. The daemon emitted its
+bounded safe response after `10.066780s`, while the TUI client's nominal long
+deadline was the same 10 seconds, so the client showed raw `timeout` before the
+safe tentative unavailable message arrived and was persisted. Attempt 013 is
+failed history. Repair 14 retains a 10-second handler work bound, gives server
+response I/O 12 seconds, and gives Go/Swift clients a 15-second receive window.
+Causal RED reproduced equal-deadline acceptance and all three Swift 10-second
+values. Minimal GREEN plus a real 10-second boundary test now pass; the client
+receives typed `state_unavailable` rather than a local timeout. An adjacent
+real Go-to-Swift probe then exposed the Swift exchange validator's old
+10-second ceiling; that validator now shares the tested public 15-second limit.
+Focused cancellation, ordinary/long-method separation, Go normal/race, real
+Go-to-Swift, Swift IPC, and Thread Sanitizer checks pass. Independent source
+review passed with `P0=P1=P2=0`. A replacement source lock, complete lock-bound
+matrix, signed Release, and clean J1-J10 replacement journey remain required.
+Phase 2C and ADR-0015 remain unaccepted.
+
+`CURRENT`: Repair 14 subsequently passed its replacement 50-path source lock,
+complete Go normal/race/vet/tidy/format, Swift, Thread Sanitizer, and signed
+Release matrix. Attempt 015 proved J1-J8 with one explicit main Journey UUID,
+safe no-folder and post-restart folder chat, explicit Team confirmation and
+Mission start, exact prepared approval facts in its named fixture,
+authoritative Runtime `online -> offline -> online` transitions, coherent
+Attention refresh, no folder-sentinel leak, and byte-identical restart state
+with `261/261/261` main and `75/75/75` decision identities plus SQLite
+integrity `ok`. Live signed-Release J9 then found six enabled Recent-row
+`AXPress` buttons with empty help/title/value. Pressing the first selected its
+visible `Inspect Failure` row, while scroll-bar and standard-window controls
+were separately identified by AX parent/subrole. Attempt 015 is failed history.
+Repair 15 is limited to dynamic Recent-row help in the existing native shell
+and structural test paths. Independent contract review is the current gate;
+Phase 2C and ADR-0015 remain unaccepted.
+
+`CURRENT`: Repair 15 Contract Review 1 returned `FAIL` with two status-only P2
+findings: the Repair Amendment header still named Repair 14 and Candidate
+Preflight counted only Attempts 001-013. Both were corrected; Attempt 015 now
+also explicitly excludes the non-canonical Deny rehearsal and binds J6 only to
+the independently rebuilt canonical `Allow once` fixture. Exact-byte Contract
+Re-review 2 returned `PASS` with `P0=P1=P2=0`. Causal RED is the current gate;
+no replacement lock or journey is authorized.
+
+`CURRENT`: Repair 15 causal RED added one dynamic Recent-row help assertion to
+the existing native action-name test and failed exactly at that assertion. The
+product helper had `.accessibilityLabel("Open recent task \(task.title)")` but
+no corresponding `.help`, matching live AX's empty help/title/value. Minimal
+GREEN adds the same bounded dynamic string as help on that existing button;
+focused verification is the current gate.
+
+`CURRENT`: Repair 15 minimal GREEN and the complete seven-test
+`LoomGraphiteViewTests` class pass. The only product change adds dynamic help to
+the existing Recent-row button; its action, selection, layout, and all authority
+boundaries are unchanged. Independent exact-byte source review is the current
+gate; the Repair 14 source lock remains invalid and no journey is authorized.
+
+`CURRENT`: Repair 15 Source Review 1 returned `FAIL` with two P2 findings.
+Candidate Purpose/Preflight still named RED as pending, and directly
+interpolating `task.title` into AX help did not prove safety for raw saved-team
+names. Remediation centralizes label construction in the native UI, applies the
+existing `SafeText` sanitizer with a 48-character title bound and empty fallback,
+binds the exact result to both accessibility label and help, and adds hostile
+and empty-title tests. Remediation verification is the current gate.
+
+`CURRENT`: Repair 15 bounded-label remediation passes all eight
+`LoomGraphiteViewTests` and all four `SafeTextTests`. Hostile terminal escapes,
+control/bidi content, overlong titles, and empty output are covered; both AX
+label and help consume the one safe helper value. Source Re-review 2 is the
+current gate; no replacement source lock or journey is authorized.
+
+`CURRENT`: Repair 15 Source Re-review 2 closed the raw-title safety finding but
+returned one P2 because Candidate Purpose still listed the already-passed
+bounded-label remediation as pending. That phrase now marks remediation passed;
+exact-byte Source Re-review 3 is the current gate. Product and test bytes are
+unchanged.
+
+`CURRENT`: Repair 15 exact-byte Source Re-review 3 returned `PASS` with
+`P0=P1=P2=0`. Status Review 1 then returned two P2 findings because Candidate
+Purpose/Preflight still listed completed source work as pending and this PASS
+entry had been inserted into an older Phase 2A section rather than the current
+tail. Candidate now records all source work complete and this entry is at the
+true tail. Exact-byte Status Re-review 2 is the current gate; no source lock,
+matrix, signed Release, or replacement journey is authorized.
+
+`CURRENT`: Repair 15 exact-byte Status Re-review 2 returned `PASS` with
+`P0=P1=P2=0`. All contract, source, remediation, failed-review, attempt-count,
+and current-gate records agree. Replacement source lock generation and
+independent lock review are the current gate; no matrix, signed Release, or
+replacement journey is authorized yet.
+
+`CURRENT`: Repair 15's independently reviewed source lock bound 50 paths with
+ordered digest
+`6bcca52489a38f9bc5b80955172a0d229011b484ccd17ff4f59cdfa46fe41e8e`
+and lock SHA
+`e2fb37fc858888f306781b3402bbde052bc474b3a08aff11e0a18cea72c9e89d`.
+The first full Go normal matrix failed one controlled Runtime restart snapshot
+with `local product unavailable`; the exact frozen test reproduced once in 20
+runs. Repair 16 therefore invalidates that lock and owns only daemon-test
+readiness synchronization: each integration wait must consume the exact
+runner server's accepted `Ready()` barrier before socket verification. No
+production retry, timeout, IPC, authority, or persistence change is admitted.
+Independent Repair 16 contract review is the current gate.
+
+`CURRENT`: Repair 16 independent Contract Review returned `PASS` with
+`P0=P1=P2=0`. The preserved full-normal failure and one-in-20 exact
+reproduction are the causal RED. Bounded test-only GREEN is the current gate;
+production daemon, IPC, retry, timeout, authority, and persistence bytes remain
+out of scope.
+
+`CURRENT`: Repair 16's first GREEN attempted to pass `runner.server` directly,
+but two production-builder fixtures are statically typed as `daemonRunner` and
+the package correctly failed to compile. The bounded implementation now passes
+each exact runner, fail-closed asserts `*productDaemonRunner` inside the test
+helper, and awaits only that runner's server readiness. The controlled Runtime
+restart test passes 100 consecutive runs in `5.520s`. Complete `cmd/loomd`
+normal/race verification is the current gate.
+
+`CURRENT`: Repair 16 complete `cmd/loomd` normal passed in `262.284s`; race
+passed in `227.471s` with no race finding. Together with the exact count-100
+GREEN, all 16 generation-bound readiness call sites are green. Independent
+exact-byte source review is the current gate; no replacement lock or full
+matrix is authorized yet.
+
+`CURRENT`: Repair 16 Source Review 1 confirmed the generation-bound helper and
+all 16 call sites, but returned one P2 because Candidate Preflight still named
+already-completed GREEN as the current gate. It now records Contract Review,
+count-100 GREEN, and daemon normal/race complete; exact-byte Source Re-review 2
+is the current gate. Product and test bytes are unchanged.
+
+`CURRENT`: Repair 16 exact-byte Source Re-review 2 returned `PASS` with
+`P0=P1=P2=0`. The test-only generation readiness barrier and all 16 bindings
+are accepted for lock preparation. Final status-byte review is the current
+gate; no replacement lock or full matrix is yet authorized.
+
+`CURRENT`: Repair 16 Status Review 1 returned one P2 because Candidate Purpose
+still said the boundary ended at Repair 15. It now names Repair 16; exact-byte
+Status Re-review 2 is the current gate. Product and test bytes are unchanged,
+and no replacement lock or full matrix is authorized yet.
+
+`CURRENT`: Repair 16 exact-byte Status Re-review 2 returned `PASS` with
+`P0=P1=P2=0`. All Repair 16 contract, RED/GREEN, compile-failure, daemon
+normal/race, source-review, and current-gate bytes agree. Replacement source
+lock generation and independent lock review are the current gate.
+
+`CURRENT`: Repair 16 then passed its independently reviewed 50-path source
+lock, complete Go/Swift/TSAN matrix, and signed Release. Attempts 016 and 017
+are failed harness history: the first omitted the original Runtime model
+catalog arguments, while the second omitted the explicit Journey UUID from two
+TUI permission-attention reads. Attempt 018 corrected both bindings and passed
+J1-J6 plus controlled J7 offline projection/replay, but ordinary Runtime
+recovery exposed `mission execution conflict` while the Mission awaited human
+review. None of those attempts is promotable.
+
+`CURRENT`: Repair 17 is active. Restart reconciliation now keeps an aggregate
+`running` TeamExecution quiescent only when it has at least one node, at least
+one node is `ready_for_review`, and every node is either `succeeded` or
+`ready_for_review`. Causal RED failed with `mission execution conflict`;
+bounded GREEN, complete `internal/app`, and supporting live recovery/restart
+proof pass without a runner call, implicit rerun, or authority append. Focused
+daemon restart/recovery coverage also passes.
+Independent Repair 17 contract/source review is the current gate. Phase 2C and
+ADR-0015 remain `PARTIAL`; a replacement lock, complete matrix, new signed
+Release, and clean J1-J10 remain mandatory. Native J9/J10 traversal additionally
+waits for the local macOS session to be unlocked.
+
+`CURRENT`: Repair 17 combined Contract + Source Review 1 found no source
+defect, but returned `P2=2`: the Repair Amendment header still named the Repair
+16 lock gate, and Candidate Purpose still said Repair 16 lock/matrix/Release and
+clean J1-J10 were pending. Both status statements now reflect the passed Repair
+16 gates, failed Attempts 016-018, completed Repair 17 GREEN/focused daemon
+coverage, and the current exact-byte re-review gate. Product and test bytes are
+unchanged. No replacement source lock is authorized before re-review passes.
+
+`CURRENT`: Repair 17 exact-byte Contract + Source Re-review 2 returned `PASS`
+with `P0=P1=P2=0`. It closed both stale-status findings, recomputed the reviewed
+production/test hashes, and accepted the narrow restart predicate without a
+source finding. Final status-byte review is the current gate before replacement
+source-lock generation; no matrix, signed Release, Journey, Phase, or ADR
+acceptance is authorized yet.
+
+`CURRENT`: Repair 18 bounded test-only GREEN passes. The provider exact test is
+green 100/100 in `67.207s`. Both real Swift client tests plus the shared-path
+assertion pass in one process in `46.770s`; complete `cmd/loomd` normal/race
+pass in `50.382s`/`47.593s`, and complete `internal/provider` normal/race pass
+in `2.430s`/`3.143s`, with no race finding. Production bytes remain unchanged.
+Independent Repair 18 source review is the current gate; no replacement lock,
+full matrix, Release, Journey, Phase, or ADR acceptance is authorized.
+
+`CURRENT`: Repair 17 final Status Review 3 returned `PASS` with
+`P0=P1=P2=0`. It verified the Review 1 and Re-review 2 records, failed Attempts
+016-018, unchanged product/test hashes, current gate, `PARTIAL` Phase/ADR
+status, and zero staged paths. The replacement 50-path source lock is now
+generated; independent lock review is the sole gate before any complete matrix.
+No signed Release or Journey is authorized.
+
+`CURRENT`: Repair 17 source-lock review returned `PASS` with `P0=P1=P2=0`,
+binding 50 paths at ordered digest
+`e82334d38e561010eb32654062b9198b71cbb1b0d77a3ff15acdf0e183a03273`
+and lock SHA
+`3968a970cc3d8743aa3c518b28c10f713086cef5699fb3d5a33c52229421a5ea`.
+The first full Go normal matrix then failed: `cmd/loomd` timed out at
+`721.048s` while rebuilding the same Swift Release probe through a second
+private scratch path, and the provider login-controller test read an existing
+but incomplete PID file as `EOF`. The exact Swift test passed alone in
+`99.926s`; provider count-100 reproduced the same `EOF` twice. Repair 18 owns
+only package-process Swift probe reuse/cleanup and complete PID-fixture
+readiness in the two existing test files. Independent Repair 18 contract review
+is the current gate. Product bytes are unchanged; no implementation, matrix,
+Release, Journey, Phase, or ADR acceptance is authorized.
+
+`CURRENT`: Repair 18 Contract Review 1 accepted the causal diagnosis, two-file
+test-only scope, process-local Swift build reuse/cleanup, and strict positive
+PID readiness, but returned `P2=1` because Candidate Purpose still said the
+boundary ended at Repair 17. It now says Repair 18. Exact-byte Contract
+Re-review 2 is the current gate; both test files remain unchanged and
+implementation is not yet authorized.
+
+`CURRENT`: Repair 18 exact-byte Contract Re-review 2 returned `PASS` with
+`P0=P1=P2=0`. It confirmed the corrected Candidate Purpose, causal RED,
+two-file test-only scope, cleanup ownership, strict PID readiness, unchanged RED
+source hashes, and zero staging. The bounded Repair 18 test implementation is
+now authorized; no matrix, replacement lock, Release, Journey, Phase, or ADR
+acceptance is authorized yet.
+
+`CURRENT`: Repair 18 Source Review 1 found no implementation defect, but
+returned `P2=2`: Candidate Purpose still left Repair 17 lock review pending, and
+the Repair 18 GREEN entry had been inserted before later historical entries
+instead of at the true tail. Candidate Purpose now records Repair 17 lock review
+passed and Repair 18 GREEN complete. This entry is at the physical EOF.
+Exact-byte Repair 18 Source Re-review 2 is the current gate; implementation
+hashes are unchanged and no replacement lock or full matrix is authorized.
+
+`CURRENT`: Repair 18 exact-byte Source Re-review 2 returned `PASS` with
+`P0=P1=P2=0`. It confirmed both status P2s closed, implementation mechanics and
+hashes unchanged, one physical EOF record, no leaked Swift build root, and zero
+staging. Final Repair 18 status review is the current gate; no replacement
+source lock, full matrix, Release, Journey, Phase, or ADR acceptance is
+authorized.
+
+`CURRENT`: Repair 18 Status Review 3 returned `FAIL` with `P0=0`, `P1=0`,
+`P2=1`: Candidate Purpose still called the completed Source Re-review 2 the
+current gate. Purpose now records Source Re-review 2 passed and exact-byte
+Status Re-review 4 current. Implementation hashes are unchanged. No replacement
+source lock or complete matrix is authorized before re-review passes.
+
+`CURRENT`: Repair 18 exact-byte Status Re-review 4 returned `PASS` with
+`P0=P1=P2=0`. It closed the final stale Purpose gate, verified the single EOF
+status record, all review counts, implementation hashes, failed-matrix
+provenance, source inventory, no leaked Swift root, and zero staging. The
+replacement 50-path source lock is now generated; independent lock review is
+the current gate. No complete matrix, Release, Journey, Phase, or ADR acceptance
+is authorized.
+
+`CURRENT`: Repair 18 replacement-lock review, complete matrix, and signed
+Release passed. Attempt 022 then passed J1-J8 authority/restart boundaries and
+the J10 visual matrix, but direct signed-Release J9 inspection found duplicate
+VoiceOver labels for four visually distinct Recent rows. Attempt 022 is
+preserved and excluded. Repair 19 changes only the existing native Recent-row
+label helper and its regression test: one-based visible position plus bounded
+sanitized title/subtitle now feed both accessibility label and help. The causal
+RED and focused GREEN pass. Independent Repair 19 contract/source/status review
+is the current gate; no replacement lock, full matrix, new signed Release,
+replacement J9/J10, Phase, or ADR acceptance is authorized.
+
+`CURRENT`: Repair 19 Contract/Source/Status Review 1 found no product defect
+and returned `P2=1`: the deterministic GREEN summary named duplicate inputs at
+positions three and four, while the exact test uses positions one and two. The
+append-only correction now records the tested values; product and test hashes
+are unchanged. Exact-byte Repair 19 re-review is the current gate. No source
+lock, complete matrix, signed Release, replacement J9/J10, Phase, or ADR
+acceptance is authorized.
+
+`CURRENT`: Repair 19 exact-byte Contract/Source/Status Re-review 2 returned
+`PASS` with `P0=P1=P2=0`. It verified the append-only evidence correction,
+unchanged product/test hashes, bounded unique-label implementation, exact
+status surfaces, Attempt 022 J9 failure provenance, zero staging, and clean
+diff checks. Replacement source-lock generation and independent lock review are
+now authorized. Only after lock review may the full matrix and signed Release
+carry Attempt 022 J1-J8; replacement live J9/J10 remain mandatory. Phase 2C and
+ADR-0015 remain unaccepted.
+
+`CURRENT`: The Repair 19 replacement 50-path source lock is generated from the
+exact Re-review 2 bytes; independent lock review is the current gate. No
+complete matrix or signed Release is authorized before that PASS. Attempt 022
+remains excluded, with only its J1-J8 authority/restart evidence eligible for
+later carry-forward; replacement live J9/J10, Phase 2C, and ADR-0015 acceptance
+remain mandatory.
+
+`CURRENT`: Repair 19 source-lock Review 1 passed with `P0=P1=P2=0`, but its
+first complete Go normal matrix failed after `753.73s`. The only failure was
+`TestPhase1EngineeringDemoApprovalRestartReconnectAndRecovery`: one competing
+caller returned `ErrTeamExecutionIncomplete`. Every other package passed. The
+exact test then passed 100/100 in `167.398s`, confirming a low-probability test
+window rather than authorization to ignore the failure. Repair 20 newly admits
+only `internal/app/phase1_engineering_demo_test.go` and freezes a closed loser
+classification: incomplete is acceptable only with zero executed nodes, while
+exactly one `main` winner and all authority/call-count assertions remain.
+Independent Repair 20 contract review is the current gate; no implementation,
+replacement lock, matrix, Release, J9/J10, Phase, or ADR acceptance is
+authorized.
+
+`CURRENT`: Repair 20 Contract Review 1 returned `PASS` with `P0=P1=P2=0`.
+It accepted the causal diagnosis, 52-path Candidate, test-only scope, closed
+incomplete-loser condition, exactly-one-winner guard, unchanged production
+hash, and zero staging. A deterministic classification RED and bounded
+test-only implementation are now authorized. No replacement lock, complete
+matrix, Release, J9/J10, Phase, or ADR acceptance is authorized.
+
+`CURRENT`: Repair 20 deterministic RED failed on the intentionally missing
+closed-classifier helper. Bounded GREEN then passed the classifier plus recovery
+scenario, the scenario 100/100 in `192.325s`, complete `internal/app` normal in
+`6.451s`, and race in `31.385s` with no race finding. Incomplete is accepted
+only for a zero-execution loser; exactly one `main` winner and all downstream
+authority/call-count assertions remain. Production coordinator hash is
+unchanged. Independent Repair 20 source/status review is the current gate; no
+replacement lock, complete matrix, Release, J9/J10, Phase, or ADR acceptance is
+authorized.
+
+`CURRENT`: Repair 20 Source/Status Review 1 returned `PASS` with
+`P0=P1=P2=0`. It verified the closed classifier, exactly-one-winner and
+downstream authority assertions, unchanged production coordinator hash,
+52-path inventory, RED/GREEN evidence, and zero staging. The replacement source
+lock is now generated; independent lock review is the current gate. No complete
+matrix, signed Release, J9/J10, Phase, or ADR acceptance is authorized before
+that PASS.
+
+## Phase 2C Final Acceptance (2026-08-09)
+
+`CURRENT`: **Phase 2C, P2C-W1 Workspace Shell & Entry, P2C-W2 Chat-First
+Conversation, P2C-W3 Governance Side Panel, and ADR-0015 are accepted.** The
+Product Owner explicitly confirmed acceptance on 2026-08-09 after every frozen
+Phase 2C gate passed. Earlier `PARTIAL`, failed-attempt, pending-gate, and
+superseded-lock entries above remain historical evidence; this section is the
+current reconciliation record.
+
+`CURRENT`: The accepted client opens chat-first in both the native macOS app
+and Bubble Tea TUI. Conversation is the primary workspace; Agent Team Mission
+Board, topology, timeline, decisions, Evidence, runtime health, and Attention
+remain collapsible or separately opened governance surfaces. Ordinary chat
+never creates a Team, Mission, Run, Grant, or authoritative fact. Agent use,
+Team Draft confirmation, New Mission, decision actions, and review transitions
+remain explicit daemon-authorized operations.
+
+`CURRENT`: The final Repair 20 Candidate binds 51 source paths at ordered
+digest
+`6fa2f269fefdaed41e60da0c64faf8f173924c427f23c1c5b0937693fab6cfa7`
+and source-lock SHA-256
+`7ad412e6b0122f3f37dfbbdaa3b5127f22d8b850963a1f1949fd14bf38ec2f1b`.
+Go full/race/vet/tidy/gofmt, Swift full/Thread Sanitizer, strict code-sign
+verification, and the signed arm64 Release passed. Combined native and real-PTY
+journeys J1-J10 passed, including restart/reconnect, authority comparison,
+keyboard traversal, unique accessibility labels, compact width, and the
+light/dark screenshot matrix.
+
+`CURRENT`: Independent implementation, dual-Result, whole-WorkItem,
+whole-Phase, journey/UI, source-lock, and A4 evidence-lock reviews pass with
+`P0=P1=P2=0`. The Product Owner sign-off is preserved at
+`.loom-evidence/phase2c/reviews/PHASE-2C-PRODUCT-OWNER-SIGNOFF.md`. The
+post-signoff transition changes acceptance metadata only; product, test,
+contract, Journey, Event Journal, Projection, Scheduler, policy, Grant,
+Evidence, Provider, credential, and execution-authority bytes remain frozen.
+
+`CURRENT`: A durable local delivery is available at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2c-2026-08-09/`.
+Its ad-hoc signed `Loom.app` is a thin arm64 bundle with identifier
+`com.earendilworks.loom.local`; executable SHA-256 is
+`a9b02d9e60afa96f8c79e18a73e8e8ca15bde61b1564ae0e1d5086dc7203bc4f`.
+The transport ZIP SHA-256 is
+`bd6abcb0e66c5febdf024fb52537e3be68538bd2252215ad5569f6113fc54a7d`.
+This is a verified local delivery, not a Developer ID notarized public release.
+
+`CURRENT`: No path is staged and no commit, push, merge, publication,
+notarization, system-directory installation, credential change, paid action,
+or autonomous activation is authorized or performed by this acceptance. Phase
+3A source-lock refresh and entry review are now eligible but remain separate,
+unstarted governance work.
+
+## Phase 2C v0.4.2 App Startup Patch (2026-08-09)
+
+`CURRENT`: The Product Owner required `Loom.app` to be directly usable without
+manually starting `loomd`. The prior Phase 2C local delivery bundled only the
+Swift UI executable; the default
+`~/Library/Application Support/Loom/run/loomd.sock` was absent, while the
+unrelated legacy `com.loom.watchdog` LaunchAgent pointed at a removed script and
+exited `127`. The UI therefore truthfully showed `Local service unavailable`,
+but the delivery journey was incomplete.
+
+`CURRENT`: v0.4.2 implements ADR-0016. The App bundle now contains the matching
+arm64 `loomd` and a `SMAppService` LaunchAgent descriptor. Developer ID signed
+builds use the macOS-managed service path. When an ad-hoc local build cannot
+activate that path, the open App starts only its fixed-path bundled helper with
+a bounded private environment and parent PID; no shell, `launchctl`, repository
+script, external daemon path, or user-supplied process argument is used. The
+helper creates and validates private state/isolation/run directories, discovers
+the installed Pi Runtime, uses the standard Socket, and cancels when its App
+parent exits. Swift waits for the real Socket and retries IPC before loading the
+remaining views.
+
+`CURRENT`: Focused Go and Swift RED/GREEN tests pass. Full `cmd/loomd` and Swift
+test suites pass. The native build fixture passes two clean deterministic
+Release builds, arm64/helper/plist/mode/deep-signature checks and launch smoke;
+the native installer fixture passes install, replacement, failure recovery,
+signal recovery, rollback and symlink rejection. The pre-existing Swift 6
+generic `QueueCommand<Input>` Sendable warning remains outside this patch.
+
+`CURRENT`: A real ad-hoc App launch created the standard Socket and returned a
+complete IPC status with `stale=false`, `partial=false`, zero Teams and one
+Runtime. The visible window showed `Local service ready` and an enabled chat
+composer. Closing the App stopped the parent-bound daemon and removed the
+Socket; reopening it recreated both and returned to ready without terminal or
+manual service action. This is a verified local v0.4.2 Candidate; it does not
+replace the accepted Phase 2C source lock or claim Developer ID notarization,
+public release, push, merge, or publication.
+
+## Phase 2C v0.4.3 Codex Conversation Patch (2026-08-09)
+
+`CURRENT`: The v0.4.2 startup patch made the service available, but a first
+ordinary message could still return `No conversation runtime is configured`.
+The live Runtime projection showed Pi online with an empty `model_ids` array,
+while Codex native auth was independently logged in. Construction created a
+conversation responder only for a separately configured local model, so the
+primary chat experience and Runtime & Providers status did not describe the
+same usable path.
+
+`CURRENT`: v0.4.3 implements ADR-0017. A configured local model remains first
+choice; otherwise a supported Codex executable creates an automatic native-auth
+conversation responder. Each call is ephemeral, read-only, bounded, timed out,
+identity-fenced, and runs in a private empty directory with no inherited API
+keys or project rules. Output remains tentative and cannot create Agent Teams
+or authoritative facts. Swift now shows the pending user message and response
+progress immediately, prevents duplicate sends, and restores the draft on
+failure.
+
+`CURRENT`: Focused Provider client, fixed process invocation, daemon prompt,
+real IPC-to-fake-Codex, and Swift pending-response tests pass. This patch does
+not silently initiate login, authorize Agent execution, replace the accepted
+Phase 2C source lock, or claim a notarized public release.
+
+`CURRENT`: Final verification passes the complete `internal/provider`,
+`internal/api`, and `cmd/loomd` Go suites, Provider/daemon vet, all 129 Swift
+tests with one visual-export skip, and two clean deterministic native Release
+builds. The local Codex 0.144.1 parser accepts every fixed tool-disable feature.
+No live remote completion was invoked; the exact text-only process path is
+covered through real daemon IPC against a controlled Codex executable.
+
+`CURRENT`: The final ad-hoc v0.4.3 App starts its bundled helper automatically,
+returns complete non-stale IPC status, and presents `Codex — Available` in the
+native Runtime & Providers sheet. It remains open at the chat-first workspace.
+The durable local delivery is
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2c-v0.4.3-final-2026-08-09/`.
+The Swift executable SHA-256 is
+`d21b3ecbd3821b15a75f91dea3665a581440f57f7241a96520cac3f19b44f638`,
+the bundled daemon SHA-256 is
+`a94942f8205a2e83d2448219fe7a5dc731d07d2ff1abeaedee552460cc43855b`,
+and the transport ZIP SHA-256 is
+`5d4951a2261269f56916c6d4d098d80f91367cb0cfa8ec7ae3d0d6ea4954392c`.
+
+`CURRENT`: The verified v0.4.3 bundle is installed at
+`/Users/lune/Applications/Loom.app` through the transactional local installer;
+the prior v0.2.0 bundle is retained at `Loom.app.previous` for rollback. The
+installed executable/helper hashes match the durable delivery, its deep
+signature passes, and opening that ordinary Applications entry starts the
+installed helper as the App child and returns complete IPC health.
+
+## Phase 2D v0.5.0 Provider Compatibility W1 (2026-08-09)
+
+`CURRENT / UNIFIED GOAL`: Phase 2D is the sole active product Goal: an installed
+Loom App must run real conversations and govern a multi-Provider, multi-model
+Agent Team in which each Agent independently freezes its Harness, Provider
+Account, credential revision, Model, limits, and capabilities. Observability,
+failure isolation, explicit fallback, account-level accounting, and governance
+UI are horizontal exit requirements. P2D-BLOCKER-1 is the current credential
+path blocker under this Goal; it does not replace the Goal. Accepted Phase 2C
+remains closed.
+
+`CURRENT`: Phase 2D is inserted after accepted Phase 2C without reopening its
+WorkItems or source lock. ADR-0018 defines a registry-driven Provider model and
+keeps exact Provider/Model selection bound to future versioned Profiles and
+individual Runs rather than a global current-Provider switch.
+
+`CURRENT`: P2D-W1 replaces the two-row Provider management surface with separate
+Agent Runtime and Model Provider sections. The macOS client renders an ordered
+24-entry directory with search, category filtering, protocol/auth labels, and
+truthful connection status. The legacy Codex and MiniMax snapshot fields remain
+temporarily for compatibility; the primary surface uses the new `providers`
+collection.
+
+`CURRENT`: Sixteen fixed API-key Providers can be configured, verified,
+replaced, and revoked through the existing Broker and macOS Keychain. Provider
+verification uses registry-owned HTTPS origins, no proxy, no redirect, bounded
+timeouts/responses, and non-generative model-list requests. Managed-cloud,
+local Runtime, and custom endpoint entries do not enter this verifier.
+
+`PARTIAL`: a verified credential is not yet an executable Provider Profile.
+OpenAI through Codex native auth remains the automatic ordinary-conversation
+path, and the pre-existing MiniMax Runtime Profile remains the governed Team
+path. P2D-W2 Run-bound Profiles and P2D-W3 Runtime Client Adapters are still
+required before Loom can claim broad execution compatibility.
+
+`CURRENT`: P2D-W1 verification passes the Provider, App, API, local IPC, and
+daemon Go suites and vet; all 130 Swift tests pass with one pre-existing visual
+export skip; and the native fixture passes two deterministic Release builds,
+bundle/helper/signature checks, and launch smoke. No live Provider completion
+or credential was used. A real installed v0.5.0 App starts its bundled local
+service automatically, reports `Codex - Available`, presents the searchable
+Provider directory, and opens a Provider's Keychain-backed credential sheet
+without exposing or persisting plaintext in the UI.
+
+`CURRENT`: The final local delivery is
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.0-w1-final-2026-08-09/`,
+and the verified bundle is installed at `/Users/lune/Applications/Loom.app`.
+The installed Swift executable SHA-256 is
+`2e4ef5689ccde459efa6414e1980c0f7021f684f54c6a4f9746a21fe09b90891`,
+the bundled daemon SHA-256 is
+`339f69471195f3cc694a3320bb69ba0b1d7fbd9e39c1c00cb3dd06c4428bb544`,
+and the transport ZIP SHA-256 is
+`c6a37044959df54af242e1e43300856c14ed7fa73d44709ca1e4cb7e7b9ec60c`.
+
+## Phase 2D v0.5.1 Provider Credential Patch (2026-08-09)
+
+`CURRENT`: A live DeepSeek connection attempt exposed a cross-layer W1
+regression. The registry and setup service accepted registered Providers, but
+the Credential Broker, authoritative metadata writer, and projection still
+restricted durable credential metadata to `minimax`. The request therefore
+failed before verification and the client collapsed the closed internal error
+to `Unavailable`. The failed transaction rolled its Keychain write back and
+did not append a partial credential event.
+
+`CURRENT`: v0.5.1 replaces the legacy Provider equality checks with one strict,
+bounded lowercase ASCII Provider identifier contract while the registry remains
+the authority for which Providers can enter the Broker. Regression coverage
+proves a DeepSeek credential can configure, verify, append non-secret metadata,
+and rebuild through the projection; malformed identifiers remain rejected.
+Provider, credential, state, projection, App, API, local IPC, and daemon suites
+and vet pass, as does the two-build native Release fixture.
+
+`PARTIAL / REOPENED`: The v0.5.1 bundle is installed and running at
+`/Users/lune/Applications/Loom.app` with its bundled local service ready. The
+durable delivery is
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.1-provider-credential-fix-2026-08-09/`.
+The Swift executable SHA-256 is
+`fb468214cdf0ec25307a1feb56f33ce398ae03012ca35548a2c2ebe7df63f926`,
+the bundled daemon SHA-256 is
+`d4569a4d8ac822362eb375ac410929c14522b6c26c7e4766612814c63b373c78`,
+and the transport ZIP SHA-256 is
+`028dfb8b0b636a3d623329b3555b97201be507aefa430ed0213220582c12c23e`.
+
+`PARTIAL / REOPENED`: v0.5.1 repairs the lower-layer Provider-ID restriction,
+but a fresh real DeepSeek key still leaves the installed setup snapshot at
+`unconfigured`, revision zero, with no credential reference. No new Keychain
+item is committed. The earlier automated matrix did not exercise a real
+installed credential, so v0.5.1 must not be described as a completed live fix.
+P2D-BLOCKER-1 now owns diagnosis of Swift request admission, UDS, process
+Keychain helper, metadata commit, projection, and safe error presentation.
+
+## Phase 2D v0.5.2 Conversation Profiles and Per-Agent P0 (2026-08-09)
+
+`PARTIAL / INSTALLED CANDIDATE`: P2D-W2A adds per-conversation Profile binding
+for Codex native auth and verified DeepSeek credentials. A conversation keeps
+its exact Profile; changing Provider starts a new conversation. DeepSeek
+requests require the current verified credential revision and use a fixed,
+bounded, non-tool route. Loom v0.5.2 build 12 is installed at
+`/Users/lune/Applications/Loom.app`; opening it starts the bundled `loomd`, and
+the installed bundle's real process Keychain helper passes isolated
+put/read/delete over UDS without using a Provider key or network request. This
+distinguishes helper launch/signing/Keychain access from the earlier failure,
+but it does not complete fresh-key verification or a live DeepSeek reply.
+
+`CURRENT`: ADR-0019 and P2D-W2B establish that Team execution is never
+conversation-level or Team-level Provider state. Each Team role independently
+selects an Execution Profile backed by the existing `RuntimeProfileID` schema.
+The P0 gap is closed in the domain binding: each role freezes Harness, Runtime
+instance, Provider, Provider Account, Model, endpoint fingerprint, credential
+reference/revision, timeout, budget, and capabilities. Multiple accounts for
+one Provider produce distinct bindings without exposing secret bytes. Optional
+reasoning effort is now part of the versioned Profile and frozen Attempt
+binding, while legacy Profiles retain their original digest.
+
+`CURRENT / PARTIAL`: P2D-W2C now persists that exact binding on each primary
+Agent Attempt, validates its digest during replay, projects it into the Team
+read model, dispatches with the role-local binding, and rejects ordinary retry
+that silently changes Harness, Provider Account, credential revision, or Model.
+Independent Verifier Agents now freeze the same binding on their authoritative
+Run; replay, claim, restart, and terminal-receipt recovery reject a missing,
+tampered, or Runtime-mismatched binding. The product-level mixed-Team entry path
+remains to be completed before the four-pair Team matrix can be claimed.
+
+`CURRENT / DISPATCH BINDING GATE`: Supervisor now freezes the Profile and
+Runtime supplied for execution, requires its digest to equal the authoritative
+Run binding, and passes that exact frozen binding into the concrete adapter.
+Model, Provider Account, credential revision, Harness, or limits drift is
+rejected before an adapter process starts. The Pi process adapter validates the
+binding's Harness, Runtime, and native auth mode; Pi RPC additionally requires
+the exact configured `loom-local` Provider and model. This closes the previous
+gap where authority froze a per-Agent binding but the final adapter call saw
+only the Run stream identity. It also makes the current product boundary
+explicit: the dynamic daemon catalog must not advertise a brokered Provider
+Profile until a concrete adapter can consume its exact Provider Account and
+credential revision. Build 12 may publish the concrete DeepSeek Profile only
+for an exact verified account; Kimi, MiniMax, Anthropic, OpenAI, and custom
+brokered Team Profiles remain absent until their W3 adapters exist.
+
+`PARTIAL / ACTIVE`: P2D-W2D is `Observability, Failure Isolation, Governance,
+Fallback, Accounting and UI`.
+Its horizontal acceptance contract and ordered execution plan are frozen at
+`.loom-evidence/phase2d/contracts/P2D-W2D-observability-governance.md` without
+creating a second product Goal or resetting W2A/W2B/W2C.
+It must carry one privacy-safe Incident/Correlation ID from Swift, UDS,
+`loomd`, Keychain helper, Provider verification, Conversation Profile, Agent
+Attempt, and Team board; persist bounded `0600` installed diagnostics; expose
+specific stage, recovery, retryability, and incident controls; isolate Agent
+failures; make fallback explicit, versioned, approvable, and auditable; and
+attribute concurrency, rate limits, budgets, token/cost usage, and error rates
+to the exact Provider Account, Run, Attempt, and Agent. The Event Journal
+remains separate and authoritative; operational diagnostics never grant
+execution authority. The four-pair Team acceptance matrix is not yet claimed.
+
+`CURRENT / MINIMUM OBSERVABILITY GATE`: P2D-BLOCKER-1 now reuses the strict IPC
+request identity as the Incident ID from Swift through UDS and the daemon's
+credential path. Safe stage values and retryability reach the Provider sheet,
+which shows an actionable explanation plus Stage, View diagnostics, and Copy
+incident ID controls. Swift input-admission failures and daemon terminal
+credential outcomes persist to separate bounded, rotating, owner-only `0600`
+JSONL stores; the bundled process console is also retained as a bounded `0600`
+file instead of `/dev/null`. These operational records are separate from the
+Event Journal and contain no API key, Authorization header, prompt,
+conversation content, or Provider response body.
+
+`CURRENT / INSTALLED STAGE PROPAGATION REPAIR (2026-08-10)`: build 10 proved the
+installed daemon persisted an empty-secret admission failure with
+`daemon_admission`, but omitted that stage from the UDS error returned to Swift.
+Build 11 normalizes every credential-method failure at the daemon boundary:
+existing helper, Keychain, and metadata stages are preserved, while an
+otherwise unstaged admission error receives the closed
+`daemon_admission` value. A real `localipc.Client -> UDS -> loomd` regression
+now requires the remote error, owner-only operational diagnostic, and
+unchanged setup projection to agree in one attempt.
+
+`CURRENT / PARTIAL GOVERNANCE UI`: the Team Board API and Swift model now carry
+each current Agent Attempt's safe Harness, Provider, Provider Account, Model,
+reasoning effort, credential revision, and terminal reason. Team Pulse displays
+this binding when available and remains compatible with legacy timeline rows.
+Credential
+reference, endpoint fingerprint, binding digest, prompts, and secret content do
+not cross into the UI.
+
+`CURRENT / PARTIAL ACCOUNTING`: `RunTerminalCommitted` can now freeze a bounded,
+validated, idempotent accounting fact containing token classes and microunit
+cost by currency. Legacy terminal Events without accounting still replay; a
+retry that changes accounting conflicts. Supervisor propagates the fact; Pi RPC,
+Codex, Claude Code, and Loom Native/OpenAI-compatible adapters extract only
+closed numeric terminal usage/cost. Projection links it to the exact Run,
+Attempt, Agent, and frozen Provider Account, and Team Board aggregates current
+concurrency, failures, observed rate-limit failures, assigned budgets, tokens,
+per-currency cost, and error rate separately for multiple accounts of the same
+Provider. Swift decodes the closed wire shape and Team Pulse displays Agent and
+account totals. API keys, credential references, Provider bodies, and prompts
+do not enter accounting.
+
+The controlled four-Provider Team canary now emits distinct numeric usage and
+cost for Codex/OpenAI, Claude Code/Anthropic, Loom Native/Kimi, and Loom
+Native/MiniMax Attempt 1. Rebuilt Projection preserves each fact under its exact
+account even when the OpenAI Attempt fails; the three peer accounts remain
+unchanged. The scheduled recovery Attempt starts without inherited accounting,
+then freezes its own distinct terminal usage after execution. Ten repeated
+focused runs, three race runs, and the complete `internal/app` suite pass.
+Configured Provider Account ceilings and installed real-Provider accounting
+remain active W2D work.
+
+`TARGET / NEXT PROVIDER ACCOUNT CEILING SLICE`: configured ceilings will use a
+separate revision-CAS policy and account-capacity stream keyed by the complete
+Provider plus Provider Account identity. Dispatch must atomically reserve both
+Runtime and account capacity, freeze the admitted policy revision/digest on the
+Attempt, and fail before credential lease access when concurrency, bounded
+dispatch rate, or assigned budget is exhausted. Retry revalidates the same
+account; an approved fallback validates the target account independently. The
+Board will combine these configured limits with existing observed usage/cost.
+This contract is frozen as the next W2D implementation boundary; no source or
+installed completion claim is made yet.
+
+`CURRENT / PARTIAL FALLBACK GOVERNANCE`: W2D now has an authoritative
+pre-approved fallback binding transition. A versioned approval freezes its
+non-secret approval ID, actor reference, UTC approval time, source binding
+digest, target binding digest, and approval digest in the Team plan. When
+recovery selects fallback, `TeamNodeRecoveryRecorded` links that exact approval,
+and dispatch permits only the approved one-shot source-to-target transition;
+ordinary retry continues to require the same frozen binding. A changed binding
+with only a fallback workflow name, a forged source or target, a future-dated
+approval, a policy swap, or a switch back to the source fails closed. Existing
+workflow-only fallback and legacy Journal replay remain compatible. The Agent
+editor's fallback controls and interactive approve/reject UI, fallback health
+preflight, and Board presentation of the configured target remain active W2D
+work.
+
+`CURRENT / PARTIAL AGENT PROFILE EDITOR`: the Team Builder now exposes one
+independent execution-profile selector per Agent. Every row shows its safe
+Harness, Provider, exact Provider Account, Model, reasoning effort, credential
+revision, timeout, budget, and required capabilities; selecting another
+compatible RoleOption
+edits only that Agent through the existing revision-checked Builder command.
+The backend regression proves that changing the primary Agent changes the Team
+binding digest while the peer Agent keeps its original Profile, Provider
+Account, and credential revision. Setup and Builder wire projections derive
+these fields from validated Runtime Profiles and never expose credential
+references, endpoint fingerprints, binding digests, secret bytes, or prompts.
+`RuntimeProfile` and every new Agent Attempt binding now freeze an optional
+reasoning-effort token. Explicit values require a Runtime that advertises the
+`reasoning_effort` capability, use a domain-separated v2 binding digest, survive
+Team and Run Journal replay, and appear in Builder, Board, and privacy-safe
+diagnostic projections. Empty values retain the exact published v1 digest and
+display as Provider default, preserving legacy replay. Direct versioned Profile
+authoring now lets the user independently change an Agent's observed Model,
+reasoning effort, timeout, and numeric budget. Each edit creates an immutable
+Profile ID, changes only that role, and rejects invalid input without advancing
+or partially mutating the Draft. Account health preflight and Agent-level
+fallback configuration/approval remain active W2D work.
+
+`CURRENT / VERSIONED SAVED PROFILE AUTHORITY`: confirmation now writes the
+complete non-secret version-1 Execution Profile snapshot into each saved role.
+The StateWriter requires it to equal the exact Runtime Profile used to validate
+the Team, and Runtime admission requires the Profile to be freeze-ready before
+it can become saved authority. Projection validates and deep-copies Model,
+Harness, Provider Account, endpoint fingerprint, credential reference/revision,
+reasoning effort, timeout, budget, and capabilities. After App/daemon restart,
+the Builder and saved-Team materializer can restore a custom Profile that is no
+longer in the dynamic catalog; an existing same-ID Profile with different
+content fails closed. The persisted credential reference is opaque metadata;
+API keys, Authorization headers, prompts, Provider bodies, and secret bytes do
+not enter the Team event.
+
+`CURRENT / PRIVACY-SAFE DIAGNOSTIC EXPORT`: a Provider Incident can now open a
+native preview instead of exposing the raw diagnostics directory. The preview
+shows App/daemon version and SHA-256, Socket health, daemon-console availability
+and byte count, non-secret Provider/Profile/Agent binding state, recent
+allowlisted operational Events, and any unsafe or malformed records skipped.
+The user-selected JSON export is owner-only `0600`; diagnostics are opened with
+`O_NOFOLLOW`, bounded, validated, and re-encoded from a closed field set. Raw
+daemon console, API keys and credential references, Authorization headers,
+environment credentials, prompts, conversations, and Provider response bodies
+are excluded by default and named in the preview. A malicious extra `secret`
+field and a symlinked diagnostic file cannot enter the bundle. This export is
+support evidence only and remains separate from the Event Journal and execution
+authority.
+
+`CURRENT / FIRST PROVIDER-AWARE AGENT ADAPTER (2026-08-10)`: the latest source
+candidate now contains the first complete W3 vertical slice for
+`loom-native + DeepSeek + deepseek-chat`. The daemon registers an authoritative
+local `loom-native` Runtime, publishes revision-qualified DeepSeek Team Profiles
+only while the exact credential projection is verified, and routes each Agent
+to a Supervisor selected by its own Harness and Runtime instance. The adapter
+revalidates the frozen Provider, Provider Account, Model, endpoint fingerprint,
+credential reference/revision, auth mode, timeout, and capabilities before any
+credential or network access; it resolves the secret only around the bounded
+Provider call, zeroes it afterwards, rejects redirects and proxy inheritance,
+and returns only safe terminal reasons and numeric usage. Provider failure is
+therefore local to the affected Agent and cannot silently fall back to the Pi
+adapter or another Provider.
+
+`CURRENT / KIMI AND MINIMAX LOOM-NATIVE ADAPTERS (2026-08-10)`: the strict
+DeepSeek transport boundary is now a closed-descriptor OpenAI-compatible core
+without exposing arbitrary endpoint or Model selection. Kimi uses the official
+Moonshot `https://api.moonshot.cn/v1/chat/completions` endpoint with
+`kimi-k2.6`; MiniMax uses the official
+`https://api.minimaxi.com/v1/chat/completions` endpoint with `MiniMax-M3` and
+`max_completion_tokens`. Each has a separate RuntimeInstance and Supervisor,
+exact Provider/Account/Model/endpoint/credential-revision validation,
+redirect-free and proxy-free bounded transport, secret clearing, numeric usage
+accounting, safe Attempt diagnostics, and pre-Keychain cross-Provider
+rejection. Verified-only runtime admission restores each Provider on cold
+start or immediately after verify; rejected and unconfigured Providers do not
+publish executable Profiles.
+
+`CURRENT / MULTI-PROVIDER CONVERSATION PROFILES`: ordinary conversation now
+publishes revision-frozen DeepSeek, Kimi, and MiniMax Profiles and routes each
+through its exact fixed client after verified-revision admission. A stale
+Profile fails before Keychain access, switching Profile still starts a new
+conversation, and conversation binding is never inherited by a Team Agent.
+
+`CURRENT / PROVIDER ACCOUNT PERSISTENCE`: broker commands now preserve an exact
+Provider Account ID. Non-primary accounts use independent account-scoped
+Journal streams and revisions, rebuild into an account-keyed projection, cross
+the strict UDS command, and appear in the Swift setup snapshot as independent
+non-secret account records. Legacy Provider credential events rebuild as the
+matching `.primary` account and new `.primary` writes stay on the legacy stream,
+so installed state migrates without rewriting Journal history. Agent credential
+resolution now queries Provider plus Provider Account and rejects account,
+reference, revision, or verification drift before Keychain access. Swift input
+validation and installed operational diagnostics also preserve the non-secret
+account identity.
+
+`CURRENT / PROVIDER ACCOUNT MANAGEMENT UI`: the latest source Provider
+directory shows the number of configured accounts for each Provider. Its native
+credential sheet always exposes the migration `.primary` account, lists exact
+additional account identities, creates a deterministic named account, and runs
+connect, verify, replace, revoke, incident, and diagnostic actions against the
+selected account only. Account operation state is keyed by the exact account;
+the Store explicitly keeps primary operations on the legacy generic path and
+routes only non-primary accounts through the account-scoped IPC contract. This
+preserves installed-client compatibility while preventing a named account from
+silently falling back to primary. Swift account and UI regressions cover stable
+identity, display labels, primary routing, non-primary routing, and independent
+projection refresh.
+
+`CURRENT / NON-PRIMARY EXECUTION PROFILE PUBLICATION`: the dynamic Team catalog
+now enumerates every exact verified DeepSeek Provider Account and publishes one
+revision-qualified Coordinator Profile plus one Worker Profile for each. The
+`.primary` Profile and RoleOption IDs remain migration-compatible; non-primary
+IDs use a bounded stable account hash while the user-facing Builder continues
+to show the exact Provider Account, Model, credential revision, timeout, and
+limits. Catalog identity binds each sorted account, credential reference, and
+revision. Revoking one account changes the catalog digest and removes only that
+account's two RoleOptions, so every Agent can independently select another
+still-verified account without a Team-level Provider switch.
+
+Direct custom Execution Profile authoring for Model, reasoning effort, budget,
+and timeout is source-complete; fallback editing and approval remain active W2D
+work. Source now includes exact Harness-specific Codex + OpenAI and Claude Code
++ Anthropic Agent adapters alongside Loom Native DeepSeek, Kimi/Moonshot, and
+MiniMax adapters. Custom endpoint Agent execution remains open. None of these
+source contracts replaces the installed four-Provider Team or fresh-key live
+gates, so this status does not change P2D-BLOCKER-1.
+
+`CURRENT / AGENT ATTEMPT DIAGNOSTICS`: the DeepSeek Agent adapter writes a safe
+terminal operational diagnostic for success, frozen-binding drift, credential
+failure, Provider rejection, rate limit, transport failure, and timeout. It
+preserves the request correlation ID plus non-secret Provider Account and Model
+identity, stage, elapsed time, result, safe error code, and retryability in the
+existing bounded owner-only store. Swift diagnostic preview/export now retains
+those non-secret binding fields plus Agent reasoning effort while continuing to
+exclude credential references, keys, prompts, conversation content,
+Authorization headers, and raw
+Provider bodies. Diagnostic persistence failure fails the adapter closed and
+never becomes execution authority.
+
+`CURRENT / INSTALLED BUILD 12`: Full Go tests, Go vet, and 148 Swift tests with
+one intentional visual export skip pass. The deterministic native fixture
+passes two Release builds, byte-identity checks, deep signature verification,
+and launch smoke. The retained delivery is
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build12-2026-08-10/`.
+Its Swift executable SHA-256 is
+`a1d16ebd04600bfffb9ec01e1f6533eb4f4da34afc955380cd53c60b59e8a5fd`
+and bundled daemon SHA-256 is
+`0706b6ebafd44f55ddd9375b87153614a1ef7fc41995ba78eff70a6de7dc9f83`.
+The installed App launches its bundled daemon as a child from the same bundle,
+with an owner-only `0600` Socket. The installed helper passes
+the real process Keychain put/read/delete test. A safe empty-secret UDS canary
+returned `credential_unavailable`, `recoverable=true`, and
+`stage=daemon_admission`; the build-12 matching `0600` operational record
+carries the same Incident ID and stage, while the setup snapshot remains DeepSeek
+`unconfigured`, revision zero, with no Provider Account or conversation
+Profile.
+
+`CURRENT / INSTALLED BUILD 13`: v0.5.2 build 13 adds versioned custom Agent
+Execution Profile authoring and restart authority without changing the live
+Provider claim. Serial full Go tests, Go vet, the real Go/Swift contract path,
+149 macOS XCTest cases with one intentional visual-export skip, and four Swift
+Testing contract cases pass with zero failures. The deterministic native fixture
+passes two Release builds, byte-identity checks, deep signature verification,
+and launch smoke. The retained delivery is
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build13-2026-08-10/Loom.app`.
+Its Swift executable SHA-256 is
+`85f0f1f28b3ef271272fb77a14778c7ea449e8c63b3d863dddfee58d04dac8ab`
+and bundled daemon SHA-256 is
+`1fe9a615e32795ca85c7cb084c28f10b6b9d9808aa389ff7b6dba1b5c6e2e1aa`.
+The transactional installer preserved build 12 as the rollback bundle and the
+installed hashes match the retained delivery. Opening the App starts its bundled
+daemon child; the installed UDS reports daemon `serving_request`, Journal
+`available`, projection `current`, and non-partial state. The installed process
+Keychain helper passes isolated synthetic put/read/delete, and CoreGraphics
+confirms the Loom main window is on screen. No real Provider credential or live
+Provider request was used for this build acceptance.
+
+`HISTORICAL / BUILD 14 REJECTED BY INSTALLED CHECK`: build 14 carried the first
+Kimi/MiniMax adapter Candidate, but a real installed `status` read exposed that
+native Runtime admission still depended on a later Mission composition branch.
+It was not accepted as the retained installed Candidate. The repair moved
+admission to verified Provider lifecycle boundaries and added a daemon cold
+start composition regression without rewriting or deleting Journal history.
+
+`CURRENT / INSTALLED BUILD 15`: v0.5.2 build 15 is installed from
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build15-2026-08-10/Loom.app`.
+The Swift executable SHA-256 is
+`802589380ff4604a769650d3bd52937daa61235875efa850a59893bfaa381013`
+and the bundled daemon SHA-256 is
+`3796078eaa9d46a9da4a2122abc59310ebb301062c5b7516f703455514305ef6`;
+installed and retained bytes match and deep signature verification passes.
+Opening the App starts that bundle's daemon child, and the installed UDS reports
+daemon `serving_request`, Journal `available`, projection `current`, and
+non-partial state. Socket and operational diagnostics are owner-only `0600`.
+An opt-in read-only installed test confirms DeepSeek, Kimi, and MiniMax are in
+the Provider directory and that any verified Provider must have its exact
+revision Conversation Profile plus admitted runtime. The installed process
+Keychain helper synthetic put/read/delete test also passes. No real API key or
+Provider generation request was used.
+
+`CURRENT / SOURCE VERIFICATION (2026-08-10)`: serial `go test -p 1 ./...`,
+`go vet ./...`, the real Go Server/Swift contract probe, and all 149 macOS Swift
+tests pass with one intentional visual-export skip and zero failures. The
+mixed-Team canary now proves that an OpenAI account's
+`provider_rejected` terminal leaves the Anthropic and DeepSeek Agents succeeded
+with their independent frozen bindings intact; recovery retries only the failed
+Agent. Provider Account accounting also passes authority, replay, projection,
+API, Pi RPC, Swift strict-decoding, and UI tests. Explicit fallback governance
+also passes source/target binding, approval digest, recovery replay, dispatch,
+unapproved change, forged target, and future approval regressions. The source
+candidate also passes independent Agent Profile selection regressions: safe
+Runtime Profile fields cross Go projection and strict Swift decoding, the
+Builder sends a role-local edit, and changing one Agent does not overwrite its
+peer. Reasoning-effort regressions additionally lock the legacy v1 binding
+digest, require an explicit Runtime capability, freeze a domain-separated v2
+binding, reject post-freeze mutation, and carry the value through Team/Run
+authority, Journal replay, API, strict Swift decoding, Board UI, and diagnostic
+export. Supervisor and Pi/Pi RPC regressions also prove that the adapter receives
+the authoritative frozen binding and that Profile or Provider/Model drift fails
+before process start. DeepSeek adapter regressions additionally prove exact
+binding use, verified-only catalog publication, exact projected credential
+revision lookup, per-binding Supervisor routing, Agent-local failure reasons,
+secret clearing, safe Attempt diagnostics, and numeric usage propagation.
+Kimi and MiniMax regressions prove their exact official endpoint, Model, token
+limit field, response Model, usage accounting, diagnostics, cross-Provider
+pre-Keychain rejection, independent RuntimeInstance/Supervisor routing,
+verified-only Profile publication, verify-time admission, and cold-start
+restoration. Conversation regressions prove exact verified revision routing for
+all three brokered Loom-native Providers and stale-Profile rejection before
+secret access.
+Provider Account regressions also prove independent same-Provider streams and
+revisions, legacy `.primary` replay, account-scoped projection and adapter
+resolution, strict UDS transport, Swift snapshot decoding, and safe account
+diagnostics. Swift Store and UI regressions additionally prove primary versus
+non-primary dispatch, named-account identity, account selection, and safe
+account-local operation presentation. This verifies the current W2C/W2D and
+first W3 source candidate. Daemon catalog regressions also prove that two
+verified DeepSeek accounts publish independent revision-frozen Agent Profiles
+and that revoking one account preserves the other's RoleOptions and changes the
+catalog digest. Custom Profile regressions additionally prove independent
+Model/reasoning/timeout/budget editing, immutable ID derivation, invalid-edit
+rollback, exact StateWriter matching, legacy optional-snapshot replay, deep-copy
+projection, restart reopening, daemon materialization, and same-ID drift
+rejection. This is now an installed synthetic-path and process-Keychain
+acceptance, not a live Provider acceptance. Build 15 contains the W3 DeepSeek,
+Kimi, and MiniMax slices plus account publication, but no fresh real Provider
+credential or Provider network reply was used; the fresh-key gate below
+remains open.
+
+`CURRENT / LIVE CREDENTIAL PATH ACCEPTED`: the installed v0.5.2 build 16 now
+accepts a real DeepSeek credential. The authoritative setup snapshot reports
+both `deepseek` and `deepseek.primary` verified at revision 3 and publishes
+`conversation-deepseek-deepseek-chat-r3`. Configure and verify complete through
+`projection_refresh`; the Keychain/bootstrap/metadata/Profile-publication part
+of P2D-BLOCKER-1 is no longer the active failure.
+
+`CURRENT / P2D-BLOCKER-1 ROOT CAUSE (2026-08-10)`: incident
+`loom-swift-663d309b-d1f2-4ee6-9e53-9e861119174f` and two matching retries
+prove the installed Swift request reached the bundled daemon and failed in
+40-47 ms before Provider verification. The daemon's real OS argv remained
+`--local-app-service --parent-pid ...`; bootstrap expansion changed only the
+slice passed to `run`. The process Keychain helper therefore correctly rejected
+the parent because its attestation could not find canonical `--state`,
+`--isolation-root`, and `--socket` arguments. `setupCredentialResult` then
+erased the original `helper_authorization` stage by returning a bare store
+error, causing the UI-facing failure to degrade to `daemon_admission`. No API
+key reached Keychain or DeepSeek, so this incident does not implicate the key.
+
+`ACTIVE / BLOCKER REPAIR ORDER`: re-exec the bundled daemon with canonical
+non-secret argv while preserving the App parent lifecycle; preserve staged
+credential errors through Setup and IPC; prove the real Darwin bootstrap and
+process-helper put/read/delete path without weakening executable identity,
+Socket owner, or peer-PID attestation; then package a new installed Candidate
+for the unchanged fresh-key live gate. API keys, credential bodies, prompts,
+and Provider responses must never enter argv or diagnostics.
+
+`CURRENT / INSTALLED BUILD 16 BOOTSTRAP REPAIR`: v0.5.2 build 16 is installed
+from
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build16-2026-08-10/Loom.app`.
+Its Swift executable SHA-256 is
+`c329691c707bc85f1d9ef37d95ef1f652ef0e95f5075b8ff0057eead79aef07a`
+and bundled daemon SHA-256 is
+`efc16e1e29d7ddc0cb28e871ce27d92149170d7e6da6b5c3ab3ccc38a7b20092`;
+installed and retained bytes match and deep signature verification passes. The
+App-started daemon's real kernel argv now contains canonical `--state`,
+`--isolation-root`, Runtime, and owner-only `0600` Socket arguments followed by
+one validated `--managed-parent-pid`. The internal flag is removed before
+`run`, while the App parent still owns daemon lifecycle. The installed daemon
+reports `serving_request`, Journal `available`, projection `current`, and
+non-partial state.
+
+The revised installed regression starts that bundled daemon through the real
+`--local-app-service --parent-pid` entry and completes synthetic process
+Keychain helper put/read/delete. The exact same regression against build 15
+fails at `credential_unavailable / daemon_admission`, proving the test no longer
+bypasses bootstrap. Classified credential errors also preserve their original
+safe helper/Keychain stage through Setup and IPC. Serial full Go tests, Go vet,
+149 XCTest cases with one intentional visual-export skip, four Swift Testing
+contracts, two deterministic Release builds, signature checks, and launch
+smoke pass. Those package-time tests did not use a real Provider key or
+generation request. The subsequent user credential attempt supplied the live
+configure/verify evidence above; a real DeepSeek conversation reply is still
+outstanding.
+
+`ACTIVE / P2D-W2A CONVERSATION SEND BLOCKER`: the installed App can retain a
+persisted Codex thread anchor while its Swift store has not yet loaded that
+thread. Selecting the verified DeepSeek Profile then reused the old thread ID.
+The daemon correctly rejected the same-thread Profile mismatch before user
+message persistence and Provider dispatch, but Swift silently caught the error,
+so the user saw a message that did not send and no recovery details.
+
+Installed build 17 rotates the thread anchor whenever a non-empty selected
+Profile changes, even before the old thread loads; its generation guard prevents
+stale asynchronous Codex loads from overwriting the user's DeepSeek selection.
+It preserves the draft and displays an inline safe stage, Retry, View
+diagnostics, and Copy incident ID actions. App and daemon `chat_message`
+diagnostics correlate by Incident ID and safe thread/Profile metadata without
+recording message content. This remains the installed fail-closed compatibility
+boundary and has not received a real DeepSeek reply.
+
+`TARGET / ACCEPTED CONVERSATION ROUTE ARCHITECTURE`: P2D-W2A is extended by
+`.loom-evidence/phase2d/contracts/P2D-W2A-conversation-route-segments.md`.
+The target keeps one user-visible Loom Conversation while each Harness,
+Provider, Provider Account, Model, or credential-revision transition creates an
+immutable Conversation Segment and one or more single-binding Agent Attempts.
+A stable Agent owns a versioned RouteSet of compatible Execution Profiles;
+parallel routes use sibling Attempts plus an Aggregation Attempt, and fallback
+uses an explicit approved Route Transition. Provider-native handles are bound to
+Provider, account, Model, Segment, and credential revision and are never reused
+across those boundaries.
+
+Each transition builds a target-specific, content-addressed Context Capsule
+from authoritative, observed, and explicitly untrusted sources. Classification,
+redaction, ACL, target-account disclosure policy, deterministic token packing,
+and an omission manifest run before a ContextAdapter dispatches the new Segment.
+Hidden reasoning is never transferred, prior model output cannot become
+authoritative history, and every Attempt freezes both Capsule and Execution
+Binding digests. The UI offers Continue with context, Summary only, and Start
+clean, and exposes only safe disclosure categories, omissions, and receipt.
+W2B/W2C reuse this as per-Agent RouteSet and Role Capsule dispatch; W2D owns
+disclosure/retention governance and encrypted transcript/Capsule/native-handle
+storage using per-Conversation DEKs wrapped by the domain-separated Loom Vault
+key hierarchy. The current
+owner-only plaintext chat file is explicitly not an encryption-at-rest claim.
+
+`CURRENT / SOURCE SEGMENT VERTICAL CANDIDATE`: the source chat authority now
+uses persistence schema 2 and keeps one visible thread while appending immutable
+Segments when Profile identity changes. Each routed call records a single
+Attempt with Profile, Segment, Context mode, content-addressed Capsule digest,
+Binding digest, and terminal status. Swift sends the explicit route mode without
+rotating the thread anchor, fences stale loads, decodes Segment/Attempt state,
+and labels each routed turn with Harness, Provider Account, and Model. The
+compact route menu offers Continue with context, Summary only, and Start clean.
+Summary mode admits recent user input and omits prior model output; Continue mode
+places prior model output only inside an explicitly untrusted policy-filtered
+Capsule, never as target-Provider assistant history. Profile conflict remains
+fail closed when a caller omits the transition mode. Schema 1 files migrate to a
+single start-clean Segment. This source Candidate passes full `internal/api` and
+`internal/app`, full `internal/localipc`, focused daemon routes, API race checks,
+and 153 XCTest plus four Swift Testing contracts. It is not installed or live
+accepted; full structured Capsule fields, omission/disclosure receipts,
+Provider-native handle isolation, and encrypted storage remain W2A/W2D work.
+
+`CURRENT / SUPERSEDED BUILD 17 CHAT REPAIR CANDIDATE`: v0.5.2 build 17 was
+installed and running from `/Users/lune/Applications/Loom.app`; the retained
+delivery is
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build17-2026-08-10/Loom.app`.
+The installed Swift executable SHA-256 is
+`58e3e6fbf56c5b8323b3d063bf3c1f16d8b516e3ccc1074ffa1084da332c03dd`
+and bundled daemon SHA-256 is
+`934a59b95b3401750a6c7d83eb031c5fb2a7acfcf12a19af71f9ccd3a65883fe`;
+retained and installed bytes match and deep signature verification passes.
+
+Opening the App automatically starts the installed helper as its child with
+canonical state/isolation/Runtime/owner-only Socket arguments and the validated
+managed-parent PID. The Socket is `0600`; no manual `loomd` start is required.
+Journal replay after installation still reports DeepSeek verified revision 3,
+and the daemon restores the Loom Native `deepseek-chat` Runtime. The source and
+package gates pass Go vet, full `internal/api`, `internal/localipc`, and
+`cmd/loomd` packages, 153 XCTest cases with one intentional visual-export skip,
+four Swift Testing contracts, two deterministic Release builds, signature
+checks, and launch smoke. No paid Provider generation was issued during these
+gates. P2D-BLOCKER-1 remains open only for the user-confirmed installed Profile
+switch, new DeepSeek thread, correlated `conversation_dispatch`, and real reply.
+
+`CURRENT / INSTALLED BUILD 20 VAULT CANDIDATE`: v0.5.2 build 20 is installed
+transactionally from
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build20-2026-08-11/Loom.app`;
+build 19 remains at `/Users/lune/Applications/Loom.app.previous`. Strict deep
+signature verification passes and the installed bytes match the candidate:
+`LoomLocalApp` SHA-256 is
+`a2fcf42e380ff710b3dfaca59692364d2297f8dd786cd8fc95860950a544f8a6`
+and bundled `loomd` SHA-256 is
+`7e1348c184f365a64665c36ab2c30f7a97439f4d13cd009a29ecb1f7c92f5ef6`.
+The App is parented by launchd and starts its canonical child daemon with
+`--state`, `--isolation-root`, `--socket`, and `--managed-parent-pid`; the
+daemon is parented by the App. The run directory and active UDS are owner-only
+`0700`/`0600`. The default LocalKeyFile Vault starts automatically with
+owner-only `private/vault.key` and `state/credential-vault.db` at `0600` beneath
+`0700` directories.
+
+The installed `setup_snapshot` first projected the pre-Vault DeepSeek account
+as `migration_required / vault_entry_missing` and suppressed its unusable
+Conversation Profile. The user then completed the explicit `Move key to Vault`
+action with a real DeepSeek credential. Installed operational diagnostics show
+`credential_replace` followed by two `credential_verify` operations succeeding
+at `projection_refresh`; the authoritative snapshot now reports the exact
+DeepSeek account `verified` at revision 6 and publishes
+`conversation-deepseek-deepseek-chat-r6`.
+
+A real App/managed-daemon stop and restart changed both PIDs while preserving
+the owner-only Vault file identities. The restarted daemon automatically
+unlocked LocalKeyFile, restored verified revision 6 and the r6 Profile, and no
+`--credential-helper` process was present. The post-restart Conversation menu
+offers DeepSeek and accepts it as the current selection without sending a
+Provider request. This accepts installed Vault import, verify, Profile
+publication, and restart continuity. It does not yet accept an r6 Provider
+reply, multi-turn no-helper observation, or the mixed-Team live matrix.
+
+`CURRENT / R6 LIVE ATTEMPT FAILED; FALSE-SUCCESS DIAGNOSTIC CORRECTED IN
+SOURCE`: the first post-restart r6 message created immutable `segment-3` with
+Profile `conversation-deepseek-deepseek-chat-r6`, `summary_only` context, and a
+new frozen binding/capsule. Incident
+`loom-chat-d6873ebe-e5f7-41b5-9b24-a204688ca2bb` reached the profile-bound
+Conversation Attempt, but authoritative `attempt-3` ended
+`failed / conversation_unavailable`; the stored Loom message is the fixed local
+fallback, not a DeepSeek reply. No credential helper was active. Build 20's App
+and daemon operational records incorrectly marked the IPC transaction
+`succeeded` because the thread response itself was returned with `OK`, masking
+the failed Attempt and leaving lease versus Provider HTTP/auth/rate-limit
+indistinguishable. Therefore the r6 live gate remains failed, not passed.
+
+The current source Candidate closes that observability gap. OpenAI-compatible
+Conversation clients now classify timeout, DNS, TLS, connect, HTTP auth,
+rate-limit, rejected request, server availability, and invalid response without
+retaining Provider bodies. The router preserves that safe stage/code/retryable
+tuple; each Conversation Attempt freezes it with the end-to-end Incident ID;
+daemon and Swift diagnostics derive the terminal result from that Attempt even
+when IPC returns the persisted thread. Swift keeps the authoritative failed
+thread and restores the draft while showing a specific recovery banner and
+Incident action. This is source evidence only until a newly installed candidate
+retries r6 and exposes the actual failure class.
+
+`CURRENT / INSTALLED BUILD 21 STAGED-FAILURE DIAGNOSTIC CANDIDATE`: v0.5.2
+build 21 is transactionally installed from
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build21-2026-08-11/Loom.app`;
+build 20 is the strict-signature rollback bundle. Candidate and installed bytes
+match: `LoomLocalApp` SHA-256 is
+`d323b8ac87c1d3cf670ce4240ce7c5b4a99e2aa139c792f6fd763d246f416790`
+and bundled `loomd` SHA-256 is
+`8241612d0e4fd58ca9a9a5a5fd375af9ef95f2c2b0785416d96886c0a46c2b1c`.
+The App starts the managed canonical daemon, preserves the existing `0600`
+Vault file identities, auto-unlocks LocalKeyFile, restores DeepSeek and
+`deepseek.primary` as verified revision 6, and republishes Profile r6. No helper
+process is active. The UI is open with DeepSeek selected, but no Build 21
+Provider request has been sent; installed failure classification and the actual
+r6 root cause remain unverified until the user retries once.
+
+`TARGET / ACCEPTED CREDENTIAL VAULT ARCHITECTURE`: ADR-0020 and
+`.loom-evidence/phase2d/contracts/P2D-W2D-credential-vault.md` add CV1-CV6 under
+the existing W2D. A Loom-owned Vault replaces ProductKeychainStore beneath the
+existing `SecretStore` interface. LocalKeyFile is the first automatic-unlock
+mode: `loomd` loads one separate owner-only VMK at startup; random per-revision
+DEKs encrypt credential bytes with AES-256-GCM and are wrapped with an
+HKDF-SHA256 credential-domain KEK. Conversation and Agent hot paths use exact
+account/reference/revision leases and never launch a helper or read Keychain.
+Keychain remains only an optional, explicit, one-time migration source; re-entry
+is the default. There is no plaintext fallback. The honest threat model protects
+a copied Vault database without its key file but does not claim resistance to
+the same macOS user, root, or live daemon-memory compromise.
+
+`CURRENT / VAULT CV1 FROZEN; CV2-CV4 PRODUCTION SOURCE CANDIDATES`: focused RED
+first failed on absent Vault symbols. `internal/credentials/vault` now contains
+the versioned AES-256-GCM per-revision envelope, HKDF-SHA256 credential,
+conversation, and export domains, canonical account/reference/revision AAD,
+owner-only LocalKeyFile loading, encrypted SQLite storage with frozen file
+identity, exact leases, pending mutation transactions, restart reconciliation,
+and configure/verify/replace/revoke coordinators. Metadata conflict rolls back
+pending ciphertext; ambiguous post-commit failures remain recoverable pending
+records; replace can explicitly import a re-entered secret when authoritative
+legacy metadata exists but the Vault row does not. Revoke and revision changes
+invalidate only the exact old lease.
+
+Production `run.go` now enables `UseCredentialVault`. The daemon owns one Vault
+runtime, injects its gated mutator into setup and its gated exact lease access
+into Conversation and Agent dispatch, and closes it before the Journal database.
+Normal production setup therefore does not construct ProductKeychainStore;
+the only direct SecretStore read left in daemon hot-path code is the explicitly
+named legacy adapter used by tests and optional migration work. Agent and
+Conversation lease failures retain `credential_lease_issue`, and operational
+diagnostics plus Swift wire decoding accept the complete closed Vault stage set.
+Provider operation idempotency now resolves the exact Provider Account stream,
+not a Provider-only global stream.
+
+`PARTIAL / CV5 STATUS, MIGRATION UX, AND ROTATION SOURCE CANDIDATE`: setup
+compares each authoritative Provider/Account reference and revision with the
+encrypted Vault row. Missing
+rows project `migration_required / vault_entry_missing`, suppress the unusable
+Conversation Profile, and retain the authoritative Journal fact. Vault access
+failure projects `recovery_required / vault_unavailable`. The Provider sheet
+names Loom Credential Vault, explains re-entry, and performs explicit import
+plus verification as one user action. Setup now also publishes a strict,
+non-secret top-level Vault projection with schema, active storage mode, aggregate
+status, and migration/recovery account counts; Runtime & Providers renders that
+state with a real privacy-safe diagnostics action. A classified LocalKeyFile
+load/open failure now keeps the daemon and Setup UI available in a restricted
+recovery mode: all credential mutation and lease paths fail closed with the
+original Vault stage, caller secret bytes are cleared, and no Keychain fallback
+is constructed. Unclassified construction failures still stop startup.
+The loaded key material also retains the exact key-file device/inode identity.
+Every VMK lease and Vault health/mutation boundary revalidates that identity
+without rereading key bytes; live deletion or path replacement immediately
+projects recovery and rejects reads, deletes, and pending transactions.
+CV5 now also has a source-level LocalKeyFile rotation vertical slice. It stages
+an explicit next-version key without replacement, transactionally rewraps every
+active DEK and advances Vault metadata without re-encrypting credential bytes,
+rejects concurrent pending
+credential mutations, and preserves the old key and rows on pre-commit failure.
+A fixed `vault.key.rotation-pending` startup protocol promotes a committed key
+or removes an uncommitted key; any third state fails closed at `vault_rotation`.
+The lease generation barrier revokes active plaintext and rejects in-flight old
+generation acquisitions. The daemon UDS and Swift Runtime & Providers row expose
+a real Rotate key action with extended timeout, safe operational diagnostics,
+stage, and Incident ID; success refreshes the authoritative Setup Snapshot.
+Interactive Lock now / Unlock is also a source Candidate. Lock closes the lease
+manager and VaultStore, revokes and zeroizes active plaintext leases, releases
+the in-session VMK, and projects `locked`; credential mutation and dispatch then
+fail closed. Unlock revalidates rotation and key-file identity, reconstructs the
+encrypted store, lease access, verifier, and coordinator, reconciles pending
+mutations, and only then projects `unlocked`. Strict private UDS methods use
+extended deadlines and safe Incident diagnostics; Swift refreshes the
+authoritative Setup Snapshot instead of inventing local state, and displays
+stage plus Incident ID on failure. Recovery reset is now a source Candidate:
+it is exposed only for `recovery_required`, requires an explicit destructive UI
+confirmation and an exact private UDS confirmation, validates all canonical
+Vault files before crypto-erasure, fsyncs both owner-only directories, and
+rebuilds the Vault runtime in place without an App or daemon restart. It never
+rewrites old credential metadata into a usable state. Existing Provider
+Accounts instead project `migration_required`, retain their non-secret account
+identity, and require API-key re-entry. Unsafe paths, normal unlocked/locked
+Vaults, repeated reset, and incorrect confirmation fail closed with
+`vault_recovery` plus Incident ID. Optional one-time Keychain helper migration
+and the complete installed support flow remain open.
+
+Encrypted export is now a source Candidate rather than an inert UI promise.
+The native sheet requires a matching 12-1024-byte passphrase and user-selected
+`.loomvault` destination. loomd applies Argon2id with a random salt, derives
+separate DEK and bundle keys beneath `loom/export-wrap/v1`, unwraps and rewraps
+each credential DEK without creating an aggregate plaintext API-key archive,
+then encrypts the complete manifest so Provider Account metadata is not exposed.
+It never exports the VMK or `vault.key`. Export is bounded to 256 credentials
+and 4 MiB, rejects pending mutations, clears the daemon passphrase buffer, and
+publishes a new `0600` file with `O_EXCL` and directory fsync. Wrong passphrase,
+tamper, unsafe destination, overwrite, and unknown versions fail closed at
+`vault_export`; operational diagnostics retain Incident ID but exclude the
+passphrase and destination. Source format tests prove exported DEKs can be
+rewrapped under a new VMK with exact account/reference/revision binding. Restore
+UI is not claimed by this slice.
+
+The current source passes full relevant credentials/app/api/localipc/runtime/
+daemon packages, focused Vault and daemon race checks including key identity
+drift, live key-path replacement, rotation/restart, malformed-key recovery, and
+explicit crypto-erasure/re-entry and encrypted export/rewrap,
+Go vet, diff
+checks, and 167 XCTest cases with one intentional visual-export skip plus six
+Swift Testing contracts. Installed build 20 now proves automatic LocalKeyFile
+Vault startup, owner-only storage, fail-closed legacy projection, real re-entry,
+verify/Profile publication, and restart auto-unlock. It does not yet prove the
+r6 live Conversation hot path or mixed-Team dispatch, so no completed
+Keychain-removal or CV6 claim is made.
+
+`NEXT / ORDERED PHASE 2D EXECUTION`: package and install the staged-failure
+Conversation Candidate, then retry one user-approved DeepSeek r6 message. The
+result must expose one safe lease/provider stage and Incident ID; fix that
+specific root cause until a real reply is persisted, then repeat for multi-turn
+no-helper observation. Preserve W2B/W2C multi-Agent bindings and complete the
+four-pair mixed-Team isolation matrix before CV6 can close. The one-time
+Keychain helper migration remains optional and outside the normal
+Conversation/Agent hot path.
+
+`CURRENT / FOUR-PROVIDER TEAM SOURCE CANARY`: the Phase 1 three-Agent ceiling
+was a real blocker for the accepted Phase 2D mixed-Team matrix. TeamDefinition,
+ExecutionPlan, coordinator admission, authoritative dispatch/replay, and
+projection replay now share one nine-Agent maximum while retaining one main
+Agent and at most three Attempts per node. Boundary regressions accept nine and
+reject ten, so creation and replay cannot disagree about Team size.
+
+The controlled source canary now executes one Team with Codex + OpenAI,
+Claude Code + Anthropic, Loom Native + Kimi, and Loom Native + MiniMax. Every
+Attempt freezes a distinct Harness, Provider Account, Model, credential
+reference/revision, endpoint, limits, capabilities, and binding digest. A
+synthetic `provider_rejected` failure on the OpenAI Agent leaves the other three
+Agents succeeded and concurrently runnable; only the failed Agent follows its
+versioned recovery path. Full `teams`, `work`, `projection`, and `app` tests plus
+the focused race test pass. This is source-level orchestration evidence only:
+real-account preflight, installed adapter dispatch, account accounting, Team
+board projection, and the user-observed four-Provider live matrix remain W2C/W2D
+exit gates.
+
+`CURRENT / PRODUCT MISSION MULTI-ROLE COMPILER`: the product Mission entry no
+longer collapses a confirmed saved Team to one hard-coded local Pi main Agent.
+`MissionExecutionBinding` now carries one role-local binding per saved role;
+the compiler emits a canonical one-to-nine-node DAG, two bounded Attempts and
+one independent verifier semantic per role, and preserves each role's exact
+Harness, Runtime, Provider Account, Model, credential revision, limits, and
+capabilities. Legacy single-main Journal lineage retains its prior verifier
+identity and remains restart-recoverable. Multi-role projected executions are
+also reconstructable after daemon restart.
+
+The projection binding source consumes the exact versioned
+`TeamDefinition.Configuration.RoleBindings` snapshot when it matches the saved
+Team definition digest. Main uses its authoritative AgentInstance; dormant
+subagents receive deterministic execution identities without being falsely
+projected as active Team instances. The stale two-subagent instantiation and
+projection ceiling is removed; all saved-Team boundaries now admit the shared
+nine-Agent maximum.
+
+`CURRENT / AGENT PREFLIGHT GOVERNANCE`: Mission preflight projects one safe row
+per Agent with Harness, Provider, Provider Account, Model, credential revision,
+reasoning effort, timeout, budget, capabilities, status, and actionable block
+reason. Credential reference and endpoint fingerprint are intentionally absent
+from the wire and UI. Exact Provider Account lookup requires the configured
+reference and revision to remain verified. A missing, revoked, rejected, or
+revision-drifted credential marks only that Agent `blocked`; peer Agents remain
+`ready`. Runtime offline, capability mismatch, and exhausted capacity use the
+same role-local fail-closed path. Swift retains the blocked preflight for review
+but refuses Mission Start until every Agent is ready.
+
+Source verification covers a Codex/OpenAI main plus Loom/DeepSeek subagent,
+four role-specific Attempt records, multi-node restart reconstruction, exact
+saved-Team projection replay, and DeepSeek credential revocation isolation.
+Full `teams`, `projection`, and `app` packages and the strict Swift suite pass.
+This is not installed-live acceptance: packaged multi-Agent dispatch, actual
+Provider replies, account rate-limit/timeout isolation, accounting, fallback
+approval, and Team Board incident projection remain open.
+
+`CURRENT / AGENT ATTEMPT INCIDENT BOARD CANDIDATE`: the Team projection now
+retains the privacy-safe correlation ID for each current Attempt dispatch
+generation beside its frozen Execution Binding. A rebound advances only that
+Attempt to the new generation Incident; a later terminal operation does not
+replace an already bound dispatch Incident, preserving adapter-diagnostic
+correlation while remaining compatible with historical Journal operations that
+used a separate terminal correlation. Team Board exposes the value only when it
+matches the strict 1-64 character IPC Incident grammar. It still omits
+credential reference, endpoint fingerprint, Prompt, Provider body, and
+diagnostic content.
+
+Swift strictly decodes the same grammar, shows the first eight characters next
+to the affected Agent's terminal reason, and provides an icon-only Copy
+incident ID action in Team Pulse. Invalid or control-bearing IDs fail closed in
+Go/Swift tests. Full `projection`, `api`, and `app` packages, focused race and
+vet, the real Go/Swift timeline contract, the focused daemon execution IPC
+contract, 167 XCTest cases with one intentional visual-export skip, and six
+Swift Testing contracts pass. This is a source Candidate and is not present in
+installed build 20; packaged Agent-failure observation remains an exit gate.
+
+`CURRENT / FALLBACK BOARD PRESENTATION CANDIDATE`: each Team Board Agent row now
+projects whether fallback is configured, whether recovery approval is required,
+whether a versioned approval is available, that approval's safe version, and
+whether the one-shot fallback has been consumed. The Board intentionally omits
+the workflow fallback key, approval ID, actor, source/target binding digests,
+and approval digest. Swift rejects inconsistent combinations and renders one
+bounded state beside the Agent binding: `Fallback configured`, `Fallback
+approval required`, `Fallback approved vN`, or `Fallback executed`.
+
+Focused API and race tests, full `projection`, `api`, and `app` packages, the
+105-second Go/Swift IPC contract, 168 XCTest cases with one intentional visual
+export skip, and six Swift Testing contracts pass. This is source-only and is
+not present in installed build 21. It closes fallback status visibility, not
+Agent fallback editing or interactive approve/reject. Those journeys, installed
+fallback presentation, and the four-Provider live matrix remain active W2D
+gates. Build 21 still has no new DeepSeek chat event; the user-triggered r6
+message and real reply or exact correlated failure remain P2D-BLOCKER-1's next
+live gate.
+
+`CURRENT / AGENT ROUTESET AUTHORING CANDIDATE`: the saved Team configuration
+now carries an optional version-1 fallback Route per Agent role. The route
+freezes its own Runtime Profile, Runtime instance, Harness, Provider Account,
+Model, endpoint fingerprint, credential reference/revision, reasoning effort,
+timeout, budget, and capabilities. It must target the same AgentDefinition and
+role kind as the primary binding, must use a distinct Runtime Profile, and is
+accepted only with `approval_required=true`. Historical Team events remain
+compatible because the route is optional. The Builder binding digest includes
+the RouteSet, so a fallback edit invalidates stale confirmation instead of
+silently changing an accepted Team.
+
+Builder editing now offers an independent fallback menu on every Agent. It
+lists only same-Agent, same-role compatible execution Profiles and displays the
+selected Harness, Provider Account, Model, credential revision, and explicit
+approval-required state. `No fallback` is a real edit, not a presentation-only
+toggle. Swift accepts old responses as unconfigured but rejects contradictory
+new wire states such as a configured route without required approval. Saved
+Teams restore both primary and fallback Profiles after daemon restart; when the
+live catalog no longer contains a frozen Profile, the Builder reconstructs a
+bounded saved option from the authoritative non-secret execution snapshot.
+
+Focused state/projection/app tests, full affected Go packages, focused app race
+tests, the real Go/Swift UDS contract, and the complete Swift suite pass: 169
+XCTest cases with one intentional visual-export skip plus six Swift Testing
+contracts. This is source-only and is not installed in build 21. It completes
+RouteSet authoring and persistence, not approval authority. Versioned
+approve/reject commands, installed Board/Builder verification, and live fallback
+execution remain active W2D gates. Build 21 still has no
+post-`loom-chat-d6873ebe...` user-triggered
+DeepSeek event, so P2D-BLOCKER-1 remains open.
+
+`CURRENT / AGENT FALLBACK PREFLIGHT CANDIDATE`: the Mission binding source now
+resolves the saved fallback Route independently for each Agent. It validates
+the exact fallback Harness/Runtime, Provider Account, credential reference and
+revision, Model, limits, and capabilities through the same fail-closed binding
+path as the primary Profile. Credential revocation, Runtime offline state,
+capability mismatch, and capacity exhaustion produce a fallback-local blocked
+reason without changing a ready primary Agent or any peer Agent.
+
+Mission preflight projects the fallback Harness, Provider Account, Model,
+credential revision, capabilities, ready/blocked state, actionable reason, and
+approval requirement under the owning Agent row. Swift accepts historical
+preflight responses as unconfigured and rejects partial or unapproved new
+fallback facts. A blocked fallback does not prevent primary Mission Start.
+Conversely, the compiler does not create a changed Attempt or RecoveryPolicy
+from configuration alone: both bounded Attempts retain the primary binding
+until a separate authoritative `TeamFallbackApproval` exists.
+
+The four-Provider concurrency canary also now waits for all three independent
+subagents before releasing its barrier. Its previous two-arrival barrier made
+the asserted three-way peak scheduler-dependent; twenty repeated runs pass
+after correcting the test boundary. Full affected Go packages, focused race,
+diff checks, 169 XCTest cases with one intentional visual skip, six Swift
+Testing contracts, and the real Go/Swift UDS suite pass. This remains a source
+Candidate outside build 21. Persistent prepared approve/reject authority, Board
+projection from a live decision, and installed execution remain open.
+
+`CURRENT / AGENT FALLBACK APPROVAL COMPILER SEAM`: the Mission compiler now
+accepts an optional approval source queried by exact Team instance, Plan digest,
+logical Agent node, primary binding digest, and fallback binding digest.
+Configuration alone still keeps Attempt 2 on the primary binding. Only a valid,
+non-future `TeamFallbackApproval` whose source and target digests exactly match
+the frozen current bindings creates RecoveryPolicy v2 and materializes Attempt
+2 on the fallback Harness, Provider Account, Model, credential revision, limits,
+and capabilities. The dispatch frame uses that fallback Runtime instance and
+the semantic binding carries the same approval fact for existing Journal and
+recovery validation.
+
+A forged target digest fails closed. If the approved fallback later becomes
+unavailable, preflight blocks only its owning Agent with the fallback reason;
+peer Agents remain ready and Mission Start is rejected. Preflight and Swift now
+show only safe approval availability/version, and reject contradictory approval
+states. Deep cloning covers both primary and fallback capability lists. Focused
+Go compiler tests and strict Swift model/UI tests pass. Full affected
+state/projection/app/API packages, focused app race, Go vet, 169 XCTest cases
+with one intentional visual-export skip, six Swift Testing contracts, the real
+Go/Swift UDS contract, and diff checks also pass. This is a source seam, not a
+durable approval product: the production source that writes and resolves
+versioned preflight approve/reject Journal facts, its Decision Sheet actions,
+and installed fallback execution remain the next W2D slice.
+
+`CURRENT / INSTALLED BUILD 22 OBSERVATION (2026-08-11)`: direct bundle and
+process inspection now reports `/Users/lune/Applications/Loom.app` v0.5.2 build
+22 with its managed canonical bundled daemon running. The newest App and daemon
+operational records are still incident
+`loom-chat-d6873ebe-e5f7-41b5-9b24-a204688ca2bb` from the earlier r6 attempt; no
+build-22 `chat_message` event has been observed. The provenance of the external
+install change from build 21 to build 22 has not been established in this task,
+so no package/hash or live-fix claim is made. P2D-BLOCKER-1 still requires the
+user-triggered DeepSeek message and a real reply or one newly correlated, safely
+classified failure.
+
+`CURRENT / PERSISTENT FALLBACK DECISION AUTHORITY CANDIDATE`: W2D now has an
+immutable version-1 fallback decision Scope whose digest binds Team instance,
+Plan digest, logical Agent node, primary binding digest, and target binding
+digest. A dedicated Journal stream per Scope uses revision CAS. Approve creates
+a `TeamFallbackApproval` whose version equals the decision revision; Reject
+advances the same stream without carrying an approval, so a later reject removes
+the earlier route's execution authority without deleting history. Payloads are
+closed, non-secret facts and contain no credential reference, endpoint, Prompt,
+API key, or Provider body.
+
+Projection replay strictly reconstructs and verifies the Scope, actor, decision
+time, approval digest, and source/target binding. It preserves historical nil
+snapshot shape when no decision events exist, survives restart, and exposes only
+the latest exact Scope. The production Mission binding source now implements
+`MissionFallbackApprovalSource`; a Plan or binding drift cannot resolve a
+foreign approval, and a projected Reject returns no approval. The installed
+daemon compiler source wiring is present; optional side-task compilers consume
+it only when their parent source supports the authority interface.
+
+The shared Mission Decision backend and native macOS sheet now support a fourth
+`fallback` kind with explicit Approve fallback, Reject fallback, and Not now.
+Not now writes nothing. A prepared submit injects the current Incident ID and
+authority UTC time, commits the exact frozen Scope/revision, refreshes the
+projection, and only then reports an authoritative result. Full affected Go
+packages, targeted race, daemon regression, 169 XCTest cases with one
+intentional visual skip, six Swift Testing contracts, and the real Go/Swift UDS
+contract pass.
+
+`CURRENT / DYNAMIC FALLBACK PREFLIGHT DECISION PRODUCER CANDIDATE`: Mission
+compilation now emits one non-secret decision Candidate for every configured
+Agent fallback. Each Candidate contains only Mission identity, the immutable
+Team/Plan/Agent/source/target Scope, Agent title, Harness, Provider, Provider
+Account, Model, and credential revision; credential reference, endpoint,
+Prompt, Provider body, and secret bytes are absent. Authoritative preflight
+registers these Candidates in the shared prepared-decision backend without
+writing the Journal. Registration atomically replaces only the same Team's
+older dynamic fallback decisions, so Plan or binding drift removes stale
+actions while peer-Team decisions remain intact.
+
+The projection-backed preparer resolves the exact Scope's current decision
+revision, builds deterministic Approve/Reject CAS commands, and refreshes the
+authoritative Projection only after an explicit action commits. `Not now`
+remains non-authoritative and writes nothing. Approve makes the existing
+compiler source materialize Attempt 2 on the exact fallback binding; a later
+Reject removes that authority on the next preflight. The production daemon now
+injects this preparer into Mission execution, and the control router recognizes
+newly registered fallback decisions without a startup-only controls table.
+After preflight succeeds, the macOS Store refreshes the same authoritative
+Snapshot so the newly prepared fallback Decision Sheet is immediately
+reachable; a changed view still expires the preflight rather than reusing stale
+authority. Focused and full `internal/app`, focused race, full `cmd/loomd`, all
+60 `LocalProductStoreTests`, all 169 XCTest cases with one intentional skip,
+and all six Swift Testing contracts pass.
+
+The dynamic integration gate now approves the exact prepared action, recompiles
+from the rebuilt decision Projection, and executes a controlled two-Agent Team.
+The Main Agent's Codex/OpenAI Attempt fails with `provider_rejected`; the
+authoritative RecoveryPolicy consumes the approval and schedules Attempt 2 on a
+different Loom Native/DeepSeek Runtime, preserving the exact DeepSeek Provider
+Account, credential reference, and credential revision 7. The independent
+Reviewer remains on its MiniMax Account and credential revision 2, completes
+normally, and never acquires fallback state.
+
+This gate exposed and repaired a real cross-Harness defect: the ExecutionPlan's
+primary Runtime instance was previously required for every Attempt, and the
+recovery decision always copied the failed Runtime. The source contract now
+freezes `FallbackRuntimeInstanceID` beside the exact fallback approval, keeps
+retry and legacy same-binding fallback on the current Runtime, records the
+target Runtime in the recovery fact, and requires the scheduled/dispatched
+Attempt plus its frozen target binding to match during Work Authority and
+Projection replay. Rules/work/projection/app full suites, focused race, Go vet,
+and diff checks pass. This remains `PARTIAL` and source-only: installed Decision
+Sheet actions and real Provider fallback dispatch remain W2D gates. Build 22 and
+the DeepSeek r6 live blocker are unchanged.
+
+`PARTIAL / UNINSTALLED BUILD 23 CANDIDATE (2026-08-11)`: the source bundle
+version is now v0.5.2 build 23 and a fresh arm64 candidate exists at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build23-candidate-2026-08-11/Loom.app`.
+It contains the earlier dynamic fallback decision and authoritative Board replay
+source slice, but predates the subsequent cross-Runtime RecoveryPolicy repair
+described above. Deep strict signing, owner-only bundle permissions, no-symlink checks,
+the deterministic native build fixture, transactional installer fixture, and
+transport ZIP extraction all pass. The Swift executable SHA-256 is
+`375d76cbcbbd163ea5eb7364d25920dd95e87d1ef8af78c8211b9ab93c2a5611`,
+the bundled daemon SHA-256 is
+`072fb02b468adf1a6a42c98003ee38557e66002b9c420df2d6841b6488660c94`,
+and the transport ZIP SHA-256 is
+`a8dd5441db6b707111bd4cd3605f10972cf4e28fb0fb5a49070784804f3859d7`.
+
+This candidate has not been installed or launched as a macOS App. The current
+installed App and managed daemon remain external-provenance build 22 with
+unchanged bytes and processes so the pending DeepSeek r6 event can still be
+attributed to that exact bundle. Build 23 cannot satisfy installed fallback,
+Vault CV6, or mixed-Team live acceptance until the build-22 conversation gate is
+observed and the candidate is transactionally installed and exercised.
+
+The build-23 bundled daemon has additionally passed an isolated-bundle Vault
+contract using a fresh temporary HOME and synthetic secret: local-app bootstrap
+created owner-only `vault.key` and `credential-vault.db`, configure committed an
+opaque reference at revision 1, replace advanced it to revision 2, a full daemon
+cold restart automatically unlocked LocalKeyFile and restored that exact
+reference/revision, and revoke advanced only that credential to revision 3.
+Focused race and the complete `cmd/loomd` suite pass, with no candidate daemon
+process residue. This is binary-path Vault evidence without Provider network
+traffic; it does not satisfy real-key verify, conversation reply, or installed
+App gates.
+
+`PARTIAL / UNINSTALLED BUILD 24 CANDIDATE (2026-08-11)`: a newer arm64
+candidate now supersedes build 23 for source-to-binary verification at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build24-candidate-2026-08-11/Loom.app`.
+It includes the cross-Runtime RecoveryPolicy repair and controlled
+Codex/OpenAI-to-Loom-Native/DeepSeek recovery source described above. It was
+built from the same dirty Phase 2D worktree and is not release provenance.
+
+Deep strict signing, arm64 identity, owner-only bundle permissions, no-symlink
+checks, deterministic native build, transactional installer fixture, and ZIP
+extraction with byte-for-byte executable comparison pass. The Swift executable
+SHA-256 is
+`b7f64d64f1547959f6e4c22fdab1d60734d5458a66f39b62d291af6c51a9b8e0`,
+the bundled daemon SHA-256 is
+`4917838942bfd07712f4707921748faba1fd958bd18d69a7924b0f25ea299464`,
+the bundle Info.plist SHA-256 is
+`38b2e69dfb1af5168e506341e07a81501a0cb609c1d17576411a5cc55d562cdf`,
+and the transport ZIP SHA-256 is
+`c1eb757c933e83933618d488a011d9d6780d9a5b07cba186cd9a2a1914bcc935`.
+
+The exact build-24 daemon passes the installed-bundle Vault
+configure/replace/cold-restart/revoke contract in normal and race modes with a
+synthetic secret and no Provider request. The complete repository Go suite,
+affected-package race and vet checks, 169 XCTest cases with one intentional
+visual skip, and six Swift Testing contracts pass for the source packaged into
+this candidate. Build 24 has not been installed or launched as a macOS App;
+installed build 22 and its running managed daemon remain unchanged for the
+pending DeepSeek r6 attribution gate. Installed Decision Sheet actions, real
+fallback dispatch, Vault CV6, and the four-Provider mixed-Team live matrix
+remain open.
+
+`CURRENT / PROVIDER ACCOUNT POLICY AUTHORITY AND PROJECTION CANDIDATE
+(2026-08-11)`: W2D now has one strict revision-CAS policy stream for each exact
+Provider Account. Its immutable version-1 value freezes maximum concurrent
+Attempts, bounded dispatch starts/window, maximum assigned budget units,
+configuration revision/time, and a canonical digest over the complete Provider
+plus account identity. Command and event IDs remain replay metadata rather than
+part of the reusable policy value, so Projection and future frozen Attempts use
+the same constructor and digest.
+
+Authority replay verifies stream sequence, causation, deterministic event ID,
+idempotency, closed payload shape, canonical digest, and Provider/account
+identity. The global Projection rebuilds exact account-local policies, rejects
+cross-Provider lookup, keeps peer accounts independent, and leaves its previous
+accepted read view unchanged when a malformed later policy fact fails rebuild.
+Focused tests, five race repetitions, and complete `internal/work` plus
+`internal/projection` suites pass.
+
+`CURRENT / PROVIDER ACCOUNT CAPACITY AND ATOMIC DISPATCH CANDIDATE
+(2026-08-11)`: W2D now also has a distinct non-secret capacity stream for each
+exact Provider Account. Claim validates the frozen Agent execution binding
+against the current account policy, then writes the Run claim, Runtime
+reservation, and Provider Account reservation in one CAS append batch. It
+fails closed before Adapter or credential lease access when account-local
+concurrency, bounded dispatch starts, or assigned budget is exhausted.
+Replacement and terminal transitions release only the exact prior generation;
+concurrent claims across different Runtimes but the same account leave one
+winner and no partial loser mutation.
+
+The admitted Run freezes policy revision/digest and assigned budget. Strict
+authority and Projection replay verify policy history, reservation sequence,
+causation, binding digest, account identity, and matching release; policy
+tightening affects future claims without rewriting an admitted Run. A
+post-implementation review added three fail-closed guards: even an absent policy
+head participates in claim CAS, policy revision timestamps must strictly
+advance, and selectively replayed peer-Run capacity facts retain deterministic
+event/idempotency validation. Clock rollback and forged orphan-capacity REDs now
+pass.
+
+The Team Board API and strict Swift models project only safe frozen policy
+fields per Agent plus current policy/capacity totals per Provider Account.
+Focused normal/race tests, complete affected Go packages, Go vet, strict Swift
+model tests, the isolated Mission UI suite, and a 63-test ordered Swift subset
+pass. Two earlier bounded full Swift runs stopped at XCTest's internal
+`@MainActor` expectation before the first Mission UI assertion. The latest
+unfiltered `swift test` now passes 174 XCTest cases with one intentional skip
+plus seven Swift Testing contracts, and five consecutive `--skip-build` full
+runs also pass. The earlier ordering symptom is not reproducible in the current
+test product; no speculative product or test workaround was added.
+The controlled four-Provider source matrix is now complete: Codex/OpenAI,
+Claude Code/Anthropic, Loom Native/Kimi, and Loom Native/MiniMax freeze
+independent bindings, preserve account-local accounting, and isolate a rejected
+or revoked account to the affected Agent. The installed App presentation,
+Vault CV6, real Provider accounting, and four-Provider mixed-Team live matrix
+remain open. Installed build 22, the DeepSeek r6 live gate, and build-24
+installation status are unchanged.
+
+`CURRENT / PROVIDER ACCOUNT POLICY CONFIGURATION AND GOVERNANCE UI CANDIDATE
+(2026-08-11)`: the production source path now runs from `work.Authority`
+through `LocalProductSetupService`, `LocalProductSetupAPI`, the private loomd
+UDS method `provider_account_policy_configure`, strict `LocalIPCClient`,
+`LocalProductStore`, and the Runtime & Providers account UI. The command is
+scoped to one exact Provider plus Provider Account and carries only expected
+policy revision, bounded concurrency/dispatch/budget limits, and an operation
+ID. It has no secret, credential reference, policy digest, Prompt, or Provider
+body. The daemon replaces any client correlation with the trusted UDS request
+ID before authority admission.
+
+The Swift client now uses that same Incident ID for input admission, UDS,
+response validation, and its owner-only app operational record. The daemon
+wrapper persists the matching governance terminal event with only safe
+Provider/account identity, stage, elapsed time, result, error code, and
+retryability. Operation ID, limits, credential data, and raw request/result
+payloads are excluded from both diagnostic stores.
+
+The service rebuilds Projection and verifies the exact policy revision/digest
+before returning. The setup account directory publishes only safe policy
+availability, revision, and limits. Swift strictly rejects unknown fields,
+cross-Provider account identities, invalid ranges/digests, and malformed
+RFC3339/RFC3339Nano timestamps; Store accepts success only after a fresh setup
+snapshot contains the same exact account, revision, and limits. CAS conflict is
+shown inside that account's Limits sheet with an Incident ID and does not take
+global setup or peer Agents offline.
+
+The Provider Account view now summarizes current concurrency, dispatch-window,
+start-count, and assigned-budget ceilings, and its dedicated Limits sheet has
+native numeric controls, loading/disabled state, inline recovery, keyboard
+cancel/default actions, accessibility labels, and no credential preview.
+Focused Swift model/client/Store/UI/diagnostic REDs pass, including fractional
+Go timestamps, safe input-admission correlation, and account-local conflict
+isolation. A 32-test Provider/Vault
+XCTest subset plus two Swift Testing contracts pass; the 520-by-500 large-type
+UI render passes. Complete affected Go package tests, focused race tests, Go
+vet, daemon wire rejection of unknown secret fields, and both strict Swift/Go
+contract probes pass. The latest unfiltered full Swift suite passes 174 XCTest
+cases with one intentional skip plus seven Swift Testing contracts; five
+consecutive no-rebuild full-suite runs pass as a stability check. This source
+Candidate is packaged as the uninstalled build 25 Candidate below, but it has
+not been installed or exercised with a real Provider Account policy. Installed
+build 22 and its running daemon remain unchanged.
+
+`PARTIAL / UNINSTALLED BUILD 25 CANDIDATE (2026-08-11)`: build 25 supersedes
+the uninstalled build 24 Candidate for the current source-to-binary boundary at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build25-candidate-2026-08-11/Loom.app`.
+It adds the production Provider Account policy path, atomic Runtime plus account
+capacity reservation, frozen policy revision/digest, account-local Store/UI
+governance, and privacy-safe app/daemon Incident diagnostics to the earlier
+Vault, per-Agent binding, and explicit fallback slices.
+
+The Candidate is v0.5.2 build 25, arm64, ad-hoc signed, owner-only, and contains
+no bundle symlinks. Deep signature verification and ZIP extraction with
+byte-for-byte App/daemon comparison pass. SHA-256 values are
+`59129509b30f955df13012f577a2b361b8ea4ac5134cf8c50452548934cd0c50`
+for `LoomLocalApp`,
+`c7b274a480d0a3a8de161d6081f4e81020a74682217b1d15b1d2bad0201bd243`
+for bundled `loomd`, and
+`d9e9574827a777b3402c723ff722662559be7af27e5900b927f8c327c8138705`
+for the transport ZIP. The artifact manifest records the focused Go/Swift,
+race, vet, strict-wire, diagnostic, and large-type UI evidence plus the latest
+174-XCTest/seven-Swift-Testing full-suite pass and five-run stability check.
+
+Build 25 was not launched or installed. `/Users/lune/Applications/Loom.app`
+and its managed daemon remain running build 22 with unchanged canonical argv,
+so the pending DeepSeek r6 event remains attributable. Installed policy UI,
+real Provider accounting, Vault CV6, and the four-Provider mixed-Team live
+matrix remain open; the corresponding controlled source matrix is complete.
+
+`CURRENT / EXACT CONVERSATION PROVIDER ACCOUNT ROUTING CANDIDATE
+(2026-08-11)`: ordinary conversation routing now follows the same exact account
+identity contract as Agent Attempts. Setup enumerates every verified brokered
+Provider Account and publishes one immutable Conversation Profile for each.
+Primary Profile IDs remain compatible with persisted threads, while
+non-primary Profiles freeze the validated account suffix and credential
+revision. Revoked, malformed, cross-Provider, or revision-zero records are not
+published.
+
+The production daemon replaces the former Provider-primary lookup with the
+full Provider Account projection. A selected Profile must match exactly one
+Provider Account record before the router acquires a Loom Vault lease scoped by
+Provider, account, opaque credential reference, and revision. Ambiguity or any
+identity/status drift fails closed before Provider dispatch. Swift rejects the
+same malformed wire states and the conversation picker now displays Provider,
+exact account, and Model.
+
+Focused RED/GREEN tests, complete affected Go package suites, focused race,
+Go vet, and the full Swift suite pass. The Swift result is 175 XCTest cases with
+one intentional visual skip plus eight Swift Testing contracts. A full
+repository Go run passed every package except one existing
+`internal/localipc` one-second client boundary under parallel load; that exact
+test then passed ten consecutive repetitions and the full package was rerun
+separately. This source postdates build 25 and therefore requires build 26 for
+binary attribution. Installed build 22, DeepSeek r6, Vault CV6, real Provider
+accounting, and the mixed-Team live matrix remain open and unchanged.
+
+`PARTIAL / UNINSTALLED BUILD 26 CANDIDATE (2026-08-11)`: build 26 now packages
+the exact Conversation Provider Account routing source at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build26-candidate-2026-08-11/Loom.app`.
+It supersedes build 25 for source-to-binary attribution and remains a dirty
+worktree Candidate rather than release provenance.
+
+The arm64 App is ad-hoc signed, owner-only, and contains no bundle symlinks.
+Deep signature verification and ZIP extraction with byte-for-byte App, daemon,
+and Info.plist comparison pass. SHA-256 values are
+`ad29f15b08ed07dae08175b990abf508f640d72560112ed3b538122e516c61ea`
+for `LoomLocalApp`,
+`867dc4977ac8f9aa71dc3a7d423e90204983167e72c81ed267c5cdc68bcda49c`
+for bundled `loomd`,
+`6111c06b4ba52bdc1eea760d62cea3912dd25a89d6b20501c59235b25a119ee5`
+for `Info.plist`, and
+`986f12a5654ba58e2016f6cf62ab573dd1a254215a0c7273402b31e25ff32937`
+for the transport ZIP.
+
+Build 26 was not installed or launched. Installed build 22 and its managed
+daemon retain the same process identities and canonical argv, preserving the
+pending DeepSeek r6 attribution. The complete `internal/localipc` package also
+passed independently after the parallel full-repository timeout described
+above. Installed Provider policy UI, real accounting, Vault CV6, DeepSeek r6,
+and the four-Provider mixed-Team live matrix remain open.
+
+`CURRENT / ANTHROPIC MESSAGES CONVERSATION ROUTE CANDIDATE (2026-08-11)`:
+ordinary conversation now publishes every exact verified Anthropic Provider
+Account as an immutable account/revision-scoped Profile. Its Loom Native route
+freezes `anthropic_messages`, `claude-sonnet-5`, Provider Account, and
+credential revision, then obtains the secret only through the exact
+Provider/Account/reference/revision Vault lease. No Provider-primary or global
+credential lookup is available on this path.
+
+The new Provider client uses the fixed official HTTPS Messages endpoint,
+private proxy-free and redirect-free transport, bounded request/response
+payloads, `x-api-key` only on the single request header, and a fixed
+`anthropic-version`. It accepts only a matching assistant message containing
+bounded text blocks. Model drift, tool use, unsafe content, redirect, oversize,
+auth, rate-limit, timeout, and malformed responses fail closed through the same
+safe conversation diagnostics used by the OpenAI-compatible routes.
+
+Provider, setup, daemon, focused race, and vet checks pass. Strict Swift setup
+decoding and Store tests prove DeepSeek to Anthropic keeps one visible Loom
+Conversation, creates a third immutable Segment, and sends the account-scoped
+Anthropic Profile. The complete Swift suite passes 175 XCTest cases with one
+intentional visual skip and eight Swift Testing contracts. One full repository
+Go run timed out two existing five-second Codex/Pi daemon conversation tests
+under parallel load; the complete daemon package passed independently and both
+targets then passed ten consecutive repetitions. This source postdates build 26
+and requires build 27 for binary attribution. Installed Anthropic reply,
+DeepSeek r6, Vault CV6, real accounting, full Capsule/disclosure, and mixed-Team
+live acceptance remain open.
+
+`CURRENT / EXTERNAL INSTALLED BUILD 26 CORRECTION (2026-08-11)`: the latest
+read-only observation supersedes the earlier statement that installed build 22
+was unchanged. `/Users/lune/Applications/Loom.app` is now a separately built
+v0.5.2 build 26 with App PID `71211` and managed daemon PID `71252`. Its daemon
+uses the canonical `--state`, `--isolation-root`, `--socket`, and
+`--managed-parent-pid` argv. This task did not install, restart, or replace it.
+The installed Swift executable is
+`b30ff10bc805c4bf95dcf0570feb8254ea3488d443cf631dc80d206d2d5b0437`,
+the daemon is
+`9d2c52b9e3dd70addf5173c2764698b35c113255be28c285e8ab700c2778086a`,
+and `Info.plist` is
+`6111c06b4ba52bdc1eea760d62cea3912dd25a89d6b20501c59235b25a119ee5`.
+These bytes do not match this task's build 26 Candidate, so no provenance is
+inferred. The daemon happens to match build 27's daemon digest.
+
+The installed owner-only setup projection reports an unlocked LocalKeyFile
+Vault, `deepseek.primary` verified at revision 6, and immutable Profile
+`conversation-deepseek-deepseek-chat-r6`. Persisted metadata shows one visible
+Conversation with Codex, DeepSeek r3, and DeepSeek r6 Segments. No successful
+DeepSeek Attempt is established: the latest correlated Attempt
+`loom-chat-6135d434-ce27-4f69-bec5-1dabba5e0c8d` reached `provider_http` at
+`2026-08-11T12:06:35Z` and failed `invalid_response`. This proves Vault lease,
+route selection, and Provider dispatch, but not an accepted Provider reply.
+
+`PARTIAL / UNINSTALLED BUILD 27 CANDIDATE`: build 27 packages the Anthropic
+Messages route and exact account-scoped Vault lease. Its arm64 identity, deep
+ad-hoc signature, owner-only permissions, no-symlink boundary, transport ZIP
+extraction, and byte-for-byte App/daemon/plist comparison pass. It was not
+installed or launched and is superseded by build 28 because it predates the
+DeepSeek response-compatibility repair. Its manifest is retained at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build27-candidate-2026-08-11/BUILD-MANIFEST.md`.
+
+`CURRENT / DEEPSEEK RESPONSE CLASSIFICATION AND BUILD 28 CANDIDATE`: the
+OpenAI-compatible conversation client now treats a bounded Provider-resolved
+model name as non-authoritative response metadata while retaining Loom's exact
+requested model in the immutable Profile and Execution Binding. A malformed
+successful response now preserves one safe reason code:
+`response_json`, `response_model`, `response_choices`, `response_role`, or
+`response_content`. It still records no Provider body, Prompt, conversation
+text, credential, header, nonce, or ciphertext.
+
+Complete `internal/provider`, `internal/app`, and `cmd/loomd` tests pass, as do
+the complete repository Go suite, complete Provider race suite,
+affected-package vet, and the full macOS suite of 175 XCTest cases with one
+intentional visual skip plus eight Swift Testing contracts. The uninstalled
+v0.5.2 build 28 Candidate passes arm64,
+deep signature, owner-only permission, no-symlink, and extracted transport byte
+equality checks. Its hashes and open gates are recorded at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build28-candidate-2026-08-11/BUILD-MANIFEST.md`.
+Installed DeepSeek reply, Anthropic reply, Vault CV6, real accounting, and the
+four-Provider mixed-Team live matrix remain open.
+
+`CURRENT / EXTERNALLY INSTALLED BUILD 28 CORRECTION (2026-08-11)`: this latest
+observation supersedes the build-26 installed-state paragraph above. During the
+final read-only check, another process replaced and restarted
+`/Users/lune/Applications/Loom.app` with v0.5.2 build 28. This task did not
+perform that install. The installed App, daemon, and `Info.plist` hashes now
+exactly match the retained build 28 Candidate:
+`ae94cf38bb2e2c08e454f6572fa9feb7fd12f743aa04a535fbe90183254e7f78`,
+`895454d1f8c41db1745414e7084448b952a0b9dd3dba35b5c98ed0a696acad28`,
+and `0e857abeef75dd438f84f186c53401d32f1b1d6417d4a308dc708d557e41bbd9`.
+Deep signature verification passes. App PID `83012` owns managed daemon PID
+`83039`, whose argv retains canonical state, isolation, Socket, and parent
+identity.
+
+The exact installed build 28 automatically reopened the owner-only Vault after
+restart. A read-only setup request reports LocalKeyFile `unlocked`, no migration
+or recovery-required accounts, `deepseek.primary` verified at revision 6, and
+the r6 Conversation Profile published. No new chat event exists after the
+install, so the earlier `provider_http/invalid_response` Attempt cannot be
+reinterpreted as build 28 evidence. Build startup/state recovery is accepted;
+the next gate remains one user-triggered DeepSeek message producing either a
+real reply or one exact safe `response_*` reason.
+
+`CURRENT / PER-AGENT CATALOG FREEZE REPAIR AND BUILD 29 CANDIDATE
+(2026-08-11)`: a Phase 2D audit found one P0 source defect in the Codex Agent
+catalog. The Codex/OpenAI Profile selected `high` reasoning while requiring
+only `workspace_edit`; Runtime validation requires the
+`reasoning_effort` capability whenever an explicit reasoning value is frozen.
+The catalog could therefore present a Codex role that failed closed during
+Execution Binding freeze. RED reproduced the exact failure, and GREEN adds
+both `reasoning_effort` and `workspace_edit` to the Profile.
+
+The product catalog regression now freezes every published role option against
+its exact Runtime instance and verifies that the selected model belongs to that
+instance. Codex/OpenAI, Claude Code/Anthropic, Loom Native/DeepSeek, Loom
+Native/Kimi, and Loom Native/MiniMax all pass. The existing controlled
+four-Provider Team canary also confirms Agent-local failure isolation: a
+Codex/OpenAI `provider_rejected` Attempt does not prevent the Anthropic, Kimi,
+or MiniMax peers from succeeding, and each Attempt keeps independent Provider
+Account, credential revision, binding digest, token usage, and cost. Projection
+tests separately revoke one DeepSeek credential and preserve the OpenAI role as
+`ready`; Provider Account capacity tests preserve account-local rate and budget
+isolation.
+
+The complete repository Go suite, focused daemon race, affected-package vet,
+and full macOS suite pass. The Swift result remains 175 XCTest cases with one
+intentional visual skip plus eight Swift Testing contracts. Uninstalled v0.5.2
+build 29 packages this source at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build29-candidate-2026-08-11/BUILD-MANIFEST.md`.
+Arm64, deep ad-hoc signature, owner-only permissions, no-symlink checks, and
+ZIP extraction byte equality pass. The installed App remains exact build 28;
+build 29 was not installed or launched. DeepSeek and Anthropic replies, Vault
+CV6, real Provider accounting, and the installed four-Provider mixed-Team
+matrix remain open under the same Phase 2D Goal.
+
+`CURRENT / TEAM BOARD STRICT GOVERNANCE WIRE AND BUILD 30 CANDIDATE
+(2026-08-11)`: a follow-on W2D audit found that the Swift Team Board accepted
+contradictory governance facts even though Go projection emits a closed shape.
+Examples included `execution_binding_available=true` with an empty Harness,
+cross-Provider Account identity, a populated binding marked unavailable,
+negative usage, a token total different from input plus output, accounting
+facts while `accounting_available=false`, and an account error rate inconsistent
+with its failed/total Attempt counts.
+
+RED proved all of those malformed states were accepted. GREEN now validates the
+exact per-Agent Harness/Provider/Account/Model/credential tuple, preserves the
+native no-credential shape, applies the same usage and cost invariants as Work
+Authority, and validates account-local attempt, rate, budget, usage, cost, and
+currency aggregates. When the daemon intentionally marks an aggregate as
+overflowed, the Team inspector now says `Accounting incomplete`; partial sums
+are no longer visually indistinguishable from complete totals.
+
+The full macOS suite passes 176 XCTest cases with one intentional visual skip
+and eight Swift Testing contracts. Complete API and daemon suites pass; the
+complete repository Go, focused race, and affected vet evidence remains valid
+because this increment changes only Swift/UI and build metadata. Uninstalled
+v0.5.2 build 30 packages the exact source at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build30-candidate-2026-08-11/BUILD-MANIFEST.md`.
+Arm64, signature, owner-only permission, no-symlink, and ZIP extraction byte
+equality checks pass. Installed build 28 remains unchanged; all live Provider,
+Vault CV6, real accounting, and installed mixed-Team gates remain open.
+
+`CURRENT / BUILD 31 FROZEN AGENT LIMITS AND CAPABILITIES (2026-08-11)`:
+the Team Board previously stopped the per-Agent execution binding at Harness,
+Provider Account, Model, reasoning effort, and credential revision. The exact
+frozen timeout, optional binding budget, and capability set were available to
+dispatch authority but were not visible to governance after preflight.
+
+Build 31 projects those three non-secret fields from each Attempt's immutable
+execution binding. Swift now fail-closes nonpositive timeout, negative budget,
+or invalid, duplicate, or unsorted capabilities, and rejects all three fields
+when no binding is available. The Team inspector shows `Timeout`, `Binding
+budget`, and `Capabilities` on the exact Agent row; binding budget remains
+separate from the Provider Account policy's assigned budget.
+
+The complete repository Go suite, focused API race, affected vet, full
+176-XCTest/eight-Swift-Testing suite, and artifact integrity checks pass. The
+uninstalled Candidate is recorded at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build31-candidate-2026-08-11/BUILD-MANIFEST.md`.
+Installed build 28 remains unchanged. DeepSeek and Anthropic replies, Vault CV6,
+real Provider accounting, and the installed four-Provider mixed-Team matrix
+remain open inside the single Phase 2D Goal.
+
+`CURRENT / BUILD 32 AGENT VAULT AND PROVIDER FAILURE STAGE PRESERVATION
+(2026-08-11)`: a source audit found that the Agent credential hot path erased
+closed Vault failure stages twice. More seriously, it rewrote every Provider
+callback failure, including authentication, rate limiting, rejection, and
+availability, as `credential_unavailable`. This made account-local failure
+isolation executable but misreported the reason and prevented one-attempt stage
+attribution.
+
+RED now covers AAD identity substitution, wrapped-DEK/ciphertext/version
+failure, VaultStore propagation, lease revocation, per-Agent credential access,
+and Provider callback preservation. GREEN reports `vault_aad_validation`,
+`vault_decrypt`, `credential_lease_revoke`, `credential_lease_expire`, or
+`credential_lease_issue` as applicable. Private lower-level error text is
+replaced by public sentinels, while Provider typed failures reach the Adapter's
+existing `provider_auth`, `provider_rate_limit`, `provider_rejected`, and
+`provider_unavailable` classification.
+
+Complete Go, affected-package race/vet, full 176-XCTest/eight-Swift-Testing,
+and package-integrity gates pass. The uninstalled build 32 Candidate is recorded
+at `/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build32-candidate-2026-08-11/BUILD-MANIFEST.md`.
+Installed build 28 remains unchanged. Installed Provider-stage observation,
+DeepSeek/Anthropic replies, Vault CV6, real accounting, and the four-Provider
+mixed-Team live matrix remain open in Phase 2D.
+
+`CURRENT / BUILD 33 AGENT-LEVEL FAILURE DIAGNOSTIC PROJECTION (2026-08-11)`:
+Build 32 preserved exact Vault, lease, Provider, and Harness failure stages in
+operational diagnostics, but the Team Board still exposed only an authoritative
+terminal reason and Incident ID. Users could not see the exact safe stage or
+retryability without inspecting a diagnostic file.
+
+Build 33 adds a bounded, read-only diagnostic source to the Team timeline. Each
+summary must match the current Attempt's Incident ID, Provider, Provider
+Account, and Model before it can enrich that Agent row. Unknown stages,
+malformed codes, duplicate summaries, cross-account/model records, and stale
+failures superseded by a successful record are omitted. Missing or unreadable
+diagnostics leave the observational fields absent and never change the
+authoritative Attempt, Team status, Journal, cursor, or projection version.
+
+Swift now fail-closes contradictory diagnostic availability, unknown stage,
+unsafe code, missing Incident identity, or absent execution binding. The Team
+inspector displays the safe stage plus `Retry available` or `Manual recovery`
+on only the affected Agent row, while preserving Copy Incident ID.
+
+Complete repository Go, focused API/daemon/Vault/Adapter race, affected vet,
+full 176-XCTest/eight-Swift-Testing, native reproducibility/smoke, deep
+signature, arm64, owner-only permission, no-symlink, and ZIP byte-equality
+gates pass. The uninstalled build 33 Candidate is recorded at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build33-candidate-2026-08-11/BUILD-MANIFEST.md`.
+Installed build 28 remains unchanged. All installed Provider, Vault CV6, real
+accounting, and four-Provider mixed-Team live gates remain open under the one
+Phase 2D Goal.
+
+`CURRENT / EXTERNAL BUILD 35 AND BUILD 36 FOUR-AGENT CARDINALITY REPAIR
+(2026-08-11)`: while this WorkItem was running, another process successively
+rebuilt, installed, and restarted v0.5.2 builds 34 and 35 from the shared Phase
+2D worktree. This task did not perform either install. The current installed
+build 35 passes deep signature verification. App PID `66019` owns managed
+daemon PID `66082`; the daemon keeps canonical `--state`, `--isolation-root`,
+`--socket`, and `--managed-parent-pid` argv. Installed App, daemon, and plist
+hashes are respectively
+`d91734b6c6942bfe819c28956f7e902c7269b30de7536f85833d0a2509ba4a1f`,
+`56b7e8ae83523a3650f18d0fe52f0fe596d27ba86e41a3c778cf45f5abd1b076`,
+and `4696d65db43ca97cce0cd893e44a5d4aac17edc911a3f8d8f3c7985fb6811e2a`.
+The installed daemon is byte-equal to the build 36 Candidate daemon, but the
+App executable and plist are not the build 36 artifacts; installed build 35
+must not be relabeled as exact build 36 provenance.
+
+A W2B/W2C source audit found that Team definitions and execution plans already
+accepted `MaxTeamAgentCount = 9`, while four older boundaries still rejected a
+third sub-Agent: Saved Team runtime-binding normalization, structured draft
+content, accepted-draft role seeding, and accepted-plan shape validation. This
+made the required Codex/OpenAI + Claude/Anthropic + Loom/Kimi + Loom/MiniMax
+Team impossible to carry through product preflight even though each role could
+freeze an independent Provider Account and credential revision.
+
+RED reproduced all four failures. GREEN replaces only those historical `2`
+limits with `MaxTeamAgentCount - 1`. Four-role regressions now pass through
+independent frozen binding, dormant Saved Team plan, saved instance projection,
+structured draft acceptance, and accepted-draft instantiation. A direct
+max-plus-one case retains the nine-Agent ceiling. The change does not introduce
+a Team-level Provider client, shared credential lookup, silent fallback, or
+cross-Agent failure state.
+
+The final clean `go test ./... -count=1`, Teams/Provider race, affected vet,
+full 176-XCTest/eight-Swift-Testing suite, native reproducibility/smoke, arm64,
+deep signature, owner-only permission, no-symlink, and ZIP byte-equality gates
+pass. An earlier concurrent full Go run saw one transient Pi metadata `version`
+probe failure; the exact test passed in isolation and the clean full rerun
+passed. The uninstalled build 36 Candidate is recorded at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build36-candidate-2026-08-11/BUILD-MANIFEST.md`.
+
+This closes the source cardinality blocker, not the Phase 2D Goal. Installed
+post-restart DeepSeek multi-turn, Anthropic reply, real four-Provider Team
+execution, account-local failure isolation, real accounting, and explicit
+fallback observation remain open.
+
+`CURRENT / CREDENTIAL VAULT PRODUCTION-DEFAULT REVALIDATION (2026-08-11)`:
+ADR-0020, the P2D-W2D Credential Vault contract, and the Phase amendment remain
+aligned under the single Phase 2D Goal. The normal product builder sets
+`UseCredentialVault` internally and injects the resulting Vault runtime into
+credential configure/verify, Conversation routing, and Agent dispatch. The
+process-attested Keychain store remains only in an explicit legacy/test or
+future one-time migration boundary; it is not the production Conversation or
+Agent hot path.
+
+A new product-boundary regression invokes `productionDaemonBuilder` without a
+test-only Vault flag, proves that it owns `productCredentialVaultRuntime`, and
+observes an `unlocked` LocalKeyFile Vault in Setup Snapshot. Focused Vault and
+complete daemon tests pass with
+`go test ./internal/credentials/vault ./cmd/loomd -count=1`, followed by the
+exact production-default regression. This is source revalidation, not CV6
+completion. Installed post-restart multi-turn Provider
+replies, absence of helper processes during those live calls, encrypted Vault
+restart continuity, and the real mixed-Team isolation/accounting matrix remain
+open.
+
+`CURRENT / P2D-W2B/W2C FOUR-ROLE PRODUCT-PATH REVALIDATION (2026-08-11)`:
+the source acceptance chain now carries the required Codex/OpenAI, Claude
+Code/Anthropic, Loom Native/Kimi, and Loom Native/MiniMax roles from persisted
+Saved Team configuration through daemon materialization, Projection Mission
+binding, preflight, and compilation. Daemon materialization rebuilds all four
+custom brokered Execution Profiles even when the current catalog does not
+publish those Profile IDs; each reconstructed selection retains its exact
+Runtime instance, and same-ID credential-revision drift fails closed.
+
+Projection resolves four role-local Harness, Provider Account, credential
+reference/revision, Model, timeout, budget, and capability tuples. Compilation
+produces four plan nodes, four semantics, and eight Attempt candidates without
+reducing the Team to its main Agent. Revoking `kimi.primary` marks only the
+Kimi role and preflight row `blocked`; OpenAI, Anthropic, and MiniMax remain
+`ready`, while start fails closed until the required role is repaired. The
+separate controlled four-Provider dispatch canary continues to prove four
+distinct FrozenExecutionBinding digests and peer success when one Provider
+Attempt fails.
+
+The focused tests, related race runs, affected vet, complete `internal/app`
+and `cmd/loomd` packages, and clean `go test ./... -count=1` pass. This is a
+source gate, not installed live acceptance. No App was built or installed and
+no real Provider credential or request was used. The installed four-Provider
+Team, real account-local failure, accounting, fallback, and Provider reply
+matrix remain open under Phase 2D.
+
+`CURRENT / P2D-W2C ROLE CAPSULE STATUS CORRECTION (2026-08-11)`: source audit
+confirmed that Agent Attempt Execution Binding is frozen end to end, but Team
+Attempts do not yet contain a real Role Context Capsule digest. The existing
+`ContextCapsuleDigest` implementation belongs to Conversation Route Segments;
+there is no Team Role Capsule authority record, scope/ACL admission,
+deterministic packing, omission manifest, ContextAdapter output, or disclosure
+receipt. Earlier amendment wording that described this as already frozen is
+superseded.
+
+The new contract
+`.loom-evidence/phase2d/contracts/P2D-W2C-agent-attempt-binding-dispatch.md`
+separates the `CURRENT` immutable Execution Binding chain from the `TARGET /
+MISSING` Role Capsule chain. Loom must not manufacture a digest without the
+corresponding admitted content. P2D-W2C remains `ACTIVE / PARTIAL`; four-role
+installed dispatch and Role Capsule isolation/restart/disclosure acceptance
+remain open without weakening the completed credential-reference or failure
+isolation work.
+
+`CURRENT / P2D-W2C ROLE CAPSULE MINIMUM VERTICAL SLICE (2026-08-12)`: the
+2026-08-11 status correction successfully prevented a synthetic digest from
+entering Team authority. Loom now has a concrete `internal/contextcapsule`
+domain object generated from admitted content. It preserves authoritative,
+observed, and untrusted trust classes; enforces conversation, Team, Agent,
+role, Artifact, and secret-reference scopes; sorts deterministically; packs a
+declared token budget; records access and budget omissions without content; and
+fails closed when required context is omitted. Model-output provenance cannot
+be promoted to authority, and secret-reference scope rejects any body bytes.
+
+Each Capsule digest and disclosure receipt bind the target Agent/role,
+Provider, Provider Account, Model, auth mode, Context Adapter, Disclosure
+Policy, token budget, and disclosure/omission counts. Team coordinator and Work
+Authority require that target to match the exact FrozenExecutionBinding. The
+safe Authority record is frozen on `TeamReadySetDispatched`, survives replay
+and Projection, and reaches API/Swift Team Board rows without Capsule content.
+Missing or route-mismatched Capsules fail before Journal mutation. Ordinary
+retry must retain the admitted digest; an approved Provider fallback receives a
+new route-bound Capsule and receipt. Journal and Board non-disclosure tests
+reject Capsule body leakage.
+
+This advances P2D-W2C but does not close it. The current product source adapter
+admits the confirmed Mission objective as the minimum authoritative item; full
+Goal/constraint/decision/workspace/Artifact assembly, model-specific
+tokenization and ContextAdapter output, encrypted Capsule body storage and
+restart lookup, disclosure receipt inspection, parallel aggregation, installed
+four-Provider Team execution, and live Provider acceptance remain open. No App
+was built or installed and no real Provider credential or request was used in
+this increment.
+
+Verification for this minimum slice passes `go test ./... -timeout=15m`, the
+affected `go test -race` set, affected `go vet`, and the complete macOS Swift
+suite: 176 XCTest cases passed with one intentional visual-export skip, plus
+eight Swift Testing contracts. These results prove the source authority,
+replay, Projection, API, and Swift model boundary only; they do not satisfy the
+installed mixed-Team or real Provider exit gates above.
+
+`CURRENT / P2D-W2C CANONICAL CONTEXT DISPATCH VERTICAL SLICE (2026-08-12)`:
+the built-in Mission compiler no longer places `command.Objective` directly in
+an independent v1 prompt payload after separately freezing a Role Context
+Capsule. `internal/contextcapsule` now renders one canonical v2 dispatch from
+the admitted Capsule body. The rendered prompt preserves authoritative,
+observed, and untrusted labels plus provenance and content-free omissions; it
+does not include Provider Account identity or credential references. Opaque
+secret-reference items, non-text content, bounded secret markers, unsupported
+Context Adapter identities, oversized target prompts, and noncanonical payloads
+fail closed.
+
+The v2 envelope binds the Capsule digest and disclosure-receipt digest.
+`TeamCoordinator` recomputes and byte-compares the payload before Work Authority
+or Journal mutation, so a raw objective, changed digest, changed receipt, or
+changed prompt cannot execute under the frozen Capsule record. Pi RPC, the
+product Pi wrapper, Loom Native OpenAI-compatible Agents, Codex, and Claude Code
+share the closed v2 decoder and retain v1 only for explicit legacy/non-Team
+compatibility. Retry fixtures retain the exact rendered payload; an approved
+fallback rebuilds it from the new route-bound Capsule.
+
+Focused Context, compiler, coordinator, adapter, product-loopback, complete
+affected-package, affected race, daemon race, and vet gates pass. This remains
+source-only. Full Goal/decision/workspace/Artifact source assembly,
+model-specific tokenization and multi-message/tool-result adaptation, encrypted
+Capsule body restart, installed four-Provider Team execution, and real Provider
+acceptance remain open. No App was built or installed and no credential or real
+Provider request was used in this increment.
+
+The first parallel `go test ./... -timeout=15m` run passed every package except
+one existing Pi local-model `health_then_early_exit` timing case under the
+concurrent daemon/Swift-contract load. The exact case then passed five
+consecutive runs, and the clean serialized `go test -p=1 ./... -timeout=15m`
+rerun passed. This is recorded as a load-sensitive test observation, not a
+Context dispatch failure and not installed-live evidence.
+
+`CURRENT / P2D-W2C AUTHORITATIVE ROLE CONTEXT SOURCE ASSEMBLY (2026-08-12)`:
+the built-in Mission source now advances beyond the minimum objective-only
+Capsule. Every role receives the confirmed Mission objective, exact WorkPackage
+policy, current task and plan identity, role-local governance, and its exact
+Artifact revision bindings as typed, scoped, prioritized, content-addressed
+authority items. Required policy, task, and governance content fails closed;
+Artifact content may be deterministically budget-omitted with a content-free
+omission record. Peer role titles, Provider Account identity, credential
+reference, secret, and approval actor do not enter the model prompt.
+
+The retry boundary remains strict. Attempt number is an authoritative Attempt
+fact and is not allowed to mutate Capsule content. An ordinary retry therefore
+reuses the exact Capsule digest and disclosure receipt. A changed Provider,
+Account, Model, or Harness remains a fallback transition and receives a new
+target-bound Capsule only when the versioned approval matches both source and
+target binding digests; the Capsule carries only safe approval metadata.
+
+RED first reproduced the ordinary-retry digest drift and the resulting
+`cmd/loomd` stop after `TeamNodeAttemptScheduled` but before the second
+`TeamReadySetDispatched`. GREEN restores the complete two-Attempt cold-runtime
+terminal path and preserves the fallback authority distinction. The Role
+Capsule source tests, complete `internal/app`, three consecutive cold-runtime
+regressions, three Harness process-contract runs, affected race,
+`go vet ./...`, and clean serialized `go test -p 1 ./... -count=1` all pass.
+
+P2D-W2C remains `ACTIVE / PARTIAL`. Complete Goal, confirmed-constraint,
+accepted-decision, workspace/test-state, and prior-output assembly;
+model-specific tokenization and richer ContextAdapter mapping; encrypted
+Capsule restart lookup; installed four-Provider Team dispatch; and real
+Provider acceptance remain open. No App was built or installed, and no real
+credential or Provider request was used in this increment.
+
+`CURRENT / P2D-W2B/W2C EXECUTION PROFILE GOVERNANCE PROJECTION (2026-08-12)`:
+the per-Agent source audit found that the immutable Runtime Profile and Attempt
+binding already froze Provider Account, credential reference/revision, Model,
+auth mode, reasoning effort, timeout, budget, and capabilities, but Builder and
+Mission preflight projections omitted part of that contract. In particular,
+Swift could not distinguish a valid native route from a malformed brokered
+route, and configured fallback rows lost auth mode, reasoning effort, timeout,
+budget, and capabilities.
+
+Builder and Mission preflight now project the complete non-secret primary and
+fallback Execution Profile. Go and Swift independently reject account-bound
+auth without a provider-scoped account and positive credential revision,
+native auth carrying an account or revision, nonpositive timeout, negative
+budget, noncanonical capabilities, contradictory ready/blocked state, and
+hidden fields on an unconfigured fallback. A valid native fallback remains
+representable. The Mission UI shows Harness, Provider or Provider Account,
+Model, auth posture, credential revision, reasoning, timeout, budget, and
+capabilities for both routes; fallback still requires explicit approval.
+
+This is a source-only P2D-W2B/W2C repair. It does not expose credential
+references, endpoint fingerprints, secrets, Prompts, Provider responses, or
+hidden reasoning. No App was built or installed and no Provider credential or
+network request was used. Installed mixed-Team execution, account-local live
+failure isolation, accounting, fallback observation, Vault CV6, and real
+Provider replies remain open under the single Phase 2D Goal.
+
+Verification passes the complete 176-XCTest/eight-Swift-Testing suite with one
+intentional visual-export skip, complete `internal/app`, focused cross-language
+Swift contract probes, `go test -race ./internal/app -count=1`, `go vet ./...`,
+and the clean serialized `go test -p 1 ./... -count=1 -timeout=15m` gate.
+
+`CURRENT / P2D-W2B/W2D INDEPENDENT AGENT ROUTE EDITOR (2026-08-12)`: the
+Builder previously exposed each Agent's Harness, Provider Account, and Model as
+one combined Role option. The macOS editor now distinguishes stable Agent role
+identity from independent Harness, Provider Account, Model, reasoning, timeout,
+budget, and explicit fallback controls. Provider Account choices name the exact
+non-secret account and credential revision; custom immutable Profiles retain the
+correct current-route checkmark without exposing the credential reference.
+
+The Go Builder now treats Harness and Provider Account edits as
+compatibility-aware Profile composition. A Provider Account choice must come
+from the same Harness/runtime and copies its exact Provider, Account, auth mode,
+endpoint fingerprint, credential reference/revision, and compatible Model; the
+menu previews that Model. Reasoning, timeout, budget, and capabilities remain
+frozen from the current Agent. A Harness choice must already publish the current
+Provider Account, credential revision, and Model, and changes only the
+Adapter/runtime selection. Each accepted combination receives a new immutable
+Runtime Profile and Role option, preserves AgentDefinition identity and peer
+Agents, validates against the exact Runtime observation, and clears an
+incompatible fallback. Cross-Agent source routes and incompatible combinations
+fail before Draft revision or binding-digest mutation.
+
+Focused account/Harness RED-GREEN tests, API and Swift Store forwarding,
+complete `internal/app` and `internal/api`, affected race, `go vet ./...`, the
+clean serialized `go test -p 1 ./... -count=1 -timeout=15m`, and the complete
+177-XCTest/eight-Swift-Testing suite pass with one intentional visual-export
+skip. This is source-only W2B/W2D progress. No App was built or installed and
+no credential or Provider request was used. Installed mixed-Team execution,
+real account-local failure isolation/accounting/fallback, Vault CV6, and real
+Provider replies remain open under the single Phase 2D Goal.
+
+`CURRENT / INSTALLED BUILD 39 DEEPSEEK LIVE REPLY ACCEPTANCE (2026-08-12)`:
+the earlier statement that every real Provider reply remained open is now
+superseded for the installed DeepSeek route only. Read-only inspection of
+`/Users/lune/Applications/Loom.app` proves v0.5.2 build 39 is currently running
+with its bundled child daemon. The App and daemon started at 00:34 local time,
+the bundle passes strict deep signature verification, and exact SHA-256
+identities were captured for the App executable, daemon, and Info.plist. No
+retained build-39 delivery manifest was found, so this is exact installed-bundle
+evidence and is not a claim that the bytes match a retained Candidate.
+
+The installed projection reports `deepseek.primary` verified at credential
+revision 6. The LocalKeyFile Vault key, encrypted database, and live UDS remain
+owner-only `0600`; safe database metadata shows one active encrypted DeepSeek
+row at the same account and revision. No credential-helper or Keychain command
+was active when observed. That observation does not prove that no helper ran
+during each historical Provider call, so instrumented no-helper hot-path
+acceptance remains open.
+
+Persisted schema-v2 conversation metadata proves one visible Conversation has
+five immutable Segments in the order Codex, DeepSeek r3, DeepSeek r6, Codex,
+DeepSeek r6. After the current build-39 App/daemon startup, final Segment
+Attempts 21 through 25 all completed successfully against DeepSeek r6. Each has
+a distinct Attempt ID, frozen binding digest, Context Capsule digest, and a
+matching successful `conversation_dispatch` Incident in both App and daemon
+operational diagnostics. Earlier account-local Provider timeouts are followed
+by these successful Attempts, providing real recovery evidence without reading
+conversation content or Provider bodies.
+
+Phase 2D therefore accepts the installed DeepSeek credential import, verify,
+Profile publication, real reply, repeated multi-turn dispatch, Codex-to-
+DeepSeek Segment continuity, and timeout recovery portions of P2D-BLOCKER-1.
+The unified Goal remains `ACTIVE / PARTIAL`: installed Anthropic reply, the
+four-Provider mixed-Team matrix, account-local revocation/rate-limit/timeout
+isolation, real accounting, explicit fallback, encrypted transcript/Capsule/
+native-handle storage, rotation continuity, and instrumented proof that normal
+Provider calls never invoke the migration helper remain open.
+
+`CURRENT / P2D-W2C ENCRYPTED TEAM CONTEXT CAPSULE STORE (2026-08-12)`:
+the Loom Vault now has a source-complete encrypted storage boundary for Team
+Mission Context Capsule dispatch payloads. Each Conversation receives a random
+256-bit DEK. The DEK is wrapped under the VMK-derived
+`loom/conversation-wrap/v1` key, while each Capsule payload is AES-256-GCM
+encrypted with its own nonce and content-addressed by the validated Capsule
+digest. Canonical AAD binds the immutable Authority record, Conversation,
+Capsule digest, disclosure receipt, schema, and cipher version. The database
+enforces unique wrap nonces and unique per-Conversation data nonces.
+
+The Store validates the Capsule Authority record and canonical dispatch payload
+before encryption and after decryption. It supports idempotent exact writes,
+restart lookup by exact Conversation and digest, tamper/substitution rejection,
+and Conversation-local crypto-erasure. Vault VMK rotation rewraps both
+Credential and Conversation DEKs in the same SQLite transaction. Context
+payload, Prompt, credential, and Provider body never enter the plaintext
+columns; only non-secret Authority metadata, wrapped keys, nonces, digests, and
+ciphertext are persisted.
+
+The built-in Team Mission compiler now writes every primary/fallback Attempt
+Capsule through this Store before assembling its dispatch frame. A locked,
+recovering, unavailable, or failed Store aborts compilation; there is no
+plaintext fallback and no Event Journal authority is created by the Store.
+Focused RED/GREEN, complete affected packages, targeted race, `go vet ./...`,
+and the serialized repository Go suite pass. The wrapper used to capture the
+full-suite exit marker later failed because zsh reserves `status`, after all Go
+packages had already reported `ok`; this shell-marker error is not a test
+failure.
+
+P2D-W2C remains `ACTIVE / PARTIAL`. Ordinary-conversation transcript and route
+Capsule encryption, Provider-native `ExternalSessionHandle`, encrypted export/
+restore coverage for context data, installed migration and restart lookup, and
+the four-Provider mixed-Team live matrix remain open. No App was built or
+installed and no credential or Provider request was used in this source slice.
+
+`CURRENT / P2D-W2A ENCRYPTED ORDINARY CONVERSATION STORE (2026-08-12)`:
+the production-default source path no longer persists ordinary Conversation
+threads as plaintext JSON. The Vault now stores one canonical encrypted
+document per Loom thread under that thread's Conversation DEK. Document AAD
+binds Conversation ID, document kind, monotonic revision, schema, and cipher;
+same-revision exact retries are idempotent, while stale revisions, content
+drift, AAD substitution, tag failure, or ciphertext corruption fail closed.
+
+Capsule payloads and transcript documents share the Conversation DEK but reserve
+data nonces through one Conversation-wide database registry. This closes the
+cross-table nonce-reuse gap. VMK rotation already rewraps the Conversation DEK,
+so both content classes survive the same atomic rotation without re-encrypting
+their bodies. Deleting a Conversation removes its wrapped DEK, Capsule rows,
+thread document, and nonce history without affecting peer Conversations.
+
+The Chat API now loads and saves per-thread encrypted documents. Existing
+`chat-threads.json` is a one-time migration source only: encrypted writes finish
+first; the source is then atomically renamed to a pending identity, identity-
+checked, overwritten, fsynced, removed, and parent-fsynced. Partial encrypted
+writes and pending cleanup are restartable. A legacy/Vault mismatch preserves
+the legacy bytes and fails closed. Unsafe owner, mode, symlink, hard-link, or
+directory boundaries are rejected. The overwrite/unlink is best-effort local
+cleanup and does not claim erasure of filesystem snapshots or external backups.
+
+The default product daemon injects the Vault document store. Vault recovery
+keeps the App governance surface available but makes chat non-replyable; it does
+not reopen the plaintext constructor. Focused migration and daemon assembly,
+complete affected packages, targeted race, `go vet ./...`, and the serialized
+repository Go suite all pass with direct `exit=0` evidence.
+
+This is a source Candidate only. The currently installed v0.5.2 build 39 still
+uses its existing schema-v2 `chat-threads.json`; no App was built, installed, or
+migrated in this increment. Installed migration, encrypted restart and real
+reply, migration diagnostics/UI, encrypted Provider-native handles, encrypted
+context backup/restore, and the mixed-Team live matrix remain open. Phase 2D
+therefore remains `ACTIVE / PARTIAL`.
+
+`CURRENT / UNINSTALLED BUILD 40 ENCRYPTED CONVERSATION CANDIDATE (2026-08-12)`:
+the encrypted ordinary Conversation source increment is packaged as v0.5.2
+build 40 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build40-candidate-2026-08-12/BUILD-MANIFEST.md`.
+The App and bundled daemon are arm64, the owner-only bundle contains no symbolic
+links, deep strict ad-hoc signature verification passes, and the ZIP round trip
+preserves the App executable, daemon, and Info.plist byte-for-byte. Exact hashes
+are frozen in the manifest.
+
+This is deliberately an uninstalled and unlaunched Candidate. The build-only
+script passed, but the launch-smoke script was not run because starting this
+source against the current user's real Application Support directory could
+migrate the installed build-39 plaintext transcript before explicit approval.
+The installed App remains build 39 and its data was not modified. Installed
+migration, encrypted restart lookup, a real post-migration reply, migration
+diagnostics/UI, encrypted Provider-native handles, no-helper instrumentation,
+Anthropic, and the four-Provider mixed-Team matrix remain open. Phase 2D stays
+`ACTIVE / PARTIAL`.
+
+
+`CURRENT / P2D-W2A/W2D ENCRYPTED EXTERNAL SESSION HANDLE STORE (2026-08-12)`:
+the Vault now has a source-complete encrypted boundary for Provider-native
+`response_id`, `conversation_id`, and `prompt_cache_id` values. Every record is
+encrypted under its Conversation DEK. Canonical AAD freezes Conversation,
+Segment, Provider, Provider Account, Model, auth mode, credential reference and
+revision, handle kind, and monotonic handle revision. Transcript, Context
+Capsule, and handle ciphertext reserve data nonces through the same
+Conversation-wide registry.
+
+Exact retries are idempotent. Stale revision, same-revision content drift,
+cross-route update, account/Model/Segment/auth/credential substitution,
+ciphertext or metadata tamper, tag failure, and cross-channel nonce reuse fail
+closed. Brokered and provider-ephemeral records require the exact account and
+positive credential revision. Native-auth records explicitly require empty
+account and credential metadata, preserving the existing Codex native binding
+without inventing a Provider Account. Restart, VMK rotation rewrap, and
+Conversation-local crypto-erasure preserve peer isolation.
+
+The production Vault runtime now owns a bounded callback access contract. It
+clears caller-owned handle bytes after encrypted write and zeroizes decrypted
+lease bytes immediately after the callback. No current DeepSeek, Anthropic,
+Kimi, or MiniMax client advertises reusable Provider-native state, so those
+routes remain stateless and Loom does not treat ordinary response IDs as
+reusable handles.
+
+Focused RED/GREEN, complete Vault and daemon packages, targeted race,
+`go vet ./...`, and the serialized `go test -p 1 ./... -count=1 -timeout=15m`
+gate all pass. This source was written after the uninstalled build 40 Candidate
+and has not been packaged, launched, or installed. Installed encrypted handle
+restart/isolation, a real explicitly stateful Provider adapter, transcript
+migration, Anthropic reply, no-helper instrumentation, and the four-Provider
+mixed-Team matrix remain open. Phase 2D remains `ACTIVE / PARTIAL`.
+
+`CURRENT / UNINSTALLED BUILD 41 ENCRYPTED HANDLE CANDIDATE (2026-08-12)`:
+the encrypted ordinary Conversation, Context Capsule, and Provider-native
+ExternalSessionHandle source is packaged as v0.5.2 build 41 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build41-candidate-2026-08-12/BUILD-MANIFEST.md`.
+The arm64 App and daemon, owner-only/no-symlink bundle, deep strict ad-hoc
+signature, and ZIP byte-equivalence checks pass; exact hashes are frozen in
+that manifest. The Candidate was neither launched nor installed because doing
+so could migrate the currently installed build-39 transcript without explicit
+approval. Installed Loom therefore remains build 39.
+
+Build 41 predates the migration-availability diagnostics below. It must not be
+used as evidence that a failed encrypted migration leaves governance online or
+shows an Incident ID in the App. The next package containing that source must
+use build 42 or later.
+
+`CURRENT / P2D-W2A/W2D CONVERSATION MIGRATION FAILURE ISOLATION (2026-08-12)`:
+the encrypted Conversation constructor now records privacy-safe
+`migration_read`, `migration_commit`, and `migration_cleanup` terminal events
+under one startup Incident ID. A read/validation or encrypted-commit failure
+preserves the legacy source and no longer aborts the complete product daemon.
+The governance and Provider setup surfaces remain available, while chat alone
+is fail-closed through a non-authoritative `state_unavailable` projection that
+contains only stage, retryability, and Incident ID.
+
+Swift strictly decodes that bounded availability failure, rejects non-migration
+stages, unsafe Incident IDs, unknown fields, or a contradictory replyable
+thread, and projects it into the existing Conversation diagnostic banner. The
+banner gives a stage-specific recovery action, View diagnostics, and Copy
+incident ID. It deliberately does not offer message Retry because restarting
+the unavailable in-memory chat service is required after correcting the local
+storage condition. Operational diagnostics preserve the underlying event's
+retryability without logging thread identity, transcript content, Prompt,
+Provider body, credential, ciphertext, nonce, or wrapped key.
+
+Focused Go migration/daemon tests and the complete 75-test Swift model/store
+selection pass. This is post-build-41 source only: no App was launched,
+installed, or allowed to touch the current user's transcript. Installed
+migration/restart/reply, migration recovery observation, no-helper hot-path
+instrumentation, Anthropic, and the four-Provider mixed-Team matrix remain open
+under the single Phase 2D Goal.
+
+`CURRENT / UNINSTALLED BUILD 42 MIGRATION GOVERNANCE CANDIDATE (2026-08-12)`:
+the post-build-41 migration failure-isolation source is packaged as v0.5.2
+build 42 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build42-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Complete serial Go, targeted race, vet, complete Swift, release build, arm64,
+deep strict signature, owner-only/no-symlink, and ZIP byte-equivalence gates
+pass. Exact executable, daemon, plist, and ZIP hashes are frozen in the
+manifest.
+
+Build 42 was not launched or installed. The launch-smoke test remains
+deliberately unrun because it could migrate build 39's real transcript without
+approval. Installed Loom remains v0.5.2 build 39. Build 42 is therefore package
+evidence for the source and transport boundary only, not installed migration,
+recovery, restart, reply, or Phase 2D completion.
+
+`CURRENT / P2D-W2D VAULT-ONLY ORDINARY RUNTIME SOURCE GATE (2026-08-12)`:
+the generic product daemon now selects the Loom Credential Vault when callers
+do not inject an explicit credential boundary. Production already selected the
+Vault explicitly; this increment removes the remaining ordinary daemon/setup
+fallback that could construct `ProductKeychainStore`. A direct setup service
+without a Vault, mutator, or explicitly injected legacy test store fails closed
+as `explicit credential boundary unavailable`.
+
+Non-test `cmd/loomd` source may no longer call `NewProductKeychainStore` outside
+an explicitly named `credential_migration` component. An AST regression test
+and the release build script enforce that rule. This preserves the accepted
+one-time Keychain migration design without allowing the helper to re-enter
+configure, verify, Conversation, or Agent Attempt hot paths.
+
+Operational diagnostics bind one closed, non-secret runtime marker for the
+daemon session: `credential_runtime=vault` or, for explicitly injected legacy
+tests only, `explicit_legacy`. IPC, Conversation migration, and Agent Attempt
+records carry that marker; Go and Swift reject unknown values such as
+`keychain`. The field does not contain a credential reference, key material,
+Prompt, Provider body, ciphertext, nonce, or filesystem path.
+
+Focused RED/GREEN, complete `cmd/loomd`, serialized `go test -p 1 ./...`,
+focused race, `go vet ./...`, shell syntax/source scans, diff checks, and the
+complete Swift suite pass. The Swift result is 180 XCTest cases with one
+intentional skip plus eight Swift Testing contracts, all with zero failures.
+This is source evidence only. A diagnostic marker proves the selected backend,
+not historical process non-creation; approved installed observation must still
+show no credential helper during import, repeated Provider calls, Agent
+Attempts, and restart. Installed Loom remains build 39 and Phase 2D remains
+`ACTIVE / PARTIAL`.
+
+`CURRENT / UNINSTALLED BUILD 43 VAULT-ONLY RUNTIME CANDIDATE (2026-08-12)`:
+the no-implicit-Keychain source gate and closed credential-runtime diagnostics
+are packaged as v0.5.2 build 43 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build43-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release construction, arm64 App/daemon, deep strict ad-hoc signature,
+owner-only/no-symlink bundle, and ZIP byte-equivalence gates pass. Exact App,
+daemon, plist, and ZIP hashes are frozen in the manifest.
+
+Build 43 was not installed and `Loom.app` was not launched. App launch smoke
+remains deliberately unrun because this source can perform the accepted
+one-time encrypted Conversation migration against the current user's build-39
+data. Installed Loom remains v0.5.2 build 39.
+
+The exact bundled daemon was subsequently launched directly against an
+owner-only canonical `/private/tmp` state, isolation root, and UDS. Its first
+session completed ping, Vault lock/unlock, and one content-free invalid chat
+admission. The second session reopened the same Vault as
+`unlocked / local_key_file`, preserved the Vault key and database identities,
+and completed another lock/unlock. Every recorded credential/chat operation
+carried `credential_runtime=vault`; lock used `credential_lease_revoke`, unlock
+used `vault_open`, and invalid chat failed at `conversation_dispatch` before a
+Provider call. Both 2 ms helper-process sampling windows recorded zero
+`--credential-helper` observations.
+
+The exact bounded evidence and its limitation are recorded in
+`.loom-evidence/phase2d/P2D-W2D-build43-packaged-runtime-no-helper.md`. Process
+polling cannot exclude a process shorter than the sampling interval, so this
+advances packaged-runtime evidence without closing installed CV6. Installed
+import, real multi-turn Provider and Agent Attempt no-helper observation,
+migration/restart/reply, Anthropic, mixed-Team, account-local isolation/
+accounting, explicit fallback, rotation continuity, and Phase 2D completion
+remain open.
+
+`CURRENT / UNINSTALLED BUILD 44 DIRECT HELPER-ATTEMPT GATE (2026-08-12)`:
+the ordinary Vault runtime now exposes a process-local monotonic count of every
+Darwin `--credential-helper` process start attempt. The count increments
+immediately before `command.Start()` and is snapshotted into every new daemon
+operational record as the explicit, non-secret
+`credential_helper_spawn_attempts` field. Go tests bind monotonicity and source
+ordering; Go and Swift diagnostic contracts preserve/export the field while
+remaining compatible with older records that omit it.
+
+Focused RED/GREEN, complete serialized Go, focused race, `go vet`, and complete
+Swift verification pass. The Swift result remains 180 XCTest cases with one
+intentional skip plus eight Swift Testing contracts, all with zero failures.
+The source is packaged as uninstalled v0.5.2 build 44 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build44-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep strict signature, owner-only/no-symlink, source gates, and
+ZIP byte-equivalence checks pass. `Loom.app` was not launched and the Candidate
+was not installed.
+
+The exact bundled daemon ran twice against fresh canonical owner-only
+`/private/tmp` state. The first process completed Vault lock/unlock and a
+content-free invalid chat admission; the second reopened the same
+`unlocked / local_key_file` Vault and repeated lock/unlock. All five operational
+records carried `credential_runtime=vault` and
+`credential_helper_spawn_attempts=0`. Vault key/database identity persisted
+across restart, while the owner-only UDS received the expected new inode. This
+directly closes the build-43 polling ambiguity for the isolated ordinary Vault
+path.
+
+The exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-build44-helper-spawn-counter.md`. Installed Loom
+remains v0.5.2 build 39. Real installed credential import, Provider multi-turn,
+Agent Attempt, restart, optional migration, and mixed-Team no-helper acceptance
+remain open, together with Anthropic, account-local isolation/accounting,
+explicit fallback, rotation continuity, and the rest of Phase 2D. The unified
+Goal remains `ACTIVE / PARTIAL`.
+
+`CURRENT / P2D-W2A ORDINARY CONVERSATION DISCLOSURE RECEIPT (2026-08-12)`:
+ordinary Conversation Route Segments now freeze a non-secret disclosure
+receipt digest and the exact numbers of Context items shared and omitted. The
+same tuple is frozen on each Conversation Attempt and passed to the Provider
+responder request. Execution binding schema version 2 binds the tuple beside
+Segment, Profile, context mode, and Context Capsule digest.
+
+Current persisted records recompute that v2 binding and fail closed when a
+receipt or count drifts without the binding changing. Older records remain
+readable only with no receipt and zero counts, preserving their existing
+pre-v2 binding. Schema-1 migration generates a current receipt and v2 binding
+when it creates the immutable Segment.
+
+The macOS Conversation timeline now shows a native expandable Context summary
+on the first visible turn of each Segment: shared item count, omitted item
+count, and the selectable disclosure receipt. It never displays Prompt text,
+transcript content, Provider response, credential, ciphertext, nonce, or
+hidden reasoning.
+
+Focused persistence and drift rejection, 20-run stability, serialized full Go,
+API/daemon race, `go vet ./...`, `git diff --check`, and complete Swift gates
+pass. Swift now reports 181 XCTest cases with one intentional visual-preview
+skip plus eight Swift Testing contracts, all with zero failures. Exact evidence
+is `.loom-evidence/phase2d/P2D-W2A-conversation-disclosure-receipt-projection.md`.
+
+Frozen build 44 does not contain this source. It is packaged as the unlaunched,
+uninstalled v0.5.2 build 45 Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build45-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, wire-contract, and ZIP
+byte-equivalence checks pass. Installed Loom remains v0.5.2 build 39. Full
+token packing, scoped retrieval,
+trust-domain disclosure approval, installed encrypted migration/restart,
+DeepSeek-to-Anthropic reply, sibling Attempts/aggregation, and mixed-Team live
+acceptance remain open. Phase 2D stays `ACTIVE / PARTIAL`.
+
+`CURRENT / P2D-W2D AGENT FAILURE GOVERNANCE ACTIONS (2026-08-12)`:
+the Team Pulse inspector now projects recovery controls only on the exact Agent
+row with a current privacy-safe failure diagnostic. A retryable failure offers
+Review retry, which navigates to the existing Attention governance surface
+without dispatching. A diagnostic offers the allowlisted diagnostic preview,
+and the Incident ID remains copyable.
+
+Healthy peer Agents and Provider Account accounting rows do not inherit these
+actions. A focused fixture combines one retryable Anthropic failure, one
+successful OpenAI/Codex peer, and one account summary and proves this row-level
+isolation. Missing, old, or out-of-range action metadata fails closed.
+
+Complete Swift verification passes with 181 XCTest cases, one intentional
+visual-preview skip, and eight Swift Testing contracts. The native rendering
+matrix continues to cover wide and compact windows, light and dark appearance,
+and large Dynamic Type. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-agent-failure-governance-actions.md`.
+
+Frozen build 45 does not contain this source. It is packaged as the unlaunched,
+uninstalled v0.5.2 build 46 Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build46-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, action-string,
+wire-contract, and ZIP byte-equivalence gates pass. The Candidate App and its
+bundled daemon were not launched.
+
+Installed Loom remains v0.5.2 build 39; real mixed-Team isolation, Provider
+Account accounting, approved fallback, and the counter-backed no-Keychain live
+matrix remain open. Phase 2D stays `ACTIVE / PARTIAL`.
+
+`CURRENT / P2D-W2C OBSERVED MANAGED SOURCE BASELINE (2026-08-12)`: each
+built-in Mission compile now creates one content-addressed, path-free source
+observation and binds its digest to every primary and verifier execution. The
+Role Context Capsule classifies it as observed/team-shared and discloses only
+schema, kind, tree digest, counts, and total bytes. Top-level `.git`, file names,
+paths, and contents remain outside the Capsule.
+
+Ordinary retry keeps the same Capsule digest. If the source changes after
+compile but before the managed workspace is prepared, execution fails with
+`source_changed` before any Harness adapter or Provider call. Artifact revision
+bindings remain separate authoritative items. Loom still does not synthesize
+Goal, confirmed-constraint, accepted-decision, observed-test-state, or prior
+model-output items without a valid source. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-managed-source-workspace-snapshot.md`.
+
+`CURRENT / P2D-W2D VAULT ACCOUNT-LOCAL LEASE CONCURRENCY (2026-08-12)`: source
+review found that the Vault runtime held its lifecycle mutex through the full
+remote Provider callback, serializing otherwise independent Provider Accounts.
+A RED test held a DeepSeek callback open and proved an Anthropic callback could
+not enter. `UseCredential` now snapshots the active exact lease access under
+the runtime lock and executes the callback after releasing it.
+
+`CredentialLeaseManager` still owns callback cancellation, expiry, revoke,
+rotation exclusion, and plaintext zeroization. The focused normal and race
+matrix passes together with Vault lock and rotation regressions. Evidence is
+`.loom-evidence/phase2d/P2D-W2D-vault-account-local-lease-concurrency.md`.
+
+Both increments pass complete affected packages and race, repository vet,
+serialized full Go, and complete Swift verification. They are frozen as the
+unlaunched, uninstalled v0.5.2 build 47 Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build47-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, contract-string, and ZIP
+byte-equivalence gates pass. The Candidate App and bundled daemon were not
+launched.
+
+Installed Loom remains v0.5.2 build 39. CV6, real account-level limits/cost
+accounting, approved fallback, and installed mixed-Team isolation remain open.
+Phase 2D stays `ACTIVE / PARTIAL`.
+
+`CURRENT / P2D-W2A/W2D CANONICAL MISSION CONTEXT AND EXACT RESTART AUTHORITY
+(2026-08-12)`: Mission preflight/start now carry Canonical Mission Context v1:
+the Goal, ordered confirmed constraints, and ordered accepted decisions. The
+existing preflight digest freezes the exact context. Role Capsules preserve
+each class as separate authoritative items while keeping the managed source
+baseline observed. Legacy objective-only commands remain readable only when
+all v1 context fields are absent.
+
+Preflight is zero-write. Start stores each complete canonical Role Capsule body
+and derived dispatch in one authenticated encrypted Vault envelope. Journal,
+projection, diagnostics, and Evidence retain no body or Prompt; Journal keeps
+only the Capsule authority record. A matching legacy dispatch-only ciphertext
+may upgrade once when its authority and validated dispatch are identical, but
+cannot downgrade or accept divergent content.
+
+Restart no longer treats current-source recompilation as the frozen context.
+It lists validated non-secret authority records for the exact Mission, decrypts
+the unique planned Capsule for each execution, restores its source digest and
+dispatch, and checks projected Attempts against their complete frozen binding.
+Missing or legacy-only body, ambiguous authority, AEAD failure, Team/Agent/Role
+or route drift, credential reference/revision or limit drift, and source drift
+all fail before adapter dispatch. Recovery performs no Capsule write.
+
+Affected packages and race, serialized `go test -p 1 ./... -count=1`,
+`go vet ./...`, and `git diff --check` pass. Swift passes 182 XCTest cases with
+one intentional visual-preview skip plus eight Swift Testing contracts, all
+with zero failures. Exact scope and open gates are
+`.loom-evidence/phase2d/P2D-W2A-W2D-canonical-mission-context-restart-authority.md`.
+The source is frozen as the unlaunched, uninstalled v0.5.2 build 48 Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build48-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, contract-string, and ZIP
+byte-equivalence gates pass. Installed Loom remains build 39; Workbench
+editing/confirmation UX, installed restart/live reply, mixed-Team failure
+isolation, accounting, fallback, and CV6 remain open. Phase 2D remains
+`ACTIVE / PARTIAL`.
+
+`CURRENT / P2D-W2A MISSION CONTEXT CONFIRMATION UX (2026-08-12)`: New Mission
+now presents the Goal, ordered confirmed constraints, and ordered accepted
+decisions as one native Mission Context review surface. Users may add or remove
+individual authority rows, but must explicitly check `I confirm this Mission
+context` before preflight. Objective, Team, work type, constraint, or decision
+edits revoke that confirmation and invalidate the prepared preflight.
+
+The Store now fences preflight by generation. A late successful response for
+an invalidated context cannot restore `ready` or make Start available.
+Unchecking confirmation invalidates the current result. Empty,
+whitespace-drifted, oversized, and duplicate authority items, including a value
+repeated across constraint and decision classes, fail before execution IPC.
+The sheet uses one scroll region with a fixed command bar so Review and Start
+remain reachable as context grows.
+
+Focused context, race, continuity, and source-contract tests pass. Complete
+Swift verification passes 186 XCTest cases with one intentional visual-preview
+skip plus eight Swift Testing contracts, all with zero failures. Native sheet
+layout passes in light appearance and dark appearance with accessibility
+Dynamic Type. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2D-canonical-mission-context-restart-authority.md`.
+
+This source is frozen as the unlaunched, uninstalled v0.5.2 build 49 Candidate
+at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build49-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Installed Loom remains build 39. Installed interaction/pixel review,
+Conversation Segment transition confirmation, real Provider reply,
+mixed-Team failure isolation, accounting, approved fallback, and CV6 remain
+open. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2A CONVERSATION ROUTE TRANSITION CONFIRMATION (2026-08-12)`:
+an active ordinary Conversation now reviews a Provider route change before it
+mutates the selected Profile. The native sheet shows the current and proposed
+Harness, exact non-secret Provider Account, Model, and credential revision;
+states that Loom will create a new immutable Segment; and requires Continue
+with context, Summary only, or Start clean.
+
+The detached Composer Context mode menu is removed. Source/target Profile
+records, thread anchor, and Store generation are frozen for review. Selection,
+anchor, directory, or credential-revision drift fails closed and asks the user
+to choose the route again. A first Profile on a blank Conversation remains a
+direct selection because no prior Segment or disclosure exists. Provider-native
+state and credentials are never reused across the new Segment.
+
+Focused transition, stale-anchor, source-contract, and native light/dark
+accessibility layout tests pass. Complete Swift verification passes 191 XCTest
+cases with one intentional visual-preview skip plus eight Swift Testing
+contracts, all with zero failures. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-conversation-route-transition-confirmation.md`.
+
+This source is frozen as the unlaunched, uninstalled v0.5.2 build 50 Candidate
+at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build50-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, route-contract, and ZIP
+byte-equivalence gates pass. Installed Loom remains build 39. Installed
+Codex-to-DeepSeek transition and reply, disclosure inspection, restart
+continuity, mixed-Team isolation, accounting, approved fallback, and CV6
+remain open. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2B/W2D MULTI-AGENT TEAM BUILDER AUTHORING (2026-08-12)`:
+the App no longer treats all sub-Agents as one global editable slot. Builder
+IPC now carries an exact optional `role_agent_definition_id`; every sub-Agent
+role, Harness, Provider Account, Model, reasoning, timeout, budget, fallback,
+and removal edit requires a unique current target. Add Agent rejects duplicate
+identities and cardinality overflow. Missing or stale targets fail without
+changing Draft revision or binding digest.
+
+Fallback RouteSet state is per Agent. Successive customizations continue from
+the session-local immutable Profile, so switching Reviewer to a DeepSeek
+account and then changing only its timeout retains that exact account and
+credential revision while Researcher remains unchanged. The built-in catalog
+now publishes Coordinator, Bounded Worker, Reviewer, Researcher, and Verifier
+identities across each compatible verified route. Swift exposes Add Agent and
+icon-only Remove Agent controls plus role-local execution controls. The
+concrete IPC client forwards the complete closed edit set rather than rejecting
+non-role fields before UDS.
+
+Focused service RED/GREEN, complete 191-XCTest/eight-Swift-Testing verification
+with one intentional visual-preview skip, strict Go/Swift contract probes,
+affected race, full `go vet ./...`, and `git diff --check` pass. One concurrent
+full-Go run observed a transient strict-loopback `unavailable`; its exact case
+passed five consecutive isolated reruns. No App was installed or launched and
+no credential or Provider request was used.
+
+The final serialized `go test -p 1 ./... -count=1 -timeout=15m` repository gate
+passes every package. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2B-W2D-multi-agent-builder-authoring.md`.
+
+This closes the multi-Agent App authoring gap, not the full W2D failure
+isolation gate. Mission start still fails the whole preflight when one required
+role begins blocked because no authoritative initial-blocked plan-node state
+exists yet. Healthy-sibling start with one blocked Agent, installed four-route
+authoring/dispatch, account-local accounting/fallback, and CV6 remain open.
+This source is frozen as the unlaunched, uninstalled v0.5.2 build 51 Candidate;
+installed Loom remains build 39 and Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D AUTHORITATIVE INITIAL AGENT FAILURE ISOLATION
+(2026-08-12)`: Mission start no longer rejects the whole Team merely because
+one role failed Provider Account, credential revision, Runtime compatibility,
+or capacity preflight. The compiler emits a canonical direct block for the
+affected role and deterministically propagates `dependency_blocked` only to
+declared dependents. Independent healthy siblings remain schedulable.
+
+`TeamExecutionPlanned` now freezes a privacy-safe initial Route summary for
+every Agent and is followed by one append-only `TeamNodeInitiallyBlocked` fact
+per blocked node. The summary contains Harness, Provider, non-secret Provider
+Account, Model, reasoning, timeout, budget, capability set, and credential
+revision. It excludes credential reference, endpoint fingerprint, binding
+digest, Capsule content, Prompt, Provider response, and secret bytes. The
+first Attempt must match that summary; explicit fallback remains a separate,
+approved Attempt binding.
+
+The coordinator creates no Attempt, grant, capacity reservation, or Adapter
+call for an initially blocked node. Runtime capacity admission ignores nodes
+already in an authoritative terminal or non-dispatchable state, so a missing
+or offline blocked Runtime cannot reintroduce Team-global failure. An
+all-blocked Team still receives observable blocked authority and a terminal
+Team fact with zero Attempts. Source tests prove one blocked dependency plus
+one healthy sibling yields blocked dependent Main, blocked affected Agent, and
+succeeded healthy Agent.
+
+Team Pulse now projects the initial Route, exact safe stage/code/retryability,
+Incident ID, and actionable diagnostic or retry-review controls before an
+Attempt exists. Swift wire validation accepts only the bounded correlated
+shape. The UI says `Not started` instead of `Attempt 0`, and native routes say
+`Native auth` instead of `Credential v0`. Known block reasons remain bounded
+safe text instead of collapsing to Team-level `Unavailable` or `offline`.
+
+Affected normal and race packages, full `go vet ./...`, `git diff --check`,
+serialized `go test -p 1 ./... -count=1 -timeout=15m`, and complete Swift
+verification pass. A post-package product review also found and closed the
+remaining Swift Store gate: `blocked + ready` now permits Start while
+`blocked only` remains fail closed. Swift reports 194 XCTest cases with one
+intentional visual preview/export skip plus eight Swift Testing contracts, all
+with zero failures. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-authoritative-initial-agent-failure-isolation.md`.
+
+This closes the source authority and App presentation gap identified after
+build 51. It does not close installed four-Provider dispatch, real account
+revocation/rate-limit/timeout isolation, Provider Account cost accounting,
+approved live fallback, or Credential Vault CV6. Keychain remains only an
+optional explicit one-time migration source; normal runtime remains Loom
+Credential Vault. Installed Loom remains v0.5.2 build 39. Build 52 was rejected
+by static product review and never installed or launched. The corrected source
+is frozen as unlaunched, uninstalled v0.5.2 build 53 and Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D ACCOUNT-LOCAL PROVIDER TIMEOUT CLASSIFICATION
+(2026-08-12)`: native OpenAI-compatible Agent adapters and the bounded
+Claude/Codex Harness gateway no longer collapse every network timeout into
+`provider_unavailable`. A timeout before an upstream response is established
+is now `timeout / provider_connect / retryable`; a timeout while reading an
+upstream response is `timeout / provider_http / retryable`. An outer Agent
+Attempt deadline remains the separate authoritative runtime timeout.
+
+The diagnostic retains the exact Incident ID, Provider, non-secret Provider
+Account, and Model from the frozen Attempt binding. Team Board enrichment
+accepts only that exact tuple, rejects unknown stages, and leaves healthy peer
+Agents without another account's failure. Provider response bodies, Prompt,
+credential reference, endpoint fingerprint, and secret bytes do not enter the
+diagnostic, Board, Journal, or Evidence.
+
+This increment revalidates the accepted Credential Vault boundary rather than
+creating another credential design. ADR-0020 and CV1-CV5 remain the source
+contract: normal Conversation and Agent dispatch acquire exact
+account/reference/revision leases from the in-process Loom Vault; Keychain is
+only an optional explicit one-time migration source, with no plaintext
+fallback. CV6 remains open for approved installed DeepSeek restart/multi-turn
+and four-Provider mixed-Team observation.
+
+Focused RED/GREEN, affected normal and race packages, serialized full Go,
+`go vet ./...`, `git diff --check`, and complete Swift verification pass.
+Swift reports 194 XCTest cases with one intentional visual preview/export skip
+plus eight Swift Testing contracts, all with zero failures. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-account-local-provider-timeout-classification.md`.
+
+Build 53 remains valid historical source/static evidence for initial-block
+isolation but is superseded by the current source. Build 54 is frozen as an
+unlaunched, uninstalled Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build54-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, timeout-contract, and ZIP
+byte/mode-equivalence gates pass. Installed Loom remains build 39.
+Installed real revocation, auth, rate-limit and timeout isolation, Provider
+Account cost observation, approved fallback, and the full CV6 matrix remain
+open. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D PROVIDER ACCOUNT GOVERNANCE VISIBILITY (2026-08-12)`:
+Team Pulse now presents the already-authoritative per-account aggregation as a
+distinct governance row instead of burying it among Agent rows. Each row names
+Provider plus exact non-secret Provider Account and shows failed/total
+Attempts, exact error rate, rate-limited Attempts, accounting coverage, token
+usage, account policy revision, active concurrency, dispatch window, assigned
+budget ceiling, costs grouped by currency, and aggregation-incomplete state.
+
+Cost display converts integer microunits to an exact user-readable decimal
+without floating-point or locale drift; error basis points use exact bounded
+percentage formatting. Agent rows keep the person icon while account rows use
+a separate system account icon and `Provider Account governance` accessibility
+label. The same Team Pulse remains one unframed inspector list; no parallel
+state authority or nested card was added.
+
+This UI consumes Board values aggregated from each Attempt's frozen Provider
+Account and terminal accounting. It does not infer account data from Provider
+ID, does not expose credential reference or secret, and does not turn
+operational statistics into retry/fallback authority. Cross-account isolation,
+strict Swift wire validation, and backend aggregation tests remain green.
+
+The RED fixture proved that error rate, rate-limit count, accounting coverage,
+and readable cost were absent from the product presentation. GREEN focused and
+complete Swift verification passes 195 XCTest cases with one intentional
+visual preview/export skip plus eight Swift Testing contracts; affected API,
+projection, and app Go packages and `git diff --check` pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-provider-account-governance-visibility.md`.
+
+Build 54 remains historical unlaunched, uninstalled timeout-classification
+evidence and is superseded by the current source. Build 55 is frozen as an
+unlaunched, uninstalled Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build55-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, account-governance source,
+and ZIP byte/mode-equivalence gates pass. Installed Loom remains build 39. Real installed account cost,
+revocation/auth/rate-limit/timeout isolation, approved fallback, and CV6 remain
+open under the sole `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2D PROVIDER ACCOUNT COST PROVENANCE (2026-08-12)`:
+new Run terminal cost facts now freeze an explicit source. Claude Code and Pi
+RPC values are `harness_reported`; a bounded Provider result may be
+`provider_reported`. Historical Journal events that genuinely lack the new
+field replay as `legacy_unspecified`, while new writes with missing, explicit
+legacy, empty, unknown, or estimated sources fail closed.
+
+Attempt rows and exact Provider Account rows carry the source through strict
+Projection, API, and Swift wire models. Account aggregation keys cost by both
+currency and source, so Provider-reported and Harness-reported USD are not
+silently merged. Team Pulse renders readable labels such as `Harness reported
+cost`, preserving the exact integer microunit formatting.
+
+Loom still does not invent prices. Native OpenAI-compatible DeepSeek, Kimi, and
+MiniMax execution currently reports token usage with cost unobserved.
+`rate_card_estimate` remains reserved and rejected until a versioned Rate Card
+identity, revision, digest, currency, and calculation basis are frozen with the
+Attempt.
+
+Focused RED/GREEN, affected normal/race packages, serialized full Go,
+`go vet ./...`, `git diff --check`, and complete Swift verification pass.
+Swift reports 195 XCTest cases with one intentional visual preview/export skip
+plus eight Swift Testing contracts, all with zero failures. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-provider-account-cost-provenance.md`.
+
+Build 55 remains historical unlaunched, uninstalled account-governance UI
+evidence. Build 56 is superseded historical cost-provenance evidence after the
+final decoder audit distinguished a missing field from explicit JSON `null`.
+Build 57 is the current
+unlaunched, uninstalled Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build57-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, arm64, deep-signature, owner-only/no-symlink, cost-provenance source,
+and ZIP byte/mode-equivalence gates pass. Installed Loom remains build 39.
+Installed real Provider Account cost, Rate Card authority, account-local
+revocation/auth/rate-limit/timeout, approved fallback, mixed-Team execution,
+and Credential Vault CV6 remain open under the sole `ACTIVE / PARTIAL` Phase
+2D Goal.
+
+`CURRENT / P2D-W2D RATE CARD AUTHORITY AND VAULT REVALIDATION (2026-08-12)`:
+Provider Account and Model Rate Cards are now append-only authority keyed by
+exact Provider, Provider Account, and Model. Each revision freezes a digest,
+currency, token basis, integer microunit rates, and deterministic rounding.
+Run Claim contract v2 freezes the complete card per Attempt;
+`rate_card_estimate` is accepted only from that frozen card and observed token
+usage. Provider- and Harness-reported costs remain distinct and take
+precedence. Loom ships no hardcoded official Provider prices.
+
+Provider setup and Swift UI can configure and display each account/model Rate
+Card. Board and Team Pulse expose revision, currency, basis, and estimate
+source without exposing credential references or secrets. A Run replay repair
+now loads the exact binding's policy, capacity, and Rate Card streams before
+strictly replaying a v2 Claim, preserving CAS conflict detection and avoiding a
+false `run authority conflict` during selective reads.
+
+The accepted ADR-0020 Credential Vault remains the sole credential architecture
+inside Phase 2D. Source audit confirms ordinary daemon composition defaults to
+LocalKeyFile Vault and both Conversation and Agent hot paths use exact
+account/reference/revision leases. Non-test daemon source does not construct
+`ProductKeychainStore`; Keychain is only an optional, explicit one-time
+migration source, and there is no plaintext fallback. CV1-CV5 remain source
+Candidates rather than a new Goal.
+
+Fresh verification passes full `go test ./... -count=1`, affected race tests,
+`go vet ./...`, `git diff --check`, 198 XCTest cases with one intentional
+visual export skip, and nine Swift Testing contracts with zero failures. Build
+58 is frozen as an unlaunched, uninstalled source/static Candidate at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build58-candidate-2026-08-12/BUILD-MANIFEST.md`;
+release, arm64, deep-signature, owner-only/no-symlink, no-implicit-Keychain, and
+ZIP byte/mode-equivalence gates pass. Installed Loom remains v0.5.2 build 39.
+Installed real account cost, counter-backed no-helper
+observation, rotation/restart continuity, single-account revoke/corruption
+isolation, approved fallback, and the four-Provider mixed-Team CV6 matrix remain
+open under the sole `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2D FOUR-PROVIDER VAULT REVOKE ISOLATION (2026-08-12)`:
+the controlled Team coordinator now composes its four independent frozen Agent
+bindings with the real in-process Credential Vault lease manager. The matrix
+covers Codex/OpenAI revision 3, Claude Code/Anthropic revision 7, Loom
+Native/Kimi revision 11, and Loom Native/MiniMax revision 13, each with a
+different Provider Account, credential reference, Model, Harness, limits, and
+capabilities.
+
+Revoking only the exact MiniMax account/reference/revision before dispatch
+blocks that Agent as `credential_unavailable`; the OpenAI, Anthropic, and Kimi
+Agents still execute and reach `succeeded`. The Team terminal fact remains
+honestly blocked because one required Agent failed, while per-Agent authority
+preserves three successes and one block instead of inventing Team-wide
+`offline` or `Unavailable` state.
+
+Team Board regression now also covers the exact privacy-safe operational
+classification `credential_lease_revoke / credential_unavailable / retryable`
+for the MiniMax Attempt. Incident, Provider, Provider Account, and Model must
+all match before enrichment; healthy peers do not receive the failed account's
+diagnostic. Operational data remains presentation-only and cannot authorize a
+retry or fallback.
+
+Focused normal and ten-run race matrices, full Go, `go vet ./...`,
+`git diff --check`, and complete Swift verification pass. Swift reports 198
+XCTest cases with one intentional skip plus nine Swift Testing contracts. Exact
+evidence is
+`.loom-evidence/phase2d/P2D-W2D-four-provider-vault-revoke-isolation.md`.
+
+Build 58 is now historical. The later real diagnostic-chain and retry-governance
+increment changes production daemon bytes; build 59 captured the first version
+and build 60 below contains the final closed retry allowlist.
+Installed Loom remains v0.5.2 build 39. Installed real four-Provider dispatch
+and revoke/corruption observation, counter-backed no-helper operation,
+restart/rotation continuity, Provider replies, accounting, approved fallback,
+and CV6 remain open. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D FOUR-PROVIDER ENCRYPTED-RECORD CORRUPTION ISOLATION
+(2026-08-12)`: the four-Provider Team source matrix now uses a real owner-only
+LocalKeyFile and encrypted SQLite VaultStore in addition to the earlier lease
+revoke case. It writes four exact Agent identities, closes the Store, verifies
+that the database contains none of the four plaintext test secrets, corrupts
+only the MiniMax ciphertext, and reopens with the original key file.
+
+All four Agent Adapters then acquire short-lived credentials through one
+production `CredentialLeaseManager`. MiniMax fails closed at `vault_decrypt`
+and is blocked as `credential_unavailable`; Codex/OpenAI, Claude
+Code/Anthropic, and Loom Native/Kimi still decrypt their independent records
+and succeed. Team Journal facts contain no test secret bytes.
+
+Board regression also accepts
+`vault_decrypt / credential_unavailable / not retryable` only for an exact
+Incident, Provider, Provider Account, and Model match. It does not annotate a
+healthy Agent or authorize retry/fallback.
+
+Focused ten-run normal and race matrices, full Go, `go vet ./...`,
+`git diff --check`, complete Swift, and non-disclosure scans pass. Exact
+evidence remains
+`.loom-evidence/phase2d/P2D-W2D-four-provider-vault-revoke-isolation.md`.
+This closes source composition for encrypted single-record corruption, not
+installed CV6. Installed Loom remains v0.5.2 build 39, and installed real
+Provider dispatch, no-helper observation, restart/rotation continuity,
+revoke/corruption isolation, accounting, approved fallback, and Provider
+replies remain open under the sole `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2D FOUR-PROVIDER VAULT ROTATION AND RESTART CONTINUITY
+(2026-08-12)`: the same exact four Agent credential records now pass the
+production rotation transaction and a Vault restart. A pre-rotation OpenAI
+lease is revoked by the lease barrier; every DEK is rewrapped, the version-2
+LocalKeyFile is promoted and adopted, and no pending key remains.
+
+After closing and reopening the VaultStore and CredentialLeaseManager, all four
+Agents acquire fresh leases and succeed. Their frozen binding digests and
+credential revisions remain exactly unchanged, proving rotation cannot silently
+switch Provider, Provider Account, Credential Reference, Model, Harness,
+limits, or capabilities.
+
+Ten-run normal and race rotation matrices, full Go, `go vet ./...`,
+`git diff --check`, and non-disclosure scans pass. This closes source-level
+post-rotation restart continuity, not installed CV6. Installed Loom remains
+v0.5.2 build 39; real Provider calls before and after installed
+restart/rotation, the no-helper counter, installed mixed-Team isolation,
+accounting, and approved fallback remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2D REAL VAULT FAILURE DIAGNOSTIC CHAIN AND RETRY GOVERNANCE
+(2026-08-12)`: source acceptance now exercises a corrupted encrypted DeepSeek
+credential through the complete production composition: owner-only
+LocalKeyFile, encrypted VaultStore, CredentialLeaseManager, exact frozen
+Provider Account/reference/revision validation, Loom Native Adapter, persistent
+operational diagnostics, and exact Agent Attempt diagnostic query.
+
+The corrupted record fails at `vault_decrypt`, the Attempt projects
+`credential_unavailable`, and the Provider HTTP client is never called. The
+persistent diagnostic is keyed by the same Incident ID, Provider, Provider
+Account, and Model and contains no credential reference, secret, Prompt,
+ciphertext, or private lower-level error. This closes the missing source proof
+between the real Vault failure and Team Board enrichment.
+
+Credential retry governance is now shared by Loom Native and Claude/Codex
+Harness adapters. Recovery-required stages `vault_key_load`, `vault_open`,
+`vault_decrypt`, `vault_aad_validation`, and `vault_recovery` are not presented
+as directly retryable. Lease issue, expiry, and revoke retain retryable
+semantics because their authoritative state can change independently. This
+removes the previous contradiction where the Board called corruption not
+retryable while adapters recorded it as retryable.
+
+Focused normal and ten-run race contracts, full Go, `go vet ./...`,
+`git diff --check`, the production non-disclosure scan, and complete Swift
+verification pass. Swift reports 198 XCTest cases with one intentional visual
+export skip plus nine Swift Testing contracts, all with zero failures.
+
+The production change is frozen as unlaunched, uninstalled v0.5.2 build 60 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build60-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Release, independent byte rebuild, arm64, deep signature, owner-only/no-symlink,
+no-implicit-Keychain, and ZIP byte/mode-equivalence gates pass. Builds 58 and
+59 are superseded historical Candidates; build 60 adds a strict allowlist so
+helper, metadata, migration, and unknown stages cannot silently become
+retryable. Installed Loom remains build 39; installed Provider calls,
+counter-backed no-helper operation, rotation/restart continuity,
+revoke/corruption isolation, accounting, approved fallback, and CV6 remain open
+under the sole `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2D VAULT-BACKED APPROVED FALLBACK AND MIXED-TEAM ISOLATION
+(2026-08-12)`: explicit fallback now has real encrypted Vault composition
+evidence. In the single-Agent case, the primary OpenAI record is corrupted and
+fails at `vault_decrypt`; an independent Anthropic fallback record is acquired
+only by the second Attempt whose target binding digest is covered by the
+versioned user approval. The fallback has a distinct account, revision,
+binding digest, and Role Context Capsule. Unapproved binding changes still fail
+before dispatch.
+
+The four-Provider Team matrix then combines Codex/OpenAI, Claude
+Code/Anthropic, Loom Native/Kimi, and Loom Native/MiniMax. The Codex primary
+account revision 3 is corrupted while an explicitly approved
+`openai.main-backup` revision 5 remains healthy. Four Agents produce five
+Attempts: failed main primary, successful approved main fallback, and three
+successful peers. Each of the five complete Provider/Account/Reference/Revision
+identities is acquired exactly once; no Provider-global lookup or silent route
+change occurs, and no test secret reaches the Journal.
+
+Accounting is frozen on those same Attempts. The failed `openai.main`
+credential Attempt has no accounting fact. The successful
+`openai.main-backup` Attempt owns its controlled 55-token/5,000-microunit fact,
+and Anthropic, Kimi, and MiniMax retain separate 77/7,000, 121/11,000, and
+143/13,000 token/microunit facts. Nothing is reassigned to the primary account.
+These are deterministic source fixtures, not real Provider invoices.
+
+Focused normal and race matrices each pass ten runs. Full Go, `go vet ./...`,
+`git diff --check`, and non-disclosure scans pass. This increment changes only
+Go test and Phase evidence source. A fresh production rebuild remains
+byte-identical to v0.5.2 build 60 for the App executable, bundled daemon, and
+`Info.plist`, so that test-only increment did not create a new build. Swift was
+not rerun for that increment; build 60's unchanged production source retains
+its earlier 198 XCTest plus nine Swift Testing result.
+
+Installed Loom remains build 39. Installed approved fallback, real mixed-Team
+Provider dispatch/accounting, counter-backed no-helper behavior, rotation and
+restart continuity, and CV6 remain open under the sole `ACTIVE / PARTIAL`
+Phase 2D Goal.
+
+`CURRENT / P2D-W2D AGENT-SCOPED VAULT RECOVERY ACTION (2026-08-12)`:
+the Team Inspector now turns durable, non-retryable Credential Vault failures
+into an executable recovery path. An affected Agent row shows a key action that
+opens Runtime & Providers at the Credential Vault surface while retaining its
+separate diagnostics and Incident ID actions.
+
+The capability uses a closed Vault-stage allowlist. It is not offered for
+Provider auth, rate limit, timeout, or retryable lease failures, and it is not
+projected onto healthy peer Agents or Provider Account summary rows. This keeps
+recovery account-local and avoids turning one broken credential into a Team-wide
+offline state.
+
+Complete verification passes 199 XCTest cases with one intentional visual
+export skip, nine Swift Testing contracts, full Go, ten race-detector runs of
+both Vault-backed approved-fallback matrices, `go vet ./...`,
+`git diff --check`, plist validation, and non-disclosure scans. The native App
+fixture passes two clean reproducible release builds and its temporary smoke
+gate.
+
+The production increment is frozen as unlaunched, uninstalled v0.5.2 build 61
+at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build61-candidate-2026-08-12/BUILD-MANIFEST.md`.
+An independent retained rebuild and ZIP extraction are byte- and mode-identical
+to the Candidate. Build 60 is historical. Installed Loom remains build 39; no
+real credential, installed App, or live Provider matrix was touched. Installed
+CV6 acceptance remains open under the sole `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2A/W2D CONVERSATION VAULT FAILURE GOVERNANCE (2026-08-12)`:
+ordinary Conversation dispatch now shares the exact Credential Vault retry
+policy already used by Agent Attempts. Temporary lease transitions remain
+retryable. Durable `vault_decrypt` and `vault_aad_validation` failures preserve
+their stage through the Conversation Router, IPC `recoverable`, and failed
+Attempt, and are not exposed as futile Retry loops.
+
+The chat failure banner provides an explicit Open Credential Vault action for
+only a closed allowlist of non-recoverable Vault stages. Provider auth, rate
+limit, timeout, route conflict, and retryable lease failures cannot receive the
+action. Privacy-safe diagnostics and Incident ID copy remain separate.
+
+Focused normal and race tests, complete Swift, full Go, and `go vet ./...`
+pass. Swift reports 200 XCTest cases with one intentional visual export skip
+plus nine Swift Testing contracts, all with zero failures. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2D-conversation-vault-failure-governance.md`.
+
+The production increment is frozen as unlaunched, uninstalled v0.5.2 build 62
+at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build62-candidate-2026-08-12/BUILD-MANIFEST.md`.
+An independent retained rebuild and ZIP extraction are byte- and mode-identical
+to the Candidate. Build 61 is historical. Installed Loom remains build 39; no
+real credential, installed App, or Provider was touched. Installed DeepSeek
+conversation recovery and the full CV6 matrix remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal.
+
+Release verification continues to report the existing Swift 6
+forward-compatibility warning that `QueueCommand<Input>` declares `Sendable`
+while `Input` is constrained only to `Encodable`. Current-language builds pass;
+the warning is recorded as non-blocking debt and was not folded into this
+narrow failure-governance increment.
+
+`CURRENT / P2D-W2A/W2D PROVIDER ACCOUNT DISCLOSURE POLICY V2 (2026-08-12)`:
+Provider Account policy now authoritatively versions and digests a closed trust
+domain, retention mode, and data region alongside concurrency, dispatch, and
+budget limits. Historical v1 events and digests remain unchanged and replay as
+disclosure policy unspecified; only complete, valid v2 settings are accepted
+for new App configurations.
+
+The exact account policy version, revision, digest, and disclosure values now
+project through setup and each Conversation Profile. Swift publishes success
+only after the mutation response matches a rebuilt authoritative account
+snapshot. Runtime & Providers exposes compact native Pickers and explicitly
+states that Loom records the selected policy rather than certifying Provider
+retention or region guarantees.
+
+Complete Swift passes 200 XCTest cases with one intentional visual export skip
+plus nine Swift Testing contracts. Full Go, five focused race runs, and
+`go vet ./...` pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2D-provider-account-disclosure-policy-v2.md`.
+
+The production increment is frozen as unlaunched, uninstalled v0.5.2 build 63
+at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build63-candidate-2026-08-12/BUILD-MANIFEST.md`.
+An independent retained rebuild made after `swift package reset` and an
+independent ZIP extraction are byte- and mode-identical to the Candidate. Build
+62 remains historical evidence for the Conversation Vault failure-governance
+slice. Installed Loom remains build 39; no real credential, installed App, or
+Provider was touched. Freezing policy revision/digest on Conversation Segment
+and Attempt records is the next source slice; installed CV6 remains open under
+the sole `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2A/W2D CONVERSATION POLICY BINDING V3 (2026-08-12)`:
+Conversation Segments and Attempts now freeze the daemon-resolved Provider,
+exact Provider Account, policy version/revision/digest, trust domain, retention
+mode, and data region. The frozen policy is visible in the Segment disclosure
+inspector and is not replaced by the account's current settings.
+
+Route review now carries the exact non-secret execution binding confirmed by the
+user through Swift and private UDS. The daemon independently re-resolves current
+authority and rejects any mismatch before persisting the user message, creating
+an Attempt, acquiring a Vault lease, or calling a Provider. This closes the
+confirmation-to-dispatch policy race without placing credential reference,
+secret, Prompt, message content, or Provider response in the binding.
+
+Route conflicts preserve the same visible Conversation, selected target Profile,
+draft, authoritative old thread, and Incident ID. Retry returns to explicit
+Segment and Context review instead of silently opening a separate Conversation.
+Legacy schema-2 Conversations retain their old digest and gain a new schema-3
+Segment on the next turn.
+
+Complete Swift passes 202 XCTest cases with one intentional visual-export skip
+plus nine Swift Testing contracts. Full Go, five focused race runs,
+`go vet ./...`, strict IPC/model/UI contracts, and `git diff --check` pass.
+Exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2D-conversation-policy-binding-v3.md`.
+
+The production increment is frozen as unlaunched, uninstalled v0.5.2 build 64 at
+`/Users/lune/Documents/Codex/2026-06-18/hermes-openclaw/loom-deliverables/phase2d-v0.5.2-build64-candidate-2026-08-12/BUILD-MANIFEST.md`.
+Two independent builds made across `swift package reset` and an independent ZIP
+extraction are byte- and mode-identical. Both bundles pass arm64 and deep strict
+ad-hoc signature verification; no Candidate process exists. Build 63 is
+historical evidence for the pre-binding disclosure-policy slice.
+
+Installed Loom remains v0.5.2 build 39; no real credential, installed App, or
+Provider was touched. Installed route transitions, real Provider replies,
+restart continuity, mixed-Team dispatch, accounting, approved fallback,
+no-helper observation, and CV6 remain open under the sole `ACTIVE / PARTIAL`
+Phase 2D Goal.
+
+`CURRENT / P2D-W2A/W2C STRUCTURED CONVERSATION CAPSULE V1 (2026-08-12)`:
+ordinary non-Agent Conversation dispatch now uses the same structured,
+content-addressed Role Context Capsule and encrypted Conversation-DEK Store as
+Team Agent dispatch. User turns remain authoritative; prior visible model output
+is untrusted, explicitly policy-filtered for `summary_only`, and excluded by
+`start_clean`. Hidden reasoning, credentials, Provider bodies, and local failure
+messages do not enter the Capsule.
+
+The daemon resolves the exact ContextAdapter, Provider Account, Model, auth mode,
+and disclosure-policy identity from the immutable Conversation Profile. Capsule
+encryption precedes thread metadata and Provider dispatch. Failure leaves no
+message, Segment, Attempt, or Provider call; a later thread-document failure
+performs an exact Authority-bound compensation delete. Real LocalKeyFile
+close/reopen tests recover the Capsule and raw database scans find no plaintext
+context.
+
+Focused transaction, target-resolution, restart, non-disclosure, Pi, Codex, and
+daemon tests pass; the affected race matrix passes three runs. Full Go, vet,
+Swift, and diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2C-structured-conversation-capsule-v1.md`.
+
+This source is post-build-64 and is not packaged or installed. Installed Loom
+remains v0.5.2 build 39; no real credential or Provider was touched. W2A/W2C
+remain `ACTIVE / PARTIAL` for tokenizer-aware packing, Provider-specific wire
+mapping, scoped retrieval, complete receipt/approval UI, parallel aggregation,
+encrypted export, and the installed CV6 matrix under the sole Phase 2D Goal.
+
+`CURRENT / P2D-W2C SCOPED CONTEXT RETRIEVAL BROKER V1 (2026-08-12)`:
+token-budget omissions now remain encrypted inside Context Capsule envelope v2
+and can be read only by an exact daemon-frozen Attempt identity. The broker
+binds Capsule Authority, WorkItem, Run, claim generation, Runtime,
+execution-binding digest, Agent, Role, item/content digest, and artifact scope.
+Only `budget_exceeded` omissions qualify; policy-filtered, access-denied,
+credential, hidden-reasoning, and Provider-body content is never retrievable.
+
+Retrieval emits a content-free operational diagnostic before plaintext is
+released and fails closed if auditing fails. The returned mutable buffer is
+zeroized on close. Real LocalKeyFile close/reopen tests recover the exact scoped
+item, structured v1 records upgrade only under exact Authority and dispatch,
+v2 downgrade fails, and raw Vault database scans find no omitted plaintext.
+
+Team execution carries Capsule Authority into managed execution. Production
+daemon composition creates the scoped broker only when the Vault retrieval
+store and operational auditor are both present. Supervisor validation still
+binds Authority to the frozen execution binding and dispatch when the optional
+retriever is absent; explicit legacy/test runtimes therefore receive no
+omission-read capability rather than a plaintext fallback.
+
+Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-scoped-context-retrieval-broker-v1.md`.
+The same post-build-64 source now provides a bounded Loom Native wire:
+DeepSeek, Kimi, and MiniMax can propose one strict `loom_read_context` call,
+consume the validated result in one second Provider round, and finish the same
+Attempt. Retrieved content is not emitted to Bridge frames, Journal, Evidence,
+or diagnostics. Duplicate/unknown protocol fields, identity/digest/body or
+trust/scope drift, denied reads, secret markers, and a second tool request fail
+closed; both rounds' token usage is attributed to the same Attempt.
+
+This is not the complete general Tool Loop. Pi private extension delivery was
+subsequently completed by the 2026-08-13 increment below. Codex/Claude Code
+Attempt-scoped MCP, persisted result delivery and crash resume, parallel
+aggregation, encrypted export, and CV6 remain open. This source is
+post-build-64; installed Loom remains v0.5.2 build 39 and was not modified.
+Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C CONTEXT RETRIEVAL CAPABILITY FREEZE (2026-08-12)`: the
+bounded Loom Native wire is no longer enabled merely because daemon composition
+has a Vault retrieval store. Loom Native runtime discovery now publishes the
+explicit `context_retrieval` capability; newly generated DeepSeek, Kimi, and
+MiniMax Execution Profiles require it, and each new Attempt freezes it in the
+binding digest. The daemon checks the frozen binding before constructing a
+scoped broker, and the Adapter independently rejects both a retriever without
+that capability and a capable Attempt without its broker before any credential
+lease or Provider request.
+
+Installed historical runtime projections with the exact v1 identity and an
+empty capability set receive one append-only, idempotent rediscovery event.
+Unknown capability sets or any other Runtime identity drift remain fail-closed.
+This migration makes the capability available to new Profiles only; it does not
+rewrite existing Team definitions, Profiles, Runs, Attempts, or frozen bindings.
+Focused migration, catalog, DeepSeek/Kimi/MiniMax tool, mismatch, and repeated
+execution tests pass. The complete affected Runtime, prompting, Capsule, Vault,
+Supervisor, Native Adapter, app, API, and daemon race matrix passes three runs;
+full `go test ./...`, vet, format, diff, and module verification pass. No bundle
+was built, launched, installed, or connected to a real Provider; installed Loom
+remains v0.5.2 build 39.
+
+`CURRENT / P2D-W2C PI CONTEXT RETRIEVAL TRANSPORT V1 (2026-08-13)`: the exact
+locked Pi 0.82.1 Harness now exposes one private `loom_read_context` tool only
+when the Attempt freezes `context_retrieval` and receives the matching scoped
+broker. One owner-only extension and one-use UDS bind the exact child PID,
+random Attempt capability, item/content digest, artifact scope, trust/source
+classification, Capsule Authority, and frozen execution identity. A first Pi
+turn may perform exactly one read; the second may emit only final text. The
+retrieved body is not projected to Bridge, Journal, Evidence, or diagnostics,
+and both model rounds share one overflow-checked Attempt accounting record.
+
+Runtime discovery no longer infers this permission from a `0.82.1` version
+string. An explicit conformance port is offered only by the runner whose
+executable bytes match the locked digest and whose filesystem bindings still
+validate. Ordinary/historical Pi observations therefore remain unchanged;
+version drift, missing/failed conformance, typed nil, broker/capability mismatch,
+peer mismatch, protocol drift, a second tool, or secret-classified content fail
+closed.
+
+The real local locked Pi component completed 20 consecutive race-enabled
+two-round tests against a loopback fake endpoint. Full `go test ./...`, affected
+package race tests, `go vet ./...`, `git diff --check`, and `go mod verify`
+pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-pi-context-retrieval-transport-v1.md`.
+
+This closes only the bounded Pi source transport slice. Codex/Claude Code MCP,
+persistent tool-result delivery and crash resume, general multi-tool loops,
+parallel aggregation, encrypted export, and installed CV6 remain open. The
+source is post-build-64; installed Loom remains v0.5.2 build 39 and was not
+modified. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C CODEX AND CLAUDE CONTEXT MCP TRANSPORT V1 (2026-08-13)`:
+Codex and Claude Code Harness Attempts now expose the existing scoped
+`loom_read_context` broker through one private, one-use loopback MCP service.
+The service is created only when the frozen Attempt binding carries
+`context_retrieval`, Capsule Authority and dispatch agree, and the exact scoped
+retriever is present. A random 256-bit Attempt capability is supplied only in
+the child environment; it does not enter argv, Prompt, Journal, Evidence, or
+diagnostics. Both transports revalidate item/content digest, artifact scope,
+trust and source classification, zeroize the mutable result, and reject a
+second call or protocol/metadata drift before disclosure.
+
+The real local Codex 0.144.1 and Claude Code 2.1.196 binaries each completed
+their native MCP lifecycle against loopback fake Providers under isolated HOME
+and workspace roots. The combined component contract passed 20 consecutive
+race-enabled runs. Runtime discovery publishes `context_retrieval` only for the
+exact executable SHA-256 identities that passed those gates. Hash drift keeps
+ordinary Harness capabilities but receives no Context permission. New Profiles
+require the observed capability and freeze it in each Attempt; exact historical
+capability sets can receive one append-only upgrade, while unknown sets or
+other identity drift remain fail-closed.
+
+Every Context-enabled Attempt re-hashes the exact Harness executable after
+Authority and frozen-binding validation but before opening the MCP listener,
+acquiring a credential, or starting the process. Executable replacement after
+discovery therefore fails closed with no disclosure or Provider access.
+
+Claude 2.1.196 compatibility is closed to its exact `/v1/messages?beta=true`
+query and local `HEAD /` health probe. The query is forwarded only for
+Anthropic; the health probe returns an empty local 204 and never accesses a
+credential or Provider. Query drift and the same probe on OpenAI remain
+rejected.
+
+Full `go test ./...`, directly affected daemon race tests (20 runs), real
+Codex/Claude component race tests (20 runs), `go vet ./...`, `go mod verify`,
+and `git diff --check` pass. A broader daemon race matrix still exposes an
+unrelated pre-existing real-Pi-timeout/IPC flaky test; an isolated 10-run check
+failed twice with `invalid local IPC protocol`, so this increment does not claim
+the complete daemon race suite is green. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-codex-claude-context-mcp-transport-v1.md`.
+
+This closes only the bounded Codex/Claude source transport and exact-binary
+capability-freeze slice. Persisted tool-result delivery and crash resume,
+general multi-tool loops, parallel aggregation, encrypted export, and installed
+CV6 remain open. This source is post-build-64; installed Loom remains v0.5.2
+build 39 and was not modified. Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C ENCRYPTED ATTEMPT PAYLOAD STORE V1 (2026-08-13)`: the
+Credential Vault now persists bounded Attempt payloads under the existing
+per-Conversation DEK. Canonical AAD freezes Conversation, WorkItem, Run, claim
+generation, Runtime, execution-binding digest, Capsule digest, call, sequence,
+content digest, and authenticated `pending`/`delivered` state. Delivery-state
+transition decrypts and authenticates the old row, then re-encrypts under a
+fresh nonce in the shared Conversation nonce registry.
+
+Focused tests prove restart recovery, idempotency, stale generation and binding
+rejection, sequence conflict, AAD/tag/content/status tamper rejection, Vault
+rotation continuity, plaintext-negative database scans, and Conversation-local
+crypto-erasure with peer isolation. Focused tests passed ten runs, focused race
+tests passed twenty runs, and the complete Vault race suite passed ten runs.
+Full repository Go tests, vet, module verification, and diff checks also pass.
+Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-attempt-payload-store-v1.md`.
+
+This is only the encrypted storage prerequisite. The Context Retriever and Pi,
+Codex, Claude Code, and Loom Native transports are not yet wired to a common
+persist-before-delivery and acknowledge-before-delivered coordinator, and no
+new Journal tool-result facts are emitted. Crash resume, general multi-tool
+loops, parallel Aggregation Attempts, encrypted export, installed CV6, and the
+live mixed-Team matrix therefore remain open. Source is post-build-64;
+installed Loom remains v0.5.2 build 39 and was not modified. Phase 2D remains
+the sole `ACTIVE / PARTIAL` Goal.
+
+## TARGET / ACCEPTED LOOM HARNESS PLATFORM CORE ABSORPTION (2026-08-13)
+
+The Product Owner clarified the architecture after reviewing DeepSeek Harness:
+Loom is the Harness Platform, while Codex, Claude Code, Pi, DeepSeek Harness,
+and Loom Native are Runtimes. The target adapter seam is therefore
+`RuntimeContract` / `RuntimeAdapter`, not a peer `HarnessAdapter` authority.
+Loom Native implements the Runtime Contract in daemon without a fictitious
+adapter; Provider adapters remain a lower model-protocol concern.
+
+Phase 2D will selectively port DeepSeek Harness Core behavior for Agent
+lifecycle, Attempt/Turn/Step loop, unified Queue/Steer/Inject inbox, capability
+seams, guarded tool scheduling, parallel/exclusive barriers, cancellation,
+resume, and replay. The reviewed source is pinned to
+`deepseek-ai/deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`
+and MIT notice/provenance is required for substantial copied code.
+
+This is not whole-core vendoring and is not implemented yet. Cordis, a second
+SessionEvent authority, plaintext Prompt/tool/session logs, credentials,
+runtime self-modification, and ungoverned tools remain excluded. Loom retains
+the sole Journal authority, encrypted Payload/Capsule stores, Credential Vault,
+Provider Account binding, approval, sandbox, recovery, and terminal decisions.
+Existing v0.5.x `Harness`/`AdapterType` records stay replayable until a
+deterministic Runtime terminology/schema migration is accepted.
+
+The decision amends ADR-0019 and P2D-W2B/W2C/W2D inside the same sole
+`ACTIVE / PARTIAL` Phase 2D Goal. Current source-verified RouteSet aggregation,
+DeepSeek conversation work, Credential Vault, and per-Agent binding status are
+unchanged.
+
+MCP HTTP, Pi UDS, and Provider HTTP currently expose no common
+application-level consumption ACK. The next delivery-coordinator slice must be
+explicitly at-least-once, retain the same daemon generation/binding fence, and
+must never re-execute a side-effecting tool merely to recover delivery. An
+exactly-once claim requires the corresponding Journal facts and
+transport-specific acknowledgement/continuation proof.
+
+`CURRENT / P2D-W2C JOURNAL-BACKED ATTEMPT PAYLOAD DELIVERY V1 (2026-08-13)`:
+Loom now encrypts one bounded Context result as `pending` before transport and
+records content-free `ToolResultAccepted` / `ToolResultDelivered` facts on a
+dedicated Journal stream fenced by the exact Run, claim generation, Runtime,
+Agent, execution-binding digest, Capsule digest, call, sequence, content digest,
+and Incident ID.
+
+Restart recovery returns the same persisted result without calling the scoped
+Retriever again. Loom Native acknowledges only after a valid Provider
+continuation. Codex and Claude Code keep MCP HTTP writes pending until validated
+Harness final output. Pi keeps UDS and `tool_execution_end` pending until the
+complete second-turn final output, agent settled state, clean process exit, and
+accounting validation. Provider-native tool-call IDs may change across retry;
+Loom's semantic call identity does not.
+
+A real LocalKeyFile Vault close/reopen plus SQLite Journal integration test
+proves timeout recovery, one retrieval, one accepted fact, one delivered fact,
+and plaintext-negative Vault/Journal files. Affected normal and race tests,
+vet, module verification, and diff checks pass. Exact local Codex 0.144.1,
+Claude Code 2.1.196, and locked Pi 0.82.1 component contracts also pass against
+loopback fake Providers; Pi asserts the final delivered transition. A broad internal parallel run
+retains one unrelated existing process-cleanup failure where a Harness timeout
+test did not observe its child PID under load; the Harness package passes in
+isolation. Aggregate runners are also terminated by existing process-group
+cleanup tests, so no clean one-command full-repository result is claimed.
+
+Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-journal-backed-attempt-payload-delivery-v1.md`.
+This is at-least-once delivery of the same encrypted result without
+side-effecting tool re-execution, not a general exactly-once Tool Loop. General
+multi-tool execution/approval, terminal reconciliation, parallel Aggregation,
+encrypted export, installed CV6, and live mixed-Team acceptance remain open.
+Source is post-build-64; installed Loom remains v0.5.2 build 39 and was not
+modified. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+Final review additionally makes the bounded single-read authority fail closed
+before retrieval or Vault persistence when a second semantic call/sequence is
+present, and returns a stable authority error for a nil Context instead of
+panicking. The complete affected normal and race package matrices pass after
+this repair; the installed and Goal boundaries above are unchanged.
+
+`CURRENT / P2D-W2C/W2D TERMINAL ATTEMPT PAYLOAD RECONCILIATION (2026-08-13)`:
+execution runtime startup now strictly replays dedicated Attempt Payload Journal
+streams and repairs a Vault row left `pending` when strong
+`ToolResultDelivered` authority committed immediately before a crash, including
+after the exact Run became terminal. Replay validates Run, claim generation,
+Runtime, Agent, frozen binding, Capsule, semantic call, sequence, content digest,
+causation, Incident ID and consumption proof before mutation.
+
+Conversation crypto-erasure makes a missing row an expected terminal result.
+One unreadable or uncommittable Vault row becomes an Attempt-local blocked
+outcome while another Agent's row continues to repair. Repaired and blocked
+outcomes use privacy-safe `context_delivery_reconcile` diagnostics with exact
+non-secret Provider Account/Attempt identity and no payload, Prompt, credential,
+ciphertext or Provider response.
+
+A real LocalKeyFile Vault + SQLite Journal crash-window test commits the delivery
+fact, terminalizes the Run, closes/reopens the Vault, repairs the encrypted row,
+and confirms plaintext-negative files. Complete affected normal and race tests
+pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-W2D-attempt-payload-terminal-reconciliation-v1.md`.
+
+General side-effecting multi-tool state, accepted-but-unproved terminal expiry,
+TTL/compaction, parallel Aggregation, encrypted export, installed CV6 and live
+mixed-Team acceptance remain open. Source remains post-build-64; installed Loom
+remains v0.5.2 build 39 and was not modified. Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2B/W2D FROZEN AGENT DISCLOSURE POLICY (2026-08-13)`:
+Provider Account governance now remains exact through the complete Agent path.
+At Run claim or Team dispatch Loom freezes policy version, revision, digest,
+trust domain, retention mode, and data region from the immutable historical
+account policy selected for that Attempt. Later policy updates affect only
+future claims and do not rewrite an admitted or terminal Agent.
+
+Authority replay, Run projection, Team Attempt overlay, Board wire, strict
+Swift decoding, and the Agent governance row carry the same frozen values.
+Legacy v1 policies display disclosure unspecified; v2 accepts only the closed
+trust/retention/region tuple, and downgrade or value substitution fails closed.
+The Board continues to exclude credential reference, endpoint fingerprint,
+secret, Prompt, Capsule body, and Provider response.
+
+Affected Go normal and race matrices pass across Work, Projection, API, App,
+Supervisor, and daemon. The complete macOS suite passes 202 XCTest cases with
+one intentional visual-export skip plus nine Swift Testing contracts. The
+serialized full-repository Go suite, vet, module verification, Go formatting,
+and diff checks also pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2B-W2D-agent-disclosure-policy-freeze-v1.md`.
+
+No bundle was built, launched, or installed and no real credential or Provider
+was accessed. Source remains post-build-64; installed Loom remains v0.5.2 build
+39. Installed CV6 and live mixed-Team acceptance remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2A/W2C PARALLEL ROUTE AGGREGATION V1 (2026-08-13)`: Loom's
+generic Team execution authority now models one stable Agent's multi-Provider
+parallel evaluation as explicit sibling Attempts followed by a separate
+Synthesis Attempt. ExecutionPlan canonicalization, Work replay, dispatch-wave
+reconstruction, Projection, Board wire, and strict Swift decoding preserve the
+node kind and versioned route group. Ordinary node canonical bytes remain
+compatible; the nine-Agent limit counts unique stable Agents while physical
+route nodes have a separate bounded ceiling.
+
+Every sibling freezes a distinct Execution Binding and Provider Account. The
+Synthesis Attempt is released only after the complete sibling dependency set
+succeeds. A failed sibling leaves a healthy sibling intact and cannot silently
+select another Provider. Each sibling and Synthesis Run retains independent
+token/cost accounting.
+
+Aggregation input comes only from exact digest-verified succeeded Attempt
+Evidence. Loom extracts authorized output events, binds their Attempt,
+Evidence and output-summary digests as authoritative source metadata, and
+places model-produced content in the new Capsule only as untrusted prior model
+output. Private runtime frames, scratchpad, Prompt, credential, Provider body,
+and model output remain absent from Journal and Board state. Source Agent,
+route group, digest, dependency, and plan-node substitution fail closed.
+
+The Team inspector labels the physical rows as `Parallel provider route` and
+`Synthesis` without exposing the opaque route-group ID to the user. Full Go,
+the affected race matrix, `git diff --check`, and the complete macOS suite pass;
+exact evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2C-parallel-route-aggregation-v1.md`.
+
+This checkpoint closed only the generic source execution and governance slice.
+Product Team Builder RouteSet authoring is closed by the later CURRENT entry
+below; ordinary Conversation parallel UX and real Harness aggregation remain
+open. No bundle was built, launched, or
+installed; no credential or live Provider was accessed. Installed Loom remains
+v0.5.2 build 39, installed CV6 and live mixed-Team acceptance remain open, and
+Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+## TARGET / ACCEPTED P2D-W2A/W2C/W2D HARNESS CONTRACT AMENDMENT (2026-08-13)
+
+The product owner accepted three DeepSeek Harness-informed increments inside the
+existing Phase 2D Goal. They are design commitments, not completed source or
+installed-App claims:
+
+- `P2D-W2A`: authoritative Context Meter; immutable Fork/Segment continuity;
+  visible, recoverable compaction disclosure; and durable Queue/Steer/Inject
+  input while an Agent is running.
+- `P2D-W2C`: an Attempt/Turn/Step/ToolCall state machine; explicit
+  `parallel`/`exclusive` tool modes with conflict scopes; and durable,
+  generation-bound Queue/Steer/Inject admission and consumption.
+- `P2D-W2D`: one-shot approval bound to the exact ToolCall and argument digest;
+  component-level sandbox requirements plus `full`/`partial`/`unavailable`
+  enforcement evidence; tool-level Incident correlation; and explicit recovery
+  for interrupted or side-effect-uncertain calls.
+
+Loom will absorb the interaction and lifecycle ideas without adopting full
+Prompt/reasoning logs, plaintext tool payloads, credentials in telemetry, silent
+fallback, or model-authored authority. Content remains in authenticated
+encrypted stores; Journal and operational diagnostics remain non-secret and
+content-free.
+
+Execution stays within the current Phase 2D hierarchy: first W2C authority
+schemas and RED tests, then W2D approval/sandbox/Incident/recovery governance,
+then W2A projections and conversation UX, followed by restart, race,
+privacy-negative, installed-App, and mixed-Team acceptance. Current RouteSet
+aggregation remains `SOURCE VERIFIED`; these new increments remain
+`TARGET / ACCEPTED / NOT YET IMPLEMENTED`. Phase 2D is still the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2A/W2B/W2C PRODUCT PARALLEL ROUTESET AUTHORING V1 (2026-08-13)`:
+the Agent Team Builder now authors, previews, confirms, persists, reopens, and
+executes a versioned parallel RouteSet owned by one stable Agent. Each RouteSet
+freezes the primary route, one or two additional exact Execution Profiles, and
+an explicit Synthesis route. Provider Account, credential revision, model,
+Harness, limits, and capabilities remain per route; no Team-level Provider is
+introduced.
+
+State and Projection reject route/profile/revision substitution, duplicate
+routes, missing Synthesis, unknown versions, and fallback/parallel ambiguity.
+Mission resolution expands one logical Agent into sibling route nodes plus the
+original logical aggregation node. Saved-Team reopen and Mission reconstruction
+preserve the exact route group and plan digest. The product editor exposes a
+compact add/remove Parallel routes control, account/model rows, and Synthesis
+label; fallback is disabled while parallel mode is active. Swift wire remains
+closed-shape and validates account scope, credential revision, and topology.
+
+The four-Agent source fixture produces six physical nodes and proves that a
+revoked Kimi account blocks its Kimi sibling while the DeepSeek sibling remains
+ready. Synthesis is held for the exact dependency set and no silent fallback is
+performed. Full Go, affected race, full macOS (202 XCTest with one intentional
+visual skip plus 10 Swift Testing contracts), and diff checks pass. Exact
+evidence is
+`.loom-evidence/phase2d/P2D-W2A-W2B-W2C-product-parallel-routeset-authoring-v1.md`.
+
+Ordinary Conversation parallel UX, real Harness Synthesis output, installed
+CV6, and live mixed-Provider acceptance remain open. No bundle was built,
+launched, or installed and no real credential or Provider was accessed. Source
+remains post-build-64; installed Loom remains v0.5.2 build 39. Phase 2D remains
+the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C ATTEMPT LOOP AUTHORITY V1 (2026-08-13)`: the first
+generalized Loom Harness Core authority slice is source verified. Audit found
+that the bounded Attempt Payload fact stream could represent only one ToolCall
+result per Attempt. Sequence 1 retains the installed-compatible legacy stream;
+sequence 2 and later use call-scoped v2 streams and an atomically committed,
+monotonic call index. Duplicate sequence ownership, gaps, call/digest
+substitution, and concurrent races fail closed.
+
+`AttemptLoopAuthority` now freezes exact Run/Attempt, Team/Conversation, Agent,
+Runtime, claim generation, Execution Binding, Capsule, permission profile,
+capability set, tool schema set, budget policy, and Incident lineage. It records
+strict Turn/Step/ModelRequest/ToolCall/dispatch/Step-end/Turn-end facts, enforces
+parallel versus exclusive conflict scopes and bounded budgets, and requires a
+Tool result's accepted fact to cite the exact dispatch event before delivery or
+Step completion. Prompt, arguments, result content, credentials, and Provider
+responses remain outside the Journal and in authenticated encrypted stores.
+
+Focused/full work tests, 10-run race, affected Runtime/daemon packages, vet,
+full repository Go, strict replay, restart/terminal reconstruction, deep-copy,
+privacy-negative, and diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-attempt-loop-authority-v1.md`.
+
+This does not yet compose the new authority into the production daemon Tool
+Gateway or expose Queue/Steer/Inject, native approval controls, sandbox state,
+operational diagnostics, or Swift governance UI. Installed Loom remains
+v0.5.2 build 39 and was not modified. CV6 and live mixed-Provider acceptance
+remain open; Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C PRODUCT ATTEMPT LOOP RUNTIME CONTEXT V1 (2026-08-13)`:
+the generalized Attempt Loop now enters the real product daemon Runtime path for
+context-bearing Team Agent Attempts. The Supervisor passes exact non-secret
+Claim and Incident identity only after `RunStarted`; a product Runtime decorator
+then validates dispatch, Agent, Runtime, route, frozen Execution Binding, and
+Role Context Capsule before invoking Pi, Codex, Claude Code, or Loom Native.
+
+`loom_read_context` is the first production-governed ToolCall. Its proposal,
+scoped `system.context-retrieval.v1` policy, exact capability and tool schema,
+dispatch, encrypted result acceptance, and Provider/Harness delivery proof are
+all bound into the Attempt/Turn/Step lineage before terminal closure. Prompt,
+Context content, arguments, credentials, and Provider bodies remain outside the
+Journal. Binding or account substitution fails before the Runtime delegate.
+The unimplemented synthetic `TurnCancelled` terminal is rejected until W2D
+adds explicit Step/Tool interruption and uncertain-side-effect recovery facts.
+
+Focused/full daemon, Supervisor, Work, Native, Harness, and Pi tests, 10-run
+race loops, full repository Go, vet, privacy-negative, and boundary checks pass.
+Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-product-attempt-loop-runtime-context-v1.md`.
+
+This closes only the Context-tool production Runtime vertical slice. Attempts
+without a Context Capsule, the existing local execution Hook, general Web/MCP/
+local Tool Gateway, native approval controls, sandbox evidence, Queue/Steer/Inject,
+operational UI, installed CV6, and live mixed-Team acceptance remain open.
+No bundle was built, signed, launched, or installed and no real credential or
+Provider was accessed. Source remains post-build-64; installed Loom remains
+v0.5.2 build 39. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D ONE-SHOT APPROVAL AND CONTENT-FREE JOURNAL V1 (2026-08-13)`:
+local ToolCall approval now has an explicit consumed fact bound to the exact
+approval digest, Job, canonical call digest, consumer execution, operation, and
+Incident/correlation lineage. Same-consumer replay is idempotent; a second or
+concurrent consumer fails closed, and race tests prove at most one executor
+invocation.
+
+New execution proposed/denied/failed and permission decision facts use strict
+schema v2. They retain IDs, tool kind, call digest, controlled status/error/
+recovery codes, timestamps, and result/evidence digests, but omit command,
+path, free-form denial text, and raw executor errors. Existing schema-v1 facts
+remain replayable. Permission attention projects the non-secret call digest.
+When authenticated proposal details are absent, the TUI disables Allow and
+keeps Reject available, so content-free facts cannot become blind approval.
+
+Focused 10-run race/privacy tests, affected Journal/Rules/Execution/Permission/
+Projection/App/TUI/daemon suites, full repository Go, and vet pass. Exact
+evidence is
+`.loom-evidence/phase2d/P2D-W2D-one-shot-approval-content-free-journal-v1.md`.
+
+Authenticated encrypted proposal detail, broader multi-tool and multi-Runtime
+Tool Gateway composition, interrupted-side-effect recovery, sandbox enforcement
+evidence, tool-level diagnostics, Queue/Steer/Inject, Swift governance,
+installed CV6, and live mixed-Team acceptance remain open. No bundle was built, signed,
+launched, or installed and no real credential or Provider was accessed. Source
+remains post-build-64; installed Loom remains v0.5.2 build 39. Phase 2D remains
+the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D ENCRYPTED TOOL PROPOSAL APPROVAL INSPECTION V1 (2026-08-14)`:
+pending local ToolCall detail now stays outside the Event Journal and is stored
+under the Credential Vault's per-Conversation DEK. Its strict AAD freezes the
+Conversation, WorkItem, Run, generation, Runtime, Agent, Execution Binding,
+Capsule, call, approval, tool, operation, Incident, and content digest.
+
+The existing Pi ask Hook writes the canonical call bytes after the exact
+approval is created. Permission Attention reads the call digest from the
+authoritative approval continuation, performs an exact Vault lookup, strictly
+decodes the call, and recomputes its digest before displaying command/path.
+Missing, tampered, or substituted detail shows unavailable and cannot be
+allowed; Reject remains available. Swift exposes the encrypted/unavailable
+state and sanitizes displayed detail.
+
+Vault restart/plaintext-negative/substitution/tamper/rotation/delete/concurrent
+tests, 10-run race, affected Go suites, and the full macOS contract suite (202
+XCTest with one intentional skip plus 10 Swift Testing contracts) pass. Exact
+evidence is
+`.loom-evidence/phase2d/P2D-W2D-encrypted-tool-proposal-approval-inspection-v1.md`.
+
+This is a safety vertical slice on the existing Pi Hook, not general Attempt
+Tool Gateway completion. Broader multi-tool dispatch admission, ask-path Attempt
+suspension/resume, sandbox evidence, tool diagnostics, interrupted-side-effect
+recovery, native approve/reject controls, other Runtime/Web/MCP paths,
+installed CV6, and live mixed-Team acceptance remain
+open. No bundle was built, signed, launched, or installed and no real
+credential, Provider, tool side effect, or user workspace was accessed. Source
+remains post-build-64; installed Loom remains v0.5.2 build 39. Phase 2D remains
+the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C/W2D PI ATTEMPT LOCAL TOOL GATEWAY V1 (2026-08-14)`:
+the production Attempt Runtime now carries its exact binding, Turn and Step in
+daemon-private context. For allowed Pi Bash/Edit calls, a per-proposal execution
+gate commits `ToolCallAdmitted` and `ToolDispatchCommitted` before invoking the
+executor. A dispatch authority failure records controlled
+`dispatch_not_committed` state and leaves the executor at zero calls. An
+approved resume passes the exact one-shot approval ID/digest into the same
+authorization and dispatch lineage.
+
+Successful digest-only execution metadata enters the Conversation-DEK Attempt
+Payload Store before `ToolResultAccepted`. The Pi result frame now carries only
+call digest, Tool and digest-only result, not the original command/path
+Envelope. RunStream acceptance writes `run_stream_tool_result` and marks the
+encrypted payload delivered. This receipt proves Loom RunStream acceptance; it
+does not claim Provider continuation or that a model consumed the result.
+
+Focused execution/work/daemon/Pi tests, exact dispatch-order and privacy tests,
+the previously flaky Harness process-group test repeated three times, vet and
+diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-attempt-local-tool-gateway-v1.md`.
+
+Pi child-process result injection and actual next-model turn, ask pause/resume,
+Read/Grep, Web/MCP, other Runtime adapters, sandbox enforcement report,
+tool-level diagnostics/recovery UI, Queue/Steer/Inject, installed CV6 and live
+mixed-Team acceptance remain open. No bundle was built, signed, launched, or
+installed and no real credential, Provider, user workspace, or external tool
+was accessed. Source remains post-build-64; installed Loom remains v0.5.2 build
+39. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D TOOL DIAGNOSTICS AND RECOVERY-REQUIRED V1 (2026-08-14)`:
+Pi Bash/Edit now emits a closed content-free stage chain for authorization,
+sandbox preparation, binding validation, dispatch, result validation/commit,
+encrypted payload commit, and result delivery. Product operational records
+carry the exact Provider Account, Model, Attempt, Run, Agent, Execution Binding,
+Capsule, call digest, operation, and Incident identity. They have no command,
+path, Prompt, result body, credential, or Provider-response field. Edit
+owned-path/content preflight now precedes dispatch, and raw executor failures
+are reduced to controlled error codes.
+
+Daemon startup reconciles `Allowed` executions without a terminal fact into one
+fixed schema-v2 `recovery_required / side_effect_unknown` authority state and
+never re-executes the side effect. Proposed-only asks remain pending. Recovery
+without authorization, substituted code/action, duplicate recovery, and
+unknown schema-v2 authority facts fail closed. The global Projection now admits
+only the exact known execution/permission v2 facts, repairing restart without
+opening a generic v2 envelope. Swift decodes and presents the result-unknown
+state and Incident ID, but intentionally exposes no recovery button before a
+real authority command exists.
+
+Focused 10-run race tests, full repository Go, Go vet, full macOS tests (203
+XCTest with one intentional visual skip plus 10 Swift Testing contracts), and
+diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-tool-diagnostics-recovery-required-v1.md`.
+
+This is `SOURCE VERIFIED / RECOVERY DECISION COMMAND OPEN`. Exact Attempt-bound
+startup `tool_recovery` diagnostics, authoritative Resume/Retry/Skip/Cancel/New
+Attempt commands and native controls, component sandbox reports, Pi Provider
+continuation, ask suspension/resume, Read/Grep/Web/MCP and other Runtime paths,
+Queue/Steer/Inject, installed CV6, and live mixed-Team acceptance remain open.
+No bundle was built, signed, launched, or installed and no real credential,
+Provider, user workspace, or external tool was accessed. Source remains
+post-build-64; installed Loom remains v0.5.2 build 39. Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-COMP1 AND P2D-COMP2-A-B SOURCE VERIFIED (2026-08-14)`: Phase 2D
+includes
+`P2D-COMP1` and `P2D-COMP2` as front-loaded Harness Platform composition
+slices, not as a new Goal. ADR-0021 freezes a Loom-owned typed Composition
+Kernel with desktop/headless/test Launch Profiles, versioned built-in Bundles,
+the `Root -> Product -> Conversation -> Team -> Agent -> Attempt -> Turn`
+Capability Context hierarchy, reversible Effects, deterministic
+CompositionSnapshot digest, closed RouteDescriptors, and the
+`Register -> Validate -> Start -> Ready -> Stop -> Dispose` lifecycle.
+
+Capability Context is explicitly distinct from Go `context.Context`, frozen
+Attempt Context, and model-visible Context Capsule. It cannot contain Prompt,
+transcript, tool-result content, Provider body, plaintext credential, Vault
+VMK, Journal writer, policy authority, or terminal authority. Child scopes may
+narrow capabilities but cannot expand or replace protected Core authority.
+Active Attempts retain both their admitted snapshot digest and independent
+Frozen Execution Binding.
+
+P2D-COMP2 uses a compatibility-first strangler migration. It first wraps the
+existing product services as built-in Bundles without behavior change, then
+replaces `localProductHandlerWithComposition` and its fifteen service
+dependencies with a compiled typed route/capability registry, and finally moves
+construction out of `newProductDaemonRunnerWithPreparedDecisions` into
+`loom-core`, `loom-vault`, `loom-conversation`, `loom-agent-runtime`,
+`loom-governance`, `loom-work`, `loom-assets`, `loom-observability`, and
+`loom-local-ipc` Bundles.
+
+P2D-COMP1 is now source verified in `internal/composition`. It provides closed
+desktop/headless/test Profile manifests, versioned built-in Bundle admission,
+deterministic graph/route compilation and snapshot digest, descriptor-narrowed
+Bundle lifecycle views, protected-Core masking below Root, exact operational
+scopes, reverse Effect cleanup, atomic Ready, safe diagnostics, and independent
+Attempt snapshot/execution-binding freeze. Focused coverage is 83.0%; 20
+race-enabled runs, full repository Go, and vet checks pass. The product daemon
+now consumes the kernel through COMP2-A/B. Exact evidence is
+`.loom-evidence/phase2d/P2D-COMP1-governed-composition-kernel-v1.md`.
+
+The source-verified ATL3 remote-result commit remains preserved. COMP2-A and
+COMP2-B are now source verified. Before broadening to sequential multi-tool
+calls, additional Runtime adapters, or Queue/Steer/Inject, the active execution
+gate is bounded COMP2-C/D service construction and scope migration.
+COMP2-E removes legacy production reachability only
+after parity, race, restart, privacy, and shutdown gates pass. Existing
+Credential Vault CV6, Conversation, per-Agent binding, Tool Loop, governance UI,
+and installed mixed-Team gates remain unchanged. Contracts:
+`.loom-evidence/phase2d/contracts/P2D-COMP1-composition-kernel.md` and
+`.loom-evidence/phase2d/contracts/P2D-COMP2-product-daemon-strangler.md`.
+
+`CURRENT / P2D-COMP2-A SOURCE VERIFIED (2026-08-14)`: the real production
+builder now activates one desktop compatibility snapshot before creating the
+local IPC server. Desktop/headless/test compile the same nine versioned built-in
+Bundle facades. The admitted handler delegates to
+the unchanged existing handler, gates calls on Ready, joins in-flight requests
+on Close, and revokes old references before legacy resources close.
+
+Composition lifecycle/scope events persist in the existing owner-only bounded
+operational JSONL store before IPC admission; write failure prevents startup.
+Full repository Go/vet and focused 10-run race checks pass. Existing state paths,
+wire responses, Vault, Conversation, per-Agent binding, Tool Loop, startup
+cleanup, and shutdown tests remain green. Legacy service constructors remain
+the compatibility oracle; COMP2-B
+method-level declarative routes are now active. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-A-compatibility-bundle-facade-v1.md`.
+
+`CURRENT / P2D-COMP2-B SOURCE VERIFIED (2026-08-14)`: all 47 local product
+methods are now exact, sorted RouteDescriptors in the desktop/headless/test
+Composition Snapshot; the aggregate `legacy.product.dispatch` route is gone.
+Each descriptor freezes its built-in Bundle owner, typed handler capability,
+required capability set, unavailable error, Incident policy, and privacy class.
+
+Product startup directly constructs `productRouteServices` and the typed route
+registry. The fifteen-parameter handler survives only as a test compatibility
+wrapper and an AST gate prevents production from calling it. Exact unavailable
+codes, Journey IDs, Conversation and credential stages, degraded-write behavior,
+and existing dispatch results remain green across focused race, daemon-package,
+full-repository, vet, and diff checks. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-B-declarative-route-registry-v1.md`.
+
+This is `SOURCE VERIFIED / COMP2-C-D OPEN`. Legacy service construction and the
+large dispatch switch remain temporary behavior oracles. The next gate is
+bounded Bundle construction extraction and scoped lifecycle ownership; COMP2-E,
+installed CV6, mixed-Team ATL9, and all existing Phase 2D live gates remain
+open. No App was built, signed, installed, or launched, and no credential,
+Provider, network, user workspace, or external tool was accessed.
+
+`CURRENT / P2D-COMP2-D PRODUCT SCOPE SOURCE VERIFIED (2026-08-14)`: the
+production compatibility composition now opens the exact `loom-product` scope
+after all Bundles are Ready and before local IPC admission. It freezes the
+Composition Snapshot digest, carries no Execution Binding digest, masks
+protected Core capabilities, and persists metadata-only open/close diagnostics.
+Facade shutdown first quiesces requests, then closes Product scope before the
+activation/root; concurrent Close remains idempotent.
+
+The real production-builder test proves the Product scope and durable
+`scope_open` record exist before Run. Focused 20-run race, daemon package, full
+repository, vet, and diff gates pass. Conversation, Team, Agent, Attempt, and
+Turn scope integration remains open. Agent Runtime construction has now moved
+behind Composition, while Conversation and remaining services still predate
+activation; hidden mutable scope injection remains forbidden. Further bounded
+COMP2-C inversion precedes attaching deeper scopes to lifecycle boundaries.
+Evidence: `.loom-evidence/phase2d/P2D-COMP2-D-product-scope-v1.md`.
+
+`CURRENT / P2D-COMP2-C ASSETS ROUTE CONSTRUCTION SOURCE VERIFIED
+(2026-08-14)`: `loom-assets` now constructs the local Assets service/API in its
+Bundle Start hook and binds a one-time typed route slot. Product startup no
+longer calls those constructors directly. Bundle Ready checks the binding;
+failed construction prevents Product scope and IPC admission. The Start Effect
+waits for in-flight Assets calls and revokes the route during composition
+cleanup, so retained slot references fail closed.
+
+Focused 20-run race, daemon package, full repository, vet, AST boundary, socket
+journey, mission execution, startup cleanup, shutdown, and diff gates pass.
+Agent Runtime construction subsequently moved behind `loom-agent-runtime`, and
+Assets authority/Evidence ownership has now moved into `loom-assets` through a
+bounded inter-Bundle materializer port. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-assets-route-construction-v1.md`.
+
+`CURRENT / P2D-COMP2-C AGENT RUNTIME CONSTRUCTION SOURCE VERIFIED
+(2026-08-14)`: `loom-agent-runtime` Start now constructs the existing Mission
+Execution backend, Side Task Handoff API, and saved-Team materializer behind a
+one-bind typed route slot. Product startup no longer calls the execution builder
+or independently owns its closer. The Start Effect revokes routes and closes
+backend, observers, handoff, and Evidence ownership after request quiescence.
+
+Assets starts before Agent Runtime. Runtime construction failure rolls Assets
+back and prevents Product scope/IPC admission. The migration also repaired
+Composition lifecycle error fidelity: safe Error text remains metadata-only,
+while `errors.Is` now retains both the composition category and original cause,
+restoring exact startup reconciliation conflicts without leaking private text.
+
+Focused COMP1/COMP2 20-run race plus post-review 10-run race, daemon package,
+full repository, vet, startup reconciliation, mission/handoff, credential
+binding, shutdown, AST boundary, and diff gates pass. Assets authority/Evidence
+ownership has subsequently moved under `loom-assets`. Remaining COMP2-C work
+includes observability, Vault, Conversation, governance/work, local IPC, and
+protected core construction.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-agent-runtime-construction-v1.md`.
+
+`CURRENT / P2D-COMP2-C ASSETS AUTHORITY OWNERSHIP SOURCE VERIFIED
+(2026-08-14)`: `loom-assets` Start now constructs and owns the Assets Evidence
+store, Asset authority, Assets API route, Pi skill materializer, and Team asset
+materializer, including startup recovery. Product construction no longer keeps
+`assetAuthority` or `assetEvidenceStore` owners. `loom-agent-runtime` receives
+only the bounded `app.TeamAssetMaterializer` port after Assets is Ready; no
+concrete authority, Evidence store, content, or protected capability enters
+Capability Context.
+
+Reverse cleanup closes Agent Runtime before Assets, revokes both bounded ports,
+waits for in-flight calls, and closes the Assets store. Focused 10-run race,
+daemon package, full repository, vet, ownership AST, rollback, shutdown, and
+diff gates pass. COMP2-C/D, COMP2-E, CV6, ATL9, and live gates remain open.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-assets-authority-ownership-v1.md`.
+
+`CURRENT / P2D-COMP2-C WORK QUEUE CONSTRUCTION SOURCE VERIFIED
+(2026-08-14)`: `loom-work` Start now constructs and binds the existing Queue
+service/API through an extensible one-bind `productWorkRoutes` slot. Production
+startup no longer constructs Queue directly. Ready gates admission; failed
+construction prevents Product scope/IPC; reverse cleanup waits for in-flight
+Queue calls and revokes the port. Compatibility helpers preserve exact typed
+nil/unavailable behavior.
+
+Focused tests freeze Assets -> Work -> Agent Runtime startup and reverse
+cleanup. Focused 10-run race, daemon package, full repository, vet, AST boundary,
+Queue journey, startup/shutdown, and diff gates pass. Workers, Integration,
+Execution, Production, governance/work authority, and deeper scopes remain.
+
+`loom-observability` has a verified bootstrap dependency: Conversation
+migration, Agent diagnostics, handler wrapping, and Composition lifecycle
+recording all need the operational store before Bundle activation. Its bounded
+solution is a minimal pre-composition recorder retained until Conversation
+construction migrates, followed by explicit operational-port handoff; an
+unbound proxy must not discard startup failures. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-work-queue-construction-v1.md`.
+
+`CURRENT / P2D-COMP2-C WORK ROUTES CONSTRUCTION V2 SOURCE VERIFIED
+(2026-08-14)`: `loom-work` now atomically constructs and binds Queue, Workers,
+and Integration during Bundle Start. Product construction no longer creates the
+Queue API, Worker execution/service API, Integration service, domain
+observability service, or local Integration API. All three typed ports must be
+valid before Ready; one Effect quiesces and revokes all six route methods.
+
+Construction failures preserve exact `build_queue`, `build_workers`, and
+`build_integration` identity through Composition. Focused 10-run race, full
+daemon/repository, vet, AST ownership, build-stage classification, and real
+socket Queue/Workers/Integration journeys pass. Execution, Production,
+governance/work authority, setup/read routes, and deeper scopes remain open.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-work-routes-construction-v2.md`.
+
+`CURRENT / P2D-COMP2-C WORK EXECUTION OWNERSHIP V3 SOURCE VERIFIED
+(2026-08-14)`: `loom-work` now also constructs and owns governed Execution,
+including its owner-only Evidence store, decision recorder, sandbox gate,
+Adapter, pending recovery, service, and API. Recovery completes before Ready.
+The typed Work slot publishes the local Execution route and one private,
+bounded tool-execution port; `loom-agent-runtime` consumes only that port after
+Work is Ready, never a concrete Adapter through Capability Context.
+
+Composition preserves exact `build_execution` and `build_execution_recovery`
+failure stages. Reverse cleanup closes Agent Runtime before Work, waits for
+in-flight calls, revokes both Execution ports, and closes the Evidence owner
+exactly once, removing the successful-start ownership leak from the product
+root. Focused route/runtime tests, 10-run composition/daemon race, full daemon
+and repository Go, vet, AST ownership, privacy, shutdown, and diff checks pass.
+Production, governance/work authority, setup/read routes, Conversation and
+observability construction, deeper scopes, COMP2-E, CV6, ATL9, and live gates
+remain open. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-work-execution-ownership-v3.md`.
+
+`CURRENT / P2D-COMP2-C WORK PRODUCTION OWNERSHIP V4 SOURCE VERIFIED
+(2026-08-14)`: `loom-work` now also constructs and owns the Production core,
+local service, and API. The typed Work route set requires Production Snapshot,
+Command, and the read-only Degraded gate before Ready. Product construction no
+longer resolves Production paths or calls its three constructors.
+
+The existing sandbox-root/user-Library path semantics, current executable,
+Journal-replayed AdminLock, authoritative projection, and degraded-write policy
+are preserved. Construction failures remain `build_production`; shutdown
+quiesces and revokes Production with the other Work routes and reports degraded
+after revocation. Focused Composition and real socket Production journeys,
+10-run race, full daemon/repository Go, vet, AST ownership, shutdown, privacy,
+and diff checks pass. Governance/work authority, setup/read routes,
+Conversation/observability construction, deeper scopes, COMP2-E, CV6, ATL9,
+and live gates remain open. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-work-production-ownership-v4.md`.
+
+`CURRENT / P2D-COMP2-C GOVERNANCE AUTHORITY OWNERSHIP V5 SOURCE VERIFIED
+(2026-08-14)`: `loom-governance` now constructs and owns the Permission approval
+port and Rules authority, Permission API, Customer Rule API, and Standing Order
+authority/API. Product construction no longer creates these objects. The Rules
+authority remains private to the trusted built-in factory; IPC receives only
+three typed route proxies, while Work receives only Request/Consume approval
+methods after Governance Ready.
+
+Governance failure prevents Work, Product scope, and IPC admission. Reverse
+cleanup closes Work before Governance and revokes both route and approval ports.
+Exact `build_permissions`, `build_customer_rule`, and `build_standing_order`
+stages, Permission ask/decision, Customer Rule, Standing Order, Execution
+approval consumption, focused 10-run race, full daemon/repository Go, vet, AST
+ownership, shutdown, privacy, and diff checks pass. Mission decision,
+Provider-account policy, setup/read routes, Conversation/observability
+construction, deeper scopes, COMP2-E, CV6, ATL9, and live gates remain open.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-governance-authority-ownership-v5.md`.
+
+`CURRENT / P2D-COMP2-C GOVERNANCE DECISION OWNERSHIP V6 SOURCE VERIFIED
+(2026-08-14)`: `loom-governance` now also constructs and owns the Prepared
+Mission Decision backend, fallback decision StateWriter/preparer, local Decision
+API, and Mission Execution decision router. The production builder no longer
+creates or retains these concrete objects. Read receives only prepared-command
+listing; Agent Runtime receives only execution-control and explicit fallback
+interfaces; IPC receives only the Decision route.
+
+The backend and StateWriter remain private to the trusted factory. Governance
+failure prevents downstream activation, and closing the slot revokes every
+decision interface. Exact `build_decision`, strict Decision IPC, prepared-view
+rebind, mission preflight/control, fail-closed registry, four-Provider explicit
+fallback, focused 10-run race, full daemon/repository Go, vet, AST ownership,
+shutdown, privacy, and diff checks pass. Provider policy, setup/read route
+construction, Conversation/observability construction, deeper scopes, COMP2-E,
+CV6, ATL9, and live gates remain open. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-governance-decision-ownership-v6.md`.
+
+`CURRENT / P2D-COMP2-C GOVERNANCE PROVIDER ACCOUNT POLICY V7 SOURCE VERIFIED
+(2026-08-14)`: `loom-governance` now also constructs and owns Provider Account
+Policy and Provider Model Rate Card authority. Setup no longer constructs that
+authority and receives only two exact configuration interfaces. The authority
+stays inside the trusted factory; it is not placed in Capability Context and
+cannot expose Journal, credential, Provider client, or terminal authority.
+
+Account identity, revision, policy/rate-card digest, concurrency, dispatch rate,
+budget, disclosure policy, token basis, and cost freezing remain exact and
+account-local. Closing Governance revokes both ports; construction preserves
+`build_setup_policy`. Trusted-correlation wire, projection refresh,
+concurrency/budget isolation, policy/price drift, privacy-safe diagnostics,
+focused 10-run race, full daemon/repository Go, vet, AST ownership, shutdown,
+and diff checks pass. Setup/read route construction,
+Conversation/observability construction, accounting UI, deeper scopes, COMP2-E,
+CV6, ATL9, and live gates remain open. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-governance-provider-account-policy-v7.md`.
+
+`CURRENT / P2D-COMP2-C OBSERVABILITY BOOTSTRAP HANDOFF V8 SOURCE VERIFIED
+(2026-08-14)`: the owner-only operational diagnostic store keeps only its
+minimal pre-composition bootstrap role for credential-runtime selection,
+encrypted Conversation migration, and Composition lifecycle failures.
+`loom-observability` Start now hands bounded operational ports to a revocable
+slot after which Read diagnostics, Agent Attempt diagnostics, Context retrieval
+audit, governed tool diagnostics, and IPC operation recording no longer retain
+the bootstrap store directly.
+
+The slot exposes no path, file handle, Journal writer, credential, Prompt,
+transcript, Provider body, or terminal authority and is not placed in
+Capability Context. Start failure prevents Product/IPC admission and preserves
+`build_diagnostics`; Composition close revokes all downstream ports. Focused
+handoff/AST/UDS tests, ten-run race, full daemon/repository Go, vet, privacy,
+shutdown, and diff checks pass. V10/V11 below subsequently move
+Vault/Conversation and persistent store construction. Setup/read construction,
+diagnostics UI/export, accounting projections, deeper scopes, COMP2-E, CV6,
+ATL9, and live gates remain open. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-observability-bootstrap-handoff-v8.md`.
+
+`CURRENT / P2D-COMP2-C CONVERSATION ROUTE HANDOFF V9 SOURCE VERIFIED
+(2026-08-14)`: `LocalProductReadService` now consumes the narrow
+`LocalProductChatSource` port rather than concrete `LocalProductChatAPI`.
+`loom-conversation` Start binds the existing persistent/encrypted chat API into
+a revocable route slot; Composition close removes both thread reads and message
+dispatch. Conversation failure prevents Agent Runtime and Product/IPC admission
+and preserves `build_setup_provider`.
+
+Profile, Segment, Attempt, Context Capsule, encrypted migration, Provider
+Account binding, and native Provider state behavior are unchanged. The slot is
+not Capability Context and exposes no content, credential, Provider response,
+Journal writer, or terminal authority. Focused chat/AST/UDS tests, encrypted
+migration tests, ten-run race, full daemon/repository Go, vet, shutdown, privacy,
+and diff checks pass. This V9 construction boundary was subsequently advanced
+by V10 below. Setup/read construction, deeper scopes, UI/accounting, COMP2-E,
+CV6, ATL9, and live gates remain open. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-conversation-route-handoff-v9.md`.
+
+`CURRENT / P2D-COMP2-C VAULT AND CONVERSATION CONSTRUCTION V10 SOURCE VERIFIED
+(2026-08-14)`: `loom-vault` Start now constructs and privately owns the real
+LocalKeyFile Vault or existing fail-closed recovery runtime. Only bounded
+credential mutation/lease/availability, encrypted document, Context Capsule,
+retrieval, Attempt payload, Tool Proposal, and external-session ports reach
+trusted built-in consumers. The Vault root, VMK, Journal writer, and replacement
+authority do not leave the Bundle.
+
+`loom-conversation` Start now constructs Codex native and system Provider
+clients, the account-aware Profile router, migration recorder, and persistent
+encrypted Chat API after Vault Ready. Failure blocks Agent Runtime and
+Product/IPC admission while preserving `build_setup_native_auth`,
+`build_setup_provider`, and `build_setup_credential`. Reverse cleanup revokes
+Conversation before closing Vault; recovery reset keeps the same bounded slot.
+The monolithic product builder no longer calls any Vault/recovery, system
+Provider, Profile router, or persistent Chat constructor. Unavailable Vault
+writes clear Context Capsule, transcript, and Attempt payload buffers.
+
+Focused ownership, lifecycle, recovery, migration, stage, and privacy tests;
+ten-run race; full daemon/repository Go; vet; static constructor inspection;
+and diff checks pass. The lazy Pi local-model Conversation resource, Setup/read
+construction, deeper scopes, UI/accounting, COMP2-E, CV6, ATL9, and live gates
+remain open. No App, network,
+Provider, credential, or installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-vault-conversation-construction-v10.md`.
+
+`CURRENT / P2D-COMP2-C OBSERVABILITY CONSTRUCTION V11 SOURCE VERIFIED
+(2026-08-14)`: `loom-observability` Start now creates the owner-only persistent
+diagnostic directory/store. The product builder retains only a no-I/O, bounded,
+privacy-safe bootstrap sink so Composition compile/validate/register and early
+start events generated before Observability Ready are not lost. Bundle Start
+binds the credential-runtime identity and flushes those records in order before
+publishing operational ports; overflow, store construction, or flush failure
+fails activation as `build_diagnostics`.
+
+After binding, lifecycle records continue to persist through stop/dispose while
+Read, Agent Attempt, Context retrieval, Tool, and IPC access remains revocable
+through the existing slot. The bootstrap carries no content, credential,
+ciphertext, VMK, Journal writer, or authority and is not Capability Context.
+Focused pre-start flush, filesystem failure, route revocation, and AST tests;
+ten-run race; full daemon/repository Go; vet; static constructor inspection;
+and diff checks pass. Lazy Pi Conversation ownership, Setup/read construction,
+deeper scopes, UI/accounting, COMP2-E, CV6, ATL9, and live gates remain open. No
+App, network, Provider, credential, or installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-observability-construction-v11.md`.
+
+`CURRENT / P2D-COMP2-C SETUP CONSTRUCTION V12 SOURCE VERIFIED
+(2026-08-14)`: the final built-in `loom-local-ipc` Start now constructs and
+binds the existing Setup aggregate only after Observability, Assets, Vault,
+Conversation, Governance, Work, and Agent Runtime are Ready. The product
+handler consumes a revocable Setup slot, and the monolithic builder no longer
+calls `buildProductSetupService`.
+
+Setup continues to consume the exact bounded Vault mutation/status/availability
+and Governance Provider Account Policy/Model Rate Card ports. Account identity,
+credential revision, native auth, runtime admission, transactions, and
+projection behavior are unchanged. Exact `build_state`, `build_setup_runtime`,
+`build_setup_credential`, `build_setup_provider`, and
+`build_setup_native_auth` failures survive Composition rollback. Close revokes
+Setup before dependency Bundles without a runner double-close; unavailable or
+nil routes clear credential input bytes. No Vault root, Provider authority,
+content, VMK, or terminal authority enters Capability Context.
+
+Focused Setup/Vault/policy/UDS/ownership tests, ten-run race, full
+daemon/repository Go, vet, AST/static constructor inspection, and diff checks
+pass. Read construction, lazy Pi Conversation ownership, deeper scopes,
+UI/accounting, COMP2-E, CV6, ATL9, and live gates remain open. No App, network,
+Provider, credential, or installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-setup-construction-v12.md`.
+
+`CURRENT / P2D-COMP2-C READ CONSTRUCTION V13 SOURCE VERIFIED
+(2026-08-14)`: the existing Read aggregate is now constructed atomically with
+`loom-governance` after Governance binds and after Observability, Conversation,
+and Vault are Ready. Failure closes Governance in the same Start rollback and
+maps to `build_state`. The product builder no longer calls
+`api.NewLocalProductReadService`.
+
+IPC consumes only snapshot/timeline/chat from a revocable Read slot. Agent
+Runtime consumes only mission observer, SideTask source injection, and observer
+close ports; it no longer receives a concrete Read service. The concrete
+Journal, Projection, cached views, stream subscriptions, tentative records, and
+observer map remain private and do not enter Capability Context. Reverse
+cleanup closes Agent Runtime, then revokes Read and residual observers before
+Governance.
+
+Focused Governance/Read/Agent Runtime/UDS/AST tests, ten-run race, full
+daemon/repository Go, vet, static constructor inspection, and diff checks pass.
+Lazy Pi Conversation ownership, deeper scopes, UI/accounting, COMP2-E, CV6,
+ATL9, and live gates remain open. No App, network, Provider, credential, or
+installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-read-construction-v13.md`.
+
+`CURRENT / P2D-COMP2-C SHARED LOCAL MODEL OWNERSHIP V14 SOURCE VERIFIED
+(2026-08-14)`: `loom-conversation` now constructs and owns the optional shared
+Pi local-model runtime. Pi Conversation and Agent Runtime use the same bounded
+runtime; Agent Runtime acquires it through the existing Conversation dependency.
+Reverse cleanup closes Agent adapters before Conversation closes the server
+exactly once, and construction rollback closes it as well. The product builder
+no longer constructs the shared model, Pi Conversation responder, or retains a
+separate closer.
+
+The process owner, paths, endpoint, and server mutex remain private and do not
+enter Capability Context. Focused shared identity/lazy-load/rollback/AST tests,
+ten-run race, full daemon/repository Go, vet, static constructor inspection,
+and diff checks pass. The required constructor ownership audit is completed by
+V15 below. Deeper scopes, UI/accounting, COMP2-E, CV6, ATL9,
+and live gates remain open. No App, network, Provider, credential, or
+installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-shared-local-model-ownership-v14.md`.
+
+`CURRENT / P2D-COMP2-C PROTECTED CORE OWNERSHIP V15 SOURCE VERIFIED
+(2026-08-14)`: `loom-core` now constructs and owns the product SQLite
+connection, Journal, Projection, replay, controlled fixture bootstrap, and
+verified built-in Runtime records. Other trusted built-in Bundle factories
+resolve these resources only during Start through a private revocable
+construction slot; it is not Capability Context and Core closes it after all
+dependent Effects. Later Bundle failure rolls back and closes the database.
+
+The explicit legacy/test SecretStore adapter now also constructs in
+`loom-vault` behind a revocable lease slot. The production builder retains only
+bounded launch/test configuration, executable validation, no-I/O diagnostics
+bootstrap, factory/route assembly, Composition activation, IPC server creation,
+and lifecycle handoff. A constructor allowlist plus explicit AST exclusions
+prevents domain construction from returning. Focused RED/rollback/error-stage,
+legacy credential, route parity, ten-run race, full daemon/repository Go, vet,
+and diff checks pass. COMP2-C's source construction exit is complete; deeper
+COMP2-D scopes, COMP2-E, UI/accounting, CV6, ATL9, and installed live gates
+remain open. No App, network, Provider, credential, or installed-live action
+occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-C-protected-core-ownership-v15.md`.
+
+`CURRENT / P2D-COMP2-D CONVERSATION ATTEMPT SCOPE V2 SOURCE VERIFIED
+(2026-08-14)`: ordinary Conversation dispatch now opens the real
+Product-owned Conversation -> Team -> stable Loom Agent -> Attempt -> Turn
+scope hierarchy before Provider dispatch. Attempt freezes the active
+Composition Snapshot digest and immutable Conversation execution binding
+digest. Scope-open failure rolls back the message, Segment, Attempt, and stored
+Capsule before any Provider call; every return path closes Attempt/Turn, while
+higher scopes are reused until Product close.
+
+The Chat service receives only a one-time-bound revocable manager port. Raw
+thread IDs do not enter Composition diagnostics; each scope uses a
+domain-separated SHA-256 opaque ID. Focused RED/rollback/reuse/production wiring
+tests, Conversation parity, ten-run race, full daemon/repository Go, vet, and
+diff checks pass. COMP2-D remains partial: Team mission identities and full
+Frozen Execution Binding, multi-turn Tool Loop scopes, and credential/session/
+tool/temporary resource Effects remain open, as do COMP2-E, CV6, ATL9, UI,
+accounting, and installed live gates. No App, network, Provider, credential, or
+installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-conversation-attempt-scope-v2.md`.
+
+`CURRENT / P2D-COMP2-D TEAM AGENT ATTEMPT SCOPE V3 SOURCE VERIFIED
+(2026-08-14)`: the real Team mission runner now opens an opaque internal
+execution Conversation and Team scope before executor construction. Every
+source and verifier call is wrapped so the exact Agent Run first freezes its
+full `FrozenExecutionBinding`, then opens a stable Agent, Attempt, and Turn
+carrying the active Composition Snapshot and binding digests. Different Agents
+in one Team therefore retain independent immutable execution bindings and
+scope admission failure stops before any Runtime or Provider delegate call.
+
+Attempt/Turn close on every return; the underlying executor closes before the
+Team execution lease revokes its Agent children. Production injects the same
+one-time-bound scope slot into Agent Runtime, while compatibility tests without
+Composition keep existing behavior. Scope diagnostics use domain-separated
+opaque IDs and expose no raw Team, Agent, Run, or correlation identity.
+Focused RED/isolation/fail-closed/production wiring tests, Conversation and Team
+parity, ten-run race, full daemon/repository Go, vet, and diff checks pass.
+
+COMP2-D remains partial: exact credential lease, Provider session, Tool Loop
+channel, component process, temporary-root, and cancellable-worker Effects are
+not yet scope-owned. Multi-turn Turn generation, COMP2-E, CV6, ATL9, UI,
+accounting, and installed live gates remain open. No App, network, Provider,
+credential, user workspace, or installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-team-agent-attempt-scope-v3.md`.
+
+`CURRENT / P2D-COMP2-D ATTEMPT CANCELLATION OWNERSHIP V4 SOURCE VERIFIED
+(2026-08-14)`: every real Team Agent Attempt now owns a cancellable Go
+execution context as a Composition Effect. The mission wrapper receives that
+context only after full binding freeze and scope admission, then passes it to
+the delegate instead of the wider Team runner context. Normal return cancels it
+during Attempt close; closing Team/Product while a delegate is active cancels
+the running operation with `composition.ErrScopeClosed` before wider cleanup.
+
+The Effect is idempotent and remains Attempt-local. Capability Context, Go
+context, Attempt Context, and Context Capsule remain separate, and no content,
+secret, authority, or Journal writer enters the context. RED demonstrated the
+previous missing cancellation; normal-return and active-revocation tests,
+ten-run race, full daemon/repository Go, vet, and diff checks pass.
+
+COMP2-D remains partial. Credential leases, Provider sessions, Tool Loop
+channels, component processes, temporary roots, multi-turn Turn ownership,
+COMP2-E, CV6, ATL9, UI/accounting, and installed live gates remain open. No App,
+network, Provider, credential, user workspace, or installed-live action
+occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-attempt-cancellation-ownership-v4.md`.
+
+`CURRENT / P2D-COMP2-D SEQUENTIAL TOOL TURN SCOPE V5 SOURCE VERIFIED
+(2026-08-14)`: each real mission Agent Attempt now owns its current Turn and a
+private controller bound into the Attempt execution context. The governed
+WBridge path advances Turn N to N+1 only after a tool result is resolved and
+required encrypted Attempt payload persistence succeeds. Ask polling stays in
+the same Turn; duplicate, stale, cancelled, or out-of-order sequences fail
+closed without corrupting the next valid transition.
+
+Each new Turn remains under the same immutable Attempt and therefore inherits
+the active Composition Snapshot and full per-Agent Frozen Execution Binding
+digests. IDs remain domain-separated and opaque. The controller carries no
+Prompt, result content, credential, Provider body, Journal writer, or execution
+authority. RED, Turn 1→2→3, ask, duplicate, real WBridge allow, mission wiring,
+tool protocol, ten-run race, full daemon/repository Go, vet, and diff checks
+pass.
+
+COMP2-D remains partial, and this is not the full ATL sequential ToolCall exit.
+Tool channel/process Effects, credentials, Provider sessions, temporary roots,
+other Runtime adapters, COMP2-E, CV6, ATL9, UI/accounting, and installed live
+gates remain open. No App, network, Provider, credential, user workspace, or
+installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-sequential-tool-turn-scope-v5.md`.
+
+`CURRENT / P2D-COMP2-D CREDENTIAL LEASE ISOLATION V6 SOURCE VERIFIED
+(2026-08-14)`: the existing Loom Vault lease hot path is now verified through
+the real per-Agent Attempt scopes. A mixed Team test freezes independent
+DeepSeek and MiniMax bindings, resolves each exact Provider Account,
+credential reference, and revision, and holds both bounded plaintext callbacks
+concurrently. Revoking DeepSeek terminates and zeroizes only that lease;
+MiniMax remains active until Team Scope close, which then cancels and zeroizes
+the peer lease.
+
+This confirms the Attempt-owned execution context is the parent of the actual
+CredentialLeaseManager lease and that account revoke does not become Team-wide
+offline/unavailable. Scope cancellation and credential revocation remain
+distinct causes. Secrets never enter Capability Context, context values,
+Capsule, Journal, Evidence, diagnostics, argv, or environment.
+
+Focused exact-resolution/isolation/zeroization tests, Vault and COMP2-D parity,
+ten-run race, full daemon/repository Go, vet, and diff checks pass. COMP2-D
+remains partial: Provider native sessions, tool channels/extensions, component
+processes, temporary roots, other Runtime adapters, COMP2-E, CV6, ATL9,
+UI/accounting, and installed live gates remain open. No App, network, real
+Provider, credential, user workspace, or installed-live action occurred.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-credential-lease-isolation-v6.md`.
+
+`CURRENT / P2D-W2D PI NATIVE TOOL CONTINUATION V1 (2026-08-14)`: the Pi
+Runtime now returns governed Bash/Edit results to the actual child as a native
+Pi `toolResult` and accepts the second model turn before closing the Attempt
+delivery. A per-Attempt owner-only extension and UDS attest the child PID and
+bind the exact Conversation, Run, Agent, claim, frozen Execution Binding,
+Capsule and Incident. `ask` suspends the same request and rechecks the same
+deterministic operation; approval resumes that call, rejection returns a
+content-free deny, and cancellation performs no execution.
+
+Pi can now load `loom_read_context` and `loom_tool` together. The strict
+two-turn protocol locks the first selected route and rejects cross-route,
+result-digest, identity and lifecycle substitution. Only a validated final
+assistant output writes `harness_final_output`; the earlier
+`run_stream_tool_result` proof remains distinct. The Pi wire result strips
+command/path, delivery binding, approval ID/digest, Prompt and Provider body.
+The product profile freezes the new `governed_tool_loop` capability only for
+the exact conformance-bound Pi 0.82.1 component, and capability/Hook mismatch
+fails before process start.
+
+Full repository Go, focused 10-run Pi and daemon race suites, vet, privacy and
+cleanup regressions, and diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-pi-native-tool-continuation-v1.md`.
+
+This is `SOURCE VERIFIED / INSTALLED LIVE OPEN`. Read/Grep execution, multiple
+sequential ToolCalls, Web/MCP and other Runtime adapters, component sandbox
+reports, authoritative recovery commands, Queue/Steer/Inject, Swift governance
+controls, installed CV6 and live mixed-Team acceptance remain open. No bundle
+was built, signed, launched or installed and no real credential, Provider,
+user workspace or external tool was accessed. Source remains post-build-64;
+installed Loom remains v0.5.2 build 39. Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2C/W2D CRASH-SAFE WEB/MCP RESULT COMMIT V1 (2026-08-14)`:
+the execution authority now supports an explicitly injected Loom-owned remote
+Tool Broker. WebSearch, WebFetch and MCPTool calls are strictly validated before
+dispatch, and `ToolDispatchCommitted` still precedes the external call. The
+bounded UTF-8 result is encrypted into the exact Conversation/Attempt Payload
+and accepted by the Attempt Loop before `ToolExecutionCompleted`. A payload
+commit failure returns `result_persistence_failed`, zeroizes the buffer and
+cannot replay the remote call merely to reconstruct content.
+
+The Broker publishes an exact remote tool set. The execution Adapter, daemon
+Hook, Pi extension schema, dynamic system prompt and strict transcript parser
+derive from that same frozen set. Undeclared or unknown tools fail before
+dispatch; an empty MCP allowlist does not advertise MCPTool. Pi returns the
+accepted content through its private native `toolResult`, rejects content or
+digest substitution, keeps query/arguments/result outside Bridge frames and
+content-free authority stores, and records delivery only after validated final
+model output.
+
+Focused tests, full repository Go, target-package race, Go vet, privacy-negative
+and diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2C-W2D-crash-safe-web-mcp-result-commit-v1.md`.
+
+This is `SOURCE VERIFIED / PRODUCTION BROKER CONFIG AND INSTALLED LIVE OPEN`.
+The product daemon accepts an injected Broker but does not yet compose or
+advertise a production Search backend or MCP registry; no real network/MCP call
+was made. Multiple sequential ToolCalls, other Runtime adapters, component
+sandbox reports, recovery commands, Queue/Steer/Inject, Swift governance,
+installed CV6 and mixed-Team live acceptance remain open. No bundle was built,
+signed, launched or installed and no credential, Provider, user workspace or
+external service was accessed. Source remains post-build-64; installed Loom
+remains v0.5.2 build 39. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-W2D PI GOVERNED READ/GREP CONTENT V1 (2026-08-14)`: the local
+execution authority now implements descriptor-relative, no-symlink Read and
+Grep over bounded regular UTF-8 files. It validates the relative path and Grep
+pattern before `ToolDispatchCommitted`, bounds files, matches and returned
+text, rejects identity/content drift, and zeroizes owned result buffers.
+
+Read/Grep content never enters the Event Journal, Evidence metadata,
+operational diagnostics, ordinary RunStream frames, or the Adapter cache. The
+Hook commits the exact content to the Conversation-DEK Attempt Payload as the
+closed `text/plain; charset=utf-8` type, then records `ToolResultAccepted`.
+The private Pi extension decrypts only the exact pending binding, recomputes
+the digest and returns the content through Pi's native `toolResult`; the strict
+two-turn protocol rejects content substitution and Bridge frames remain
+content/path free. Only `harness_final_output` marks delivery. Read-only replay
+re-reads the target and requires the committed output digest; changed content
+fails closed instead of returning stale plaintext. Result-commit failures
+zeroize the executor buffer.
+
+Focused Read/Grep product, execution, permission, Attempt authority and Pi
+protocol tests, four 10-run race suites, full repository Go, Go vet, privacy
+negative checks and diff checks pass. Exact evidence is
+`.loom-evidence/phase2d/P2D-W2D-pi-governed-read-grep-content-v1.md`.
+
+This is `SOURCE VERIFIED / INSTALLED LIVE OPEN`. An actual managed Pi child
+Read canary now proves private content delivery and second-turn continuation;
+multiple sequential ToolCalls, Web/MCP and other Runtime adapters, component
+sandbox reports, authoritative recovery
+commands, Queue/Steer/Inject, Swift governance controls, installed CV6 and live
+mixed-Team acceptance remain open. Web/MCP stays unadvertised until remote
+result bytes are durably encrypted before terminal execution state, so crash
+recovery cannot repeat a remote call merely to reconstruct content. No bundle
+was built, signed, launched or installed and no real credential, Provider,
+user workspace, network or external tool was accessed. Source remains
+post-build-64; installed Loom remains v0.5.2 build 39. Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal.
+
+`CURRENT / P2D-COMP2-D CONVERSATION PROVIDER SESSION LIFECYCLE V7 SOURCE
+VERIFIED (2026-08-14)`: ordinary Conversation Attempts now own a cancellable Go
+execution context as a Composition Effect, and Chat passes only that context to
+the Provider responder after scope admission. Product close cancels active
+dispatch with `composition.ErrScopeClosed`; a missing or already-cancelled
+scope context fails closed, rolls back Message/Segment/Attempt/Capsule state,
+closes the scope, and cannot call the Provider.
+
+A real encrypted ExternalSessionHandle is cross-component verified under this
+Attempt context with its exact Conversation, Segment, Provider Account, model,
+auth mode, credential reference, and revision binding. Product close terminates
+the callback and the Vault runtime zeroizes plaintext after return. Capability
+Context, Go context values, Journal, Capsule, diagnostics, argv, and environment
+receive no handle or secret.
+
+Focused RED/GREEN, ExternalSessionHandle/Vault parity, ten-run race, full daemon
+and repository Go, vet, and diff checks pass. COMP2-D remains partial: this
+verifies the native-session lifecycle boundary, but currently stateless
+Provider adapters have not yet adopted native handle reuse. Tool channels and
+extensions, component processes, temporary roots, broader Runtime adapters,
+COMP2-E, CV6, ATL9, UI/accounting, and installed live gates remain open. No App,
+network, real Provider, credential, user workspace, or installed-live action
+occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-conversation-provider-session-lifecycle-v7.md`.
+
+`CURRENT / P2D-COMP2-D PI TOOL PROCESS RESOURCE CLEANUP V8 SOURCE VERIFIED
+(2026-08-14)`: the real Pi 0.82.1 governed Tool Adapter is now verified under an
+active cancellation boundary across its child process group, private Tool UDS,
+accepted connection, extension file/root, and optional short-path socket root.
+The child enters a pending `ask` request and intentionally stays alive after the
+native abort acknowledgement. Cancellation returns a content-free denial,
+reaps the process within the configured bound, closes channel resources, and
+leaves no extension or socket residue.
+
+V4 already proves the real Team mission delegate receives the Attempt-owned
+context; V8 proves the Pi resource graph cleans up when that context is
+cancelled. No generic Effect registrar, environment channel, or Capability
+Context authority was added. Focused Tool/process parity, ten-run race, full Pi
+Adapter and repository Go, vet, and diff checks pass.
+
+COMP2-D remains partial. This result is limited to the current Pi 0.82.1 path;
+other Runtime adapters, arbitrary MCP component processes, crash/restart
+residue, Provider native-handle adoption, COMP2-E, CV6, ATL9, UI/accounting, and
+installed live gates remain open. No App, network, real Provider, credential,
+user workspace, MCP server, or installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-pi-tool-process-resource-cleanup-v8.md`.
+
+`CURRENT / P2D-COMP2-D HARNESS PROCESS AND PRIVATE PROMPT CLEANUP V9 SOURCE
+VERIFIED (2026-08-14)`: Claude Code and Codex Harness process runners now join
+owner-only system-prompt cleanup into every return path. RED proved that both
+previously returned success when `.loom-private/loom-system-prompt.txt` cleanup
+was blocked. Cleanup failure now returns `ErrHarnessProtocol` without replacing
+an existing Provider/process error.
+
+Real local process tests for both Harnesses start a long-lived descendant under
+the system command runner. Attempt-context cancellation reaps the complete
+process group within the configured bound, returns `context.Canceled`, and
+removes the private prompt file and directory. No Prompt, Provider key, gateway
+token, environment, or child output enters diagnostics, Journal, or Evidence.
+
+Focused RED/GREEN, ten-run race, full Harness Adapter and repository Go, vet,
+and diff checks pass. COMP2-D remains partial: live Claude/Codex CLI and
+Provider dispatch, Attempt gateway/Context MCP crash cleanup, other Runtime
+adapters, Provider native-handle adoption, COMP2-E, CV6, ATL9, UI/accounting,
+and installed gates remain open. No App, network, real credential, Provider,
+user workspace, Claude CLI, Codex CLI, or installed-live action occurred.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-harness-process-private-prompt-cleanup-v9.md`.
+
+`CURRENT / P2D-COMP2-D ATTEMPT LOOPBACK SERVICE REVOCATION V10 SOURCE
+VERIFIED (2026-08-14)`: the current credential gateway and Harness Context MCP
+are now directly parented by the Attempt execution context. Cancellation closes
+both loopback listeners before a deliberately blocked trusted callback or
+Harness runner returns. Context MCP clears its bearer token under synchronized
+lease and authorization access; ordinary completion retains graceful,
+idempotent shutdown.
+
+Focused RED/GREEN, expanded gateway/Context MCP protocol tests, ten-run race,
+full Harness and repository Go, vet, and diff checks pass. This verifies
+normal-process cancellation only. The credential callback must still return
+before its bounded plaintext copy is cleared. Daemon crash/restart, `kill -9`
+residue, arbitrary MCP component processes, other Runtime adapters, COMP2-E,
+CV6, ATL9, UI/accounting, and installed gates remain open. No App, network,
+real credential, Provider, user workspace, CLI, MCP server, or installed-live
+action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-attempt-loopback-service-revocation-v10.md`.
+
+`CURRENT / P2D-COMP2-D PI CONTEXT EXTENSION REVOCATION V11 SOURCE VERIFIED
+(2026-08-14)`: the production Pi RPC Context extension now inherits the Agent
+Attempt execution context at construction. Attempt cancellation terminates a
+blocked Context delivery, closes its private UDS and accepted connection, and
+removes the generated extension file, socket, optional short socket root, and
+private extension root without waiting for the outer Adapter return.
+
+Focused RED/GREEN, Pi Context protocol tests, ten-run race, full Pi Adapter and
+repository Go, vet, and diff checks pass. The selected locked Pi 0.82.1 test was
+skipped by its existing environment gate and is not counted as live binary
+acceptance. COMP2-D remains partial: crash/restart and `kill -9` residue,
+arbitrary MCP component processes, other Runtime adapters, COMP2-E, CV6, ATL9,
+UI/accounting, and installed gates remain open. No App, network, real
+credential, Provider, user workspace, Pi binary, MCP server, or installed-live
+action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-pi-context-extension-revocation-v11.md`.
+
+`CURRENT / P2D-W2C/W2D PI SEQUENTIAL TOOL CONTINUATION V2 SOURCE VERIFIED
+(2026-08-14)`: one real local managed Pi-compatible child now performs two
+bounded sequential governed ToolCalls through separate peer-attested private
+UDS connections in one RPC invocation. Each call carries a distinct sequence,
+execution ID, payload/call lineage, and result digest. Final assistant output is
+accepted only after both native results match; both results then receive exact
+`harness_final_output` proof. Commands and payload authority do not enter
+Bridge frames or the content-free transcript audit.
+
+The first managed-child run RED because the sequential fixture used a unit-only
+Prompt constant; the production parser correctly rejected the identity drift.
+The fixture now uses the exact rendered child Prompt, with no production
+protocol relaxation. Focused protocol, ten-run race, full Pi Adapter and
+repository Go, vet, and diff checks pass. COMP2-D V5 separately proves
+sequence-driven Turn 1→2→3 authority. Official Pi 0.82.1, a product Tool-hook
+dual-call live canary, other Runtime transports, product Inbox ingress and
+Runtime consumption, COMP2-E, CV6, ATL9, UI/accounting, and installed gates
+remain open. No App, network,
+real credential, Provider, user workspace, official Pi binary, MCP server, or
+installed-live action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-pi-sequential-tool-continuation-v2.md`.
+
+`CURRENT / P2D-W2C/W2D DURABLE AGENT INBOX V1 SOURCE VERIFIED
+(2026-08-14)`: Loom now has a durable Queue/Steer/Inject authority core rather
+than transient UI messages or the legacy developer work queue. Every input
+freezes exact Conversation, Segment, Agent, claim generation, Runtime,
+Execution Binding and Capsule digests, order, target Turn/Step, context scope
+and encrypted content digest. Queue consumption is one CAS batch with the next
+`TurnStarted`; ordered Steer/Inject consumption is one CAS batch with the exact
+next `StepStarted`. Admission alone never wakes a Turn or Step, stale targets
+and silent Steer-to-Queue fallback fail closed, and Loop/Inbox replay reads one
+transactionally consistent stream set.
+
+Input bytes are stored in the Loom Vault under the existing per-Conversation
+DEK with canonical AES-256-GCM AAD over every frozen binding field and status.
+The Journal stores only non-content facts and digests. The coordinator writes
+ciphertext before authority, deletes only known-uncommitted ciphertext, keeps
+unknown commit outcomes for reconciliation, and aligns pending/consumed state
+after restart without inventing authority.
+
+Focused RED/GREEN, active-Turn non-waking behavior, ordered consumption,
+restart/reconciliation, Vault restart/tamper/plaintext-negative tests, ten-run
+race, full related packages and daemon, full repository Go, complete related
+race, vet, format and diff checks pass. This is `SOURCE VERIFIED / DAEMON
+INGRESS AND INSTALLED LIVE OPEN`: authenticated IPC, Runtime model-input
+assembly/zeroization, Swift governance UI, cross-Runtime conformance, CV6 and
+ATL9 remain open. No App, network, Provider, real credential, user workspace or
+external Runtime action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-durable-agent-inbox-v1.md`.
+
+`CURRENT / P2D-W2C/W2D AGENT INBOX PRODUCT COMPOSITION V2 SOURCE VERIFIED
+(2026-08-14)`: the real Loom Vault runtime and versioned Bundle slot now expose
+the encrypted Agent Inbox store. Recovery, unbound and facade-closed states
+fail closed; rejected writes clear caller-owned input bytes. The product mission
+executor composes one Agent Inbox coordinator over the same Attempt Loop
+authority and rejects a detached Inbox store without that authority.
+
+Focused ten-run and race checks, full daemon and repository Go, vet, format and
+diff checks pass. This closes product composition only. Active-Attempt
+resolution, multi-Step Runtime consumption, model-input plaintext zeroization,
+authenticated daemon IPC, Swift Queue/Steer/Inject controls, cross-Runtime
+conformance, CV6 and ATL9 remain open. No App, network, Provider, real
+credential, user workspace or external Runtime action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-agent-inbox-product-composition-v2.md`.
+
+`CURRENT / P2D-W2C/W2D ACTIVE ATTEMPT RUNTIME PROJECTION V3 SOURCE VERIFIED
+(2026-08-14)`: every governed product Runtime now registers its already
+validated Attempt Loop and Frozen Execution Binding in one mission-scoped,
+revocable registry. Exact Conversation, Agent, WorkItem, Run and claim-
+generation lookup exists only while the delegate executes; stale generation,
+incomplete identity and post-return lookup fail closed. Returned mutable binding
+fields are cloned and registration cleanup is token guarded.
+
+This registry is a runtime projection, not execution authority, and no client
+route exists. The current Team Capsule authority does not yet carry a Route
+Segment ID, so V3 uses a deterministic Attempt-local Inbox Segment solely to
+prevent cross-Attempt mixing. Authoritative Route Segment propagation,
+multi-Step consumption and plaintext zeroization remain IPC blockers. Focused
+20-run and race checks, full daemon and repository Go, vet, format and diff
+checks pass. No App, network, Provider, credential, user workspace or external
+Runtime action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-active-attempt-runtime-projection-v3.md`.
+
+`CURRENT / P2D-W2A/W2C/W2D AUTHORITATIVE ROUTE SEGMENT BINDING V4 SOURCE
+VERIFIED (2026-08-14)`: every governed Team Agent Attempt now freezes a
+versioned, content-free Route Segment binding over Conversation, Team, Agent,
+Role, Attempt number, Context Capsule digest and Frozen Execution Binding
+digest. Team dispatch journals it, replay recomputes and validates it,
+Aggregation rebuilds it with a changed Capsule, Supervisor verifies it before
+Runtime execution, and the active-Attempt registry uses the supplied authority
+instead of its former Attempt-local substitute.
+
+Projection, Team board and strict Swift `LocalProductNode` now expose only
+Segment availability, ID and digest. Older daemon responses may omit those
+fields; new Capsule-bearing dispatch requires them. The first repository run
+correctly found two strict Swift `invalid_response` failures, and both real
+Go-to-Swift loopback contracts pass after the DTO update.
+
+Focused ten-run race, multi-Provider/aggregation/fallback race, full Go
+repository, full Swift package (203 passed, one existing visual skip, plus 10
+Swift Testing cases), vet, format and diff checks pass. Multi-Step Runtime
+consumption, input plaintext zeroization, authenticated Inbox IPC, Swift
+governance controls, CV6 and ATL9 remain open. No App, network, Provider,
+credential, user workspace or external Runtime action occurred. Evidence:
+`.loom-evidence/phase2d/P2D-W2A-W2C-W2D-authoritative-route-segment-binding-v4.md`.
+
+`CURRENT / P2D-W2C/W2D LOOM NATIVE AGENT INPUT CONSUMPTION V5 SOURCE VERIFIED
+(2026-08-14)`: the durable encrypted Agent Inbox now reaches one real product
+Runtime. Loom Native consumes ordered Steer/Inject inputs into the exact next
+Step and Queue into the exact next Turn while retaining one frozen Execution
+Binding, authoritative Route Segment, Provider Account, credential revision and
+credential lease across all model rounds.
+
+The production vertical test performs three DeepSeek-compatible Provider
+rounds: initial input, Steer continuation, then Queue continuation. Attempt
+authority records Turn 1 Step 1→2 and Turn 2 Step 1; Supervisor receives only
+one final Bridge result and accounting is combined across rounds. Context tool
+delivery follows a content-free current Step cursor.
+
+Inbox payloads are released only after authority and encrypted storage status
+agree. Runtime batches, message wire buffers and HTTP request payloads remain
+mutable and are cleared after use; Journal scans contain no input or credential
+plaintext. Focused ten-run race and full repository Go pass.
+
+This is `SOURCE VERIFIED / LOOM NATIVE ONLY`. Authenticated daemon ingress,
+Swift Queue/Steer/Inject controls, crash-mid-transition recovery, Pi/Codex/Claude
+conformance, installed CV6, mixed-Team ATL9 and COMP2-E remain open. No App,
+network, real Provider, real credential, user workspace or external Runtime was
+accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-loom-native-agent-input-consumption-v5.md`.
+
+`CURRENT / P2D-W2C/W2D AUTHENTICATED AGENT INPUT IPC AND SWIFT GOVERNANCE V6
+SOURCE VERIFIED (2026-08-14)`: Queue, Steer, and Inject now cross the private
+authenticated UDS through the typed `loom-agent-runtime` route. The request ID
+is the Incident and idempotency anchor. Swift supplies only exact public active-
+Agent identity, mode, scope, and bounded UTF-8 bytes; daemon resolves the shared
+mission-scoped active-Attempt registry and freezes internal input/payload/order/
+Turn/Step authority itself. Same-request replay is idempotent, substitution and
+stale generation fail closed, and request plaintext is cleared on every path.
+
+Mission center now provides per-active-Agent Queue/Steer/Inject controls. Each
+row shows Harness, Provider Account, Model and status; drafts, progress,
+receipts and failures remain Agent-local. Failures retain the draft and expose
+a safe stage, recovery action and copyable Incident ID. App and daemon
+diagnostics share `agent_input_admission` and persist only non-content identity,
+mode, timing, result and controlled error metadata; privacy tests prove input
+content does not enter the diagnostic JSONL.
+
+Focused authenticated UDS/ingress/diagnostic race passes ten runs, full Swift
+passes 205 XCTest cases with one intentional visual skip plus ten Swift Testing
+contracts, `go vet ./...` passes, and a serial full repository Go run passes.
+The initial parallel full-Go run exposed and then closed a missing Agent Input
+model in the explicit Go-driven Swift probe; its concurrent Harness start
+timeout passed ten isolated runs and the full serial run without production
+relaxation.
+
+This is `SOURCE VERIFIED / INSTALLED LIVE OPEN`. Crash-mid-transition recovery,
+Pi/Codex/Claude input consumption, installed App use, CV6, mixed-Team ATL9 and
+COMP2-E remain open. No App, network, real Provider, real credential, user
+workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-authenticated-agent-input-ipc-swift-v6.md`.
+
+`CURRENT / P2D-W2C/W2D AGENT INPUT PRE-MODEL CRASH RECOVERY V7 SOURCE
+VERIFIED (2026-08-14)`: the authoritative-consumed/model-unseen Inbox window is
+now recoverable before a ModelRequest exists. If Journal already contains the
+exact Queue/Steer/Inject consumption and Turn/Step transition, the coordinator
+idempotently aligns Vault status and can re-release only the same authenticated
+payload while the target has no `ModelRequestAdmitted`.
+
+The product AgentInputSource recognizes committed Step and Queue states,
+requires the prior model-output checkpoint digest, recomputes the exact input
+digest, restores the deterministic cursor and admits one ModelRequest before
+returning mutable zeroizable content. Queue covers both Turn-only and first-
+Step/no-ModelRequest windows. Wrong checkpoints and any post-ModelRequest retry
+fail closed instead of replaying Provider dispatch.
+
+RED reproduced both lost-delivery states. Focused recovery race passes twenty
+runs; vet, diff and frozen-source serial full repository Go pass. This is a
+bounded source recovery primitive, not general exactly-once execution. Daemon
+restart checkpoint reconstruction and post-ModelRequest uncertain Provider
+recovery remain open, as do Pi/Codex/Claude consumption, CV6, ATL9 and COMP2-E.
+No App, network, real Provider, credential, user workspace or external Runtime
+was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-agent-input-pre-model-crash-recovery-v7.md`.
+
+`CURRENT / P2D-W2C/W2D PI AGENT INPUT CONTINUATION V8 SOURCE VERIFIED
+(2026-08-14)`: Pi now consumes Queue/Steer/Inject after an accepted assistant
+checkpoint by sending another native RPC prompt to the same managed child
+process. The Adapter retains one frozen Execution Binding and process identity,
+one monotonic Bridge sequence, one ACK and one final terminal while combining
+Harness accounting across prompts.
+
+The shared Runtime renderer returns mutable prompt bytes. Inbox content, prompt
+wire bytes, round state and accounting snapshots are cleared after their
+bounded use; Bridge frames and transcript audit remain content-negative. RED,
+focused ten-run race, affected Runtime packages, vet, diff and frozen-source
+serial full repository Go pass.
+
+This is managed Pi-compatible child source verification. Follow-up prompts are
+currently strict text continuations; a second Context/Tool event fails closed.
+Official Pi 0.82.1 multi-prompt conformance, Codex/Claude consumption, daemon-
+restart reconstruction, installed CV6, mixed-Team ATL9 and COMP2-E remain open.
+No App, network, real Provider, credential, user workspace or external Runtime
+was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-pi-agent-input-continuation-v8.md`.
+
+`CURRENT / P2D-W2C/W2D HARNESS MUTABLE PROMPT PREREQUISITE V9 SOURCE VERIFIED
+(2026-08-14)`: Codex and Claude Code process prompts now cross Adapter, process
+runner and command stdin as owned mutable bytes. Every production return path
+clears the bounded prompt/stdin slice; tests clone synthetic bytes explicitly
+and prove the original owner is zeroized. Prompt content remains outside argv,
+environment, diagnostics, Journal, Evidence and ordinary Bridge metadata.
+
+This does not advertise Agent Input support. Current Codex uses one-shot
+`exec --ephemeral`; Claude Code uses `--print --no-session-persistence`.
+Repeated process launch is not a valid continuation, so both Adapters remain
+fail closed until version-locked persistent app-server/stream-json contracts
+pass process identity, checkpoint, session binding, cancellation, accounting
+and privacy conformance.
+
+Harness package, focused ten-run race, vet, diff and frozen-source serial full
+repository Go pass. No App, network, Provider, credential, user workspace or
+external Harness was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-harness-mutable-prompt-prerequisite-v9.md`.
+
+`CURRENT / P2D-W2C/W2D DAEMON RESTART ATTEMPT RECONSTRUCTION V10 SOURCE
+VERIFIED (2026-08-14)`: daemon startup now reconstructs every current Agent
+Attempt Loop from its strict first Journal event, recomputes the stream identity,
+replays the complete Loop and Inbox, and revalidates current Run generation,
+Runtime, Agent, Execution Binding, Capsule, capability and budget authority.
+Historical generations and terminal Runs are not revived.
+
+Consumed Queue or Steer/Inject authority with no ModelRequest reconstructs the
+exact Turn/Step cursor and prior output checkpoint as `pre_model_resume`. An
+open Step with `ModelRequestAdmitted` becomes `provider_outcome_uncertain` and
+is never replayed automatically. Neither outcome enters the active-Attempt
+registry or authorizes Runtime/Provider dispatch.
+
+Journal/Run authority corruption remains daemon-level fail-closed. A missing or
+conflicting encrypted Inbox payload is isolated to that Agent as
+`recovery_blocked`; another Agent remains independently projected. Startup
+persists only safe `agent_attempt_reconcile` diagnostics with controlled error
+codes and frozen non-content identity.
+
+Focused Queue/Step/uncertain/terminal/isolation tests, focused ten-run race, full
+related packages, serial full repository Go, vet and diff checks pass. Explicit
+resume authority and UI,
+persistent Harness process recovery, version-locked Codex/Claude continuation,
+official Pi, installed CV6, mixed-Team ATL9 and COMP2-E remain open. No App,
+network, Provider, real credential, user workspace or external Runtime was
+accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-daemon-restart-attempt-reconstruction-v10.md`.
+
+`CURRENT / P2D-W2C/W2D CODEX APP-SERVER AGENT INPUT CONTINUATION V11 SOURCE
+VERIFIED (2026-08-14)`: a version-locked Codex 0.144.1 Agent may now consume
+Queue/Steer/Inject through repeated `turn/start` requests on one ephemeral
+app-server thread and one managed process. Exact response, thread and Turn IDs
+remain bound; only a completed assistant output becomes the next Loom
+checkpoint. Per-Turn token usage is validated and combined across rounds.
+
+The shared system session runner enforces exact executable identity, bounded
+JSONL/stdout/stderr, mutable input clearing, timeout and process-group reaping.
+Codex advertises Agent Input support only when the persistent runner and exact
+executable digest both pass; drift fails before credential access. Ordinary
+requests retain the one-shot `exec --ephemeral` path.
+
+This is `SOURCE VERIFIED / SAME-PROCESS ONLY`. Codex native thread persistence,
+daemon-restart reattachment, installed Codex/Provider live, CV6, ATL9 and
+COMP2-E remain open. No App, network, Provider, credential, user workspace or
+external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-codex-app-server-agent-input-v11.md`.
+
+`CURRENT / P2D-W2C/W2D CLAUDE STREAM-JSON AGENT INPUT CONTINUATION V12 SOURCE
+VERIFIED (2026-08-14)`: a version-locked Claude Code 2.1.196 Agent may now keep
+one `--no-session-persistence` stream-json process and one emitted `session_id`
+across Queue/Steer/Inject rounds. The parser requires exact replayed user input,
+tracks typed `tool_use`/`tool_result` pairs, accepts only the audited
+`compact_boundary`, and exposes no checkpoint until a successful final result.
+Usage and harness-reported cost are combined across all rounds.
+
+Claude advertises Agent Input support only when the persistent runner and exact
+executable digest pass. The existing one-shot JSON path remains unchanged for
+ordinary requests. Harness package/race/vet and the serial Runtime, Supervisor
+and daemon matrix pass. One earlier parallel matrix hit the pre-existing
+three-second cancellation fixture under load; the exact fixture then passed ten
+runs and the complete affected matrix passed serially without changing its
+timeout.
+
+This is `SOURCE VERIFIED / SAME-PROCESS ONLY`. Encrypted native session-handle
+persistence, daemon-restart reattachment, installed Claude/Anthropic live,
+CV6, ATL9 and COMP2-E remain open. No App, network, Provider, credential, user
+workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-claude-stream-json-agent-input-v12.md`.
+
+`CURRENT / P2D-COMP2-D LOCAL IPC BUNDLE OWNERSHIP V12 SOURCE VERIFIED
+(2026-08-14)`: production no longer constructs the typed product route handler
+or applies IPC decorators before Composition activation. The built-in
+`loom-local-ipc` Bundle now owns a stable revocable handler slot and no-I/O
+factory. Bundle Start constructs Setup first, then the route handler with the
+unchanged observability and controlled-journey wrapper order; Ready gates both
+before request admission.
+
+Construction failure rolls back Setup and permanently revokes the slot. Close
+waits for in-flight requests, revokes old handler references, then closes Setup.
+Production supplies no direct handler to the compatibility activator, while the
+COMP2-A direct facade remains available only for parity tests. Missing or dual
+handler sources fail closed.
+
+The mandatory AST RED, local IPC lifecycle tests, full daemon package, focused
+race, Composition race, serial full repository Go, full vet and diff checks
+pass. This is source verification only. `legacy.product.dispatch`, COMP2-A
+parity facade and compatibility decoders remain until COMP2-E restart,
+crash-window, privacy, shutdown and installed App startup gates pass. Installed
+CV6, mixed-Team ATL9, explicit recovery/UI, accounting and real Provider replies
+remain open under the sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network,
+Provider, credential, user workspace or external Runtime was accessed.
+Evidence:
+`.loom-evidence/phase2d/P2D-COMP2-D-local-ipc-bundle-ownership-v12.md`.
+
+`CURRENT / P2D-W2C/W2D AGENT ATTEMPT RECOVERY PROJECTION V13 SOURCE VERIFIED
+(2026-08-14)`: the Team board now accepts the closed
+`agent_attempt_reconcile` stage and projects each V10 restart outcome only onto
+the exact Incident/Provider Account/Model Agent row. Swift recognizes the same
+stage. Mission governance renders resume approval required, uncertain Provider
+outcome, unavailable encrypted input, or recovery-state conflict while
+retaining View diagnostics and Copy incident ID.
+
+This is a read-only governance boundary. V10 outcomes remain non-retryable; no
+Retry or Resume command was added, recovered state does not enter the active
+Attempt registry, and no Runtime/Provider dispatch or native session
+reattachment occurs. Focused RED/GREEN, ten-run API race, complete Swift (207
+XCTest with one existing skip plus ten Swift Testing contracts), full API and
+daemon packages, full vet, and diff checks pass. Explicit recovery authority,
+restart-safe native session persistence, installed CV6, mixed-Team ATL9,
+accounting completion and COMP2-E remain open under the sole `ACTIVE / PARTIAL`
+Phase 2D Goal. No App, network, Provider, credential, user workspace or external
+Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-agent-attempt-recovery-projection-v13.md`.
+
+`CURRENT / P2D-W2C/W2D AGENT ATTEMPT RECOVERY DECISION AUTHORITY V14 SOURCE
+VERIFIED (2026-08-14)`: Loom now has a separate Journal authority for one
+explicit `resume_pre_model` decision. The command freezes the exact
+domain-separated V10 recovery-candidate digest and a separately domain-separated
+restart-capability digest supplied by a trusted Runtime resolver. The authority
+rebuilds the candidate around a consistent snapshot and atomically fences the
+recovery-decision, Attempt Loop and Run stream heads. Concurrent distinct
+decisions have exactly one winner.
+
+An uncertain Provider outcome, candidate/binding/capability substitution,
+Run terminalization and Loop progress fail closed before an authority fact can
+be used. The fact is content-free. This is decision authority only: production
+composition supplies no restart resolver, and there is no dispatch lease,
+active-Attempt registration, native session reattachment, IPC/Swift action or
+Runtime/Provider call. Focused RED/GREEN, ten-run race, complete
+`internal/work`, serial full repository Go, full vet and diff checks pass.
+Decision consumption, restart-safe Runtime composition, UI, installed CV6,
+mixed-Team ATL9, accounting and COMP2-E remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal. No App, network, Provider, credential, user
+workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-agent-attempt-recovery-decision-authority-v14.md`.
+
+`CURRENT / P2D-W2C/W2D AGENT ATTEMPT RECOVERY CONSUMPTION V15 SOURCE VERIFIED
+(2026-08-14)`: one exact V14 recovery approval now has one durable consumer.
+Before appending `AgentAttemptRecoveryConsumed`, Loom rebuilds the V10 candidate,
+re-resolves the trusted restart capability, and atomically fences the recovery,
+Attempt Loop and Run heads. The authority creates the lease ID internally, so a
+caller cannot exploit idempotent replay to obtain duplicate success.
+
+Only the CAS winner receives a process-local dispatch lease. Its cloned frozen
+grant can be taken once; all concurrent and later consumers receive no lease.
+Capability drift during confirmation leaves the decision unconsumed. Journal
+facts remain content-free. Production still supplies no restart-safe resolver
+or adapter and performs no active-Attempt registration, native-session
+reattachment, authenticated IPC, Swift action, Runtime dispatch or Provider
+replay. Focused RED/GREEN, ten-run race, complete `internal/work`, serial full
+repository Go, full vet and diff checks pass. Runtime composition, UI,
+installed CV6, mixed-Team ATL9, accounting and COMP2-E remain open under the
+sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, Provider, credential,
+user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-agent-attempt-recovery-consumption-v15.md`.
+
+`CURRENT / P2D-W2C/W2D AGENT ATTEMPT RECOVERY RUNTIME ATTACHMENT V16 SOURCE
+VERIFIED (2026-08-14)`: safe pre-model recovery now preserves the exact Route
+Segment from the consumed encrypted Inbox records selected by its frozen input
+IDs. Missing or cross-Segment metadata produces only the affected Attempt's
+`agent_input_recovery_conflict`. The v2 recovery-candidate digest and
+content-free authorization metadata bind the Segment. The consumed grant also
+freezes the recovery operation Incident ID.
+
+Trusted product composition can take the grant once, reattach an identity-only
+Runtime session, verify the exact Runtime instance and session-binding digest,
+and only then insert the recovered active Attempt. Any later failure closes the
+session. Normal close revokes the registry entry before session close, and is
+idempotent under concurrency. The reattachment port has no Provider-dispatch
+method, so an uncertain Provider outcome cannot be translated into another
+request.
+
+This is source composition only. Production supplies no restart-safe capability
+resolver or reattacher, Codex/Claude native sessions are not persisted across
+daemon restart, and there is no authenticated recovery IPC, Swift action,
+Runtime continuation or Provider replay. Focused tests and ten-run race gates
+pass together with complete affected-package tests, serial full repository Go,
+full vet and diff checks. Installed CV6, mixed-Team ATL9, accounting and COMP2-E
+remain open under the sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network,
+Provider, credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-agent-attempt-recovery-runtime-attachment-v16.md`.
+
+`CURRENT / P2D-W2C/W2D LOOM NATIVE RESTART CAPABILITY V17 SOURCE VERIFIED
+(2026-08-14)`: the built-in Loom Native adapter now explicitly declares
+`loom-owned-checkpoint/v1` restart conformance. A trusted product resolver
+revalidates the complete Frozen Execution Binding, exact Runtime, Provider
+Account, credential revision, Model and content-free encrypted Capsule
+authority, then binds the recovered Route Segment, previous output checkpoint
+and input IDs into a domain-separated session digest.
+
+V16 can attach that identity-only session and register the exact active Attempt.
+Capability resolution and attachment read no Capsule content, acquire no
+credential, call no Runtime `Execute`, and issue no Provider request. Unsupported
+or duplicate Runtime identity, duplicate exact Capsule authority, substitution
+and post-consumption Capsule drift fail closed; unrelated corrupt Capsule state
+does not block another Agent.
+
+This is source composition, not a user-visible Resume flow. The daemon does not
+yet construct this recovery service or assemble and dispatch the continued Loom
+Native request. Authenticated IPC, Swift governance, installed CV6, mixed-Team
+ATL9, accounting and COMP2-E remain open under the sole `ACTIVE / PARTIAL`
+Phase 2D Goal. Ten-run focused race, serial full repository Go, vet and diff
+checks pass. No App, network, Provider, real credential, user workspace or
+external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-loom-native-restart-capability-v17.md`.
+
+`CURRENT / P2D-W2C/W2D ENCRYPTED LOOM NATIVE CONTINUATION V18 SOURCE VERIFIED
+(2026-08-14)`: Loom Native now persists an authenticated previous-output
+checkpoint before consuming the next Agent Input. A dedicated
+Conversation-DEK store binds checkpoint content to the exact Conversation,
+Segment, Attempt, Agent, WorkItem, Run/generation, Runtime, frozen Execution
+Binding, Capsule, Turn and Step. It is separate from Tool Result payloads and
+the Event Journal; missing, tampered, substituted or ambiguous state fails
+closed and Conversation crypto-erasure removes its records.
+
+The controlled local recovery path consumes the one-use grant, attaches and
+registers the exact active Attempt, restores the frozen Capsule, checkpoint and
+consumed Inbox material, admits one new ModelRequest, acquires the exact
+credential lease, dispatches Loom Native, terminalizes Step/Turn and deletes
+the obsolete checkpoint. The uncertain-Provider branch remains non-resumable.
+Journal tests exclude checkpoint, input, reply and credential fixture content.
+
+Focused RED/GREEN, ten-run cross-package race, serial full repository Go, full
+vet, exact gofmt and diff gates pass. This is source verification with a local
+simulated Provider fixture. The daemon does not yet construct an authenticated
+recovery service, and there is no IPC command, Swift governance action or
+user-visible Resume. A production route must also restore authorized frame
+validation, commit Run terminal/accounting authority and close the prior
+execution authorization; direct IPC-to-continuation wiring is forbidden because
+it would leave model completion and Team board state divergent. Installed CV6,
+mixed-Team ATL9, accounting, COMP2-E and restart support for Codex/Claude/Pi
+remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real Provider, real
+credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-encrypted-agent-checkpoint-continuation-v18.md`.
+
+`CURRENT / P2D-W2C/W2D RECOVERY FRAME AND TERMINAL CLOSURE V19A SOURCE VERIFIED
+(2026-08-14)`: the controlled Loom Native recovery path now uses a dedicated
+Bridge frame authority bound to the consumed one-use recovery grant, exact
+unrevoked original grant identity and operation set, deterministic dispatch ACK
+and recovery Incident ID. The AdapterResult transcript must exactly match every
+accepted frame before Attempt Loop success can be written. Correlation or
+binding substitution, observer rejection, missing/ambiguous original grant and
+transcript mismatch fail before Run terminal authority.
+
+After one valid terminal stream, recovery resolves accounting against the exact
+authoritative Run and frozen Provider/Model Rate Card, commits Run terminal
+state and revokes the exact original grant. The old bearer token remains
+unrecoverable. Cleanup authority outlives request cancellation under a bounded
+timeout, and session close errors are retained.
+
+Focused RED/GREEN, ten-run recovery race, complete supervisor and daemon
+packages, serial full repository Go, full vet and exact gofmt checks pass. This
+is source verification only. Production does not yet construct the coordinator,
+restore the Team frame/evidence observer or expose authenticated recovery IPC
+and Swift governance. A crash after Run terminal commit and before grant revoke
+is still an explicit V19B startup-reconciliation gate; it must close only the
+exact grant and must never redispatch the Provider. Installed CV6, mixed-Team
+ATL9, broader Runtime recovery and COMP2-E remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real Provider, real
+credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-recovery-frame-terminal-closure-v19a.md`.
+
+`CURRENT / P2D-W2C/W2D PRODUCTION RECOVERY LIFECYCLE V19B SOURCE VERIFIED
+(2026-08-14)`: the production mission Bundle now owns the Loom Native recovery
+decision authority and V19A completion coordinator whenever durable Agent Inbox
+recovery is configured. It composes the exact restart resolver, encrypted
+checkpoint continuation, active-Attempt attachment, frame validation, Run
+accounting/terminal authority and original-grant closure from the existing
+production stores and frozen adapters.
+
+Before resumed output is accepted, production rebuilds the projection and
+restores the existing Team evidence and NodeOutput observer for exactly one node
+Attempt selected by WorkItem, Run, generation, Runtime and Agent. Missing or
+ambiguous ownership fails closed.
+
+Daemon startup now repairs a crash after Run terminal commit but before grant
+revocation. It revokes only one exact unrevoked grant whose complete execution
+tuple matches the terminal Run, ignores already revoked grants, and is
+idempotent. Tuple drift or duplicate pending authority stops startup. The
+reconciler has no Runtime, adapter, credential or Provider-dispatch port.
+
+Each successful repair writes a persistent, content-free
+`authorization_reconcile` record at `agent_attempt_reconcile` with the startup
+Incident ID and non-secret frozen execution identity. No Capsule, Prompt,
+transcript, Provider body, credential, grant token or ciphertext is recorded,
+and the success is not projected as an Agent failure.
+
+The focused RED/GREEN, ten-run recovery race, complete daemon package, serial
+full repository Go, full vet, exact gofmt and diff checks pass. This remains
+source verification: no authenticated preview/confirm/resume IPC or Swift
+governance action exists yet, so users cannot invoke recovery. V19C, installed
+CV6, mixed-Team ATL9, broader Runtime recovery, ATL3-ATL8 and COMP2-E remain
+open under the sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real
+Provider, real credential, user workspace or external Runtime was accessed.
+Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-production-recovery-lifecycle-v19b.md`.
+
+`CURRENT / P2D-W2C/W2D AUTHENTICATED RECOVERY IPC AND SWIFT GOVERNANCE V19C
+SOURCE VERIFIED (2026-08-14)`: the V19B production lifecycle is now reachable
+through one typed authenticated private-UDS route with distinct Preview,
+Confirm and Resume operations. Preview is read-only. Confirm binds the
+authenticated principal to the exact current candidate and restart capability.
+Only the separate Resume action consumes that decision and can enter Provider
+continuation.
+
+The Swift Store requires fresh authoritative candidate state, refuses Resume
+without the exact confirmation, suppresses duplicate in-flight Resume and
+invalidates uncertain local authority after failure. Strict wire models reject
+unknown or malformed recovery data. Mission Inspector limits controls to the
+affected Agent, displays Harness, Provider Account, Model and credential
+revision, and keeps shield confirmation separate from the Resume command.
+
+App and daemon operational diagnostics share the request Incident ID and record
+only operation, stage, elapsed time, result, stable error and retryability. They
+exclude candidate/capability digests, principal ID, Prompt, transcript,
+Provider body, credential, Authorization header and API key.
+
+The focused RED/GREEN suite, ten-run cross-package recovery race, real Go-server
+to strict Swift contract probe, complete 214-test Swift suite, serial full
+repository Go, full vet, exact gofmt, privacy and diff checks pass. One
+visual-export-only Swift test was skipped by design. This remains source
+verification: installed App recovery and real Provider continuation were not
+run. Broader Runtime restart support, CV6, mixed-Team ATL9, ATL3-ATL8 and
+COMP2-E remain open under the sole `ACTIVE / PARTIAL` Phase 2D Goal. No App,
+network, real Provider, real credential, user workspace or external Runtime was
+accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-authenticated-recovery-ipc-swift-governance-v19c.md`.
+
+`CURRENT / P2D-W2C/W2D TOOLCALL RECOVERY DECISION GOVERNANCE V20 SOURCE
+VERIFIED (2026-08-14)`: ToolCalls terminalized as `side_effect_unknown` now have
+a separate content-free authenticated Preview/Resolve authority. The exact
+candidate is domain-separated and stream-head CAS fenced. Abort, trusted
+observed-effect acceptance and trusted replacement-Attempt authorization all
+close the original execution; none can rerun the original ToolCall.
+
+Production currently injects no observation or replacement resolver, so the
+daemon advertises only Abort. Swift requires a fresh exact candidate and one of
+the daemon's `available_actions`, suppresses duplicate decisions and discards
+uncertain local state after failure. Mission Inspector keeps ToolCall recovery
+separate from Agent restart recovery, shows only Tool/Job/Incident identity,
+requires confirmation and offers privacy-safe diagnostics and Incident copy.
+
+Focused RED/GREEN, ten-run race, typed authenticated UDS, strict Go-to-Swift
+contract, complete 223-test Swift suite plus 10 Swift Testing cases, affected
+Go package tests and diff checks pass. One visual-export-only Swift test was
+skipped by design. This remains source verification: trusted observed-result
+delivery, replacement-Attempt startup, installed App recovery, CV6, mixed-Team
+ATL9, remaining ATL3-ATL8 and COMP2-E remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real Provider, real
+credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-tool-recovery-decision-governance-v20.md`.
+
+`CURRENT / P2D-W2C/W2D LOOM NATIVE SEQUENTIAL CONTEXT TOOLS V21 SOURCE
+VERIFIED (2026-08-14)`: one Loom Native Provider exchange now supports up to
+four strictly sequential governed `loom_read_context` calls. Every call keeps
+the exact frozen Attempt, Route Segment, Provider Account, credential revision
+and Model, receives a distinct monotonic ToolCall/payload lineage, and must be
+authoritatively delivered before the next exclusive call can be admitted.
+
+The native adapter aggregates usage across all Provider rounds, zeroes its
+owned mutable result buffers, stops advertising the tool after the fourth call
+and fails closed on a nonconforming fifth tool response. Product integration
+proves two real Provider continuations through admission, dispatch,
+accepted/delivered facts and successful Step/Turn terminal state. Context and
+credential content stay out of Journal and Bridge frames.
+
+Focused RED/GREEN, ten-run cross-package race, complete `internal/work`,
+`nativeadapter` and `cmd/loomd` package tests pass. This is source verification
+with simulated Provider responses. General Read/Grep/Web/MCP, parallel tools,
+other Runtime transports, installed CV6, mixed-Team ATL9 and COMP2-E remain
+open under the sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real
+Provider, real credential, user workspace or external Runtime was accessed.
+Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-loom-native-sequential-context-tools-v21.md`.
+
+Supplemental whole-repository runs remain non-green because existing local
+process/socket fixtures intermittently returned a Pi health timeout or
+`local product unavailable` under package load. Each affected exact test passed
+alone, including 10 consecutive runs for both Local IPC cases. These failures
+are outside the V21 source set and are retained as an explicit repository test
+stability residual rather than reported as a passing full-repository gate.
+
+`CURRENT / P2D-W2C/W2D CODEX AND CLAUDE BOUNDED MULTI-CONTEXT V22 SOURCE
+VERIFIED (2026-08-14)`: Codex and Claude Code may now perform up to four
+distinct governed `loom_read_context` calls through one Attempt-scoped private
+MCP service. Every call receives a monotonic encrypted payload lineage and
+remains `accepted/pending`; a later MCP call is not treated as consumption
+proof. Only the validated Harness final output acknowledges all prepared
+bindings in order with `harness_final_output` proof.
+
+Duplicate, fifth, concurrent and post-seal calls fail closed. Final-output ACK
+cannot race an in-flight Prepare, and a partial ACK failure resumes at the first
+undelivered binding without repeating earlier acknowledgements. Product policy
+grants four parallel pending Context slots only to Codex/Claude. Loom Native,
+Pi and default Runtime types retain exclusive/one; V21's Provider-continuation
+proof remains unchanged.
+
+Real private-MCP adapter tests cover two calls for both Codex and Claude.
+Product authority tests observe two Codex results pending together before final
+output and delivered afterward. Complete `harnessadapter` and `cmd/loomd`
+packages, ten-run cross-package race, vet and exact formatting checks pass.
+This is source verification only. General tools, installed CV6, mixed-Team
+ATL9, broader Runtime restart, accounting/UI and COMP2-E remain open under the
+sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, Provider, credential,
+user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-codex-claude-bounded-multi-context-v22.md`.
+
+`CURRENT / P2D-W2C/W2D CODEX AND CLAUDE GOVERNED READ/GREP V23 SOURCE
+VERIFIED (2026-08-15)`: Tool Gateway envelope, binding, result, encrypted
+delivery and acknowledgement contracts are now Runtime-neutral. Pi preserves
+its existing API and error identity through compatibility aliases; the
+production bridge no longer depends on Pi-owned type names.
+
+Codex and Claude expose only Context, Read and Grep through one Attempt-scoped
+private MCP. All four Harness process modes derive the same exact allowlist;
+separate executable-byte conformance and complete Attempt/claim/generation/
+Route/Execution Binding/Capsule/Incident validation fail closed before
+credential access. Loopback HTTP cancellation is merged into the daemon-owned
+Attempt context and cannot replace its execution authority.
+
+The existing production permission/execution bridge and Attempt Loop authority
+persist Read/Grep output in the encrypted payload store. Results remain pending
+until validated final output provides ordered `harness_final_output` proofs.
+Distinct paths may use read-only parallel slots; Read/Grep on the same path
+conflict through a content-free digest. Paths, patterns and result content do
+not enter Journal or operational diagnostics.
+
+Focused cross-runtime tests, complete runtime/Harness/Pi/daemon package tests,
+ten-run race, vet, gofmt and diff checks pass. This is source verification only:
+Harness Bash/Edit/Web/MCP, restart reattachment, TTL/compaction, accounting/UI,
+installed CV6, mixed-Team ATL9 and COMP2-E remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal. No App, network, Provider, real credential,
+user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-codex-claude-governed-read-grep-v23.md`.
+
+`CURRENT / P2D-W2C/W2D CODEX AND CLAUDE NATIVE-TOOL BYPASS CLOSURE V24
+SOURCE VERIFIED (2026-08-15)`: the V23 private MCP no longer coexists with an
+uncontrolled Harness-native workspace path. Every Codex/Claude credential
+gateway invocation now freezes the exact Loom MCP tool names derived from that
+Attempt's lease. OpenAI and Anthropic request tool catalogs, duplicate JSON
+keys and successful Provider tool-call output are validated against that
+frozen set before a Provider request or Harness delivery can continue.
+
+Codex runs from the private Attempt temp directory with read-only sandboxing;
+shell, unified exec, freeform apply-patch and dynamic tool search feature paths
+are disabled in both exec and app-server configuration. Claude one-shot and
+stream-json run from the same private boundary with `dontAsk`, an MCP-only
+allowlist and an explicit native-tool denylist. Both Harness system prompts now
+describe only the Loom-governed MCP capability instead of advertising direct
+Bash/Edit/Read authority.
+
+Native or mixed catalogs, `tool_search`, unapproved Loom tools, duplicate
+`model/tools/type` keys, Codex local shell calls and Claude native tool-use
+responses fail closed. Rejected requests do not reach the Provider; rejected
+responses do not reach the Harness. Provider credentials, loopback bearer
+tokens, Prompt, workspace paths and Provider bodies are not added to Journal,
+Evidence or diagnostics.
+
+Focused RED/GREEN, complete Harness package, affected runtime/Pi/daemon
+packages, ten-run race, vet, gofmt, privacy and diff checks pass. This remains
+source verification. The exact external Codex/Claude executables were not
+launched, so strict-config acceptance and eager MCP behavior require a later
+explicit component/live gate. Web/MCP expansion, broader Runtime restart,
+installed CV6, mixed-Team ATL9, accounting/UI and COMP2-E remain open under the
+sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, Provider, real
+credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-codex-claude-native-tool-bypass-closure-v24.md`.
+
+`CURRENT / P2D-W2C/W2D ROLE DEPENDENCY CONTEXT CAPSULE V25 SOURCE VERIFIED
+(2026-08-15)`: an ordinary multi-Agent DAG no longer treats dependency
+completion as scheduling-only. Before a dependent Agent Attempt is admitted,
+the coordinator resolves every exact succeeded dependency Attempt from the
+authoritative Team Projection and Evidence Store, verifies the complete
+Attempt/receipt lineage, and extracts only authorized output events.
+
+The target Agent receives a new immutable Role Context Capsule and Route
+Segment. Each source's lineage is a role-restricted authoritative item; its
+model-produced output is a separate role-restricted
+`untrusted_model_output`. A peer node, Agent, receipt, Evidence digest, output
+summary or plan substitution fails closed. Provider Account, credential
+reference/revision and peer Capsule content are not copied into the dependent
+prompt. Parallel Route aggregation now uses the same deterministic Capsule
+extension primitive without losing existing budget, policy or access
+omissions and retrievable references.
+
+The four-Provider DAG canary proves that the Codex Main Agent receives the
+authorized outputs of the Claude, Kimi and MiniMax dependency Attempts while
+their account and credential identities remain undisclosed. Dynamic approved
+fallback proves that retry Runtime changes retain the same dependency
+authority while freezing a new Capsule/Segment beside the exact fallback
+Execution Binding.
+
+Focused RED/GREEN, direct substitution tests, ten-run race, complete affected
+packages and daemon, serial full repository Go, vet, gofmt and diff checks
+pass. This is source verification only. Authoritative observed test-state
+assembly, model-specific tokenizers/wire adapters, user-visible disclosure
+inspection, installed CV6, mixed-Team ATL9 and COMP2-E remain open under the
+sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real Provider, real
+credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-role-dependency-context-capsule-v25.md`.
+
+`CURRENT / P2D-W2C/W2D OBSERVED ACCEPTANCE STATE V26 SOURCE VERIFIED
+(2026-08-15)`: dependency and aggregation Role Context Capsules now distinguish
+projected execution facts from model output. Before a source can cross into a
+dependent Attempt, Loom requires the exact projected Attempt to be succeeded,
+its versioned Output Contract and digest to be valid, its output classification
+to be `valid_nonempty` or `valid_empty`, and its acceptance decision to be an
+exact accepted digest with a UTC decision time.
+
+Those facts are emitted as a compact, role-restricted
+`observed_execution_state` item with observed trust and authoritative
+provenance. The adjacent source-lineage item remains authoritative, while the
+Provider-generated output remains a separate role-restricted
+`untrusted_model_output`. Classification or acceptance substitution fails
+closed. The compact shape preserves Pi's existing 6 KiB dispatch boundary;
+Output Contract and Evidence digests are validated before construction and
+remain bound by the adjacent authoritative lineage rather than being duplicated
+into the prompt.
+
+Focused RED/GREEN, complete affected packages, ten-run race, vet, gofmt and diff
+checks pass. A fresh serial full-repository run passed every package except
+`cmd/loomd`, where the package hit its 10-minute timeout after
+`TestProductDaemonContainsExactPiMetadataTimeoutWithoutStoppingIPC` reported an
+IPC protocol failure; that test and the interrupted Loom Native recovery test
+both passed immediately in isolated reruns. The full-repository gate is
+therefore recorded as a daemon suite timing/stability residual, not as passing.
+This remains source verification only: Loom does not yet ingest a structured,
+authoritative `test_report` or tool-result document, and model claims never
+become observed facts. Installed CV6, mixed-Team ATL9, disclosure UI,
+model-specific adapters and COMP2-E remain open under the sole
+`ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real Provider, real
+credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-observed-acceptance-state-v26.md`.
+
+`CURRENT / P2D-W2C/W2D GOVERNED TEST REPORT V27 SOURCE VERIFIED
+(2026-08-15)`: Loom no longer relies on Provider prose to tell a dependent
+Agent that a controlled test command passed. The common Tool Gateway now
+recognizes a strict single-command subset of Go, Swift, Cargo, Pytest, npm,
+pnpm, Yarn and Bun test runners. It commits a typed immutable report only after
+the exact Bash ToolCall was authorized, dispatched and its result payload was
+accepted by the Attempt Loop authority.
+
+Each report freezes runner, coarse scope, exit-derived outcome, ToolCall and
+execution identities, arguments/output digests and duration. The Attempt Loop
+Journal stores only canonical report metadata and digests, not raw command or
+output content. Replay, idempotence, payload substitution and Attempt authority
+drift fail closed. A report becomes queryable to Team coordination only after
+the matching result reaches `delivered`.
+
+Dependent and aggregation Agents receive these reports inside the existing
+role-restricted `observed_execution_state` item. The coordinator derives the
+query only from the exact projected Attempt, frozen Execution Binding and
+Context Capsule; requests cannot inject report state. The compact projection
+contains runner, scope, outcome, call sequence, report digest and set digest.
+Provider output remains an adjacent `untrusted_model_output`. Ordinary Bash is
+not classified as a test.
+
+Complete `internal/verification`, `internal/work`, `internal/app` and
+`cmd/loomd` suites, affected race tests, vet and formatting checks pass. A fresh
+full-repository run passed V27 and daemon packages but reported one existing
+Darwin Keychain helper stage-timing failure in `internal/credentials`; the
+isolated test then passed and the complete credentials package passed three
+consecutive runs. The full-repository gate is therefore not reported as wholly
+passing. This remains source verification: reports are command-level exit
+observations, not per-test-case parsing or a general verifier artifact. UI,
+installed CV6, mixed-Team ATL9, Provider live acceptance and COMP2-E remain open
+under the sole `ACTIVE / PARTIAL` Phase 2D Goal. No App, network, real Provider,
+real credential, user workspace or external Runtime was accessed. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-governed-test-report-v27.md`.
+
+`CURRENT / P2D-W2C/W2D GOVERNED TEST REPORT BOARD V28 SOURCE VERIFIED
+(2026-08-15)`: the Agent Team Board now projects the V27 governed test reports
+onto the exact current Agent Attempt. Each Agent row exposes only report count,
+passed/failed counts, the latest closed runner/scope/outcome values and stable
+report/set digests. Raw command text, arguments, stdout/stderr, Prompt,
+Provider body and credential content do not enter the Board payload or Swift
+presentation.
+
+The read service and product Bundle facade receive the existing Attempt Loop
+authority as an observational report source. Board queries are rebuilt from
+the projected Team, conversation, WorkItem, Run, claim generation, Runtime,
+Agent, Incident, frozen Execution Binding and Capsule identities. Missing,
+invalid or duplicate report state is omitted rather than fabricated. The
+strict Swift decoder rejects contradictory availability/counts, unknown
+runner/scope/outcome values and malformed digests while preserving older
+payloads that contain no report fields.
+
+Mission Inspector now shows each affected Agent's compact pass/fail summary
+and latest governed test classification beside its existing Runtime,
+Provider, context, failure and accounting metadata. Go API and focused daemon
+tests, ten-run race, vet/gofmt, three focused Swift tests and the full macOS
+package suite (`223` XCTest cases with `1` skipped plus `10` Swift Testing
+cases) pass. This is source verification only. It is not per-test parsing,
+raw-output inspection, installed App validation, CV6, mixed-Team ATL9 or real
+Provider acceptance. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal.
+Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-governed-test-report-board-v28.md`.
+
+`CURRENT / P2D-W2C/W2D PRODUCTION REMOTE TOOL BROKER COMPOSITION V29 SOURCE
+VERIFIED (2026-08-15)`: remote Web/MCP execution is no longer limited to an
+already-assembled executor injected from outside Composition. `loom-work` now
+constructs the Loom-owned Broker during Bundle Start from explicit bounded
+Search and MCP client ports plus an opt-in hardened WebFetch transport. The
+product builder passes configuration only; it does not construct the Broker or
+retain its runtime resource.
+
+Capabilities are published from actual backends. Search-only, Fetch-only and
+allowlisted MCP can be admitted independently; an absent backend, MCP client /
+allowlist mismatch, invalid timeout/size ceiling or empty capability set fails
+before Bundle Ready. The default production configuration remains `nil`, so
+Loom does not advertise Web/MCP merely because code exists.
+
+The Broker owns a revocable lifecycle context and an idempotent Composition
+Effect. Work startup rollback and normal Dispose cancel active calls, close the
+owned system HTTP transport, clear the delegate and make retained references
+fail closed. Query, URL, MCP arguments/results, endpoint credentials, Prompt,
+Provider body and secret material are not added to descriptors, snapshots,
+Journal or diagnostics by this composition path.
+
+Focused RED/GREEN, complete Tool Broker and Execution packages, complete
+`cmd/loomd`, twenty-run daemon race coverage, vet/gofmt/diff checks and a fresh
+serial full-repository Go run pass. No network request, external MCP client,
+App build, installed live run, Provider, real credential or user workspace was
+used. Production Search/MCP enrollment UI/config, installed ATL9, CV6 and
+COMP2-E remain open under the sole `ACTIVE / PARTIAL` Phase 2D Goal. Evidence:
+`.loom-evidence/phase2d/P2D-W2C-W2D-production-remote-tool-broker-composition-v29.md`.
+
+`CURRENT / P2D-W2D PERSISTED REMOTE TOOL BACKEND ENROLLMENT V30 SOURCE
+VERIFIED (2026-08-15)`: Search and MCP backend intent is now an append-only,
+versioned governance fact instead of process-only configuration. Each
+Enrollment freezes one exact Provider Account Policy version, revision and
+digest, adapter, endpoint fingerprint, MCP server/tool allowlist and bounded
+concurrency, per-Attempt calls, timeout, result bytes and budget. Configure
+atomically fences both the Enrollment and policy stream heads; stale policy,
+cross-account substitution and malformed Search/MCP shapes fail closed.
+Revocation remains available after policy drift and affects only the selected
+Enrollment.
+
+The Governance Bundle owns the authority. Setup projects deterministic active
+or revoked records under the exact Provider Account, including an explicit
+`policy_current` signal; an orphan account without configured/verified
+credential metadata cannot enroll. Authenticated UDS configure/revoke routes
+inject the trusted Request ID as correlation, map conflict/stale/not-found/
+unavailable separately and emit only content-free operational diagnostics.
+The strict Swift setup decoder accepts legacy accounts with no Enrollments,
+accepts stale records only when marked non-current, and rejects unknown fields,
+raw endpoints, contradictory policy state and malformed allowlists/digests.
+
+Focused authority/projection/App/API/daemon tests, ten-run race checks, the
+complete daemon suite, a fresh serial full-repository Go run, vet/gofmt/diff
+checks, the exact Go-to-Swift setup contract and the complete macOS package
+suite (`223` XCTest cases with `1` skipped plus `11` Swift Testing cases) pass.
+This is `SOURCE VERIFIED / CLIENT EDITING, RUNTIME MATERIALIZATION AND
+INSTALLED LIVE OPEN`: no Swift configure/revoke action, Broker client
+materialization, per-Agent preflight/UI, network, external MCP, installed App,
+Provider or real credential was used. The default production Broker remains
+unconfigured and publishes no remote capability. Phase 2D remains the sole
+`ACTIVE / PARTIAL` Goal. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-remote-tool-backend-enrollment-v30.md`.
+
+`CURRENT / P2D-W2D REMOTE TOOL ENROLLMENT CLIENT GOVERNANCE V31 SOURCE
+VERIFIED (2026-08-15)`: the native Provider Account surface now consumes the
+V30 authority instead of treating remote tools as hidden daemon state. Strict
+Swift commands and result decoders cover exact account-scoped configure and
+revoke operations, reject unknown or secret-shaped fields, preserve immutable
+adapter/endpoint/server identity, and safely reject invalid revision bounds.
+The concrete UDS client sends only the closed non-secret wire keys and requires
+the authoritative response to echo the requested Provider Account and
+Enrollment lineage.
+
+`LocalProductStore` permits edits only for an Enrollment already present in the
+current authoritative setup projection. It refreshes and verifies the returned
+revision after each operation, keeps conflict/stale/not-found/unavailable
+failures local to that Enrollment, and exposes stage, retryability and Incident
+ID without taking setup or the Team offline. The Provider Account policy sheet
+now shows Web Search/MCP state, limits and policy drift; its native editor can
+change bounded limits and MCP allowlists, rebind a stale record, restore a
+revoked record, or revoke an active record after explicit confirmation. Failure
+states offer Retry, diagnostic preview and Incident ID copy.
+
+The UI intentionally has no arbitrary Adapter ID, raw endpoint, dynamic plugin,
+or new-backend form. Trusted built-in backend candidates and runtime client
+materialization do not yet exist, so inventing those values in Swift would not
+be an executable or secure configuration path. The complete macOS package
+suite passes (`226` XCTest cases with `1` intentional visual-export skip plus
+`12` Swift Testing contracts), as do the exact Go-to-Swift setup contract,
+focused daemon Enrollment wire tests and diff checks. This is `SOURCE VERIFIED /
+TRUSTED NEW ENROLLMENT, AGENT PREFLIGHT, RUNTIME MATERIALIZATION AND INSTALLED
+LIVE OPEN`. No App bundle, network, external MCP, Provider, real credential or
+user workspace was used; default production still publishes no remote
+capability. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-remote-tool-enrollment-client-governance-v31.md`.
+
+`CURRENT / P2D-W2D AGENT REMOTE TOOL ENROLLMENT BINDINGS V32 SOURCE VERIFIED
+(2026-08-16)`: the ExecutionProfile -> Agent-selected Enrollment -> Preflight ->
+Frozen Attempt Binding -> Work Bundle materialization chain is now source
+complete. Each per-Agent ExecutionProfile and FrozenExecutionBinding may carry
+an optional both-or-neither Enrollment ID/digest pair in a new explicit digest
+domain, so retry, replay and recovery reject Enrollment drift. The setup
+builder accepts `none` or `<enrollment_id>:<digest>` per Agent, validates it
+against the authoritative projection, and clears the selection when the
+Provider Account route changes. Per-Agent preflight blocks revoked,
+policy-drifted, account-mismatched, digest-conflicted, adapter-unsupported or
+unavailable Enrollments with closed safe codes and never relabels peers or the
+Team offline.
+
+A trusted built-in backend candidate registry (`builtin.search.deepseek.v1`,
+`builtin.mcp.stdio.v1`) is the only source of materializable Adapter IDs, and
+the Work Bundle materialization boundary (`internal/toolbroker/enrollment`)
+is the only path from a persisted, active, policy-current Enrollment to a typed
+`execution.RemoteToolExecutor` with the exact allowlist and bounded limits;
+unknown adapters, revoked records, drifted policy and missing typed ports fail
+closed. The native Agent editor gains a per-Agent "Remote tools" picker (active
++ policy-current Enrollments or none) with strict Swift models that reject
+one-sided Enrollment pairs and unknown fields. No real Search/MCP transport,
+App bundle, network request, Provider, real credential or user workspace was
+used; default production still publishes no remote capability. Verification:
+focused/package/race/vet/gofmt/diff plus the complete daemon suite, the full
+Go repository suite (only the recorded pre-existing full-load harness flake,
+which passes in isolation) and the complete macOS package suite (`227` XCTest
+cases with `1` intentional visual-export skip plus `15` Swift Testing
+contracts). Phase 2D remains the sole `ACTIVE / PARTIAL` Goal. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-agent-remote-tool-enrollment-bindings-v32.md`.
+
+`CURRENT / P2D-W2D LIVE ACCEPTANCE READINESS V33 (2026-08-16)`: every remaining
+Phase 2D completion gate is now operator-executable. The installed-live runbook
+and matrix (`G1` installed credential import/CV6, `G2` real conversation, `G3`
+mixed Provider Team ATL9, `G4` single-Agent failure isolation matrix, `G5`
+installed Web/MCP diagnostics, `G6` per-Account accounting/governance UI) with
+per-gate steps, pass criteria and evidence rules live at
+`.loom-evidence/phase2d/acceptance/PHASE-2D-LIVE-ACCEPTANCE.md`. A safe source
+library (`scripts/phase2d-live-acceptance.sh`) checks installed App/daemon
+prerequisites, prints a PASS/OPEN summary and exports bounded `0600`
+privacy-safe gate evidence without ever touching credentials, secrets, Prompts
+or Provider bodies; `scripts/test-phase2d-live-acceptance.sh` validates it in a
+private temp dir and `scripts/test-build-loom-local-app.sh` re-confirms the
+native App build fixture PASS. The six gates remain OPEN: executing them
+requires an installed App, real Provider credentials, runtimes and explicit
+operator approval; no credential or secret enters source, scripts, logs or
+evidence. Phase 2D remains the sole `ACTIVE / PARTIAL` Goal. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-live-acceptance-readiness-v33.md`.
+
+`CURRENT / P2D-W2D FAILURE ISOLATION SOURCE MATRIX V34 (2026-08-16)`: the
+consolidated source-level single-Agent failure isolation matrix is now a
+first-class test. `TestPhase2DPerAgentFailureIsolationMatrix` drives a
+four-Provider Team and injects, per cell, one runtime failure on exactly one
+sub-agent — `provider_rate_limited`, `provider_timeout`,
+`provider_insufficient_balance`, `credential_unavailable` — asserting the
+affected Agent's Attempt fails with the exact closed reason and the node is
+recovery-blocked while every peer sub-agent and the main Agent succeed with no
+inherited failure. The Team result is `blocked` only because aggregation waits
+on the failed node; healthy peers are never relabelled. Preflight-block classes
+(credential revision conflict, Enrollment revoked/policy drift) remain proven
+by the V32 preflight tests and W2C binding tests. Complete `internal/app`
+package, race on the matrix/four-Provider tests, vet, gofmt, diff and
+`go build ./...` pass. The installed-live G4 matrix remains operator-executable
+via the V33 acceptance runbook. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-failure-isolation-source-matrix-v34.md`.
+
+`CURRENT / P2D-W2D PRODUCTION WORK BUNDLE MATERIALIZATION V35 (2026-08-16)`: the
+default production daemon composition now consumes persisted Remote Tool Backend
+Enrollments through the trusted Work Bundle materialization boundary, closing
+the last open "runtime client materialization" source gap. `GlobalReadView`
+gains a sorted all-Enrollment catalog accessor; the daemon materializes only
+active + policy-current Enrollments whose Adapter ID is in the trusted built-in
+catalog and whose typed ports are available, skipping revoked/drifted/
+unsupported/port-less records per-Enrollment (their bound Agents are already
+preflight-blocked) so no capability is ever exposed accidentally. A composite
+remote tool executor fans proposals over the materialized set, zeroes content if
+the shared lifecycle closes mid-call, and its Close is idempotent; the factory
+combines the injected broker and enrollment executors under joined close
+effects. Default production (no Enrollment, no injected ports) remains
+remote-tool unavailable. Verification: focused materializer tests (trusted-only
+materialization, port-less nil, post-revoke nil, idempotent close), race on the
+materializer/broker tests, the complete daemon suite, the complete projection
+suite (with catalog assertions), vet, gofmt, diff, build and a full `go test
+./...` re-run with no new failures. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-production-work-bundle-materialization-v35.md`.
+
+`CURRENT / P2D-W2D OPENCODE PROVIDER V36 SOURCE VERIFIED (2026-08-16)`: OpenCode
+is now a first-class Loom Provider in the catalog (`opencode`, native_auth /
+native_runtime, protocol `opencode_agent`) with
+`conversation-opencode-default-v1`, plus a bounded native conversation client
+and the real OpenCode 1.18 JSON event decoder (`message.part.updated` text
+parts, `session.idle`, `auth.error`/`session.error` fail-closed). The system
+runner spawns `opencode run --format json --pure --model <provider/model>` with
+private TMPDIR, real HOME for OpenCode's own auth, process-group cancellation
+and executable identity checks; prompts and conversation content are never
+persisted. Tests: complete `internal/provider` (client bounded/fail-closed +
+event-stream decoder fixtures + catalog), race, harnessadapter/loomd focused,
+vet, gofmt, diff, build and a full `go test ./...` with no new failures. The
+daemon wiring (conversation profile/router responder, runtime discovery and the
+team-attempt harness adapter) is the next slice V37 and should land with live
+validation against the real OpenCode CLI. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-opencode-provider-v36.md`.
+
+`CURRENT / P2D-W2D OPENCODE MULTI-MODEL ADAPTATION V37 SOURCE VERIFIED
+(2026-08-16)`: OpenCode is now a fully adapted multi-model Provider. Loom
+Provider + Model bindings map to OpenCode's `provider/model` identity
+(`OpenCodeModelIdentity`, OpenRouter gateway pass-through, cross-Provider
+models fail closed) and the bound key is injected through the exact env
+variable OpenCode 1.18 reads per Provider (`OpenCodeCredentialEnv`, grounded
+in the installed binary: OPENAI/ANTHROPIC/DEEPSEEK/MOONSHOT(kimi)/MINIMAX/XAI/
+ZHIPU/STEPFUN/OPENROUTER/GOOGLE_GENERATIVE_AI/DASHSCOPE/OLLAMA/LMSTUDIO).
+A team-attempt Harness adapter (`opencode_adapter.go` + `opencode_process.go` +
+`system_opencode.go`) runs `opencode run --format json --pure --model
+<provider/model>` with the system prompt prepended, shared JSON event decoding,
+and unobserved accounting; daemon wiring adds `--opencode-executable`, the
+`runtime.opencode.local` discovery observation, attempt-loop adapter
+construction, the `productOpenCodeConversationResponder`, the
+`conversation-opencode-default-v1` native binding in the profile router, and
+the OpenCode conversation profile in the setup snapshot (Swift accepts the
+generic protocol/adapter). Verification: complete provider + harnessadapter
+(+race) + app + daemon suites, vet/gofmt/diff/build, full `go test ./...` and
+the complete macOS package suite with no new failures. Live validation against
+real OpenCode Providers remains operator-driven. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-opencode-multimodel-adaptation-v37.md`.
+
+`CURRENT / V37 LIVE DISCOVERY (2026-08-16)`: the rebuilt App daemon now
+discovers `runtime.opencode.local | opencode | online` alongside Loom Native
+(deepseek-chat) and Pi, and `opencode providers list` confirms the environment
+supplies `DEEPSEEK_API_KEY`, `MINIMAX_API_KEY` and `ZHIPU_API_KEY` (existence
+only) — the exact env variables the V37 harness adapter injects from a Loom
+lease. DeepSeek / MiniMax / Zhipu OpenCode bindings are live-ready; a paid
+`opencode run` validation is intentionally deferred pending explicit approval.
+
+`CURRENT / P2D-W2D CONVERSATION THREE-LAYER SELECTION AND CHAT UX V38 SOURCE
+VERIFIED (2026-08-16)`: conversation selection in the App is now three
+dependent layers — Provider -> Model -> Reasoning Effort — mirroring the
+DeepSeek model/reasoning separation. The server owns the contract:
+`provider/conversation_catalog.go` (models per Provider, reasoning efforts per
+model, OpenCode dynamic `provider/model`), `ModelID`/`ReasoningEffort` on the
+chat request and conversation request, `RespondConfigured` on the
+OpenAI-compatible/Anthropic/OpenCode clients (per-request model,
+`reasoning_effort`/`--variant` mapping, fail-closed validation), and router
+validation before the credential lease. The client renders Provider/Model/
+Reasoning pickers with dependency filtering (client catalog mirrors the Go
+catalog; server stays authoritative) and sends the selection per message.
+Chat UX fixes: per-message Copy button + context menu, and Enter-to-send via
+`onSubmit`. Verification: complete provider/api/app/daemon suites, vet, gofmt,
+diff, build, full `go test ./...`, and the complete macOS package suite; the
+App was rebuilt/reinstalled and the daemon serves with OpenCode, Loom Native
+and Pi online. Paid conversation turns on selected model/reasoning combinations
+remain operator-driven. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-conversation-three-layer-ux-v38.md`.
+
+`CURRENT / V38 FOLLOW-UP FIXES (2026-08-16)`: incident
+`loom-chat-d69fd342-aff2-44ad-b4dc-e8e62d6e39e1`
+(`input_admission / invalid_request`, OpenCode profile) was traced to the Swift
+client pre-validating `model_id` with `validIdentifier`, which rejects `/` in
+OpenCode identities; the client now uses `validModelID` (slash allowed) with a
+regression test. The Provider picker no longer carries a model —
+`conversationProfileMenuLabel` shows Provider + Account only, Model stays a
+separate layer (label test updated). The chat send protocol requires the
+context-carrying 7-parameter method alongside the 8-parameter
+model/reasoning method, with extension defaults delegating correctly (store
+mocks + unavailable client conform without recursion). Full macOS package suite
+green (`227` XCTest + `15` Swift Testing); App rebuilt/reinstalled and the
+daemon serves with OpenCode / Loom Native / Pi online.
+
+`CURRENT / V38 FOLLOW-UP (DEFAULTS + CODEX MODELS + VAULT-LOCK) (2026-08-16)`:
+incident `loom-chat-1ea6e228-...` (`vault_encrypt / state_unavailable /
+retryable`) is a locked Credential Vault after App restart — the operator must
+Unlock the vault for conversation context-capsule encryption (not a routing
+bug). Codex now has a model picker: the conversation model catalog gained the
+`openai` Provider (`codex-default` / GPT-5.5 Codex) in both Go and Swift. All
+three selectors always carry a default: `effectiveConversationModelID` falls
+back to the selected profile's model and
+`effectiveConversationReasoningEffort` falls back to `medium` (or the first
+supported effort) when the model supports reasoning; model selection resets
+reasoning to the default and the reasoning menu adds an explicit "Provider
+default" option. Regression tests added; full macOS package suite green
+(`228` XCTest with `1` intentional skip + `15` Swift Testing); App rebuilt /
+reinstalled and the daemon serves with OpenCode / Loom Native / Pi online.
+
+`CURRENT / V38 FOLLOW-UP (CODEX MULTI-MODEL) (2026-08-16)`: Codex now offers
+more than gpt-5.5-codex. Loom's Codex conversation path previously used
+`--ignore-user-config` through the OpenAI gateway (hence only gpt-5.5-codex);
+the user's Codex is actually configured via cc-switch with a local custom
+provider (127.0.0.1:15721, wire_api responses) serving DeepSeek V4 Flash / Pro.
+The `openai` conversation model catalog now lists `codex-default` /
+`gpt-5.5-codex` (gateway) plus `deepseek-v4-flash` / `deepseek-v4-pro`
+(native, reasoning none/high grounded in the cc-switch catalog);
+`CodexConversationClient.RespondConfigured` + system runner add a native mode
+(no `--ignore-user-config`, `--model <slug>`,
+`-c model_reasoning_effort="<effort>"`) while the gateway mode stays unchanged,
+and the daemon codex responder forwards the three-layer selection. Tests:
+native-vs-gateway args + expanded catalog; complete Go and macOS package suites
+green; App rebuilt/reinstalled with OpenCode / Loom Native / Pi online. Live
+Codex turns still require the Credential Vault to be Unlocked.
+
+`CURRENT / V38 FOLLOW-UP (VAULT-LOCK CHAT RECOVERY) (2026-08-16)`: incidents
+`loom-chat-34f593b4-...` and `...-1ea6e228-...` are `vault_encrypt /
+state_unavailable / retryable=true` — the Credential Vault is locked after App
+restart, so conversation capsule encryption fails. The chat failure banner hid
+the vault recovery action because `conversationVaultRecoveryAvailable` gated on
+`!recoverable` and omitted `.vaultEncrypt`. Fixed: vault-stage failures
+(including `.vaultEncrypt`/`.vaultCommit`) always offer recovery even when
+retryable, and the banner now has a direct **Unlock Vault** button (passphrase-
+free LocalKeyFile unlock) plus "Open Credential Vault"; tests added/updated;
+full macOS package suite green; App rebuilt/reinstalled with OpenCode / Loom
+Native / Pi online.
+
+`CURRENT / V38 FOLLOW-UP (CODEX GPT CATALOG CORRECTED) (2026-08-16)`: the
+`openai` conversation model catalog was corrected to the real Codex CLI 0.144.1
+catalog (`gpt-5.5` default, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini`,
+`gpt-5.2`, `gpt-5.1-codex-max`, `gpt-5.6-terra/sol/luna`, `o3`, plus
+`codex-default` alias and native `deepseek-v4-flash/pro`). Native mode now keys
+on the `deepseek-v4-` prefix; GPT models run through the user's Codex OpenAI
+auth with an explicit `--model`. Go + Swift catalogs and tests updated; full Go
+and macOS package suites green; App rebuilt/reinstalled with OpenCode / Loom
+Native / Pi online.
+
+`CURRENT / V38 FOLLOW-UP (AUTO-UNLOCK VAULT ON SEND) (2026-08-16)`: incident
+`loom-chat-74849682-...` was the locked-Vault wall again. A direct daemon probe
+proved `credential_vault_unlock` succeeds passphrase-free, so the blocker was
+UX. `LocalProductStore.sendChatMessage` now auto-unlocks the vault first when
+locked (LocalKeyFile, no passphrase), so a locked vault after App restart never
+blocks a conversation; the chat failure banner keeps the explicit Unlock Vault
+action. macOS package suite green; App rebuilt/reinstalled with OpenCode / Loom
+Native / Pi online.
+
+`CURRENT / V38 FOLLOW-UP (STALE-PROFILE CHAT RECOVERY) (2026-08-16)`: incident
+`loom-chat-d0838d99-...` (`conversation_dispatch / invalid_request`) happened
+after the vault was unlocked. Live probes proved the vault was unlocked, the
+DeepSeek r6 profile existed in the authoritative snapshot, and a chat with the
+real thread + profile succeeded — the 22:51 failure was transient stale-state
+during a DeepSeek credential re-import. `LocalProductStore.sendChatMessage`
+now refreshes the setup snapshot and retries once with the current profile on
+`invalid_request / conversation_dispatch` before surfacing the failure. macOS
+package suite green; App rebuilt/reinstalled with OpenCode / Loom Native / Pi
+online.
+
+`CURRENT / V38 FOLLOW-UP (REPEATED ROUTE-TRANSITION SHEET FIXED) (2026-08-16)`:
+after switching the conversation Provider, the "Change conversation route"
+sheet re-appeared on every send because the switch branch of
+`confirmConversationRouteTransition` never set `forceNewConversationSegment`
+(thread kept the old profile → pre-send `requestConversationDispatchTransition`
+returned a fresh transition each time). Confirming a switch/rebind now sets
+`forceNewConversationSegment = true` and clears the pending-route state, so the
+next send proceeds with a new segment and the sheet never re-pops; regression
+test added. macOS package suite green; App rebuilt/reinstalled with OpenCode /
+Loom Native / Pi online.
+
+`CURRENT / V38 FOLLOW-UP (CONVERSATION CONFLICT SELF-HEAL) (2026-08-16)`:
+incident `loom-chat-7404eed7-...` was `conversation_dispatch / conflict /
+retryable` on deepseek-r6: the server rejects with conflict when the thread's
+last segment binding differs from the current resolved binding and the request
+lacks ExpectedExecutionBinding + ContextMode; live probes confirmed the current
+daemon accepts the sends (transient stale-binding during credential
+re-import). `LocalProductStore.sendChatMessage` now self-heals conflict by
+aligning to the current profile binding, forcing a new segment, and retrying
+once; a failed retry resets state so the normal route-transition sheet stays
+available. Regression + updated tests; macOS package suite green; App
+rebuilt/reinstalled with OpenCode / Loom Native / Pi online.
+
+`CURRENT / P2D-W2D OPENCODE LIVE CONVERSATION E2E + USER-VISIBLE FAILURE CODES
+V39 (2026-08-16)`: the installed App now completes a real OpenCode conversation
+end-to-end through the daemon and surfaces every failure with an actionable,
+non-technical message.
+
+- **Live OpenCode E2E (real paid calls)**: `TestLiveOpenCodeConversationE2E`
+  (gated by `LOOM_LIVE_OPENCODE_E2E=1`) sends
+  `Reply with exactly: E2E-OK` on the opencode profile
+  (`conversation-opencode-default-v1`, model `deepseek/deepseek-chat`,
+  binding `{SchemaVersion:3, ProviderID:"opencode"}`, `ContextModeStartClean`)
+  through the installed daemon UDS socket and asserts the thread's final loom
+  message is exactly `E2E-OK`. Passes repeatedly against the rebuilt App with
+  OpenCode / Loom Native / Pi online.
+- **Root cause fixed (V39)**: the OpenCode responder was constructed before
+  `leases` was resolved, so it captured a nil `productCredentialLeaseAccess`
+  and fell back to native auth with no injected Provider key; OpenCode then
+  failed model resolution with `ProviderModelNotFoundError` and the router
+  surfaced `provider_unavailable / provider_connect`. Responder binding now
+  happens after `leases` (vault) is resolved, so the bound model's Provider
+  credential (e.g. `DEEPSEEK_API_KEY`) is leased from the Credential Vault and
+  injected into the OpenCode process env. Verified by in-process runner,
+  lease, and daemon E2E probes.
+- **Routing fixed (V39)**: `conversation-opencode-default-v1` now resolves a
+  valid Context Capsule target (`opencode / opencode-default / native_auth /
+  context:loom-native:v1`) and routes to the default responder (previously the
+  profile fell through `resolveBrokeredProfile` → `state_unavailable /
+  vault_encrypt`). Unit tests cover Respond routing, binding resolution, and
+  context-target resolution for the OpenCode profile.
+- **User-visible failure codes (V39)**: the App maps every chat failure
+  code/stage to a non-technical, actionable title + detail + incident ID.
+  New cases: `state_unavailable+vault_encrypt` ("Conversation context could
+  not be secured … Unlock the vault or re-verify the Provider credential"),
+  `state_unavailable+vault_key_load/vault_open/vault_commit`,
+  `provider_unavailable+provider_connect` ("Conversation Provider could not
+  start … Open Runtime & Providers"), `conversation_unavailable+
+  conversation_dispatch`, and `invalid_request+conversation_dispatch`.
+  Regression tests assert the new presentation.
+- **OpenCode decoder**: `opencode run --format json` event stream decoding
+  accepts the real 1.18.3 `text` / `step_finish` / `session.idle` shape (plus
+  legacy `message.part.updated`); verified against live CLI output.
+- **Verification**: full Go suite green (`go test ./...`), macOS package
+  `231` tests executed, `0` failures (`1` visual-export skip by design), live
+  OpenCode E2E `E2E-OK`, `git diff --check` clean. Evidence:
+  `.loom-evidence/phase2d/P2D-W2D-opencode-live-conversation-v39.md`.
+
+`CURRENT / P2D-W2D OPENCODE DEFAULT MODEL + MULTI-CONVERSATION SESSIONS V40
+(2026-08-16)`:
+
+- **Actionable `provider_auth` (incident `loom-chat-81e0ea64-...`)**: the App
+  defaulted the OpenCode profile to `openai/gpt-5.5`, but the Vault only had a
+  verified DeepSeek account, so OpenCode ran without a key and the user saw an
+  opaque failure (and, earlier, an untracked native-auth reply). Fixes:
+  - `setupConversationProfiles` now picks the OpenCode profile default model
+    from the first catalog model whose Provider has a verified Loom account
+    (`deepseek/deepseek-chat` when only DeepSeek is verified; falls back to
+    the catalog default when none is).
+  - The OpenCode responder now fails fast with
+    `provider_auth / provider_connect` and a user message ("The selected model
+    requires a verified <provider> Provider credential…") when the selected
+    model's Provider has no verified Vault credential, instead of silently
+    running OpenCode natively.
+  - The conversation router preserves the responder's dispatch failure info
+    (code/stage/message) instead of collapsing it to a generic
+    `provider_unavailable`.
+  - Swift shows "Model Provider credential required — the selected model
+    belongs to a Provider that has no verified Loom account…".
+- **Multi-conversation sessions**: the App now supports distinct conversations.
+  `LocalProductStore` keeps a `chatSessions` registry (thread id, auto-title
+  from the first user message, timestamps) persisted to
+  `~/Library/Application Support/Loom/chat-sessions.json` (file-based; the App
+  core avoids UserDefaults per the native-app source gate). `newConversation()`
+  creates a fresh thread, `selectChatSession(_:)` switches, the workspace
+  thread anchor follows the active session, and the chat header shows a
+  conversation switcher menu plus a New Conversation button.
+- **Verification**: Go suite green (incl. dynamic-default + responder
+  `provider_auth` + router-preservation tests); macOS package `234` tests, `0`
+  failures (`1` visual-export skip); live OpenCode E2E still `E2E-OK`; the
+  installed App's header shows the session switcher and the registry file is
+  written. Evidence:
+  `.loom-evidence/phase2d/P2D-W2D-opencode-default-model-and-sessions-v40.md`.

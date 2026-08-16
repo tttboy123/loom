@@ -1193,18 +1193,32 @@ func currentRunFromEvents(
 		switch event.Type {
 		case "RunClaimed":
 			var payload struct {
-				WorkItemID            string `json:"work_item_id"`
-				RunID                 string `json:"run_id"`
-				ClaimID               string `json:"claim_id"`
-				ClaimGeneration       int64  `json:"claim_generation"`
-				RuntimeInstanceID     string `json:"runtime_instance_id"`
-				AgentInstanceID       string `json:"agent_instance_id"`
-				PrepareLeaseExpiresAt string `json:"prepare_lease_expires_at"`
-				RuntimeStatusStreamID string `json:"runtime_status_stream_id"`
-				RuntimeStatusSequence int64  `json:"runtime_status_sequence"`
-				RuntimeStatusEventID  string `json:"runtime_status_event_id"`
+				ClaimContractVersion          *int            `json:"claim_contract_version"`
+				WorkItemID                    string          `json:"work_item_id"`
+				RunID                         string          `json:"run_id"`
+				ClaimID                       string          `json:"claim_id"`
+				ClaimGeneration               int64           `json:"claim_generation"`
+				RuntimeInstanceID             string          `json:"runtime_instance_id"`
+				AgentInstanceID               string          `json:"agent_instance_id"`
+				PrepareLeaseExpiresAt         string          `json:"prepare_lease_expires_at"`
+				RuntimeStatusStreamID         string          `json:"runtime_status_stream_id"`
+				RuntimeStatusSequence         int64           `json:"runtime_status_sequence"`
+				RuntimeStatusEventID          string          `json:"runtime_status_event_id"`
+				RateCardStatus                *string         `json:"rate_card_status"`
+				RateCard                      json.RawMessage `json:"rate_card"`
+				AssetRevisionBindings         json.RawMessage `json:"asset_revision_bindings"`
+				AssetRevisionSetDigest        *string         `json:"asset_revision_set_digest"`
+				MaterializationManifestDigest *string         `json:"materialization_manifest_digest"`
+				MaterializationRootDigest     *string         `json:"materialization_root_digest"`
 			}
 			if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil {
+				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
+			}
+			if !validGrantClaimContract(
+				payload.ClaimContractVersion,
+				payload.RateCardStatus,
+				payload.RateCard,
+			) {
 				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
 			}
 			expiresAt, err := time.Parse(time.RFC3339Nano, payload.PrepareLeaseExpiresAt)
@@ -1268,23 +1282,26 @@ func currentRunFromEvents(
 			current.phase = "running"
 		case "RunTerminalCommitted":
 			var payload struct {
-				WorkItemID            string `json:"work_item_id"`
-				RunID                 string `json:"run_id"`
-				ClaimID               string `json:"claim_id"`
-				ClaimGeneration       int64  `json:"claim_generation"`
-				RuntimeInstanceID     string `json:"runtime_instance_id"`
-				AgentInstanceID       string `json:"agent_instance_id"`
-				Status                string `json:"status"`
-				Reason                string `json:"reason"`
-				RuntimeStatusStreamID string `json:"runtime_status_stream_id"`
-				RuntimeStatusSequence int64  `json:"runtime_status_sequence"`
-				RuntimeStatusEventID  string `json:"runtime_status_event_id"`
+				WorkItemID            string              `json:"work_item_id"`
+				RunID                 string              `json:"run_id"`
+				ClaimID               string              `json:"claim_id"`
+				ClaimGeneration       int64               `json:"claim_generation"`
+				RuntimeInstanceID     string              `json:"runtime_instance_id"`
+				AgentInstanceID       string              `json:"agent_instance_id"`
+				Status                string              `json:"status"`
+				Reason                string              `json:"reason"`
+				Accounting            *work.RunAccounting `json:"accounting"`
+				RuntimeStatusStreamID string              `json:"runtime_status_stream_id"`
+				RuntimeStatusSequence int64               `json:"runtime_status_sequence"`
+				RuntimeStatusEventID  string              `json:"runtime_status_event_id"`
 			}
 			if decodeExactGrantPayload(event.PayloadJSON, &payload) != nil ||
 				!grantRunPayloadMatches(current, payload.WorkItemID, payload.RunID,
 					payload.ClaimID, payload.ClaimGeneration,
 					payload.RuntimeInstanceID, payload.AgentInstanceID) ||
-				payload.Status == "" {
+				payload.Status == "" ||
+				(payload.Accounting != nil &&
+					work.ValidateRunAccounting(*payload.Accounting) != nil) {
 				return runReference{}, currentGrantRun{}, ErrInvalidGrantAuthorityInput
 			}
 			current.phase = "terminal"
@@ -1297,6 +1314,28 @@ func currentRunFromEvents(
 		return runReference{}, currentGrantRun{}, ErrRunNotGrantable
 	}
 	return head, current, nil
+}
+
+func validGrantClaimContract(
+	version *int,
+	status *string,
+	rateCard json.RawMessage,
+) bool {
+	if version == nil {
+		return status == nil && len(rateCard) == 0
+	}
+	if *version != 2 || status == nil {
+		return false
+	}
+	switch *status {
+	case "not_configured":
+		return len(rateCard) == 0
+	case "configured":
+		_, err := work.DecodeFrozenProviderModelRateCard(rateCard)
+		return err == nil
+	default:
+		return false
+	}
 }
 
 func grantRunPayloadMatches(

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "implementation_review_5_pass_compatibility_commit_pending_not_materialized",
+  "status": "replacement_live_canary_failed_pi0821_user_content_array_no_second_replacement_human_required",
   "pi": {
     "repository": "https://github.com/earendil-works/pi",
     "package": "@earendil-works/pi-coding-agent",
@@ -33,7 +33,21 @@
     "repository": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
     "revision": "2ab9f8f42af02fc212effaef7c4850c885e965f4",
     "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "bytes": 1117320768,
     "sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
-    "license": "apache-2.0"
+    "license": "apache-2.0",
+    "transport_provenance": {
+      "status": "user_accepted_deviation_review_pass_installed",
+      "declared_url": "https://hf-mirror.com/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+      "declared_host": "hf-mirror.com",
+      "official_direct_access": "unreachable",
+      "mirror_trust": "untrusted_byte_transport_only",
+      "revision_ancestry_claimed": false,
+      "staged": false,
+      "installed": true,
+      "observed_bytes": 1117320768,
+      "observed_sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
+      "observed_format": "GGUF v3"
+    }
   }
 }

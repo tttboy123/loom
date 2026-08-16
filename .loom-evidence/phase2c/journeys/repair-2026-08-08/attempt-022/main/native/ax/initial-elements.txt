@@ -1,0 +1,228 @@
+role=AXApplication|title=Loom|desc=|help=|id=|enabled=|actions=
+  role=AXWindow|title=Loom|desc=|help=|id=SwiftUI.ModifiedContent<LoomLocalAppUI.ContentView, SwiftUI._FlexFrameLayout>-1-AppWindow-1|enabled=|actions=AXRaise
+    role=AXGroup|title=|desc=|help=|id=|enabled=|actions=
+      role=AXGroup|title=|desc=Loom workspace|help=|id=|enabled=1|actions=
+        role=AXSplitGroup|title=|desc=|help=|id=|enabled=|actions=
+          role=AXGroup|title=|desc=|help=|id=|enabled=|actions=
+            role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+            role=AXScrollArea|title=|desc=|help=|id=|enabled=|actions=AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage
+              role=AXButton|title=|desc=New Mission|help=New Mission|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Conversation|help=Chat|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Mission Board|help=Work|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Agent Teams|help=Teams|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Items needing attention|help=Attention|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Agent library|help=Library|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Runtime health|help=Runtimes|id=|enabled=1|actions=AXPress
+              role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+              role=AXButton|title=|desc=Open recent task Recent work|help=Open recent task Recent work|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Open recent task Recent work|help=Open recent task Recent work|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Open recent task Attempt 022 Review Team|help=Open recent task Attempt 022 Review Team|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Open recent task Attempt 022 Review Team|help=Open recent task Attempt 022 Review Team|id=|enabled=1|actions=AXPress
+            role=AXButton|title=|desc=Open local service and runtime health|help=Some information is unavailable|id=|enabled=1|actions=AXPress
+          role=AXSplitter|title=|desc=|help=|id=|enabled=0|actions=
+          role=AXGroup|title=|desc=|help=|id=|enabled=|actions=
+            role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+            role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+            role=AXButton|title=|desc=Open governance inspector|help=Governance inspector|id=sidebar.trailing|enabled=1|actions=AXPress
+            role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+            role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+            role=AXButton|title=|desc=Try Again|help=Try Again|id=|enabled=1|actions=AXPress
+            role=AXScrollArea|title=|desc=|help=|id=|enabled=|actions=AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage
+              role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+              role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+              role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+              role=AXButton|title=|desc=Open Folder|help=Open Folder|id=|enabled=1|actions=AXPress
+              role=AXButton|title=|desc=Use Agent Team|help=Use Agent Team|id=|enabled=1|actions=AXPress
+            role=AXButton|title=|desc=Choose conversation folder|help=Choose folder|id=folder|enabled=1|actions=AXPress
+            role=AXButton|title=|desc=Use Agent Team|help=Use Agent Team|id=person.3|enabled=1|actions=AXPress
+            role=AXButton|title=|desc=New Mission|help=New Mission|id=plus.square|enabled=1|actions=AXPress
+            role=AXTextField|title=|desc=|help=|id=|enabled=1|actions=AXShowMenu,AXConfirm
+            role=AXButton|title=|desc=Send message|help=Send message|id=arrow.up|enabled=0|actions=AXPress
+            role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+    role=AXButton|title=|desc=|help=|id=|enabled=1|actions=AXPress
+    role=AXButton|title=|desc=|help=this button also has an action to zoom the window|id=|enabled=1|actions=AXPress,AXZoomWindow,AXShowMenu
+      role=AXGroup|title=|desc=|help=|id=|enabled=|actions=
+    role=AXButton|title=|desc=|help=|id=|enabled=1|actions=AXPress
+    role=AXStaticText|title=|desc=|help=|id=|enabled=1|actions=
+  role=AXMenuBar|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+    role=AXMenuBarItem|title=Apple|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=关于本机|desc=|help=|id=_aboutThisMacRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=系统信息|desc=|help=|id=_systemInformationRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=系统设置…, 1项更新|desc=|help=|id=_systemSettingsRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=App Store|desc=|help=|id=_appStoreRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=最近使用的项目|desc=|help=|id=_recentsRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+            role=AXMenuItem|title=应用程序|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=终端|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“终端”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Loom|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“Loom”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=文稿|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=hermes-openclaw|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“hermes-openclaw”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=loom-pi-rebuild|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“loom-pi-rebuild”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=MEMORY-NOTES-v3.md|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“MEMORY-NOTES-v3.md”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=MEMORY-NOTES-v4.md|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“MEMORY-NOTES-v4.md”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=model-self-improvement-and-boundary-awareness.md|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“model-self-improvement-and-boundary-awareness.md”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=openclaw-openclaw-github-com-openclaw-openclaw|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“openclaw-openclaw-github-com-openclaw-openclaw”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=openusage-bar-public-release|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“openusage-bar-public-release”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=OpenUsageActivity|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“OpenUsageActivity”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=resume-preview.png|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“resume-preview.png”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=resume.pdf|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=在访达中显示“resume.pdf”|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=服务器|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Macintosh HD|desc=|help=|id=_recentItemRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=清除菜单|desc=|help=|id=_clearRecentItemsRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=强制退出…|desc=|help=|id=_forceQuitPanelRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=强制退出“Loom”|desc=|help=|id=_forceQuitRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=睡眠|desc=|help=|id=_sleepRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=重新启动…|desc=|help=|id=_restartRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=重新启动|desc=|help=|id=_restartNowRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=关机…|desc=|help=|id=_shutDownRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=关机|desc=|help=|id=_shutDownNowRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=锁定屏幕|desc=|help=|id=_lockScreenRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=退出登录“lune”…|desc=|help=|id=_logOutRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=退出登录“lune”|desc=|help=|id=_logOutNowRequested:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Loom|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=About Loom|desc=|help=|id=orderFrontStandardAboutPanel:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Services|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+            role=AXMenuItem|title=Activity Monitor|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Allocations & Leaks|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=File Activity|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=System Trace|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Time Profile Active Application|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Time Profile App Under Mouse|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Time Profile Entire System|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Toggle Instruments Recording|desc=|help=|id=_processRequest:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Services Settings…|desc=|help=|id=_configureServicesMenu:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Hide Loom|desc=|help=|id=hide:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Hide Others|desc=|help=|id=hideOtherApplications:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show All|desc=|help=|id=unhideAllApplications:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Quit Loom|desc=|help=|id=terminate:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Quit and Keep Windows|desc=|help=|id=NSAlternateQuitMenuItem|enabled=1|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=File|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=New Loom Window|desc=|help=|id=menuAction:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Open Folder...|desc=|help=|id=menuAction:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Close|desc=|help=|id=performClose:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Close All|desc=|help=|id=closeAll:|enabled=1|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Edit|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=Undo|desc=|help=|id=undo:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Redo|desc=|help=|id=redo:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Cut|desc=|help=|id=cut:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Copy|desc=|help=|id=copy:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Paste|desc=|help=|id=paste:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Delete|desc=|help=|id=delete:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Select All|desc=|help=|id=selectAll:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=AutoFill|desc=|help=|id=_NSMenuItemAutoFillIdentifier|enabled=1|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+            role=AXMenuItem|title=Contact…|desc=|help=|id=_handleInsertFromContactsCommand:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Passwords…|desc=|help=|id=_handleInsertFromPasswordsCommand:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Credit Card…|desc=|help=|id=_handleInsertFromCreditCardsCommand:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Start Dictation…|desc=|help=|id=startDictation:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Emoji & Symbols|desc=|help=|id=orderFrontCharacterPalette:|enabled=1|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=View|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=Show Tab Bar|desc=|help=|id=toggleTabBar:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show All Tabs|desc=|help=|id=toggleTabOverview:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Enter Full Screen|desc=|help=|id=toggleFullScreen:|enabled=1|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Window|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=Minimize|desc=|help=|id=performMiniaturize:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Minimize All|desc=|help=|id=miniaturizeAll:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Zoom|desc=|help=|id=performZoom:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Zoom All|desc=|help=|id=zoomAll:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Fill|desc=|help=|id=_zoomFill:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Center|desc=|help=|id=_zoomCenter:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Move & Resize|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+            role=AXMenuItem|title=Halves|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Left|desc=|help=|id=_zoomLeft:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right|desc=|help=|id=_zoomRight:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top|desc=|help=|id=_zoomTop:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom|desc=|help=|id=_zoomBottom:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Quarters|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top Left|desc=|help=|id=_zoomTopLeft:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top Right|desc=|help=|id=_zoomTopRight:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom Left|desc=|help=|id=_zoomBottomLeft:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom Right|desc=|help=|id=_zoomBottomRight:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Arrange|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Left & Right|desc=|help=|id=_zoomLeftAndRight:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Left & Quarters|desc=|help=|id=_zoomLeftThreeUp:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right & Left|desc=|help=|id=_zoomRightAndLeft:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right & Quarters|desc=|help=|id=_zoomRightThreeUp:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top & Bottom|desc=|help=|id=_zoomTopAndBottom:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top & Quarters|desc=|help=|id=_zoomTopThreeUp:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom & Top|desc=|help=|id=_zoomBottomAndTop:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom & Quarters|desc=|help=|id=_zoomBottomThreeUp:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Quarters|desc=|help=|id=_zoomQuarters:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Return to Previous Size|desc=|help=|id=_zoomUntile:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Full Screen Tile|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+            role=AXMenuItem|title=Left of Screen|desc=|help=|id=_tileLeft:|enabled=1|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right of Screen|desc=|help=|id=_tileRight:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Remove Window from Set|desc=|help=|id=_removeWindowFromStageManagerSet:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Bring All to Front|desc=|help=|id=arrangeInFront:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Arrange in Front|desc=|help=|id=alternateArrangeInFront:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Loom|desc=|help=|id=makeKeyAndOrderFront:|enabled=1|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show Previous Tab|desc=|help=|id=selectPreviousTab:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show Next Tab|desc=|help=|id=selectNextTab:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Move Tab to New Window|desc=|help=|id=moveTabToNewWindow:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Merge All Windows|desc=|help=|id=mergeAllWindows:|enabled=0|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|help=|id=|enabled=0|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Help|desc=|help=|id=|enabled=1|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|help=|id=|enabled=1|actions=AXCancel
+        role=AXMenuItem|title=Loom Help|desc=|help=|id=showHelp:|enabled=1|actions=AXCancel,AXPress,AXPick

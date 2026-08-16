@@ -13,24 +13,34 @@ import (
 )
 
 type ClientConfig struct {
-	SocketPath string
-	Timeout    time.Duration
+	SocketPath      string
+	Timeout         time.Duration
+	ExtendedTimeout time.Duration
 }
 
 type Client struct {
-	socketPath string
-	timeout    time.Duration
-	nextID     atomic.Uint64
+	socketPath      string
+	timeout         time.Duration
+	extendedTimeout time.Duration
+	nextID          atomic.Uint64
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
+	explicitExtendedTimeout := config.ExtendedTimeout != 0
+	if config.ExtendedTimeout == 0 {
+		config.ExtendedTimeout = config.Timeout
+	}
 	if config.Timeout <= 0 ||
+		config.ExtendedTimeout < config.Timeout ||
+		explicitExtendedTimeout &&
+			config.ExtendedTimeout <= extendedResponseDeadline ||
 		validateSocketPath(config.SocketPath, os.Geteuid()) != nil {
 		return nil, ErrInvalidSocketPath
 	}
 	return &Client{
-		socketPath: config.SocketPath,
-		timeout:    config.Timeout,
+		socketPath:      config.SocketPath,
+		timeout:         config.Timeout,
+		extendedTimeout: config.ExtendedTimeout,
 	}, nil
 }
 
@@ -84,7 +94,7 @@ func (client *Client) call(
 	if err != nil || hasDuplicateJSONKeys(body) {
 		return ErrInvalidProtocol
 	}
-	deadline := time.Now().Add(client.timeout)
+	deadline := time.Now().Add(client.timeoutForMethod(method))
 	if contextDeadline, ok := ctx.Deadline(); ok &&
 		contextDeadline.Before(deadline) {
 		deadline = contextDeadline
@@ -157,6 +167,7 @@ func (client *Client) call(
 		return &RemoteError{
 			Code:        response.Error.Code,
 			Recoverable: response.Error.Recoverable,
+			Stage:       response.Error.Stage,
 		}
 	}
 	if len(response.Result) == 0 ||
@@ -164,6 +175,16 @@ func (client *Client) call(
 		return ErrInvalidProtocol
 	}
 	return nil
+}
+
+func (client *Client) timeoutForMethod(method string) time.Duration {
+	if method == "chat_message" || method == "agent_attempt_recovery" {
+		return chatResponseDeadline + 3*time.Second
+	}
+	if usesExtendedRequestDeadline(method) {
+		return client.extendedTimeout
+	}
+	return client.timeout
 }
 
 func (client *Client) CallJourney(
@@ -184,6 +205,7 @@ var ErrLocalProductUnavailable = errors.New("local product unavailable")
 type RemoteError struct {
 	Code        string
 	Recoverable bool
+	Stage       string
 }
 
 func (err *RemoteError) Error() string {

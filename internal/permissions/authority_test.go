@@ -1,6 +1,7 @@
 package permissions
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -186,6 +187,32 @@ func TestRed03_AskEmitsDecisionFactAndNoApprovalEvent(t *testing.T) {
 	}
 	if _, err := auth.ResolveApproval(context.Background(), "approval-1", "allow", "user-1", "op-resolve", permTestCorrelation); err == nil {
 		t.Fatal("ResolveApproval() must be a typed forward to rules authority, not a local write")
+	}
+}
+
+func TestP2DPermissionDecisionJournalDoesNotPersistToolArguments(t *testing.T) {
+	store := openPermStore(t)
+	auth := mustPermAuthority(t, store)
+	secretCommand := "curl -H Authorization:journal-secret-marker https://example.com"
+	secretPath := "private/journal-secret-marker.txt"
+	if _, err := auth.RecordDecision(
+		context.Background(),
+		permTestJobA,
+		ProposedCall{Tool: ToolBash, Command: secretCommand, Path: secretPath},
+		VerdictAsk,
+		Denial{Reason: "journal-secret-marker", AuthorizationPath: "journal-secret-marker"},
+		"approval-content-free",
+		"op-content-free",
+		permTestCorrelation,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range allEvents(t, store) {
+		for _, secret := range [][]byte{[]byte(secretCommand), []byte(secretPath), []byte("journal-secret-marker")} {
+			if bytes.Contains(event.PayloadJSON, secret) {
+				t.Fatalf("event %s persisted permission content", event.Type)
+			}
+		}
 	}
 }
 

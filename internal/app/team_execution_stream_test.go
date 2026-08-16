@@ -20,6 +20,7 @@ import (
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
@@ -238,9 +239,18 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 		VerifierWorkflowPath:      "independent-verification",
 	}
 	view := readModel.GlobalReadView()
+	executionBinding := streamTestExecutionBinding(
+		t, "runtime-stream-integration",
+	)
+	contextCapsule := streamTestContextCapsule(t, plan, executionBinding)
+	contextPayload, err := contextcapsule.RenderDispatchPayload(contextCapsule)
+	if err != nil {
+		t.Fatal(err)
+	}
 	selection := work.TeamAttemptSelection{
-		LogicalNodeID: "main",
-		AttemptNumber: 1,
+		LogicalNodeID: "main", AttemptNumber: 1,
+		ExecutionBinding: executionBinding,
+		ContextCapsule:   contextCapsule,
 	}
 	dispatched, err := workAuthority.DispatchTeamReadySet(
 		ctx,
@@ -249,7 +259,7 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 			ReadyAttempts:        []work.TeamAttemptSelection{selection},
 			SemanticBindings:     []work.TeamNodeSemanticBinding{semanticBinding},
 			ViewVersion:          view.Version(),
-			ExpectedHeads:        streamTestDispatchHeads(view, plan),
+			ExpectedHeads:        streamTestDispatchHeads(view, plan, executionBinding),
 			AuthoritativeTime:    now,
 			PrepareLeaseDuration: time.Minute,
 			CorrelationID:        "11111111-1111-4111-8111-111111111111",
@@ -326,16 +336,22 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 		Sequence:              1,
 		Type:                  bridgev1.MessageDispatch,
 		EmittedAt:             now,
-		Payload:               []byte(`{"task":"controlled-stream-integration"}`),
+		Payload:               contextPayload,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
-		ID:          "profile-stream-integration",
-		AdapterType: "pi",
-		AuthMode:    loomruntime.AuthBrokered,
-		Timeout:     5 * time.Second,
+		ID:                  "profile-stream-integration",
+		AdapterType:         "pi",
+		ProviderID:          "openai",
+		ProviderAccountID:   "openai.stream",
+		ModelID:             "gpt-test",
+		AuthMode:            loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("f", 64),
+		CredentialReference: "credential-ref-stream-integration",
+		CredentialRevision:  1,
+		Timeout:             5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -354,10 +370,16 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 	}
 	verifierProfile, err := loomruntime.NewRuntimeProfile(
 		loomruntime.RuntimeProfile{
-			ID:          "profile-stream-verifier",
-			AdapterType: "pi",
-			AuthMode:    loomruntime.AuthBrokered,
-			Timeout:     5 * time.Second,
+			ID:                  "profile-stream-verifier",
+			AdapterType:         "pi",
+			ProviderID:          "anthropic",
+			ProviderAccountID:   "anthropic.stream-verifier",
+			ModelID:             "claude-sonnet",
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("a", 64),
+			CredentialReference: "credential-ref-stream-verifier",
+			CredentialRevision:  1,
+			Timeout:             5 * time.Second,
 		},
 	)
 	if err != nil {
@@ -398,14 +420,15 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 	result, err := coordinator.Run(ctx, app.TeamExecutionRequest{
 		Plan: plan,
 		Nodes: []app.TeamNodeExecution{{
-			LogicalNodeID: "main",
-			AttemptNumber: 1,
-			WorkflowPath:  "primary",
-			SourcePath:    t.TempDir(),
-			Profile:       profile,
-			Instance:      instance,
-			Dispatch:      dispatchFrame,
-			Executor:      executor,
+			LogicalNodeID:  "main",
+			AttemptNumber:  1,
+			WorkflowPath:   "primary",
+			SourcePath:     t.TempDir(),
+			Profile:        profile,
+			Instance:       instance,
+			Dispatch:       dispatchFrame,
+			Executor:       executor,
+			ContextCapsule: contextCapsule,
 		}},
 		Semantics: []app.TeamNodeSemantics{{
 			LogicalNodeID:             "main",
@@ -543,8 +566,14 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 		Board struct {
 			Status string `json:"status"`
 			Nodes  []struct {
-				LogicalNodeID string `json:"logical_node_id"`
-				Status        string `json:"status"`
+				LogicalNodeID                  string `json:"logical_node_id"`
+				Status                         string `json:"status"`
+				ContextCapsuleAvailable        bool   `json:"context_capsule_available"`
+				ContextCapsuleDigest           string `json:"context_capsule_digest"`
+				ContextDisclosureReceiptDigest string `json:"context_disclosure_receipt_digest"`
+				ContextAdapterID               string `json:"context_adapter_id"`
+				DisclosurePolicyID             string `json:"disclosure_policy_id"`
+				ContextOmissionCount           int    `json:"context_omission_count"`
 			} `json:"nodes"`
 		} `json:"board"`
 		Attention []json.RawMessage `json:"attention"`
@@ -614,6 +643,13 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 		len(authoritative.Board.Nodes) != 1 ||
 		authoritative.Board.Nodes[0].LogicalNodeID != "main" ||
 		authoritative.Board.Nodes[0].Status != "succeeded" ||
+		!authoritative.Board.Nodes[0].ContextCapsuleAvailable ||
+		authoritative.Board.Nodes[0].ContextCapsuleDigest != contextCapsule.Digest() ||
+		authoritative.Board.Nodes[0].ContextDisclosureReceiptDigest !=
+			contextCapsule.DisclosureReceiptDigest() ||
+		authoritative.Board.Nodes[0].ContextAdapterID != "context:pi:v1" ||
+		authoritative.Board.Nodes[0].DisclosurePolicyID != "policy.stream-test" ||
+		authoritative.Board.Nodes[0].ContextOmissionCount != 0 ||
 		len(authoritative.Attention) != 0 {
 		t.Fatalf("final board/Attention = %s", pageJSON)
 	}
@@ -655,6 +691,74 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 	}
 }
 
+func streamTestContextCapsule(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	binding loomruntime.FrozenExecutionBinding,
+) contextcapsule.RoleContextCapsule {
+	t.Helper()
+	node := plan.Nodes()[0]
+	capsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
+			TeamID:         plan.TeamInstanceID(), AgentID: node.AgentInstanceID(), RoleID: "main",
+			ProviderID: binding.ProviderID, ProviderAccountID: binding.ProviderAccountID,
+			ModelID: binding.ModelID, AuthMode: string(binding.AuthMode),
+			ContextAdapterID:   "context:pi:v1",
+			DisclosurePolicyID: "policy.stream-test", DisclosurePolicyVersion: 1,
+			TokenBudget: 64,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Content:    []byte("Execute the stream integration test."),
+			SourceType: contextcapsule.SourceAuthority,
+			SourceRef:  "team-plan:" + plan.Digest(),
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capsule
+}
+
+func streamTestExecutionBinding(
+	t testing.TB,
+	runtimeInstanceID string,
+) loomruntime.FrozenExecutionBinding {
+	t.Helper()
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:                  "profile-stream-integration",
+		AdapterType:         "pi",
+		ProviderID:          "openai",
+		ProviderAccountID:   "openai.stream",
+		ModelID:             "gpt-test",
+		AuthMode:            loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("f", 64),
+		CredentialReference: "credential-ref-stream-integration",
+		CredentialRevision:  1,
+		Timeout:             5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: runtimeInstanceID, DeviceID: "device-1",
+		AdapterType: "pi", DisplayName: runtimeInstanceID,
+		ExecutableVersion: "1.0.0", Status: loomruntime.RuntimeOnline,
+		Capacity: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
+}
+
 func streamTestSemantics(
 	t testing.TB,
 ) (
@@ -692,10 +796,13 @@ func streamTestSemantics(
 func streamTestDispatchHeads(
 	view projection.GlobalReadView,
 	plan teams.ExecutionPlan,
+	binding loomruntime.FrozenExecutionBinding,
 ) []journal.StreamHead {
 	workItemID := streamTestAttemptIdentity("work", plan, "main", 1)
 	runID := streamTestAttemptIdentity("run", plan, "main", 1)
 	streamIDs := []string{
+		"provider-account-capacity/" + binding.ProviderAccountID,
+		"provider-account-policy/" + binding.ProviderAccountID,
 		"run/" + runID,
 		"runtime_capacity:runtime-stream-integration",
 		"runtime_instance:runtime-stream-integration",
@@ -703,6 +810,13 @@ func streamTestDispatchHeads(
 		"work-item/" + workItemID,
 		"work-run-identity/v1",
 	}
+	rateCardStreamID, err := work.ProviderModelRateCardStreamID(
+		binding.ProviderID, binding.ProviderAccountID, binding.ModelID,
+	)
+	if err != nil {
+		panic(err)
+	}
+	streamIDs = append(streamIDs, rateCardStreamID)
 	heads := make([]journal.StreamHead, len(streamIDs))
 	for index, streamID := range streamIDs {
 		head, ok := view.Head(streamID)

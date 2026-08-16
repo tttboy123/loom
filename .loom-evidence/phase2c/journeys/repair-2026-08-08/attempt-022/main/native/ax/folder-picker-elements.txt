@@ -1,0 +1,171 @@
+role=AXApplication|title=Loom|desc=|value=|help=|actions=
+  role=AXWindow|title=Loom|desc=|value=|help=|actions=AXRaise
+    role=AXGroup|title=|desc=|value=|help=|actions=
+      role=AXGroup|title=|desc=Loom workspace|value=|help=|actions=
+        role=AXSplitGroup|title=|desc=|value=|help=|actions=
+          role=AXGroup|title=|desc=|value=|help=|actions=
+            role=AXStaticText|title=|desc=|value=Loom|help=|actions=
+            role=AXScrollArea|title=|desc=|value=|help=|actions=AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage
+              role=AXButton|title=|desc=New Mission|value=|help=New Mission|actions=AXPress
+              role=AXButton|title=|desc=Conversation|value=|help=Chat|actions=AXPress
+              role=AXButton|title=|desc=Mission Board|value=|help=Work|actions=AXPress
+              role=AXButton|title=|desc=Agent Teams|value=|help=Teams|actions=AXPress
+              role=AXButton|title=|desc=Items needing attention|value=|help=Attention|actions=AXPress
+              role=AXButton|title=|desc=Agent library|value=|help=Library|actions=AXPress
+              role=AXButton|title=|desc=Runtime health|value=|help=Runtimes|actions=AXPress
+              role=AXStaticText|title=|desc=|value=RECENT|help=|actions=
+              role=AXButton|title=|desc=Open recent task Recent work|value=|help=Open recent task Recent work|actions=AXPress
+              role=AXButton|title=|desc=Open recent task Recent work|value=|help=Open recent task Recent work|actions=AXPress
+              role=AXButton|title=|desc=Open recent task Attempt 022 Review Team|value=|help=Open recent task Attempt 022 Review Team|actions=AXPress
+              role=AXButton|title=|desc=Open recent task Attempt 022 Review Team|value=|help=Open recent task Attempt 022 Review Team|actions=AXPress
+            role=AXButton|title=|desc=Open local service and runtime health|value=|help=Some information is unavailable|actions=AXPress
+          role=AXSplitter|title=|desc=|value=192|help=|actions=
+          role=AXGroup|title=|desc=|value=|help=|actions=
+            role=AXStaticText|title=|desc=|value=New task|help=|actions=
+            role=AXStaticText|title=|desc=|value=memory-learning-notes|help=|actions=
+            role=AXButton|title=|desc=Open governance inspector|value=|help=Governance inspector|actions=AXPress
+            role=AXStaticText|title=|desc=|value=Some information is unavailable|help=|actions=
+            role=AXStaticText|title=|desc=|value=Loom is showing the information it could safely load.|help=|actions=
+            role=AXButton|title=|desc=Try Again|value=|help=Try Again|actions=AXPress
+            role=AXScrollArea|title=|desc=|value=|help=|actions=AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage
+              role=AXStaticText|title=|desc=|value=What are we working on?|help=|actions=
+              role=AXStaticText|title=|desc=|value=Describe the outcome in your own words. Bring in an Agent Team only when the work needs governed execution.|help=|actions=
+              role=AXStaticText|title=|desc=|value=1 active missions, 0 items need you|help=|actions=
+              role=AXButton|title=|desc=Open Folder|value=|help=Open Folder|actions=AXPress
+              role=AXButton|title=|desc=Use Agent Team|value=|help=Use Agent Team|actions=AXPress
+            role=AXButton|title=|desc=Choose conversation folder|value=|help=Choose folder|actions=AXPress
+            role=AXButton|title=|desc=Use Agent Team|value=|help=Use Agent Team|actions=AXPress
+            role=AXButton|title=|desc=|value=|help=New Mission|actions=AXPress
+            role=AXStaticText|title=|desc=|value=memory-learning-notes|help=|actions=
+            role=AXTextField|title=|desc=|value=|help=|actions=AXShowMenu,AXConfirm
+            role=AXButton|title=|desc=Send message|value=|help=Send message|actions=AXPress
+            role=AXStaticText|title=|desc=|value=Agent work requires review and confirmation.|help=|actions=
+    role=AXButton|title=|desc=|value=|help=|actions=AXPress
+    role=AXButton|title=|desc=|value=|help=this button also has an action to zoom the window|actions=AXPress,AXZoomWindow,AXShowMenu
+      role=AXGroup|title=|desc=|value=|help=|actions=
+        role=AXGroup|title=|desc=|value=|help=|actions=
+    role=AXButton|title=|desc=|value=|help=|actions=AXPress
+    role=AXStaticText|title=|desc=|value=Loom|help=|actions=
+  role=AXMenuBar|title=|desc=|value=|help=|actions=AXCancel
+    role=AXMenuBarItem|title=Apple|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=关于本机|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=系统信息|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=系统设置…, 1项更新|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=App Store|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=最近使用的项目|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=|desc=|value=|help=|actions=
+        role=AXMenuItem|title=强制退出…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=强制退出“Loom”|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=睡眠|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=重新启动…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=重新启动|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=关机…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=关机|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=锁定屏幕|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=退出登录“lune”…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=退出登录“lune”|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Loom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=About Loom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Services|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+            role=AXMenuItem|title=No Services Apply|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Services Settings…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Hide Loom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Hide Others|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show All|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Quit Loom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=File|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=New Loom Window|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Open Folder...|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=|title=|desc=|value=|help=|actions=
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Close|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Close All|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Edit|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=Undo|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Redo|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Cut|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Copy|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Paste|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Delete|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Select All|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=AutoFill|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+            role=AXMenuItem|title=Contact…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Passwords…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Credit Card…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Start Dictation…|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Emoji & Symbols|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=View|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=Show Tab Bar|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show All Tabs|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Enter Full Screen|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Window|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=Minimize|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Minimize All|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Zoom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Zoom All|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Fill|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Center|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Move & Resize|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+          role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+            role=AXMenuItem|title=Halves|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Left|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Quarters|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top Left|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top Right|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom Left|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom Right|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Arrange|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Left & Right|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Left & Quarters|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right & Left|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Right & Quarters|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top & Bottom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Top & Quarters|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom & Top|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Bottom & Quarters|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Quarters|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+            role=AXMenuItem|title=Return to Previous Size|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Full Screen Tile|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Remove Window from Set|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Bring All to Front|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Arrange in Front|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show Previous Tab|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Show Next Tab|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Move Tab to New Window|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Merge All Windows|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+        role=AXMenuItem|title=Loom|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+    role=AXMenuBarItem|title=Help|desc=|value=|help=|actions=AXCancel,AXPress,AXPick
+      role=AXMenu|title=|desc=|value=|help=|actions=AXCancel
+        role=AXMenuItem|title=Loom Help|desc=|value=|help=|actions=AXCancel,AXPress,AXPick

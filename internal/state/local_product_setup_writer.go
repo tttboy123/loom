@@ -31,15 +31,60 @@ type TeamConfigurationSkillRevision struct {
 	Digest   string `json:"digest"`
 }
 
+type TeamConfigurationExecutionProfile struct {
+	Version                    int                  `json:"version"`
+	ID                         string               `json:"id"`
+	HarnessAdapter             string               `json:"harness_adapter"`
+	ProviderID                 string               `json:"provider_id"`
+	ProviderAccountID          string               `json:"provider_account_id"`
+	ModelID                    string               `json:"model_id"`
+	AuthMode                   loomruntime.AuthMode `json:"auth_mode"`
+	EndpointFingerprint        string               `json:"endpoint_fingerprint"`
+	CredentialReference        string               `json:"credential_reference"`
+	CredentialRevision         int64                `json:"credential_revision"`
+	ReasoningEffort            string               `json:"reasoning_effort"`
+	TimeoutNanoseconds         int64                `json:"timeout_nanoseconds"`
+	Budget                     *int64               `json:"budget"`
+	RequiredCapabilities       []string             `json:"required_capabilities"`
+	RemoteToolEnrollmentID     string               `json:"remote_tool_enrollment_id,omitempty"`
+	RemoteToolEnrollmentDigest string               `json:"remote_tool_enrollment_digest,omitempty"`
+}
+
+type TeamConfigurationFallbackRoute struct {
+	Version           int                                `json:"version"`
+	RuntimeProfileID  string                             `json:"runtime_profile_id"`
+	RuntimeInstanceID string                             `json:"runtime_instance_id"`
+	ModelID           string                             `json:"model_id"`
+	ExecutionProfile  *TeamConfigurationExecutionProfile `json:"execution_profile"`
+	ApprovalRequired  bool                               `json:"approval_required"`
+}
+
+type TeamConfigurationExecutionRoute struct {
+	Version           int                                `json:"version"`
+	RuntimeProfileID  string                             `json:"runtime_profile_id"`
+	RuntimeInstanceID string                             `json:"runtime_instance_id"`
+	ModelID           string                             `json:"model_id"`
+	ExecutionProfile  *TeamConfigurationExecutionProfile `json:"execution_profile"`
+}
+
+type TeamConfigurationParallelRouteSet struct {
+	Version          int                               `json:"version"`
+	AdditionalRoutes []TeamConfigurationExecutionRoute `json:"additional_routes"`
+	SynthesisRoute   TeamConfigurationExecutionRoute   `json:"synthesis_route"`
+}
+
 type TeamConfigurationRoleBinding struct {
-	Kind              string                           `json:"kind"`
-	AgentDefinitionID string                           `json:"agent_definition_id"`
-	RuntimeProfileID  string                           `json:"runtime_profile_id"`
-	RuntimeInstanceID string                           `json:"runtime_instance_id"`
-	ModelID           string                           `json:"model_id"`
-	SkillRevisions    []TeamConfigurationSkillRevision `json:"skill_revisions"`
-	PermissionIDs     []string                         `json:"permission_ids"`
-	ResourceIDs       []string                         `json:"resource_ids"`
+	Kind              string                             `json:"kind"`
+	AgentDefinitionID string                             `json:"agent_definition_id"`
+	RuntimeProfileID  string                             `json:"runtime_profile_id"`
+	RuntimeInstanceID string                             `json:"runtime_instance_id"`
+	ModelID           string                             `json:"model_id"`
+	ExecutionProfile  *TeamConfigurationExecutionProfile `json:"execution_profile,omitempty"`
+	FallbackRoute     *TeamConfigurationFallbackRoute    `json:"fallback_route,omitempty"`
+	ParallelRouteSet  *TeamConfigurationParallelRouteSet `json:"parallel_route_set,omitempty"`
+	SkillRevisions    []TeamConfigurationSkillRevision   `json:"skill_revisions"`
+	PermissionIDs     []string                           `json:"permission_ids"`
+	ResourceIDs       []string                           `json:"resource_ids"`
 }
 
 type TeamConfigurationSnapshot struct {
@@ -120,6 +165,7 @@ func (writer *LocalProductSetupWriter) SaveTeamDefinition(
 	configuration, err := normalizeTeamConfiguration(
 		command.Configuration,
 		command.Definition,
+		command.RuntimeProfiles,
 	)
 	if err != nil {
 		return LocalProductSetupCommitResult{}, err
@@ -241,7 +287,11 @@ func (writer *LocalProductSetupWriter) CommitCredentialMetadata(
 ) (credentials.MetadataResult, error) {
 	if writer == nil || writer.store == nil || ctx == nil ||
 		!validSetupIdentifier(command.CommandID, 128) ||
-		command.ProviderID != "minimax" ||
+		!credentials.ValidProviderIdentifier(command.ProviderID) ||
+		command.ProviderAccountID != "" &&
+			!credentials.ValidProviderAccountIdentifier(
+				command.ProviderID, command.ProviderAccountID,
+			) ||
 		!validSetupCredentialReference(command.CredentialReference) ||
 		command.ExpectedRevision < 0 ||
 		!validSetupTime(command.OccurredAt) ||
@@ -256,8 +306,24 @@ func (writer *LocalProductSetupWriter) CommitCredentialMetadata(
 		eventType = "ProviderCredentialRevoked"
 	}
 	streamID := "provider-credential/" + command.ProviderID
+	providerAccountID := command.ProviderAccountID
+	if providerAccountID != "" &&
+		providerAccountID != command.ProviderID+".primary" {
+		streamID = "provider-account-credential/" + providerAccountID
+		switch command.Status {
+		case credentials.CredentialConfigured:
+			eventType = "ProviderAccountCredentialConfigured"
+		case credentials.CredentialVerified, credentials.CredentialRejected:
+			eventType = "ProviderAccountCredentialVerified"
+		case credentials.CredentialRevoked:
+			eventType = "ProviderAccountCredentialRevoked"
+		}
+	} else {
+		providerAccountID = ""
+	}
 	payload := credentialMetadataPayload{
 		ProviderID:          command.ProviderID,
+		ProviderAccountID:   providerAccountID,
 		CredentialReference: command.CredentialReference,
 		AuthMode:            "brokered",
 		Revision:            command.ExpectedRevision + 1,
@@ -296,6 +362,7 @@ func (writer *LocalProductSetupWriter) CommitCredentialMetadata(
 	}
 	return credentials.MetadataResult{
 		ProviderID:          command.ProviderID,
+		ProviderAccountID:   command.ProviderAccountID,
 		CredentialReference: command.CredentialReference,
 		Revision:            command.ExpectedRevision + 1,
 		Status:              command.Status,
@@ -344,6 +411,7 @@ type teamDefinitionStatusPayload struct {
 
 type credentialMetadataPayload struct {
 	ProviderID          string `json:"provider_id"`
+	ProviderAccountID   string `json:"provider_account_id,omitempty"`
 	CredentialReference string `json:"credential_reference"`
 	AuthMode            string `json:"auth_mode"`
 	Revision            int64  `json:"revision"`
@@ -415,6 +483,7 @@ func setupCommitResult(event journal.Event) LocalProductSetupCommitResult {
 func normalizeTeamConfiguration(
 	input TeamConfigurationSnapshot,
 	definition teams.TeamDefinition,
+	runtimeProfiles []loomruntime.RuntimeProfile,
 ) (TeamConfigurationSnapshot, error) {
 	if input.RequestedConcurrency <= 0 ||
 		input.RequestedConcurrency > 3 ||
@@ -466,9 +535,61 @@ func normalizeTeamConfiguration(
 			RuntimeProfileID:  role.RuntimeProfileID,
 			RuntimeInstanceID: role.RuntimeInstanceID,
 			ModelID:           role.ModelID,
+			ExecutionProfile:  nil,
+			FallbackRoute:     nil,
+			ParallelRouteSet:  nil,
 			SkillRevisions:    skills,
 			PermissionIDs:     permissions,
 			ResourceIDs:       resources,
+		}
+		if role.ExecutionProfile != nil {
+			profile, err := normalizeTeamConfigurationExecutionProfile(
+				*role.ExecutionProfile,
+				role.RuntimeProfileID,
+				role.ModelID,
+			)
+			if err != nil {
+				return TeamConfigurationSnapshot{}, err
+			}
+			expected, found := runtimeProfileByID(
+				runtimeProfiles,
+				role.RuntimeProfileID,
+			)
+			if !found || !teamExecutionProfileMatchesRuntimeProfile(
+				profile,
+				expected,
+			) {
+				return TeamConfigurationSnapshot{}, ErrInvalidLocalProductSetupWrite
+			}
+			output.RoleBindings[index].ExecutionProfile = &profile
+		}
+		if role.FallbackRoute != nil {
+			if role.ParallelRouteSet != nil {
+				return TeamConfigurationSnapshot{}, ErrInvalidLocalProductSetupWrite
+			}
+			route, err := normalizeTeamConfigurationFallbackRoute(
+				*role.FallbackRoute,
+				role.RuntimeProfileID,
+				runtimeProfiles,
+			)
+			if err != nil {
+				return TeamConfigurationSnapshot{}, err
+			}
+			output.RoleBindings[index].FallbackRoute = &route
+		}
+		if role.ParallelRouteSet != nil {
+			if role.ExecutionProfile == nil {
+				return TeamConfigurationSnapshot{}, ErrInvalidLocalProductSetupWrite
+			}
+			routeSet, err := normalizeTeamConfigurationParallelRouteSet(
+				*role.ParallelRouteSet,
+				role.RuntimeProfileID,
+				runtimeProfiles,
+			)
+			if err != nil {
+				return TeamConfigurationSnapshot{}, err
+			}
+			output.RoleBindings[index].ParallelRouteSet = &routeSet
 		}
 	}
 	sort.Slice(output.RoleBindings, func(i, j int) bool {
@@ -478,6 +599,194 @@ func normalizeTeamConfiguration(
 		return output.RoleBindings[i].AgentDefinitionID <
 			output.RoleBindings[j].AgentDefinitionID
 	})
+	return output, nil
+}
+
+func normalizeTeamConfigurationParallelRouteSet(
+	input TeamConfigurationParallelRouteSet,
+	primaryProfileID string,
+	runtimeProfiles []loomruntime.RuntimeProfile,
+) (TeamConfigurationParallelRouteSet, error) {
+	if input.Version != 1 || len(input.AdditionalRoutes) < 1 ||
+		len(input.AdditionalRoutes) > 2 {
+		return TeamConfigurationParallelRouteSet{}, ErrInvalidLocalProductSetupWrite
+	}
+	output := TeamConfigurationParallelRouteSet{
+		Version: input.Version,
+		AdditionalRoutes: make(
+			[]TeamConfigurationExecutionRoute,
+			len(input.AdditionalRoutes),
+		),
+	}
+	seen := map[string]struct{}{primaryProfileID: {}}
+	for index, raw := range input.AdditionalRoutes {
+		route, err := normalizeTeamConfigurationExecutionRoute(raw, runtimeProfiles)
+		if err != nil {
+			return TeamConfigurationParallelRouteSet{}, err
+		}
+		if _, duplicate := seen[route.RuntimeProfileID]; duplicate {
+			return TeamConfigurationParallelRouteSet{}, ErrInvalidLocalProductSetupWrite
+		}
+		seen[route.RuntimeProfileID] = struct{}{}
+		output.AdditionalRoutes[index] = route
+	}
+	sort.Slice(output.AdditionalRoutes, func(i, j int) bool {
+		return output.AdditionalRoutes[i].RuntimeProfileID <
+			output.AdditionalRoutes[j].RuntimeProfileID
+	})
+	synthesis, err := normalizeTeamConfigurationExecutionRoute(
+		input.SynthesisRoute,
+		runtimeProfiles,
+	)
+	if err != nil {
+		return TeamConfigurationParallelRouteSet{}, err
+	}
+	output.SynthesisRoute = synthesis
+	return output, nil
+}
+
+func normalizeTeamConfigurationExecutionRoute(
+	input TeamConfigurationExecutionRoute,
+	runtimeProfiles []loomruntime.RuntimeProfile,
+) (TeamConfigurationExecutionRoute, error) {
+	if input.Version != 1 ||
+		!validSetupIdentifier(input.RuntimeProfileID, 128) ||
+		!validSetupIdentifier(input.RuntimeInstanceID, 128) ||
+		!validSetupIdentifier(input.ModelID, 256) ||
+		input.ExecutionProfile == nil {
+		return TeamConfigurationExecutionRoute{}, ErrInvalidLocalProductSetupWrite
+	}
+	profile, err := normalizeTeamConfigurationExecutionProfile(
+		*input.ExecutionProfile,
+		input.RuntimeProfileID,
+		input.ModelID,
+	)
+	if err != nil {
+		return TeamConfigurationExecutionRoute{}, err
+	}
+	expected, found := runtimeProfileByID(runtimeProfiles, input.RuntimeProfileID)
+	if !found || !teamExecutionProfileMatchesRuntimeProfile(profile, expected) {
+		return TeamConfigurationExecutionRoute{}, ErrInvalidLocalProductSetupWrite
+	}
+	return TeamConfigurationExecutionRoute{
+		Version: input.Version, RuntimeProfileID: input.RuntimeProfileID,
+		RuntimeInstanceID: input.RuntimeInstanceID, ModelID: input.ModelID,
+		ExecutionProfile: &profile,
+	}, nil
+}
+
+func normalizeTeamConfigurationFallbackRoute(
+	input TeamConfigurationFallbackRoute,
+	primaryProfileID string,
+	runtimeProfiles []loomruntime.RuntimeProfile,
+) (TeamConfigurationFallbackRoute, error) {
+	if input.Version != 1 || !input.ApprovalRequired ||
+		input.RuntimeProfileID == primaryProfileID ||
+		!validSetupIdentifier(input.RuntimeProfileID, 128) ||
+		!validSetupIdentifier(input.RuntimeInstanceID, 128) ||
+		!validSetupIdentifier(input.ModelID, 256) ||
+		input.ExecutionProfile == nil {
+		return TeamConfigurationFallbackRoute{}, ErrInvalidLocalProductSetupWrite
+	}
+	profile, err := normalizeTeamConfigurationExecutionProfile(
+		*input.ExecutionProfile,
+		input.RuntimeProfileID,
+		input.ModelID,
+	)
+	if err != nil {
+		return TeamConfigurationFallbackRoute{}, err
+	}
+	expected, found := runtimeProfileByID(runtimeProfiles, input.RuntimeProfileID)
+	if !found || !teamExecutionProfileMatchesRuntimeProfile(profile, expected) {
+		return TeamConfigurationFallbackRoute{}, ErrInvalidLocalProductSetupWrite
+	}
+	return TeamConfigurationFallbackRoute{
+		Version: input.Version, RuntimeProfileID: input.RuntimeProfileID,
+		RuntimeInstanceID: input.RuntimeInstanceID, ModelID: input.ModelID,
+		ExecutionProfile: &profile, ApprovalRequired: true,
+	}, nil
+}
+
+func runtimeProfileByID(
+	profiles []loomruntime.RuntimeProfile,
+	id string,
+) (loomruntime.RuntimeProfile, bool) {
+	for _, profile := range profiles {
+		if profile.ID == id {
+			normalized, err := loomruntime.NewRuntimeProfile(profile)
+			return normalized, err == nil
+		}
+	}
+	return loomruntime.RuntimeProfile{}, false
+}
+
+func teamExecutionProfileMatchesRuntimeProfile(
+	snapshot TeamConfigurationExecutionProfile,
+	profile loomruntime.RuntimeProfile,
+) bool {
+	if snapshot.ID != profile.ID ||
+		snapshot.HarnessAdapter != profile.AdapterType ||
+		snapshot.ProviderID != profile.ProviderID ||
+		snapshot.ProviderAccountID != profile.ProviderAccountID ||
+		snapshot.ModelID != profile.ModelID ||
+		snapshot.AuthMode != profile.AuthMode ||
+		snapshot.EndpointFingerprint != profile.EndpointFingerprint ||
+		snapshot.CredentialReference != profile.CredentialReference ||
+		snapshot.CredentialRevision != profile.CredentialRevision ||
+		snapshot.ReasoningEffort != profile.ReasoningEffort ||
+		time.Duration(snapshot.TimeoutNanoseconds) != profile.Timeout ||
+		snapshot.RemoteToolEnrollmentID != profile.RemoteToolEnrollmentID ||
+		snapshot.RemoteToolEnrollmentDigest != profile.RemoteToolEnrollmentDigest ||
+		len(snapshot.RequiredCapabilities) != len(profile.RequiredCapabilities) ||
+		(snapshot.Budget == nil) != (profile.Budget == nil) {
+		return false
+	}
+	for index := range snapshot.RequiredCapabilities {
+		if snapshot.RequiredCapabilities[index] != profile.RequiredCapabilities[index] {
+			return false
+		}
+	}
+	return snapshot.Budget == nil || *snapshot.Budget == *profile.Budget
+}
+
+func normalizeTeamConfigurationExecutionProfile(
+	input TeamConfigurationExecutionProfile,
+	profileID string,
+	modelID string,
+) (TeamConfigurationExecutionProfile, error) {
+	if input.Version != 1 || input.ID != profileID || input.ModelID != modelID {
+		return TeamConfigurationExecutionProfile{}, ErrInvalidLocalProductSetupWrite
+	}
+	profile, err := loomruntime.ValidateExecutionProfile(loomruntime.RuntimeProfile{
+		ID:                         input.ID,
+		AdapterType:                input.HarnessAdapter,
+		ProviderID:                 input.ProviderID,
+		ProviderAccountID:          input.ProviderAccountID,
+		ModelID:                    input.ModelID,
+		AuthMode:                   input.AuthMode,
+		EndpointFingerprint:        input.EndpointFingerprint,
+		CredentialReference:        input.CredentialReference,
+		CredentialRevision:         input.CredentialRevision,
+		ReasoningEffort:            input.ReasoningEffort,
+		RequiredCapabilities:       append([]string(nil), input.RequiredCapabilities...),
+		Timeout:                    time.Duration(input.TimeoutNanoseconds),
+		Budget:                     input.Budget,
+		RemoteToolEnrollmentID:     input.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: input.RemoteToolEnrollmentDigest,
+	})
+	if err != nil {
+		return TeamConfigurationExecutionProfile{}, ErrInvalidLocalProductSetupWrite
+	}
+	output := input
+	output.RequiredCapabilities = append(
+		[]string(nil), profile.RequiredCapabilities...,
+	)
+	output.RemoteToolEnrollmentID = profile.RemoteToolEnrollmentID
+	output.RemoteToolEnrollmentDigest = profile.RemoteToolEnrollmentDigest
+	if profile.Budget != nil {
+		budget := *profile.Budget
+		output.Budget = &budget
+	}
 	return output, nil
 }
 

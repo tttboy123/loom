@@ -102,6 +102,36 @@ final class LocalProductExperienceTests: XCTestCase {
         )
     }
 
+    func testConnectionCopyDescribesLocalServiceWithoutTransportReasons() {
+        let loading = LocalProductExperience(
+            snapshot: nil,
+            connectionState: .loading
+        ).connection
+        let offline = LocalProductExperience(
+            snapshot: nil,
+            connectionState: .offline(reason: "invalid_socket")
+        ).connection
+        let preserved = LocalProductExperience(
+            snapshot: .empty(viewVersion: "last-view"),
+            connectionState: .offline(reason: "invalid_socket")
+        ).connection
+        let fatal = LocalProductExperience(
+            snapshot: nil,
+            connectionState: .fatal(reason: "unauthorized_peer")
+        ).connection
+
+        XCTAssertEqual(loading.title, "Starting local service")
+        XCTAssertEqual(offline.title, "Local service unavailable")
+        XCTAssertEqual(preserved.title, "Showing last loaded state")
+        XCTAssertEqual(fatal.title, "Local service rejected the connection")
+
+        for presentation in [loading, offline, preserved, fatal] {
+            XCTAssertFalse(presentation.title.contains("invalid_socket"))
+            XCTAssertFalse(presentation.detail.contains("invalid_socket"))
+            XCTAssertFalse(presentation.title.localizedCaseInsensitiveContains("offline"))
+        }
+    }
+
     func testVisibleFrozenCopyIsFunctionalAndContainsNoEmDash() {
         XCTAssertEqual(LocalProductCopy.workActivity, "Work activity")
         XCTAssertEqual(

@@ -29,6 +29,15 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case credentialUnavailable = "credential_unavailable"
         case credentialRejected = "credential_rejected"
         case credentialRollbackFailed = "credential_rollback_failed"
+        case conversationUnavailable = "conversation_unavailable"
+        case invalidResponse = "invalid_response"
+        case providerAuth = "provider_auth"
+        case providerRateLimit = "provider_rate_limit"
+        case providerRejected = "provider_rejected"
+		case providerInsufficientBalance = "provider_insufficient_balance"
+		case providerModelUnavailable = "provider_model_unavailable"
+		case providerInvalidRequest = "provider_invalid_request"
+		case providerUnavailable = "provider_unavailable"
         case cursorConflict = "cursor_conflict"
         case streamGap = "stream_gap"
         case stateUnavailable = "state_unavailable"
@@ -37,8 +46,77 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case `internal`
     }
 
+    public enum Stage: String, Codable, Sendable {
+        case inputAdmission = "input_admission"
+        case udsTransport = "uds_transport"
+        case daemonAdmission = "daemon_admission"
+        case helperValidation = "helper_validation"
+        case helperStart = "helper_start"
+        case helperAuthorization = "helper_authorization"
+        case helperRequest = "helper_request"
+        case helperTimeout = "helper_timeout"
+        case helperResponse = "helper_response"
+        case helperExit = "helper_exit"
+        case keychainAccess = "keychain_access"
+        case metadataCommit = "metadata_commit"
+        case projectionRefresh = "projection_refresh"
+        case vaultKeyLoad = "vault_key_load"
+        case vaultOpen = "vault_open"
+        case vaultEncrypt = "vault_encrypt"
+        case vaultCommit = "vault_commit"
+        case vaultDecrypt = "vault_decrypt"
+        case vaultAADValidation = "vault_aad_validation"
+        case vaultRotation = "vault_rotation"
+        case vaultRecovery = "vault_recovery"
+        case vaultExport = "vault_export"
+        case credentialLeaseIssue = "credential_lease_issue"
+        case credentialLeaseExpire = "credential_lease_expire"
+        case credentialLeaseRevoke = "credential_lease_revoke"
+        case migrationRead = "migration_read"
+        case migrationCommit = "migration_commit"
+        case migrationCleanup = "migration_cleanup"
+        case providerDNS = "provider_dns"
+        case providerTLS = "provider_tls"
+        case providerConnect = "provider_connect"
+        case providerHTTP = "provider_http"
+        case providerAuth = "provider_auth"
+        case providerRateLimit = "provider_rate_limit"
+        case profilePublish = "profile_publish"
+        case conversationDispatch = "conversation_dispatch"
+        case agentAttemptDispatch = "agent_attempt_dispatch"
+        case agentAttemptReconcile = "agent_attempt_reconcile"
+        case agentInputAdmission = "agent_input_admission"
+		case toolRecovery = "tool_recovery"
+    }
+
     public let code: Code
     public let recoverable: Bool
+    public let stage: Stage?
+    public let incidentID: String?
+	public let httpStatus: Int
+	public let providerCode: String
+	public let safeMessage: String
+	public let retryAfterSeconds: Int64
+
+    public init(
+        code: Code,
+        recoverable: Bool,
+        stage: Stage? = nil,
+		incidentID: String? = nil,
+		httpStatus: Int = 0,
+		providerCode: String = "",
+		safeMessage: String = "",
+		retryAfterSeconds: Int64 = 0
+    ) {
+        self.code = code
+        self.recoverable = recoverable
+        self.stage = stage
+        self.incidentID = incidentID
+		self.httpStatus = httpStatus
+		self.providerCode = providerCode
+		self.safeMessage = safeMessage
+		self.retryAfterSeconds = retryAfterSeconds
+    }
 }
 
 private indirect enum JSONValue: Codable {
@@ -124,15 +202,16 @@ private struct ErrorEnvelope: Decodable {
     let code: LocalIPCRemoteError.Code
     let message: String
     let recoverable: Bool
+    let stage: LocalIPCRemoteError.Stage?
 
     enum CodingKeys: String, CodingKey {
-        case code, message, recoverable
+        case code, message, recoverable, stage
     }
 
     init(from decoder: Decoder) throws {
         try rejectIPCUnknownKeys(
             decoder,
-            allowed: ["code", "message", "recoverable"]
+            allowed: ["code", "message", "recoverable", "stage"]
         )
         let values = try decoder.container(keyedBy: CodingKeys.self)
         code = try values.decode(LocalIPCRemoteError.Code.self, forKey: .code)
@@ -141,6 +220,10 @@ private struct ErrorEnvelope: Decodable {
             Bool.self,
             forKey: .recoverable
         ) ?? false
+        stage = try values.decodeIfPresent(
+            LocalIPCRemoteError.Stage.self,
+            forKey: .stage
+        )
     }
 }
 
@@ -214,7 +297,9 @@ public enum LocalIPCWire {
             }
             throw LocalIPCRemoteError(
                 code: error.code,
-                recoverable: error.recoverable
+                recoverable: error.recoverable,
+                stage: error.stage,
+                incidentID: envelope.requestID
             )
         } catch let error as LocalIPCRemoteError {
             throw error
@@ -347,13 +432,15 @@ private struct BuilderEditParams: Encodable {
     let viewVersion: String
     let field: String
     let value: String
+	let roleAgentDefinitionID: String
 
     enum CodingKeys: String, CodingKey {
         case draftID = "draft_id"
         case expectedRevision = "expected_revision"
         case catalogDigest = "catalog_digest"
         case viewVersion = "view_version"
-        case field, value
+		case field, value
+		case roleAgentDefinitionID = "role_agent_definition_id"
     }
 }
 
@@ -407,6 +494,7 @@ private struct TeamStatusParams: Encodable {
 
 private struct CredentialParams: Encodable {
     let providerID: String
+    let providerAccountID: String
     let credentialReference: String
     let expectedRevision: Int64
     let operationID: String?
@@ -414,11 +502,137 @@ private struct CredentialParams: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
         case credentialReference = "credential_reference"
         case expectedRevision = "expected_revision"
         case operationID = "operation_id"
         case secret
     }
+}
+
+struct ProviderAccountPolicyParams: Encodable {
+    let providerID: String
+    let providerAccountID: String
+    let expectedRevision: Int64
+    let maximumConcurrentAttempts: Int
+    let dispatchWindowSeconds: Int64
+    let maximumDispatchStarts: Int
+    let maximumAssignedBudgetUnits: Int64
+    let trustDomain: String
+    let retentionMode: String
+    let dataRegion: String
+    let operationID: String
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case expectedRevision = "expected_revision"
+        case maximumConcurrentAttempts = "maximum_concurrent_attempts"
+        case dispatchWindowSeconds = "dispatch_window_seconds"
+        case maximumDispatchStarts = "maximum_dispatch_starts"
+        case maximumAssignedBudgetUnits = "maximum_assigned_budget_units"
+        case trustDomain = "trust_domain"
+        case retentionMode = "retention_mode"
+        case dataRegion = "data_region"
+        case operationID = "operation_id"
+    }
+}
+
+struct ProviderModelRateCardParams: Encodable {
+    let providerID: String
+    let providerAccountID: String
+    let modelID: String
+    let expectedRevision: Int64
+    let currency: String
+    let inputTokenBasis: String
+    let inputMicrounitsPerMillion: Int64
+    let outputMicrounitsPerMillion: Int64
+    let cacheReadMicrounitsPerMillion: Int64
+    let cacheWriteMicrounitsPerMillion: Int64
+    let roundingMode: String
+    let operationID: String
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case modelID = "model_id"
+        case expectedRevision = "expected_revision"
+        case currency
+        case inputTokenBasis = "input_token_basis"
+        case inputMicrounitsPerMillion = "input_microunits_per_million"
+        case outputMicrounitsPerMillion = "output_microunits_per_million"
+        case cacheReadMicrounitsPerMillion = "cache_read_microunits_per_million"
+        case cacheWriteMicrounitsPerMillion = "cache_write_microunits_per_million"
+        case roundingMode = "rounding_mode"
+        case operationID = "operation_id"
+    }
+}
+
+struct RemoteToolBackendEnrollmentParams: Encodable {
+    let enrollmentID: String
+    let backendKind: String
+    let adapterID: String
+    let providerID: String
+    let providerAccountID: String
+    let providerAccountPolicyVersion: Int
+    let providerAccountPolicyRevision: Int64
+    let providerAccountPolicyDigest: String
+    let endpointFingerprint: String
+    let mcpServerID: String
+    let allowedTools: [String]
+    let expectedRevision: Int64
+    let maximumConcurrentCalls: Int
+    let maximumCallsPerAttempt: Int
+    let timeoutSeconds: Int64
+    let maximumResultBytes: Int
+    let maximumBudgetUnits: Int64
+    let operationID: String
+
+    enum CodingKeys: String, CodingKey {
+        case enrollmentID = "enrollment_id"
+        case backendKind = "backend_kind"
+        case adapterID = "adapter_id"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case providerAccountPolicyVersion = "provider_account_policy_version"
+        case providerAccountPolicyRevision = "provider_account_policy_revision"
+        case providerAccountPolicyDigest = "provider_account_policy_digest"
+        case endpointFingerprint = "endpoint_fingerprint"
+        case mcpServerID = "mcp_server_id"
+        case allowedTools = "allowed_tools"
+        case expectedRevision = "expected_revision"
+        case maximumConcurrentCalls = "maximum_concurrent_calls"
+        case maximumCallsPerAttempt = "maximum_calls_per_attempt"
+        case timeoutSeconds = "timeout_seconds"
+        case maximumResultBytes = "maximum_result_bytes"
+        case maximumBudgetUnits = "maximum_budget_units"
+        case operationID = "operation_id"
+    }
+}
+
+struct RemoteToolBackendEnrollmentRevokeParams: Encodable {
+    let enrollmentID: String
+    let providerID: String
+    let providerAccountID: String
+    let expectedRevision: Int64
+    let operationID: String
+
+    enum CodingKeys: String, CodingKey {
+        case enrollmentID = "enrollment_id"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case expectedRevision = "expected_revision"
+        case operationID = "operation_id"
+    }
+}
+
+private struct CredentialVaultResetParams: Encodable {
+    let confirmation: String
+}
+
+private struct CredentialVaultExportParams: Encodable {
+    let passphrase: Data
+    let destination: String
 }
 
 private struct IPCRequest<Params: Encodable>: Encodable {
@@ -441,25 +655,47 @@ public final class LocalIPCClient:
     LocalProductDecisionClientProtocol,
     LocalProductSetupClientProtocol,
     LocalProductExecutionClientProtocol,
+    LocalProductAgentRecoveryClientProtocol,
+	LocalProductToolRecoveryClientProtocol,
+    LocalProductAgentInputClientProtocol,
     LocalProductHandoffClientProtocol,
     LocalProductAssetClientProtocol
 {
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
+    public static let maximumRequestTimeoutSeconds = 55
     private let socketPath: String
     private let requestID: @Sendable () -> String
+    private let operationalDiagnostics: LocalOperationalDiagnostics
+    private let recordsInstalledDiagnostics: Bool
 
-    public init(
+    public convenience init(
         socketPath: String,
         requestID: @escaping @Sendable () -> String = {
             "loom-swift-\(UUID().uuidString.lowercased())"
         }
+    ) throws {
+        try self.init(
+            socketPath: socketPath,
+            requestID: requestID,
+            operationalDiagnostics: LocalOperationalDiagnostics.installedStore(),
+            recordsInstalledDiagnostics: Self.isInstalledSocketPath(socketPath)
+        )
+    }
+
+    init(
+        socketPath: String,
+        requestID: @escaping @Sendable () -> String,
+        operationalDiagnostics: LocalOperationalDiagnostics,
+        recordsInstalledDiagnostics: Bool = true
     ) throws {
         guard Self.validateSocketConfiguration(socketPath) else {
             throw LocalProductClientError.invalidSocket
         }
         self.socketPath = socketPath
         self.requestID = requestID
+        self.operationalDiagnostics = operationalDiagnostics
+        self.recordsInstalledDiagnostics = recordsInstalledDiagnostics
     }
 
     public static func defaultClient() throws -> LocalIPCClient {
@@ -689,6 +925,135 @@ public final class LocalIPCClient:
         return envelope
     }
 
+    public func sendAgentInput(
+        _ request: LocalProductAgentInputRequest,
+        incidentID: String
+    ) async throws -> LocalProductAgentInputReceipt {
+		let started = Date()
+        guard request.isValid, LocalIPCWire.validRequestID(incidentID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+		do {
+			let result = try await call(
+				method: "agent_input",
+				params: request,
+				incidentID: incidentID
+			)
+			let receipt = try LocalProductAgentInputWire.decodeReceipt(result)
+			guard receipt.incidentID == incidentID, receipt.mode == request.mode else {
+				throw LocalProductClientError.invalidResponse
+			}
+			recordAgentInput(
+				request: request, incidentID: incidentID, started: started,
+				result: "succeeded", failure: nil
+			)
+			return receipt
+		} catch {
+			let failure: LocalIPCRemoteError
+			if let remote = error as? LocalIPCRemoteError {
+				failure = remote
+			} else {
+				failure = LocalIPCRemoteError(
+					code: error as? LocalProductClientError == .invalidRequest
+						? .invalidRequest : .stateUnavailable,
+					recoverable: error as? LocalProductClientError != .invalidRequest,
+					stage: error as? LocalProductClientError == .invalidRequest
+						? .inputAdmission : .udsTransport,
+					incidentID: incidentID
+				)
+			}
+			recordAgentInput(
+				request: request, incidentID: incidentID, started: started,
+				result: "failed", failure: failure
+			)
+			throw failure
+		}
+    }
+
+    public func recoverAgentAttempt(
+        _ request: LocalProductAgentRecoveryRequest,
+        incidentID: String
+    ) async throws -> LocalProductAgentRecoveryResponse {
+        let started = Date()
+        guard request.isValid, LocalIPCWire.validRequestID(incidentID) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission,
+                incidentID: LocalIPCWire.validRequestID(incidentID) ? incidentID : nil
+            )
+            recordAgentRecovery(
+                request: request, incidentID: incidentID, started: started,
+                result: "failed", failure: failure
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: "agent_attempt_recovery",
+                params: request,
+                incidentID: incidentID
+            )
+            let response = try LocalProductAgentRecoveryWire.decodeResponse(result)
+            guard response.incidentID == incidentID,
+                  response.operation == request.operation else {
+                throw LocalProductClientError.invalidResponse
+            }
+            recordAgentRecovery(
+                request: request, incidentID: incidentID, started: started,
+                result: "succeeded", failure: nil
+            )
+            return response
+        } catch {
+            let failure = Self.agentRecoveryOperationError(error, incidentID: incidentID)
+            recordAgentRecovery(
+                request: request, incidentID: incidentID, started: started,
+                result: "failed", failure: failure
+            )
+            throw failure
+        }
+    }
+
+    public func recoverToolCall(
+        _ request: LocalProductToolRecoveryRequest,
+        incidentID: String
+    ) async throws -> LocalProductToolRecoveryResponse {
+        let started = Date()
+        guard request.isValid, LocalIPCWire.validRequestID(incidentID) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission,
+                incidentID: LocalIPCWire.validRequestID(incidentID) ? incidentID : nil
+            )
+            recordToolRecovery(
+                request: request, incidentID: incidentID, started: started,
+                result: "failed", failure: failure
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: "tool_recovery", params: request, incidentID: incidentID
+            )
+            let response = try LocalProductToolRecoveryWire.decodeResponse(result)
+            guard response.incidentID == incidentID,
+                  response.operation == request.operation else {
+                throw LocalProductClientError.invalidResponse
+            }
+            recordToolRecovery(
+                request: request, incidentID: incidentID, started: started,
+                result: "succeeded", failure: nil
+            )
+            return response
+        } catch {
+            let failure = Self.agentRecoveryOperationError(error, incidentID: incidentID)
+            recordToolRecovery(
+                request: request, incidentID: incidentID, started: started,
+                result: "failed", failure: failure
+            )
+            throw failure
+        }
+    }
+
     public func proposeSideTask(
         _ request: LocalProductSideTaskProposalRequest
     ) async throws -> LocalProductSideTaskProposalResult {
@@ -723,6 +1088,447 @@ public final class LocalIPCClient:
             params: EmptyParams()
         )
         return try LocalProductSetupWire.decodeSnapshot(result)
+    }
+
+    public func configureProviderAccountPolicy(
+        providerID: String,
+        providerAccountID: String,
+        expectedRevision: Int64,
+        maximumConcurrentAttempts: Int,
+        dispatchWindowSeconds: Int64,
+        maximumDispatchStarts: Int,
+        maximumAssignedBudgetUnits: Int64,
+        trustDomain: String,
+        retentionMode: String,
+        dataRegion: String
+    ) async throws -> LocalProductProviderAccountPolicyResult {
+        let operation = "provider_account_policy_configure"
+        let started = Date()
+        let incidentID = requestID()
+        let diagnosticAccountID = Self.validProviderAccountID(
+            providerAccountID,
+            providerID: providerID
+        ) ? providerAccountID : nil
+        guard Self.validIdentifier(providerID),
+              Self.validProviderAccountID(
+                providerAccountID,
+                providerID: providerID
+              ),
+              expectedRevision >= 0,
+              expectedRevision < Int64(UInt32.max),
+              (1...64).contains(maximumConcurrentAttempts),
+              (1...86_400).contains(dispatchWindowSeconds),
+              (1...1_000_000).contains(maximumDispatchStarts),
+              maximumAssignedBudgetUnits >= 0 else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: operation,
+                providerID: providerID,
+                providerAccountID: diagnosticAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+        guard ["external_provider", "enterprise_tenant", "local_runtime"].contains(trustDomain),
+              ["provider_default", "zero_data_retention", "limited_retention"].contains(retentionMode),
+              ["global", "us", "eu", "apac", "local"].contains(dataRegion) else {
+            throw LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+        }
+        do {
+            let result = try await call(
+                method: operation,
+                params: ProviderAccountPolicyParams(
+                    providerID: providerID,
+                    providerAccountID: providerAccountID,
+                    expectedRevision: expectedRevision,
+                    maximumConcurrentAttempts: maximumConcurrentAttempts,
+                    dispatchWindowSeconds: dispatchWindowSeconds,
+                    maximumDispatchStarts: maximumDispatchStarts,
+                    maximumAssignedBudgetUnits: maximumAssignedBudgetUnits,
+                    trustDomain: trustDomain,
+                    retentionMode: retentionMode,
+                    dataRegion: dataRegion,
+                    operationID: "provider-policy-\(UUID().uuidString.lowercased())"
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try JSONDecoder().decode(
+                LocalProductProviderAccountPolicyResult.self,
+                from: result
+            )
+            guard decoded.providerID == providerID,
+                  decoded.providerAccountID == providerAccountID,
+                  decoded.revision == expectedRevision + 1,
+                  decoded.maximumConcurrentAttempts == maximumConcurrentAttempts,
+                  decoded.dispatchWindowSeconds == dispatchWindowSeconds,
+                  decoded.maximumDispatchStarts == maximumDispatchStarts,
+                  decoded.maximumAssignedBudgetUnits == maximumAssignedBudgetUnits else {
+                throw LocalProductClientError.invalidResponse
+            }
+            guard decoded.policyVersion == 2,
+                  decoded.trustDomain == trustDomain,
+                  decoded.retentionMode == retentionMode,
+                  decoded.dataRegion == dataRegion else {
+                throw LocalProductClientError.invalidResponse
+            }
+            if recordsInstalledDiagnostics {
+                try? operationalDiagnostics.recordCredential(
+                    incidentID: incidentID,
+                    operation: operation,
+                    providerID: providerID,
+                    providerAccountID: providerAccountID,
+                    stage: .projectionRefresh,
+                    result: "succeeded",
+                    errorCode: nil,
+                    retryable: false,
+                    elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+                )
+            }
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: operation,
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+    }
+
+    public func configureProviderModelRateCard(
+        providerID: String,
+        providerAccountID: String,
+        modelID: String,
+        expectedRevision: Int64,
+        currency: String,
+        inputTokenBasis: String,
+        inputMicrounitsPerMillion: Int64,
+        outputMicrounitsPerMillion: Int64,
+        cacheReadMicrounitsPerMillion: Int64,
+        cacheWriteMicrounitsPerMillion: Int64
+    ) async throws -> LocalProductProviderModelRateCardResult {
+        let operation = "provider_model_rate_card_configure"
+        let started = Date()
+        let incidentID = requestID()
+        let rates = [
+            inputMicrounitsPerMillion, outputMicrounitsPerMillion,
+            cacheReadMicrounitsPerMillion, cacheWriteMicrounitsPerMillion,
+        ]
+        guard Self.validIdentifier(providerID),
+              Self.validProviderAccountID(providerAccountID, providerID: providerID),
+              Self.validModelID(modelID),
+              expectedRevision >= 0, expectedRevision < Int64(UInt32.max),
+              currency.utf8.count == 3,
+              currency.utf8.allSatisfy({ $0 >= 0x41 && $0 <= 0x5a }),
+              ["input_includes_cache", "input_excludes_cache"].contains(inputTokenBasis),
+              rates.allSatisfy({ (0...1_000_000_000_000).contains($0) }) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: operation, providerID: providerID,
+                providerAccountID: Self.validProviderAccountID(
+                    providerAccountID, providerID: providerID
+                ) ? providerAccountID : nil,
+                failure: failure, incidentID: incidentID, started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: operation,
+                params: ProviderModelRateCardParams(
+                    providerID: providerID, providerAccountID: providerAccountID,
+                    modelID: modelID, expectedRevision: expectedRevision,
+                    currency: currency, inputTokenBasis: inputTokenBasis,
+                    inputMicrounitsPerMillion: inputMicrounitsPerMillion,
+                    outputMicrounitsPerMillion: outputMicrounitsPerMillion,
+                    cacheReadMicrounitsPerMillion: cacheReadMicrounitsPerMillion,
+                    cacheWriteMicrounitsPerMillion: cacheWriteMicrounitsPerMillion,
+                    roundingMode: "ceiling_per_attempt",
+                    operationID: "provider-rate-card-\(UUID().uuidString.lowercased())"
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try JSONDecoder().decode(
+                LocalProductProviderModelRateCardResult.self, from: result
+            )
+            guard decoded.providerID == providerID,
+                  decoded.providerAccountID == providerAccountID,
+                  decoded.modelID == modelID,
+                  decoded.revision == expectedRevision + 1,
+                  decoded.currency == currency,
+                  decoded.inputTokenBasis == inputTokenBasis,
+                  decoded.inputMicrounitsPerMillion == inputMicrounitsPerMillion,
+                  decoded.outputMicrounitsPerMillion == outputMicrounitsPerMillion,
+                  decoded.cacheReadMicrounitsPerMillion == cacheReadMicrounitsPerMillion,
+                  decoded.cacheWriteMicrounitsPerMillion == cacheWriteMicrounitsPerMillion else {
+                throw LocalProductClientError.invalidResponse
+            }
+            if recordsInstalledDiagnostics {
+                try? operationalDiagnostics.recordCredential(
+                    incidentID: incidentID, operation: operation,
+                    providerID: providerID, providerAccountID: providerAccountID,
+                    stage: .projectionRefresh, result: "succeeded",
+                    errorCode: nil, retryable: false,
+                    elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+                )
+            }
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: operation, providerID: providerID,
+                providerAccountID: providerAccountID, failure: failure,
+                incidentID: incidentID, started: started
+            )
+            throw failure
+        }
+    }
+
+    public func configureRemoteToolBackend(
+        _ command: LocalProductRemoteToolBackendEnrollmentCommand
+    ) async throws -> LocalProductRemoteToolBackendEnrollmentResult {
+        let operation = "remote_tool_backend_enrollment_configure"
+        let started = Date()
+        let incidentID = requestID()
+        guard command.valid else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: operation, providerID: command.providerID,
+                providerAccountID: Self.validProviderAccountID(
+                    command.providerAccountID,
+                    providerID: command.providerID
+                ) ? command.providerAccountID : nil,
+                failure: failure, incidentID: incidentID, started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: operation,
+                params: RemoteToolBackendEnrollmentParams(
+                    enrollmentID: command.enrollmentID,
+                    backendKind: command.backendKind,
+                    adapterID: command.adapterID,
+                    providerID: command.providerID,
+                    providerAccountID: command.providerAccountID,
+                    providerAccountPolicyVersion: command.providerAccountPolicyVersion,
+                    providerAccountPolicyRevision: command.providerAccountPolicyRevision,
+                    providerAccountPolicyDigest: command.providerAccountPolicyDigest,
+                    endpointFingerprint: command.endpointFingerprint,
+                    mcpServerID: command.mcpServerID,
+                    allowedTools: command.allowedTools,
+                    expectedRevision: command.expectedRevision,
+                    maximumConcurrentCalls: command.maximumConcurrentCalls,
+                    maximumCallsPerAttempt: command.maximumCallsPerAttempt,
+                    timeoutSeconds: command.timeoutSeconds,
+                    maximumResultBytes: command.maximumResultBytes,
+                    maximumBudgetUnits: command.maximumBudgetUnits,
+                    operationID: "remote-tool-enrollment-\(UUID().uuidString.lowercased())"
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try JSONDecoder().decode(
+                LocalProductRemoteToolBackendEnrollmentResult.self,
+                from: result
+            )
+            guard Self.remoteToolResult(decoded, matches: command),
+                  decoded.status == "active", decoded.policyCurrent else {
+                throw LocalProductClientError.invalidResponse
+            }
+            recordRemoteToolSuccess(
+                operation: operation, command: command,
+                incidentID: incidentID, started: started
+            )
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: operation, providerID: command.providerID,
+                providerAccountID: command.providerAccountID,
+                failure: failure, incidentID: incidentID, started: started
+            )
+            throw failure
+        }
+    }
+
+    public func revokeRemoteToolBackend(
+        _ command: LocalProductRemoteToolBackendEnrollmentRevokeCommand
+    ) async throws -> LocalProductRemoteToolBackendEnrollmentResult {
+        let operation = "remote_tool_backend_enrollment_revoke"
+        let started = Date()
+        let incidentID = requestID()
+        guard command.valid else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: operation, providerID: command.providerID,
+                providerAccountID: nil, failure: failure,
+                incidentID: incidentID, started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: operation,
+                params: RemoteToolBackendEnrollmentRevokeParams(
+                    enrollmentID: command.enrollmentID,
+                    providerID: command.providerID,
+                    providerAccountID: command.providerAccountID,
+                    expectedRevision: command.expectedRevision,
+                    operationID: "remote-tool-revoke-\(UUID().uuidString.lowercased())"
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try JSONDecoder().decode(
+                LocalProductRemoteToolBackendEnrollmentResult.self,
+                from: result
+            )
+            guard decoded.enrollmentID == command.enrollmentID,
+                  decoded.providerID == command.providerID,
+                  decoded.providerAccountID == command.providerAccountID,
+                  decoded.revision == command.expectedRevision + 1,
+                  decoded.status == "revoked" else {
+                throw LocalProductClientError.invalidResponse
+            }
+            if recordsInstalledDiagnostics {
+                try? operationalDiagnostics.recordCredential(
+                    incidentID: incidentID, operation: operation,
+                    providerID: command.providerID,
+                    providerAccountID: command.providerAccountID,
+                    stage: .projectionRefresh, result: "succeeded",
+                    errorCode: nil, retryable: false,
+                    elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+                )
+            }
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: operation, providerID: command.providerID,
+                providerAccountID: command.providerAccountID,
+                failure: failure, incidentID: incidentID, started: started
+            )
+            throw failure
+        }
+    }
+
+    private static func remoteToolResult(
+        _ result: LocalProductRemoteToolBackendEnrollmentResult,
+        matches command: LocalProductRemoteToolBackendEnrollmentCommand
+    ) -> Bool {
+        result.enrollmentID == command.enrollmentID
+            && result.backendKind == command.backendKind
+            && result.adapterID == command.adapterID
+            && result.providerID == command.providerID
+            && result.providerAccountID == command.providerAccountID
+            && result.providerAccountPolicyVersion
+                == command.providerAccountPolicyVersion
+            && result.providerAccountPolicyRevision
+                == command.providerAccountPolicyRevision
+            && result.providerAccountPolicyDigest
+                == command.providerAccountPolicyDigest
+            && result.endpointFingerprint == command.endpointFingerprint
+            && result.mcpServerID == command.mcpServerID
+            && result.allowedTools == command.allowedTools
+            && result.revision == command.expectedRevision + 1
+            && result.maximumConcurrentCalls == command.maximumConcurrentCalls
+            && result.maximumCallsPerAttempt == command.maximumCallsPerAttempt
+            && result.timeoutSeconds == command.timeoutSeconds
+            && result.maximumResultBytes == command.maximumResultBytes
+            && result.maximumBudgetUnits == command.maximumBudgetUnits
+    }
+
+    private func recordRemoteToolSuccess(
+        operation: String,
+        command: LocalProductRemoteToolBackendEnrollmentCommand,
+        incidentID: String,
+        started: Date
+    ) {
+        guard recordsInstalledDiagnostics else { return }
+        try? operationalDiagnostics.recordCredential(
+            incidentID: incidentID, operation: operation,
+            providerID: command.providerID,
+            providerAccountID: command.providerAccountID,
+            stage: .projectionRefresh, result: "succeeded",
+            errorCode: nil, retryable: false,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+    public func rotateCredentialVault() async throws {
+        _ = try await call(
+            method: "credential_vault_rotate",
+            params: EmptyParams()
+        )
+    }
+
+    public func lockCredentialVault() async throws {
+        _ = try await call(
+            method: "credential_vault_lock",
+            params: EmptyParams()
+        )
+    }
+
+    public func unlockCredentialVault() async throws {
+        _ = try await call(
+            method: "credential_vault_unlock",
+            params: EmptyParams()
+        )
+    }
+
+    public func resetCredentialVault() async throws {
+        _ = try await call(
+            method: "credential_vault_reset",
+            params: CredentialVaultResetParams(
+                confirmation: "reset_recovery_vault"
+            )
+        )
+    }
+
+    public func exportCredentialVault(
+        passphrase: String,
+        destination: String
+    ) async throws -> LocalProductCredentialVaultExportResult {
+        var passphraseData = Data(passphrase.utf8)
+        defer { passphraseData.resetBytes(in: 0..<passphraseData.count) }
+        guard passphraseData.count >= 12, passphraseData.count <= 1_024,
+              destination.hasPrefix("/"), destination.hasSuffix(".loomvault"),
+              destination.utf8.count <= 1_024 else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "credential_vault_export",
+            params: CredentialVaultExportParams(
+                passphrase: passphraseData,
+                destination: destination
+            )
+        )
+        return try JSONDecoder().decode(
+            LocalProductCredentialVaultExportResult.self,
+            from: result
+        )
     }
 
     public func connectCodex() async throws -> LocalProductProviderConnectResult {
@@ -784,9 +1590,26 @@ public final class LocalIPCClient:
         field: String,
         value: String
     ) async throws -> LocalProductBuilderSession {
-        guard ["team_name", "purpose", "main_role", "subagent_role"]
-            .contains(field),
-              Self.validBuilderText(value) else {
+		return try await editBuilder(
+			session: session,
+			field: field,
+			value: value,
+			roleAgentDefinitionID: ""
+		)
+	}
+
+	public func editBuilder(
+		session: LocalProductBuilderSession,
+		field: String,
+		value: String,
+		roleAgentDefinitionID: String
+	) async throws -> LocalProductBuilderSession {
+		guard LocalProductStore.allowsBuilderEditField(field),
+			LocalProductStore.validBuilderEditTarget(
+				field: field,
+				roleAgentDefinitionID: roleAgentDefinitionID
+			),
+			Self.validBuilderText(value) else {
             throw LocalProductClientError.invalidRequest
         }
         let result = try await call(
@@ -797,7 +1620,8 @@ public final class LocalIPCClient:
                 catalogDigest: session.catalogDigest,
                 viewVersion: session.viewVersion,
                 field: field,
-                value: value
+				value: value,
+				roleAgentDefinitionID: roleAgentDefinitionID
             )
         )
         return try LocalProductSetupWire.decodeBuilderSession(result)
@@ -869,29 +1693,118 @@ public final class LocalIPCClient:
     public func configureMiniMax(
         secret: String
     ) async throws -> LocalProductCredentialSetupResult {
-        guard Self.validSecret(secret) else {
-            throw LocalProductClientError.invalidRequest
-        }
-        let result = try await call(
-            method: "credential_configure",
-            params: CredentialParams(
-                providerID: "minimax",
-                credentialReference: "",
-                expectedRevision: 0,
-                operationID: nil,
-                secret: secret
-            )
+        try await configureCredential(providerID: "minimax", secret: secret)
+    }
+
+    public func configureCredential(
+        providerID: String,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        try await configureCredential(
+            providerID: providerID,
+            providerAccountID: providerID + ".primary",
+            secret: secret
         )
-        return try LocalProductSetupWire.decodeCredentialResult(result)
+    }
+
+    public func configureCredential(
+        providerID: String,
+        providerAccountID: String,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        let started = Date()
+        let incidentID = requestID()
+        guard Self.validIdentifier(providerID),
+              Self.validProviderAccountID(providerAccountID, providerID: providerID),
+              let normalizedSecret = Self.normalizedCredentialSecret(secret) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: "credential_configure",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: "credential_configure",
+                params: CredentialParams(
+                    providerID: providerID,
+                    providerAccountID: providerAccountID,
+                    credentialReference: "",
+                    expectedRevision: 0,
+                    operationID: nil,
+                    secret: normalizedSecret
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try LocalProductSetupWire.decodeCredentialResult(result)
+            recordCredentialResult(
+                operation: "credential_configure",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                result: decoded,
+                incidentID: incidentID,
+                started: started
+            )
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: "credential_configure",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
     }
 
     public func verifyMiniMax(
         reference: String,
         revision: Int64
     ) async throws -> LocalProductCredentialSetupResult {
+        return try await verifyCredential(
+            providerID: "minimax",
+            reference: reference,
+            revision: revision
+        )
+    }
+
+    public func verifyCredential(
+        providerID: String,
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
+        try await verifyCredential(
+            providerID: providerID,
+            providerAccountID: providerID + ".primary",
+            reference: reference,
+            revision: revision
+        )
+    }
+
+    public func verifyCredential(
+        providerID: String,
+        providerAccountID: String,
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
         let operationID = UUID().uuidString.lowercased()
         return try await credentialMutation(
             method: "credential_verify",
+            providerID: providerID,
+            providerAccountID: providerAccountID,
             reference: reference,
             revision: revision,
             operationID: operationID,
@@ -904,14 +1817,66 @@ public final class LocalIPCClient:
         revision: Int64,
         secret: String
     ) async throws -> LocalProductCredentialSetupResult {
-        guard Self.validSecret(secret) else {
-            throw LocalProductClientError.invalidRequest
-        }
-        return try await credentialMutation(
-            method: "credential_replace",
+        try await replaceCredential(
+            providerID: "minimax",
             reference: reference,
             revision: revision,
             secret: secret
+        )
+    }
+
+    public func replaceCredential(
+        providerID: String,
+        reference: String,
+        revision: Int64,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        try await replaceCredential(
+            providerID: providerID,
+            providerAccountID: providerID + ".primary",
+            reference: reference,
+            revision: revision,
+            secret: secret
+        )
+    }
+
+    public func replaceCredential(
+        providerID: String,
+        providerAccountID: String,
+        reference: String,
+        revision: Int64,
+        secret: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        let started = Date()
+        let incidentID = requestID()
+        guard Self.validIdentifier(providerID),
+              Self.validProviderAccountID(providerAccountID, providerID: providerID),
+              let normalizedSecret = Self.normalizedCredentialSecret(secret) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: "credential_replace",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+        return try await credentialMutation(
+            method: "credential_replace",
+            providerID: providerID,
+            providerAccountID: providerAccountID,
+            reference: reference,
+            revision: revision,
+            incidentID: incidentID,
+            started: started,
+            secret: normalizedSecret
         )
     }
 
@@ -919,8 +1884,36 @@ public final class LocalIPCClient:
         reference: String,
         revision: Int64
     ) async throws -> LocalProductCredentialSetupResult {
+        try await revokeCredential(
+            providerID: "minimax",
+            reference: reference,
+            revision: revision
+        )
+    }
+
+    public func revokeCredential(
+        providerID: String,
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
+        try await revokeCredential(
+            providerID: providerID,
+            providerAccountID: providerID + ".primary",
+            reference: reference,
+            revision: revision
+        )
+    }
+
+    public func revokeCredential(
+        providerID: String,
+        providerAccountID: String,
+        reference: String,
+        revision: Int64
+    ) async throws -> LocalProductCredentialSetupResult {
         try await credentialMutation(
             method: "credential_revoke",
+            providerID: providerID,
+            providerAccountID: providerAccountID,
             reference: reference,
             revision: revision,
             secret: ""
@@ -947,28 +1940,201 @@ public final class LocalIPCClient:
     }
 
     public func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
-        guard Self.validIdentifier(threadID), !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw LocalProductClientError.invalidRequest
-        }
-        let result = try await call(
-            method: "chat_message",
-            params: LocalProductChatMessageRequest(threadID: threadID, content: content)
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: ""
         )
-        return try LocalProductWire.decodeChatThread(result)
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String
+    ) async throws -> LocalProductChatThread {
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: profileID,
+            incidentID: requestID()
+        )
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String,
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: profileID,
+            contextMode: nil,
+            incidentID: incidentID
+        )
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String,
+        contextMode: LocalProductConversationContextMode?,
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: profileID,
+            contextMode: contextMode,
+            expectedExecutionBinding: nil,
+            incidentID: incidentID
+        )
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String,
+        contextMode: LocalProductConversationContextMode?,
+        expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: profileID,
+            modelID: "",
+            reasoningEffort: "",
+            contextMode: contextMode,
+            expectedExecutionBinding: expectedExecutionBinding,
+            incidentID: incidentID
+        )
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String,
+        modelID: String,
+        reasoningEffort: String,
+        contextMode: LocalProductConversationContextMode?,
+        expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
+        let started = Date()
+        guard Self.validIdentifier(threadID),
+              profileID.isEmpty || Self.validIdentifier(profileID),
+              modelID.isEmpty || Self.validModelID(modelID),
+              reasoningEffort.isEmpty || Self.validIdentifier(reasoningEffort),
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              LocalIPCWire.validRequestID(incidentID) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+            recordConversationFailure(
+                threadID: threadID,
+                profileID: profileID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: "chat_message",
+                params: LocalProductChatMessageRequest(
+                    threadID: threadID,
+                    content: content,
+                    profileID: profileID,
+                    modelID: modelID,
+                    reasoningEffort: reasoningEffort,
+                    contextMode: contextMode,
+                    expectedExecutionBinding: expectedExecutionBinding
+                ),
+                incidentID: incidentID
+            )
+            let thread = try LocalProductWire.decodeChatThread(result)
+            if let failure = Self.conversationAttemptError(
+                thread,
+                incidentID: incidentID
+            ) {
+                recordConversationFailure(
+                    threadID: threadID,
+                    profileID: profileID,
+                    failure: failure,
+                    incidentID: incidentID,
+                    started: started
+                )
+            } else {
+                recordConversationResult(
+                    threadID: threadID,
+                    profileID: profileID,
+                    incidentID: incidentID,
+                    started: started
+                )
+            }
+            return thread
+        } catch {
+            let failure = Self.conversationOperationError(
+                error,
+                incidentID: incidentID
+            )
+            recordConversationFailure(
+                threadID: threadID,
+                profileID: profileID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+    }
+
+    static func conversationAttemptError(
+        _ thread: LocalProductChatThread,
+        incidentID: String
+    ) -> LocalIPCRemoteError? {
+        guard let attempt = thread.attempts.last(where: {
+            $0.incidentID == incidentID && $0.status == "failed"
+        }) else {
+            return nil
+        }
+        return LocalIPCRemoteError(
+            code: LocalIPCRemoteError.Code(rawValue: attempt.failureCode)
+                ?? .stateUnavailable,
+            recoverable: attempt.retryable,
+            stage: LocalIPCRemoteError.Stage(rawValue: attempt.failureStage)
+                ?? .conversationDispatch,
+			incidentID: incidentID,
+			httpStatus: attempt.httpStatus,
+			providerCode: attempt.providerCode,
+			safeMessage: attempt.failureMessage,
+			retryAfterSeconds: attempt.retryAfterSeconds
+        )
     }
 
     func call<Params: Encodable>(
         method: String,
-        params: Params
+        params: Params,
+        incidentID: String? = nil
     ) async throws -> Data {
-        let id = requestID()
+        let id = incidentID ?? requestID()
         let methods = Set([
-            "ping", "snapshot", "timeline_page", "setup_snapshot",
-            "codex_connect",
+            "ping", "agent_attempt_recovery", "tool_recovery", "agent_input", "snapshot", "timeline_page", "setup_snapshot",
+            "codex_connect", "provider_account_policy_configure",
+            "provider_model_rate_card_configure",
             "builder_start", "builder_answer", "builder_edit",
             "builder_validate", "builder_confirm", "team_archive",
             "team_restore", "credential_configure", "credential_verify",
-            "credential_replace", "credential_revoke", "mission_decision",
+            "credential_replace", "credential_revoke", "credential_vault_rotate",
+            "credential_vault_lock", "credential_vault_unlock", "credential_vault_reset",
+            "credential_vault_export",
+            "mission_decision",
             "mission_execution",
             "side_task_handoff",
             "chat_thread",
@@ -1073,7 +2239,17 @@ public final class LocalIPCClient:
     }
 
     static func requestTimeoutSeconds(for method: String) -> Int {
-        method == "credential_verify" || method == "mission_execution" ? 10 : 5
+        switch method {
+        case "chat_message", "agent_attempt_recovery":
+            return 55
+        case "credential_verify", "credential_vault_rotate",
+             "credential_vault_lock", "credential_vault_unlock", "credential_vault_reset",
+             "credential_vault_export",
+			 "mission_execution", "tool_recovery":
+            return 15
+        default:
+            return 5
+        }
     }
 
     static func validJourneyID(_ value: String) -> Bool {
@@ -1091,7 +2267,7 @@ public final class LocalIPCClient:
         guard validateSocketPath(path) else {
             throw LocalProductClientError.invalidSocket
         }
-        guard (1...10).contains(timeoutSeconds) else {
+        guard (1...maximumRequestTimeoutSeconds).contains(timeoutSeconds) else {
             throw LocalProductClientError.invalidRequest
         }
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -1229,6 +2405,45 @@ public final class LocalIPCClient:
         }
     }
 
+    public static func validModelID(_ value: String) -> Bool {
+        guard (1...256).contains(value.utf8.count),
+              value == value.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy {
+            !CharacterSet.controlCharacters.contains($0)
+        }
+    }
+
+    public static func validProviderAccountID(
+        _ value: String,
+        providerID: String
+    ) -> Bool {
+        guard value.hasPrefix(providerID + "."), value.utf8.count <= 128 else {
+            return false
+        }
+        let suffix = value.dropFirst(providerID.count + 1)
+        guard !suffix.isEmpty,
+              suffix.first != ".", suffix.last != ".",
+              suffix.first != "-", suffix.last != "-" else {
+            return false
+        }
+        var previousSeparator = false
+        for scalar in suffix.unicodeScalars {
+            let isAlphaNumeric = scalar.value >= 97 && scalar.value <= 122 ||
+                scalar.value >= 48 && scalar.value <= 57
+            let isSeparator = scalar == "." || scalar == "-"
+            if isAlphaNumeric {
+                previousSeparator = false
+            } else if isSeparator && !previousSeparator {
+                previousSeparator = true
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
     static func validTimelineCursor(_ value: String) -> Bool {
         if value.isEmpty { return true }
         guard (1...(32 << 10)).contains(value.utf8.count),
@@ -1277,25 +2492,359 @@ public final class LocalIPCClient:
 
     private func credentialMutation(
         method: String,
+        providerID: String,
+        providerAccountID: String,
         reference: String,
         revision: Int64,
         operationID: String? = nil,
+        incidentID providedIncidentID: String? = nil,
+        started providedStart: Date? = nil,
         secret: String
     ) async throws -> LocalProductCredentialSetupResult {
-        guard Self.validIdentifier(reference), revision > 0 else {
-            throw LocalProductClientError.invalidRequest
-        }
-        let result = try await call(
-            method: method,
-            params: CredentialParams(
-                providerID: "minimax",
-                credentialReference: reference,
-                expectedRevision: revision,
-                operationID: operationID,
-                secret: secret
+        let started = providedStart ?? Date()
+        let incidentID = providedIncidentID ?? requestID()
+        guard Self.validIdentifier(providerID),
+              Self.validProviderAccountID(providerAccountID, providerID: providerID),
+              Self.validIdentifier(reference), revision > 0 else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
             )
+            recordCredentialFailure(
+                operation: method,
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: method,
+                params: CredentialParams(
+                    providerID: providerID,
+                    providerAccountID: providerAccountID,
+                    credentialReference: reference,
+                    expectedRevision: revision,
+                    operationID: operationID,
+                    secret: secret
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try LocalProductSetupWire.decodeCredentialResult(result)
+            recordCredentialResult(
+                operation: method,
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                result: decoded,
+                incidentID: incidentID,
+                started: started
+            )
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: method,
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+    }
+
+    private func recordCredentialResult(
+        operation: String,
+        providerID: String,
+        providerAccountID: String,
+        result: LocalProductCredentialSetupResult,
+        incidentID: String,
+        started: Date
+    ) {
+        guard recordsInstalledDiagnostics else { return }
+        if result.status == "rejected" {
+            let timeout = result.reason == "timeout"
+            try? operationalDiagnostics.recordCredential(
+                incidentID: incidentID,
+                operation: operation,
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                stage: timeout ? .providerConnect : .providerAuth,
+                result: "failed",
+                errorCode: timeout ? .timeout : .credentialRejected,
+                retryable: timeout,
+                elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+            )
+            return
+        }
+        try? operationalDiagnostics.recordCredential(
+            incidentID: incidentID,
+            operation: operation,
+            providerID: providerID,
+            providerAccountID: providerAccountID,
+            stage: .projectionRefresh,
+            result: "succeeded",
+            errorCode: nil,
+            retryable: false,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
         )
-        return try LocalProductSetupWire.decodeCredentialResult(result)
+    }
+
+    private func recordCredentialFailure(
+        operation: String,
+        providerID: String,
+        providerAccountID: String?,
+        failure: Error,
+        incidentID: String,
+        started: Date
+    ) {
+        guard recordsInstalledDiagnostics else { return }
+        guard let remote = failure as? LocalIPCRemoteError else { return }
+        try? operationalDiagnostics.recordCredential(
+            incidentID: incidentID,
+            operation: operation,
+            providerID: providerID,
+            providerAccountID: providerAccountID,
+            stage: remote.stage ?? .daemonAdmission,
+            result: "failed",
+            errorCode: remote.code,
+            retryable: remote.recoverable,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+    private func recordConversationResult(
+        threadID: String,
+        profileID: String,
+        incidentID: String,
+        started: Date
+    ) {
+        guard recordsInstalledDiagnostics else { return }
+        try? operationalDiagnostics.recordConversation(
+            incidentID: incidentID,
+            threadID: threadID,
+            profileID: profileID,
+            stage: .conversationDispatch,
+            result: "succeeded",
+            errorCode: nil,
+            retryable: false,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+	private func recordAgentInput(
+		request: LocalProductAgentInputRequest,
+		incidentID: String,
+		started: Date,
+		result: String,
+		failure: LocalIPCRemoteError?
+	) {
+		guard recordsInstalledDiagnostics else { return }
+		try? operationalDiagnostics.recordAgentInput(
+			incidentID: incidentID,
+			request: request,
+			stage: failure?.stage ?? .agentInputAdmission,
+			result: result,
+			errorCode: failure?.code,
+			retryable: failure?.recoverable ?? false,
+			elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+		)
+	}
+
+    private func recordAgentRecovery(
+        request: LocalProductAgentRecoveryRequest,
+        incidentID: String,
+        started: Date,
+        result: String,
+        failure: LocalIPCRemoteError?
+    ) {
+        guard recordsInstalledDiagnostics,
+              LocalIPCWire.validRequestID(incidentID), request.isValid else { return }
+        try? operationalDiagnostics.recordAgentRecovery(
+            incidentID: incidentID,
+            operation: request.operation,
+            stage: failure?.stage ?? .agentAttemptReconcile,
+            result: result,
+            errorCode: failure?.code,
+            retryable: failure?.recoverable ?? false,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+    private func recordToolRecovery(
+        request: LocalProductToolRecoveryRequest,
+        incidentID: String,
+        started: Date,
+        result: String,
+        failure: LocalIPCRemoteError?
+    ) {
+        guard recordsInstalledDiagnostics,
+              LocalIPCWire.validRequestID(incidentID), request.isValid else { return }
+        try? operationalDiagnostics.recordToolRecovery(
+            incidentID: incidentID,
+            operation: request.operation,
+            stage: failure?.stage ?? .toolRecovery,
+            result: result,
+            errorCode: failure?.code,
+            retryable: failure?.recoverable ?? false,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+    private static func agentRecoveryOperationError(
+        _ error: Error,
+        incidentID: String
+    ) -> LocalIPCRemoteError {
+        if let remote = error as? LocalIPCRemoteError { return remote }
+        guard let local = error as? LocalProductClientError else {
+            return LocalIPCRemoteError(
+                code: .internal, recoverable: true,
+                stage: .udsTransport, incidentID: incidentID
+            )
+        }
+        switch local {
+        case .invalidRequest:
+            return LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+        case .timeout:
+            return LocalIPCRemoteError(
+                code: .timeout, recoverable: true,
+                stage: .udsTransport, incidentID: incidentID
+            )
+        case .invalidResponse:
+            return LocalIPCRemoteError(
+                code: .invalidResponse, recoverable: true,
+                stage: .udsTransport, incidentID: incidentID
+            )
+        case .invalidSocket, .unavailable, .notFound:
+            return LocalIPCRemoteError(
+                code: .stateUnavailable, recoverable: true,
+                stage: .udsTransport, incidentID: incidentID
+            )
+        }
+    }
+
+    private func recordConversationFailure(
+        threadID: String,
+        profileID: String,
+        failure: Error,
+        incidentID: String,
+        started: Date
+    ) {
+        guard recordsInstalledDiagnostics,
+              let remote = failure as? LocalIPCRemoteError else {
+            return
+        }
+        try? operationalDiagnostics.recordConversation(
+            incidentID: incidentID,
+            threadID: threadID,
+            profileID: profileID,
+            stage: remote.stage ?? .conversationDispatch,
+            result: "failed",
+            errorCode: remote.code,
+			httpStatus: remote.httpStatus,
+			providerErrorCode: remote.providerCode,
+			retryAfterSeconds: remote.retryAfterSeconds,
+            retryable: remote.recoverable,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+    private static func elapsedMilliseconds(since started: Date) -> Int64 {
+        max(Int64(Date().timeIntervalSince(started) * 1_000), 0)
+    }
+
+    private static func isInstalledSocketPath(_ path: String) -> Bool {
+        let expected = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .appendingPathComponent("Library/Application Support/Loom/run/loomd.sock")
+            .path
+        return URL(fileURLWithPath: path).standardizedFileURL.path == expected
+    }
+
+    private static func credentialOperationError(
+        _ error: Error,
+        incidentID: String
+    ) -> Error {
+        if let remote = error as? LocalIPCRemoteError { return remote }
+        guard let local = error as? LocalProductClientError else {
+            return LocalIPCRemoteError(
+                code: .internal,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
+        switch local {
+        case .invalidRequest:
+            return LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+        case .timeout:
+            return LocalIPCRemoteError(
+                code: .timeout,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        case .invalidSocket, .invalidResponse, .unavailable, .notFound:
+            return LocalIPCRemoteError(
+                code: .stateUnavailable,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
+    }
+
+    private static func conversationOperationError(
+        _ error: Error,
+        incidentID: String
+    ) -> Error {
+        if let remote = error as? LocalIPCRemoteError { return remote }
+        guard let local = error as? LocalProductClientError else {
+            return LocalIPCRemoteError(
+                code: .internal,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
+        switch local {
+        case .invalidRequest:
+            return LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+        case .timeout:
+            return LocalIPCRemoteError(
+                code: .timeout,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        case .invalidSocket, .invalidResponse, .unavailable, .notFound:
+            return LocalIPCRemoteError(
+                code: .stateUnavailable,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
     }
 
     private static func validDigest(_ value: String) -> Bool {
@@ -1313,6 +2862,29 @@ public final class LocalIPCClient:
         return value.unicodeScalars.allSatisfy {
             !CharacterSet.controlCharacters.contains($0)
         }
+    }
+
+    static func normalizedCredentialSecret(_ value: String) -> String? {
+        let bytes = Array(value.utf8)
+        var lower = bytes.startIndex
+        var upper = bytes.endIndex
+        while lower < upper && credentialEdgeWhitespace(bytes[lower]) {
+            lower += 1
+        }
+        while upper > lower && credentialEdgeWhitespace(bytes[upper - 1]) {
+            upper -= 1
+        }
+        guard let normalized = String(
+            data: Data(bytes[lower..<upper]),
+            encoding: .utf8
+        ), validSecret(normalized) else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func credentialEdgeWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0a || byte == 0x0d
     }
 
     private static func validSecret(_ value: String) -> Bool {

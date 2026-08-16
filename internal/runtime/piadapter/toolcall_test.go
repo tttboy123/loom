@@ -1,11 +1,29 @@
 package piadapter
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
 
 	"loom-pi-rebuild/internal/permissions"
 )
+
+type piToolCapabilityFixture struct {
+	allowed []permissions.ToolKind
+}
+
+func (fixture piToolCapabilityFixture) AllowedToolCalls() []permissions.ToolKind {
+	return append([]permissions.ToolKind(nil), fixture.allowed...)
+}
+
+func (piToolCapabilityFixture) ExecuteToolCall(
+	context.Context,
+	ToolCallEnvelope,
+	ToolCallBinding,
+) (ToolCallResult, error) {
+	return ToolCallResult{}, nil
+}
 
 func TestRedW1_DecodeValidEnvelope(t *testing.T) {
 	envelope, err := DecodeToolCallEnvelope([]byte(
@@ -17,6 +35,44 @@ func TestRedW1_DecodeValidEnvelope(t *testing.T) {
 	if envelope.JobID != "job-1" || envelope.Call.Tool != permissions.ToolBash ||
 		envelope.Call.Command != "printf hi" {
 		t.Fatalf("envelope = %+v", envelope)
+	}
+}
+
+func TestP2DAllowedPiToolCallsFailsClosedForUnknownCapability(t *testing.T) {
+	allowed := allowedPiToolCalls(piToolCapabilityFixture{allowed: []permissions.ToolKind{
+		permissions.ToolRead, permissions.ToolWebSearch,
+	}})
+	if len(allowed) != 2 {
+		t.Fatalf("allowed=%v", allowed)
+	}
+	invalid := allowedPiToolCalls(piToolCapabilityFixture{allowed: []permissions.ToolKind{
+		permissions.ToolRead, permissions.ToolKind("UnknownRemoteTool"),
+	}})
+	if len(invalid) != 0 {
+		t.Fatalf("unknown capability was published: %v", invalid)
+	}
+}
+
+func TestP2DToolResultFrameOmitsProposalArguments(t *testing.T) {
+	marker := "private-command-must-stay-in-vault"
+	envelope := ToolCallEnvelope{
+		JobID: "job-private",
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolBash, Command: "printf " + marker,
+			Path: "/private/path/" + marker,
+		},
+	}
+	payload, err := marshalToolCallResultPayload(envelope, ToolCallResult{
+		Verdict: permissions.VerdictAllow, ExecutionID: "execution-1",
+		OutputDigest: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte(marker)) || bytes.Contains(payload, []byte(`"envelope"`)) ||
+		!bytes.Contains(payload, []byte(permissions.ProposedCallDigest(envelope.Call))) ||
+		!bytes.Contains(payload, []byte(`"tool":"Bash"`)) {
+		t.Fatalf("unsafe or incomplete Tool result frame: %s", payload)
 	}
 }
 
@@ -67,5 +123,18 @@ func TestRedW5_SystemPromptContract(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "JSON") || !strings.Contains(prompt, "job_id") {
 		t.Fatalf("system prompt must declare the envelope protocol")
+	}
+	for _, required := range []string{
+		"provider=loom-local",
+		"model=" + piRPCModelID,
+		"Bash, Edit, Grep, Read",
+		"only a proposal",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("system prompt missing %q: %s", required, prompt)
+		}
+	}
+	if strings.Contains(prompt, "WebSearch") || strings.Contains(prompt, "MCPTool") {
+		t.Fatalf("system prompt advertised an unbridged tool: %s", prompt)
 	}
 }

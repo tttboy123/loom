@@ -1,21 +1,27 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/assets"
+	"loom-pi-rebuild/internal/contextcapsule"
+	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/state"
 	"loom-pi-rebuild/internal/teams"
 	"loom-pi-rebuild/internal/work"
 )
@@ -34,6 +40,7 @@ type controlledMissionExecutionState struct {
 	byTeam     map[string]projection.TeamExecution
 	executions []projection.TeamExecution
 	runs       map[string]projection.Run
+	grants     map[string]projection.AgentGrant
 	visible    bool
 	refreshes  int
 }
@@ -54,6 +61,15 @@ func (state *controlledMissionExecutionState) Run(
 	defer state.mu.Unlock()
 	run, ok := state.runs[runID]
 	return run, ok
+}
+
+func (state *controlledMissionExecutionState) LatestAgentGrantForRun(
+	runID string,
+) (projection.AgentGrant, bool) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	grant, ok := state.grants[runID]
+	return grant, ok
 }
 
 func (state *controlledMissionExecutionState) Refresh(context.Context) error {
@@ -90,6 +106,56 @@ type controlledMissionExecutionCompiler struct {
 	recoveryRequest TeamExecutionRequest
 	recoveryErr     error
 	calls           int
+}
+
+type recordingMissionFallbackDecisionPreparer struct {
+	mu         sync.Mutex
+	teamID     string
+	view       string
+	candidates []MissionFallbackDecisionCandidate
+	calls      int
+	err        error
+}
+
+func (preparer *recordingMissionFallbackDecisionPreparer) PrepareMissionFallbackDecisions(
+	_ context.Context,
+	teamID string,
+	viewVersion string,
+	candidates []MissionFallbackDecisionCandidate,
+) error {
+	preparer.mu.Lock()
+	defer preparer.mu.Unlock()
+	preparer.calls++
+	preparer.teamID = teamID
+	preparer.view = viewVersion
+	preparer.candidates = append(
+		[]MissionFallbackDecisionCandidate(nil), candidates...,
+	)
+	return preparer.err
+}
+
+type controlledMissionFallbackApprovalSource struct {
+	now                 time.Time
+	targetBindingDigest string
+	queries             []MissionFallbackApprovalQuery
+}
+
+func (source *controlledMissionFallbackApprovalSource) ResolveMissionFallbackApproval(
+	_ context.Context,
+	query MissionFallbackApprovalQuery,
+) (work.TeamFallbackApproval, bool, error) {
+	source.queries = append(source.queries, query)
+	targetBindingDigest := query.TargetBindingDigest
+	if source.targetBindingDigest != "" {
+		targetBindingDigest = source.targetBindingDigest
+	}
+	approval, err := work.NewTeamFallbackApproval(work.TeamFallbackApprovalInput{
+		Version: 1, ApprovalID: "fallback-approval-main-v1",
+		ActorRef: "user:local-owner", ApprovedAt: source.now,
+		SourceBindingDigest: query.SourceBindingDigest,
+		TargetBindingDigest: targetBindingDigest,
+	})
+	return approval, err == nil, err
 }
 
 func (compiler *controlledMissionExecutionCompiler) ReconstructMissionExecution(
@@ -135,13 +201,34 @@ func (runner *cancellationMissionExecutionRunner) Run(
 		Status:         "running",
 		Nodes: []projection.TeamExecutionNode{{
 			LogicalNodeID:  "main",
+			Status:         "running",
 			CurrentAttempt: 1,
 			Attempts: []projection.TeamExecutionAttempt{{
-				AttemptNumber:   1,
-				ClaimGeneration: 1,
-				Status:          "running",
+				AttemptNumber:     1,
+				WorkItemID:        "work-main-1",
+				RunID:             "run-main-1",
+				ClaimID:           "claim-main-1",
+				ClaimGeneration:   1,
+				RuntimeInstanceID: "runtime-pi",
+				AgentInstanceID:   "agent-main",
+				Status:            "dispatched",
 			}},
 		}},
+	}
+	if runner.state.runs == nil {
+		runner.state.runs = make(map[string]projection.Run)
+	}
+	runner.state.runs["run-main-1"] = projection.Run{
+		ID: "run-main-1", WorkItemID: "work-main-1", Phase: "running",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+	}
+	if runner.state.grants == nil {
+		runner.state.grants = make(map[string]projection.AgentGrant)
+	}
+	runner.state.grants["run-main-1"] = projection.AgentGrant{
+		ID: "grant-main-1", WorkItemID: "work-main-1", RunID: "run-main-1",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+		RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
 	}
 	runner.state.mu.Unlock()
 	close(runner.started)
@@ -161,6 +248,73 @@ func (incompleteMissionExecutionRunner) Run(
 	TeamExecutionRequest,
 ) (TeamExecutionResult, error) {
 	return TeamExecutionResult{}, ErrTeamExecutionIncomplete
+}
+
+type preProjectionCancellationRunner struct {
+	entered chan struct{}
+	exited  chan struct{}
+}
+
+type stagedStartLineageRunner struct {
+	state      *controlledMissionExecutionState
+	plan       teams.ExecutionPlan
+	dispatched chan struct{}
+	release    chan struct{}
+}
+
+func (runner *stagedStartLineageRunner) Run(
+	ctx context.Context,
+	_ TeamExecutionRequest,
+) (TeamExecutionResult, error) {
+	runner.state.mu.Lock()
+	runner.state.visible = true
+	runner.state.execution = projection.TeamExecution{
+		TeamInstanceID: runner.plan.TeamInstanceID(),
+		PlanDigest:     runner.plan.Digest(),
+		Status:         "running",
+		Nodes: []projection.TeamExecutionNode{{
+			LogicalNodeID: "main", Status: "running", CurrentAttempt: 1,
+			Attempts: []projection.TeamExecutionAttempt{{
+				AttemptNumber: 1, WorkItemID: "work-main-1", RunID: "run-main-1",
+				ClaimID: "claim-main-1", ClaimGeneration: 1,
+				RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
+				Status: "dispatched",
+			}},
+		}},
+	}
+	runner.state.mu.Unlock()
+	close(runner.dispatched)
+	select {
+	case <-ctx.Done():
+		return TeamExecutionResult{}, ctx.Err()
+	case <-runner.release:
+	}
+	runner.state.mu.Lock()
+	runner.state.runs = map[string]projection.Run{
+		"run-main-1": {
+			ID: "run-main-1", WorkItemID: "work-main-1", Phase: "running",
+			ClaimID: "claim-main-1", ClaimGeneration: 1,
+		},
+	}
+	runner.state.grants = map[string]projection.AgentGrant{
+		"run-main-1": {
+			ID: "grant-main-1", WorkItemID: "work-main-1", RunID: "run-main-1",
+			ClaimID: "claim-main-1", ClaimGeneration: 1,
+			RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
+		},
+	}
+	runner.state.mu.Unlock()
+	return TeamExecutionResult{}, ErrTeamExecutionIncomplete
+}
+
+func (runner *preProjectionCancellationRunner) Run(
+	ctx context.Context,
+	_ TeamExecutionRequest,
+) (TeamExecutionResult, error) {
+	close(runner.entered)
+	<-ctx.Done()
+	close(runner.exited)
+	return TeamExecutionResult{}, ctx.Err()
 }
 
 type controlledMissionExecutionDecisionRouter struct {
@@ -216,6 +370,70 @@ type controlledMissionExecutionBindingSource struct {
 	calls   int
 }
 
+type recordedMissionContextCapsule struct {
+	authority contextcapsule.AuthorityRecord
+	capsule   contextcapsule.RoleContextCapsule
+	payload   []byte
+}
+
+type controlledMissionContextCapsuleStore struct {
+	records []recordedMissionContextCapsule
+	err     error
+}
+
+func (store *controlledMissionContextCapsuleStore) PutRoleContextCapsule(
+	_ context.Context,
+	capsule contextcapsule.RoleContextCapsule,
+	payload []byte,
+) error {
+	if store.err != nil {
+		return store.err
+	}
+	store.records = append(store.records, recordedMissionContextCapsule{
+		authority: capsule.AuthorityRecord(),
+		capsule:   capsule,
+		payload:   append([]byte(nil), payload...),
+	})
+	return nil
+}
+
+func (store *controlledMissionContextCapsuleStore) ReadRoleContextCapsule(
+	_ context.Context,
+	authority contextcapsule.AuthorityRecord,
+) (contextcapsule.RoleContextCapsule, []byte, error) {
+	if store.err != nil {
+		return contextcapsule.RoleContextCapsule{}, nil, store.err
+	}
+	for _, record := range store.records {
+		if record.authority == authority {
+			return record.capsule, append([]byte(nil), record.payload...), nil
+		}
+	}
+	return contextcapsule.RoleContextCapsule{}, nil, errors.New("capsule not found")
+}
+
+func (store *controlledMissionContextCapsuleStore) ListRoleContextCapsuleAuthorities(
+	_ context.Context,
+	conversationID string,
+) ([]contextcapsule.AuthorityRecord, error) {
+	if store.err != nil {
+		return nil, store.err
+	}
+	records := make([]contextcapsule.AuthorityRecord, 0, len(store.records))
+	seen := make(map[contextcapsule.AuthorityRecord]struct{}, len(store.records))
+	for _, stored := range store.records {
+		if stored.authority.ConversationID != conversationID {
+			continue
+		}
+		if _, duplicate := seen[stored.authority]; duplicate {
+			continue
+		}
+		seen[stored.authority] = struct{}{}
+		records = append(records, stored.authority)
+	}
+	return records, nil
+}
+
 func (source *controlledMissionExecutionBindingSource) ResolveMissionExecutionRecoveryBinding(
 	ctx context.Context,
 	teamID string,
@@ -264,6 +482,32 @@ func (runner *controlledTeamExecutionRunner) Run(
 	runner.mu.Unlock()
 	runner.state.mu.Lock()
 	runner.state.visible = true
+	if len(runner.state.execution.Nodes) == 0 {
+		runner.state.execution.Nodes = []projection.TeamExecutionNode{{
+			LogicalNodeID: "main", Status: "running", CurrentAttempt: 1,
+			Attempts: []projection.TeamExecutionAttempt{{
+				AttemptNumber: 1, WorkItemID: "work-main-1", RunID: "run-main-1",
+				ClaimID: "claim-main-1", ClaimGeneration: 1,
+				RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
+				Status: "dispatched",
+			}},
+		}}
+	}
+	if runner.state.runs == nil {
+		runner.state.runs = make(map[string]projection.Run)
+	}
+	runner.state.runs["run-main-1"] = projection.Run{
+		ID: "run-main-1", WorkItemID: "work-main-1", Phase: "running",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+	}
+	if runner.state.grants == nil {
+		runner.state.grants = make(map[string]projection.AgentGrant)
+	}
+	runner.state.grants["run-main-1"] = projection.AgentGrant{
+		ID: "grant-main-1", WorkItemID: "work-main-1", RunID: "run-main-1",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+		RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
+	}
 	runner.state.mu.Unlock()
 	return TeamExecutionResult{}, ErrTeamExecutionIncomplete
 }
@@ -317,12 +561,24 @@ func TestAuthoritativeMissionExecutionStartReturnsOnlyAfterProjectedDispatch(
 				}},
 			},
 			Request: TeamExecutionRequest{Plan: plan},
+			FallbackDecisions: []MissionFallbackDecisionCandidate{{
+				MissionID: command.MissionID,
+				Scope: mustMissionFallbackDecisionScope(t,
+					command.TeamInstanceID, plan.Digest(), "main",
+					strings.Repeat("1", 64), strings.Repeat("2", 64),
+				),
+				AgentTitle: "Main Agent", HarnessAdapter: "loom-native",
+				ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+				ModelID: "deepseek-chat", CredentialRevision: 6,
+			}},
 		},
 	}
+	decisionPreparer := &recordingMissionFallbackDecisionPreparer{}
 	runner := &controlledTeamExecutionRunner{state: state}
 	backend, err := NewAuthoritativeMissionExecutionBackend(
 		AuthoritativeMissionExecutionConfig{
 			State: state, Compiler: compiler, Runner: runner,
+			FallbackDecisions: decisionPreparer,
 			VisibilityTimeout: time.Second,
 		},
 	)
@@ -335,6 +591,13 @@ func TestAuthoritativeMissionExecutionStartReturnsOnlyAfterProjectedDispatch(
 	if err != nil || preflight.PreflightDigest == "" {
 		t.Fatalf("preflight = %#v, %v", preflight, err)
 	}
+	if decisionPreparer.calls != 1 ||
+		decisionPreparer.teamID != command.TeamInstanceID ||
+		decisionPreparer.view != command.ExpectedViewVersion ||
+		len(decisionPreparer.candidates) != 1 ||
+		decisionPreparer.candidates[0].Scope.PlanDigest() != plan.Digest() {
+		t.Fatalf("fallback decision preparation = %#v", decisionPreparer)
+	}
 	start := command
 	start.Operation = "start"
 	start.CorrelationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -344,6 +607,179 @@ func TestAuthoritativeMissionExecutionStartReturnsOnlyAfterProjectedDispatch(
 	if err != nil || result.Status != "running" || runner.Calls() != 1 ||
 		!visible || refreshes < 2 {
 		t.Fatalf("start = %#v, err=%v calls=%d refreshes=%d", result, err, runner.Calls(), refreshes)
+	}
+}
+
+func TestAuthoritativeMissionExecutionCallerCancellationJoinsUnreportedFlight(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand("preflight")
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: command.TeamInstanceID,
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: command.Objective,
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{version: command.ExpectedViewVersion}
+	compiler := &controlledMissionExecutionCompiler{
+		compilation: MissionExecutionCompilation{
+			Plan: plan, Request: TeamExecutionRequest{Plan: plan},
+			Preflight: MissionExecutionPreflight{
+				SchemaVersion: 1, MissionID: command.MissionID,
+				TeamInstanceID:    command.TeamInstanceID,
+				WorkPackageID:     command.WorkPackageID,
+				WorkPackageDigest: command.WorkPackageDigest,
+				ViewVersion:       command.ExpectedViewVersion,
+				PlanDigest:        plan.Digest(), RuntimeInstanceID: "runtime-pi",
+				RuntimeProfileID: "pi-default", ModelID: "qwen",
+				AuthMode: "brokered", CapacityAvailable: 1,
+				BudgetStatus: "unavailable", SideEffects: []string{},
+				PermissionScopes: []string{"workspace"},
+				ApprovalPoints:   []string{"before_start"},
+				Nodes: []MissionExecutionNodePreview{{
+					LogicalNodeID: "main", Title: command.Objective,
+					Role: "main", DependsOn: []string{}, MaxAttempts: 1,
+				}},
+			},
+		},
+	}
+	runner := &preProjectionCancellationRunner{
+		entered: make(chan struct{}),
+		exited:  make(chan struct{}),
+	}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler, Runner: runner,
+			VisibilityTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	preflight, err := backend.PreflightMission(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := command
+	start.Operation = "start"
+	start.PreflightDigest = preflight.PreflightDigest
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, startErr := backend.StartMission(ctx, start)
+		result <- startErr
+	}()
+	<-runner.entered
+	cancel()
+	if startErr := <-result; !errors.Is(startErr, context.Canceled) {
+		t.Fatalf("canceled start error = %v", startErr)
+	}
+	select {
+	case <-runner.exited:
+	default:
+		t.Fatal("canceled start returned before its unreported flight joined")
+	}
+	if _, visible := state.TeamExecution(command.TeamInstanceID); visible {
+		t.Fatal("canceled pre-projection start manufactured authority")
+	}
+	backend.mu.Lock()
+	flight := backend.flights[command.TeamInstanceID]
+	backend.mu.Unlock()
+	if flight != nil {
+		t.Fatal("joined zero-authority flight still blocks an exact retry")
+	}
+}
+
+func TestAuthoritativeMissionExecutionDoesNotReturnFromDispatchOnlyProjection(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand("preflight")
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: command.TeamInstanceID,
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: command.Objective,
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{version: command.ExpectedViewVersion}
+	compiler := &controlledMissionExecutionCompiler{
+		compilation: MissionExecutionCompilation{
+			Plan: plan, Request: TeamExecutionRequest{Plan: plan},
+			Preflight: MissionExecutionPreflight{
+				SchemaVersion: 1, MissionID: command.MissionID,
+				TeamInstanceID:    command.TeamInstanceID,
+				WorkPackageID:     command.WorkPackageID,
+				WorkPackageDigest: command.WorkPackageDigest,
+				ViewVersion:       command.ExpectedViewVersion,
+				PlanDigest:        plan.Digest(), RuntimeInstanceID: "runtime-pi",
+				RuntimeProfileID: "pi-default", ModelID: "qwen",
+				AuthMode: "brokered", CapacityAvailable: 1,
+				BudgetStatus: "unavailable", SideEffects: []string{},
+				PermissionScopes: []string{"workspace"},
+				ApprovalPoints:   []string{"before_start"},
+				Nodes: []MissionExecutionNodePreview{{
+					LogicalNodeID: "main", Title: command.Objective,
+					Role: "main", DependsOn: []string{}, MaxAttempts: 1,
+				}},
+			},
+		},
+	}
+	runner := &stagedStartLineageRunner{
+		state: state, plan: plan,
+		dispatched: make(chan struct{}), release: make(chan struct{}),
+	}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler, Runner: runner,
+			VisibilityTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	preflight, err := backend.PreflightMission(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := command
+	start.Operation = "start"
+	start.PreflightDigest = preflight.PreflightDigest
+	result := make(chan struct {
+		value MissionExecutionResult
+		err   error
+	}, 1)
+	go func() {
+		value, startErr := backend.StartMission(context.Background(), start)
+		result <- struct {
+			value MissionExecutionResult
+			err   error
+		}{value: value, err: startErr}
+	}()
+	<-runner.dispatched
+	select {
+	case early := <-result:
+		t.Fatalf("dispatch-only projection returned early: %#v, %v", early.value, early.err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(runner.release)
+	select {
+	case outcome := <-result:
+		if outcome.err != nil || outcome.value.Status != "running" {
+			t.Fatalf("complete start lineage result = %#v, %v", outcome.value, outcome.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("complete start lineage did not become visible")
 	}
 }
 
@@ -816,6 +1252,112 @@ func TestAuthoritativeMissionRestartResumesOneExactExpiredLineage(t *testing.T) 
 	}
 }
 
+func TestAuthoritativeMissionRestartKeepsReadyForReviewQuiescent(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-review-restart",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Await human review",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{
+		version: strings.Repeat("a", 64),
+		executions: []projection.TeamExecution{{
+			TeamInstanceID: plan.TeamInstanceID(), PlanDigest: plan.Digest(),
+			Status: "running",
+			Nodes: []projection.TeamExecutionNode{{
+				LogicalNodeID: "main", Status: "ready_for_review",
+			}},
+		}},
+	}
+	runner := &controlledTeamExecutionRunner{state: state}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state,
+			Compiler: &controlledMissionExecutionCompiler{
+				recoveryRequest: TeamExecutionRequest{Plan: plan},
+			},
+			Runner: runner, VisibilityTimeout: time.Second,
+			Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if err := backend.ResumeProjectedMissions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.Calls() != 0 {
+		t.Fatalf("ready-for-review restart runner calls = %d", runner.Calls())
+	}
+}
+
+func TestMissionExecutionAwaitingHumanReview(t *testing.T) {
+	tests := []struct {
+		name      string
+		execution projection.TeamExecution
+		want      bool
+	}{
+		{
+			name: "single ready node",
+			execution: projection.TeamExecution{
+				Status: "running",
+				Nodes:  []projection.TeamExecutionNode{{Status: "ready_for_review"}},
+			},
+			want: true,
+		},
+		{
+			name: "succeeded and ready nodes",
+			execution: projection.TeamExecution{
+				Status: "running",
+				Nodes: []projection.TeamExecutionNode{
+					{Status: "succeeded"},
+					{Status: "ready_for_review"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "ready and pending nodes",
+			execution: projection.TeamExecution{
+				Status: "running",
+				Nodes: []projection.TeamExecutionNode{
+					{Status: "ready_for_review"},
+					{Status: "pending"},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "recovery aggregate",
+			execution: projection.TeamExecution{
+				Status: "awaiting_recovery",
+				Nodes:  []projection.TeamExecutionNode{{Status: "ready_for_review"}},
+			},
+			want: false,
+		},
+		{
+			name:      "empty running execution",
+			execution: projection.TeamExecution{Status: "running"},
+			want:      false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := missionExecutionAwaitingHumanReview(test.execution); got != test.want {
+				t.Fatalf("missionExecutionAwaitingHumanReview() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAuthoritativeMissionExecutionCompletedFlightWaitIsTickerBounded(
 	t *testing.T,
 ) {
@@ -950,6 +1492,407 @@ func TestAuthoritativeMissionExecutionFlightRegistryIsBounded(
 	}
 	if err := backend.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBuiltInMissionExecutionCompilerPreservesRoleSpecificExecutionBindings(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand("preflight")
+	now := time.Date(2026, 8, 11, 6, 0, 0, 0, time.UTC)
+	profile := func(
+		id, adapter, provider, account, model, reference string,
+		revision int64,
+	) loomruntime.RuntimeProfile {
+		t.Helper()
+		value, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+			ID: id, AdapterType: adapter, ProviderID: provider,
+			ProviderAccountID: account, ModelID: model,
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("a", 64),
+			CredentialReference: reference, CredentialRevision: revision,
+			Timeout: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	instance := func(id, adapter string) loomruntime.RuntimeInstance {
+		t.Helper()
+		value, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+			ID: id, DeviceID: "device-local", AdapterType: adapter,
+			DisplayName: id, ExecutableVersion: "1.0.0",
+			Status: loomruntime.RuntimeOnline, Capacity: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	mainProfile := profile(
+		"profile-codex", "codex", "openai", "openai.primary",
+		"gpt-5.5-codex", "credential-ref-openai", 3,
+	)
+	mainInstance := instance("runtime-codex", "codex")
+	subProfile := profile(
+		"profile-deepseek", "loom-native", "deepseek", "deepseek.primary",
+		"deepseek-chat", "credential-ref-deepseek", 7,
+	)
+	subInstance := instance("runtime-loom", "loom-native")
+	fallbackProfile := profile(
+		"profile-anthropic", "claude-code", "anthropic", "anthropic.backup",
+		"claude-sonnet", "credential-ref-anthropic", 5,
+	)
+	fallbackInstance := instance("runtime-claude", "claude-code")
+	source := &controlledMissionExecutionBindingSource{binding: MissionExecutionBinding{
+		ViewVersion: command.ExpectedViewVersion, TeamInstanceID: command.TeamInstanceID,
+		AgentInstanceID: "agent-main", Profile: mainProfile, Instance: mainInstance,
+		CapacityAvailable: 1,
+		Roles: []MissionExecutionRoleBinding{
+			{
+				LogicalNodeID: "main", Title: "Coordinate delivery",
+				Role: teams.ExecutionRoleMain, DependsOn: []string{"review"},
+				AgentInstanceID: "agent-main", Profile: mainProfile,
+				Instance: mainInstance, CapacityAvailable: 1,
+				FallbackConfigured: true, FallbackProfile: fallbackProfile,
+				FallbackInstance: fallbackInstance, FallbackCapacityAvailable: 1,
+				FallbackStatus: "ready", FallbackApprovalRequired: true,
+			},
+			{
+				LogicalNodeID: "review", Title: "Review the implementation",
+				Role: teams.ExecutionRoleSubAgent, DependsOn: []string{},
+				AgentInstanceID: "agent-review", Profile: subProfile,
+				Instance: subInstance, CapacityAvailable: 1,
+			},
+		},
+	}}
+	capsuleStore := &controlledMissionContextCapsuleStore{}
+	compiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: source, SourcePath: t.TempDir(),
+			ContextCapsules: capsuleStore,
+			Now:             func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compilation, err := compiler.CompileMissionExecution(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compilation.Plan.Nodes()) != 2 ||
+		len(compilation.Preflight.Nodes) != 2 ||
+		len(compilation.Request.Semantics) != 2 ||
+		len(compilation.Request.Nodes) != 4 {
+		t.Fatalf("multi-role compilation = %#v", compilation)
+	}
+	if len(capsuleStore.records) != 0 {
+		t.Fatalf("preflight persisted encrypted capsules = %#v", capsuleStore.records)
+	}
+	startForPersistence := command
+	startForPersistence.Operation = missionExecutionStart
+	startForPersistence.PreflightDigest = strings.Repeat("e", 64)
+	startedForPersistence, err := compiler.CompileMissionExecution(
+		context.Background(), startForPersistence,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capsuleStore.records) != len(startedForPersistence.Request.Nodes) {
+		t.Fatalf("stored start capsules = %#v", capsuleStore.records)
+	}
+	for index, execution := range startedForPersistence.Request.Nodes {
+		stored := capsuleStore.records[index]
+		if stored.authority != execution.ContextCapsule.AuthorityRecord() ||
+			!bytes.Equal(stored.payload, execution.Dispatch.Payload()) {
+			t.Fatalf("stored start capsule %d = %#v", index, stored)
+		}
+	}
+	capsuleStore.err = errors.New("injected encrypted capsule failure")
+	if _, err := compiler.CompileMissionExecution(
+		context.Background(), startForPersistence,
+	); !errors.Is(err, ErrInvalidMissionExecution) {
+		t.Fatalf("capsule persistence failure = %v", err)
+	}
+	capsuleStore.err = nil
+	if len(compilation.FallbackDecisions) != 1 {
+		t.Fatalf("fallback decision candidates = %#v", compilation.FallbackDecisions)
+	}
+	decisionCandidate := compilation.FallbackDecisions[0]
+	if decisionCandidate.MissionID != command.MissionID ||
+		decisionCandidate.Scope.TeamInstanceID() != command.TeamInstanceID ||
+		decisionCandidate.Scope.PlanDigest() != compilation.Plan.Digest() ||
+		decisionCandidate.Scope.LogicalNodeID() != "main" ||
+		decisionCandidate.AgentTitle != command.Objective ||
+		decisionCandidate.HarnessAdapter != "claude-code" ||
+		decisionCandidate.ProviderAccountID != "anthropic.backup" ||
+		decisionCandidate.ModelID != "claude-sonnet" ||
+		decisionCandidate.CredentialRevision != 5 {
+		t.Fatalf("fallback decision candidate = %#v", decisionCandidate)
+	}
+	previewByNode := make(map[string]MissionExecutionNodePreview)
+	for _, preview := range compilation.Preflight.Nodes {
+		previewByNode[preview.LogicalNodeID] = preview
+	}
+	if got := previewByNode["main"]; got.HarnessAdapter != "codex" ||
+		got.ProviderID != "openai" || got.ProviderAccountID != "openai.primary" ||
+		got.AuthMode != string(loomruntime.AuthBrokered) ||
+		got.ModelID != "gpt-5.5-codex" || got.CredentialRevision != 3 ||
+		got.Status != "ready" || got.BlockReason != "" ||
+		got.Title != command.Objective {
+		t.Fatalf("main preflight preview = %#v", got)
+	}
+	if got := previewByNode["main"]; !got.FallbackConfigured ||
+		got.FallbackHarnessAdapter != "claude-code" ||
+		got.FallbackProviderID != "anthropic" ||
+		got.FallbackProviderAccountID != "anthropic.backup" ||
+		got.FallbackAuthMode != string(loomruntime.AuthBrokered) ||
+		got.FallbackModelID != "claude-sonnet" ||
+		got.FallbackCredentialRevision != 5 || got.FallbackTimeoutSeconds != 60 ||
+		got.FallbackBudgetCredits != nil || got.FallbackStatus != "ready" ||
+		got.FallbackBlockReason != "" || !got.FallbackApprovalRequired {
+		t.Fatalf("main fallback preflight = %#v", got)
+	}
+	if encoded, err := json.Marshal(compilation.Preflight); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(encoded), "credential-openai") ||
+		strings.Contains(string(encoded), strings.Repeat("a", 64)) {
+		t.Fatalf("preflight exposed credential metadata: %s", encoded)
+	}
+	executionProfiles := map[string]loomruntime.RuntimeProfile{}
+	for _, execution := range compilation.Request.Nodes {
+		executionProfiles[execution.LogicalNodeID] = execution.Profile
+	}
+	if got := executionProfiles["main"]; got.ProviderAccountID != "openai.primary" ||
+		got.CredentialRevision != 3 || got.ModelID != "gpt-5.5-codex" {
+		t.Fatalf("main execution profile = %#v", got)
+	}
+	if got := executionProfiles["review"]; got.ProviderAccountID != "deepseek.primary" ||
+		got.CredentialRevision != 7 || got.ModelID != "deepseek-chat" {
+		t.Fatalf("review execution profile = %#v", got)
+	}
+	var ordinaryRetry TeamNodeExecution
+	var primaryAttempt TeamNodeExecution
+	for _, execution := range compilation.Request.Nodes {
+		if execution.LogicalNodeID == "main" && execution.AttemptNumber == 1 {
+			primaryAttempt = execution
+		}
+		if execution.LogicalNodeID == "main" && execution.AttemptNumber == 2 &&
+			(execution.Profile.ID != mainProfile.ID ||
+				execution.WorkflowPath != "builtin/mission-primary-v1") {
+			t.Fatalf("unapproved fallback materialized = %#v", execution)
+		}
+		if execution.LogicalNodeID == "main" && execution.AttemptNumber == 2 {
+			ordinaryRetry = execution
+		}
+	}
+	ordinaryDispatch, err := contextcapsule.ValidateDispatchPayload(
+		ordinaryRetry.ContextCapsule, ordinaryRetry.Dispatch.Payload(),
+	)
+	if err != nil || ordinaryRetry.ContextCapsule.Digest() != primaryAttempt.ContextCapsule.Digest() ||
+		strings.Contains(ordinaryDispatch.Prompt, "fallback-route-approval") {
+		t.Fatalf("ordinary retry disclosed fallback authority = %#v, err=%v", ordinaryDispatch, err)
+	}
+	semanticsByNode := make(map[string]TeamNodeSemantics)
+	for _, semantic := range compilation.Request.Semantics {
+		semanticsByNode[semantic.LogicalNodeID] = semantic
+	}
+	projectedNodes := make([]projection.TeamExecutionNode, 0, 2)
+	for _, node := range compilation.Plan.Nodes() {
+		semantic := semanticsByNode[node.LogicalNodeID()]
+		projectedNodes = append(projectedNodes, projection.TeamExecutionNode{
+			LogicalNodeID: node.LogicalNodeID(), Title: node.Title(),
+			AgentInstanceID:   node.AgentInstanceID(),
+			RuntimeInstanceID: node.RuntimeInstanceID(), Role: string(node.Role()),
+			DependsOn: node.DependsOn(), MaxAttempts: node.MaxAttempts(),
+			Status:                      "pending",
+			OutputContractVersion:       semantic.OutputContract.Version(),
+			OutputContractDigest:        semantic.OutputContract.Digest(),
+			RecoveryPolicyVersion:       semantic.RecoveryPolicy.Version(),
+			RecoveryPolicyDigest:        semantic.RecoveryPolicy.Digest(),
+			AttemptCredits:              semantic.RecoveryPolicy.AttemptCredits(),
+			PrimaryWorkflowPath:         semantic.PrimaryWorkflowPath,
+			WorkflowFallbackKey:         semantic.RecoveryPolicy.WorkflowFallbackKey(),
+			RecoveryApprovalRequired:    semantic.RecoveryPolicy.RecoveryApprovalRequired(),
+			AcceptanceContractVersion:   semantic.AcceptanceContract.Version(),
+			AcceptanceContractDigest:    semantic.AcceptanceContract.Digest(),
+			AcceptanceRisk:              string(semantic.AcceptanceContract.Risk()),
+			IndependentVerifierRequired: semantic.AcceptanceContract.IndependentVerifierRequired(),
+			VerifierAgentInstanceID:     semantic.VerifierAgentInstanceID,
+			VerifierRuntimeInstanceID:   semantic.VerifierRuntimeInstanceID,
+			VerifierWorkflowPath:        semantic.VerifierWorkflowPath,
+		})
+	}
+	recovered, err := compiler.ReconstructMissionExecution(
+		context.Background(),
+		projection.TeamExecution{
+			TeamInstanceID: command.TeamInstanceID,
+			PlanDigest:     compilation.Plan.Digest(), Status: "running",
+			Nodes: projectedNodes,
+		},
+	)
+	if err != nil || recovered.Plan.Digest() != compilation.Plan.Digest() ||
+		len(recovered.Nodes) != 4 || len(recovered.Semantics) != 2 {
+		t.Fatalf("multi-role recovery = %#v, err=%v", recovered, err)
+	}
+	approvalSource := &controlledMissionFallbackApprovalSource{now: now}
+	if _, freezeErr := loomruntime.FreezeExecutionBinding(
+		source.binding.Roles[0].Profile,
+		source.binding.Roles[0].Instance,
+	); freezeErr != nil {
+		t.Fatalf("primary approval binding: %v", freezeErr)
+	}
+	if _, freezeErr := loomruntime.FreezeExecutionBinding(
+		source.binding.Roles[0].FallbackProfile,
+		source.binding.Roles[0].FallbackInstance,
+	); freezeErr != nil {
+		t.Fatalf("fallback approval binding: %v", freezeErr)
+	}
+	approvedCompiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: source, FallbackApprovals: approvalSource,
+			SourcePath: t.TempDir(), Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := approvedCompiler.CompileMissionExecution(
+		context.Background(), command,
+	)
+	if err != nil || len(approvalSource.queries) != 1 {
+		t.Fatalf("approved fallback compilation = %#v, queries=%#v, %v", approved, approvalSource.queries, err)
+	}
+	var approvedAttempt TeamNodeExecution
+	for _, execution := range approved.Request.Nodes {
+		if execution.LogicalNodeID == "main" && execution.AttemptNumber == 2 {
+			approvedAttempt = execution
+		}
+	}
+	approvedSemantic := TeamNodeSemantics{}
+	for _, semantic := range approved.Request.Semantics {
+		if semantic.LogicalNodeID == "main" {
+			approvedSemantic = semantic
+		}
+	}
+	if approvedAttempt.Profile.ID != fallbackProfile.ID ||
+		approvedAttempt.Instance.ID != fallbackInstance.ID ||
+		approvedAttempt.WorkflowPath != "builtin/mission-fallback-v1" ||
+		approvedSemantic.RecoveryPolicy.WorkflowFallbackKey() !=
+			"builtin/mission-fallback-v1" ||
+		!approvedSemantic.FallbackApproval.Valid() ||
+		approvedSemantic.FallbackApproval.SourceBindingDigest() !=
+			approvalSource.queries[0].SourceBindingDigest ||
+		approvedSemantic.FallbackApproval.TargetBindingDigest() !=
+			approvalSource.queries[0].TargetBindingDigest {
+		t.Fatalf("approved fallback attempt/semantics = %#v / %#v", approvedAttempt, approvedSemantic)
+	}
+	approvedDispatch, err := contextcapsule.ValidateDispatchPayload(
+		approvedAttempt.ContextCapsule, approvedAttempt.Dispatch.Payload(),
+	)
+	if err != nil ||
+		!strings.Contains(approvedDispatch.Prompt, `"item_id":"fallback-route-approval"`) ||
+		!strings.Contains(approvedDispatch.Prompt, approvedSemantic.FallbackApproval.Digest()) ||
+		!strings.Contains(approvedDispatch.Prompt, approvalSource.queries[0].SourceBindingDigest) ||
+		!strings.Contains(approvedDispatch.Prompt, approvalSource.queries[0].TargetBindingDigest) ||
+		strings.Contains(approvedDispatch.Prompt, approvedSemantic.FallbackApproval.ActorRef()) ||
+		strings.Contains(approvedDispatch.Prompt, fallbackProfile.CredentialReference) {
+		t.Fatalf("approved fallback context dispatch = %#v, err=%v", approvedDispatch, err)
+	}
+	for _, preview := range approved.Preflight.Nodes {
+		if preview.LogicalNodeID == "main" &&
+			(!preview.FallbackApprovalAvailable ||
+				preview.FallbackApprovalVersion != 1) {
+			t.Fatalf("approved fallback preflight = %#v", preview)
+		}
+	}
+	if !validMissionExecutionFallbackApproval(approved.Preflight.Nodes[0]) {
+		t.Fatal("approved fallback preview should satisfy the closed contract")
+	}
+	contradictory := cloneMissionExecutionPreflight(approved.Preflight)
+	contradictory.Nodes[0].FallbackApprovalAvailable = false
+	if validMissionExecutionFallbackApproval(contradictory.Nodes[0]) {
+		t.Fatal("approval version without an available approval should fail closed")
+	}
+	contradictory = cloneMissionExecutionPreflight(approved.Preflight)
+	contradictory.Nodes[0].FallbackApprovalRequired = false
+	if validMissionExecutionFallbackApproval(contradictory.Nodes[0]) {
+		t.Fatal("configured fallback without required approval should fail closed")
+	}
+	withCapabilities := cloneMissionExecutionPreflight(approved.Preflight)
+	withCapabilities.Nodes[0].FallbackCapabilities = []string{"fallback-capability"}
+	cloned := cloneMissionExecutionPreflight(withCapabilities)
+	cloned.Nodes[0].FallbackCapabilities[0] = "mutated-capability"
+	if withCapabilities.Nodes[0].FallbackCapabilities[0] == "mutated-capability" {
+		t.Fatal("preflight clone aliases fallback capabilities")
+	}
+	forgedApprovalSource := &controlledMissionFallbackApprovalSource{
+		now: now, targetBindingDigest: strings.Repeat("f", 64),
+	}
+	forgedCompiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: source, FallbackApprovals: forgedApprovalSource,
+			SourcePath: t.TempDir(), Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := forgedCompiler.CompileMissionExecution(
+		context.Background(), command,
+	); !errors.Is(err, ErrMissionExecutionConflict) {
+		t.Fatalf("forged fallback approval error = %v", err)
+	}
+	source.binding.Roles[0].FallbackStatus = "blocked"
+	source.binding.Roles[0].FallbackBlockReason =
+		"Credential was revoked for this Provider Account."
+	approvedBlocked, err := approvedCompiler.CompileMissionExecution(
+		context.Background(), command,
+	)
+	if err != nil || approvedBlocked.Preflight.Nodes[0].Status != "blocked" ||
+		approvedBlocked.Preflight.Nodes[0].BlockReason == "" ||
+		approvedBlocked.Preflight.Nodes[1].Status != "ready" {
+		t.Fatalf("approved blocked fallback preflight = %#v, err=%v", approvedBlocked.Preflight, err)
+	}
+	approvedBlockedStart := command
+	approvedBlockedStart.Operation = missionExecutionStart
+	approvedBlockedStart.PreflightDigest = strings.Repeat("e", 64)
+	approvedIsolated, err := approvedCompiler.CompileMissionExecution(
+		context.Background(), approvedBlockedStart,
+	)
+	if err != nil || len(approvedIsolated.Request.InitialBlocks) != 1 ||
+		approvedIsolated.Request.InitialBlocks[0].Code != "fallback_unavailable" {
+		t.Fatalf("approved blocked fallback start error = %v", err)
+	}
+	source.binding.Roles[0].FallbackStatus = "ready"
+	source.binding.Roles[0].FallbackBlockReason = ""
+	source.binding.Roles[1].Status = "blocked"
+	source.binding.Roles[1].BlockReason = "Credential is not verified. Reconnect this Provider Account."
+	blocked, err := compiler.CompileMissionExecution(context.Background(), command)
+	if err != nil || len(blocked.Preflight.Nodes) != 2 ||
+		blocked.Preflight.Nodes[1].Status != "blocked" ||
+		blocked.Preflight.Nodes[1].BlockReason == "" ||
+		blocked.Preflight.Nodes[0].Status != "ready" {
+		t.Fatalf("blocked preflight = %#v, err=%v", blocked.Preflight, err)
+	}
+	start := command
+	start.Operation = missionExecutionStart
+	start.PreflightDigest = strings.Repeat("f", 64)
+	started, err := compiler.CompileMissionExecution(context.Background(), start)
+	if err != nil {
+		t.Fatalf("blocked start error = %v", err)
+	}
+	blocksByNode := make(map[string]teams.InitialExecutionBlock)
+	for _, block := range started.Request.InitialBlocks {
+		blocksByNode[block.LogicalNodeID] = block
+	}
+	if len(blocksByNode) != 2 ||
+		blocksByNode[source.binding.Roles[1].LogicalNodeID].Code != "agent_unavailable" ||
+		blocksByNode["main"].Code != "dependency_blocked" ||
+		blocksByNode["main"].SourceLogicalNodeID != source.binding.Roles[1].LogicalNodeID {
+		t.Fatalf("initial blocks = %#v", started.Request.InitialBlocks)
 	}
 }
 
@@ -1204,6 +2147,29 @@ func TestP3AMissionCompilerMergesExactBindingsAndRequiresMaterializationCapabili
 	if got := compilation.Request.Nodes[0].Profile.RequiredCapabilities; !reflect.DeepEqual(got, []string{missionSkillMaterializationCapability, "models"}) {
 		t.Fatalf("required capabilities = %#v", got)
 	}
+	dispatch, err := contextcapsule.ValidateDispatchPayload(
+		compilation.Request.Nodes[0].ContextCapsule,
+		compilation.Request.Nodes[0].Dispatch.Payload(),
+	)
+	var rolePrompt struct {
+		Items []struct {
+			ItemID  string `json:"item_id"`
+			Content string `json:"content"`
+		} `json:"items"`
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(dispatch.Prompt), &rolePrompt)
+	}
+	var disclosedBinding assets.ExactAssetRevisionBinding
+	for _, item := range rolePrompt.Items {
+		if item.ItemID == "artifact-000" {
+			err = json.Unmarshal([]byte(item.Content), &disclosedBinding)
+		}
+	}
+	if err != nil || disclosedBinding != workPackageBinding ||
+		len(compilation.Request.Nodes[0].ContextCapsule.Target().ArtifactRefs) != 1 {
+		t.Fatalf("exact asset context dispatch = %#v, err=%v", dispatch, err)
+	}
 }
 
 func TestProjectionMissionExecutionBindingSourceUsesConfirmedExactPiTeam(
@@ -1339,6 +2305,728 @@ func TestProjectionMissionExecutionBindingSourceUsesConfirmedExactPiTeam(
 	}
 }
 
+func TestProjectionMissionExecutionBindingSourceResolvesEverySavedTeamRole(
+	t *testing.T,
+) {
+	database := openTeamCanaryDB(t)
+	store := journal.NewStore(database)
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readModel := projection.New(database)
+	rebuild := func(stage string) {
+		t.Helper()
+		if err := readModel.Rebuild(context.Background()); err != nil {
+			t.Fatalf("%s projection replay: %v", stage, err)
+		}
+	}
+	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC)
+	digest := func(seed int) string { return fmt.Sprintf("%064x", seed) }
+	definitions := []agents.AgentDefinition{
+		{
+			ID: "agent-main", Version: 1, Scope: agents.ScopeReusable,
+			Name: "Coordinator", RoleSpec: "Coordinate delivery",
+			Status: agents.DefinitionActive,
+		},
+		{
+			ID: "agent-claude", Version: 1, Scope: agents.ScopeReusable,
+			Name: "Claude reviewer", RoleSpec: "Review implementation",
+			Status: agents.DefinitionActive,
+		},
+		{
+			ID: "agent-kimi", Version: 1, Scope: agents.ScopeReusable,
+			Name: "Kimi researcher", RoleSpec: "Research dependencies",
+			Status: agents.DefinitionActive,
+		},
+		{
+			ID: "agent-minimax", Version: 1, Scope: agents.ScopeReusable,
+			Name: "MiniMax verifier", RoleSpec: "Verify the result",
+			Status: agents.DefinitionActive,
+		},
+	}
+	profiles := []loomruntime.RuntimeProfile{
+		{
+			ID: "profile-codex", AdapterType: "codex", ProviderID: "openai",
+			ProviderAccountID: "openai.primary", ModelID: "gpt-5.5-codex",
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("a", 64),
+			CredentialReference: "credential-ref-openai-primary",
+			CredentialRevision:  2, RequiredCapabilities: []string{"chat"},
+			Timeout: time.Minute,
+		},
+		{
+			ID: "profile-claude", AdapterType: "claude-code", ProviderID: "anthropic",
+			ProviderAccountID: "anthropic.primary", ModelID: "claude-sonnet-4",
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("b", 64),
+			CredentialReference: "credential-ref-anthropic-primary",
+			CredentialRevision:  2, RequiredCapabilities: []string{"chat"},
+			Timeout: time.Minute,
+		},
+		{
+			ID: "profile-kimi", AdapterType: "loom-native", ProviderID: "kimi",
+			ProviderAccountID: "kimi.primary", ModelID: "kimi-k2.5",
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("c", 64),
+			CredentialReference: "credential-ref-kimi-primary",
+			CredentialRevision:  2, RequiredCapabilities: []string{"chat"},
+			Timeout: 2 * time.Minute,
+		},
+		{
+			ID: "profile-minimax", AdapterType: "loom-native", ProviderID: "minimax",
+			ProviderAccountID: "minimax.primary", ModelID: "MiniMax-M2.1",
+			AuthMode:            loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("d", 64),
+			CredentialReference: "credential-ref-minimax-primary",
+			CredentialRevision:  2, RequiredCapabilities: []string{"chat"},
+			Timeout: 3 * time.Minute,
+		},
+	}
+	fallbackProfile := loomruntime.RuntimeProfile{
+		ID: "profile-deepseek", AdapterType: "loom-native", ProviderID: "deepseek",
+		ProviderAccountID: "deepseek.backup", ModelID: "deepseek-chat",
+		AuthMode:            loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("e", 64),
+		CredentialReference: "credential-ref-deepseek-backup",
+		CredentialRevision:  2, RequiredCapabilities: []string{"chat"},
+		Timeout: time.Minute,
+	}
+	runtimeProfiles := append(append([]loomruntime.RuntimeProfile{}, profiles...), fallbackProfile)
+	definition, err := teams.BuildTeamDefinition(teams.TeamDefinitionInput{
+		ID: "team.mixed", Version: 1, Scope: teams.TeamDefinitionScopeReusable,
+		Name: "Mixed Team", Status: teams.TeamDefinitionActive,
+		Roles: []teams.TeamDefinitionRole{
+			{
+				Kind: teams.TeamDefinitionRoleMain, AgentDefinitionID: "agent-main",
+				RuntimeProfileID: "profile-codex", Responsibility: "Coordinate delivery",
+			},
+			{
+				Kind: teams.TeamDefinitionRoleSubAgent, AgentDefinitionID: "agent-claude",
+				RuntimeProfileID: "profile-claude", Responsibility: "Review implementation",
+			},
+			{
+				Kind: teams.TeamDefinitionRoleSubAgent, AgentDefinitionID: "agent-kimi",
+				RuntimeProfileID: "profile-kimi", Responsibility: "Research dependencies",
+			},
+			{
+				Kind: teams.TeamDefinitionRoleSubAgent, AgentDefinitionID: "agent-minimax",
+				RuntimeProfileID: "profile-minimax", Responsibility: "Verify the result",
+			},
+		},
+	}, definitions, runtimeProfiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := state.TeamConfigurationSnapshot{
+		RequestedConcurrency: 3, MaximumBudgetCredits: 40,
+		RoleBindings: make([]state.TeamConfigurationRoleBinding, 0, 4),
+	}
+	runtimeIDs := []string{
+		"runtime-codex", "runtime-claude", "runtime-kimi", "runtime-minimax",
+	}
+	for index, profile := range profiles {
+		kind := "main"
+		agentID := "agent-main"
+		if index > 0 {
+			kind = "subagent"
+			agentID = definitions[index].ID
+		}
+		configuration.RoleBindings = append(configuration.RoleBindings,
+			state.TeamConfigurationRoleBinding{
+				Kind: kind, AgentDefinitionID: agentID,
+				RuntimeProfileID: profile.ID, RuntimeInstanceID: runtimeIDs[index],
+				ModelID: profile.ModelID,
+				ExecutionProfile: &state.TeamConfigurationExecutionProfile{
+					Version: 1, ID: profile.ID, HarnessAdapter: profile.AdapterType,
+					ProviderID:        profile.ProviderID,
+					ProviderAccountID: profile.ProviderAccountID,
+					ModelID:           profile.ModelID, AuthMode: profile.AuthMode,
+					EndpointFingerprint: profile.EndpointFingerprint,
+					CredentialReference: profile.CredentialReference,
+					CredentialRevision:  profile.CredentialRevision,
+					TimeoutNanoseconds:  int64(profile.Timeout),
+					RequiredCapabilities: append(
+						[]string{}, profile.RequiredCapabilities...,
+					),
+				},
+				SkillRevisions: []state.TeamConfigurationSkillRevision{},
+				PermissionIDs:  []string{}, ResourceIDs: []string{},
+			},
+		)
+	}
+	configuration.RoleBindings[0].FallbackRoute = &state.TeamConfigurationFallbackRoute{
+		Version: 1, RuntimeProfileID: fallbackProfile.ID,
+		RuntimeInstanceID: "runtime-deepseek", ModelID: fallbackProfile.ModelID,
+		ExecutionProfile: &state.TeamConfigurationExecutionProfile{
+			Version: 1, ID: fallbackProfile.ID,
+			HarnessAdapter:    fallbackProfile.AdapterType,
+			ProviderID:        fallbackProfile.ProviderID,
+			ProviderAccountID: fallbackProfile.ProviderAccountID,
+			ModelID:           fallbackProfile.ModelID, AuthMode: fallbackProfile.AuthMode,
+			EndpointFingerprint: fallbackProfile.EndpointFingerprint,
+			CredentialReference: fallbackProfile.CredentialReference,
+			CredentialRevision:  fallbackProfile.CredentialRevision,
+			TimeoutNanoseconds:  int64(fallbackProfile.Timeout),
+			RequiredCapabilities: append(
+				[]string{}, fallbackProfile.RequiredCapabilities...,
+			),
+		},
+		ApprovalRequired: true,
+	}
+	configuration.RoleBindings[2].ParallelRouteSet = &state.TeamConfigurationParallelRouteSet{
+		Version: 1,
+		AdditionalRoutes: []state.TeamConfigurationExecutionRoute{{
+			Version: 1, RuntimeProfileID: fallbackProfile.ID,
+			RuntimeInstanceID: "runtime-deepseek", ModelID: fallbackProfile.ModelID,
+			ExecutionProfile: &state.TeamConfigurationExecutionProfile{
+				Version: 1, ID: fallbackProfile.ID,
+				HarnessAdapter:    fallbackProfile.AdapterType,
+				ProviderID:        fallbackProfile.ProviderID,
+				ProviderAccountID: fallbackProfile.ProviderAccountID,
+				ModelID:           fallbackProfile.ModelID, AuthMode: fallbackProfile.AuthMode,
+				EndpointFingerprint: fallbackProfile.EndpointFingerprint,
+				CredentialReference: fallbackProfile.CredentialReference,
+				CredentialRevision:  fallbackProfile.CredentialRevision,
+				TimeoutNanoseconds:  int64(fallbackProfile.Timeout),
+				RequiredCapabilities: append(
+					[]string{}, fallbackProfile.RequiredCapabilities...,
+				),
+			},
+		}},
+		SynthesisRoute: state.TeamConfigurationExecutionRoute{
+			Version: 1, RuntimeProfileID: profiles[2].ID,
+			RuntimeInstanceID: "runtime-kimi", ModelID: profiles[2].ModelID,
+			ExecutionProfile: configuration.RoleBindings[2].ExecutionProfile,
+		},
+	}
+	if _, err := writer.SaveTeamDefinition(context.Background(), state.TeamDefinitionSaveCommand{
+		CommandID: "save-team-mixed", ExpectedHead: 0, OccurredAt: now,
+		Definition: definition, Definitions: definitions, RuntimeProfiles: runtimeProfiles,
+		DraftID: "draft-mixed", DraftRevision: 1,
+		CatalogDigest: digest(10), ContentDigest: digest(11), BindingDigest: digest(12),
+		Configuration: configuration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rebuild("definition")
+	for index, profile := range runtimeProfiles {
+		for revision, status := range []credentials.CredentialStatus{
+			credentials.CredentialConfigured, credentials.CredentialVerified,
+		} {
+			if _, err := writer.CommitCredentialMetadata(
+				context.Background(), credentials.MetadataCommand{
+					CommandID:           fmt.Sprintf("credential-%d-%d", index, revision),
+					ProviderID:          profile.ProviderID,
+					ProviderAccountID:   profile.ProviderAccountID,
+					CredentialReference: profile.CredentialReference,
+					ExpectedRevision:    int64(revision),
+					OccurredAt:          now.Add(time.Duration(index*2+revision+1) * time.Second),
+					Status:              status,
+				},
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	rebuild("credentials")
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		if _, err := store.Append(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	encode := func(value any) []byte {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	for index, runtime := range []struct{ id, adapter string }{
+		{"runtime-codex", "codex"},
+		{"runtime-claude", "claude-code"},
+		{"runtime-kimi", "loom-native"},
+		{"runtime-minimax", "loom-native"},
+		{"runtime-deepseek", "loom-native"},
+	} {
+		appendEvent(journal.Event{
+			ID: fmt.Sprintf("runtime-%d", index), StreamID: "runtime_instance:" + runtime.id,
+			Seq: 1, IdempotencyKey: fmt.Sprintf("runtime-idem-%d", index),
+			Type: "RuntimeInstanceDiscovered", SchemaVersion: 1,
+			EmittedAt:     now.Add(time.Duration(10+index) * time.Second),
+			CorrelationID: "11111111-1111-4111-8111-111111111111",
+			PayloadJSON: encode(map[string]any{
+				"discovery_digest": digest(20 + index), "source_probe_id": "probe-" + runtime.id,
+				"instance": map[string]any{
+					"id": runtime.id, "device_id": "device-local",
+					"adapter_type": runtime.adapter, "display_name": runtime.id,
+					"executable_version": "1.0.0", "status": "online",
+					"observed_capabilities": []string{"chat"}, "capacity": 1,
+				},
+				"model_ids": []string{runtimeProfiles[index].ProviderID + "/" + runtimeProfiles[index].ModelID},
+			}),
+		})
+		rebuild("runtime " + runtime.id)
+	}
+	appendEvent(journal.Event{
+		ID: "team-mixed-created", StreamID: "team_instance:team-mixed-instance",
+		Seq: 1, IdempotencyKey: "team-mixed-created-idem",
+		Type: "TeamInstanceCreated", SchemaVersion: 1,
+		EmittedAt:     now.Add(20 * time.Second),
+		CorrelationID: "11111111-1111-4111-8111-111111111111",
+		PayloadJSON: encode(map[string]any{
+			"team": map[string]any{
+				"id":              "team-mixed-instance",
+				"work_request_id": "11111111-1111-4111-8111-111111111111",
+				"source_kind":     "saved_team", "team_definition_id": definition.ID(),
+				"team_definition_version": definition.Version(),
+				"team_definition_scope":   string(definition.Scope()),
+				"scope_identity":          map[string]any{"project_id": "", "generation_id": ""},
+				"team_definition_digest":  definition.Digest(), "source_plan_digest": digest(30),
+				"state": "created", "created_at": int64(1_755_000_000),
+			},
+			"dormant_sub_agents": []any{
+				map[string]any{
+					"dormant": true, "agent_definition_id": "agent-claude",
+					"runtime_profile_id": "profile-claude", "runtime_instance_id": "runtime-claude",
+				},
+				map[string]any{
+					"dormant": true, "agent_definition_id": "agent-kimi",
+					"runtime_profile_id": "profile-kimi", "runtime_instance_id": "runtime-kimi",
+				},
+				map[string]any{
+					"dormant": true, "agent_definition_id": "agent-minimax",
+					"runtime_profile_id": "profile-minimax", "runtime_instance_id": "runtime-minimax",
+				},
+			},
+			"source_plan_digest": digest(30), "source_record_set_digest": digest(31),
+			"team_instance_count": 1, "agent_instance_count": 1,
+			"active_sub_agent_count": 0, "work_item_count": 0,
+		}),
+	})
+	appendEvent(journal.Event{
+		ID: "agent-mixed-created", StreamID: "agent_instance:agent-main-instance",
+		Seq: 1, IdempotencyKey: "agent-mixed-created-idem",
+		Type: "AgentInstanceCreated", SchemaVersion: 1,
+		EmittedAt:     now.Add(21 * time.Second),
+		CorrelationID: "11111111-1111-4111-8111-111111111111",
+		CausationID:   "team-mixed-created",
+		PayloadJSON: encode(map[string]any{
+			"main_agent": map[string]any{
+				"id": "agent-main-instance", "team_instance_id": "team-mixed-instance",
+				"agent_definition_id": "agent-main", "agent_definition_version": 1,
+				"agent_definition_scope": "reusable",
+				"scope_identity":         map[string]any{"project_id": "", "generation_id": ""},
+				"runtime_profile_id":     "profile-codex", "runtime_instance_id": "runtime-codex",
+				"is_main": true, "state": "created",
+			},
+			"runtime_binding": map[string]any{
+				"accepted": true, "profile_id": "profile-codex", "instance_id": "runtime-codex",
+			},
+			"source_plan_digest": digest(30), "source_record_set_digest": digest(31),
+			"team_created_at": int64(1_755_000_000), "binding_digest": digest(32),
+			"runtime_discovery_digest": digest(20),
+		}),
+	})
+	rebuild("agent")
+	source, err := NewProjectionMissionExecutionBindingSource(readModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := source.ResolveMissionExecutionBinding(
+		context.Background(), "team-mixed-instance",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(binding.Roles) != 6 {
+		t.Fatalf("roles = %#v", binding.Roles)
+	}
+	roleByProvider := make(map[string]MissionExecutionRoleBinding)
+	seenAgentInstances := make(map[string]struct{})
+	subNodeIDs := make([]string, 0, 3)
+	routeSiblingCount := 0
+	for _, role := range binding.Roles {
+		if role.Kind == teams.ExecutionNodeRouteSibling {
+			routeSiblingCount++
+			continue
+		}
+		if _, duplicate := roleByProvider[role.Profile.ProviderID]; duplicate {
+			t.Fatalf("duplicate Provider role = %#v", binding.Roles)
+		}
+		if _, duplicate := seenAgentInstances[role.AgentInstanceID]; duplicate {
+			t.Fatalf("duplicate Agent instance = %#v", binding.Roles)
+		}
+		roleByProvider[role.Profile.ProviderID] = role
+		seenAgentInstances[role.AgentInstanceID] = struct{}{}
+		if role.Role == teams.ExecutionRoleSubAgent {
+			subNodeIDs = append(subNodeIDs, role.LogicalNodeID)
+		}
+	}
+	if routeSiblingCount != 2 ||
+		roleByProvider["kimi"].Kind != teams.ExecutionNodeAggregation ||
+		!roleByProvider["kimi"].Aggregation ||
+		len(roleByProvider["kimi"].DependsOn) != 2 {
+		t.Fatalf("Kimi parallel route binding = %#v", binding.Roles)
+	}
+	slices.Sort(subNodeIDs)
+	main := roleByProvider["openai"]
+	if main.Profile.ProviderAccountID != "openai.primary" ||
+		main.Profile.CredentialReference != "credential-ref-openai-primary" ||
+		main.Profile.CredentialRevision != 2 ||
+		!slices.Equal(main.DependsOn, subNodeIDs) ||
+		!main.FallbackConfigured ||
+		main.FallbackProfile.ProviderAccountID != "deepseek.backup" ||
+		main.FallbackProfile.CredentialReference != "credential-ref-deepseek-backup" ||
+		main.FallbackProfile.CredentialRevision != 2 ||
+		main.FallbackInstance.ID != "runtime-deepseek" ||
+		main.FallbackStatus != "ready" || main.FallbackBlockReason != "" ||
+		!main.FallbackApprovalRequired {
+		t.Fatalf("binding = %#v", binding)
+	}
+	wantBindings := map[string]struct {
+		adapter, account, reference, model string
+		timeout                            time.Duration
+	}{
+		"openai":    {"codex", "openai.primary", "credential-ref-openai-primary", "gpt-5.5-codex", time.Minute},
+		"anthropic": {"claude-code", "anthropic.primary", "credential-ref-anthropic-primary", "claude-sonnet-4", time.Minute},
+		"kimi":      {"loom-native", "kimi.primary", "credential-ref-kimi-primary", "kimi-k2.5", 2 * time.Minute},
+		"minimax":   {"loom-native", "minimax.primary", "credential-ref-minimax-primary", "MiniMax-M2.1", 3 * time.Minute},
+	}
+	for providerID, want := range wantBindings {
+		role, found := roleByProvider[providerID]
+		if !found || role.Profile.AdapterType != want.adapter ||
+			role.Profile.ProviderAccountID != want.account ||
+			role.Profile.CredentialReference != want.reference ||
+			role.Profile.CredentialRevision != 2 ||
+			role.Profile.ModelID != want.model || role.Profile.Timeout != want.timeout ||
+			!slices.Equal(role.Profile.RequiredCapabilities, []string{"chat"}) ||
+			role.Status != "ready" || role.BlockReason != "" ||
+			role.AgentInstanceID == "" {
+			t.Fatalf("%s role binding = %#v", providerID, role)
+		}
+	}
+	command := missionExecutionTestCommand("preflight")
+	command.MissionID = "mission/team-mixed-instance"
+	command.TeamInstanceID = "team-mixed-instance"
+	command.ExpectedViewVersion = binding.ViewVersion
+	compiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: source, SourcePath: t.TempDir(),
+			Now: func() time.Time { return now.Add(time.Minute) },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compilation, err := compiler.CompileMissionExecution(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compilation.Plan.Nodes()) != 6 || len(compilation.Preflight.Nodes) != 6 ||
+		len(compilation.Request.Semantics) != 6 || len(compilation.Request.Nodes) != 12 {
+		t.Fatalf("four-role compilation = %#v", compilation)
+	}
+	compiledSiblingCount := 0
+	compiledAggregationCount := 0
+	for _, node := range compilation.Plan.Nodes() {
+		switch node.Kind() {
+		case teams.ExecutionNodeRouteSibling:
+			compiledSiblingCount++
+		case teams.ExecutionNodeAggregation:
+			compiledAggregationCount++
+			if len(node.DependsOn()) != 2 || node.RouteGroupID() == "" {
+				t.Fatalf("aggregation node = %#v", node)
+			}
+		}
+	}
+	if compiledSiblingCount != 2 || compiledAggregationCount != 1 {
+		t.Fatalf("parallel plan topology = %#v", compilation.Plan.Nodes())
+	}
+	for _, execution := range compilation.Request.Nodes {
+		planned, _ := missionContextPlanNode(compilation.Plan, execution.LogicalNodeID)
+		if (planned.Kind() == teams.ExecutionNodeAggregation) !=
+			(execution.Aggregation != nil) {
+			t.Fatalf("aggregation execution marker = %#v", execution)
+		}
+	}
+	semanticsByLogicalNode := make(map[string]TeamNodeSemantics)
+	for _, semantic := range compilation.Request.Semantics {
+		semanticsByLogicalNode[semantic.LogicalNodeID] = semantic
+	}
+	projectedRouteNodes := make([]projection.TeamExecutionNode, 0, 6)
+	for _, node := range compilation.Plan.Nodes() {
+		semantic := semanticsByLogicalNode[node.LogicalNodeID()]
+		projectedRouteNodes = append(projectedRouteNodes, projection.TeamExecutionNode{
+			LogicalNodeID: node.LogicalNodeID(), Title: node.Title(),
+			AgentInstanceID: node.AgentInstanceID(), RuntimeInstanceID: node.RuntimeInstanceID(),
+			Role: string(node.Role()), Kind: string(node.Kind()), RouteGroupID: node.RouteGroupID(),
+			DependsOn: node.DependsOn(), MaxAttempts: node.MaxAttempts(), Status: "pending",
+			OutputContractVersion:       semantic.OutputContract.Version(),
+			OutputContractDigest:        semantic.OutputContract.Digest(),
+			RecoveryPolicyVersion:       semantic.RecoveryPolicy.Version(),
+			RecoveryPolicyDigest:        semantic.RecoveryPolicy.Digest(),
+			AttemptCredits:              semantic.RecoveryPolicy.AttemptCredits(),
+			PrimaryWorkflowPath:         semantic.PrimaryWorkflowPath,
+			WorkflowFallbackKey:         semantic.RecoveryPolicy.WorkflowFallbackKey(),
+			RecoveryApprovalRequired:    semantic.RecoveryPolicy.RecoveryApprovalRequired(),
+			AcceptanceContractVersion:   semantic.AcceptanceContract.Version(),
+			AcceptanceContractDigest:    semantic.AcceptanceContract.Digest(),
+			AcceptanceRisk:              string(semantic.AcceptanceContract.Risk()),
+			IndependentVerifierRequired: semantic.AcceptanceContract.IndependentVerifierRequired(),
+			VerifierAgentInstanceID:     semantic.VerifierAgentInstanceID,
+			VerifierRuntimeInstanceID:   semantic.VerifierRuntimeInstanceID,
+			VerifierWorkflowPath:        semantic.VerifierWorkflowPath,
+		})
+	}
+	recoveredRoutes, err := compiler.ReconstructMissionExecution(
+		context.Background(),
+		projection.TeamExecution{
+			TeamInstanceID: command.TeamInstanceID, PlanDigest: compilation.Plan.Digest(),
+			Status: "running", Nodes: projectedRouteNodes,
+		},
+	)
+	if err != nil || recoveredRoutes.Plan.Digest() != compilation.Plan.Digest() ||
+		len(recoveredRoutes.Nodes) != 12 ||
+		len(recoveredRoutes.Semantics) != 6 {
+		t.Fatalf("parallel route recovery = %#v, err=%v", recoveredRoutes, err)
+	}
+	preflightByProvider := make(map[string]MissionExecutionNodePreview)
+	for _, preview := range compilation.Preflight.Nodes {
+		if preview.Kind == string(teams.ExecutionNodeRouteSibling) {
+			continue
+		}
+		preflightByProvider[preview.ProviderID] = preview
+	}
+	for providerID, want := range wantBindings {
+		preview, found := preflightByProvider[providerID]
+		if !found || preview.HarnessAdapter != want.adapter ||
+			preview.ProviderAccountID != want.account || preview.ModelID != want.model ||
+			preview.CredentialRevision != 2 ||
+			preview.TimeoutSeconds != int64(want.timeout/time.Second) ||
+			!slices.Equal(preview.Capabilities, []string{"chat"}) ||
+			preview.Status != "ready" || preview.BlockReason != "" {
+			t.Fatalf("%s preflight = %#v", providerID, preview)
+		}
+	}
+	primaryByProvider := make(map[string]TeamNodeExecution)
+	for _, execution := range compilation.Request.Nodes {
+		planned, _ := missionContextPlanNode(compilation.Plan, execution.LogicalNodeID)
+		if execution.AttemptNumber == 1 &&
+			planned.Kind() != teams.ExecutionNodeRouteSibling {
+			primaryByProvider[execution.Profile.ProviderID] = execution
+		}
+	}
+	for providerID, want := range wantBindings {
+		execution, found := primaryByProvider[providerID]
+		if !found || execution.Profile.AdapterType != want.adapter ||
+			execution.Profile.ProviderAccountID != want.account ||
+			execution.Profile.CredentialReference != want.reference ||
+			execution.Profile.CredentialRevision != 2 ||
+			execution.Profile.ModelID != want.model {
+			t.Fatalf("%s primary execution = %#v", providerID, execution)
+		}
+		dispatch, dispatchErr := contextcapsule.ValidateDispatchPayload(
+			execution.ContextCapsule,
+			execution.Dispatch.Payload(),
+		)
+		role := roleByProvider[providerID]
+		expectedTitle := role.Title
+		if role.Role == teams.ExecutionRoleMain {
+			expectedTitle = command.Objective
+		}
+		var rolePrompt struct {
+			Items []struct {
+				ItemID  string `json:"item_id"`
+				Content string `json:"content"`
+			} `json:"items"`
+		}
+		if dispatchErr == nil {
+			dispatchErr = json.Unmarshal([]byte(dispatch.Prompt), &rolePrompt)
+		}
+		itemContent := make(map[string]string, len(rolePrompt.Items))
+		for _, item := range rolePrompt.Items {
+			itemContent[item.ItemID] = item.Content
+		}
+		var policy struct {
+			DefaultVerifierKey string `json:"default_verifier_key"`
+		}
+		var task struct {
+			LogicalNodeID string `json:"logical_node_id"`
+		}
+		var governance struct {
+			Title string `json:"title"`
+		}
+		if dispatchErr == nil {
+			dispatchErr = json.Unmarshal([]byte(itemContent["work-package-policy"]), &policy)
+		}
+		if dispatchErr == nil {
+			dispatchErr = json.Unmarshal([]byte(itemContent["current-task-state"]), &task)
+		}
+		if dispatchErr == nil {
+			dispatchErr = json.Unmarshal([]byte(itemContent["role-governance"]), &governance)
+		}
+		if dispatchErr != nil || dispatch.CapsuleDigest != execution.ContextCapsule.Digest() ||
+			dispatch.DisclosureReceiptDigest !=
+				execution.ContextCapsule.DisclosureReceiptDigest() ||
+			dispatch.Prompt == command.Objective ||
+			strings.Contains(dispatch.Prompt, want.account) ||
+			strings.Contains(dispatch.Prompt, want.reference) ||
+			!strings.Contains(dispatch.Prompt, command.Objective) ||
+			policy.DefaultVerifierKey != "verifier.code-review.v1" ||
+			task.LogicalNodeID != role.LogicalNodeID || governance.Title != expectedTitle {
+			t.Fatalf("%s context dispatch = %#v, %v", providerID, dispatch, dispatchErr)
+		}
+		for peerProviderID, peerRole := range roleByProvider {
+			if peerProviderID != providerID && peerRole.Title != command.Objective &&
+				strings.Contains(dispatch.Prompt, peerRole.Title) {
+				t.Fatalf(
+					"%s context dispatch disclosed %s role title: %s",
+					providerID, peerProviderID, dispatch.Prompt,
+				)
+			}
+		}
+	}
+	approvalSource := &controlledMissionFallbackApprovalSource{now: now}
+	approvedCompiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: source, FallbackApprovals: approvalSource,
+			SourcePath: t.TempDir(), Now: func() time.Time { return now.Add(time.Minute) },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedCompilation, err := approvedCompiler.CompileMissionExecution(
+		context.Background(), command,
+	)
+	if err != nil {
+		t.Fatalf("approved mixed-Team DeepSeek fallback compilation: %v", err)
+	}
+	var approvedFallback TeamNodeExecution
+	for _, execution := range approvedCompilation.Request.Nodes {
+		if execution.LogicalNodeID == "main" && execution.AttemptNumber == 2 {
+			approvedFallback = execution
+		}
+	}
+	approvedDispatch, err := contextcapsule.ValidateDispatchPayload(
+		approvedFallback.ContextCapsule, approvedFallback.Dispatch.Payload(),
+	)
+	if err != nil || approvedFallback.Profile.ProviderID != "deepseek" ||
+		!strings.Contains(approvedDispatch.Prompt, "fallback-route-approval") {
+		t.Fatalf("approved mixed-Team DeepSeek fallback = %#v, dispatch=%#v, err=%v", approvedFallback, approvedDispatch, err)
+	}
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(), credentials.MetadataCommand{
+			CommandID:  "credential-kimi-revoke",
+			ProviderID: "kimi", ProviderAccountID: "kimi.primary",
+			CredentialReference: "credential-ref-kimi-primary",
+			ExpectedRevision:    2, OccurredAt: now.Add(30 * time.Second),
+			Status: credentials.CredentialRevoked,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	rebuild("revoked credential")
+	blockedBinding, err := source.ResolveMissionExecutionBinding(
+		context.Background(), "team-mixed-instance",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusByProvider := make(map[string]MissionExecutionRoleBinding)
+	blockedRouteStatuses := make(map[string]string)
+	for _, role := range blockedBinding.Roles {
+		statusByProvider[role.Profile.ProviderID] = role
+		if role.Kind == teams.ExecutionNodeRouteSibling {
+			blockedRouteStatuses[role.Profile.ProviderID] = role.Status
+		}
+	}
+	for _, providerID := range []string{"openai", "anthropic", "minimax"} {
+		if statusByProvider[providerID].Status != "ready" ||
+			statusByProvider[providerID].BlockReason != "" {
+			t.Fatalf("%s peer credential health = %#v", providerID, statusByProvider)
+		}
+	}
+	if statusByProvider["kimi"].Status != "blocked" ||
+		!strings.Contains(statusByProvider["kimi"].BlockReason, "Credential") {
+		t.Fatalf("isolated Kimi credential health = %#v", statusByProvider)
+	}
+	if blockedRouteStatuses["kimi"] != "blocked" ||
+		blockedRouteStatuses["deepseek"] != "ready" {
+		t.Fatalf("parallel route failure isolation = %#v", blockedRouteStatuses)
+	}
+	blockedCommand := command
+	blockedCommand.ExpectedViewVersion = blockedBinding.ViewVersion
+	blockedCompilation, err := compiler.CompileMissionExecution(
+		context.Background(), blockedCommand,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blockedCompilation.Preflight.Nodes) != 6 {
+		t.Fatalf("blocked preflight = %#v", blockedCompilation.Preflight)
+	}
+	blockedPreflightByProvider := make(map[string]MissionExecutionNodePreview)
+	for _, preview := range blockedCompilation.Preflight.Nodes {
+		if preview.Kind == string(teams.ExecutionNodeRouteSibling) {
+			continue
+		}
+		blockedPreflightByProvider[preview.ProviderID] = preview
+	}
+	for _, providerID := range []string{"openai", "anthropic", "minimax"} {
+		if blockedPreflightByProvider[providerID].Status != "ready" {
+			t.Fatalf("%s blocked with Kimi = %#v", providerID, blockedPreflightByProvider)
+		}
+	}
+	if blockedPreflightByProvider["kimi"].Status != "blocked" ||
+		!strings.Contains(blockedPreflightByProvider["kimi"].BlockReason, "Credential") {
+		t.Fatalf("Kimi preflight = %#v", blockedPreflightByProvider["kimi"])
+	}
+	blockedStart := blockedCommand
+	blockedStart.Operation = "start"
+	blockedStart.PreflightDigest = strings.Repeat("f", 64)
+	isolatedStart, err := compiler.CompileMissionExecution(
+		context.Background(), blockedStart,
+	)
+	if err != nil {
+		t.Fatalf("start with blocked Kimi error = %v", err)
+	}
+	if len(isolatedStart.Request.InitialBlocks) != 3 {
+		t.Fatalf("Kimi isolated initial blocks = %#v", isolatedStart.Request.InitialBlocks)
+	}
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(), credentials.MetadataCommand{
+			CommandID:  "credential-deepseek-revoke",
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.backup",
+			CredentialReference: "credential-ref-deepseek-backup",
+			ExpectedRevision:    2, OccurredAt: now.Add(31 * time.Second),
+			Status: credentials.CredentialRevoked,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	rebuild("revoked fallback credential")
+	fallbackBlocked, err := source.ResolveMissionExecutionBinding(
+		context.Background(), "team-mixed-instance",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range fallbackBlocked.Roles {
+		if role.Role != teams.ExecutionRoleMain {
+			continue
+		}
+		if role.Status != "ready" || role.BlockReason != "" ||
+			role.FallbackStatus != "blocked" ||
+			!strings.Contains(role.FallbackBlockReason, "Credential") {
+			t.Fatalf("isolated fallback health = %#v", role)
+		}
+	}
+}
+
 func TestLockedLocalPiModelIdentityRejectsAliasesAndAmbiguity(t *testing.T) {
 	valid := "loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m"
 	provider, model, ok := parseLockedLocalPiModelIdentity(valid)
@@ -1413,11 +3101,18 @@ func TestLocalProductExecutionPreflightIsReadOnlyBoundedAndCopied(t *testing.T) 
 		PermissionScopes:  []string{"workspace"},
 		ApprovalPoints:    []string{"before_workspace_write"},
 		Nodes: []MissionExecutionNodePreview{{
-			LogicalNodeID: "main",
-			Title:         command.Objective,
-			Role:          "main",
-			DependsOn:     []string{},
-			MaxAttempts:   2,
+			LogicalNodeID:  "main",
+			Title:          command.Objective,
+			Role:           "main",
+			DependsOn:      []string{},
+			MaxAttempts:    2,
+			HarnessAdapter: "pi",
+			ProviderID:     "loom-local",
+			ModelID:        "qwen2.5-coder-1.5b",
+			AuthMode:       string(loomruntime.AuthNative),
+			TimeoutSeconds: 60,
+			Capabilities:   []string{},
+			Status:         "ready",
 		}},
 	}
 	backend := &recordingMissionExecutionBackend{preflight: want}
@@ -1447,6 +3142,90 @@ func TestLocalProductExecutionPreflightIsReadOnlyBoundedAndCopied(t *testing.T) 
 	}
 	if !reflect.DeepEqual(second, want) {
 		t.Fatalf("preflight alias leaked = %#v", second)
+	}
+}
+
+func TestMissionExecutionRoutePreviewRejectsCredentialAndFallbackDrift(t *testing.T) {
+	node := MissionExecutionNodePreview{
+		HarnessAdapter:             "codex",
+		ProviderID:                 "openai",
+		ProviderAccountID:          "openai.primary",
+		ModelID:                    "gpt-5.5-codex",
+		AuthMode:                   string(loomruntime.AuthBrokered),
+		CredentialRevision:         3,
+		TimeoutSeconds:             120,
+		Capabilities:               []string{},
+		Status:                     "ready",
+		FallbackConfigured:         true,
+		FallbackHarnessAdapter:     "claude-code",
+		FallbackProviderID:         "anthropic",
+		FallbackProviderAccountID:  "anthropic.backup",
+		FallbackModelID:            "claude-sonnet",
+		FallbackAuthMode:           string(loomruntime.AuthBrokered),
+		FallbackCredentialRevision: 5,
+		FallbackTimeoutSeconds:     90,
+		FallbackCapabilities:       []string{},
+		FallbackStatus:             "ready",
+		FallbackApprovalRequired:   true,
+	}
+	validPrimary := func(candidate MissionExecutionNodePreview) bool {
+		return validMissionExecutionRoute(
+			candidate.HarnessAdapter,
+			candidate.ProviderID,
+			candidate.ProviderAccountID,
+			candidate.ModelID,
+			candidate.AuthMode,
+			candidate.CredentialRevision,
+			candidate.ReasoningEffort,
+			candidate.TimeoutSeconds,
+			candidate.BudgetCredits,
+			candidate.Capabilities,
+			candidate.Status,
+			candidate.BlockReason,
+		)
+	}
+	if !validPrimary(node) || !validMissionExecutionFallback(node) {
+		t.Fatalf("valid route preview rejected: %#v", node)
+	}
+	for name, mutate := range map[string]func(*MissionExecutionNodePreview){
+		"brokered account missing": func(candidate *MissionExecutionNodePreview) {
+			candidate.ProviderAccountID = ""
+		},
+		"brokered revision missing": func(candidate *MissionExecutionNodePreview) {
+			candidate.CredentialRevision = 0
+		},
+		"native account retained": func(candidate *MissionExecutionNodePreview) {
+			candidate.AuthMode = string(loomruntime.AuthNative)
+		},
+		"timeout missing": func(candidate *MissionExecutionNodePreview) {
+			candidate.TimeoutSeconds = 0
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := node
+			mutate(&candidate)
+			if validPrimary(candidate) {
+				t.Fatalf("credential drift accepted: %#v", candidate)
+			}
+		})
+	}
+	missingFallbackRevision := node
+	missingFallbackRevision.FallbackCredentialRevision = 0
+	if validMissionExecutionFallback(missingFallbackRevision) {
+		t.Fatal("brokered fallback revision drift accepted")
+	}
+	nativeFallback := node
+	nativeFallback.FallbackAuthMode = string(loomruntime.AuthNative)
+	nativeFallback.FallbackProviderAccountID = ""
+	nativeFallback.FallbackCredentialRevision = 0
+	if !validMissionExecutionFallback(nativeFallback) {
+		t.Fatalf("legal native fallback rejected: %#v", nativeFallback)
+	}
+	hiddenFallback := MissionExecutionNodePreview{
+		FallbackProviderID: "deepseek",
+	}
+	if validMissionExecutionFallback(hiddenFallback) {
+		t.Fatal("unconfigured fallback carried hidden route fields")
 	}
 }
 
@@ -1526,6 +3305,9 @@ func TestLocalProductExecutionStartAndControlRequireExactOperationShape(
 	control.WorkPackageID = ""
 	control.WorkPackageDigest = ""
 	control.Objective = ""
+	control.ContextVersion = 0
+	control.ConfirmedConstraints = nil
+	control.AcceptedDecisions = nil
 	control.PreflightDigest = ""
 	control.ControlAction = "cancel"
 	control.ExecutionDigest = want.ExecutionDigest
@@ -1549,7 +3331,7 @@ func missionExecutionTestCommand(operation string) MissionExecutionCommand {
 	if err != nil {
 		panic(err)
 	}
-	return MissionExecutionCommand{
+	command := MissionExecutionCommand{
 		SchemaVersion:       MissionExecutionSchemaVersion,
 		Operation:           operation,
 		MissionID:           "mission/team-1",
@@ -1560,6 +3342,82 @@ func missionExecutionTestCommand(operation string) MissionExecutionCommand {
 		ExpectedViewVersion: executionTestDigest("view"),
 		CorrelationID:       "11111111-1111-4111-8111-111111111111",
 	}
+	if operation != missionExecutionControl {
+		command.ContextVersion = MissionContextVersion
+		command.ConfirmedConstraints = []string{}
+		command.AcceptedDecisions = []string{}
+	}
+	return command
+}
+
+func TestMissionContextValidationAndPreflightDigestFreezeConfirmedAuthority(t *testing.T) {
+	command := missionExecutionTestCommand(missionExecutionPreflight)
+	command.ConfirmedConstraints = []string{"Do not change public APIs"}
+	command.AcceptedDecisions = []string{"Use the existing execution adapter"}
+	if !validMissionExecutionCommand(command, missionExecutionPreflight) {
+		t.Fatal("canonical Mission Context v1 command was rejected")
+	}
+	preflight := MissionExecutionPreflight{
+		SchemaVersion: MissionExecutionSchemaVersion,
+		MissionID:     command.MissionID, TeamInstanceID: command.TeamInstanceID,
+		WorkPackageID: command.WorkPackageID, WorkPackageDigest: command.WorkPackageDigest,
+		ViewVersion: command.ExpectedViewVersion, PlanDigest: executionTestDigest("plan"),
+		RuntimeInstanceID: "runtime-pi", RuntimeProfileID: "profile-pi",
+		ModelID: "model-pi", AuthMode: "native_auth", CapacityAvailable: 1,
+		BudgetStatus: "unavailable", SideEffects: []string{}, PermissionScopes: []string{},
+		ApprovalPoints: []string{}, Nodes: []MissionExecutionNodePreview{},
+	}
+	first, err := missionExecutionPreflightDigest(command, preflight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := command
+	drifted.AcceptedDecisions = []string{"Use a replacement execution adapter"}
+	second, err := missionExecutionPreflightDigest(drifted, preflight)
+	if err != nil || first == second {
+		t.Fatalf("Mission Context digest drift = %q/%q, %v", first, second, err)
+	}
+	for _, invalid := range []MissionExecutionCommand{
+		func() MissionExecutionCommand { value := command; value.ContextVersion = 2; return value }(),
+		func() MissionExecutionCommand { value := command; value.ConfirmedConstraints = nil; return value }(),
+		func() MissionExecutionCommand {
+			value := command
+			value.ConfirmedConstraints = []string{" padded "}
+			return value
+		}(),
+		func() MissionExecutionCommand {
+			value := command
+			value.AcceptedDecisions = []string{"Do not change public APIs"}
+			return value
+		}(),
+	} {
+		if validMissionExecutionCommand(invalid, missionExecutionPreflight) {
+			t.Fatalf("invalid Mission Context accepted = %#v", invalid)
+		}
+	}
+}
+
+func mustMissionFallbackDecisionScope(
+	t *testing.T,
+	teamInstanceID string,
+	planDigest string,
+	logicalNodeID string,
+	sourceBindingDigest string,
+	targetBindingDigest string,
+) work.TeamFallbackDecisionScope {
+	t.Helper()
+	scope, err := work.NewTeamFallbackDecisionScope(
+		work.TeamFallbackDecisionScopeInput{
+			Version: 1, TeamInstanceID: teamInstanceID,
+			PlanDigest: planDigest, LogicalNodeID: logicalNodeID,
+			SourceBindingDigest: sourceBindingDigest,
+			TargetBindingDigest: targetBindingDigest,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
 }
 
 func executionTestDigest(label string) string {

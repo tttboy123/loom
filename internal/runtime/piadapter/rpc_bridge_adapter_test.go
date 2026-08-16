@@ -10,11 +10,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/agentinbox"
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
+	"loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
@@ -26,6 +30,194 @@ const piRPCFixtureSettings = `{"compaction":{"enabled":false},"retry":{"enabled"
 type piRPCEventRejectingFrameSink struct {
 	frames []bridgev1.Frame
 	err    error
+}
+
+type nilPiContextRetriever struct{}
+
+type piRPCAgentInputSourceFixture struct {
+	batches     []runtime.AgentInputBatch
+	checkpoints []runtime.AgentInputCheckpoint
+}
+
+func (source *piRPCAgentInputSourceFixture) NextAgentInput(
+	_ context.Context,
+	checkpoint runtime.AgentInputCheckpoint,
+) (runtime.AgentInputBatch, bool, error) {
+	source.checkpoints = append(source.checkpoints, checkpoint)
+	if len(source.batches) == 0 {
+		return runtime.AgentInputBatch{}, false, nil
+	}
+	batch := source.batches[0]
+	source.batches = source.batches[1:]
+	return batch, true, nil
+}
+
+func (*nilPiContextRetriever) Retrieve(
+	context.Context,
+	contextcapsule.RetrievalProposal,
+) (contextcapsule.RetrievedItem, error) {
+	return contextcapsule.RetrievedItem{}, contextcapsule.ErrContextRetrievalDenied
+}
+
+func TestPiRPCContextExtensionArgumentsExposeOnlyFrozenContextRead(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "success")
+	runtimeAdapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := runtimeAdapter.(*piRPCBridgeAdapter)
+	extension := &piContextExtension{extensionPath: "/private/attempt/loom-context.mjs"}
+	arguments, err := adapter.arguments(fixture.request(t), extension, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTail := []string{"--no-builtin-tools", "--extension", extension.extensionPath}
+	if len(arguments) < len(wantTail) ||
+		!reflect.DeepEqual(arguments[len(arguments)-len(wantTail):], wantTail) {
+		t.Fatalf("context extension arguments = %#v", arguments)
+	}
+	joined := strings.Join(arguments, "\n")
+	if !strings.Contains(joined, "Frozen tools for this Agent attempt: ContextRead.") ||
+		!strings.Contains(joined, "loom_read_context at most once") ||
+		strings.Contains(joined, "Bash, Edit, Grep, Read") ||
+		strings.Contains(joined, `"tool":"Bash|Edit|Read|Grep"`) {
+		t.Fatalf("context system prompt capability drifted: %s", joined)
+	}
+	if !strings.Contains(joined, "--no-extensions") {
+		t.Fatal("automatic extension discovery was enabled")
+	}
+}
+
+func TestPiRPCCombinedExtensionArgumentsExposeFrozenContextAndGovernedTool(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "success")
+	runtimeAdapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := runtimeAdapter.(*piRPCBridgeAdapter)
+	contextExtension := &piContextExtension{extensionPath: "/private/attempt/loom-context.mjs"}
+	toolExtension := &piToolExtension{extensionPath: "/private/attempt/loom-tool.mjs"}
+	arguments, err := adapter.arguments(fixture.request(t), contextExtension, toolExtension)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTail := []string{
+		"--no-builtin-tools",
+		"--extension", contextExtension.extensionPath,
+		"--extension", toolExtension.extensionPath,
+	}
+	if len(arguments) < len(wantTail) ||
+		!reflect.DeepEqual(arguments[len(arguments)-len(wantTail):], wantTail) {
+		t.Fatalf("combined extension arguments = %#v", arguments)
+	}
+	joined := strings.Join(arguments, "\n")
+	if !strings.Contains(joined, "loom_read_context") ||
+		!strings.Contains(joined, "loom_tool") ||
+		!strings.Contains(joined, "Bash, ContextRead, Edit, Grep, Read") {
+		t.Fatalf("combined system prompt capability drifted: %s", joined)
+	}
+}
+
+func TestPiRPCContextRetrieverPresenceRejectsTypedNil(t *testing.T) {
+	var typedNil *nilPiContextRetriever
+	var retriever contextcapsule.Retriever = typedNil
+	if piRPCContextRetrieverPresent(retriever) ||
+		piRPCContextRetrieverPresent(nil) ||
+		!piRPCContextRetrieverPresent(&nilPiContextRetriever{}) {
+		t.Fatal("Context Retriever presence accepted a typed nil or rejected a concrete broker")
+	}
+}
+
+func TestPiRPCContextCapabilityWithoutAuthorityFailsBeforeProcessStart(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "settings-start-marker")
+	runtimeAdapter, err := NewPiRPCBridgeAdapter(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.request(t)
+	profile, err := runtime.NewRuntimeProfile(runtime.RuntimeProfile{
+		ID: "profile-pi-context", AdapterType: "pi-cli",
+		ProviderID: piRPCProviderID, ModelID: piRPCModelID,
+		AuthMode: runtime.AuthNative, Timeout: time.Minute,
+		RequiredCapabilities: []string{runtime.CapabilityContextRetrieval},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := runtime.NewRuntimeInstance(runtime.RuntimeInstance{
+		ID: request.Binding.RuntimeInstanceID, DeviceID: "device-fixture",
+		AdapterType: "pi-cli", DisplayName: "Pi fixture", ExecutableVersion: "0.82.1",
+		Status:               runtime.RuntimeOnline,
+		ObservedCapabilities: []string{runtime.CapabilityContextRetrieval}, Capacity: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ExecutionBinding, err = runtime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContextRetriever = &nilPiContextRetriever{}
+	if _, err := runtimeAdapter.Execute(context.Background(), request); !errors.Is(err, ErrPiContextExtension) {
+		t.Fatalf("Execute() error = %v, want ErrPiContextExtension", err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.homePath, "process-started")); !os.IsNotExist(err) {
+		t.Fatalf("Pi process started before Context Authority validation: %v", err)
+	}
+}
+
+func TestPiRPCGovernedToolCapabilityAndHookMustMatchBeforeProcessStart(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		capability bool
+		hook       bool
+	}{
+		{name: "capability without hook", capability: true},
+		{name: "hook without capability", hook: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPiRPCBridgeFixture(t, "settings-start-marker")
+			config := fixture.config()
+			if test.hook {
+				config.ToolHook = &piToolSuspendingHookFixture{}
+			}
+			adapter, err := NewPiRPCBridgeAdapter(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := fixture.request(t)
+			if test.capability {
+				profile, profileErr := runtime.NewRuntimeProfile(runtime.RuntimeProfile{
+					ID: "profile-pi-tool-mismatch", AdapterType: "pi-cli",
+					ProviderID: piRPCProviderID, ModelID: piRPCModelID,
+					AuthMode: runtime.AuthNative, Timeout: time.Minute,
+					RequiredCapabilities: []string{runtime.CapabilityGovernedToolLoop},
+				})
+				if profileErr != nil {
+					t.Fatal(profileErr)
+				}
+				instance, instanceErr := runtime.NewRuntimeInstance(runtime.RuntimeInstance{
+					ID: fixture.binding.RuntimeInstanceID, DeviceID: "device-fixture",
+					AdapterType: "pi-cli", DisplayName: "Pi fixture",
+					ExecutableVersion: "0.82.1", Status: runtime.RuntimeOnline,
+					ObservedCapabilities: []string{runtime.CapabilityGovernedToolLoop}, Capacity: 1,
+				})
+				if instanceErr != nil {
+					t.Fatal(instanceErr)
+				}
+				request.ExecutionBinding, err = runtime.FreezeExecutionBinding(profile, instance)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := adapter.Execute(context.Background(), request); !errors.Is(err, ErrPiToolExtension) {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(fixture.homePath, "process-started")); !os.IsNotExist(err) {
+				t.Fatalf("Pi started before capability/hook validation: %v", err)
+			}
+		})
+	}
 }
 
 func TestPiRPCModelOutputBudget(t *testing.T) {
@@ -88,7 +280,7 @@ func TestPiRPCPi0821UserMessageCompatibility(t *testing.T) {
 		),
 	} {
 		t.Run("accept/"+name, func(t *testing.T) {
-			if !piRPCUserMessage(raw, prompt) {
+			if !piRPCUserMessage(raw, []byte(prompt)) {
 				t.Fatal("exact Pi 0.82.1 user message was rejected")
 			}
 		})
@@ -123,7 +315,7 @@ func TestPiRPCPi0821UserMessageCompatibility(t *testing.T) {
 	}
 	for name, raw := range rejections {
 		t.Run("reject/"+name, func(t *testing.T) {
-			if piRPCUserMessage(raw, prompt) {
+			if piRPCUserMessage(raw, []byte(prompt)) {
 				t.Fatal("invalid Pi user message was accepted")
 			}
 		})
@@ -247,6 +439,12 @@ func TestPiRPCBridgeTranslatesCorrelatedTranscript(t *testing.T) {
 		result.CancelAcknowledged() {
 		t.Fatalf("adapter result = %#v", result)
 	}
+	accounting, accountingAvailable := result.Accounting()
+	if !accountingAvailable || !accounting.UsageObserved ||
+		accounting.TotalTokens != 0 || !accounting.CostObserved ||
+		accounting.CostMicrounits != 0 || accounting.CostCurrency != "USD" {
+		t.Fatalf("adapter accounting = %#v, %v", accounting, accountingAvailable)
+	}
 	frames := result.InboundFrames()
 	if len(frames) != 5 || len(sink.frames) != len(frames) {
 		t.Fatalf("frames = %d/%d, want 5 translated frames", len(frames), len(sink.frames))
@@ -277,6 +475,144 @@ func TestPiRPCBridgeTranslatesCorrelatedTranscript(t *testing.T) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("models.json binding = %#v, %v", info, err)
 	}
+}
+
+func TestPiRPCBridgeConsumesAgentInputInSameManagedProcess(t *testing.T) {
+	const (
+		inputText       = "narrow the Pi implementation boundary"
+		secondMessageID = "20000000-0000-4000-8000-000000000002"
+	)
+	secondPrompt := "Loom steer input (scope=agent_private):\n" + inputText
+	fixture := newPiRPCBridgeFixture(t, "success")
+	secondScript := piRPCFixtureScriptFor(
+		"success",
+		secondPrompt,
+		piRPCSystemPrompt,
+		secondMessageID,
+	)
+	const bodyMarker = "read request || exit 42\n"
+	_, secondBody, found := strings.Cut(secondScript, bodyMarker)
+	if !found {
+		t.Fatal("second Pi transcript body is unavailable")
+	}
+	secondBody = strings.ReplaceAll(secondBody, "Hello world", "Second reply")
+	secondBody = strings.ReplaceAll(secondBody, "Hello ", "Second ")
+	secondBody = strings.ReplaceAll(secondBody, `"delta":"world"`, `"delta":"reply"`)
+	expectedRequest, err := json.Marshal(struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}{ID: secondMessageID, Type: "prompt", Message: secondPrompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := piRPCFixtureScript("success") +
+		"printf '%s' \"$$\" > \"$HOME/multi-prompt-pid\"\n" +
+		"IFS= read -r second_request || exit 61\n" +
+		": > \"$HOME/multi-prompt-read\"\n" +
+		"[ \"$second_request\" = " + piRPCShellQuote(string(expectedRequest)) + " ] || exit 62\n" +
+		": > \"$HOME/multi-prompt-matched\"\n" + secondBody +
+		": > \"$HOME/multi-prompt-emitted\"\n"
+	if err := os.WriteFile(fixture.executablePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	inputBytes := []byte(inputText)
+	source := &piRPCAgentInputSourceFixture{batches: []runtime.AgentInputBatch{{
+		TurnID: "turn-1", TurnSequence: 1,
+		StepID: secondMessageID, StepSequence: 2,
+		Inputs: []runtime.AgentInput{{
+			Binding: agentinbox.Binding{
+				Mode: agentinbox.ModeSteer, ContextScope: agentinbox.ScopeAgentPrivate,
+			},
+			Content: inputBytes,
+		}},
+	}}}
+	config := fixture.config()
+	audits := make(chan PiRPCTranscriptAudit, 1)
+	config.TranscriptAudit = audits
+	adapter, err := NewPiRPCBridgeAdapter(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, ok := adapter.(runtime.AgentInputConsumer)
+	if !ok || !consumer.AcceptsAgentInputs() {
+		t.Fatal("Pi RPC adapter does not advertise governed Agent input consumption")
+	}
+	request := fixture.request(t)
+	request.AgentInputs = source
+	result, err := adapter.Execute(context.Background(), request)
+	if err != nil {
+		markers := make([]string, 0, 4)
+		for _, name := range []string{
+			"multi-prompt-pid", "multi-prompt-read",
+			"multi-prompt-matched", "multi-prompt-emitted",
+		} {
+			if _, statErr := os.Stat(filepath.Join(fixture.homePath, name)); statErr == nil {
+				markers = append(markers, name)
+			}
+		}
+		t.Fatalf("Execute() error = %v; child markers = %v", err, markers)
+	}
+	pid, pidErr := os.ReadFile(filepath.Join(fixture.homePath, "multi-prompt-pid"))
+	if pidErr != nil || len(pid) == 0 {
+		t.Fatal("same managed Pi process identity was not observed")
+	}
+	for _, value := range pid {
+		if value < '0' || value > '9' {
+			t.Fatal("managed Pi process identity marker is invalid")
+		}
+	}
+	for _, name := range []string{"multi-prompt-matched", "multi-prompt-emitted"} {
+		if _, statErr := os.Stat(filepath.Join(fixture.homePath, name)); statErr != nil {
+			t.Fatalf("same-process checkpoint %q is unavailable", name)
+		}
+	}
+	if len(source.checkpoints) != 2 ||
+		source.checkpoints[0].OutputDigest == source.checkpoints[1].OutputDigest {
+		t.Fatalf("Agent input checkpoints = %#v", source.checkpoints)
+	}
+	if !piRPCAllZero(inputBytes) {
+		t.Fatal("Pi Agent input plaintext remained after managed-process dispatch")
+	}
+	frames := result.InboundFrames()
+	if len(frames) != 7 || frames[len(frames)-1].Type() != bridgev1.MessageResult {
+		t.Fatalf("multi-prompt frames = %#v", frames)
+	}
+	resultCount := 0
+	for _, frame := range frames {
+		if frame.Type() == bridgev1.MessageResult {
+			resultCount++
+		}
+		if bytes.Contains(frame.Payload(), []byte(inputText)) {
+			t.Fatal("Agent input plaintext entered a Bridge frame")
+		}
+	}
+	if resultCount != 1 {
+		t.Fatalf("terminal result count = %d", resultCount)
+	}
+	accounting, available := result.Accounting()
+	if !available || accounting.TotalTokens != 0 || !accounting.UsageObserved {
+		t.Fatalf("combined accounting = %#v, %t", accounting, available)
+	}
+	select {
+	case audit := <-audits:
+		encoded, marshalErr := json.Marshal(audit)
+		if marshalErr != nil || bytes.Contains(encoded, []byte(inputText)) {
+			t.Fatal("Agent input plaintext entered transcript audit")
+		}
+	default:
+		t.Fatal("multi-prompt transcript audit was not published")
+	}
+}
+
+func piRPCAllZero(content []byte) bool {
+	for _, value := range content {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestPiRPCTranscriptClosure(t *testing.T) {
@@ -896,6 +1232,39 @@ func TestPiRPCBridgeRejectsDispatchBeforeProcessStart(t *testing.T) {
 	}
 }
 
+func TestPiRPCBridgeAcceptsCanonicalRoleContextDispatch(t *testing.T) {
+	fixture := newPiRPCBridgeFixture(t, "success")
+	capsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "conversation-1", TeamID: "team-1",
+			AgentID: "agent-pi", RoleID: "coder",
+			ProviderID: "provider.local", ProviderAccountID: "provider.local.primary",
+			ModelID: "model.test", AuthMode: "brokered",
+			ContextAdapterID:   "context:pi-cli:v1",
+			DisclosurePolicyID: "policy.test", DisclosurePolicyVersion: 1,
+			TokenBudget: 64,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Content:    []byte("Implement the admitted local change."),
+			SourceType: contextcapsule.SourceAuthority, SourceRef: "goal:phase-2d",
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := contextcapsule.RenderDispatchPayload(capsule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := parsePiRPCDispatch(payload, fixture.token.Value())
+	if err != nil || !strings.Contains(prompt, "Implement the admitted local change.") {
+		t.Fatalf("context dispatch prompt = %q, %v", prompt, err)
+	}
+}
+
 func TestPiRPCBridgeCancellationAcknowledgementAndCleanup(t *testing.T) {
 	fixture := newPiRPCBridgeFixture(t, "wait-cancel")
 	adapter, err := NewPiRPCBridgeAdapter(fixture.config())
@@ -1028,14 +1397,34 @@ func (fixture *piRPCBridgeFixture) request(t testing.TB) supervisor.AdapterReque
 		HomePath:      fixture.homePath,
 		TempPath:      fixture.tempPath,
 		Binding:       fixture.binding,
-		Dispatch:      fixture.dispatch,
-		Grant:         fixture.token,
-		FrameSink:     &piRecordingFrameSink{},
+		ExecutionBinding: piFixtureExecutionBinding(
+			t,
+			"pi-cli",
+			piRPCProviderID,
+			piRPCModelID,
+			fixture.binding.RuntimeInstanceID,
+		),
+		Dispatch:  fixture.dispatch,
+		Grant:     fixture.token,
+		FrameSink: &piRecordingFrameSink{},
 	}
 }
 
 func piRPCFixtureScript(mode string) string {
-	responseID := "10000000-0000-4000-8000-000000000001"
+	return piRPCFixtureScriptFor(
+		mode,
+		piRPCFixturePrompt,
+		piRPCSystemPrompt,
+		"10000000-0000-4000-8000-000000000001",
+	)
+}
+
+func piRPCFixtureScriptFor(
+	mode string,
+	prompt string,
+	systemPrompt string,
+	responseID string,
+) string {
 	expectedArguments := []string{
 		"--mode", "rpc",
 		"--offline",
@@ -1049,7 +1438,7 @@ func piRPCFixtureScript(mode string) string {
 		"--provider", "loom-local",
 		"--model", "loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m",
 		"--thinking", "off",
-		"--system-prompt", piRPCSystemPrompt,
+		"--system-prompt", systemPrompt,
 	}
 	header := "#!/bin/sh\n" +
 		"[ -z \"${SHOULD_NOT_LEAK+x}\" ] || exit 41\n" +
@@ -1078,7 +1467,7 @@ func piRPCFixtureScript(mode string) string {
 			"printf '%s\\n' '{\"id\":\"45454545-4545-4545-8545-454545454545\",\"type\":\"response\",\"command\":\"abort\",\"success\":true}'\n" +
 			"exec /bin/sleep 30\n"
 	}
-	userMessage := piRPCFixtureUserMessage(piRPCFixturePrompt)
+	userMessage := piRPCFixtureUserMessage(prompt)
 	emptyAssistant := piRPCFixtureAssistantMessage("")
 	emptyTextAssistant := strings.Replace(
 		emptyAssistant,

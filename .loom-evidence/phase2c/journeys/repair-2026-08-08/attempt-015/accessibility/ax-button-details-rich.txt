@@ -1,0 +1,28 @@
+help=New Mission|identifier=|subrole=missing value|description=button|enabled=true|position=24189|size=10216|parent_role=|parent_description=|actions=AXPress
+help=Chat|identifier=|subrole=missing value|description=button|enabled=true|position=10223|size=17240|parent_role=|parent_description=|actions=AXPress
+help=Work|identifier=|subrole=missing value|description=button|enabled=true|position=23281|size=5615|parent_role=|parent_description=|actions=AXPress
+help=Teams|identifier=|subrole=missing value|description=button|enabled=true|position=18327|size=6915|parent_role=|parent_description=|actions=AXPress
+help=Attention|identifier=|subrole=missing value|description=button|enabled=true|position=23373|size=7815|parent_role=|parent_description=|actions=AXPress
+help=Library|identifier=|subrole=missing value|description=button|enabled=true|position=22419|size=6715|parent_role=|parent_description=|actions=AXPress
+help=Runtimes|identifier=|subrole=missing value|description=button|enabled=true|position=23465|size=7915|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=missing value|description=button|enabled=true|position=10537|size=17242|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=missing value|description=button|enabled=true|position=10585|size=17242|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=missing value|description=button|enabled=true|position=10633|size=17242|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=missing value|description=button|enabled=true|position=10681|size=17242|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=missing value|description=button|enabled=true|position=10729|size=17242|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=missing value|description=button|enabled=true|position=10777|size=17242|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=AXIncrementArrow|description=increment arrow button|enabled=missing value|position=175165|size=00|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=AXDecrementArrow|description=decrement arrow button|enabled=missing value|position=175165|size=00|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=AXIncrementPage|description=increment page button|enabled=missing value|position=183651|size=681|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=AXDecrementPage|description=decrement page button|enabled=missing value|position=183168|size=60|parent_role=|parent_description=|actions=AXPress
+help=Local service ready|identifier=|subrole=missing value|description=button|enabled=true|position=21765|size=12013|parent_role=|parent_description=|actions=AXPress
+help=Governance inspector|identifier=sidebar.trailing|subrole=missing value|description=button|enabled=true|position=1396132|size=1512|parent_role=|parent_description=|actions=AXPress
+help=Open Folder|identifier=|subrole=missing value|description=button|enabled=true|position=436433|size=13524|parent_role=|parent_description=|actions=AXPress
+help=Use Agent Team|identifier=|subrole=missing value|description=button|enabled=true|position=581433|size=15824|parent_role=|parent_description=|actions=AXPress
+help=Choose folder|identifier=folder|subrole=missing value|description=button|enabled=true|position=218697|size=1412|parent_role=|parent_description=|actions=AXPress
+help=Use Agent Team|identifier=person.3|subrole=missing value|description=button|enabled=true|position=249696|size=2413|parent_role=|parent_description=|actions=AXPress
+help=New Mission|identifier=plus.square|subrole=missing value|description=button|enabled=true|position=291697|size=1212|parent_role=|parent_description=|actions=AXPress
+help=Send message|identifier=arrow.up|subrole=missing value|description=button|enabled=false|position=1382725|size=4040|parent_role=|parent_description=|actions=AXPress
+help=missing value|identifier=|subrole=AXCloseButton|description=close button|enabled=true|position=888|size=1616|parent_role=|parent_description=|actions=AXPress
+help=this button also has an action to zoom the window|identifier=|subrole=AXFullScreenButton|description=full screen button|enabled=true|position=5488|size=1616|parent_role=|parent_description=|actions=AXPressAXZoomWindowAXShowMenu
+help=missing value|identifier=|subrole=AXMinimizeButton|description=minimize button|enabled=true|position=3188|size=1616|parent_role=|parent_description=|actions=AXPress

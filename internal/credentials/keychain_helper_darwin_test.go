@@ -10,11 +10,33 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestKeychainHelperCountsAttemptBeforeProcessStart(t *testing.T) {
+	contents, err := os.ReadFile("keychain_helper_darwin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := []byte("recordProductKeychainHelperSpawnAttempt()")
+	start := []byte("command.Start()")
+	recorderIndex := bytes.Index(contents, recorder)
+	startIndex := bytes.Index(contents, start)
+	if recorderIndex < 0 || startIndex < 0 || recorderIndex > startIndex {
+		t.Fatalf(
+			"helper spawn instrumentation order = recorder %d, start %d",
+			recorderIndex,
+			startIndex,
+		)
+	}
+	if bytes.Count(contents, recorder) != 1 {
+		t.Fatalf("helper spawn recorder calls = %d, want 1", bytes.Count(contents, recorder))
+	}
+}
 
 type helperTestStore struct {
 	mu      sync.Mutex
@@ -437,6 +459,9 @@ func TestKeychainHelperProcessOutputFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("output-producing helper error = %v", err)
 	}
+	if stage := CredentialFailureStage(err); stage != CredentialStageHelperExit {
+		t.Fatalf("output-producing helper stage = %q", stage)
+	}
 }
 
 func TestKeychainHelperCancellationKillsAndJoinsFixture(t *testing.T) {
@@ -466,6 +491,9 @@ func main() {
 	elapsed := time.Since(started)
 	if !errors.Is(err, errKeychainHelperTimeout) {
 		t.Fatalf("hanging helper error = %v", err)
+	}
+	if stage := CredentialFailureStage(err); stage != CredentialStageHelperTimeout {
+		t.Fatalf("hanging helper stage = %q", stage)
 	}
 	if elapsed < 50*time.Millisecond || elapsed > time.Second {
 		t.Fatalf("hanging helper elapsed = %s", elapsed)
@@ -509,6 +537,32 @@ func main() {
 	if !errors.Is(err, errKeychainHelperProtocol) &&
 		!errors.Is(err, errKeychainHelperTimeout) {
 		t.Fatalf("malformed helper response error = %v", err)
+	}
+	wantStage := CredentialStageHelperResponse
+	if errors.Is(err, errKeychainHelperTimeout) {
+		wantStage = CredentialStageHelperTimeout
+	}
+	if stage := CredentialFailureStage(err); stage != wantStage {
+		t.Fatalf("malformed helper stage = %q, want %q", stage, wantStage)
+	}
+}
+
+func TestProcessKeychainStorePreservesHelperAuthorizationStage(t *testing.T) {
+	store := newProcessKeychainStoreForTest(func(
+		context.Context,
+		keychainHelperRequest,
+	) (keychainHelperResponse, error) {
+		return keychainHelperResponse{}, withCredentialFailureStage(
+			CredentialStageHelperAuthorization,
+			errKeychainHelperUnauthorized,
+		)
+	})
+	_, err := store.Read(context.Background(), "credential-ref-stage")
+	if !errors.Is(err, ErrCredentialStoreUnavailable) ||
+		CredentialFailureStage(err) != CredentialStageHelperAuthorization ||
+		strings.Contains(err.Error(), CredentialStageHelperAuthorization) {
+		t.Fatalf("authorization failure = %v stage=%q", err,
+			CredentialFailureStage(err))
 	}
 }
 

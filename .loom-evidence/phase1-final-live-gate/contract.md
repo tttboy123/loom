@@ -1,6 +1,15 @@
 # Final Live Gate Compatibility Amendment
 
-Status: IMPLEMENTATION REVIEW 5 `PASS` — LOCAL COMPATIBILITY COMMIT PENDING.
+Status: REPLACEMENT CONTROLLED LIVE CANARY `FAIL` — `HUMAN_REQUIRED`, NO
+SECOND REPLACEMENT.
+Source provenance, atomic installation, pre-live binding, the metadata
+indentation repair, and production metadata discovery passed. The single
+authorized replacement advanced through local model-server startup into Team
+execution, then failed closed in Pi RPC protocol validation because installed
+Pi `0.82.1` represents the user message `content` as a text-block array while
+the frozen adapter accepts only a string. No authorized assistant output was
+accepted. The original attempt and its one replacement are both consumed; no
+retry or further replacement is authorized.
 FROZEN TECHNICAL CORRECTION 2, Product Repair 3 exhausted, Implementation
 Review 4 `FAIL`, and explicit user authorization for one narrow Repair 4.
 Contract Review 1 `FAIL`, bounded
@@ -15,8 +24,9 @@ reproduced a focused timeout/child-exit classification flake after the final
 bounded repair.
 Repair 4 owns only timeout/child-exit arbitration and the health-then-exit
 fixture startup budget. Its full reverification and fresh independent
-Implementation Review 5 passed. External materialization and live canary
-remain prohibited until the reviewed local compatibility commit is created.
+Implementation Review 5 passed and the reviewed local compatibility commit was
+created at `7829423`. External materialization and the two subsequently
+authorized controlled attempts are recorded in the final-live evidence.
 
 - Amendment: `PHASE1-FINAL-LIVE-COMPAT-1`
 - Risk: `HIGH`
@@ -691,6 +701,30 @@ or hidden reasoning.
 
 Phase 1 remains `READY_FOR_FINAL_USER_SIGNOFF` after a live PASS. Only the user
 can provide `final_review_signoff`; the assistant must not infer or fabricate it.
+
+## Source provenance appendix
+
+`PHASE1-FINAL-LIVE-SOURCE-PROVENANCE-1` is a governance-only amendment at
+baseline `7829423`. The user explicitly accepted that the exact staged GGUF was
+transported through `hf-mirror.com` after direct official access failed.
+
+The mirror is an untrusted byte transport only. It receives no repository,
+revision, Runtime, Provider, policy, fallback, retry, or execution authority.
+The staged URL used `resolve/main`; this contract therefore does not claim that
+the mirror proves the frozen revision ancestry. Artifact acceptance remains
+bound exclusively to the previously reviewed exact filename, byte size, GGUF
+v3 header, and full SHA-256 source lock.
+
+The exact amendment, ownership, pre-install evidence, atomic same-filesystem
+rename, post-install verification, and unchanged live-gate order are frozen in
+`.loom-evidence/phase1-final-live-gate/source-provenance-amendment.md`.
+Fresh independent Contract Review returned `PASS`. Atomic installation,
+post-install verification, the shared inspector, sanitized pre-live manifest,
+and raw installed-Pi metadata process preflight passed. That raw command check
+did not prove acceptance by the production metadata parser. The one authorized
+canary was subsequently consumed and failed closed in production Runtime
+discovery on the two-space-indented Pi 0.82.1 documentation paths. No live
+authorization remains; repair and a replacement canary are `HUMAN_REQUIRED`.
 
 ## Explicit exclusions
 

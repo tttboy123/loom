@@ -326,10 +326,13 @@ func (compiler *BuiltInSideTaskExecutionCompiler) CompileSideTaskExecution(
 		return SideTaskExecutionCompilation{}, errors.Join(ErrSideTaskProductConflict, err)
 	}
 	collector := &sideTaskOutputCollector{}
+	fallbackApprovals, _ := compiler.bindings.parent.(MissionFallbackApprovalSource)
 	missionCompiler, err := NewBuiltInMissionExecutionCompiler(
 		BuiltInMissionExecutionCompilerConfig{
-			Bindings: compiler.bindings.parent, SourcePath: compiler.sourcePath,
-			OutputObserver: collector, Now: compiler.now,
+			Bindings:          compiler.bindings.parent,
+			FallbackApprovals: fallbackApprovals,
+			SourcePath:        compiler.sourcePath,
+			OutputObserver:    collector, Now: compiler.now,
 		},
 	)
 	if err != nil {
@@ -348,7 +351,7 @@ func (compiler *BuiltInSideTaskExecutionCompiler) CompileSideTaskExecution(
 		Objective: input.Objective, ExpectedViewVersion: input.ExpectedViewVersion,
 		PreflightDigest: strings.Repeat("0", 64), CorrelationID: input.CorrelationID,
 	}
-	compilation, err := missionCompiler.compileMissionExecution(ctx, command, binding)
+	compilation, err := missionCompiler.compileMissionExecution(ctx, command, binding, true)
 	if err != nil {
 		return SideTaskExecutionCompilation{}, err
 	}

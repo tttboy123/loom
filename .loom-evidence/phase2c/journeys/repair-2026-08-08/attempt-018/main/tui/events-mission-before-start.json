@@ -1,0 +1,6 @@
+[{"event_type":"AgentGrantIdentityIndexInitialized","count":1},
+{"event_type":"AgentInstanceCreated","count":1},
+{"event_type":"RuntimeInstanceDiscovered","count":1},
+{"event_type":"TeamDefinitionSaved","count":1},
+{"event_type":"TeamInstanceCreated","count":1},
+{"event_type":"WorkRunIdentityIndexInitialized","count":1}]

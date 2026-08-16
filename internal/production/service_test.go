@@ -155,6 +155,38 @@ func TestActivationWritesJournalThenFilesAndRollsBackOnFailure(t *testing.T) {
 	_ = os.Remove(paths.PlistPath())
 }
 
+func TestActivationFailurePreservesOriginalConfig(t *testing.T) {
+	store := openProdStore(t)
+	service, paths := mustProdService(t, store, false)
+	original := []byte(`{"schema_version":1,"activated":false,"original":true}`)
+	if err := os.WriteFile(paths.ConfigPath(), original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.Command(context.Background(), ActivationCommand{
+		Operation: "activation_preview", TargetMode: "default",
+		JourneyID: prodJourney, OperationID: "op-preview",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force installPlist to fail: plist path becomes a directory.
+	_ = os.Remove(paths.PlistPath())
+	if err := os.MkdirAll(paths.PlistPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Command(context.Background(), ActivationCommand{
+		Operation: "activation_confirm", TargetMode: "default",
+		PreviewDigest: preview.Digest, AuthorizedBy: "user-1",
+		JourneyID: prodJourney, OperationID: "op-confirm",
+	}); err == nil {
+		t.Fatal("confirm with failing plist must error")
+	}
+	if digestFile(paths.ConfigPath()) != sha256Hex(original) {
+		t.Fatalf("failed activation must preserve original config, got %q", digestFile(paths.ConfigPath()))
+	}
+	_ = os.Remove(paths.PlistPath())
+}
+
 func TestDeactivationRestoresBackup(t *testing.T) {
 	store := openProdStore(t)
 	service, paths := mustProdService(t, store, false)
@@ -221,6 +253,47 @@ func TestRecoveryDegradesOnConfigMismatch(t *testing.T) {
 	snapshot, err = service.Snapshot(context.Background())
 	if err != nil || !snapshot.Recovery.Degraded {
 		t.Fatalf("tampered snapshot = %+v err=%v", snapshot, err)
+	}
+}
+
+func TestRecoveryDegradesOnPlistAndModeMismatch(t *testing.T) {
+	store := openProdStore(t)
+	service, paths := mustProdService(t, store, false)
+	preview, _ := service.Command(context.Background(), ActivationCommand{
+		Operation: "activation_preview", TargetMode: "default",
+		JourneyID: prodJourney, OperationID: "op-preview",
+	})
+	if _, err := service.Command(context.Background(), ActivationCommand{
+		Operation: "activation_confirm", TargetMode: "default",
+		PreviewDigest: preview.Digest, AuthorizedBy: "user-1",
+		JourneyID: prodJourney, OperationID: "op-confirm",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Snapshot(context.Background())
+	if err != nil || snapshot.Recovery.Degraded {
+		t.Fatalf("fresh activation snapshot = %+v err=%v", snapshot, err)
+	}
+	// Tamper only the plist: journal says activated but the launchd item no
+	// longer matches the desired plist.
+	if err := os.WriteFile(paths.PlistPath(), []byte(`junk`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = service.Snapshot(context.Background())
+	if err != nil || !snapshot.Recovery.Degraded {
+		t.Fatalf("plist mismatch must degrade: %+v err=%v", snapshot, err)
+	}
+	// Restore the plist and tamper only the mode: config still parses and
+	// says activated, but the digest does not match the journal target mode.
+	if err := os.WriteFile(paths.PlistPath(), desiredPlist(paths.DaemonPath, paths.AppSupport), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.ConfigPath(), []byte(`{"schema_version":1,"activated":true,"mode":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = service.Snapshot(context.Background())
+	if err != nil || !snapshot.Recovery.Degraded {
+		t.Fatalf("mode mismatch must degrade: %+v err=%v", snapshot, err)
 	}
 }
 

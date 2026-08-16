@@ -4,6 +4,14 @@
 **Status**: accepted
 **Deciders**: lune, Codex
 
+**Phase 2D amendment (2026-08-10)**: the three-node product ceiling in this ADR
+is superseded by the accepted multi-Provider Team contract. The current shared
+limit is nine Agent nodes, enforced consistently by Team definition, planning,
+dispatch, authoritative replay, and projection replay. The Journal CAS,
+one-main-Agent, bounded Attempt, independent lineage, and fail-closed scheduler
+decisions below remain accepted. See
+`../../.loom-evidence/phase2d/contracts/P2D-W2B-per-agent-provider-account.md`.
+
 ## Context
 
 The Event Journal is Loom's state authority, but the accepted Run/WorkItem and

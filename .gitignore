@@ -50,3 +50,12 @@ loom-data/
 # Logs
 *.log
 logs/
+
+# Loom daemon build artifact
+/loomd
+
+# SwiftPM build directory
+apps/macos/.build/
+
+# Machine-specific Codex installation identity
+.codex/installation_id

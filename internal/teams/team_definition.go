@@ -326,7 +326,7 @@ func validateAndNormalizeTeamDefinitionRoles(
 	definitions []agents.AgentDefinition,
 	profiles []loomruntime.RuntimeProfile,
 ) ([]TeamDefinitionRole, error) {
-	if len(input.Roles) == 0 || len(input.Roles) > 3 {
+	if len(input.Roles) == 0 || len(input.Roles) > MaxTeamAgentCount {
 		return nil, ErrInvalidTeamDefinitionRole
 	}
 	profileIDs := make(map[string]struct{}, len(profiles))
@@ -367,7 +367,7 @@ func validateAndNormalizeTeamDefinitionRoles(
 			return nil, fmt.Errorf("%w: agent definition: %v", ErrInvalidTeamDefinitionCatalog, err)
 		}
 	}
-	if mainCount != 1 || subAgentCount > 2 {
+	if mainCount != 1 || subAgentCount > MaxTeamAgentCount-1 {
 		return nil, ErrInvalidTeamDefinitionRole
 	}
 	normalizeTeamDefinitionRoles(roles)
@@ -407,7 +407,7 @@ func validateStoredTeamDefinition(current TeamDefinition) error {
 }
 
 func validateStoredTeamDefinitionRoles(roles []TeamDefinitionRole) ([]TeamDefinitionRole, error) {
-	if len(roles) == 0 || len(roles) > 3 {
+	if len(roles) == 0 || len(roles) > MaxTeamAgentCount {
 		return nil, ErrInvalidTeamDefinitionRole
 	}
 	mainCount := 0
@@ -430,7 +430,7 @@ func validateStoredTeamDefinitionRoles(roles []TeamDefinitionRole) ([]TeamDefini
 		}
 		seen[role.AgentDefinitionID] = struct{}{}
 	}
-	if mainCount != 1 || subCount > 2 {
+	if mainCount != 1 || subCount > MaxTeamAgentCount-1 {
 		return nil, ErrInvalidTeamDefinitionRole
 	}
 	normalized := copyTeamDefinitionRoles(roles)

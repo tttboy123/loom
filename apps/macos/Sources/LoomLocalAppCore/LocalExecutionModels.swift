@@ -28,6 +28,16 @@ public struct ExecutionRecord: Codable, Equatable, Sendable {
     public var failedAt: String?
     public var failureReason: String?
     public var errorCode: String?
+    public var recoveryRequiredAt: String?
+    public var recoveryCode: String?
+    public var recoveryAction: String?
+    public var recoveryDecisionID: String?
+    public var recoveryDecision: String?
+    public var recoveryResolvedAt: String?
+    public var recoveryEvidenceID: String?
+    public var recoveryObservationDigest: String?
+    public var recoveryReplacementAttemptID: String?
+    public var recoveryReplacementRunID: String?
 
     public init(
         executionID: String = "",
@@ -52,7 +62,17 @@ public struct ExecutionRecord: Codable, Equatable, Sendable {
         completedAt: String? = nil,
         failedAt: String? = nil,
         failureReason: String? = nil,
-        errorCode: String? = nil
+        errorCode: String? = nil,
+        recoveryRequiredAt: String? = nil,
+        recoveryCode: String? = nil,
+        recoveryAction: String? = nil,
+        recoveryDecisionID: String? = nil,
+        recoveryDecision: String? = nil,
+        recoveryResolvedAt: String? = nil,
+        recoveryEvidenceID: String? = nil,
+        recoveryObservationDigest: String? = nil,
+        recoveryReplacementAttemptID: String? = nil,
+        recoveryReplacementRunID: String? = nil
     ) {
         self.executionID = executionID
         self.jobID = jobID
@@ -77,6 +97,16 @@ public struct ExecutionRecord: Codable, Equatable, Sendable {
         self.failedAt = failedAt
         self.failureReason = failureReason
         self.errorCode = errorCode
+        self.recoveryRequiredAt = recoveryRequiredAt
+        self.recoveryCode = recoveryCode
+        self.recoveryAction = recoveryAction
+        self.recoveryDecisionID = recoveryDecisionID
+        self.recoveryDecision = recoveryDecision
+        self.recoveryResolvedAt = recoveryResolvedAt
+        self.recoveryEvidenceID = recoveryEvidenceID
+        self.recoveryObservationDigest = recoveryObservationDigest
+        self.recoveryReplacementAttemptID = recoveryReplacementAttemptID
+        self.recoveryReplacementRunID = recoveryReplacementRunID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -100,6 +130,16 @@ public struct ExecutionRecord: Codable, Equatable, Sendable {
         case failedAt = "failed_at"
         case failureReason = "failure_reason"
         case errorCode = "error_code"
+        case recoveryRequiredAt = "recovery_required_at"
+        case recoveryCode = "recovery_code"
+        case recoveryAction = "recovery_action"
+        case recoveryDecisionID = "recovery_decision_id"
+        case recoveryDecision = "recovery_decision"
+        case recoveryResolvedAt = "recovery_resolved_at"
+        case recoveryEvidenceID = "recovery_evidence_id"
+        case recoveryObservationDigest = "recovery_observation_digest"
+        case recoveryReplacementAttemptID = "recovery_replacement_attempt_id"
+        case recoveryReplacementRunID = "recovery_replacement_run_id"
     }
 }
 

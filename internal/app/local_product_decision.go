@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
@@ -117,6 +118,13 @@ type TeamRecoveryAuthority interface {
 	) (work.TeamExecutionRecord, error)
 }
 
+type MissionFallbackDecisionAuthority interface {
+	CommitMissionFallbackDecision(
+		context.Context,
+		state.MissionFallbackDecisionCommand,
+	) (state.MissionFallbackDecisionResult, error)
+}
+
 type MissionDecisionViewRefresher interface {
 	RefreshMissionDecisionView(context.Context) (string, error)
 }
@@ -158,10 +166,20 @@ type PreparedRecoveryDecision struct {
 	Refresh         MissionDecisionViewRefresher
 }
 
+type PreparedMissionFallbackDecision struct {
+	Sheet     MissionDecisionSheet
+	Authority MissionFallbackDecisionAuthority
+	Approve   *state.MissionFallbackDecisionCommand
+	Reject    *state.MissionFallbackDecisionCommand
+	Refresh   MissionDecisionViewRefresher
+	Now       func() time.Time
+}
+
 type PreparedMissionDecisions struct {
 	Authorizations []PreparedAuthorizationDecision
 	Reviews        []PreparedReviewDecision
 	Recoveries     []PreparedRecoveryDecision
+	Fallbacks      []PreparedMissionFallbackDecision
 }
 
 type ControlledMissionDecisionFixtureConfig struct {
@@ -949,9 +967,62 @@ func dispatchControlledMission(
 		return controlledMissionScenario{}, err
 	}
 	view := readModel.GlobalReadView()
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:                   "profile." + teamID,
+		AdapterType:          "fixture",
+		ProviderID:           "loom-fixture",
+		ProviderAccountID:    "loom-fixture.local",
+		ModelID:              "controlled",
+		AuthMode:             loomruntime.AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("c", 64),
+		CredentialReference:  "credential-ref-" + teamID,
+		CredentialRevision:   1,
+		RequiredCapabilities: []string{"models"},
+		Timeout:              time.Minute,
+	})
+	if err != nil {
+		return controlledMissionScenario{}, err
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: runtimeID, DeviceID: "device." + teamID,
+		AdapterType: "fixture", DisplayName: "Controlled Decision Fixture",
+		Status: loomruntime.RuntimeOnline, ObservedCapabilities: []string{"models"},
+		Capacity: 8,
+	})
+	if err != nil {
+		return controlledMissionScenario{}, err
+	}
+	executionBinding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		return controlledMissionScenario{}, err
+	}
+	contextCapsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "mission:" + teamID, TeamID: teamID,
+			AgentID: "agent-" + teamID, RoleID: "main",
+			ProviderID:        executionBinding.ProviderID,
+			ProviderAccountID: executionBinding.ProviderAccountID,
+			ModelID:           executionBinding.ModelID, AuthMode: string(executionBinding.AuthMode),
+			ContextAdapterID:        "context:fixture:v1",
+			DisclosurePolicyID:      "policy.controlled-fixture",
+			DisclosurePolicyVersion: 1, TokenBudget: 64,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Content:    []byte("Execute the controlled mission fixture."),
+			SourceType: contextcapsule.SourceAuthority, SourceRef: "team-plan:" + plan.Digest(),
+		}},
+	)
+	if err != nil {
+		return controlledMissionScenario{}, err
+	}
 	selections := []work.TeamAttemptSelection{{
-		LogicalNodeID: "main",
-		AttemptNumber: 1,
+		LogicalNodeID:    "main",
+		AttemptNumber:    1,
+		ExecutionBinding: executionBinding,
+		ContextCapsule:   contextCapsule,
 	}}
 	dispatched, err := workAuthority.DispatchTeamReadySet(
 		ctx,
@@ -1209,14 +1280,87 @@ func controlledWorkDecisionSheet(
 }
 
 type preparedMissionDecisionEntry struct {
-	sheet   MissionDecisionSheet
-	refresh MissionDecisionViewRefresher
-	execute func(
+	sheet           MissionDecisionSheet
+	refresh         MissionDecisionViewRefresher
+	dynamicFallback bool
+	execute         func(
 		context.Context,
 		MissionDecisionCommand,
 	) (string, string, error)
 	inFlight bool
 	consumed bool
+}
+
+func (backend *PreparedMissionDecisionBackend) replacePreparedMissionFallbackDecisions(
+	teamInstanceID string,
+	candidates []PreparedMissionFallbackDecision,
+) error {
+	if backend == nil || !validDecisionID(teamInstanceID) {
+		return ErrInvalidMissionDecision
+	}
+	prepared := make(map[string]*preparedMissionDecisionEntry, len(candidates))
+	for _, candidate := range candidates {
+		if !validPreparedMissionFallbackDecision(candidate) ||
+			candidate.Sheet.TeamInstanceID != teamInstanceID {
+			return ErrInvalidMissionDecision
+		}
+		candidate := clonePreparedMissionFallbackDecision(candidate)
+		if _, duplicate := prepared[candidate.Sheet.DecisionID]; duplicate {
+			return ErrInvalidMissionDecision
+		}
+		prepared[candidate.Sheet.DecisionID] = &preparedMissionDecisionEntry{
+			sheet:           cloneMissionDecisionSheet(candidate.Sheet),
+			refresh:         candidate.Refresh,
+			dynamicFallback: true,
+			execute: func(
+				ctx context.Context,
+				command MissionDecisionCommand,
+			) (string, string, error) {
+				return executePreparedMissionFallback(ctx, command, candidate)
+			},
+		}
+	}
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	for decisionID, entry := range backend.entries {
+		if replacement, ok := prepared[decisionID]; ok &&
+			(!entry.dynamicFallback ||
+				entry.sheet.TeamInstanceID != teamInstanceID ||
+				replacement.sheet.TeamInstanceID != teamInstanceID) {
+			return ErrMissionDecisionConflict
+		}
+		if !entry.dynamicFallback || entry.sheet.TeamInstanceID != teamInstanceID {
+			continue
+		}
+		if entry.inFlight {
+			return ErrMissionDecisionConflict
+		}
+	}
+	for decisionID, entry := range backend.entries {
+		if entry.dynamicFallback && entry.sheet.TeamInstanceID == teamInstanceID {
+			delete(backend.entries, decisionID)
+		}
+	}
+	for decisionID, entry := range prepared {
+		backend.entries[decisionID] = entry
+	}
+	return nil
+}
+
+func clonePreparedMissionFallbackDecision(
+	candidate PreparedMissionFallbackDecision,
+) PreparedMissionFallbackDecision {
+	candidate.Sheet = cloneMissionDecisionSheet(candidate.Sheet)
+	if candidate.Approve != nil {
+		approve := *candidate.Approve
+		candidate.Approve = &approve
+	}
+	if candidate.Reject != nil {
+		reject := *candidate.Reject
+		candidate.Reject = &reject
+	}
+	return candidate
 }
 
 type PreparedMissionDecisionBackend struct {
@@ -1293,6 +1437,20 @@ func NewPreparedMissionDecisionBackend(
 			command MissionDecisionCommand,
 		) (string, string, error) {
 			return executePreparedRecovery(ctx, command, candidate)
+		}); err != nil {
+			return nil, ErrInvalidMissionDecision
+		}
+	}
+	for _, candidate := range prepared.Fallbacks {
+		if !validPreparedMissionFallbackDecision(candidate) {
+			return nil, ErrInvalidMissionDecision
+		}
+		candidate := candidate
+		if err := add(candidate.Sheet, candidate.Refresh, func(
+			ctx context.Context,
+			command MissionDecisionCommand,
+		) (string, string, error) {
+			return executePreparedMissionFallback(ctx, command, candidate)
 		}); err != nil {
 			return nil, ErrInvalidMissionDecision
 		}
@@ -1710,6 +1868,39 @@ func validPreparedRecoveryDecision(candidate PreparedRecoveryDecision) bool {
 			))
 }
 
+func validPreparedMissionFallbackDecision(
+	candidate PreparedMissionFallbackDecision,
+) bool {
+	if candidate.Sheet.Kind != "fallback" ||
+		!candidate.Sheet.Prepared || candidate.Authority == nil ||
+		candidate.Refresh == nil || candidate.Now == nil ||
+		candidate.Approve == nil || candidate.Reject == nil ||
+		!containsDecisionAction(candidate.Sheet.PreparedActions, "approve_fallback") ||
+		!containsDecisionAction(candidate.Sheet.PreparedActions, "reject_fallback") {
+		return false
+	}
+	approve := *candidate.Approve
+	reject := *candidate.Reject
+	if approve.Decision != state.MissionFallbackApproved ||
+		reject.Decision != state.MissionFallbackRejected ||
+		!approve.Scope.Valid() || !reject.Scope.Valid() ||
+		approve.Scope.Digest() != reject.Scope.Digest() ||
+		approve.ExpectedRevision != reject.ExpectedRevision ||
+		approve.ActorRef != reject.ActorRef ||
+		approve.CommandID == "" || reject.CommandID == "" ||
+		approve.OccurredAt != (time.Time{}) || reject.OccurredAt != (time.Time{}) ||
+		approve.CorrelationID != "" || reject.CorrelationID != "" {
+		return false
+	}
+	return candidate.Sheet.TeamInstanceID == approve.Scope.TeamInstanceID() &&
+		candidate.Sheet.LogicalNodeID == approve.Scope.LogicalNodeID() &&
+		candidate.Sheet.AttemptNumber == 2 &&
+		candidate.Sheet.ClaimGeneration == 0 &&
+		candidate.Sheet.DecisionDigest == missionFallbackDecisionIntentDigest(
+			approve.Scope, approve.ExpectedRevision,
+		)
+}
+
 func validRecoveryBinding(
 	sheet MissionDecisionSheet,
 	attempt work.TeamAttemptRecord,
@@ -1864,6 +2055,51 @@ func executePreparedRecovery(
 	return status, viewVersion, err
 }
 
+func executePreparedMissionFallback(
+	ctx context.Context,
+	command MissionDecisionCommand,
+	candidate PreparedMissionFallbackDecision,
+) (string, string, error) {
+	var input state.MissionFallbackDecisionCommand
+	status := ""
+	switch command.Action {
+	case "approve_fallback":
+		input = *candidate.Approve
+		status = "approved"
+	case "reject_fallback":
+		input = *candidate.Reject
+		status = "denied"
+	default:
+		return "", "", ErrMissionDecisionConflict
+	}
+	now := candidate.Now()
+	if now.IsZero() || now.Location() != time.UTC {
+		return "", "", ErrMissionDecisionConflict
+	}
+	input.OccurredAt = now
+	input.CorrelationID = command.CorrelationID
+	result, err := candidate.Authority.CommitMissionFallbackDecision(ctx, input)
+	if err != nil || result.ScopeDigest != input.Scope.Digest() ||
+		result.Revision != input.ExpectedRevision+1 ||
+		result.Decision != input.Decision {
+		return "", "", errors.Join(ErrMissionDecisionConflict, err)
+	}
+	viewVersion, err := refreshMissionDecisionView(
+		ctx, command.ViewVersion, candidate.Refresh,
+	)
+	return status, viewVersion, err
+}
+
+func missionFallbackDecisionIntentDigest(
+	scope work.TeamFallbackDecisionScope,
+	expectedRevision int64,
+) string {
+	return missionDecisionDigestFields(
+		"loom.mission-fallback-decision-intent.v1",
+		scope.Digest(), fmt.Sprint(expectedRevision),
+	)
+}
+
 func refreshMissionDecisionView(
 	ctx context.Context,
 	previous string,
@@ -1959,7 +2195,7 @@ func validMissionDecisionCommand(command MissionDecisionCommand) bool {
 		command.AttemptNumber < 1 {
 		return false
 	}
-	if command.Kind == "authorization" {
+	if command.Kind == "authorization" || command.Kind == "fallback" {
 		if command.ClaimGeneration < 0 {
 			return false
 		}
@@ -2060,6 +2296,8 @@ func requiredDecisionActions(kind string) []string {
 			"edit_scope",
 			"start_new_attempt",
 		}
+	case "fallback":
+		return []string{"not_now", "reject_fallback", "approve_fallback"}
 	default:
 		return nil
 	}
@@ -2154,7 +2392,7 @@ func validMissionDecisionResult(
 
 func validDecisionKind(kind string) bool {
 	switch kind {
-	case "authorization", "review", "recovery":
+	case "authorization", "review", "recovery", "fallback":
 		return true
 	default:
 		return false
@@ -2176,6 +2414,8 @@ func validDecisionAction(kind, action string) bool {
 	case "recovery":
 		return action == "stop_mission" ||
 			action == "start_new_attempt"
+	case "fallback":
+		return action == "reject_fallback" || action == "approve_fallback"
 	default:
 		return false
 	}

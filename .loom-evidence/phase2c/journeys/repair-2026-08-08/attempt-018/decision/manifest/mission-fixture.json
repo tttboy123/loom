@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "purpose": "p2a-w2-mission-workbench-controlled-live",
+  "attempt_id": "loom-phase2c-decision-20260809-018",
+  "state_path": "/private/tmp/loom-phase2c-decision-20260809-018/state/loom.db",
+  "artifact_root": "/private/tmp/loom-phase2c-decision-20260809-018/artifacts/mission-fixture",
+  "source_commit": "651f156afda37a8e703cbc0396f9f38b7912600b",
+  "authoritative_time": "2026-08-09T01:41:45Z",
+  "fixture_id": "phase2c-attempt018-decision-allow"
+}

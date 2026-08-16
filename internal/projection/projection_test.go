@@ -348,6 +348,52 @@ func TestRebuildAcceptsRepeatedIdenticalProjectedFacts(t *testing.T) {
 	}
 }
 
+func TestRebuildAcceptsOnlyKnownDedicatedAuthoritySchemaV2Events(t *testing.T) {
+	knownExecution := journal.Event{
+		ID: "execution-v2", StreamID: "execution/work-1/execution-1", Seq: 1,
+		IdempotencyKey: "execution-v2-idempotency", Type: "ToolExecutionProposed",
+		SchemaVersion: 2, EmittedAt: time.Unix(1, 0).UTC(),
+		PayloadJSON: []byte(`{"dedicated_authority_payload":true}`),
+	}
+	knownPermission := journal.Event{
+		ID: "permission-v2", StreamID: "permission-decision/work-1", Seq: 1,
+		IdempotencyKey: "permission-v2-idempotency", Type: "PermissionDecisionRecorded",
+		SchemaVersion: 2, EmittedAt: time.Unix(2, 0).UTC(),
+		PayloadJSON: []byte(`{"dedicated_authority_payload":true}`),
+	}
+	knownRecoveryResolved := journal.Event{
+		ID: "execution-recovery-resolved-v2", StreamID: "execution/work-2/execution-2", Seq: 1,
+		IdempotencyKey: "execution-recovery-resolved-v2-idempotency",
+		Type:           "ToolExecutionRecoveryResolved",
+		SchemaVersion:  2, EmittedAt: time.Unix(3, 0).UTC(),
+		PayloadJSON: []byte(`{"dedicated_authority_payload":true}`),
+	}
+	projection := newForTestSource(eventSliceSource{events: []journal.Event{
+		knownExecution, knownPermission, knownRecoveryResolved,
+	}})
+	if err := projection.Rebuild(context.Background()); err != nil {
+		t.Fatalf("known dedicated schema v2 facts rejected: %v", err)
+	}
+
+	for _, invalid := range []journal.Event{
+		withProjectionEvent(knownExecution, func(event *journal.Event) {
+			event.ID = "unknown-v2"
+			event.IdempotencyKey = "unknown-v2-idempotency"
+			event.Type = "UnknownExecutionV2"
+		}),
+		withProjectionEvent(knownExecution, func(event *journal.Event) {
+			event.ID = "wrong-stream-v2"
+			event.IdempotencyKey = "wrong-stream-v2-idempotency"
+			event.StreamID = "stream-a"
+		}),
+	} {
+		projection := newForTestSource(eventSliceSource{events: []journal.Event{invalid}})
+		if err := projection.Rebuild(context.Background()); !errors.Is(err, ErrUnsupportedEventVersion) {
+			t.Fatalf("unknown schema v2 event accepted: %#v err=%v", invalid, err)
+		}
+	}
+}
+
 func TestFailedRebuildPreservesPreviousSnapshot(t *testing.T) {
 	ctx := context.Background()
 	source := &mutableSource{events: []journal.Event{

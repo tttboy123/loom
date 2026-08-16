@@ -161,8 +161,8 @@ public struct PermissionExplorerView: View {
             } else {
                 ForEach(attention.approvals, id: \.approvalID) { approval in
                     Label(
-                        approval.command ?? approval.status,
-                        systemImage: "clock"
+                        approvalDetail(approval),
+                        systemImage: approval.detailsAvailable == true ? "clock" : "lock.trianglebadge.exclamationmark"
                     )
                     .font(.callout)
                     .foregroundStyle(LoomGraphite.textPrimary)
@@ -176,6 +176,19 @@ public struct PermissionExplorerView: View {
                 }
             }
         }
+    }
+
+    private func approvalDetail(_ approval: PermissionApprovalView) -> String {
+        guard approval.detailsAvailable == true else {
+            return "Proposal details unavailable"
+        }
+        if let command = approval.command, !command.isEmpty {
+            return SafeText.sanitize(command, limit: 256)
+        }
+        if let path = approval.path, !path.isEmpty {
+            return "\(SafeText.sanitize(approval.tool ?? "Tool", limit: 32)) · \(SafeText.sanitize(path, limit: 224))"
+        }
+        return SafeText.sanitize(approval.tool ?? approval.status, limit: 96)
     }
 
     private func ruleActionColor(_ action: String) -> Color {

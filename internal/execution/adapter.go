@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
@@ -30,13 +31,57 @@ type Adapter struct {
 	executor  Executor
 	resolver  WorktreeResolver
 	approvals ApprovalRequester
+	consumer  ApprovalConsumer
 	decisions DecisionRecorder
 	sandbox   SandboxGate
+	remote    RemoteToolExecutor
 	now       func() time.Time
 
 	mu        sync.Mutex
 	inflight  map[string]bool
 	completed map[string]ExecutionResult
+}
+
+// WithRemoteToolExecutor is a composition-time option. Call it before exposing
+// the Adapter to concurrent requests; the remote broker is immutable at run time.
+func (a *Adapter) WithRemoteToolExecutor(executor RemoteToolExecutor) *Adapter {
+	if a != nil {
+		a.remote = executor
+	}
+	return a
+}
+
+func (a *Adapter) RemoteToolsEnabled() bool {
+	return len(a.RemoteToolKinds()) > 0
+}
+
+func (a *Adapter) RemoteToolKinds() []permissions.ToolKind {
+	if a == nil || a.remote == nil {
+		return nil
+	}
+	allowed := a.remote.AllowedRemoteTools()
+	result := make([]permissions.ToolKind, 0, len(allowed))
+	seen := make(map[permissions.ToolKind]bool, len(allowed))
+	for _, tool := range allowed {
+		if seen[tool] ||
+			tool != permissions.ToolWebSearch &&
+				tool != permissions.ToolWebFetch &&
+				tool != permissions.ToolMCPTool {
+			return nil
+		}
+		seen[tool] = true
+		result = append(result, tool)
+	}
+	return result
+}
+
+func (a *Adapter) remoteToolEnabled(wanted permissions.ToolKind) bool {
+	for _, tool := range a.RemoteToolKinds() {
+		if tool == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // WithSandboxGate wires the Phase 3B sandbox policy gate. A nil gate (default)
@@ -60,11 +105,15 @@ func NewAdapter(
 	if store == nil || evidenceStore == nil || executor == nil || resolver == nil || now == nil {
 		return nil, ErrInvalidExecutionInput
 	}
-	return &Adapter{
+	adapter := &Adapter{
 		store: store, evidence: evidenceStore, executor: executor,
 		resolver: resolver, approvals: approvals, decisions: decisions,
 		now: now, inflight: make(map[string]bool), completed: make(map[string]ExecutionResult),
-	}, nil
+	}
+	if consumer, ok := approvals.(ApprovalConsumer); ok {
+		adapter.consumer = consumer
+	}
+	return adapter, nil
 }
 
 // Execute proposes and (only when allow) executes one tool call. ask and
@@ -84,7 +133,7 @@ func (a *Adapter) Execute(ctx context.Context, proposal Proposal) (ExecutionResu
 	a.mu.Lock()
 	if result, ok := a.completed[executionID]; ok {
 		a.mu.Unlock()
-		return result, nil
+		return a.restoreReadOnlyContent(ctx, proposal, result)
 	}
 	if a.inflight[executionID] {
 		a.mu.Unlock()
@@ -113,19 +162,22 @@ func (a *Adapter) Execute(ctx context.Context, proposal Proposal) (ExecutionResu
 	existing, found := snapshot.Record(executionID)
 	if found && isTerminal(existing) {
 		result := resultFromRecord(existing)
-		a.mu.Lock()
-		a.completed[executionID] = result
-		a.mu.Unlock()
-		return result, nil
+		a.remember(executionID, result)
+		return a.restoreReadOnlyContent(ctx, proposal, result)
 	}
 	if found && existing.AllowedAt != "" {
 		// An Allowed fact with no terminal fact means the side effect may
 		// already have happened. Re-executing would violate exactly-once;
 		// ReplayPending is the only path that terminalizes it, and it never
 		// executes.
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageRecovery,
+			a.now().UTC(), ToolDiagnosticFailed, "side_effect_unknown", false,
+		)
 		return ExecutionResult{}, ErrExecutionInterrupted
 	}
 
+	authorizationStarted := a.now().UTC()
 	effective, profileErr := permissions.ResolveEffectiveProfile(permissionProjection, proposal.JobID)
 	verdict, denial, evalErr := permissions.VerdictDeny, permissions.Denial{}, error(nil)
 	generation := int64(0)
@@ -134,12 +186,20 @@ func (a *Adapter) Execute(ctx context.Context, proposal Proposal) (ExecutionResu
 		verdict, denial, evalErr = permissions.Evaluate(effective, proposal.Call)
 	}
 	if profileErr != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageAuthorization,
+			authorizationStarted, ToolDiagnosticFailed, "permission_profile_unavailable", false,
+		)
 		return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
 			Reason:            profileErr.Error(),
 			AuthorizationPath: "bind a valid permission profile or fix the stale binding",
 		})
 	}
 	if evalErr != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageAuthorization,
+			authorizationStarted, ToolDiagnosticFailed, "permission_evaluation_failed", false,
+		)
 		return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
 			Reason:            evalErr.Error(),
 			AuthorizationPath: "fix the proposed call",
@@ -148,12 +208,31 @@ func (a *Adapter) Execute(ctx context.Context, proposal Proposal) (ExecutionResu
 
 	switch verdict {
 	case permissions.VerdictDeny:
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageAuthorization,
+			authorizationStarted, ToolDiagnosticFailed, "permission_denied", false,
+		)
 		return a.deny(ctx, proposal, executionID, callDigest, generation, events, denial)
 	case permissions.VerdictAsk:
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageAuthorization,
+			authorizationStarted, ToolDiagnosticSucceeded, "", false,
+		)
 		return a.ask(ctx, proposal, executionID, callDigest, generation, events, denial, found)
 	case permissions.VerdictAllow:
-		return a.allowAndExecute(ctx, proposal, executionID, callDigest, generation, events, existing, found, effective, callDigest)
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageAuthorization,
+			authorizationStarted, ToolDiagnosticSucceeded, "", false,
+		)
+		return a.allowAndExecute(
+			ctx, proposal, executionID, callDigest, generation, events,
+			existing, found, effective, "", "",
+		)
 	default:
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageAuthorization,
+			authorizationStarted, ToolDiagnosticFailed, "permission_verdict_invalid", false,
+		)
 		return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
 			Reason:            "unknown verdict",
 			AuthorizationPath: "fix the permission pipeline",
@@ -236,8 +315,11 @@ func (a *Adapter) ask(
 		// conflict).
 		existingFound = true
 	}
-	if approvalID, digest, status, found := existingApproval(events, proposal.JobID, callDigest); found {
-		if status == "approved" {
+	if approval, found := existingApproval(events, proposal.JobID, callDigest); found {
+		if approval.status == "consumed" {
+			return ExecutionResult{}, ErrApprovalConsumed
+		}
+		if approval.status == "approved" {
 			// Approval exists for this exact (job, call). The approval is the
 			// one-time authorization for this call: resume executes when the
 			// re-check yields allow OR ask (approved overrides the ask), and
@@ -256,15 +338,33 @@ func (a *Adapter) ask(
 					if existing.Status == "" {
 						existing.Status = string(EventToolProposed)
 					}
+					if a.consumer == nil {
+						return ExecutionResult{}, ErrApprovalConsumed
+					}
+					if _, consumeErr := a.consumer.ConsumePermissionApproval(
+						ctx,
+						rules.PermissionApprovalConsumptionInput{
+							ApprovalID: approval.id, ApprovalDigest: approval.digest,
+							JobID: proposal.JobID, CallDigest: callDigest,
+							ConsumerID: executionID, OperationID: proposal.OperationID,
+							CorrelationID: proposal.JourneyID,
+						},
+					); consumeErr != nil {
+						if errors.Is(consumeErr, rules.ErrPermissionApprovalConsumed) {
+							return ExecutionResult{}, ErrApprovalConsumed
+						}
+						return ExecutionResult{}, consumeErr
+					}
 					result, resumeErr := a.allowAndExecute(
 						ctx, proposal, executionID, callDigest, generation,
-						events, existing, existingFound, effective, callDigest,
+						events, existing, existingFound, effective,
+						approval.id, approval.digest,
 					)
 					if resumeErr != nil {
 						return ExecutionResult{}, resumeErr
 					}
-					result.ApprovalID = approvalID
-					result.ApprovalDigest = digest
+					result.ApprovalID = approval.id
+					result.ApprovalDigest = approval.digest
 					a.remember(executionID, result)
 					return result, nil
 				}
@@ -276,7 +376,7 @@ func (a *Adapter) ask(
 				return a.deny(ctx, proposal, executionID, callDigest, generation, events, resumeDenial)
 			}
 		}
-		if status == "rejected" {
+		if approval.status == "rejected" {
 			return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
 				Reason: "approval was rejected", AuthorizationPath: "request a new grant or allow rule",
 			})
@@ -284,7 +384,7 @@ func (a *Adapter) ask(
 		return ExecutionResult{
 			ExecutionID: executionID, JobID: proposal.JobID,
 			Verdict: permissions.VerdictAsk, Denial: denial,
-			ApprovalID: approvalID, ApprovalDigest: digest,
+			ApprovalID: approval.id, ApprovalDigest: approval.digest,
 			Note: "approval pending; replay the same operation after resolution",
 		}, nil
 	}
@@ -310,8 +410,16 @@ func (a *Adapter) ask(
 		RequestedAt: now, CorrelationID: proposal.JourneyID,
 	})
 	if err != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageApprovalWait,
+			now, ToolDiagnosticFailed, "approval_unavailable", true,
+		)
 		return ExecutionResult{}, err
 	}
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageApprovalWait,
+		now, ToolDiagnosticSucceeded, "", false,
+	)
 	return ExecutionResult{
 		ExecutionID: executionID, JobID: proposal.JobID,
 		Verdict: permissions.VerdictAsk, Denial: denial,
@@ -329,7 +437,8 @@ func (a *Adapter) allowAndExecute(
 	existing ExecutionRecord,
 	existingFound bool,
 	effective permissions.EffectiveProfile,
-	_ string,
+	approvalID string,
+	approvalDigest string,
 ) (ExecutionResult, error) {
 	streamID := executionStreamID(proposal.JobID, executionID)
 	heads := streamHeads(events)
@@ -360,16 +469,12 @@ func (a *Adapter) allowAndExecute(
 		}
 		events = append(events, committed...)
 	}
-	result, executeErr := a.executeApproved(ctx, proposal, executionID, callDigest, generation, events, effective, callDigest, "", "")
+	result, executeErr := a.executeApproved(
+		ctx, proposal, executionID, callDigest, generation, events, effective,
+		approvalID, approvalDigest,
+	)
 	if executeErr != nil {
 		return ExecutionResult{}, executeErr
-	}
-	if result.ApprovalID == "" {
-		if approvalID, digest, status, ok := existingApproval(events, proposal.JobID, callDigest); ok && status == "approved" {
-			result.ApprovalID = approvalID
-			result.ApprovalDigest = digest
-			a.remember(executionID, result)
-		}
 	}
 	return result, nil
 }
@@ -381,20 +486,28 @@ func (a *Adapter) executeApproved(
 	generation int64,
 	events []journal.Event,
 	effective permissions.EffectiveProfile,
-	_ string,
 	approvalID, approvalDigest string,
 ) (ExecutionResult, error) {
+	sandboxStarted := a.now().UTC()
 	// Phase 3B sandbox policy gate: Required + unavailable backend => fail
 	// closed with zero side effects (never local fallback).
 	if a.sandbox != nil {
 		policy, policyErr := a.sandbox.ResolvePolicy(ctx, proposal.JobID)
 		if policyErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageSandboxPrepare,
+				sandboxStarted, ToolDiagnosticFailed, "sandbox_policy_unavailable", false,
+			)
 			return a.deny(ctx, proposal, executionID, callDigest, generation, events,
 				permissions.Denial{Reason: "sandbox policy error"})
 		}
 		if policy.Required {
 			available, availErr := a.sandbox.BackendAvailable(ctx, policy.Backend)
 			if availErr != nil || !available {
+				a.recordToolDiagnostic(
+					ctx, proposal, executionID, callDigest, ToolStageSandboxPrepare,
+					sandboxStarted, ToolDiagnosticFailed, "sandbox_unavailable", false,
+				)
 				return a.deny(ctx, proposal, executionID, callDigest, generation, events,
 					permissions.Denial{
 						Reason:            "required sandbox backend unavailable",
@@ -403,18 +516,27 @@ func (a *Adapter) executeApproved(
 			}
 		}
 	}
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageSandboxPrepare,
+		sandboxStarted, ToolDiagnosticSucceeded, "", false,
+	)
+	bindingStarted := a.now().UTC()
 	worktree, err := a.resolver.Resolve(ctx, proposal.JobID)
 	if err != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+			bindingStarted, ToolDiagnosticFailed, "worktree_unavailable", true,
+		)
 		return a.fail(ctx, proposal, executionID, callDigest, generation, events, "worktree resolution failed", "worktree_unavailable")
 	}
-	started := a.now().UTC()
-	var (
-		result ExecutionResult
-		runErr error
-	)
+	var editContent []byte
 	switch proposal.Call.Tool {
 	case permissions.ToolEdit:
 		if !pathAllowed(effective, proposal.Call.Path) {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, "path_outside_owned_scope", false,
+			)
 			return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
 				Reason:            "edit path is not inside profile owned paths",
 				AuthorizationPath: "narrow the owned paths or add an allow rule",
@@ -422,18 +544,124 @@ func (a *Adapter) executeApproved(
 		}
 		content, readErr := a.readProposalContent(proposal)
 		if readErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, "invalid_edit_content", false,
+			)
 			return a.fail(ctx, proposal, executionID, callDigest, generation, events, readErr.Error(), "invalid_edit_content")
 		}
-		contentSum := sha256.Sum256(content)
+		editContent = content
+	case permissions.ToolRead, permissions.ToolGrep:
+		if _, pathErr := secureRelativePath(proposal.Call.Path); pathErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, "path_outside_workspace", false,
+			)
+			return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
+				Reason:            "read path is outside the workspace",
+				AuthorizationPath: "use a workspace-relative path",
+			})
+		}
+		if proposal.Call.Tool == permissions.ToolGrep {
+			if _, patternErr := validateGrepPattern(proposal.Call.Pattern); patternErr != nil {
+				a.recordToolDiagnostic(
+					ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+					bindingStarted, ToolDiagnosticFailed, "invalid_grep_pattern", false,
+				)
+				return a.fail(
+					ctx, proposal, executionID, callDigest, generation, events,
+					"invalid Grep pattern", "invalid_grep_pattern",
+				)
+			}
+		}
+	case permissions.ToolWebSearch, permissions.ToolWebFetch, permissions.ToolMCPTool:
+		if !a.remoteToolEnabled(proposal.Call.Tool) || proposal.ResultCommitGate == nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, "remote_tool_unavailable", false,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"remote tool unavailable", "remote_tool_unavailable",
+			)
+		}
+		if validateErr := a.remote.ValidateProposal(proposal.Call); validateErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, "invalid_remote_tool_call", false,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"invalid remote tool call", "invalid_remote_tool_call",
+			)
+		}
+	case permissions.ToolBash:
+	default:
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+			bindingStarted, ToolDiagnosticFailed, "unsupported_tool", false,
+		)
+		return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
+			Reason:            "tool is not executable by the adapter",
+			AuthorizationPath: "use Edit or Bash through the execution adapter",
+		})
+	}
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+		bindingStarted, ToolDiagnosticSucceeded, "", false,
+	)
+	if proposal.DispatchGate != nil {
+		dispatchStarted := a.now().UTC()
+		if dispatchErr := proposal.DispatchGate.CommitExecutionDispatch(
+			ctx,
+			ExecutionDispatchInput{
+				JobID: proposal.JobID, ExecutionID: executionID,
+				CallDigest: callDigest, Tool: proposal.Call.Tool,
+				OperationID: proposal.OperationID, CorrelationID: proposal.JourneyID,
+				ApprovalID: approvalID, ApprovalDigest: approvalDigest,
+			},
+		); dispatchErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageDispatch,
+				dispatchStarted, ToolDiagnosticFailed, "dispatch_not_committed", false,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"dispatch admission failed", "dispatch_not_committed",
+			)
+		}
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageDispatch,
+			dispatchStarted, ToolDiagnosticSucceeded, "", false,
+		)
+	}
+	started := a.now().UTC()
+	var (
+		result              ExecutionResult
+		runErr              error
+		retainResultContent bool
+	)
+	defer func() {
+		if !retainResultContent {
+			result.Close()
+		}
+	}()
+	switch proposal.Call.Tool {
+	case permissions.ToolEdit:
+		contentSum := sha256.Sum256(editContent)
 		editResult, editErr := a.executor.Edit(ctx, EditRequest{
 			Worktree: worktree, RelativePath: proposal.Call.Path,
-			NewContentDigest: hex.EncodeToString(contentSum[:]), NewContentBytes: content,
+			NewContentDigest: hex.EncodeToString(contentSum[:]), NewContentBytes: editContent,
 		})
 		if editErr != nil {
 			code := "edit_failed"
 			if errors.Is(editErr, ErrExecutionLimit) {
 				code = "limit_exceeded"
 			}
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+				started, ToolDiagnosticFailed, code, errors.Is(editErr, ErrExecutionLimit),
+			)
 			return a.fail(ctx, proposal, executionID, callDigest, generation, events, editErr.Error(), code)
 		}
 		result = ExecutionResult{
@@ -451,6 +679,10 @@ func (a *Adapter) executeApproved(
 			if errors.Is(runErr, ErrExecutionLimit) {
 				code = "limit_exceeded"
 			}
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+				started, ToolDiagnosticFailed, code, errors.Is(runErr, ErrExecutionLimit),
+			)
 			return a.fail(ctx, proposal, executionID, callDigest, generation, events, runErr.Error(), code)
 		}
 		result = ExecutionResult{
@@ -461,13 +693,116 @@ func (a *Adapter) executeApproved(
 			DurationMS:         runResult.DurationMS,
 			Note:               "command completed",
 		}
-	default:
-		return a.deny(ctx, proposal, executionID, callDigest, generation, events, permissions.Denial{
-			Reason:            "tool is not executable by the adapter",
-			AuthorizationPath: "use Edit or Bash through the execution adapter",
+	case permissions.ToolRead:
+		executor, ok := a.executor.(ReadExecutor)
+		if !ok {
+			return a.unsupportedTool(
+				ctx, proposal, executionID, callDigest, generation, events, started,
+			)
+		}
+		readResult, readErr := executor.Read(ctx, ReadRequest{
+			Worktree: worktree, RelativePath: proposal.Call.Path,
 		})
+		if readErr != nil {
+			readResult.Close()
+			return a.readOnlyToolFailure(
+				ctx, proposal, executionID, callDigest, generation, events, started, readErr,
+			)
+		}
+		result = ExecutionResult{
+			ExecutionID: executionID, JobID: proposal.JobID,
+			Verdict: permissions.VerdictAllow, OutputDigest: readResult.ContentDigest,
+			DurationMS: readResult.DurationMS, Note: "read completed",
+			Content: readResult.Content,
+		}
+	case permissions.ToolGrep:
+		executor, ok := a.executor.(GrepExecutor)
+		if !ok {
+			return a.unsupportedTool(
+				ctx, proposal, executionID, callDigest, generation, events, started,
+			)
+		}
+		grepResult, grepErr := executor.Grep(ctx, GrepRequest{
+			Worktree: worktree, RelativePath: proposal.Call.Path,
+			Pattern: proposal.Call.Pattern,
+		})
+		if grepErr != nil {
+			grepResult.Close()
+			return a.readOnlyToolFailure(
+				ctx, proposal, executionID, callDigest, generation, events, started, grepErr,
+			)
+		}
+		result = ExecutionResult{
+			ExecutionID: executionID, JobID: proposal.JobID,
+			Verdict: permissions.VerdictAllow, OutputDigest: grepResult.ContentDigest,
+			DurationMS: grepResult.DurationMS, Note: "grep completed",
+			Content: grepResult.Content,
+		}
+	case permissions.ToolWebSearch, permissions.ToolWebFetch, permissions.ToolMCPTool:
+		content, remoteErr := a.remote.ExecuteProposalContent(ctx, proposal.Call)
+		if remoteErr != nil {
+			zeroExecutionBytes(content)
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+				started, ToolDiagnosticFailed, "remote_tool_failed", true,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"remote tool failed", "remote_tool_failed",
+			)
+		}
+		if len(content) == 0 || len(content) > piCompatibleRemoteResultLimit ||
+			!utf8.Valid(content) || executionTextHasUnsafeControls(content) {
+			zeroExecutionBytes(content)
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+				started, ToolDiagnosticFailed, "remote_result_invalid", false,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"remote result invalid", "remote_result_invalid",
+			)
+		}
+		result = ExecutionResult{
+			ExecutionID: executionID, JobID: proposal.JobID,
+			Verdict: permissions.VerdictAllow, OutputDigest: digestBytes(content),
+			DurationMS: a.now().UTC().Sub(started).Milliseconds(),
+			Note:       "remote tool completed", Content: content,
+		}
 	}
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+		started, ToolDiagnosticSucceeded, "", false,
+	)
 	_ = runErr
+	if proposal.Call.Tool == permissions.ToolWebSearch ||
+		proposal.Call.Tool == permissions.ToolWebFetch ||
+		proposal.Call.Tool == permissions.ToolMCPTool {
+		commitStarted := a.now().UTC()
+		if commitErr := proposal.ResultCommitGate.CommitExecutionResult(
+			ctx,
+			ExecutionResultCommitInput{
+				JobID: proposal.JobID, ExecutionID: executionID,
+				CallDigest: callDigest, Tool: proposal.Call.Tool,
+				OperationID: proposal.OperationID, CorrelationID: proposal.JourneyID,
+				OutputDigest: result.OutputDigest, DurationMS: result.DurationMS,
+				Content: result.Content,
+			},
+		); commitErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStagePayloadCommit,
+				commitStarted, ToolDiagnosticFailed, "result_persistence_failed", false,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"remote result persistence failed", "result_persistence_failed",
+			)
+		}
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStagePayloadCommit,
+			commitStarted, ToolDiagnosticSucceeded, "", false,
+		)
+	}
 	// Evidence metadata is digest-only, never raw output or secrets.
 	metadata := map[string]any{
 		"execution_id":         executionID,
@@ -482,12 +817,20 @@ func (a *Adapter) executeApproved(
 	}
 	body, marshalErr := json.Marshal(metadata)
 	if marshalErr != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageResultCommit,
+			started, ToolDiagnosticFailed, "evidence_failed", false,
+		)
 		return a.fail(ctx, proposal, executionID, callDigest, generation, events, "evidence marshal failed", "evidence_failed")
 	}
 	sum := sha256.Sum256(body)
 	expected := hex.EncodeToString(sum[:])
 	artifact, publishErr := a.evidence.Publish(ctx, bytes.NewReader(body), expected)
 	if publishErr != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageResultCommit,
+			started, ToolDiagnosticFailed, "evidence_failed", true,
+		)
 		return a.fail(ctx, proposal, executionID, callDigest, generation, events, "evidence publish failed", "evidence_failed")
 	}
 	result.EvidenceID = artifact.Digest
@@ -495,17 +838,30 @@ func (a *Adapter) executeApproved(
 	streamID := executionStreamID(proposal.JobID, executionID)
 	completed, err := a.buildCompletedEvent(streamID, executionID, result, started, completedAt)
 	if err != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageResultCommit,
+			started, ToolDiagnosticFailed, "result_commit_failed", false,
+		)
 		return ExecutionResult{}, err
 	}
 	heads := streamHeads(events)
 	if _, err := a.appendCAS(ctx, events, heads, streamID, []journal.Event{completed}); err != nil {
+		a.recordToolDiagnostic(
+			ctx, proposal, executionID, callDigest, ToolStageResultCommit,
+			started, ToolDiagnosticFailed, "result_commit_failed", true,
+		)
 		return ExecutionResult{}, err
 	}
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageResultCommit,
+		started, ToolDiagnosticSucceeded, "", false,
+	)
 	if approvalID != "" {
 		result.ApprovalID = approvalID
 		result.ApprovalDigest = approvalDigest
 	}
 	a.remember(executionID, result)
+	retainResultContent = true
 	return result, nil
 }
 
@@ -541,7 +897,7 @@ func (a *Adapter) fail(
 	}
 	result := ExecutionResult{
 		ExecutionID: executionID, JobID: proposal.JobID,
-		Verdict: permissions.VerdictDeny, Note: reason,
+		Verdict: permissions.VerdictDeny, Note: errorCode, ErrorCode: errorCode,
 	}
 	a.remember(executionID, result)
 	return result, nil
@@ -584,14 +940,22 @@ func (a *Adapter) ReplayPending(ctx context.Context) error {
 			continue
 		}
 		now := a.now().UTC()
-		failed, err := a.buildFailedEvent(streamID, executionID, "interrupted before terminal fact", "interrupted", now)
+		// Proposed-only streams are pending approval/proposals and have no
+		// dispatched-side-effect uncertainty. Only Allowed-without-terminal
+		// streams enter explicit human recovery.
+		if !ok || record.AllowedAt == "" {
+			continue
+		}
+		recovery, err := a.buildRecoveryRequiredEvent(
+			streamID, executionID, record.JourneyID, now,
+		)
 		if err != nil {
 			return err
 		}
-		if _, err := a.appendCAS(ctx, events, heads, streamID, []journal.Event{failed}); err != nil {
+		if _, err := a.appendCAS(ctx, events, heads, streamID, []journal.Event{recovery}); err != nil {
 			return err
 		}
-		heads[streamID] = failed.Seq
+		heads[streamID] = recovery.Seq
 	}
 	return nil
 }
@@ -601,10 +965,9 @@ func (a *Adapter) buildEvent(kind, streamID, jobID, executionID, callDigest stri
 	var payload any
 	switch kind {
 	case "proposed":
-		payload = proposedPayload{
+		payload = proposedPayloadV2{
 			JobID: jobID, ExecutionID: executionID, CallDigest: callDigest,
-			Tool: string(proposal.Call.Tool), Command: proposal.Call.Command,
-			Path: proposal.Call.Path, ProposedAt: now.Format(time.RFC3339Nano),
+			Tool: string(proposal.Call.Tool), ProposedAt: now.Format(time.RFC3339Nano),
 			Generation: generation, OperationID: proposal.OperationID, JourneyID: journeyID,
 		}
 	default:
@@ -617,7 +980,7 @@ func (a *Adapter) buildEvent(kind, streamID, jobID, executionID, callDigest stri
 	id := deterministicEventID(adapterPrefix, EventToolProposed, streamID, proposal.OperationID)
 	return journal.Event{
 		ID: id, StreamID: streamID, IdempotencyKey: adapterPrefix + "/" + EventToolProposed + "/" + executionID,
-		Type: EventToolProposed, SchemaVersion: 1, EmittedAt: now.UTC(),
+		Type: EventToolProposed, SchemaVersion: 2, EmittedAt: now.UTC(),
 		CorrelationID: journeyID, PayloadJSON: body,
 	}, nil
 }
@@ -637,8 +1000,8 @@ func (a *Adapter) buildAllowedEvent(streamID, executionID string, now time.Time)
 }
 
 func (a *Adapter) buildDeniedEvent(streamID, executionID string, denial permissions.Denial, now time.Time) (journal.Event, error) {
-	body, err := json.Marshal(deniedPayload{
-		ExecutionID: executionID, Denial: denial,
+	body, err := json.Marshal(deniedPayloadV2{
+		ExecutionID: executionID, ReasonCode: "permission_denied",
 		DeniedAt: now.Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -648,7 +1011,7 @@ func (a *Adapter) buildDeniedEvent(streamID, executionID string, denial permissi
 	return journal.Event{
 		ID:       deterministicEventID(adapterPrefix, EventToolDenied, streamID, executionID),
 		StreamID: streamID, IdempotencyKey: key,
-		Type: EventToolDenied, SchemaVersion: 1, EmittedAt: now.UTC(),
+		Type: EventToolDenied, SchemaVersion: 2, EmittedAt: now.UTC(),
 		PayloadJSON: body,
 	}, nil
 }
@@ -674,8 +1037,8 @@ func (a *Adapter) buildCompletedEvent(streamID, executionID string, result Execu
 }
 
 func (a *Adapter) buildFailedEvent(streamID, executionID, reason, errorCode string, now time.Time) (journal.Event, error) {
-	body, err := json.Marshal(failedPayload{
-		ExecutionID: executionID, Reason: reason, ErrorCode: errorCode,
+	body, err := json.Marshal(failedPayloadV2{
+		ExecutionID: executionID, ErrorCode: errorCode,
 		FailedAt: now.Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -685,8 +1048,31 @@ func (a *Adapter) buildFailedEvent(streamID, executionID, reason, errorCode stri
 	return journal.Event{
 		ID:       deterministicEventID(adapterPrefix, EventToolFailed, streamID, executionID),
 		StreamID: streamID, IdempotencyKey: key,
-		Type: EventToolFailed, SchemaVersion: 1, EmittedAt: now.UTC(),
+		Type: EventToolFailed, SchemaVersion: 2, EmittedAt: now.UTC(),
 		PayloadJSON: body,
+	}, nil
+}
+
+func (a *Adapter) buildRecoveryRequiredEvent(
+	streamID string,
+	executionID string,
+	correlationID string,
+	now time.Time,
+) (journal.Event, error) {
+	body, err := json.Marshal(recoveryRequiredPayloadV2{
+		ExecutionID: executionID, RecoveryCode: "side_effect_unknown",
+		RecoveryAction: "resolve_tool_recovery",
+		RequiredAt:     now.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return journal.Event{}, err
+	}
+	key := adapterPrefix + "/" + EventToolRecoveryRequired + "/" + executionID
+	return journal.Event{
+		ID:       deterministicEventID(adapterPrefix, EventToolRecoveryRequired, streamID, executionID),
+		StreamID: streamID, IdempotencyKey: key,
+		Type: EventToolRecoveryRequired, SchemaVersion: 2, EmittedAt: now.UTC(),
+		CorrelationID: correlationID, PayloadJSON: body,
 	}, nil
 }
 
@@ -733,9 +1119,100 @@ func (a *Adapter) appendCAS(
 }
 
 func (a *Adapter) remember(executionID string, result ExecutionResult) {
+	result.Content = nil
 	a.mu.Lock()
 	a.completed[executionID] = result
 	a.mu.Unlock()
+}
+
+func (a *Adapter) restoreReadOnlyContent(
+	ctx context.Context,
+	proposal Proposal,
+	result ExecutionResult,
+) (ExecutionResult, error) {
+	if result.Verdict != permissions.VerdictAllow ||
+		(proposal.Call.Tool != permissions.ToolRead && proposal.Call.Tool != permissions.ToolGrep) {
+		return result, nil
+	}
+	worktree, err := a.resolver.Resolve(ctx, proposal.JobID)
+	if err != nil {
+		return ExecutionResult{}, ErrExecutionContent
+	}
+	var restored ReadResult
+	switch proposal.Call.Tool {
+	case permissions.ToolRead:
+		executor, ok := a.executor.(ReadExecutor)
+		if !ok {
+			return ExecutionResult{}, ErrUnsupportedTool
+		}
+		restored, err = executor.Read(ctx, ReadRequest{
+			Worktree: worktree, RelativePath: proposal.Call.Path,
+		})
+	case permissions.ToolGrep:
+		executor, ok := a.executor.(GrepExecutor)
+		if !ok {
+			return ExecutionResult{}, ErrUnsupportedTool
+		}
+		restored, err = executor.Grep(ctx, GrepRequest{
+			Worktree: worktree, RelativePath: proposal.Call.Path,
+			Pattern: proposal.Call.Pattern,
+		})
+	}
+	if err != nil {
+		restored.Close()
+		return ExecutionResult{}, errors.Join(ErrExecutionContent, err)
+	}
+	if restored.ContentDigest != result.OutputDigest {
+		restored.Close()
+		return ExecutionResult{}, ErrExecutionContent
+	}
+	result.Content = restored.Content
+	return result, nil
+}
+
+func (a *Adapter) unsupportedTool(
+	ctx context.Context,
+	proposal Proposal,
+	executionID, callDigest string,
+	generation int64,
+	events []journal.Event,
+	started time.Time,
+) (ExecutionResult, error) {
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+		started, ToolDiagnosticFailed, "unsupported_tool", false,
+	)
+	return a.fail(
+		ctx, proposal, executionID, callDigest, generation, events,
+		"tool unavailable", "unsupported_tool",
+	)
+}
+
+func (a *Adapter) readOnlyToolFailure(
+	ctx context.Context,
+	proposal Proposal,
+	executionID, callDigest string,
+	generation int64,
+	events []journal.Event,
+	started time.Time,
+	cause error,
+) (ExecutionResult, error) {
+	code := "read_failed"
+	if errors.Is(cause, ErrExecutionLimit) {
+		code = "limit_exceeded"
+	} else if errors.Is(cause, ErrExecutionContent) {
+		code = "content_unavailable"
+	} else if errors.Is(cause, ErrExecutionPathOutside) {
+		code = "path_outside_workspace"
+	}
+	a.recordToolDiagnostic(
+		ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+		started, ToolDiagnosticFailed, code, false,
+	)
+	return a.fail(
+		ctx, proposal, executionID, callDigest, generation, events,
+		"read-only tool failed", code,
+	)
 }
 
 func (a *Adapter) readProposalContent(proposal Proposal) ([]byte, error) {
@@ -806,9 +1283,7 @@ func executionMatchSingle(pattern, value string) bool {
 }
 
 func callDigest(call permissions.ProposedCall) string {
-	body, _ := json.Marshal(call)
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
+	return permissions.ProposedCallDigest(call)
 }
 
 func executionID(jobID, callDigest, operationID string) string {
@@ -852,8 +1327,42 @@ func sameImmutable(left, right journal.Event) bool {
 		bytes.Equal(left.PayloadJSON, right.PayloadJSON)
 }
 
+func (a *Adapter) recordToolDiagnostic(
+	ctx context.Context,
+	proposal Proposal,
+	executionID string,
+	callDigest string,
+	stage ToolExecutionStage,
+	started time.Time,
+	result string,
+	errorCode string,
+	retryable bool,
+) {
+	if proposal.Diagnostics == nil {
+		return
+	}
+	elapsed := a.now().UTC().Sub(started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	_ = proposal.Diagnostics.RecordToolExecutionDiagnostic(
+		ctx,
+		ToolExecutionDiagnostic{
+			ExecutionID: executionID, JobID: proposal.JobID,
+			CallDigest: callDigest, Tool: proposal.Call.Tool,
+			OperationID: proposal.OperationID, CorrelationID: proposal.JourneyID,
+			Stage: stage, Elapsed: elapsed, Result: result,
+			ErrorCode: errorCode, Retryable: retryable,
+		},
+	)
+}
+
 func isTerminal(record ExecutionRecord) bool {
-	return record.Status == "completed" || record.Status == "failed" || record.Status == "denied"
+	return record.Status == "completed" || record.Status == "failed" ||
+		record.Status == "denied" || record.Status == "recovery_required" ||
+		record.Status == "recovery_aborted" ||
+		record.Status == "recovery_effect_accepted" ||
+		record.Status == "recovery_retry_authorized"
 }
 
 func resultFromRecord(record ExecutionRecord) ExecutionResult {
@@ -863,7 +1372,10 @@ func resultFromRecord(record ExecutionRecord) ExecutionResult {
 		ExitCode: record.ExitCode, OutputDigest: record.OutputDigest,
 		ChangedFilesDigest: record.ChangedFilesDigest,
 		EvidenceID:         record.EvidenceID, DurationMS: record.DurationMS,
-		Note: record.FailureReason,
+		Note:             record.FailureReason,
+		ErrorCode:        record.ErrorCode,
+		RecoveryRequired: record.Status == "recovery_required",
+		RecoveryCode:     record.RecoveryCode, RecoveryAction: record.RecoveryAction,
 	}
 	if record.Status == "completed" {
 		result.Verdict = permissions.VerdictAllow
@@ -871,15 +1383,36 @@ func resultFromRecord(record ExecutionRecord) ExecutionResult {
 	} else if record.Status == "denied" {
 		result.Denial = permissions.Denial{Reason: record.DenialReason}
 		result.Note = "denied without execution"
+	} else if record.Status == "recovery_required" {
+		result.Note = "recovery required"
+	} else if record.Status == "recovery_aborted" {
+		result.Note = "recovery aborted"
+	} else if record.Status == "recovery_effect_accepted" {
+		result.Note = "observed effect accepted; current execution closed"
+	} else if record.Status == "recovery_retry_authorized" {
+		result.Note = "retry requires the authorized replacement Attempt"
 	}
 	return result
 }
 
+type existingApprovalRecord struct {
+	id          string
+	digest      string
+	status      string
+	consumerID  string
+	operationID string
+}
+
 // existingApproval scans the Journal for a permission approval matching the
-// job and call digest and returns its latest resolution.
-func existingApproval(events []journal.Event, jobID, callDigest string) (string, string, string, bool) {
+// job and call digest and returns its latest resolution or consumption state.
+func existingApproval(
+	events []journal.Event,
+	jobID string,
+	callDigest string,
+) (existingApprovalRecord, bool) {
 	status := make(map[string]string)
 	meta := make(map[string][2]string)
+	consumers := make(map[string][2]string)
 	for _, event := range events {
 		if event.Type == "ApprovalRequested" {
 			var payload struct {
@@ -919,6 +1452,22 @@ func existingApproval(events []journal.Event, jobID, callDigest string) (string,
 				status[payload.ApprovalRequestID] = resolution
 			}
 		}
+		if event.Type == "PermissionApprovalConsumed" {
+			var payload struct {
+				ApprovalRequestID string `json:"approval_request_id"`
+				ConsumerID        string `json:"consumer_id"`
+				OperationID       string `json:"operation_id"`
+			}
+			if err := json.Unmarshal(event.PayloadJSON, &payload); err != nil {
+				continue
+			}
+			if _, ok := status[payload.ApprovalRequestID]; ok {
+				status[payload.ApprovalRequestID] = "consumed"
+				consumers[payload.ApprovalRequestID] = [2]string{
+					payload.ConsumerID, payload.OperationID,
+				}
+			}
+		}
 	}
 	var ids []string
 	for id := range status {
@@ -926,11 +1475,14 @@ func existingApproval(events []journal.Event, jobID, callDigest string) (string,
 	}
 	sort.Strings(ids)
 	if len(ids) == 0 {
-		return "", "", "", false
+		return existingApprovalRecord{}, false
 	}
 	id := ids[0]
-	digest := meta[id][1]
-	return id, digest, status[id], true
+	consumer := consumers[id]
+	return existingApprovalRecord{
+		id: id, digest: meta[id][1], status: status[id],
+		consumerID: consumer[0], operationID: consumer[1],
+	}, true
 }
 
 var _ = sort.Strings

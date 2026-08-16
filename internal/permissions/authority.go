@@ -368,12 +368,27 @@ func (a *Authority) RecordDecision(ctx context.Context, jobID string, call Propo
 	}
 	_ = projection
 	streamID := streamDecision + jobID
+	reasonCode, recoveryAction := decisionCode(verdict)
 	event := newPermEvent("PermissionDecisionRecorded", streamID, heads[streamID]+1,
-		a.now(), journeyID, operationID, decisionPayload{
+		a.now(), journeyID, operationID, decisionPayloadV2{
 			JobID: jobID, ApprovalID: approvalID, Verdict: verdict,
-			Tool: call.Tool, Command: call.Command, Path: call.Path,
-			Reason: denial.Reason, AuthorizationPath: denial.AuthorizationPath,
+			Tool: call.Tool, CallDigest: ProposedCallDigest(call),
+			ReasonCode: reasonCode, RecoveryAction: recoveryAction,
 			RecordedAt: isoNow(a.now),
 		})
+	event.SchemaVersion = 2
 	return a.appendCAS(ctx, events, heads, streamID, event)
+}
+
+func decisionCode(verdict Verdict) (string, string) {
+	switch verdict {
+	case VerdictAllow:
+		return "allowed", "none"
+	case VerdictAsk:
+		return "approval_required", "review_permission_request"
+	case VerdictDeny:
+		return "permission_denied", "review_permission_profile"
+	default:
+		return "invalid_decision", "review_permission_pipeline"
+	}
 }

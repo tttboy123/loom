@@ -10,6 +10,131 @@ import (
 	"time"
 )
 
+func TestClientUsesExtendedTimeoutOnlyForLongOperations(t *testing.T) {
+	client := Client{
+		timeout:         5 * time.Second,
+		extendedTimeout: 10 * time.Second,
+	}
+	for _, method := range []string{"credential_verify", "mission_execution"} {
+		if got := client.timeoutForMethod(method); got != 10*time.Second {
+			t.Fatalf("timeoutForMethod(%q) = %s, want 10s", method, got)
+		}
+	}
+	for _, method := range []string{"chat_message", "agent_attempt_recovery"} {
+		if got := client.timeoutForMethod(method); got != 55*time.Second {
+			t.Fatalf("timeoutForMethod(%s) = %s, want 55s", method, got)
+		}
+	}
+	for _, method := range []string{
+		"ping", "snapshot", "timeline_page", "chat_thread",
+	} {
+		if got := client.timeoutForMethod(method); got != 5*time.Second {
+			t.Fatalf("timeoutForMethod(%q) = %s, want 5s", method, got)
+		}
+	}
+}
+
+func TestClientConfigDefaultsAndValidatesExtendedTimeout(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	client, err := NewClient(ClientConfig{
+		SocketPath: socketPath,
+		Timeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.extendedTimeout != 5*time.Second {
+		t.Fatalf("default extended timeout = %s, want 5s", client.extendedTimeout)
+	}
+	if _, err := NewClient(ClientConfig{
+		SocketPath:      socketPath,
+		Timeout:         5 * time.Second,
+		ExtendedTimeout: 4 * time.Second,
+	}); !errors.Is(err, ErrInvalidSocketPath) {
+		t.Fatalf("short extended timeout error = %v, want invalid input", err)
+	}
+}
+
+func TestClientConfigRequiresResponseGraceBeyondServerDeadline(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	if _, err := NewClient(ClientConfig{
+		SocketPath:      socketPath,
+		Timeout:         5 * time.Second,
+		ExtendedTimeout: extendedResponseDeadline,
+	}); !errors.Is(err, ErrInvalidSocketPath) {
+		t.Fatalf("equal extended deadline error = %v, want invalid input", err)
+	}
+	client, err := NewClient(ClientConfig{
+		SocketPath:      socketPath,
+		Timeout:         5 * time.Second,
+		ExtendedTimeout: extendedRequestDeadline + 5*time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.extendedTimeout != 15*time.Second {
+		t.Fatalf("extended timeout = %s, want 15s", client.extendedTimeout)
+	}
+}
+
+func TestExtendedClientReceivesControlledServerDeadlineResponse(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "deadline-response-fixture",
+		Handler: HandlerFunc(func(
+			ctx context.Context,
+			request Request,
+		) Response {
+			<-ctx.Done()
+			return Response{
+				Version:   1,
+				RequestID: request.RequestID,
+				Error: &ProtocolError{
+					Code:        "state_unavailable",
+					Message:     "controlled deadline",
+					Recoverable: true,
+				},
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForServerReady(t, server)
+	client, err := NewClient(ClientConfig{
+		SocketPath:      socketPath,
+		Timeout:         5 * time.Second,
+		ExtendedTimeout: 15 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	var result map[string]any
+	err = client.Call(context.Background(), "mission_execution", struct{}{}, &result)
+	if elapsed := time.Since(started); elapsed < extendedRequestDeadline ||
+		elapsed >= 15*time.Second {
+		t.Fatalf("controlled response elapsed = %s, want [10s, 15s)", elapsed)
+	}
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Code != "state_unavailable" ||
+		!remote.Recoverable {
+		t.Fatalf("controlled response error = %#v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientAndServerRoundTripOneBoundedRequestAndCloseCleanly(t *testing.T) {
 	root := shortPrivateSocketRoot(t)
 	socketPath := filepath.Join(root, "loomd.sock")
@@ -149,7 +274,7 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 						errors.New("private path"),
 					),
 				}
-			case "timeline_page":
+			case "timeline_page", "chat_message":
 				time.Sleep(250 * time.Millisecond)
 				result, _ := json.Marshal(map[string]any{"late": true})
 				return Response{OK: true, Result: result}
@@ -167,8 +292,9 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 	waitForSocket(t, socketPath)
 
 	client, err := NewClient(ClientConfig{
-		SocketPath: socketPath,
-		Timeout:    time.Second,
+		SocketPath:      socketPath,
+		Timeout:         time.Second,
+		ExtendedTimeout: 15 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +354,7 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 	go func() {
 		inflightDone <- client.Call(
 			inflight,
-			"timeline_page",
+			"chat_message",
 			struct{}{},
 			&result,
 		)

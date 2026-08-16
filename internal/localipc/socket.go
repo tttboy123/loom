@@ -16,6 +16,16 @@ var ErrInvalidSocketPath = errors.New("invalid local IPC socket path")
 
 var exactRemoveMu sync.Mutex
 
+var socketPreparationLocks = struct {
+	sync.Mutex
+	entries map[string]*socketPreparationLock
+}{entries: make(map[string]*socketPreparationLock)}
+
+type socketPreparationLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type fileIdentity struct {
 	device uint64
 	inode  uint64
@@ -114,6 +124,8 @@ func isSocket(info os.FileInfo) bool {
 }
 
 func prepareSocket(path string, effectiveUID int) (*os.File, error) {
+	unlock := lockSocketPreparation(path)
+	defer unlock()
 	if err := validateSocketPath(path, effectiveUID); err != nil {
 		return nil, err
 	}
@@ -171,6 +183,28 @@ func prepareSocket(path string, effectiveUID int) (*os.File, error) {
 		return nil, ErrInvalidSocketPath
 	}
 	return fresh, nil
+}
+
+func lockSocketPreparation(path string) func() {
+	socketPreparationLocks.Lock()
+	entry := socketPreparationLocks.entries[path]
+	if entry == nil {
+		entry = &socketPreparationLock{}
+		socketPreparationLocks.entries[path] = entry
+	}
+	entry.refs++
+	socketPreparationLocks.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		socketPreparationLocks.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(socketPreparationLocks.entries, path)
+		}
+		socketPreparationLocks.Unlock()
+	}
 }
 
 func createOwnedLock(path string, effectiveUID int) (*os.File, error) {

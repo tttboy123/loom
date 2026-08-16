@@ -1,7 +1,7 @@
 
  # Phase 2C Cross-Client Journey Manifest
  
- **Status**: frozen — part of Phase 2C Exit Contract  
+ **Status**: frozen — reviewed part of Phase 2C Exit Contract
  **Date**: 2026-08-06  
  **Parent**: `.loom-evidence/phase2c/contracts/PHASE-2C-EXIT-CONTRACT.md`
  
@@ -21,10 +21,10 @@
  | # | Journey | Owner | Key assertions |
  |---|---|---|---|
  | J1 | Fresh launch → no-folder chat | W1 | No Team/Mission facts created; composer visible; offline state truthful. |
- | J2 | Open Folder → first chat | W1 | Native folder picker used; path not typed; scoped preflight before file access. |
+| J2 | Open Folder → first chat | W1 | Native folder picker used; path not typed; no file access attempted; any later read requires scoped preflight. |
  | J3 | Offline → reconnect → continue | W1 | Distinct states; recovery action visible; view rebuilds from Journal on reconnect. |
  | J4 | Plain chat → explicit “use Agent” → Team Draft | W2 | Main Agent proposes a structured Draft; no fact created until user confirms. |
- | J5 | Confirm Team Draft → Mission starts → governance panel | W2 + W3 | Right panel shows Board; center shows milestones; Journal contains the facts. |
+| J5 | Confirm Team Draft → explicit New Mission → governance panel | W2 + W3 | Team confirmation does not auto-start work; explicit Mission action starts it; panel shows Board and Journal contains only authorized facts. |
  | J6 | Mission running → inspect Evidence → approve decision | W3 | Right panel switches to Evidence/Decisions; approval creates a Journal fact. |
  | J7 | Runtime offline | W3 | Panel shows Runtime health; status distinct from Mission state; recovery actionable. |
  | J8 | Restart daemon → reconnect → view preserved | W1–W3 | Journal rebuilds the same views; no duplicate facts; no client-side authority. |

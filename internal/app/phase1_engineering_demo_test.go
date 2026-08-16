@@ -25,6 +25,7 @@ import (
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/mode"
@@ -679,6 +680,45 @@ type demoCoordinatorOutcome struct {
 	err         error
 }
 
+func TestExpectedDemoRecoveryLoser(t *testing.T) {
+	tests := []struct {
+		name            string
+		err             error
+		executedNodeIDs []string
+		want            bool
+	}{
+		{name: "team conflict", err: work.ErrTeamExecutionConflict, want: true},
+		{name: "stale view", err: work.ErrStaleGlobalReadView, want: true},
+		{name: "grant ID collision", err: authorization.ErrGrantIDCollision, want: true},
+		{name: "grant conflict", err: authorization.ErrGrantAuthorityConflict, want: true},
+		{name: "incomplete observer", err: app.ErrTeamExecutionIncomplete, want: true},
+		{
+			name:            "incomplete dispatcher",
+			err:             app.ErrTeamExecutionIncomplete,
+			executedNodeIDs: []string{"main"},
+		},
+		{name: "unrelated", err: errors.New("unexpected")},
+		{name: "success"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := expectedDemoRecoveryLoser(test.err, test.executedNodeIDs); got != test.want {
+				t.Fatalf("expected loser = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func expectedDemoRecoveryLoser(err error, executedNodeIDs []string) bool {
+	if errors.Is(err, app.ErrTeamExecutionIncomplete) {
+		return len(executedNodeIDs) == 0
+	}
+	return errors.Is(err, work.ErrTeamExecutionConflict) ||
+		errors.Is(err, work.ErrStaleGlobalReadView) ||
+		errors.Is(err, authorization.ErrGrantIDCollision) ||
+		errors.Is(err, authorization.ErrGrantAuthorityConflict)
+}
+
 func runCompetingDemoRecovery(
 	t *testing.T,
 	environment *demoEnvironment,
@@ -732,16 +772,10 @@ func runCompetingDemoRecovery(
 	var winner *app.TeamCoordinator
 	for index, outcome := range outcomes {
 		if outcome.err != nil {
-			if !errors.Is(outcome.err, work.ErrTeamExecutionConflict) &&
-				!errors.Is(outcome.err, work.ErrStaleGlobalReadView) &&
-				!errors.Is(
-					outcome.err,
-					authorization.ErrGrantIDCollision,
-				) &&
-				!errors.Is(
-					outcome.err,
-					authorization.ErrGrantAuthorityConflict,
-				) {
+			if !expectedDemoRecoveryLoser(
+				outcome.err,
+				outcome.result.ExecutedNodeIDs(),
+			) {
 				t.Fatalf(
 					"competing coordinator %d error = %v",
 					index,
@@ -1131,12 +1165,39 @@ func demoNodeExecution(
 	barrier *demoBarrier,
 ) app.TeamNodeExecution {
 	t.Helper()
+	profile := demoProfile(t, "profile-"+logicalNodeID)
+	capsule, err := contextcapsule.BuildRoleContextCapsule(
+		contextcapsule.Target{
+			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
+			TeamID:         plan.TeamInstanceID(), AgentID: agentInstanceID,
+			RoleID: logicalNodeID, ProviderID: profile.ProviderID,
+			ProviderAccountID: profile.ProviderAccountID, ModelID: profile.ModelID,
+			AuthMode: string(profile.AuthMode), ContextAdapterID: "context:pi:v1",
+			DisclosurePolicyID: "policy.phase1-demo", DisclosurePolicyVersion: 1,
+			TokenBudget: 2048,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Content:    []byte("Execute the Phase 1 engineering demo."),
+			SourceType: contextcapsule.SourceAuthority,
+			SourceRef:  "team-plan:" + plan.Digest(),
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPayload, err := contextcapsule.RenderDispatchPayload(capsule)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return app.TeamNodeExecution{
 		LogicalNodeID: logicalNodeID,
 		AttemptNumber: attemptNumber,
 		WorkflowPath:  "primary",
 		SourcePath:    t.TempDir(),
-		Profile:       demoProfile(t, "profile-"+logicalNodeID+fmt.Sprint(attemptNumber)),
+		Profile:       profile,
 		Instance:      demoInstance(t, runtimeInstanceID),
 		Dispatch: demoDispatchFrame(
 			t,
@@ -1146,6 +1207,7 @@ func demoNodeExecution(
 			agentInstanceID,
 			runtimeInstanceID,
 			demoNow,
+			dispatchPayload,
 		),
 		Executor: newDemoSupervisor(
 			t,
@@ -1162,6 +1224,7 @@ func demoNodeExecution(
 					attemptNumber == 2,
 			},
 		),
+		ContextCapsule: capsule,
 	}
 }
 
@@ -1524,8 +1587,12 @@ func demoCatalogProfile(id string) loomruntime.RuntimeProfile {
 		ID:                   id,
 		AdapterType:          "pi",
 		ProviderID:           "provider.local",
+		ProviderAccountID:    "provider-account." + id,
 		ModelID:              "model.test",
 		AuthMode:             loomruntime.AuthBrokered,
+		EndpointFingerprint:  strings.Repeat("a", 64),
+		CredentialReference:  "credential-ref-" + strings.ReplaceAll(id, ".", "-"),
+		CredentialRevision:   1,
 		RequiredCapabilities: []string{"text"},
 		Timeout:              time.Minute,
 		Budget:               &budget,
@@ -1539,10 +1606,16 @@ func demoCatalogProfile(id string) loomruntime.RuntimeProfile {
 func demoProfile(t *testing.T, id string) loomruntime.RuntimeProfile {
 	t.Helper()
 	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
-		ID:          id,
-		AdapterType: "pi",
-		AuthMode:    loomruntime.AuthBrokered,
-		Timeout:     5 * time.Second,
+		ID:                  id,
+		AdapterType:         "pi",
+		ProviderID:          "provider.local",
+		ProviderAccountID:   "provider-account." + id,
+		ModelID:             "model.test",
+		AuthMode:            loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("b", 64),
+		CredentialReference: "credential-ref-" + strings.ReplaceAll(id, ".", "-"),
+		CredentialRevision:  1,
+		Timeout:             5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1601,6 +1674,7 @@ func demoDispatchFrame(
 	agentInstanceID string,
 	runtimeInstanceID string,
 	now time.Time,
+	payload []byte,
 ) bridgev1.Frame {
 	t.Helper()
 	frame, err := bridgev1.NewFrame(bridgev1.FrameInput{
@@ -1614,7 +1688,7 @@ func demoDispatchFrame(
 		Sequence:              1,
 		Type:                  bridgev1.MessageDispatch,
 		EmittedAt:             now,
-		Payload:               []byte(`{"task":"bounded-phase1-demo"}`),
+		Payload:               payload,
 	})
 	if err != nil {
 		t.Fatal(err)

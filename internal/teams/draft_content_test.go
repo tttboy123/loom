@@ -2,6 +2,7 @@ package teams
 
 import (
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -293,7 +294,7 @@ func TestTeamDraftContentRoles(t *testing.T) {
 		})
 	}
 
-	t.Run("rejects more than two subagents", func(t *testing.T) {
+	t.Run("accepts four-agent Phase 2D team", func(t *testing.T) {
 		largeCatalog := draftContentCatalog(t, []string{"agent.main", "agent.sub.a", "agent.sub.b", "agent.sub.c"})
 		changed := cloneTeamDraftContentInput(input)
 		changed.References.SubAgentDefinitionIDs = append(changed.References.SubAgentDefinitionIDs, "agent.sub.c")
@@ -303,9 +304,26 @@ func TestTeamDraftContentRoles(t *testing.T) {
 			AcceptanceCriteria: []string{"sub c passes"},
 		})
 		changed.Limits.MaxTasks = 4
-		got, err := BuildTeamDraftContent(largeCatalog, changed)
+		got := mustTeamDraftContent(t, largeCatalog, changed)
+		validated, err := ValidateTeamDraftContent(got, largeCatalog)
+		if err != nil || !validated.Valid || validated.RoleCount != 4 {
+			t.Fatalf("ValidateTeamDraftContent(4 agents) = (%#v, %v)", validated, err)
+		}
+	})
+
+	t.Run("rejects max team agents plus one", func(t *testing.T) {
+		changed := cloneTeamDraftContentInput(input)
+		agentIDs := []string{"agent.main", "agent.sub.a", "agent.sub.b"}
+		for index := len(agentIDs); index <= MaxTeamAgentCount; index++ {
+			agentID := fmt.Sprintf("agent.sub.%d", index)
+			agentIDs = append(agentIDs, agentID)
+			changed.References.SubAgentDefinitionIDs = append(
+				changed.References.SubAgentDefinitionIDs, agentID,
+			)
+		}
+		got, err := BuildTeamDraftContent(draftContentCatalog(t, agentIDs), changed)
 		if !errors.Is(err, ErrTeamDraftContentLimitExceeded) {
-			t.Fatalf("BuildTeamDraftContent(3 subagents) error = %v, want ErrTeamDraftContentLimitExceeded", err)
+			t.Fatalf("BuildTeamDraftContent(max+1) error = %v, want ErrTeamDraftContentLimitExceeded", err)
 		}
 		assertZeroTeamDraftContent(t, got)
 	})
@@ -541,6 +559,19 @@ func draftContentFixture(t *testing.T) (TeamDraftCatalogSnapshot, TeamDraftConte
 			MaxCapabilityGaps:            2,
 		},
 	}
+}
+
+func fourRoleDraftContentFixture(t *testing.T) (TeamDraftCatalogSnapshot, TeamDraftContentInput) {
+	_, input := draftContentFixture(t)
+	catalog := draftContentCatalog(t, []string{"agent.main", "agent.sub.a", "agent.sub.b", "agent.sub.c"})
+	input.References.SubAgentDefinitionIDs = append(input.References.SubAgentDefinitionIDs, "agent.sub.c")
+	input.Roles = append(input.Roles, draftContentRole("agent.sub.c", "profile.sub.c", "model.alpha"))
+	input.Tasks = append(input.Tasks, TeamDraftTaskCandidate{
+		ID: "task.sub.c", OwnerAgentDefinitionID: "agent.sub.c",
+		AcceptanceCriteria: []string{"sub c passes"},
+	})
+	input.Limits.MaxTasks = len(input.Tasks)
+	return catalog, input
 }
 
 func draftContentCatalog(t *testing.T, agentIDs []string) TeamDraftCatalogSnapshot {

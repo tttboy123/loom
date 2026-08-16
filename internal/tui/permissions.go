@@ -264,6 +264,9 @@ func (model Model) permissionResolveDecision(resolution string) tea.Cmd {
 			return permissionCommandDoneMsg{err: app.ErrInvalidPermissionRequest}
 		}
 		approval := model.permissionAttention.Approvals[0]
+		if resolution == "allow" && !approval.DetailsAvailable {
+			return permissionCommandDoneMsg{err: app.ErrInvalidPermissionRequest}
+		}
 		input, _ := json.Marshal(map[string]any{
 			"approval_id":     approval.ApprovalID,
 			"approval_digest": approval.Digest,

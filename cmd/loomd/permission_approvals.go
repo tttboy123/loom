@@ -34,6 +34,13 @@ func (port *permissionApprovalPort) RequestPermissionApproval(
 	return port.authority.RequestPermissionApproval(ctx, input)
 }
 
+func (port *permissionApprovalPort) ConsumePermissionApproval(
+	ctx context.Context,
+	input rules.PermissionApprovalConsumptionInput,
+) (rules.ApprovalRequestRecord, error) {
+	return port.authority.ConsumePermissionApproval(ctx, input)
+}
+
 func (port *permissionApprovalPort) DecidePermissionApproval(
 	ctx context.Context,
 	approvalID, approvalDigest, decision, resolvedBy, correlationID string,

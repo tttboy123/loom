@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/runtime/piadapter"
@@ -22,6 +26,8 @@ func TestMissionExecutionConfigFromDaemonBuildPreservesExactRuntimeBinding(
 		ModelPath:      "/private/model/model.gguf",
 	}
 	config := missionExecutionConfigFromDaemonBuild(daemonBuildConfig{
+		CodexExecutable:  "/opt/codex/bin/codex",
+		ClaudeExecutable: "/opt/claude/bin/claude",
 		Observer: app.LocalRuntimeObservationDaemonConfig{
 			RuntimeSearchPaths: searchPaths,
 			RuntimeInstanceID:  "runtime-1",
@@ -29,6 +35,8 @@ func TestMissionExecutionConfigFromDaemonBuildPreservesExactRuntimeBinding(
 		},
 	})
 	if config == nil || config.RuntimeInstanceID != "runtime-1" ||
+		config.CodexExecutable != "/opt/codex/bin/codex" ||
+		config.ClaudeExecutable != "/opt/claude/bin/claude" ||
 		!reflect.DeepEqual(config.RuntimeSearchPaths, searchPaths) ||
 		config.LocalModelCatalog == nil ||
 		*config.LocalModelCatalog != *catalog {
@@ -434,6 +442,170 @@ func completeDaemonArgs() []string {
 		"--display-name", "Local Pi",
 		"--interval", "1s",
 		"--process-timeout", "2s",
+	}
+}
+
+func TestExpandLocalAppServiceArgsUsesStableUserPathsAndInstalledRuntime(t *testing.T) {
+	home := t.TempDir()
+	runtimeBin := filepath.Join(
+		home,
+		"Library", "Application Support", "Loom", "runtimes", "pi", "0.82.1",
+		"node_modules", ".bin",
+	)
+	if err := os.MkdirAll(runtimeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := expandLocalAppServiceArgs(
+		[]string{"--local-app-service"},
+		home,
+		[]string{runtimeBin, "/usr/bin"},
+		"/usr/bin/codex",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("expand local app service args: %v", err)
+	}
+	want := []string{
+		"--state", filepath.Join(home, "Library/Application Support/Loom/state/loom.db"),
+		"--isolation-root", filepath.Join(home, "Library/Application Support/Loom/isolation"),
+		"--runtime-dir", runtimeBin,
+		"--runtime-dir", "/usr/bin",
+		"--probe-id", "probe.pi.local-app",
+		"--instance-id", "runtime.pi.earendil-works.0.82.1",
+		"--device-id", "device.local",
+		"--display-name", "Pi 0.82.1",
+		"--interval", "10s",
+		"--process-timeout", "10s",
+		"--socket", filepath.Join(home, "Library/Application Support/Loom/run/loomd.sock"),
+		"--codex-executable", "/usr/bin/codex",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("expanded args = %#v, want %#v", args, want)
+	}
+}
+
+func TestExpandLocalAppServiceArgsRejectsMissingRuntime(t *testing.T) {
+	_, err := expandLocalAppServiceArgs(
+		[]string{"--local-app-service"},
+		t.TempDir(),
+		nil,
+		"",
+		"",
+	)
+	if err == nil {
+		t.Fatal("missing local runtime was accepted")
+	}
+}
+
+func TestParseLocalAppServiceInvocationBindsOptionalParent(t *testing.T) {
+	parent, err := parseLocalAppServiceParentPID(
+		[]string{"--local-app-service", "--parent-pid", "4242"},
+	)
+	if err != nil || parent != 4242 {
+		t.Fatalf("parent = %d, err = %v", parent, err)
+	}
+	for _, args := range [][]string{
+		{"--local-app-service", "--parent-pid", "0"},
+		{"--local-app-service", "--parent-pid", "not-a-pid"},
+		{"--local-app-service", "--unexpected"},
+	} {
+		if _, err := parseLocalAppServiceParentPID(args); err == nil {
+			t.Fatalf("invalid local app invocation accepted: %q", args)
+		}
+	}
+}
+
+func TestPrepareLocalAppInvocationReexecsCanonicalArgsExactlyOnce(t *testing.T) {
+	expanded := []string{
+		"--state", "/tmp/loom/state/loom.db",
+		"--isolation-root", "/tmp/loom/isolation",
+		"--socket", "/tmp/loom/run/loomd.sock",
+	}
+	expandCalls := 0
+	first, err := prepareLocalAppInvocation(
+		[]string{localAppServiceFlag, "--parent-pid", "4242"},
+		func() ([]string, error) {
+			expandCalls++
+			return append([]string(nil), expanded...), nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCanonical := append(
+		append([]string(nil), expanded...),
+		managedLocalAppParentFlag, "4242",
+	)
+	if !first.Reexec || first.ParentPID != 0 ||
+		!reflect.DeepEqual(first.Args, wantCanonical) || expandCalls != 1 {
+		t.Fatalf("first plan = %#v calls=%d", first, expandCalls)
+	}
+	second, err := prepareLocalAppInvocation(first.Args, func() ([]string, error) {
+		t.Fatal("canonical invocation recursively expanded")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Reexec || second.ParentPID != 4242 ||
+		!reflect.DeepEqual(second.Args, expanded) {
+		t.Fatalf("second plan = %#v", second)
+	}
+	for _, argument := range second.Args {
+		if argument == managedLocalAppParentFlag || argument == localAppServiceFlag {
+			t.Fatalf("internal bootstrap argument reached run: %q", argument)
+		}
+	}
+}
+
+func TestPrepareLocalAppInvocationValidatesManagedParentHandoff(t *testing.T) {
+	canonical := []string{
+		"--state", "/tmp/loom/state/loom.db",
+		"--isolation-root", "/tmp/loom/isolation",
+		"--socket", "/tmp/loom/run/loomd.sock",
+	}
+	for _, args := range [][]string{
+		append(append([]string(nil), canonical...), managedLocalAppParentFlag),
+		append(append([]string(nil), canonical...), managedLocalAppParentFlag, "0"),
+		append(append([]string(nil), canonical...), managedLocalAppParentFlag, "nope"),
+		{managedLocalAppParentFlag, "4242"},
+		append(
+			append([]string(nil), canonical...),
+			managedLocalAppParentFlag, "4242", "--interval", "1s",
+		),
+	} {
+		if _, err := prepareLocalAppInvocation(args, localAppServiceArgs); err == nil {
+			t.Fatalf("invalid managed-parent handoff accepted: %#v", args)
+		}
+	}
+}
+
+func TestManagedLocalAppDaemonCancelsAfterParentExit(t *testing.T) {
+	parent := exec.Command("/usr/bin/true")
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	parentPID := parent.Process.Pid
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		cancelWhenLocalAppParentExits(ctx, cancel, parentPID)
+		close(done)
+	}()
+	if err := parent.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("managed daemon did not cancel after parent exit")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("parent lifecycle observer did not join")
 	}
 }
 

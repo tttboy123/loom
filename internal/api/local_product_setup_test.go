@@ -10,10 +10,13 @@ import (
 )
 
 type setupAPIFixtureBackend struct {
-	snapshot app.SetupSnapshot
-	session  app.BuilderSessionView
-	connect  app.ProviderConnectResult
-	closed   bool
+	snapshot      app.SetupSnapshot
+	session       app.BuilderSessionView
+	connect       app.ProviderConnectResult
+	policy        app.ProviderAccountPolicyResult
+	policyCommand app.ProviderAccountPolicyCommand
+	editCommand   app.BuilderEditCommand
+	closed        bool
 }
 
 func TestLocalProductSetupAPINilReceiverFailsClosed(t *testing.T) {
@@ -45,10 +48,26 @@ func (backend *setupAPIFixtureBackend) StartBuilder(
 	return backend.session, nil
 }
 
+func (backend *setupAPIFixtureBackend) EditBuilder(
+	_ context.Context,
+	command app.BuilderEditCommand,
+) (app.BuilderSessionView, error) {
+	backend.editCommand = command
+	return backend.session, nil
+}
+
 func (backend *setupAPIFixtureBackend) ConnectCodex(
 	context.Context,
 ) (app.ProviderConnectResult, error) {
 	return backend.connect, nil
+}
+
+func (backend *setupAPIFixtureBackend) ConfigureProviderAccountPolicy(
+	_ context.Context,
+	command app.ProviderAccountPolicyCommand,
+) (app.ProviderAccountPolicyResult, error) {
+	backend.policyCommand = command
+	return backend.policy, nil
 }
 
 func (backend *setupAPIFixtureBackend) Close() error {
@@ -78,6 +97,70 @@ func TestLocalProductSetupAPIExposesStrictCodexConnectResult(t *testing.T) {
 	}
 	if !backend.closed {
 		t.Fatal("Close() did not propagate to the setup backend")
+	}
+}
+
+func TestLocalProductSetupAPIConfiguresExactProviderAccountPolicy(t *testing.T) {
+	backend := &setupAPIFixtureBackend{policy: app.ProviderAccountPolicyResult{
+		PolicyAvailable: true, PolicyVersion: 2, ProviderID: "deepseek",
+		ProviderAccountID: "deepseek.work", Revision: 2,
+		PolicyDigest:              setupAPIDigest("deepseek-work-policy"),
+		MaximumConcurrentAttempts: 3, DispatchWindowSeconds: 60,
+		MaximumDispatchStarts: 12, MaximumAssignedBudgetUnits: 8_000,
+		TrustDomain: "external_provider", RetentionMode: "zero_data_retention",
+		DataRegion:   "apac",
+		ConfiguredAt: "2026-08-11T10:00:00Z",
+	}}
+	service, err := NewLocalProductSetupAPI(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := app.ProviderAccountPolicyCommand{
+		ProviderID: "deepseek", ProviderAccountID: "deepseek.work",
+		ExpectedRevision: 1, MaximumConcurrentAttempts: 3,
+		DispatchWindowSeconds: 60, MaximumDispatchStarts: 12,
+		MaximumAssignedBudgetUnits: 8_000,
+		TrustDomain:                "external_provider", RetentionMode: "zero_data_retention",
+		DataRegion:    "apac",
+		OperationID:   "configure-deepseek-work-v2",
+		CorrelationID: "loom-policy-api-test",
+	}
+	result, err := service.ConfigureProviderAccountPolicy(
+		context.Background(), command,
+	)
+	if err != nil || result != backend.policy || backend.policyCommand != command {
+		t.Fatalf("ConfigureProviderAccountPolicy() = %#v, command=%#v, err=%v", result, backend.policyCommand, err)
+	}
+}
+
+func TestLocalProductSetupAPIForwardsIndependentProviderAccountRouteEdit(t *testing.T) {
+	backend := &setupAPIFixtureBackend{session: app.BuilderSessionView{
+		SchemaVersion: 1,
+		DraftID:       "draft-route-edit",
+		Revision:      5,
+		Source:        app.BuilderSourceBlank,
+	}}
+	service, err := NewLocalProductSetupAPI(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := app.BuilderEditCommand{
+		DraftID:          "draft-route-edit",
+		ExpectedRevision: 4,
+		CatalogDigest:    setupAPIDigest("catalog-route-edit"),
+		ViewVersion:      setupAPIDigest("view-route-edit"),
+		Field:            "main_provider_account_route",
+		Value:            "role-main-backup",
+	}
+	result, err := service.EditBuilder(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend.editCommand != command {
+		t.Fatalf("EditBuilder() command = %#v", backend.editCommand)
+	}
+	if result.DraftID != backend.session.DraftID || result.Revision != backend.session.Revision {
+		t.Fatalf("EditBuilder() result = %#v", result)
 	}
 }
 
@@ -123,6 +206,8 @@ func TestLocalProductSetupAPICanonicalizesCollectionsAndCopiesResults(
 		t.Fatal(err)
 	}
 	for _, required := range []string{
+		`"providers":[]`,
+		`"conversation_profiles":[]`,
 		`"runtimes":[]`,
 		`"saved_teams":[]`,
 		`"templates":[]`,

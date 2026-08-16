@@ -41,6 +41,67 @@ func TestP3AJourneyWireAndMethodsAreStrictlyAvailable(t *testing.T) {
 	}
 }
 
+func TestCredentialVaultLifecycleMethodsAreStrictAndExtended(t *testing.T) {
+	for _, method := range []string{
+		"credential_vault_rotate",
+		"credential_vault_lock",
+		"credential_vault_unlock",
+		"credential_vault_reset",
+		"credential_vault_export",
+	} {
+		if !validMethod(method) {
+			t.Fatalf("%s method unavailable", method)
+		}
+		if !usesExtendedRequestDeadline(method) {
+			t.Fatalf("%s lacks extended deadline", method)
+		}
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"vault-rotation-1","method":"credential_vault_rotate","params":{}}`,
+	))
+	if err != nil || request.Method != "credential_vault_rotate" {
+		t.Fatalf("decoded rotation request = %+v, %v", request, err)
+	}
+}
+
+func TestAgentAttemptRecoveryMethodIsStrictAndUsesProviderDeadline(t *testing.T) {
+	method := "agent_attempt_recovery"
+	if !validMethod(method) {
+		t.Fatalf("%s method unavailable", method)
+	}
+	if requiresJourney(method) {
+		t.Fatalf("%s unexpectedly requires a journey id", method)
+	}
+	if !usesExtendedRequestDeadline(method) {
+		t.Fatalf("%s lacks extended deadline", method)
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"recovery-preview-1","method":"agent_attempt_recovery","params":{"schema_version":1,"operation":"preview"}}`,
+	))
+	if err != nil || request.Method != method {
+		t.Fatalf("decoded recovery request = %+v, %v", request, err)
+	}
+}
+
+func TestToolRecoveryMethodIsStrictAndUsesExtendedDeadline(t *testing.T) {
+	method := "tool_recovery"
+	if !validMethod(method) {
+		t.Fatalf("%s method unavailable", method)
+	}
+	if requiresJourney(method) {
+		t.Fatalf("%s unexpectedly requires a journey id", method)
+	}
+	if !usesExtendedRequestDeadline(method) {
+		t.Fatalf("%s lacks extended deadline", method)
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"tool-recovery-preview-1","method":"tool_recovery","params":{"schema_version":1,"operation":"preview"}}`,
+	))
+	if err != nil || request.Method != method {
+		t.Fatalf("decoded recovery request = %+v, %v", request, err)
+	}
+}
+
 func TestQueueJourneyWireAndMethodsAreStrictlyAvailable(t *testing.T) {
 	for _, method := range []string{"queue_snapshot", "queue_command"} {
 		if !validMethod(method) {

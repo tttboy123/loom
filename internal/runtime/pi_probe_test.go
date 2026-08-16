@@ -14,6 +14,7 @@ func TestPiRuntimeProbeConstructorRejectsInvalidConfiguration(t *testing.T) {
 
 	valid := validPiRuntimeProbeConfig()
 	var typedNil *recordingPiMetadataRunner
+	var typedNilContext *testPiContextRetrievalConformance
 	tests := []struct {
 		name   string
 		change func(*PiRuntimeProbeConfig)
@@ -24,6 +25,9 @@ func TestPiRuntimeProbeConstructorRejectsInvalidConfiguration(t *testing.T) {
 		{name: "empty display name", change: func(c *PiRuntimeProbeConfig) { c.DisplayName = "" }},
 		{name: "nil runner", change: func(c *PiRuntimeProbeConfig) { c.Runner = nil }},
 		{name: "typed nil runner", change: func(c *PiRuntimeProbeConfig) { c.Runner = typedNil }},
+		{name: "typed nil Context retrieval conformance", change: func(c *PiRuntimeProbeConfig) {
+			c.ContextRetrievalConformance = typedNilContext
+		}},
 	}
 	for _, test := range tests {
 		test := test
@@ -47,6 +51,14 @@ func TestP3APiProbeHasExplicitSkillMaterializationConformance(t *testing.T) {
 	field, found := configType.FieldByName("SkillMaterializationConformance")
 	if !found || field.Type.Kind() != reflect.Interface {
 		t.Fatalf("PiRuntimeProbeConfig SkillMaterializationConformance = %#v, %v", field, found)
+	}
+}
+
+func TestP2DPiProbeHasExplicitContextRetrievalConformance(t *testing.T) {
+	configType := reflect.TypeOf(PiRuntimeProbeConfig{})
+	field, found := configType.FieldByName("ContextRetrievalConformance")
+	if !found || field.Type.Kind() != reflect.Interface {
+		t.Fatalf("PiRuntimeProbeConfig ContextRetrievalConformance = %#v, %v", field, found)
 	}
 }
 
@@ -143,7 +155,9 @@ func TestPiRuntimeProbeNoModelsAndMutationIsolation(t *testing.T) {
 		t.Fatalf("second ObserveRuntime() error = %v", err)
 	}
 	assertPiMetadataRequests(t, runner.calls)
-	if got := second[0].Instance.ObservedCapabilities; !reflect.DeepEqual(got, []string{"pi.metadata.models", "pi.metadata.version"}) {
+	if got := second[0].Instance.ObservedCapabilities; !reflect.DeepEqual(got, []string{
+		"pi.metadata.models", "pi.metadata.version",
+	}) {
 		t.Fatalf("second capabilities = %#v, want immutable canonical capabilities", got)
 	}
 	if second[0].ModelIDs != nil {
@@ -563,6 +577,163 @@ func TestP3AProbeAdvertisesOnlyAvailableVerifiedMaterializationCapability(t *tes
 	if provider.calls != 0 || len(observed[0].Instance.ObservedCapabilities) != 2 {
 		t.Fatalf("unavailable conformance was used: calls=%d observation=%#v", provider.calls, observed[0])
 	}
+}
+
+func TestPi0821ProbeAdvertisesConformanceBoundContextRetrievalCapability(t *testing.T) {
+	runner := successfulPiMetadataRunner()
+	runner.results[PiMetadataVersion] = PiMetadataResult{Stdout: "0.82.1\n"}
+	conformance := &testPiContextRetrievalConformance{}
+	config := validPiRuntimeProbeConfig()
+	config.Runner = runner
+	config.ContextRetrievalConformance = conformance
+	probe := mustPiRuntimeProbe(t, config)
+	observed, err := probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conformance.calls != 1 {
+		t.Fatalf("Context retrieval conformance calls = %d, want 1", conformance.calls)
+	}
+	want := []string{
+		CapabilityContextRetrieval, "pi.metadata.models", "pi.metadata.version",
+	}
+	if len(observed) != 1 ||
+		!reflect.DeepEqual(observed[0].Instance.ObservedCapabilities, want) {
+		t.Fatalf("Pi 0.82.1 capabilities = %#v, want %#v", observed, want)
+	}
+
+	runner.results[PiMetadataVersion] = PiMetadataResult{Stdout: "0.82.2\n"}
+	observed, err = probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conformance.calls != 1 {
+		t.Fatalf("unmatched version invoked Context retrieval conformance: %d", conformance.calls)
+	}
+	want = []string{"pi.metadata.models", "pi.metadata.version"}
+	if !reflect.DeepEqual(observed[0].Instance.ObservedCapabilities, want) {
+		t.Fatalf("unverified Pi version capabilities = %#v, want %#v", observed, want)
+	}
+}
+
+func TestPi0821ProbeContextRetrievalConformanceFailsClosed(t *testing.T) {
+	runner := successfulPiMetadataRunner()
+	runner.results[PiMetadataVersion] = PiMetadataResult{Stdout: "0.82.1\n"}
+	config := validPiRuntimeProbeConfig()
+	config.Runner = runner
+	config.ContextRetrievalConformance = &testPiContextRetrievalConformance{
+		err: errors.New("private conformance detail"),
+	}
+	probe := mustPiRuntimeProbe(t, config)
+	if _, err := probe.ObserveRuntime(context.Background()); !errors.Is(err, ErrInvalidPiRuntimeProbe) ||
+		strings.Contains(err.Error(), "private conformance detail") {
+		t.Fatalf("ObserveRuntime() error = %v, want bounded fail-closed error", err)
+	}
+}
+
+func TestPi0821ProbeAdvertisesOnlyVerifiedGovernedToolLoopCapability(t *testing.T) {
+	runner := successfulPiMetadataRunner()
+	runner.results[PiMetadataVersion] = PiMetadataResult{Stdout: "0.82.1\n"}
+	conformance := &testPiGovernedToolLoopConformance{}
+	config := validPiRuntimeProbeConfig()
+	config.Runner = runner
+	config.GovernedToolLoopConformance = conformance
+	probe := mustPiRuntimeProbe(t, config)
+	observed, err := probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		CapabilityGovernedToolLoop, "pi.metadata.models", "pi.metadata.version",
+	}
+	if conformance.calls != 1 || len(observed) != 1 ||
+		!reflect.DeepEqual(observed[0].Instance.ObservedCapabilities, want) {
+		t.Fatalf("calls=%d capabilities=%#v", conformance.calls, observed)
+	}
+
+	conformance.err = errors.New("private tool conformance detail")
+	if _, err := probe.ObserveRuntime(context.Background()); !errors.Is(err, ErrInvalidPiRuntimeProbe) ||
+		strings.Contains(err.Error(), "private tool conformance detail") {
+		t.Fatalf("ObserveRuntime() error = %v", err)
+	}
+}
+
+func TestPi0821ProbeDiscoversContextRetrievalConformanceFromRunner(t *testing.T) {
+	provider := &testPiContextRetrievalProvider{
+		recordingPiMetadataRunner: successfulPiMetadataRunner(),
+		available:                 true,
+	}
+	provider.results[PiMetadataVersion] = PiMetadataResult{Stdout: "0.82.1\n"}
+	config := validPiRuntimeProbeConfig()
+	config.Runner = provider
+	probe := mustPiRuntimeProbe(t, config)
+	observed, err := probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 1 || !reflect.DeepEqual(
+		observed[0].Instance.ObservedCapabilities,
+		[]string{CapabilityContextRetrieval, "pi.metadata.models", "pi.metadata.version"},
+	) {
+		t.Fatalf("runner conformance calls=%d observation=%#v", provider.calls, observed)
+	}
+
+	provider = &testPiContextRetrievalProvider{
+		recordingPiMetadataRunner: successfulPiMetadataRunner(),
+		available:                 false,
+	}
+	provider.results[PiMetadataVersion] = PiMetadataResult{Stdout: "0.82.1\n"}
+	config.Runner = provider
+	probe = mustPiRuntimeProbe(t, config)
+	observed, err = probe.ObserveRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 0 || len(observed[0].Instance.ObservedCapabilities) != 2 {
+		t.Fatalf("unavailable runner conformance was used: calls=%d observation=%#v", provider.calls, observed)
+	}
+}
+
+type testPiContextRetrievalConformance struct {
+	calls int
+	err   error
+}
+
+type testPiGovernedToolLoopConformance struct {
+	calls int
+	err   error
+}
+
+func (conformance *testPiGovernedToolLoopConformance) VerifyGovernedToolLoop(
+	context.Context,
+) error {
+	conformance.calls++
+	return conformance.err
+}
+
+func (conformance *testPiContextRetrievalConformance) VerifyContextRetrieval(
+	context.Context,
+) error {
+	conformance.calls++
+	return conformance.err
+}
+
+type testPiContextRetrievalProvider struct {
+	*recordingPiMetadataRunner
+	available bool
+	calls     int
+}
+
+func (provider *testPiContextRetrievalProvider) ContextRetrievalConformance() (
+	ContextRetrievalConformance,
+	bool,
+) {
+	return provider, provider.available
+}
+
+func (provider *testPiContextRetrievalProvider) VerifyContextRetrieval(context.Context) error {
+	provider.calls++
+	return nil
 }
 
 func (r *recordingPiMetadataRunner) RunPiMetadata(_ context.Context, request PiMetadataRequest) (PiMetadataResult, error) {

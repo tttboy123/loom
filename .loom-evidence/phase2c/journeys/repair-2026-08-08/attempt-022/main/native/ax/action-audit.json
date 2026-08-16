@@ -1,0 +1,273 @@
+{
+  "enabled_buttons" : [
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "New Mission",
+      "help" : "New Mission",
+      "identifier" : "",
+      "label" : "New Mission",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Conversation",
+      "help" : "Chat",
+      "identifier" : "",
+      "label" : "Conversation",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Mission Board",
+      "help" : "Work",
+      "identifier" : "",
+      "label" : "Mission Board",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Agent Teams",
+      "help" : "Teams",
+      "identifier" : "",
+      "label" : "Agent Teams",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Items needing attention",
+      "help" : "Attention",
+      "identifier" : "",
+      "label" : "Items needing attention",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Agent library",
+      "help" : "Library",
+      "identifier" : "",
+      "label" : "Agent library",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Runtime health",
+      "help" : "Runtimes",
+      "identifier" : "",
+      "label" : "Runtime health",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task Recent work",
+      "help" : "Open recent task Recent work",
+      "identifier" : "",
+      "label" : "Open recent task Recent work",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task Recent work",
+      "help" : "Open recent task Recent work",
+      "identifier" : "",
+      "label" : "Open recent task Recent work",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task Attempt 022 Review Team",
+      "help" : "Open recent task Attempt 022 Review Team",
+      "identifier" : "",
+      "label" : "Open recent task Attempt 022 Review Team",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open recent task Attempt 022 Review Team",
+      "help" : "Open recent task Attempt 022 Review Team",
+      "identifier" : "",
+      "label" : "Open recent task Attempt 022 Review Team",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open local service and runtime health",
+      "help" : "Some information is unavailable",
+      "identifier" : "",
+      "label" : "Open local service and runtime health",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Close governance inspector",
+      "help" : "Governance inspector",
+      "identifier" : "sidebar.trailing",
+      "label" : "Close governance inspector",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Try Again",
+      "help" : "Try Again",
+      "identifier" : "",
+      "label" : "Try Again",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Choose conversation folder",
+      "help" : "Choose folder",
+      "identifier" : "folder",
+      "label" : "Choose conversation folder",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Use Agent Team",
+      "help" : "Use Agent Team",
+      "identifier" : "person.3",
+      "label" : "Use Agent Team",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "New Mission",
+      "help" : "New Mission",
+      "identifier" : "plus.square",
+      "label" : "New Mission",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Pin inspector",
+      "help" : "Pin inspector",
+      "identifier" : "pin",
+      "label" : "Pin inspector",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Close governance inspector",
+      "help" : "Close",
+      "identifier" : "xmark",
+      "label" : "Close governance inspector",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Attempt 022 Review Team, Review · ready_for_review",
+      "help" : "",
+      "identifier" : "",
+      "label" : "Attempt 022 Review Team, Review · ready_for_review",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "Open full Mission Board",
+      "help" : "",
+      "identifier" : "",
+      "label" : "Open full Mission Board",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "",
+      "help" : "",
+      "identifier" : "",
+      "label" : "",
+      "labeled" : false,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress",
+        "AXZoomWindow",
+        "AXShowMenu"
+      ],
+      "description" : "",
+      "help" : "this button also has an action to zoom the window",
+      "identifier" : "",
+      "label" : "this button also has an action to zoom the window",
+      "labeled" : true,
+      "title" : ""
+    },
+    {
+      "actions" : [
+        "AXPress"
+      ],
+      "description" : "",
+      "help" : "",
+      "identifier" : "",
+      "label" : "",
+      "labeled" : false,
+      "title" : ""
+    }
+  ],
+  "labeled_product_buttons" : 22,
+  "schema_version" : 1,
+  "unlabeled_window_chrome" : 2
+}

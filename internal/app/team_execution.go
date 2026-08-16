@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -8,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +18,7 @@ import (
 
 	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
@@ -31,6 +35,8 @@ var (
 	ErrInvalidTeamCoordinator  = errors.New("invalid Team coordinator")
 	ErrTeamExecutionIncomplete = errors.New("Team execution incomplete")
 )
+
+const teamAttemptCommitTimeout = 15 * time.Second
 
 type ManagedNodeExecutor interface {
 	Execute(context.Context, supervisor.ExecuteInput) (supervisor.Outcome, error)
@@ -54,21 +60,35 @@ type NodeOutputObserver interface {
 }
 
 type TeamNodeExecution struct {
-	LogicalNodeID string
-	AttemptNumber int
-	WorkflowPath  string
-	SourcePath    string
-	Profile       loomruntime.RuntimeProfile
-	Instance      loomruntime.RuntimeInstance
-	Dispatch      bridgev1.Frame
-	Executor      ManagedNodeExecutor
+	LogicalNodeID        string
+	AttemptNumber        int
+	WorkflowPath         string
+	SourcePath           string
+	SourceSnapshotDigest string
+	Profile              loomruntime.RuntimeProfile
+	Instance             loomruntime.RuntimeInstance
+	Dispatch             bridgev1.Frame
+	Executor             ManagedNodeExecutor
+	ContextCapsule       contextcapsule.RoleContextCapsule
+	Aggregation          *TeamAggregationExecution
+	executionBinding     loomruntime.FrozenExecutionBinding
+	routeSegment         contextcapsule.RouteSegmentBinding
+}
+
+type TeamContextCapsuleStore interface {
+	PutRoleContextCapsule(
+		context.Context,
+		contextcapsule.RoleContextCapsule,
+		[]byte,
+	) error
 }
 
 type TeamVerifierExecution struct {
-	SourcePath string
-	Profile    loomruntime.RuntimeProfile
-	Instance   loomruntime.RuntimeInstance
-	Executor   ManagedNodeExecutor
+	SourcePath           string
+	SourceSnapshotDigest string
+	Profile              loomruntime.RuntimeProfile
+	Instance             loomruntime.RuntimeInstance
+	Executor             ManagedNodeExecutor
 }
 
 type TeamNodeSemantics struct {
@@ -77,6 +97,7 @@ type TeamNodeSemantics struct {
 	RecoveryPolicy            rules.RecoveryPolicy
 	AcceptanceContract        verification.AcceptanceContract
 	PrimaryWorkflowPath       string
+	FallbackApproval          work.TeamFallbackApproval
 	VerifierAgentInstanceID   string
 	VerifierRuntimeInstanceID string
 	VerifierWorkflowPath      string
@@ -87,11 +108,14 @@ type TeamExecutionRequest struct {
 	Plan                 teams.ExecutionPlan
 	Nodes                []TeamNodeExecution
 	Semantics            []TeamNodeSemantics
+	InitialBlocks        []teams.InitialExecutionBlock
+	RouteSummaries       []work.TeamNodeRouteSummary
 	AuthoritativeTime    time.Time
 	PrepareLeaseDuration time.Duration
 	GrantLifetime        time.Duration
 	CorrelationID        string
 	OutputObserver       NodeOutputObserver
+	ContextCapsules      TeamContextCapsuleStore
 	AssetSourceStreamIDs []string
 }
 
@@ -132,6 +156,13 @@ type TeamAssetMaterializer interface {
 	) error
 }
 
+type TeamGovernedTestReportSource interface {
+	GovernedTestReportsForAttempt(
+		context.Context,
+		work.AttemptReportQuery,
+	) ([]verification.GovernedTestReport, error)
+}
+
 type TeamExecutionResult struct {
 	team            work.TeamExecutionRecord
 	executedNodeIDs []string
@@ -148,6 +179,7 @@ type TeamCoordinator struct {
 	projection        *projection.Projection
 	evidenceStore     *evidence.Store
 	assetMaterializer TeamAssetMaterializer
+	testReportSource  TeamGovernedTestReportSource
 }
 
 func (coordinator *TeamCoordinator) SetAssetMaterializer(
@@ -157,6 +189,16 @@ func (coordinator *TeamCoordinator) SetAssetMaterializer(
 		return ErrInvalidTeamCoordinator
 	}
 	coordinator.assetMaterializer = materializer
+	return nil
+}
+
+func (coordinator *TeamCoordinator) SetGovernedTestReportSource(
+	source TeamGovernedTestReportSource,
+) error {
+	if coordinator == nil || nilAppInterface(source) || coordinator.testReportSource != nil {
+		return ErrInvalidTeamCoordinator
+	}
+	coordinator.testReportSource = source
 	return nil
 }
 
@@ -194,23 +236,24 @@ func (port teamRecoveryPolicyPort) Decide(
 	return rules.DecideRecovery(
 		port.policy,
 		rules.RecoveryInput{
-			TeamInstanceID:           request.TeamInstanceID,
-			PlanDigest:               request.PlanDigest,
-			LogicalNodeID:            request.LogicalNodeID,
-			AttemptNumber:            request.AttemptNumber,
-			MaxAttempts:              request.MaxAttempts,
-			AgentInstanceID:          request.AgentInstanceID,
-			RuntimeInstanceID:        request.RuntimeInstanceID,
-			EvidenceID:               request.EvidenceID,
-			EvidenceDigest:           request.EvidenceDigest,
-			OutputSummaryDigest:      request.OutputSummaryDigest,
-			Classification:           request.Classification,
-			PriorClassifications:     request.PriorClassifications,
-			RemainingCredits:         request.RemainingCredits,
-			FallbackConsumed:         request.FallbackConsumed,
-			DecisionTime:             request.DecisionTime,
-			Trigger:                  rules.RecoveryTrigger(request.Trigger),
-			AcceptanceDecisionDigest: request.AcceptanceDecisionDigest,
+			TeamInstanceID:            request.TeamInstanceID,
+			PlanDigest:                request.PlanDigest,
+			LogicalNodeID:             request.LogicalNodeID,
+			AttemptNumber:             request.AttemptNumber,
+			MaxAttempts:               request.MaxAttempts,
+			AgentInstanceID:           request.AgentInstanceID,
+			RuntimeInstanceID:         request.RuntimeInstanceID,
+			FallbackRuntimeInstanceID: request.FallbackRuntimeInstanceID,
+			EvidenceID:                request.EvidenceID,
+			EvidenceDigest:            request.EvidenceDigest,
+			OutputSummaryDigest:       request.OutputSummaryDigest,
+			Classification:            request.Classification,
+			PriorClassifications:      request.PriorClassifications,
+			RemainingCredits:          request.RemainingCredits,
+			FallbackConsumed:          request.FallbackConsumed,
+			DecisionTime:              request.DecisionTime,
+			Trigger:                   rules.RecoveryTrigger(request.Trigger),
+			AcceptanceDecisionDigest:  request.AcceptanceDecisionDigest,
 		},
 	)
 }
@@ -303,12 +346,12 @@ func (coordinator *TeamCoordinator) Run(
 		if recoveryChanged {
 			continue
 		}
-		states := appExecutionStates(request.Plan, view)
+		states := appExecutionStates(request, view)
 		planningPlan, err := appPlanningPlan(request.Plan, view)
 		if err != nil {
 			return TeamExecutionResult{}, err
 		}
-		capacities, err := appRuntimeCapacities(planningPlan, view)
+		capacities, err := appRuntimeCapacities(planningPlan, states, view)
 		if err != nil {
 			return TeamExecutionResult{}, err
 		}
@@ -325,7 +368,7 @@ func (coordinator *TeamCoordinator) Run(
 				err,
 			)
 		}
-		if len(ready) == 0 {
+		if len(ready) == 0 && len(request.InitialBlocks) != len(request.Plan.Nodes()) {
 			break
 		}
 		selections := make([]work.TeamAttemptSelection, 0, len(ready))
@@ -338,6 +381,23 @@ func (coordinator *TeamCoordinator) Run(
 			)]
 			if !exists {
 				return TeamExecutionResult{}, ErrTeamExecutionIncomplete
+			}
+			if node.Kind() == teams.ExecutionNodeAggregation {
+				execution, err = coordinator.prepareAggregationExecution(
+					ctx, request, view, node, execution,
+				)
+				if err != nil {
+					return TeamExecutionResult{}, err
+				}
+				executions[appExecutionKey(node.LogicalNodeID(), attemptNumber)] = execution
+			} else if len(node.DependsOn()) > 0 {
+				execution, err = coordinator.prepareDependencyContextExecution(
+					ctx, request, view, node, execution,
+				)
+				if err != nil {
+					return TeamExecutionResult{}, err
+				}
+				executions[appExecutionKey(node.LogicalNodeID(), attemptNumber)] = execution
 			}
 			expectedWorkflowPath, err := appExpectedWorkflowPath(
 				request,
@@ -353,8 +413,10 @@ func (coordinator *TeamCoordinator) Run(
 				)
 			}
 			selections = append(selections, work.TeamAttemptSelection{
-				LogicalNodeID: node.LogicalNodeID(),
-				AttemptNumber: attemptNumber,
+				LogicalNodeID:    node.LogicalNodeID(),
+				AttemptNumber:    attemptNumber,
+				ExecutionBinding: execution.executionBinding,
+				ContextCapsule:   execution.ContextCapsule,
 			})
 			selectedExecutions = append(selectedExecutions, execution)
 		}
@@ -381,6 +443,8 @@ func (coordinator *TeamCoordinator) Run(
 			work.TeamDispatchInput{
 				Plan:                 request.Plan,
 				ReadyAttempts:        selections,
+				InitialBlocks:        appInitialDispatchBlocks(request, view),
+				RouteSummaries:       appInitialDispatchRoutes(request, view),
 				SemanticBindings:     appSemanticBindings(request),
 				Materializations:     materializations,
 				AssetSourceHeads:     assetSourceHeads,
@@ -405,6 +469,9 @@ func (coordinator *TeamCoordinator) Run(
 			request.Plan.TeamInstanceID(), materializations,
 		); err != nil {
 			return TeamExecutionResult{}, err
+		}
+		if len(dispatched.Nodes()) == 0 {
+			continue
 		}
 		tasks, err := coordinator.prepareTeamTasks(
 			ctx,
@@ -522,6 +589,12 @@ func appValidateProjectedSemantics(
 				semantics.RecoveryPolicy.WorkflowFallbackKey() ||
 			node.RecoveryApprovalRequired !=
 				semantics.RecoveryPolicy.RecoveryApprovalRequired() ||
+			!appProjectedFallbackApprovalMatches(
+				*node,
+				semantics.FallbackApproval,
+			) ||
+			node.FallbackRuntimeInstanceID !=
+				appFallbackRuntimeInstanceID(request, semantics) ||
 			node.AcceptanceContractVersion !=
 				semantics.AcceptanceContract.Version() ||
 			node.AcceptanceContractDigest !=
@@ -539,8 +612,49 @@ func appValidateProjectedSemantics(
 				semantics.VerifierWorkflowPath {
 			return work.ErrTeamExecutionConflict
 		}
+		if route, ok := appRouteSummaryByNode(request.RouteSummaries, semantics.LogicalNodeID); ok &&
+			!appProjectedInitialRouteMatches(*node, route) {
+			return work.ErrTeamExecutionConflict
+		}
 	}
 	return nil
+}
+
+func appProjectedInitialRouteMatches(
+	node projection.TeamExecutionNode,
+	route work.TeamNodeRouteSummary,
+) bool {
+	if !node.InitialRouteAvailable {
+		return true
+	}
+	if node.InitialHarnessAdapter != route.HarnessAdapter ||
+		node.InitialProviderID != route.ProviderID ||
+		node.InitialProviderAccountID != route.ProviderAccountID ||
+		node.InitialModelID != route.ModelID ||
+		node.InitialReasoningEffort != route.ReasoningEffort ||
+		node.InitialTimeoutNanoseconds != route.TimeoutNanoseconds ||
+		node.InitialCredentialRevision != route.CredentialRevision ||
+		!reflect.DeepEqual(node.InitialCapabilities, route.Capabilities) {
+		return false
+	}
+	return reflect.DeepEqual(node.InitialBudget, route.Budget)
+}
+
+func appProjectedFallbackApprovalMatches(
+	node projection.TeamExecutionNode,
+	approval work.TeamFallbackApproval,
+) bool {
+	if approval.Digest() == "" {
+		return !node.FallbackApprovalAvailable
+	}
+	return approval.Valid() && node.FallbackApprovalAvailable &&
+		node.FallbackApprovalVersion == approval.Version() &&
+		node.FallbackApprovalID == approval.ApprovalID() &&
+		node.FallbackApprovalActorRef == approval.ActorRef() &&
+		node.FallbackApprovedAt.Equal(approval.ApprovedAt()) &&
+		node.FallbackSourceBindingDigest == approval.SourceBindingDigest() &&
+		node.FallbackTargetBindingDigest == approval.TargetBindingDigest() &&
+		node.FallbackApprovalDigest == approval.Digest()
 }
 
 func (coordinator *TeamCoordinator) commitTeamTaskOutcomes(
@@ -548,42 +662,59 @@ func (coordinator *TeamCoordinator) commitTeamTaskOutcomes(
 	request TeamExecutionRequest,
 	outcomes []teamTaskOutcome,
 ) error {
+	var commitErr error
 	for _, outcome := range outcomes {
-		terminalStatus := outcome.outcome.Run().TerminalStatus()
-		if terminalStatus == "" {
-			return errors.Join(ErrTeamExecutionIncomplete, outcome.err)
+		if err := coordinator.commitTeamTaskOutcome(ctx, request, outcome); err != nil {
+			commitErr = errors.Join(commitErr, err)
 		}
-		receipt, err := coordinator.evidenceStore.FinalizeAttemptCapture(
-			ctx,
-			outcome.task.evidenceID,
-			evidence.AttemptTerminal{
-				Status: terminalStatus,
-				Reason: outcome.outcome.Run().TerminalReason(),
-			},
-		)
-		if err != nil {
-			return fmt.Errorf(
-				"Team attempt capture finalize %s/%d: %w",
-				outcome.task.logicalNodeID,
-				outcome.task.attemptNumber,
-				errors.Join(err, outcome.err),
-			)
-		}
-		if err := coordinator.commitTeamAttemptReceipt(
-			ctx,
-			request,
+	}
+	return commitErr
+}
+
+func (coordinator *TeamCoordinator) commitTeamTaskOutcome(
+	ctx context.Context,
+	request TeamExecutionRequest,
+	outcome teamTaskOutcome,
+) error {
+	commitContext, cancelCommit := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		teamAttemptCommitTimeout,
+	)
+	defer cancelCommit()
+	terminalStatus := outcome.outcome.Run().TerminalStatus()
+	if terminalStatus == "" {
+		return errors.Join(ErrTeamExecutionIncomplete, outcome.err)
+	}
+	receipt, err := coordinator.evidenceStore.FinalizeAttemptCapture(
+		commitContext,
+		outcome.task.evidenceID,
+		evidence.AttemptTerminal{
+			Status: terminalStatus,
+			Reason: outcome.outcome.Run().TerminalReason(),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"Team attempt capture finalize %s/%d: %w",
 			outcome.task.logicalNodeID,
 			outcome.task.attemptNumber,
-			outcome.task.generation,
-			receipt,
-		); err != nil {
-			return fmt.Errorf(
-				"Team attempt evidence commit %s/%d: %w",
-				outcome.task.logicalNodeID,
-				outcome.task.attemptNumber,
-				errors.Join(err, outcome.err),
-			)
-		}
+			errors.Join(err, outcome.err),
+		)
+	}
+	if err := coordinator.commitTeamAttemptReceipt(
+		commitContext,
+		request,
+		outcome.task.logicalNodeID,
+		outcome.task.attemptNumber,
+		outcome.task.generation,
+		receipt,
+	); err != nil {
+		return fmt.Errorf(
+			"Team attempt evidence commit %s/%d: %w",
+			outcome.task.logicalNodeID,
+			outcome.task.attemptNumber,
+			errors.Join(err, outcome.err),
+		)
 	}
 	return nil
 }
@@ -835,6 +966,13 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			evidence.AttemptReceipt{},
 			work.ErrIndependentVerificationRequired
 	}
+	verifierBinding, verifierProfile, verifierInstance, err :=
+		appFreezeVerifierExecution(semantics)
+	if err != nil {
+		return verification.VerifierCandidate{},
+			evidence.AttemptReceipt{},
+			err
+	}
 	source := result.Input()
 	workItemID := appVerifierIdentity(
 		"verifier-work",
@@ -888,7 +1026,10 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			projectedRun.RuntimeInstanceID !=
 				semantics.VerifierRuntimeInstanceID ||
 			projectedRun.AgentInstanceID !=
-				semantics.VerifierAgentInstanceID {
+				semantics.VerifierAgentInstanceID ||
+			!projectedRun.ExecutionBindingAvailable ||
+			projectedRun.ExecutionBinding.BindingDigest !=
+				verifierBinding.BindingDigest {
 			return verification.VerifierCandidate{},
 				evidence.AttemptReceipt{},
 				work.ErrVerifierLineageMismatch
@@ -1052,14 +1193,15 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 		}
 	}
 	if !hasVerifierRun {
-		_, _, err := coordinator.workAuthority.CreateAndAssign(
+		_, _, err = coordinator.workAuthority.CreateAndAssign(
 			ctx,
 			work.WorkItemAssignmentInput{
-				WorkItemID:      workItemID,
-				Title:           "Independent verification",
-				RunID:           runID,
-				AgentInstanceID: semantics.VerifierAgentInstanceID,
-				CorrelationID:   request.CorrelationID,
+				WorkItemID:       workItemID,
+				Title:            "Independent verification",
+				RunID:            runID,
+				AgentInstanceID:  semantics.VerifierAgentInstanceID,
+				ExecutionBinding: verifierBinding,
+				CorrelationID:    request.CorrelationID,
 			},
 		)
 		if err != nil {
@@ -1187,14 +1329,16 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 		logicalNodeID: verifierLogicalNodeID,
 		attemptNumber: 1,
 		execution: TeamNodeExecution{
-			LogicalNodeID: verifierLogicalNodeID,
-			AttemptNumber: 1,
-			WorkflowPath:  semantics.VerifierWorkflowPath,
-			SourcePath:    execution.SourcePath,
-			Profile:       execution.Profile,
-			Instance:      execution.Instance,
-			Dispatch:      dispatch,
-			Executor:      execution.Executor,
+			LogicalNodeID:        verifierLogicalNodeID,
+			AttemptNumber:        1,
+			WorkflowPath:         semantics.VerifierWorkflowPath,
+			SourcePath:           execution.SourcePath,
+			SourceSnapshotDigest: execution.SourceSnapshotDigest,
+			Profile:              verifierProfile,
+			Instance:             verifierInstance,
+			Dispatch:             dispatch,
+			Executor:             execution.Executor,
+			executionBinding:     verifierBinding,
 		},
 		generation: generation,
 		grant:      grant,
@@ -1312,6 +1456,16 @@ func (coordinator *TeamCoordinator) recoverTeamAttempts(
 		}
 		attempt, ok := appProjectedCurrentAttempt(node)
 		if !ok || attempt.Status != "dispatched" {
+			return nil, changed, work.ErrTeamAttemptRecoveryRequired
+		}
+		execution, executionOK := executions[appExecutionKey(
+			node.LogicalNodeID,
+			attempt.AttemptNumber,
+		)]
+		if !executionOK || !attempt.ExecutionBindingAvailable ||
+			execution.executionBinding.BindingDigest == "" ||
+			execution.executionBinding.BindingDigest !=
+				attempt.ExecutionBinding.BindingDigest {
 			return nil, changed, work.ErrTeamAttemptRecoveryRequired
 		}
 		run, ok := view.Run(attempt.RunID)
@@ -1516,13 +1670,6 @@ func (coordinator *TeamCoordinator) recoverTeamAttempts(
 			); err != nil {
 				return nil, changed, err
 			}
-			execution, ok := executions[appExecutionKey(
-				node.LogicalNodeID,
-				attempt.AttemptNumber,
-			)]
-			if !ok {
-				return nil, changed, ErrTeamExecutionIncomplete
-			}
 			task, err := coordinator.prepareRecoveredTeamTask(
 				ctx,
 				request,
@@ -1584,6 +1731,13 @@ func (coordinator *TeamCoordinator) prepareTeamTasks(
 		)]
 		if !exists {
 			return nil, ErrTeamExecutionIncomplete
+		}
+		frozen := attempt.ExecutionBinding()
+		routeSegment := attempt.RouteSegmentBinding()
+		if frozen.BindingDigest == "" ||
+			frozen.BindingDigest != execution.executionBinding.BindingDigest ||
+			routeSegment != execution.routeSegment {
+			return nil, ErrInvalidTeamCoordinator
 		}
 		run := node.Run()
 		generation := work.RunGenerationInput{
@@ -1767,13 +1921,16 @@ func executeTeamTasks(
 			outcome, err := task.execution.Executor.Execute(
 				ctx,
 				supervisor.ExecuteInput{
-					SourcePath:    task.execution.SourcePath,
-					Profile:       task.execution.Profile,
-					Instance:      task.execution.Instance,
-					Generation:    task.generation,
-					Grant:         task.grant,
-					Dispatch:      task.execution.Dispatch,
-					FrameObserver: task.collector,
+					SourcePath:           task.execution.SourcePath,
+					ExpectedSourceDigest: task.execution.SourceSnapshotDigest,
+					Profile:              task.execution.Profile,
+					Instance:             task.execution.Instance,
+					Generation:           task.generation,
+					Grant:                task.grant,
+					Dispatch:             task.execution.Dispatch,
+					FrameObserver:        task.collector,
+					ContextCapsule:       task.execution.ContextCapsule.AuthorityRecord(),
+					RouteSegment:         task.execution.routeSegment,
 				},
 			)
 			outcomes[index] = teamTaskOutcome{
@@ -1842,6 +1999,33 @@ type teamFrameCollector struct {
 	evidenceID    string
 }
 
+type RecoveredTeamFrameObserverInput struct {
+	LogicalNodeID string
+	AttemptNumber int
+	Observer      NodeOutputObserver
+	EvidenceStore *evidence.Store
+	EvidenceID    string
+}
+
+// NewRecoveredTeamFrameObserver restores the same evidence and tentative Team
+// output path used by an ordinary managed execution. It grants no execution
+// authority and accepts no Run identity from the caller.
+func NewRecoveredTeamFrameObserver(
+	input RecoveredTeamFrameObserverInput,
+) (supervisor.AuthorizedFrameObserver, error) {
+	if input.LogicalNodeID == "" || input.AttemptNumber <= 0 ||
+		nilAppInterface(input.Observer) || input.EvidenceStore == nil ||
+		input.EvidenceID == "" {
+		return nil, ErrInvalidTeamCoordinator
+	}
+	return &teamFrameCollector{
+		logicalNodeID: input.LogicalNodeID,
+		attemptNumber: input.AttemptNumber,
+		observer:      input.Observer, evidenceStore: input.EvidenceStore,
+		evidenceID: input.EvidenceID,
+	}, nil
+}
+
 func (collector *teamFrameCollector) ObserveAuthorizedFrame(
 	ctx context.Context,
 	frame supervisor.AuthorizedFrame,
@@ -1878,8 +2062,13 @@ func validateTeamExecutionRequest(
 		return nil, err
 	}
 	nodes := request.Plan.Nodes()
-	if len(nodes) == 0 || len(nodes) > 3 ||
-		len(request.Nodes) == 0 || len(request.Nodes) > 9 ||
+	initialBlocks, initialBlockErr := teams.ValidateInitialExecutionBlocks(
+		request.Plan, request.InitialBlocks,
+	)
+	routeSummaries, routeErr := appValidateRouteSummaries(request.Plan, request.RouteSummaries)
+	if len(nodes) == 0 || len(nodes) > teams.MaxExecutionNodeCount ||
+		len(request.Nodes) == 0 ||
+		len(request.Nodes) > teams.MaxExecutionNodeCount ||
 		len(request.Semantics) != len(nodes) ||
 		request.AuthoritativeTime.IsZero() ||
 		request.AuthoritativeTime.Location() != time.UTC ||
@@ -1889,10 +2078,14 @@ func validateTeamExecutionRequest(
 		request.GrantLifetime > time.Hour ||
 		request.CorrelationID == "" ||
 		!validAppAssetSourceStreamIDs(request.AssetSourceStreamIDs) ||
+		initialBlockErr != nil || len(initialBlocks) != len(request.InitialBlocks) || routeErr != nil ||
 		request.OutputObserver != nil &&
-			nilAppInterface(request.OutputObserver) {
+			nilAppInterface(request.OutputObserver) ||
+		request.ContextCapsules != nil && nilAppInterface(request.ContextCapsules) {
 		return nil, ErrInvalidTeamCoordinator
 	}
+	request.InitialBlocks = initialBlocks
+	request.RouteSummaries = routeSummaries
 	planNodes := make(map[string]teams.ExecutionNode, len(nodes))
 	for _, node := range nodes {
 		planNodes[node.LogicalNodeID()] = node
@@ -1916,6 +2109,12 @@ func validateTeamExecutionRequest(
 				) ||
 					semantics.RecoveryPolicy.WorkflowFallbackKey() ==
 						semantics.PrimaryWorkflowPath) ||
+			semantics.FallbackApproval.Digest() != "" &&
+				(!semantics.FallbackApproval.Valid() ||
+					semantics.RecoveryPolicy.WorkflowFallbackKey() == "" ||
+					semantics.FallbackApproval.ApprovedAt().After(
+						request.AuthoritativeTime,
+					)) ||
 			!validAppVerifierBinding(semantics, node.AgentInstanceID()) {
 			return nil, ErrInvalidTeamCoordinator
 		}
@@ -1930,6 +2129,15 @@ func validateTeamExecutionRequest(
 			!validAppWorkflowPath(execution.WorkflowPath) ||
 			execution.SourcePath == "" ||
 			nilAppInterface(execution.Executor) {
+			return nil, ErrInvalidTeamCoordinator
+		}
+		if node.Kind() == teams.ExecutionNodeAggregation {
+			if execution.Aggregation == nil ||
+				execution.Aggregation.MaxSourceArtifactBytes <= 0 ||
+				execution.Aggregation.MaxSourceArtifactBytes > maxTeamAggregationSourceBytes {
+				return nil, ErrInvalidTeamCoordinator
+			}
+		} else if execution.Aggregation != nil {
 			return nil, ErrInvalidTeamCoordinator
 		}
 		semantics := semanticNodes[execution.LogicalNodeID]
@@ -1947,19 +2155,192 @@ func validateTeamExecutionRequest(
 		if _, duplicate := executions[key]; duplicate {
 			return nil, ErrInvalidTeamCoordinator
 		}
+		profile, profileErr := loomruntime.NewRuntimeProfile(execution.Profile)
+		instance, instanceErr := loomruntime.NewRuntimeInstance(execution.Instance)
+		binding, bindingErr := loomruntime.FreezeExecutionBinding(profile, instance)
+		capsuleRecord := execution.ContextCapsule.AuthorityRecord()
+		_, capsuleErr := contextcapsule.ValidateAuthorityRecord(capsuleRecord)
+		_, contextDispatchErr := contextcapsule.ValidateDispatchPayload(
+			execution.ContextCapsule,
+			execution.Dispatch.Payload(),
+		)
+		contextSourceDigest, contextSourceAvailable, contextSourceErr := appContextSourceSnapshotDigest(
+			execution.ContextCapsule,
+		)
+		contextSourceMatches := !contextSourceAvailable && execution.SourceSnapshotDigest == "" ||
+			contextSourceAvailable && execution.SourceSnapshotDigest == contextSourceDigest
+		routeSegment, routeSegmentErr := work.BuildTeamRouteSegmentBinding(
+			work.TeamAttemptSelection{
+				LogicalNodeID:    execution.LogicalNodeID,
+				AttemptNumber:    execution.AttemptNumber,
+				ExecutionBinding: binding, ContextCapsule: execution.ContextCapsule,
+			},
+		)
+		if profileErr != nil || instanceErr != nil || bindingErr != nil ||
+			capsuleErr != nil || contextDispatchErr != nil || contextSourceErr != nil ||
+			routeSegmentErr != nil ||
+			!contextSourceMatches ||
+			capsuleRecord.TeamID != request.Plan.TeamInstanceID() ||
+			capsuleRecord.AgentID != node.AgentInstanceID() ||
+			capsuleRecord.RoleID != execution.LogicalNodeID ||
+			capsuleRecord.ProviderID != binding.ProviderID ||
+			capsuleRecord.ProviderAccountID != binding.ProviderAccountID ||
+			capsuleRecord.ModelID != binding.ModelID ||
+			capsuleRecord.AuthMode != string(binding.AuthMode) ||
+			execution.AttemptNumber == 1 &&
+				binding.RuntimeInstanceID != node.RuntimeInstanceID() ||
+			execution.Dispatch.RuntimeInstanceID() != binding.RuntimeInstanceID {
+			return nil, errors.Join(
+				ErrInvalidTeamCoordinator,
+				profileErr,
+				instanceErr,
+				bindingErr,
+				contextDispatchErr,
+				contextSourceErr,
+				routeSegmentErr,
+			)
+		}
+		execution.Profile = appRuntimeProfileFromFrozenBinding(binding)
+		execution.Instance = instance
+		execution.executionBinding = binding
+		execution.routeSegment = routeSegment
 		executions[key] = execution
 	}
 	for _, node := range nodes {
+		primary, ok := executions[appExecutionKey(node.LogicalNodeID(), 1)]
+		if !ok {
+			return nil, ErrTeamExecutionIncomplete
+		}
+		if route, ok := appRouteSummaryByNode(request.RouteSummaries, node.LogicalNodeID()); ok &&
+			!appRouteSummaryMatchesBinding(route, primary.executionBinding) {
+			return nil, ErrInvalidTeamCoordinator
+		}
+		semantics := semanticNodes[node.LogicalNodeID()]
+		fallbackSeen := false
 		for attemptNumber := 1; attemptNumber <= node.MaxAttempts(); attemptNumber++ {
-			if _, ok := executions[appExecutionKey(
+			execution, exists := executions[appExecutionKey(
 				node.LogicalNodeID(),
 				attemptNumber,
-			)]; !ok {
+			)]
+			if !exists {
 				return nil, ErrTeamExecutionIncomplete
 			}
+			digest := execution.executionBinding.BindingDigest
+			if !fallbackSeen && digest == primary.executionBinding.BindingDigest {
+				continue
+			}
+			approval := semantics.FallbackApproval
+			if !approval.Valid() ||
+				approval.SourceBindingDigest() !=
+					primary.executionBinding.BindingDigest ||
+				approval.TargetBindingDigest() != digest ||
+				execution.WorkflowPath !=
+					semantics.RecoveryPolicy.WorkflowFallbackKey() {
+				return nil, ErrInvalidTeamCoordinator
+			}
+			fallbackSeen = true
 		}
 	}
+	if err := appValidateParallelRouteBindings(request.Plan, executions); err != nil {
+		return nil, err
+	}
 	return executions, nil
+}
+
+func appValidateParallelRouteBindings(
+	plan teams.ExecutionPlan,
+	executions map[string]TeamNodeExecution,
+) error {
+	groupBindings := make(map[string]map[string]struct{})
+	for _, node := range plan.Nodes() {
+		if node.Kind() != teams.ExecutionNodeRouteSibling {
+			continue
+		}
+		execution, ok := executions[appExecutionKey(node.LogicalNodeID(), 1)]
+		if !ok || execution.executionBinding.BindingDigest == "" {
+			return ErrTeamExecutionIncomplete
+		}
+		bindings := groupBindings[node.RouteGroupID()]
+		if bindings == nil {
+			bindings = make(map[string]struct{})
+			groupBindings[node.RouteGroupID()] = bindings
+		}
+		if _, duplicate := bindings[execution.executionBinding.BindingDigest]; duplicate {
+			return ErrInvalidTeamCoordinator
+		}
+		bindings[execution.executionBinding.BindingDigest] = struct{}{}
+	}
+	return nil
+}
+
+func appContextSourceSnapshotDigest(
+	capsule contextcapsule.RoleContextCapsule,
+) (string, bool, error) {
+	digest := ""
+	for _, item := range capsule.Disclosed() {
+		if item.Kind != contextcapsule.KindWorkspaceSnapshot {
+			continue
+		}
+		if digest != "" || item.ItemID != "workspace-snapshot" ||
+			item.Trust != contextcapsule.TrustObserved ||
+			item.Scope != contextcapsule.ScopeTeamShared ||
+			item.SourceType != contextcapsule.SourceObservation {
+			return "", false, ErrInvalidTeamCoordinator
+		}
+		var snapshot struct {
+			SchemaVersion  int    `json:"schema_version"`
+			SnapshotKind   string `json:"snapshot_kind"`
+			TreeDigest     string `json:"tree_digest"`
+			EntryCount     int    `json:"entry_count"`
+			FileCount      int    `json:"file_count"`
+			DirectoryCount int    `json:"directory_count"`
+			TotalBytes     int64  `json:"total_bytes"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(item.Content))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&snapshot) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			snapshot.SchemaVersion != 1 ||
+			snapshot.SnapshotKind != "managed_source_baseline" ||
+			snapshot.EntryCount < 0 || snapshot.FileCount < 0 ||
+			snapshot.DirectoryCount < 0 || snapshot.TotalBytes < 0 ||
+			snapshot.FileCount+snapshot.DirectoryCount != snapshot.EntryCount ||
+			len(snapshot.TreeDigest) != sha256.Size*2 ||
+			item.SourceRef != "managed-source:"+snapshot.TreeDigest {
+			return "", false, ErrInvalidTeamCoordinator
+		}
+		if _, err := hex.DecodeString(snapshot.TreeDigest); err != nil {
+			return "", false, ErrInvalidTeamCoordinator
+		}
+		digest = snapshot.TreeDigest
+	}
+	if digest == "" {
+		return "", false, nil
+	}
+	return digest, true, nil
+}
+
+func appRuntimeProfileFromFrozenBinding(
+	binding loomruntime.FrozenExecutionBinding,
+) loomruntime.RuntimeProfile {
+	profile := loomruntime.RuntimeProfile{
+		ID:                   binding.ProfileID,
+		AdapterType:          binding.HarnessAdapter,
+		ProviderID:           binding.ProviderID,
+		ProviderAccountID:    binding.ProviderAccountID,
+		ModelID:              binding.ModelID,
+		AuthMode:             binding.AuthMode,
+		EndpointFingerprint:  binding.EndpointFingerprint,
+		CredentialReference:  binding.CredentialReference,
+		CredentialRevision:   binding.CredentialRevision,
+		ReasoningEffort:      binding.ReasoningEffort,
+		RequiredCapabilities: append([]string(nil), binding.Capabilities...),
+		Timeout:              binding.Timeout,
+	}
+	if binding.Budget != nil {
+		budget := *binding.Budget
+		profile.Budget = &budget
+	}
+	return profile
 }
 
 func validAppAssetSourceStreamIDs(values []string) bool {
@@ -2014,15 +2395,19 @@ func appSemanticBindings(
 	for _, semantics := range request.Semantics {
 		planNode := appPlanNode(request.Plan, semantics.LogicalNodeID)
 		result = append(result, work.TeamNodeSemanticBinding{
-			LogicalNodeID:               semantics.LogicalNodeID,
-			OutputContractVersion:       semantics.OutputContract.Version(),
-			OutputContractDigest:        semantics.OutputContract.Digest(),
-			RecoveryPolicyVersion:       semantics.RecoveryPolicy.Version(),
-			RecoveryPolicyDigest:        semantics.RecoveryPolicy.Digest(),
-			AttemptCredits:              semantics.RecoveryPolicy.AttemptCredits(),
-			PrimaryWorkflowPath:         semantics.PrimaryWorkflowPath,
-			WorkflowFallbackKey:         semantics.RecoveryPolicy.WorkflowFallbackKey(),
-			RecoveryApprovalRequired:    semantics.RecoveryPolicy.RecoveryApprovalRequired(),
+			LogicalNodeID:            semantics.LogicalNodeID,
+			OutputContractVersion:    semantics.OutputContract.Version(),
+			OutputContractDigest:     semantics.OutputContract.Digest(),
+			RecoveryPolicyVersion:    semantics.RecoveryPolicy.Version(),
+			RecoveryPolicyDigest:     semantics.RecoveryPolicy.Digest(),
+			AttemptCredits:           semantics.RecoveryPolicy.AttemptCredits(),
+			PrimaryWorkflowPath:      semantics.PrimaryWorkflowPath,
+			WorkflowFallbackKey:      semantics.RecoveryPolicy.WorkflowFallbackKey(),
+			RecoveryApprovalRequired: semantics.RecoveryPolicy.RecoveryApprovalRequired(),
+			FallbackApproval:         semantics.FallbackApproval,
+			FallbackRuntimeInstanceID: appFallbackRuntimeInstanceID(
+				request, semantics,
+			),
 			AcceptanceContractVersion:   semantics.AcceptanceContract.Version(),
 			AcceptanceContractDigest:    semantics.AcceptanceContract.Digest(),
 			AcceptanceRisk:              string(semantics.AcceptanceContract.Risk()),
@@ -2037,6 +2422,24 @@ func appSemanticBindings(
 	return result
 }
 
+func appFallbackRuntimeInstanceID(
+	request TeamExecutionRequest,
+	semantics TeamNodeSemantics,
+) string {
+	if !semantics.FallbackApproval.Valid() ||
+		semantics.RecoveryPolicy.WorkflowFallbackKey() == "" {
+		return ""
+	}
+	for _, execution := range request.Nodes {
+		if execution.LogicalNodeID == semantics.LogicalNodeID &&
+			execution.AttemptNumber > 1 &&
+			execution.WorkflowPath == semantics.RecoveryPolicy.WorkflowFallbackKey() {
+			return execution.Instance.ID
+		}
+	}
+	return ""
+}
+
 func validAppVerifierBinding(
 	semantics TeamNodeSemantics,
 	sourceAgentInstanceID string,
@@ -2048,6 +2451,7 @@ func validAppVerifierBinding(
 			semantics.VerifierWorkflowPath == "" &&
 			semantics.VerifierExecution == nil
 	}
+	_, _, _, bindingErr := appFreezeVerifierExecution(semantics)
 	return validAppWorkflowPath(semantics.VerifierAgentInstanceID) &&
 		semantics.VerifierAgentInstanceID != sourceAgentInstanceID &&
 		validAppWorkflowPath(semantics.VerifierRuntimeInstanceID) &&
@@ -2056,7 +2460,44 @@ func validAppVerifierBinding(
 		semantics.VerifierExecution.SourcePath != "" &&
 		!nilAppInterface(semantics.VerifierExecution.Executor) &&
 		semantics.VerifierExecution.Instance.ID ==
-			semantics.VerifierRuntimeInstanceID
+			semantics.VerifierRuntimeInstanceID &&
+		bindingErr == nil
+}
+
+func appFreezeVerifierExecution(
+	semantics TeamNodeSemantics,
+) (
+	loomruntime.FrozenExecutionBinding,
+	loomruntime.RuntimeProfile,
+	loomruntime.RuntimeInstance,
+	error,
+) {
+	if semantics.VerifierExecution == nil {
+		return loomruntime.FrozenExecutionBinding{},
+			loomruntime.RuntimeProfile{},
+			loomruntime.RuntimeInstance{},
+			ErrInvalidTeamCoordinator
+	}
+	profile, profileErr := loomruntime.NewRuntimeProfile(
+		semantics.VerifierExecution.Profile,
+	)
+	instance, instanceErr := loomruntime.NewRuntimeInstance(
+		semantics.VerifierExecution.Instance,
+	)
+	binding, bindingErr := loomruntime.FreezeExecutionBinding(profile, instance)
+	if profileErr != nil || instanceErr != nil || bindingErr != nil ||
+		binding.RuntimeInstanceID != semantics.VerifierRuntimeInstanceID {
+		return loomruntime.FrozenExecutionBinding{},
+			loomruntime.RuntimeProfile{},
+			loomruntime.RuntimeInstance{},
+			errors.Join(
+				ErrInvalidTeamCoordinator,
+				profileErr,
+				instanceErr,
+				bindingErr,
+			)
+	}
+	return binding, appRuntimeProfileFromFrozenBinding(binding), instance, nil
 }
 
 func validAppWorkflowPath(value string) bool {
@@ -2072,19 +2513,13 @@ func validAppWorkflowPath(value string) bool {
 }
 
 func appExecutionStates(
-	plan teams.ExecutionPlan,
+	request TeamExecutionRequest,
 	view projection.GlobalReadView,
 ) []teams.ExecutionNodeState {
+	plan := request.Plan
 	projected, exists := view.TeamExecution(plan.TeamInstanceID())
 	if !exists {
-		states := make([]teams.ExecutionNodeState, 0, len(plan.Nodes()))
-		for _, node := range plan.Nodes() {
-			states = append(states, teams.ExecutionNodeState{
-				LogicalNodeID: node.LogicalNodeID(),
-				Status:        "pending",
-			})
-		}
-		return states
+		return teams.InitialExecutionNodeStates(plan, request.InitialBlocks)
 	}
 	states := make([]teams.ExecutionNodeState, len(projected.Nodes))
 	for index, node := range projected.Nodes {
@@ -2096,6 +2531,105 @@ func appExecutionStates(
 		}
 	}
 	return states
+}
+
+func appInitialDispatchBlocks(
+	request TeamExecutionRequest,
+	view projection.GlobalReadView,
+) []teams.InitialExecutionBlock {
+	if _, exists := view.TeamExecution(request.Plan.TeamInstanceID()); exists {
+		return nil
+	}
+	return append([]teams.InitialExecutionBlock(nil), request.InitialBlocks...)
+}
+
+func appInitialDispatchRoutes(
+	request TeamExecutionRequest,
+	view projection.GlobalReadView,
+) []work.TeamNodeRouteSummary {
+	if _, exists := view.TeamExecution(request.Plan.TeamInstanceID()); exists {
+		return nil
+	}
+	return cloneAppRouteSummaries(request.RouteSummaries)
+}
+
+func appValidateRouteSummaries(
+	plan teams.ExecutionPlan,
+	values []work.TeamNodeRouteSummary,
+) ([]work.TeamNodeRouteSummary, error) {
+	if len(values) == 0 {
+		return []work.TeamNodeRouteSummary{}, nil
+	}
+	if len(values) != len(plan.Nodes()) {
+		return nil, ErrInvalidTeamCoordinator
+	}
+	routes := cloneAppRouteSummaries(values)
+	sort.Slice(routes, func(i, j int) bool { return routes[i].LogicalNodeID < routes[j].LogicalNodeID })
+	for index, route := range routes {
+		node := appPlanNode(plan, route.LogicalNodeID)
+		if node.LogicalNodeID() == "" || index > 0 && route.LogicalNodeID == routes[index-1].LogicalNodeID ||
+			!validAppWorkflowPath(route.HarnessAdapter) || !validAppWorkflowPath(route.ProviderID) ||
+			!validAppRouteCredentialIdentity(route) || !validAppWorkflowPath(route.ModelID) ||
+			route.ReasoningEffort != "" && !validAppWorkflowPath(route.ReasoningEffort) ||
+			route.TimeoutNanoseconds <= 0 ||
+			route.Budget != nil && *route.Budget < 0 {
+			return nil, ErrInvalidTeamCoordinator
+		}
+		for capabilityIndex, capability := range route.Capabilities {
+			if !validAppWorkflowPath(capability) ||
+				capabilityIndex > 0 && route.Capabilities[capabilityIndex-1] >= capability {
+				return nil, ErrInvalidTeamCoordinator
+			}
+		}
+	}
+	return routes, nil
+}
+
+func validAppRouteCredentialIdentity(route work.TeamNodeRouteSummary) bool {
+	if route.ProviderAccountID == "" {
+		return route.CredentialRevision == 0
+	}
+	return validAppWorkflowPath(route.ProviderAccountID) && route.CredentialRevision > 0
+}
+
+func appRouteSummaryByNode(
+	routes []work.TeamNodeRouteSummary,
+	logicalNodeID string,
+) (work.TeamNodeRouteSummary, bool) {
+	for _, route := range routes {
+		if route.LogicalNodeID == logicalNodeID {
+			return route, true
+		}
+	}
+	return work.TeamNodeRouteSummary{}, false
+}
+
+func appRouteSummaryMatchesBinding(
+	route work.TeamNodeRouteSummary,
+	binding loomruntime.FrozenExecutionBinding,
+) bool {
+	return route.HarnessAdapter == binding.HarnessAdapter &&
+		route.ProviderID == binding.ProviderID &&
+		route.ProviderAccountID == binding.ProviderAccountID &&
+		route.ModelID == binding.ModelID &&
+		route.ReasoningEffort == binding.ReasoningEffort &&
+		route.TimeoutNanoseconds == int64(binding.Timeout) &&
+		route.CredentialRevision == binding.CredentialRevision &&
+		reflect.DeepEqual(route.Budget, binding.Budget) &&
+		reflect.DeepEqual(route.Capabilities, binding.Capabilities)
+}
+
+func cloneAppRouteSummaries(values []work.TeamNodeRouteSummary) []work.TeamNodeRouteSummary {
+	result := make([]work.TeamNodeRouteSummary, len(values))
+	for index, value := range values {
+		result[index] = value
+		result[index].Capabilities = append([]string(nil), value.Capabilities...)
+		if value.Budget != nil {
+			budget := *value.Budget
+			result[index].Budget = &budget
+		}
+	}
+	return result
 }
 
 func appReadyEvaluationTime(
@@ -2150,6 +2684,8 @@ func appPlanningPlan(
 			AgentInstanceID:        agentInstanceID,
 			RuntimeInstanceID:      runtimeInstanceID,
 			Role:                   node.Role(),
+			Kind:                   node.Kind(),
+			RouteGroupID:           node.RouteGroupID(),
 			DependsOn:              node.DependsOn(),
 			MaxAttempts:            node.MaxAttempts(),
 			AssetRevisionBindings:  node.AssetRevisionBindings(),
@@ -2168,11 +2704,22 @@ func appPlanningPlan(
 
 func appRuntimeCapacities(
 	plan teams.ExecutionPlan,
+	states []teams.ExecutionNodeState,
 	view projection.GlobalReadView,
 ) ([]teams.RuntimeCapacityState, error) {
+	stateByNode := make(map[string]teams.ExecutionNodeState, len(states))
+	for _, state := range states {
+		stateByNode[state.LogicalNodeID] = state
+	}
 	seen := make(map[string]struct{})
 	capacities := make([]teams.RuntimeCapacityState, 0, len(plan.Nodes()))
 	for _, node := range plan.Nodes() {
+		state, exists := stateByNode[node.LogicalNodeID()]
+		if !exists || state.Status != "pending" &&
+			state.Status != "retry_scheduled" &&
+			state.Status != "fallback_scheduled" {
+			continue
+		}
 		if _, exists := seen[node.RuntimeInstanceID()]; exists {
 			continue
 		}
@@ -2266,6 +2813,18 @@ func appDispatchHeadsWithSources(
 		streams[streamID] = struct{}{}
 	}
 	for _, selection := range selections {
+		if selection.ExecutionBinding.ProviderAccountID != "" {
+			accountID := selection.ExecutionBinding.ProviderAccountID
+			streams["provider-account-policy/"+accountID] = struct{}{}
+			streams["provider-account-capacity/"+accountID] = struct{}{}
+			if rateCardStreamID, err := work.ProviderModelRateCardStreamID(
+				selection.ExecutionBinding.ProviderID,
+				accountID,
+				selection.ExecutionBinding.ModelID,
+			); err == nil {
+				streams[rateCardStreamID] = struct{}{}
+			}
+		}
 		var runtimeInstanceID string
 		for _, node := range nodes {
 			if node.LogicalNodeID() == selection.LogicalNodeID {
@@ -2373,7 +2932,14 @@ func (coordinator *TeamCoordinator) prepareTeamAssetMaterializations(
 			cleanup()
 			return nil, nil, nil, ErrInvalidTeamCoordinator
 		}
+		baseline, observeErr := supervisor.ObserveSourceSnapshot(execution.SourcePath)
+		if observeErr != nil || baseline.TreeDigest() != execution.SourceSnapshotDigest {
+			prepared = append(prepared, result)
+			cleanup()
+			return nil, nil, nil, errors.Join(ErrInvalidTeamCoordinator, observeErr)
+		}
 		execution.SourcePath = result.SourcePath
+		execution.SourceSnapshotDigest = ""
 		updated[index] = execution
 		lineage = append(lineage, attemptLineage)
 		prepared = append(prepared, result)

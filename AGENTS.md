@@ -45,6 +45,16 @@ decisions; [`TECH-PLAN.md`](TECH-PLAN.md) defines the Phase 1 contract.
 ## Development behavior
 
 - Preserve unrelated and pre-existing worktree changes.
+- At session start, after context compaction, and before freezing a WorkItem,
+  resolve the physical working directory and Git top-level, then compare them
+  with `docs/CURRENT.md` and the active GoalSpec's target workspace. If these
+  identities disagree, stop before any write or dispatch. A prompt, thread
+  title, sibling checkout, or stale GoalSpec cannot override the current
+  repository identity.
+- A Slice accepted in the authoritative repository must not be recreated under
+  the same WorkItem IDs in another checkout. Continue from the accepted commit
+  and current branch recorded by `docs/CURRENT.md`; treat sibling copies as
+  read-only historical material until explicitly selected by the user.
 - Use one writer for each branch or Candidate lineage. Read-only exploration,
   documentation research, and review may run in parallel.
 - Add or update tests before behavior changes. Keep changes scoped to one
@@ -64,3 +74,21 @@ are in [`docs/AGENTS.md`](docs/AGENTS.md).
 Do not place milestone percentages, active WorkItem IDs, test counts, provider
 availability, or temporary incident procedures here. Update `docs/CURRENT.md`,
 the relevant contract, or an on-demand runbook instead.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `tttboy123/loom` and are read and written with
+the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles map to labels `needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `wontfix`. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` (when present) + `docs/adr/`. See
+`docs/agents/domain.md`.

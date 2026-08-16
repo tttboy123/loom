@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	supportedSchemaVersion = 1
-	maxEventBatchSize      = 32
-	MaxCursorStreams       = 96
-	MaxReadPageEvents      = 128
+	maxSupportedSchemaVersion = 2
+	maxEventBatchSize         = 32
+	maxAtomicStreamSetSize    = 64
+	MaxCursorStreams          = 96
+	MaxReadPageEvents         = 128
 )
 
 var (
@@ -665,7 +666,7 @@ type eventStreamSequence struct {
 func normalizeStreamHeadExpectations(
 	expectations []StreamHeadExpectation,
 ) ([]StreamHeadExpectation, error) {
-	if len(expectations) == 0 || len(expectations) > 16 {
+	if len(expectations) == 0 || len(expectations) > maxAtomicStreamSetSize {
 		return nil, ErrInvalidEventBatch
 	}
 	normalized := make([]StreamHeadExpectation, len(expectations))
@@ -684,7 +685,7 @@ func normalizeStreamHeadExpectations(
 }
 
 func normalizeStreamIDs(streamIDs []string) ([]string, error) {
-	if len(streamIDs) == 0 || len(streamIDs) > 16 {
+	if len(streamIDs) == 0 || len(streamIDs) > maxAtomicStreamSetSize {
 		return nil, ErrInvalidEventBatch
 	}
 	normalized := append([]string(nil), streamIDs...)
@@ -787,7 +788,7 @@ func validateEvent(event Event) (Event, error) {
 	if event.Type == "" {
 		return Event{}, fmt.Errorf("%w: empty event type", ErrInvalidEvent)
 	}
-	if event.SchemaVersion != supportedSchemaVersion {
+	if event.SchemaVersion < 1 || event.SchemaVersion > maxSupportedSchemaVersion {
 		return Event{}, fmt.Errorf("%w: %d", ErrUnsupportedVersion, event.SchemaVersion)
 	}
 	if event.EmittedAt.IsZero() {

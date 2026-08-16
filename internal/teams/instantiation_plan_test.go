@@ -97,6 +97,28 @@ func TestBuildAcceptedDraftInstantiationPlanOneSubAgentAndZeroBudget(t *testing.
 	}
 }
 
+func TestBuildAcceptedDraftInstantiationPlanFourAgentTeam(t *testing.T) {
+	catalog, input := fourRoleDraftContentFixture(t)
+	content := mustTeamDraftContent(t, catalog, input)
+	base := mustNewStructuredTeamDraft(t, "draft.four-agent", catalog, content)
+	proposed := mustPresentStructuredTeamDraft(t, base, catalog, nil)
+	decided := mustDecideStructuredTeamDraft(
+		t, proposed, catalog, decisionCommand(proposed, TeamDraftDecisionAccepted),
+	)
+
+	got, err := BuildAcceptedDraftInstantiationPlan(decided, catalog)
+	if err != nil {
+		t.Fatalf("BuildAcceptedDraftInstantiationPlan(4 agents) error = %v", err)
+	}
+	if !got.Ready() || len(got.SubAgentRoles()) != 3 {
+		t.Fatalf("four-agent instantiation plan = %#v", got)
+	}
+	validated, err := ValidateAcceptedDraftInstantiationPlan(got, decided, catalog)
+	if err != nil || !validated.Valid || validated.RoleCount != 4 {
+		t.Fatalf("ValidateAcceptedDraftInstantiationPlan(4 agents) = (%#v, %v)", validated, err)
+	}
+}
+
 func TestBuildAcceptedDraftInstantiationPlanFailures(t *testing.T) {
 	catalog, accepted := acceptedInstantiationFixture(t, false, 50)
 	proposed := accepted.Source()

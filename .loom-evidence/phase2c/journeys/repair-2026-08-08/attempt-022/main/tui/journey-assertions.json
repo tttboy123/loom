@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "journey_id": "87b96e18-f300-4dcc-858a-15267a547764",
+  "authoritative_state": {
+    "before_digest": "9a88a283a741463ba2fa82746f1f84507e2ba0b00691706edc138498ee73c402",
+    "after_digest": "9a88a283a741463ba2fa82746f1f84507e2ba0b00691706edc138498ee73c402",
+    "identical": true
+  },
+  "event_identity": {
+    "before": {
+      "events": 166,
+      "ids": 166,
+      "stream_seq": 166
+    },
+    "after": {
+      "events": 168,
+      "ids": 168,
+      "stream_seq": 168
+    },
+    "integrity": "ok",
+    "delta": 2
+  },
+  "runtime_stream": [
+    {
+      "seq": 1,
+      "event_type": "RuntimeInstanceDiscovered",
+      "from_status": null,
+      "to_status": null
+    },
+    {
+      "seq": 2,
+      "event_type": "RuntimeInstanceStatusChanged",
+      "from_status": "online",
+      "to_status": "offline"
+    },
+    {
+      "seq": 3,
+      "event_type": "RuntimeInstanceStatusChanged",
+      "from_status": "offline",
+      "to_status": "online"
+    }
+  ],
+  "runtime_transition_counts": {
+    "offline": 1,
+    "online": 1
+  },
+  "run_claimed_total": 2,
+  "assertions": {
+    "state_preserved": true,
+    "exactly_one_offline": true,
+    "exactly_one_recovery_online": true,
+    "only_two_new_events": true,
+    "event_identity_unique": true,
+    "integrity_ok": true,
+    "no_restart_run_claim": true
+  }
+}

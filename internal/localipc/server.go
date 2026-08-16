@@ -13,7 +13,10 @@ import (
 
 const (
 	connectionDeadline       = 5 * time.Second
-	credentialVerifyDeadline = 10 * time.Second
+	extendedRequestDeadline  = 10 * time.Second
+	extendedResponseDeadline = extendedRequestDeadline + 2*time.Second
+	chatRequestDeadline      = 50 * time.Second
+	chatResponseDeadline     = chatRequestDeadline + 2*time.Second
 	maxConnections           = 16
 )
 
@@ -263,7 +266,7 @@ func (server *Server) serveConnection(
 		return
 	}
 	_ = connection.SetDeadline(
-		time.Now().Add(requestDeadline(request.Method)),
+		time.Now().Add(responseDeadline(request.Method)),
 	)
 	response := server.handle(ctx, request)
 	response.Version = protocolVersion
@@ -306,10 +309,36 @@ func (server *Server) handle(
 }
 
 func requestDeadline(method string) time.Duration {
-	if method == "credential_verify" {
-		return credentialVerifyDeadline
+	if method == "chat_message" || method == "agent_attempt_recovery" {
+		return chatRequestDeadline
+	}
+	if usesExtendedRequestDeadline(method) {
+		return extendedRequestDeadline
 	}
 	return connectionDeadline
+}
+
+func responseDeadline(method string) time.Duration {
+	if method == "chat_message" || method == "agent_attempt_recovery" {
+		return chatResponseDeadline
+	}
+	if usesExtendedRequestDeadline(method) {
+		return extendedResponseDeadline
+	}
+	return connectionDeadline
+}
+
+func usesExtendedRequestDeadline(method string) bool {
+	switch method {
+	case "credential_verify", "credential_vault_rotate", "credential_vault_lock",
+		"credential_vault_unlock", "credential_vault_reset", "mission_execution", "chat_message",
+		"agent_attempt_recovery", "tool_recovery":
+		return true
+	case "credential_vault_export":
+		return true
+	default:
+		return false
+	}
 }
 
 func readServerRequestFrame(connection *net.UnixConn) ([]byte, error) {

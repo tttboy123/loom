@@ -582,14 +582,14 @@ func TestServerCloseCancelsAndJoinsTrackedHandler(t *testing.T) {
 	}
 }
 
-func TestServerUsesExtendedDeadlineOnlyForCredentialVerify(t *testing.T) {
+func TestServerUsesExtendedDeadlineOnlyForLongOperations(t *testing.T) {
 	root := shortPrivateSocketRoot(t)
 	socketPath := filepath.Join(root, "loomd.sock")
 	type observation struct {
 		method    string
 		remaining time.Duration
 	}
-	observations := make(chan observation, 2)
+	observations := make(chan observation, 4)
 	server, err := NewServer(ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
@@ -623,7 +623,9 @@ func TestServerUsesExtendedDeadlineOnlyForCredentialVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, method := range []string{"snapshot", "credential_verify"} {
+	for _, method := range []string{
+		"snapshot", "credential_verify", "mission_execution", "chat_message",
+	} {
 		var result map[string]any
 		if err := client.Call(
 			context.Background(),
@@ -634,26 +636,57 @@ func TestServerUsesExtendedDeadlineOnlyForCredentialVerify(t *testing.T) {
 			t.Fatalf("Call(%s) error = %v", method, err)
 		}
 	}
-	first := <-observations
-	second := <-observations
+	byMethod := make(map[string]time.Duration, 4)
+	for range 4 {
+		observed := <-observations
+		byMethod[observed.method] = observed.remaining
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-	byMethod := map[string]time.Duration{
-		first.method:  first.remaining,
-		second.method: second.remaining,
 	}
 	if got := byMethod["snapshot"]; got <= 4*time.Second ||
 		got > 5*time.Second {
 		t.Fatalf("snapshot deadline remaining = %s, want (4s, 5s]", got)
 	}
-	if got := byMethod["credential_verify"]; got <= 9*time.Second ||
-		got > 10*time.Second {
-		t.Fatalf(
-			"credential_verify deadline remaining = %s, want (9s, 10s]",
-			got,
-		)
+	for _, method := range []string{"credential_verify", "mission_execution"} {
+		if got := byMethod[method]; got <= 9*time.Second ||
+			got > 10*time.Second {
+			t.Fatalf(
+				"%s deadline remaining = %s, want (9s, 10s]",
+				method,
+				got,
+			)
+		}
+	}
+	if got := byMethod["chat_message"]; got <= 49*time.Second ||
+		got > 50*time.Second {
+		t.Fatalf("chat_message deadline remaining = %s, want (49s, 50s]", got)
+	}
+}
+
+func TestServerSeparatesHandlerAndResponseDeadlinesForLongOperations(t *testing.T) {
+	for _, method := range []string{"credential_verify", "mission_execution"} {
+		if got := requestDeadline(method); got != 10*time.Second {
+			t.Fatalf("%s handler deadline = %s, want 10s", method, got)
+		}
+		if got := responseDeadline(method); got != 12*time.Second {
+			t.Fatalf("%s response deadline = %s, want 12s", method, got)
+		}
+	}
+	for _, method := range []string{"chat_message", "agent_attempt_recovery"} {
+		if got := requestDeadline(method); got != 50*time.Second {
+			t.Fatalf("%s handler deadline = %s, want 50s", method, got)
+		}
+		if got := responseDeadline(method); got != 52*time.Second {
+			t.Fatalf("%s response deadline = %s, want 52s", method, got)
+		}
+	}
+	if got := requestDeadline("snapshot"); got != 5*time.Second {
+		t.Fatalf("snapshot handler deadline = %s, want 5s", got)
+	}
+	if got := responseDeadline("snapshot"); got != 5*time.Second {
+		t.Fatalf("snapshot response deadline = %s, want 5s", got)
 	}
 }
 

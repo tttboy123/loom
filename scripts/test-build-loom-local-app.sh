@@ -110,12 +110,19 @@ do
   test ! -L "$bundle"
   test "$(stat -f '%Lp' "$bundle")" = 700
   test "$(stat -f '%Lp' "$bundle/Contents/MacOS/LoomLocalApp")" = 700
+  test "$(stat -f '%Lp' "$bundle/Contents/Library/Helpers/loomd")" = 700
+  test "$(stat -f '%Lp' "$bundle/Contents/Library/LaunchAgents/com.earendilworks.loom.local.daemon.plist")" = 600
   test "$(stat -f '%Lp' "$bundle/Contents/Info.plist")" = 600
   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")" = com.earendilworks.loom.local
   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$bundle/Contents/Info.plist")" = Loom
   /usr/bin/codesign --verify --strict "$bundle"
   /usr/bin/lipo -archs "$bundle/Contents/MacOS/LoomLocalApp" |
     grep -Eq '(^| )arm64( |$)'
+  /usr/bin/lipo -archs "$bundle/Contents/Library/Helpers/loomd" |
+    grep -Eq '(^| )arm64( |$)'
+  test "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$bundle/Contents/Library/LaunchAgents/com.earendilworks.loom.local.daemon.plist")" = com.earendilworks.loom.local.daemon
+  test "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$bundle/Contents/Library/LaunchAgents/com.earendilworks.loom.local.daemon.plist")" = Contents/Library/Helpers/loomd
+  test "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$bundle/Contents/Library/LaunchAgents/com.earendilworks.loom.local.daemon.plist")" = --local-app-service
   uuid_output=$(
     /usr/bin/dwarfdump --uuid "$bundle/Contents/MacOS/LoomLocalApp"
   )
@@ -198,8 +205,12 @@ assert_no_new_crash_report "$smoke_crash_inventory" smoke
 app_sources="$repo_root/apps/macos/Sources/LoomLocalApp"
 core_sources="$repo_root/apps/macos/Sources/LoomLocalAppCore"
 ! grep -REn \
-  'Process[[:space:]]*[(]|NSTask|UserDefaults|CacheStore|CoreData|WebView|WKWebView|launchctl|loom-cockpit-bridge|LOOM_WORKSPACE' \
+  'NSTask|UserDefaults|CacheStore|CoreData|WebView|WKWebView|launchctl|loom-cockpit-bridge|LOOM_WORKSPACE' \
   "$app_sources" "$core_sources"
+test "$({
+  grep -REn 'Process[[:space:]]*[(]' "$app_sources" "$core_sources" || true
+} | grep -Ev '/LocalServiceProcessHost[.]swift:' | wc -l | tr -d ' ')" = 0
+test "$(grep -Ec 'Process[[:space:]]*[(]' "$app_sources/LocalServiceProcessHost.swift")" = 1
 ! grep -REn \
   'getenv|ProcessInfo\\.processInfo\\.environment' \
   "$app_sources"
