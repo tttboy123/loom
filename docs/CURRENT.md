@@ -12820,3 +12820,23 @@ failures (`1` visual-export skip); new test
 `testExecutableTeamsExposesOnlyConfirmedRunnableTeams`; App rebuilt +
 reinstalled; `git diff --check` clean. Evidence:
 `.loom-evidence/phase2d/P2D-W2D-chat-to-mission-v48.md`.
+
+`CURRENT / V49 (MIXED-PROVIDER TEAM LIVE GATE) (2026-08-16)`: drove the
+installed daemon through the full Team lifecycle live — verified DeepSeek +
+MiniMax broker accounts, built a 4-Agent mixed-provider Team (DeepSeek main +
+MiniMax + DeepSeek reviewer + MiniMax researcher) via the form-first builder,
+confirmed it (`status=active`, confirmed + executable in snapshot). This
+exposed the real G3 installed-live blocker: the installed App daemon builds no
+Mission execution runtime (`Execution == nil` because
+`missionExecutionConfigFromDaemonBuild` requires `LocalModelCatalog`, and the
+installed Pi runtime bundle ships no local GGUF model + llama-server);
+`buildProductMissionExecutionAPI` + `newProductMissionExecutor` require the
+local model as the primary Pi supervisor adapter, so Mission preflight returns
+`state_unavailable` and no TeamInstance is materialized. Added
+`TestLiveMixedProviderTeamE2E` (`LOOM_LIVE_TEAM_E2E=1`) as the installed-live
+G3 gate that re-verifies accounts, builds+confirms the mixed Team, then runs
+preflight+start, skipping by default and failing fast at the precise blocking
+stage. G3/G4 source proofs remain green (`TestFourProviderTeam*`,
+`TestPhase2DPerAgentFailureIsolationMatrix`). No remote capability is
+published by default. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-mixed-provider-team-live-gate-v49.md`.
