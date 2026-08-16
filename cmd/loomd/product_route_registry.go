@@ -10,6 +10,7 @@ import (
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/production"
+	"loom-pi-rebuild/internal/roundtable"
 )
 
 type productRouteGroup struct {
@@ -77,6 +78,17 @@ func productRouteManifest() []composition.RouteDescriptor {
 			privacyClass: composition.PrivacyLocalContent,
 			methods: []composition.RouteMethod{
 				"agent_attempt_recovery", "agent_input", "codex_connect", "mission_execution",
+			},
+		},
+		{
+			owner: "loom-agent-runtime", handler: runtime,
+			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_request",
+			privacyClass: composition.PrivacyLocalContent,
+			methods: []composition.RouteMethod{
+				"roundtable_ack_message", "roundtable_add_seat", "roundtable_conclude",
+				"roundtable_drop_message", "roundtable_insert_message", "roundtable_open_round",
+				"roundtable_propose_message", "roundtable_relay_message", "roundtable_retire_seat",
+				"roundtable_session_create", "roundtable_snapshot",
 			},
 		},
 		{
@@ -286,6 +298,12 @@ func productRouteAdmissionFor(
 			if services.production == nil {
 				return reject(productJourneyErrorResponse(
 					request.JourneyID, "state_unavailable", app.ErrProductionUnavailable,
+				))
+			}
+		case productRoundtableMethod(string(method)):
+			if services.roundtable == nil {
+				return reject(productErrorResponse(
+					"state_unavailable", roundtable.ErrRoundtableSessionNotFound,
 				))
 			}
 		}

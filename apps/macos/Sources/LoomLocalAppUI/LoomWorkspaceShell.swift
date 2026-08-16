@@ -259,6 +259,7 @@ public enum LoomWorkspaceNavigationItem: String, CaseIterable, Identifiable, Sen
     case home = "Chat"
     case work = "Work"
     case teams = "Teams"
+    case roundtable = "Roundtable"
     case attention = "Attention"
     case library = "Library"
     case runtimes = "Runtimes"
@@ -270,6 +271,7 @@ public enum LoomWorkspaceNavigationItem: String, CaseIterable, Identifiable, Sen
         case .home: return "bubble.left.fill"
         case .work: return "square.3.layers.3d"
         case .teams: return "person.3"
+        case .roundtable: return "person.2.wave.2"
         case .attention: return "exclamationmark.triangle"
         case .library: return "books.vertical"
         case .runtimes: return "cpu"
@@ -281,6 +283,7 @@ public enum LoomWorkspaceNavigationItem: String, CaseIterable, Identifiable, Sen
         case .home: return "Conversation"
         case .work: return "Mission Board"
         case .teams: return "Agent Teams"
+        case .roundtable: return "Governed handoff roundtable"
         case .attention: return "Items needing attention"
         case .library: return "Agent library"
         case .runtimes: return "Runtime health"
@@ -292,6 +295,7 @@ private enum LoomFullGovernancePresentation: String, Identifiable {
     case workbench
     case newMission
     case runtimeProviders
+    case roundtable
 
     var id: String { rawValue }
 }
@@ -405,13 +409,18 @@ public struct LoomWorkspaceShell: View {
             onCompletion: handleFolderSelection
         )
         .sheet(item: $fullGovernancePresentation) { presentation in
-            MissionWorkbench(
-                store: store,
-                showProvidersInitially: presentation == .runtimeProviders,
-                showNewMissionInitially: presentation == .newMission,
-                initialMissionObjective: pendingMissionObjective
-            )
-                .frame(minWidth: 1_080, minHeight: 680)
+            if presentation == .roundtable {
+                RoundtableWorkbench(store: store)
+                    .frame(minWidth: 860, minHeight: 620)
+            } else {
+                MissionWorkbench(
+                    store: store,
+                    showProvidersInitially: presentation == .runtimeProviders,
+                    showNewMissionInitially: presentation == .newMission,
+                    initialMissionObjective: pendingMissionObjective
+                )
+                    .frame(minWidth: 1_080, minHeight: 680)
+            }
         }
         .sheet(item: $diagnosticPreview) { preview in
             if let diagnosticExporter {
@@ -654,6 +663,8 @@ public struct LoomWorkspaceShell: View {
         case .teams:
             store.showMissionTeams()
             governance.open(.team)
+        case .roundtable:
+            fullGovernancePresentation = .roundtable
         case .attention:
             store.showMissionAttention()
             governance.open(.attention)

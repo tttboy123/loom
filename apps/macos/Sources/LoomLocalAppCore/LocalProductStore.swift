@@ -488,6 +488,42 @@ public protocol LocalProductHandoffClientProtocol {
   ) async throws -> LocalProductSideTaskDecisionResult
 }
 
+public protocol LocalRoundtableClientProtocol {
+  func roundtableCreateSession(
+    _ request: LocalRoundtableSessionCreateRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableAddSeat(
+    _ request: LocalRoundtableAddSeatRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableRetireSeat(
+    _ request: LocalRoundtableRetireSeatRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableOpenRound(
+    _ request: LocalRoundtableOpenRoundRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableProposeMessage(
+    _ request: LocalRoundtableProposeMessageRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableRelayMessage(
+    _ request: LocalRoundtableRelayMessageRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableAckMessage(
+    _ request: LocalRoundtableAckMessageRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableInsertMessage(
+    _ request: LocalRoundtableInsertMessageRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableDropMessage(
+    _ request: LocalRoundtableDropMessageRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableConclude(
+    _ request: LocalRoundtableConcludeRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableSnapshot(
+    _ request: LocalRoundtableSnapshotRequest
+  ) async throws -> LocalRoundtableView
+}
+
 public protocol LocalProductSetupClientProtocol {
   func setupSnapshot() async throws -> LocalProductSetupSnapshot
   func configureProviderAccountPolicy(
@@ -888,6 +924,7 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var permissionAttention: PermissionAttention?
   @Published public private(set) var executionSnapshot: ExecutionSnapshot?
   @Published public private(set) var productionSnapshot: ProductionSnapshot?
+  @Published public private(set) var roundtableError: String?
   @Published public var selectedSection: LocalProductSection = .home
   @Published public var selectedTeamID: String?
 
@@ -899,6 +936,7 @@ public final class LocalProductStore: ObservableObject {
   private let agentRecoveryClient: LocalProductAgentRecoveryClientProtocol?
 	private let toolRecoveryClient: LocalProductToolRecoveryClientProtocol?
   private let handoffClient: LocalProductHandoffClientProtocol?
+  private let roundtableClient: LocalRoundtableClientProtocol?
   private let assetClient: LocalProductAssetClientProtocol?
   private let permissionClient: LocalProductPermissionClientProtocol?
   private let executionSnapshotClient: LocalProductExecutionSnapshotClientProtocol?
@@ -949,6 +987,7 @@ public final class LocalProductStore: ObservableObject {
     agentRecoveryClient = client as? LocalProductAgentRecoveryClientProtocol
 	toolRecoveryClient = client as? LocalProductToolRecoveryClientProtocol
     handoffClient = client as? LocalProductHandoffClientProtocol
+    roundtableClient = client as? LocalRoundtableClientProtocol
     assetClient = client as? LocalProductAssetClientProtocol
     permissionClient = client as? LocalProductPermissionClientProtocol
     executionSnapshotClient = client as? LocalProductExecutionSnapshotClientProtocol
@@ -1290,6 +1329,214 @@ public final class LocalProductStore: ObservableObject {
   }
 
   public var sideTaskHandoffReachable: Bool { handoffClient != nil }
+
+  public var roundtableReachable: Bool { roundtableClient != nil }
+
+  private func roundtableCorrelationID() -> String {
+    UUID().uuidString.lowercased()
+  }
+
+  private func runRoundtable(
+    _ operation: () async throws -> LocalRoundtableView
+  ) async -> LocalRoundtableView? {
+    do {
+      let view = try await operation()
+      roundtableError = nil
+      return view
+    } catch {
+      roundtableError = Self.roundtableErrorMessage(error)
+      return nil
+    }
+  }
+
+  static func roundtableErrorMessage(_ error: Error) -> String {
+    if let remote = error as? LocalIPCRemoteError {
+      var suffix = ""
+      if let stage = remote.stage, stage != .conversationDispatch {
+        suffix = " (stage: \(stage.rawValue))"
+      }
+      return "Roundtable \(remote.code): \(remote.safeMessage)\(suffix)"
+    }
+    return "Roundtable unavailable: \(error.localizedDescription)"
+  }
+
+  public func roundtableCreateSession(
+    sessionID: String,
+    title: String,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    let boundedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let roundtableClient,
+          !sessionID.isEmpty, !boundedTitle.isEmpty, !moderatorSeat.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session, title and moderator seat are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableCreateSession(
+        LocalRoundtableSessionCreateRequest(
+          schemaVersion: 1, sessionID: sessionID, moderatorSeat: moderatorSeat,
+          title: boundedTitle, correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableAddSeat(
+    sessionID: String,
+    seatID: String,
+    displayName: String
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !seatID.isEmpty,
+          !displayName.isEmpty else {
+      roundtableError = "Roundtable invalid_request: seat identity and display name are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableAddSeat(
+        LocalRoundtableAddSeatRequest(
+          schemaVersion: 1, sessionID: sessionID, seatID: seatID,
+          displayName: displayName, correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableOpenRound(
+    sessionID: String,
+    roundID: String,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !moderatorSeat.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session, round and moderator seat are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableOpenRound(
+        LocalRoundtableOpenRoundRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          moderatorSeat: moderatorSeat, correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableProposeMessage(
+    sessionID: String,
+    roundID: String,
+    messageID: String,
+    body: String,
+    writerSeat: String,
+    targetSeat: String
+  ) async -> LocalRoundtableView? {
+    let boundedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !messageID.isEmpty, !boundedBody.isEmpty, !writerSeat.isEmpty,
+          !targetSeat.isEmpty, boundedBody.utf8.count <= 8_192 else {
+      roundtableError = "Roundtable invalid_body: message body must be 1...8192 bytes"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableProposeMessage(
+        LocalRoundtableProposeMessageRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          messageID: messageID, writerSeat: writerSeat, targetSeat: targetSeat,
+          body: boundedBody, artifactRefs: [],
+          correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableRelayMessage(
+    sessionID: String,
+    messageID: String,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !messageID.isEmpty,
+          !moderatorSeat.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session, message and moderator seat are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableRelayMessage(
+        LocalRoundtableRelayMessageRequest(
+          schemaVersion: 1, sessionID: sessionID, messageID: messageID,
+          moderatorSeat: moderatorSeat, correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableAckMessage(
+    sessionID: String,
+    messageID: String,
+    seatID: String
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !messageID.isEmpty,
+          !seatID.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session, message and seat are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableAckMessage(
+        LocalRoundtableAckMessageRequest(
+          schemaVersion: 1, sessionID: sessionID, messageID: messageID,
+          seatID: seatID, correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableInsertMessage(
+    sessionID: String,
+    messageID: String,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !messageID.isEmpty,
+          !moderatorSeat.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session, message and moderator seat are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableInsertMessage(
+        LocalRoundtableInsertMessageRequest(
+          schemaVersion: 1, sessionID: sessionID, messageID: messageID,
+          moderatorSeat: moderatorSeat, correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableConclude(
+    sessionID: String,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !moderatorSeat.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session and moderator seat are required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableConclude(
+        LocalRoundtableConcludeRequest(
+          schemaVersion: 1, sessionID: sessionID, moderatorSeat: moderatorSeat,
+          correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
+  public func roundtableSnapshot(sessionID: String) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session id is required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableSnapshot(
+        LocalRoundtableSnapshotRequest(schemaVersion: 1, sessionID: sessionID)
+      )
+    }
+  }
 
   public func canCreateSideTask(for missionID: String) -> Bool {
     sideTaskParentBinding(missionID: missionID) != nil

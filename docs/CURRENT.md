@@ -1,6 +1,42 @@
 # Current State
 
-Updated: 2026-08-16
+Updated: 2026-08-17
+
+## Phase 2D V32 Governed Handoff / Roundtable — Strict IPC + Cross-Client Journey PASS (2026-08-17)
+
+`CURRENT / ROUNDTABLE (GOVERNED HANDOFF)`: new `internal/roundtable` journal
+authority — a moderator hosts multiple seats and relays bounded (8 KiB),
+digest-bound messages with per-hop confirmation
+`pending -> relayed -> acknowledged -> inserted|dropped`, reusing the existing
+Journal CAS and Evidence Store (no second authority). Conclude publishes a
+SHA-256 `AlignmentSummary` Artifact and rejects post-conclude writes. Strict
+Local IPC methods (`roundtable_session_create` … `roundtable_snapshot`) with
+server-authoritative timestamps and typed error codes
+(`not_moderator`, `seat_unavailable`, `concluded`, `invalid_body`,
+`too_many_messages`, `too_many_seats`, `conflict`, `not_found`,
+`invalid_request`, `state_unavailable`). Swift client models + 11 client
+methods + `LocalProductStore` helpers with typed error surfacing, and a
+self-guiding "Roundtable" workbench in the app (create -> seats -> open round
+-> propose -> relay -> acknowledge -> insert -> conclude, or "Run full
+journey"). Canonical view digest is a pure function of the normalized view;
+empty collections serialize as `[]`, never `null`.
+
+`CURRENT / FIXES`: two real wire defects fixed while wiring the Swift client:
+- Empty `artifact_refs` / empty round `messages` marshaled as `null` from nil
+  slices, which strict Swift decoders reject; the authority now normalizes to
+  non-nil empty slices (`normalizedArtifactRefs`, `cloneView`).
+- The Swift view decoder initially required seats to equal referenced seats,
+  which rejected valid early views; it now checks referenced seats are a
+  subset of registered seats.
+
+`VERIFICATION`: full Go suite green (`go test ./... -count=1 -p 1`; the
+real-process tests that flake under parallel load pass serially/in
+isolation); `go test -race` on roundtable packages green; `swift test` 240
+tests, 0 failures (1 pre-existing visual-export skip); Go E2E over an
+authenticated Local IPC Unix socket; cross-client journey — the Swift
+`LocalIPCClient` runs the full lifecycle against a real Go server over a real
+Unix socket and decodes every view; release bundle builds clean with the
+`roundtable_*` methods in the bundled daemon.
 
 ## Phase 2D V34 G4/G5 — Failure Isolation + Web/MCP Diagnostics Installed-Live PASS (2026-08-16)
 

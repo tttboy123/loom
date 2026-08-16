@@ -107,6 +107,7 @@ func TestCOMP2CConversationFailurePreventsAgentRuntimeActivation(t *testing.T) {
 				return productAgentRuntimeRoutes{
 					mission:      productMissionExecutionRouteFixture{},
 					handoff:      productHandoffRouteFixture{},
+					roundtable:   productRoundtableRouteFixture{},
 					materializer: productSavedTeamMaterializerFixture{},
 					close:        func() error { return nil },
 				}, nil

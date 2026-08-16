@@ -47,6 +47,7 @@ import (
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	"loom-pi-rebuild/internal/queue"
+	"loom-pi-rebuild/internal/roundtable"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/discoveryscan"
 	"loom-pi-rebuild/internal/runtime/harnessadapter"
@@ -2306,8 +2307,9 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	}
 	localIPCFactory := newProductLocalIPCHandlerFactory(productRouteServices{
 		read: readRouteSlot, setup: setupRouteSlot, decision: governanceRouteSlot,
-		missionExecution: missionExecutionRoute, agentRecovery: agentRecoveryRoute,
-		agentInput: agentInputRoute, toolRecovery: workRouteSlot,
+		missionExecution: missionExecutionRoute, roundtable: agentRuntimeSlot,
+		agentRecovery: agentRecoveryRoute, agentInput: agentInputRoute,
+		toolRecovery:          workRouteSlot,
 		handoff:               handoffRoute,
 		savedTeamMaterializer: savedTeamMaterializer,
 		assets:                assetRouteSlot, queue: workRouteSlot, workers: workRouteSlot,
@@ -2644,6 +2646,7 @@ type productMissionExecutionBundle struct {
 	backend            *app.AuthoritativeMissionExecutionBackend
 	evidence           *evidence.Store
 	observers          productReadRoute
+	roundtable         productRoundtableRoute
 	handoff            *api.LocalProductHandoffAPI
 	agentInput         *productAgentInputIngress
 	handoffService     *app.LocalProductHandoffService
@@ -3767,6 +3770,18 @@ func buildProductMissionExecutionAPI(
 	if err := workAuthority.InitializeRunIdentityIndex(ctx); err != nil {
 		return nil, nil, err
 	}
+	roundtableAuthority, err := roundtable.NewAuthority(
+		store, evidenceStore, now, rand.Reader,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	roundtableController, err := newProductRoundtableController(
+		roundtableAuthority, now,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
 	if config.AttemptPayloadStore != nil {
 		payloadFacts, factErr := work.NewAttemptPayloadAuthority(workAuthority)
 		if factErr != nil {
@@ -3984,6 +3999,7 @@ func buildProductMissionExecutionAPI(
 		backend:            backend,
 		evidence:           evidenceStore,
 		observers:          readService,
+		roundtable:         roundtableController,
 		workAuthority:      workAuthority,
 		recoveryTerminal:   recoveryTerminal,
 		recoveryAuthority:  recoveryServices.authority,
@@ -6538,6 +6554,7 @@ type productRouteServices struct {
 	setup                 productSetupRoute
 	decision              productDecisionRoute
 	missionExecution      productMissionExecutionRoute
+	roundtable            productRoundtableRoute
 	agentRecovery         productAgentAttemptRecoveryRoute
 	toolRecovery          productToolRecoveryRoute
 	agentInput            productAgentInputRoute
@@ -6577,6 +6594,7 @@ func newProductRouteHandler(
 	customerRuleService := services.customerRule
 	standingOrderService := services.standingOrder
 	credentialVaultController := services.credentialVault
+	roundtableService := services.roundtable
 	registry := newProductRouteRegistry(services)
 	return func(
 		ctx context.Context,
@@ -7009,6 +7027,159 @@ func newProductRouteHandler(
 				return productServiceError(err)
 			}
 			return productResultResponse(result)
+		case "roundtable_session_create":
+			var input productRoundtableSessionCreateParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableSession)
+			}
+			view, err := roundtableService.CreateSession(ctx, roundtable.CreateSessionCommand{
+				SessionID: input.SessionID, ModeratorSeat: input.ModeratorSeat,
+				Title: input.Title, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_add_seat":
+			var input productRoundtableAddSeatParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableSeat)
+			}
+			view, err := roundtableService.AddSeat(ctx, roundtable.AddSeatCommand{
+				SessionID: input.SessionID, SeatID: input.SeatID,
+				DisplayName: input.DisplayName, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_retire_seat":
+			var input productRoundtableRetireSeatParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableSeat)
+			}
+			view, err := roundtableService.RetireSeat(ctx, roundtable.RetireSeatCommand{
+				SessionID: input.SessionID, SeatID: input.SeatID,
+				ModeratorSeat: input.ModeratorSeat, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_open_round":
+			var input productRoundtableOpenRoundParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableMessage)
+			}
+			view, err := roundtableService.OpenRound(ctx, roundtable.OpenRoundCommand{
+				SessionID: input.SessionID, RoundID: input.RoundID,
+				ModeratorSeat: input.ModeratorSeat, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_propose_message":
+			var input productRoundtableProposeMessageParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableMessage)
+			}
+			view, err := roundtableService.ProposeMessage(ctx, roundtable.ProposeMessageCommand{
+				SessionID: input.SessionID, RoundID: input.RoundID,
+				MessageID: input.MessageID, WriterSeat: input.WriterSeat,
+				TargetSeat: input.TargetSeat, Body: input.Body,
+				ArtifactRefs: input.ArtifactRefs, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_relay_message":
+			var input productRoundtableRelayMessageParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableMessage)
+			}
+			view, err := roundtableService.RelayMessage(ctx, roundtable.RelayMessageCommand{
+				SessionID: input.SessionID, MessageID: input.MessageID,
+				ModeratorSeat: input.ModeratorSeat, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_ack_message":
+			var input productRoundtableAckMessageParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableMessage)
+			}
+			view, err := roundtableService.AcknowledgeMessage(ctx, roundtable.AcknowledgeMessageCommand{
+				SessionID: input.SessionID, MessageID: input.MessageID,
+				SeatID: input.SeatID, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_insert_message":
+			var input productRoundtableInsertMessageParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableMessage)
+			}
+			view, err := roundtableService.InsertMessage(ctx, roundtable.InsertMessageCommand{
+				SessionID: input.SessionID, MessageID: input.MessageID,
+				ModeratorSeat: input.ModeratorSeat, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_drop_message":
+			var input productRoundtableDropMessageParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableMessage)
+			}
+			view, err := roundtableService.DropMessage(ctx, roundtable.DropMessageCommand{
+				SessionID: input.SessionID, MessageID: input.MessageID,
+				ModeratorSeat: input.ModeratorSeat, CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_conclude":
+			var input productRoundtableConcludeParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableSession)
+			}
+			view, err := roundtableService.ConcludeSession(ctx, roundtable.ConcludeSessionCommand{
+				SessionID: input.SessionID, ModeratorSeat: input.ModeratorSeat,
+				CorrelationID: input.CorrelationID,
+			})
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
+		case "roundtable_snapshot":
+			var input productRoundtableSnapshotParams
+			if decodeExactProductParams(request.Params, &input) != nil ||
+				!validProductRoundtableSchemaVersion(input.SchemaVersion) {
+				return productErrorResponse("invalid_request", roundtable.ErrInvalidRoundtableSession)
+			}
+			view, err := roundtableService.ReadView(ctx, input.SessionID)
+			if err != nil {
+				return productRoundtableServiceError(err)
+			}
+			return productResultResponse(view)
 		case "agent_attempt_recovery":
 			var input productAgentAttemptRecoveryRequest
 			if decodeExactProductParams(request.Params, &input) != nil {
@@ -7841,6 +8012,13 @@ func localipcSafeError(code string, cause error) *localipc.ProtocolError {
 		"state_unavailable": {"state unavailable", true},
 		"degraded":          {"production state degraded; writes blocked", true},
 		"timeout":           {"request timed out", true},
+		"not_moderator":     {"roundtable seat is not the moderator", false},
+		"seat_unavailable":  {"roundtable seat unavailable", false},
+		"concluded":         {"roundtable session already concluded", false},
+		"invalid_body":      {"roundtable message body exceeds the bounded limit", false},
+		"invalid_digest":    {"roundtable digest is not a valid SHA-256", false},
+		"too_many_messages": {"roundtable round has too many messages", false},
+		"too_many_seats":    {"roundtable session has too many seats", false},
 		"internal":          {"internal error", true},
 	}
 	definition, ok := messages[code]

@@ -660,6 +660,7 @@ public final class LocalIPCClient:
 	LocalProductToolRecoveryClientProtocol,
     LocalProductAgentInputClientProtocol,
     LocalProductHandoffClientProtocol,
+    LocalRoundtableClientProtocol,
     LocalProductAssetClientProtocol
 {
     public static let requestMaximum = 65_536
@@ -1081,6 +1082,91 @@ public final class LocalIPCClient:
     ) async throws -> LocalProductSideTaskDecisionResult {
         let result = try await call(method: "side_task_handoff", params: request)
         return try LocalProductHandoffWire.decodeDecision(result)
+    }
+
+    public func roundtableCreateSession(
+        _ request: LocalRoundtableSessionCreateRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(
+            method: "roundtable_session_create", params: request
+        )
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableAddSeat(
+        _ request: LocalRoundtableAddSeatRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_add_seat", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableRetireSeat(
+        _ request: LocalRoundtableRetireSeatRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_retire_seat", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableOpenRound(
+        _ request: LocalRoundtableOpenRoundRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_open_round", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableProposeMessage(
+        _ request: LocalRoundtableProposeMessageRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(
+            method: "roundtable_propose_message", params: request
+        )
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableRelayMessage(
+        _ request: LocalRoundtableRelayMessageRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(
+            method: "roundtable_relay_message", params: request
+        )
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableAckMessage(
+        _ request: LocalRoundtableAckMessageRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_ack_message", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableInsertMessage(
+        _ request: LocalRoundtableInsertMessageRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(
+            method: "roundtable_insert_message", params: request
+        )
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableDropMessage(
+        _ request: LocalRoundtableDropMessageRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_drop_message", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableConclude(
+        _ request: LocalRoundtableConcludeRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_conclude", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableSnapshot(
+        _ request: LocalRoundtableSnapshotRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_snapshot", params: request)
+        return try LocalRoundtableWire.decodeView(result)
     }
 
     public func setupSnapshot() async throws -> LocalProductSetupSnapshot {
@@ -2153,6 +2239,17 @@ public final class LocalIPCClient:
             "chat_thread",
             "chat_thread_delete",
             "chat_message",
+            "roundtable_session_create",
+            "roundtable_add_seat",
+            "roundtable_retire_seat",
+            "roundtable_open_round",
+            "roundtable_propose_message",
+            "roundtable_relay_message",
+            "roundtable_ack_message",
+            "roundtable_insert_message",
+            "roundtable_drop_message",
+            "roundtable_conclude",
+            "roundtable_snapshot",
         ])
         guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
             throw LocalProductClientError.invalidRequest

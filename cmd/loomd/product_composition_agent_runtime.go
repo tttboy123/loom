@@ -11,6 +11,7 @@ import (
 	"loom-pi-rebuild/internal/composition"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/roundtable"
 )
 
 type productMissionExecutionRoute interface {
@@ -29,6 +30,7 @@ type productAgentRuntimeRoutes struct {
 	recovery     productAgentAttemptRecoveryRoute
 	agentInput   productAgentInputRoute
 	handoff      productHandoffRoute
+	roundtable   productRoundtableRoute
 	materializer productSavedTeamMaterializer
 	close        func() error
 }
@@ -36,6 +38,7 @@ type productAgentRuntimeRoutes struct {
 func (routes productAgentRuntimeRoutes) valid() bool {
 	return !nilProductAgentRuntimePort(routes.mission) &&
 		!nilProductAgentRuntimePort(routes.handoff) &&
+		!nilProductAgentRuntimePort(routes.roundtable) &&
 		!nilProductAgentRuntimePort(routes.materializer) && routes.close != nil &&
 		(routes.agentInput == nil) == (routes.recovery == nil)
 }
@@ -171,6 +174,184 @@ func (slot *productAgentRuntimeRouteSlot) DecideSideTask(
 	return slot.routes.handoff.DecideSideTask(ctx, request)
 }
 
+func (slot *productAgentRuntimeRouteSlot) CreateSession(
+	ctx context.Context,
+	command roundtable.CreateSessionCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.CreateSession(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) AddSeat(
+	ctx context.Context,
+	command roundtable.AddSeatCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.AddSeat(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) RetireSeat(
+	ctx context.Context,
+	command roundtable.RetireSeatCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.RetireSeat(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) OpenRound(
+	ctx context.Context,
+	command roundtable.OpenRoundCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.OpenRound(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ProposeMessage(
+	ctx context.Context,
+	command roundtable.ProposeMessageCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.ProposeMessage(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) RelayMessage(
+	ctx context.Context,
+	command roundtable.RelayMessageCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.RelayMessage(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) AcknowledgeMessage(
+	ctx context.Context,
+	command roundtable.AcknowledgeMessageCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.AcknowledgeMessage(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) InsertMessage(
+	ctx context.Context,
+	command roundtable.InsertMessageCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.InsertMessage(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) DropMessage(
+	ctx context.Context,
+	command roundtable.DropMessageCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.DropMessage(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ConcludeSession(
+	ctx context.Context,
+	command roundtable.ConcludeSessionCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.ConcludeSession(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ReadView(
+	ctx context.Context,
+	sessionID string,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() ||
+		slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.ReadView(ctx, sessionID)
+}
+
+var _ productRoundtableRoute = (*productAgentRuntimeRouteSlot)(nil)
+
 func (slot *productAgentRuntimeRouteSlot) MaterializeConfirmedTeam(
 	ctx context.Context,
 	confirmation app.BuilderConfirmation,
@@ -262,6 +443,7 @@ func newProductAgentRuntimeFactory(
 		return productAgentRuntimeRoutes{
 			mission: mission, recovery: bundle.agentRecovery,
 			agentInput: bundle.agentInput, handoff: bundle.handoff,
+			roundtable: bundle.roundtable,
 			materializer: &productSavedTeamMaterialization{
 				store: store, projection: readModel, now: config.Now,
 			},

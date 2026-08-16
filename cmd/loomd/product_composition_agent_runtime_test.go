@@ -13,6 +13,7 @@ import (
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/composition"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/roundtable"
 )
 
 func TestCOMP2CAgentRuntimeConstructsAfterAssetsAndRevokesRoutes(t *testing.T) {
@@ -47,6 +48,7 @@ func TestCOMP2CAgentRuntimeConstructsAfterAssetsAndRevokesRoutes(t *testing.T) {
 				return productAgentRuntimeRoutes{
 					mission:      productMissionExecutionRouteFixture{},
 					handoff:      productHandoffRouteFixture{},
+					roundtable:   productRoundtableRouteFixture{},
 					materializer: productSavedTeamMaterializerFixture{},
 					close: func() error {
 						events = append(events, "agent-runtime-close")
@@ -187,3 +189,63 @@ func (productSavedTeamMaterializerFixture) MaterializeConfirmedTeam(
 ) (app.BuilderConfirmation, error) {
 	return confirmation, nil
 }
+
+type productRoundtableRouteFixture struct{}
+
+func (productRoundtableRouteFixture) CreateSession(
+	context.Context, roundtable.CreateSessionCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) AddSeat(
+	context.Context, roundtable.AddSeatCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) RetireSeat(
+	context.Context, roundtable.RetireSeatCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) OpenRound(
+	context.Context, roundtable.OpenRoundCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) ProposeMessage(
+	context.Context, roundtable.ProposeMessageCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) RelayMessage(
+	context.Context, roundtable.RelayMessageCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) AcknowledgeMessage(
+	context.Context, roundtable.AcknowledgeMessageCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) InsertMessage(
+	context.Context, roundtable.InsertMessageCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) DropMessage(
+	context.Context, roundtable.DropMessageCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) ConcludeSession(
+	context.Context, roundtable.ConcludeSessionCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) ReadView(
+	context.Context, string,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+
+var _ productRoundtableRoute = productRoundtableRouteFixture{}

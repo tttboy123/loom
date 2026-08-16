@@ -372,7 +372,18 @@ func validMethod(method string) bool {
 		"customer_rule_snapshot",
 		"customer_rule_command",
 		"standing_order_snapshot",
-		"standing_order_command":
+		"standing_order_command",
+		"roundtable_session_create",
+		"roundtable_add_seat",
+		"roundtable_retire_seat",
+		"roundtable_open_round",
+		"roundtable_propose_message",
+		"roundtable_relay_message",
+		"roundtable_ack_message",
+		"roundtable_insert_message",
+		"roundtable_drop_message",
+		"roundtable_conclude",
+		"roundtable_snapshot":
 		return true
 	default:
 		return false
