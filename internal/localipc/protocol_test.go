@@ -373,3 +373,36 @@ func TestProtocolRejectsNestedDuplicatesAndInvalidResponses(t *testing.T) {
 		t.Fatalf("unknown code response = %#v", errorResponse)
 	}
 }
+
+func TestGovernanceConfigureMethodsAreStrictlyAvailable(t *testing.T) {
+	for _, method := range []string{
+		"provider_model_rate_card_configure",
+		"remote_tool_backend_enrollment_configure",
+		"remote_tool_backend_enrollment_revoke",
+	} {
+		if !validMethod(method) {
+			t.Fatalf("validMethod(%q) = false", method)
+		}
+		if requiresJourney(method) {
+			t.Fatalf("requiresJourney(%q) = true", method)
+		}
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"governance-configure-1","method":"provider_model_rate_card_configure","params":{"provider_id":"deepseek","provider_account_id":"deepseek.primary"}}`,
+	))
+	if err != nil || request.Method != "provider_model_rate_card_configure" {
+		t.Fatalf("decoded rate-card request = %+v, %v", request, err)
+	}
+	request, err = decodeRequest([]byte(
+		`{"version":1,"request_id":"enrollment-configure-1","method":"remote_tool_backend_enrollment_configure","params":{"enrollment_id":"enroll-1"}}`,
+	))
+	if err != nil || request.Method != "remote_tool_backend_enrollment_configure" {
+		t.Fatalf("decoded enrollment request = %+v, %v", request, err)
+	}
+	request, err = decodeRequest([]byte(
+		`{"version":1,"request_id":"enrollment-revoke-1","method":"remote_tool_backend_enrollment_revoke","params":{"enrollment_id":"enroll-1"}}`,
+	))
+	if err != nil || request.Method != "remote_tool_backend_enrollment_revoke" {
+		t.Fatalf("decoded enrollment revoke request = %+v, %v", request, err)
+	}
+}

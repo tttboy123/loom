@@ -32,7 +32,7 @@ const (
 	timelineSchemaVersion = 1
 	maxCursorBytes        = 32 << 10
 	maxDeliveryBytes      = 8 << 10
-	maxTentativeDelta     = 2048
+	maxTentativeDelta     = 256 << 10
 	maxSubscribers        = 8
 	maxSubscriberItems    = 64
 	maxSubscriberBytes    = 64 << 10

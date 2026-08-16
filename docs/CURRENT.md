@@ -2,6 +2,32 @@
 
 Updated: 2026-08-16
 
+## Phase 2D V34 G6 Accounting + Governance Board — Installed-Live PASS (2026-08-16)
+
+`CURRENT / G6 INSTALLED-LIVE PASS`: with Provider Account Policies + Model
+Rate Cards configured, the installed App daemon's `timeline_page` board now
+projects real per-account accounting for the mixed-provider Team: attempt
+counts, failed/rate-limited counts, error-rate basis points, budget, policy
+revision + digest, concurrency/dispatch/budget ceilings, accounting coverage,
+token usage (input/output/cache), and per-attempt cost rows
+(`provider_reported` vs `rate_card_estimate`), plus the explicit
+accounting-incomplete state for attempts that failed before usage.
+
+`CURRENT / FIXES`: two real defects blocked G5/G6 configuration and mission
+completion:
+- `internal/localipc` `validMethod` was missing
+  `provider_model_rate_card_configure` and
+  `remote_tool_backend_enrollment_configure`/`_revoke` (the daemon rejected
+  them with `unknown_method`). Added them and the Swift client allowlist.
+- `internal/api` `maxTentativeDelta` was 2 KiB; the loom-native adapter
+  publishes the full bounded model response as one `MessageEvent` delta, so
+  real responses were rejected (`invalid node output`) and attempts stayed
+  `running` forever. Raised to 256 KiB. A completed MiniMax attempt now
+  projects exact tokens (2898) + a `rate_card_estimate` USD cost.
+
+`VERIFICATION`: full Go suite green (known harnessadapter flake passes in
+isolation); `swift test` all suites pass; `git diff --check` clean.
+
 ## Phase 2D V33 Brokered-Only Mission Execution — G3 Installed-Live PASS (2026-08-16)
 
 `CURRENT / G3 INSTALLED-LIVE PASS`: the installed App daemon now confirms and

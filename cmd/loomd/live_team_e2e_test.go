@@ -81,6 +81,12 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 	// view version and catalog digest stay stable through confirm.
 	archiveLiveTeams(t, ctx, client)
 
+	// 3c. Configure Provider Account Policies + Model Rate Cards so the G6
+	// accounting board carries exact policy revision, concurrency/budget
+	// ceilings, token usage and both provider-reported and rate-card cost.
+	configureProviderGovernance(t, ctx, client, "deepseek", "deepseek.primary", "deepseek-chat")
+	configureProviderGovernance(t, ctx, client, "minimax", "minimax.primary", "MiniMax-M3")
+
 	// 4. Start a blank Team draft (form-first), set name+purpose, and add a
 	//    second subagent so the Team spans two independent Provider Accounts
 	//    across four Agents (main + three subagents).
@@ -579,22 +585,252 @@ func runMission(t *testing.T, ctx context.Context, client *localipc.Client, team
 	return missionRunResult{}, errors.New("mission start view version conflict retries exhausted")
 }
 
-func verifyAccountingRows(t *testing.T, ctx context.Context, client *localipc.Client, teamInstanceID string) {
+type teamBoardCostRow struct {
+	Currency         string `json:"currency"`
+	Source           string `json:"source"`
+	AmountMicrounits int64  `json:"amount_microunits"`
+}
+
+type teamBoardAccountRow struct {
+	ProviderID                 string             `json:"provider_id"`
+	ProviderAccountID          string             `json:"provider_account_id"`
+	ActiveAttempts             int                `json:"active_attempts"`
+	AttemptCount               int                `json:"attempt_count"`
+	FailedAttempts             int                `json:"failed_attempts"`
+	RateLimitedAttempts        int                `json:"rate_limited_attempts"`
+	ErrorRateBasisPoints       int                `json:"error_rate_basis_points"`
+	BudgetAttemptCount         int                `json:"budget_attempt_count"`
+	BudgetUnits                int64              `json:"budget_units"`
+	PolicyAvailable            bool               `json:"policy_available"`
+	PolicyRevision             int64              `json:"policy_revision"`
+	PolicyDigest               string             `json:"policy_digest"`
+	MaximumConcurrentAttempts  int                `json:"maximum_concurrent_attempts"`
+	DispatchWindowSeconds      int64              `json:"dispatch_window_seconds"`
+	MaximumDispatchStarts      int                `json:"maximum_dispatch_starts"`
+	MaximumAssignedBudgetUnits int64              `json:"maximum_assigned_budget_units"`
+	ActiveAssignedBudgetUnits  int64              `json:"active_assigned_budget_units"`
+	AccountingAttemptCount     int                `json:"accounting_attempt_count"`
+	UsageAttemptCount          int                `json:"usage_attempt_count"`
+	InputTokens                int64              `json:"input_tokens"`
+	OutputTokens               int64              `json:"output_tokens"`
+	CacheReadTokens            int64              `json:"cache_read_tokens"`
+	CacheWriteTokens           int64              `json:"cache_write_tokens"`
+	TotalTokens                int64              `json:"total_tokens"`
+	CostAttemptCount           int                `json:"cost_attempt_count"`
+	Costs                      []teamBoardCostRow `json:"costs"`
+	AggregationOverflow        bool               `json:"aggregation_overflow"`
+}
+
+type teamBoardWire struct {
+	SchemaVersion    int                   `json:"schema_version"`
+	TeamInstanceID   string                `json:"team_instance_id"`
+	PlanDigest       string                `json:"plan_digest"`
+	Status           string                `json:"status"`
+	ViewVersion      string                `json:"view_version"`
+	ProviderAccounts []teamBoardAccountRow `json:"provider_accounts"`
+	Cost             struct {
+		Observed         bool   `json:"observed"`
+		AmountMicrounits *int64 `json:"amount_microunits"`
+		Currency         string `json:"currency"`
+	} `json:"cost"`
+}
+
+func readTeamBoard(
+	t *testing.T,
+	ctx context.Context,
+	client *localipc.Client,
+	teamInstanceID string,
+) teamBoardWire {
 	t.Helper()
 	var raw json.RawMessage
+	if err := client.Call(ctx, "timeline_page", map[string]any{
+		"team_instance_id": teamInstanceID, "cursor": "", "limit": 64,
+	}, &raw); err != nil {
+		t.Fatalf("timeline_page: %v", err)
+	}
+	var page struct {
+		Board teamBoardWire `json:"board"`
+	}
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("decode timeline board: %v", err)
+	}
+	return page.Board
+}
+
+// configureProviderGovernance configures the Provider Account Policy (exact
+// concurrency + budget ceilings and disclosure) and the Model Rate Card for an
+// account so the G6 board carries policy revision, ceilings and rate-card
+// cost estimates.
+func configureProviderGovernance(
+	t *testing.T,
+	ctx context.Context,
+	client *localipc.Client,
+	providerID string,
+	providerAccountID string,
+	modelID string,
+) {
+	t.Helper()
+	// Read the current policy revision + rate-card revision so the configure
+	// calls are idempotent across live-gate reruns.
+	var raw json.RawMessage
 	if err := client.Call(ctx, "setup_snapshot", struct{}{}, &raw); err != nil {
-		t.Fatalf("setup: %v", err)
+		t.Fatalf("setup_snapshot: %v", err)
 	}
 	var snap struct {
 		Accounts []struct {
-			ProviderID string `json:"provider_id"`
-			Status     string `json:"status"`
-			Revision   int64  `json:"revision"`
+			ProviderID        string `json:"provider_id"`
+			ProviderAccountID string `json:"provider_account_id"`
+			PolicyRevision    int64  `json:"policy_revision"`
+			RateCards         []struct {
+				ModelID  string `json:"model_id"`
+				Revision int64  `json:"revision"`
+			} `json:"rate_cards"`
 		} `json:"provider_accounts"`
 	}
 	_ = json.Unmarshal(raw, &snap)
+	policyRevision := int64(0)
+	rateCardRevision := int64(0)
+	rateCardPresent := false
 	for _, account := range snap.Accounts {
-		t.Logf("account %s status=%s revision=%d", account.ProviderID, account.Status, account.Revision)
+		if account.ProviderID != providerID ||
+			account.ProviderAccountID != providerAccountID {
+			continue
+		}
+		policyRevision = account.PolicyRevision
+		for _, rateCard := range account.RateCards {
+			if rateCard.ModelID == modelID {
+				rateCardPresent = true
+				rateCardRevision = rateCard.Revision
+			}
+		}
+	}
+	if policyRevision == 0 {
+		if err := client.Call(ctx, "provider_account_policy_configure", map[string]any{
+			"provider_id": providerID, "provider_account_id": providerAccountID,
+			"expected_revision":             0,
+			"maximum_concurrent_attempts":   4,
+			"dispatch_window_seconds":       3600,
+			"maximum_dispatch_starts":       1000,
+			"maximum_assigned_budget_units": 1_000_000,
+			"trust_domain":                  "local_runtime", "retention_mode": "limited_retention",
+			"data_region": "local", "operation_id": matrixOperationID(),
+		}, &raw); err != nil {
+			t.Fatalf("policy %s: %v", providerID, err)
+		}
+	}
+	if !rateCardPresent {
+		if err := client.Call(ctx, "provider_model_rate_card_configure", map[string]any{
+			"provider_id": providerID, "provider_account_id": providerAccountID,
+			"model_id": modelID, "expected_revision": rateCardRevision,
+			"currency": "USD", "input_token_basis": "input_excludes_cache",
+			"input_microunits_per_million":       270_000,
+			"output_microunits_per_million":      1_100_000,
+			"cache_read_microunits_per_million":  27_000,
+			"cache_write_microunits_per_million": 270_000,
+			"rounding_mode":                      "ceiling_per_attempt",
+			"operation_id":                       matrixOperationID(),
+		}, &raw); err != nil {
+			t.Fatalf("rate card %s: %v", providerID, err)
+		}
+	}
+	t.Logf("governance configured for %s/%s (%s)", providerID, providerAccountID, modelID)
+}
+
+// verifyAccountingRows asserts the G6 accounting/governance board: every
+// Provider Account that participated shows the exact attempt, error-rate,
+// budget, policy, token, cost and ceiling fields, and accounting coverage is
+// internally consistent (never exceeds attempt counts).
+func verifyAccountingRows(
+	t *testing.T,
+	ctx context.Context,
+	client *localipc.Client,
+	teamInstanceID string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(6 * time.Minute)
+	var board teamBoardWire
+	for {
+		board = readTeamBoard(t, ctx, client, teamInstanceID)
+		accounted := 0
+		for _, row := range board.ProviderAccounts {
+			if row.AccountingAttemptCount > 0 {
+				accounted++
+			}
+		}
+		if accounted > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if len(board.ProviderAccounts) == 0 {
+		t.Fatalf("board has no Provider Account rows")
+	}
+	seen := map[string]bool{}
+	for _, row := range board.ProviderAccounts {
+		seen[row.ProviderID+":"+row.ProviderAccountID] = true
+		if row.AttemptCount < 0 || row.FailedAttempts < 0 ||
+			row.FailedAttempts > row.AttemptCount ||
+			row.RateLimitedAttempts < 0 ||
+			row.RateLimitedAttempts > row.AttemptCount ||
+			row.AccountingAttemptCount < 0 ||
+			row.AccountingAttemptCount > row.AttemptCount ||
+			row.UsageAttemptCount < 0 ||
+			row.UsageAttemptCount > row.AccountingAttemptCount ||
+			row.CostAttemptCount < 0 ||
+			row.CostAttemptCount > row.AccountingAttemptCount ||
+			row.InputTokens < 0 || row.OutputTokens < 0 ||
+			row.CacheReadTokens < 0 || row.CacheWriteTokens < 0 ||
+			row.TotalTokens < 0 ||
+			row.TotalTokens != row.InputTokens+row.OutputTokens {
+			t.Fatalf("accounting row inconsistent: %#v", row)
+		}
+		t.Logf(
+			"account %s/%s attempts=%d failed=%d rateLimited=%d errorRateBps=%d accounting=%d usage=%d cost=%d tokens=%d budgetUnits=%d policyRev=%d maxConcurrent=%d overflow=%v",
+			row.ProviderID, row.ProviderAccountID, row.AttemptCount,
+			row.FailedAttempts, row.RateLimitedAttempts, row.ErrorRateBasisPoints,
+			row.AccountingAttemptCount, row.UsageAttemptCount, row.CostAttemptCount,
+			row.TotalTokens, row.BudgetUnits, row.PolicyRevision,
+			row.MaximumConcurrentAttempts, row.AggregationOverflow,
+		)
+		if row.MaximumConcurrentAttempts <= 0 || row.DispatchWindowSeconds <= 0 {
+			t.Fatalf("account %s lacks ceiling fields: %#v", row.ProviderID, row)
+		}
+		if !row.PolicyAvailable || row.PolicyRevision <= 0 || row.PolicyDigest == "" {
+			t.Fatalf("account %s lacks policy lineage: %#v", row.ProviderID, row)
+		}
+		// Failed/cancelled attempts legitimately carry no usage/cost
+		// accounting; coverage must never exceed attempts and completed
+		// attempts must carry exact token usage.
+		if row.AccountingAttemptCount > 0 {
+			if row.UsageAttemptCount == 0 || row.TotalTokens <= 0 {
+				t.Fatalf("account %s accounting lacks token usage: %#v",
+					row.ProviderID, row)
+			}
+		}
+		for _, cost := range row.Costs {
+			if cost.Currency == "" || cost.Source == "" || cost.AmountMicrounits < 0 {
+				t.Fatalf("account %s invalid cost row: %#v", row.ProviderID, cost)
+			}
+		}
+	}
+	if !seen["deepseek:deepseek.primary"] {
+		t.Fatalf("board missing deepseek accounting row: %#v", board.ProviderAccounts)
+	}
+	completedAccounting := false
+	for _, row := range board.ProviderAccounts {
+		if row.AccountingAttemptCount > 0 {
+			completedAccounting = true
+		}
+	}
+	if !completedAccounting {
+		t.Fatalf("no account completed an attempt with accounting: %#v",
+			board.ProviderAccounts)
+	}
+	if board.Cost.Observed {
+		if board.Cost.Currency == "" || board.Cost.AmountMicrounits == nil ||
+			*board.Cost.AmountMicrounits < 0 {
+			t.Fatalf("board cost observation inconsistent: %#v", board.Cost)
+		}
 	}
 }
 

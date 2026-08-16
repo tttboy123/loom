@@ -2139,6 +2139,8 @@ public final class LocalIPCClient:
             "ping", "agent_attempt_recovery", "tool_recovery", "agent_input", "snapshot", "timeline_page", "setup_snapshot",
             "codex_connect", "provider_account_policy_configure",
             "provider_model_rate_card_configure",
+            "remote_tool_backend_enrollment_configure",
+            "remote_tool_backend_enrollment_revoke",
             "builder_start", "builder_answer", "builder_edit",
             "builder_validate", "builder_confirm", "team_archive",
             "team_restore", "credential_configure", "credential_verify",

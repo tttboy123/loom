@@ -1857,3 +1857,25 @@ func appendAPITimelineFixture(t *testing.T, store *journal.Store) {
 		}
 	}
 }
+
+func TestTentativeDeltaAcceptsLargeRealModelResponseChunk(t *testing.T) {
+	// The loom-native adapter publishes the full bounded model response as one
+	// MessageEvent delta; real responses comfortably exceed the old 2 KiB cap.
+	content := strings.Repeat(
+		"Verify the mixed-provider Team runs end to end with real provider calls. ",
+		600,
+	)
+	payload, err := json.Marshal(struct {
+		Delta string `json:"delta"`
+	}{Delta: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) <= 2048 {
+		t.Fatalf("fixture delta is not large: %d bytes", len(content))
+	}
+	delta, err := decodeTentativeDelta(payload)
+	if err != nil || delta != content {
+		t.Fatalf("large delta = %d bytes, %v", len(delta), err)
+	}
+}
