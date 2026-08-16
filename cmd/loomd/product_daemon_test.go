@@ -3049,33 +3049,38 @@ func TestProductDaemonRealSetupServiceConfirmsCandidateOverPrivateUDS(
 	if err != nil {
 		t.Fatal(err)
 	}
-	answers := map[string]string{
-		"team_name":     "Private UDS Team",
-		"purpose":       "Confirm one Candidate through the daemon",
-		"main_role":     "coordinator",
-		"subagent_role": "bounded-worker",
+	// Form-first blank draft: default roles are pre-selected; fill the two
+	// required fields (name, purpose) inline, then confirm.
+	edited, err := setupClient.EditBuilder(
+		context.Background(),
+		app.BuilderEditCommand{
+			DraftID:          session.DraftID,
+			ExpectedRevision: session.Revision,
+			CatalogDigest:    session.CatalogDigest,
+			ViewVersion:      session.ViewVersion,
+			Field:            "team_name",
+			Value:            "Private UDS Team",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for session.Question.ID != "" {
-		answer, ok := answers[session.Question.ID]
-		if !ok {
-			t.Fatalf("unexpected Builder question = %#v", session.Question)
-		}
-		session, err = setupClient.AnswerBuilder(
-			context.Background(),
-			app.BuilderAnswerCommand{
-				DraftID:          session.DraftID,
-				ExpectedRevision: session.Revision,
-				CatalogDigest:    session.CatalogDigest,
-				ViewVersion:      session.ViewVersion,
-				QuestionID:       session.Question.ID,
-				Answer:           answer,
-			},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+	session, err = setupClient.EditBuilder(
+		context.Background(),
+		app.BuilderEditCommand{
+			DraftID:          edited.DraftID,
+			ExpectedRevision: edited.Revision,
+			CatalogDigest:    edited.CatalogDigest,
+			ViewVersion:      edited.ViewVersion,
+			Field:            "purpose",
+			Value:            "Confirm one Candidate through the daemon",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !session.CanConfirm || session.BindingDigest == "" {
+	if session.Question.ID != "" ||
+		!session.CanConfirm || session.BindingDigest == "" {
 		t.Fatalf("Candidate session = %#v", session)
 	}
 	confirmation, err := setupClient.ConfirmBuilder(
@@ -3359,30 +3364,33 @@ func TestProductDaemonExecutionCompositionMaterializesConfirmedTeamForPreflight(
 	if err != nil {
 		t.Fatal(err)
 	}
-	answers := map[string]string{
-		"team_name":     "Controlled Execution Team",
-		"purpose":       "Run one bounded verified Mission",
-		"main_role":     "coordinator",
-		"subagent_role": "bounded-worker",
+	// Form-first blank draft: default roles are pre-selected; fill the two
+	// required fields (name, purpose) inline, then confirm.
+	edited, err := setupClient.EditBuilder(
+		context.Background(),
+		app.BuilderEditCommand{
+			DraftID: session.DraftID, ExpectedRevision: session.Revision,
+			CatalogDigest: session.CatalogDigest,
+			ViewVersion:   session.ViewVersion,
+			Field:         "team_name",
+			Value:         "Controlled Execution Team",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for session.Question.ID != "" {
-		answer, ok := answers[session.Question.ID]
-		if !ok {
-			t.Fatalf("unexpected Builder question = %#v", session.Question)
-		}
-		session, err = setupClient.AnswerBuilder(
-			context.Background(),
-			app.BuilderAnswerCommand{
-				DraftID: session.DraftID, ExpectedRevision: session.Revision,
-				CatalogDigest: session.CatalogDigest,
-				ViewVersion:   session.ViewVersion,
-				QuestionID:    session.Question.ID,
-				Answer:        answer,
-			},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
+	session, err = setupClient.EditBuilder(
+		context.Background(),
+		app.BuilderEditCommand{
+			DraftID: edited.DraftID, ExpectedRevision: edited.Revision,
+			CatalogDigest: edited.CatalogDigest,
+			ViewVersion:   edited.ViewVersion,
+			Field:         "purpose",
+			Value:         "Run one bounded verified Mission",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 	confirmation, err := setupClient.ConfirmBuilder(
 		context.Background(),
@@ -10179,7 +10187,7 @@ func TestProductSetupRefreshesRuntimeCatalogAfterServiceConstruction(
 	if err != nil {
 		t.Fatalf("StartBuilder() error = %v", err)
 	}
-	if session.Question.ID != "team_name" ||
+	if session.Question.ID != "" ||
 		session.CatalogDigest == "" ||
 		session.ViewVersion != snapshot.ViewVersion {
 		t.Fatalf("builder session = %#v, snapshot = %#v", session, snapshot)

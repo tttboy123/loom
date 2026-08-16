@@ -12761,3 +12761,27 @@ docs/API:
   unrelated); macOS `236` tests, `0` failures (`1` visual-export skip); live matrix
   E2E PASS; OpenCode E2E `E2E-OK`; `git diff --check` clean. Evidence:
   `.loom-evidence/phase2d/P2D-W2D-provider-model-effort-matrix-v44.md`.
+
+`CURRENT / V45 FOLLOW-UP (TEAM CREATION + SIDEBAR FRICTION REDUCTION) (2026-08-16)`:
+- **Form-first blank Team builder**: `BuilderSourceBlank` now presents the full
+  editable draft immediately (default Main + SubAgent roles pre-selected) instead
+  of forcing the 4-step sequential Q&A (team_name → purpose → main_role →
+  subagent_role). Only the two required fields (name, purpose) gate confirmation;
+  explicit confirmation semantics are unchanged. Verified live on the installed
+  daemon: blank start returns no question + 2 default roles, and two inline
+  `builder_edit` calls flip `can_confirm=true`.
+- **Inline Name/Purpose editors**: the Team builder panel renders editable "Team
+  name" and "Bounded purpose" fields (commit via editBuilder) so users fill the
+  required fields in place and confirm.
+- **Sidebar "AGENT TEAMS" rail section**: confirmed Teams are listed in the nav
+  rail (click to open), with an empty state and a "New Agent Team" button that
+  opens Teams and starts a blank draft in one action.
+- **Multica research resolved**: the earlier "no network access" claim was wrong
+  for this environment — web search, GitHub API and docs fetch all work.
+  Live-verified `multica-ai/multica` (~46k stars, 20 agent CLIs, Apache 2.0 +
+  conditions, 4 trigger methods, creation requires only Name + Runtime), which
+  the form-first blank builder now mirrors.
+- **Verification**: Go `internal/app` + `cmd/loomd` full suites green; macOS
+  `236` tests, `0` failures (`1` visual-export skip); App rebuilt/reinstalled;
+  `git diff --check` clean. Evidence:
+  `.loom-evidence/phase2d/P2D-W2D-team-sidebar-friction-v45.md`.

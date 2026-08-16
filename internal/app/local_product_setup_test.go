@@ -254,35 +254,41 @@ func TestLocalProductSetupBuilderBlankFlowRequiresExplicitConfirmation(
 	}
 	if session.DraftID == "" ||
 		session.Revision != 1 ||
-		session.Question.ID != "team_name" ||
+		session.Question.ID != "" ||
 		session.CanConfirm {
 		t.Fatalf("initial session = %#v", session)
 	}
 
-	answers := []struct {
-		questionID string
-		answer     string
-	}{
-		{"team_name", "Local Review Team"},
-		{"purpose", "Review one bounded change"},
-		{"main_role", "role-main"},
-		{"subagent_role", "role-sub"},
+	// Form-first blank draft: no sequential Q&A gauntlet. The default Main
+	// Agent and SubAgent roles are already selected; the user fills the two
+	// required fields (name, purpose) inline, then reviews and confirms.
+	edited, err := service.EditBuilder(
+		context.Background(),
+		BuilderEditCommand{
+			DraftID:          session.DraftID,
+			ExpectedRevision: session.Revision,
+			CatalogDigest:    catalog.CatalogDigest,
+			ViewVersion:      session.ViewVersion,
+			Field:            "team_name",
+			Value:            "Local Review Team",
+		},
+	)
+	if err != nil || edited.CanConfirm {
+		t.Fatalf("EditBuilder(team_name) = %#v, %v", edited, err)
 	}
-	for _, answer := range answers {
-		session, err = service.AnswerBuilder(
-			context.Background(),
-			BuilderAnswerCommand{
-				DraftID:          session.DraftID,
-				ExpectedRevision: session.Revision,
-				CatalogDigest:    catalog.CatalogDigest,
-				ViewVersion:      session.ViewVersion,
-				QuestionID:       answer.questionID,
-				Answer:           answer.answer,
-			},
-		)
-		if err != nil {
-			t.Fatalf("AnswerBuilder(%s) error = %v", answer.questionID, err)
-		}
+	session, err = service.EditBuilder(
+		context.Background(),
+		BuilderEditCommand{
+			DraftID:          session.DraftID,
+			ExpectedRevision: edited.Revision,
+			CatalogDigest:    catalog.CatalogDigest,
+			ViewVersion:      edited.ViewVersion,
+			Field:            "purpose",
+			Value:            "Review one bounded change",
+		},
+	)
+	if err != nil {
+		t.Fatalf("EditBuilder(purpose) error = %v", err)
 	}
 	if session.Question.ID != "" ||
 		!session.CanConfirm ||

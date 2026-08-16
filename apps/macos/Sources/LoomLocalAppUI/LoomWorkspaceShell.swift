@@ -340,6 +340,8 @@ public struct LoomWorkspaceShell: View {
     @State private var fullGovernancePresentation: LoomFullGovernancePresentation?
     @State private var showFolderImporter = false
     @State private var builderAnswer = ""
+    @State private var builderName = ""
+    @State private var builderPurpose = ""
     @State private var diagnosticPreview: LocalDiagnosticBundlePreview?
     @State private var diagnosticExporter: LocalDiagnosticBundleExporter?
     @State private var pendingConversationRouteTransition:
@@ -519,6 +521,44 @@ public struct LoomWorkspaceShell: View {
                     .accessibilityLabel("New Conversation")
                     .help("New Conversation")
 
+                    railSectionTitle("AGENT TEAMS")
+                    let teams = store.snapshot?.teams ?? []
+                    if teams.isEmpty {
+                        if !compact {
+                            Text("No Agent Teams yet")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 10)
+                                .frame(height: 28, alignment: .leading)
+                        }
+                    } else {
+                        ForEach(teams) { team in
+                            teamRailButton(team, compact: compact)
+                        }
+                    }
+                    Button {
+                        selectNavigation(.teams)
+                        Task { await store.startBlankBuilder() }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "plus")
+                                .frame(width: 20)
+                            if !compact {
+                                Text("New Agent Team")
+                                Spacer()
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: compact ? .center : .leading
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("New Agent Team")
+                    .help("New Agent Team")
+
                     if !compact, store.workspace.tasks.count > 1 {
                         railSectionTitle("RECENT")
                         ForEach(
@@ -682,6 +722,50 @@ public struct LoomWorkspaceShell: View {
                 Label("Delete Conversation", systemImage: "trash")
             }
         }
+    }
+
+    private func teamRailButton(
+        _ team: LocalProductTeamSummary,
+        compact: Bool
+    ) -> some View {
+        let active = store.selectedTeamID == team.teamInstanceID
+        return Button {
+            store.selectTeam(team)
+            governance.open(.team)
+            selectedNavigation = .teams
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "person.2")
+                    .frame(width: 20)
+                    .foregroundStyle(
+                        active ? LoomGraphite.accent : Color.secondary
+                    )
+                if !compact {
+                    Text(
+                        LocalProductExperience.visibleName(
+                            team.displayName,
+                            internalID: team.teamInstanceID,
+                            fallback: "Agent Team"
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(active ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
+            .background(
+                active ? LoomGraphite.accentMuted : Color.clear,
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open Agent Team \(team.displayName)")
+        .help(team.displayName)
     }
 
     private static func conversationRelativeTime(_ date: Date) -> String {
@@ -1757,12 +1841,41 @@ public struct LoomWorkspaceShell: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(session.preview.name.isEmpty ? "Untitled Team" : session.preview.name)
-                    .font(.headline)
-                Text(session.preview.purpose.isEmpty ? "Purpose not set" : session.preview.purpose)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                TextField(
+                    "Team name",
+                    text: Binding(
+                        get: {
+                            builderName.isEmpty ? session.preview.name : builderName
+                        },
+                        set: { builderName = $0 }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    let value = builderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !value.isEmpty, value != session.preview.name else { return }
+                    Task { await store.editBuilder(field: "team_name", value: value) }
+                }
+                .disabled(store.setupState == .loading)
+                .accessibilityLabel("Agent Team name")
+
+                TextField(
+                    "Bounded purpose",
+                    text: Binding(
+                        get: {
+                            builderPurpose.isEmpty ? session.preview.purpose : builderPurpose
+                        },
+                        set: { builderPurpose = $0 }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    let value = builderPurpose.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !value.isEmpty, value != session.preview.purpose else { return }
+                    Task { await store.editBuilder(field: "purpose", value: value) }
+                }
+                .disabled(store.setupState == .loading)
+                .accessibilityLabel("Agent Team bounded purpose")
                 Label(
                     "\(session.preview.roles.count) agents · concurrency \(session.preview.requestedConcurrency)",
                     systemImage: "person.3"

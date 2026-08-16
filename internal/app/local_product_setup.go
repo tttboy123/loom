@@ -1207,8 +1207,15 @@ func (service *LocalProductSetupService) StartBuilder(
 		if err != nil {
 			return BuilderSessionView{}, err
 		}
-		session.view.Question = scoped.builderQuestion("team_name")
+		// Form-first: present the full editable draft immediately instead of
+		// a sequential Q&A gauntlet. The user fills name/purpose inline;
+		// confirmation stays explicit (CanConfirm requires name + purpose and
+		// a compatible, gap-free preview), matching the template/saved-team
+		// review-before-confirm contract.
 		if err := scoped.initializeStructuredSession(session); err != nil {
+			return BuilderSessionView{}, err
+		}
+		if err := scoped.makeSessionProposed(session); err != nil {
 			return BuilderSessionView{}, err
 		}
 	case BuilderSourceTemplate:
