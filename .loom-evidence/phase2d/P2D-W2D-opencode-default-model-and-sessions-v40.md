@@ -56,6 +56,11 @@ model). The Credential Vault only contained a verified DeepSeek account, so:
   UserDefaults/ProcessInfo per the native-app source gate.
 - UI: the chat header shows the active conversation title, a switcher menu of
   all sessions, and a New Conversation button.
+- UI (V41 follow-up): the navigation rail adds a visible "CONVERSATIONS"
+  section listing every session (title + relative time, active highlighted)
+  with a New Conversation button, so conversations are clearly distinguishable
+  at a glance; the registry survives relaunch
+  (`testChatSessionsSurviveRestartViaRegistryFile`).
 
 ## 4. Verification
 

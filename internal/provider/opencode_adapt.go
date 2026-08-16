@@ -35,8 +35,12 @@ func OpenCodeCredentialEnv(providerID string) (string, bool) {
 		return "MINIMAX_API_KEY", true
 	case "xai":
 		return "XAI_API_KEY", true
-	case "zhipu":
+	case "zhipu", "zai":
+		// OpenCode identifies GLM models under the `zai` provider prefix and
+		// reads the Zhipu key from ZHIPU_API_KEY.
 		return "ZHIPU_API_KEY", true
+	case "opencode":
+		return "OPENCODE_API_KEY", true
 	case "stepfun":
 		return "STEPFUN_API_KEY", true
 	case "openrouter":

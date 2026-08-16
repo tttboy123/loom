@@ -12670,3 +12670,36 @@ non-technical message.
   installed App's header shows the session switcher and the registry file is
   written. Evidence:
   `.loom-evidence/phase2d/P2D-W2D-opencode-default-model-and-sessions-v40.md`.
+
+`CURRENT / V41 FOLLOW-UP (VISIBLE CONVERSATION SESSIONS) (2026-08-16)`: the
+App now makes conversations visibly distinct: the navigation rail shows a
+"CONVERSATIONS" section listing every session (title + relative time, active
+session highlighted with a checkmark) with a New Conversation button, in
+addition to the header switcher menu. Sessions persist across App restarts via
+`~/Library/Application Support/Loom/chat-sessions.json`; a new test proves a
+fresh store instance (simulated relaunch) restores all sessions and the
+previously selected one. macOS package `235` tests, `0` failures (`1`
+visual-export skip); live OpenCode E2E still `E2E-OK`; App reinstalled and
+running.
+
+`CURRENT / V42 FOLLOW-UP (OPENCODE MODEL CATALOG CORRECTED) (2026-08-16)`: the
+OpenCode model configuration was wrong versus the installed OpenCode CLI
+1.18.3 (`opencode models` + models.dev cache), and CCswitch's OpenCode
+integration confirmed the correct provider/model shape:
+- `zhipu/glm-4.5` was the wrong provider prefix — the CLI exposes GLM under
+  `zai/` (`zai/glm-4.5`, `zai/glm-5.2`, …) with `ZHIPU_API_KEY`.
+- `openai/gpt-5.5` is not usable through the OpenCode CLI in this environment
+  (no openai provider / key) and is removed from the OpenCode catalog (the
+  Codex profile still covers OpenAI models).
+- Missing real CLI models added: `deepseek/deepseek-reasoner`,
+  `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`,
+  `minimax/MiniMax-M2.7`, `zai/glm-4.5`, `zai/glm-5.2`,
+  `opencode/deepseek-v4-flash-free`.
+- Reasoning efforts now follow each model's real capability
+  (v4-flash/v4-pro → low/high/max, glm-5.2 → high/max, toggle-only models →
+  none) instead of a fake `low/medium/high/minimal` for every model.
+- `OpenCodeConversationDefaultModel` is now `deepseek/deepseek-chat` (a real
+  CLI model) and `OpenCodeCredentialEnv` maps `zai` → `ZHIPU_API_KEY` and
+  `opencode` → `OPENCODE_API_KEY`.
+- Verified live: `deepseek/deepseek-v4-flash` returns `FLASH-OK` through the
+  CLI; OpenCode E2E still `E2E-OK`; Go + macOS `235` tests green.

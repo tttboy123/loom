@@ -18,9 +18,10 @@ import (
 
 const (
 	// OpenCodeConversationDefaultModel is the default model identity used only
-	// when a profile does not pin one; callers pass provider/model identities
-	// such as "deepseek/deepseek-chat".
-	OpenCodeConversationDefaultModel   = "openai/gpt-5.5"
+	// when a profile does not pin one. It is a real OpenCode CLI 1.18.3 model
+	// (deepseek/deepseek-chat) so a profile with no verified Provider account
+	// still starts from a resolvable model instead of an unavailable one.
+	OpenCodeConversationDefaultModel   = "deepseek/deepseek-chat"
 	maxOpenCodeConversationPromptBytes = 64 * 1024
 )
 

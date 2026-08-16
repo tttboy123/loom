@@ -37,16 +37,28 @@ func TestConversationModelCatalogLayers(t *testing.T) {
 	}
 	opencode := ProviderConversationModels("opencode")
 	opencodeModels := map[string]bool{}
+	efforts := map[string][]string{}
 	for _, model := range opencode {
 		opencodeModels[model.ID] = true
-		if len(model.ReasoningEfforts) == 0 {
-			t.Fatalf("opencode model %q should declare reasoning efforts", model.ID)
+		efforts[model.ID] = append([]string(nil), model.ReasoningEfforts...)
+	}
+	for _, required := range []string{
+		"deepseek/deepseek-chat", "deepseek/deepseek-v4-flash",
+		"minimax/MiniMax-M3", "zai/glm-4.5", "opencode/deepseek-v4-flash-free",
+	} {
+		if !opencodeModels[required] {
+			t.Fatalf("opencode models missing %q: %#v", required, opencodeModels)
 		}
 	}
-	if !opencodeModels["deepseek/deepseek-chat"] ||
-		!opencodeModels["minimax/MiniMax-M3"] ||
-		!opencodeModels["zhipu/glm-4.5"] {
-		t.Fatalf("opencode models = %#v", opencodeModels)
+	// Reasoning efforts follow the OpenCode CLI 1.18.3 per-model capability:
+	// effort-capable models declare their values, toggle-only models declare
+	// none, and the invalid zhipu/ prefix is not used (zai is the CLI prefix).
+	if opencodeModels["zhipu/glm-4.5"] {
+		t.Fatalf("zhipu/ prefix must not be used; use zai/glm-4.5")
+	}
+	if len(efforts["deepseek/deepseek-v4-flash"]) == 0 ||
+		len(efforts["deepseek/deepseek-chat"]) != 0 {
+		t.Fatalf("reasoning efforts = %#v", efforts)
 	}
 }
 
@@ -60,17 +72,26 @@ func TestValidateConversationModelAndReasoning(t *testing.T) {
 	) {
 		t.Fatalf("cross model error = %v", err)
 	}
-	opencodeModel, err := ValidateConversationModel("opencode", "zhipu/glm-4.5")
+	opencodeModel, err := ValidateConversationModel("opencode", "zai/glm-4.5")
 	if err != nil {
 		t.Fatalf("opencode model error = %v", err)
 	}
-	if err := ValidateConversationReasoningEffort(opencodeModel, "high"); err != nil {
+	// Toggle-only GLM-4.5 has no effort values: empty effort is valid and a
+	// named effort is rejected.
+	if err := ValidateConversationReasoningEffort(opencodeModel, ""); err != nil {
 		t.Fatalf("opencode reasoning error = %v", err)
 	}
-	if err := ValidateConversationReasoningEffort(opencodeModel, "ultra"); !errors.Is(
+	if err := ValidateConversationReasoningEffort(opencodeModel, "high"); !errors.Is(
 		err, ErrInvalidConversationModel,
 	) {
 		t.Fatalf("unsupported reasoning error = %v", err)
+	}
+	flash, err := ValidateConversationModel("opencode", "deepseek/deepseek-v4-flash")
+	if err != nil || flash.ID != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("flash model=%#v error=%v", flash, err)
+	}
+	if err := ValidateConversationReasoningEffort(flash, "max"); err != nil {
+		t.Fatalf("flash max effort error = %v", err)
 	}
 	if err := ValidateConversationReasoningEffort(opencodeModel, ""); err != nil {
 		t.Fatalf("empty reasoning error = %v", err)

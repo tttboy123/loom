@@ -3307,7 +3307,7 @@ final class LocalProductStoreTests: XCTestCase {
           "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
           "providers":[],
           "conversation_profiles":[
-            {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"openai/gpt-5.5","auth_mode":"native_auth","credential_revision":0}
+            {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"deepseek/deepseek-chat","auth_mode":"native_auth","credential_revision":0}
           ],
           "runtimes":[],"saved_teams":[],"templates":[],"role_options":[],
           "skills":[],"permissions":[],"resources":[]
@@ -3316,12 +3316,16 @@ final class LocalProductStoreTests: XCTestCase {
       )
     )
     let openCodeStore = LocalProductStore(client: client, initialSetupSnapshot: openCodeSnapshot)
-    XCTAssertEqual(openCodeStore.effectiveConversationModelID, "openai/gpt-5.5")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "medium")
+    XCTAssertEqual(openCodeStore.effectiveConversationModelID, "deepseek/deepseek-chat")
+    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
+    // DeepSeek Chat is toggle-only in the OpenCode CLI: no effort values.
     openCodeStore.selectConversationModel("deepseek/deepseek-chat")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "medium")
-    openCodeStore.selectConversationReasoningEffort("high")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "high")
+    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
+    // Effort-capable models expose their exact CLI values.
+    openCodeStore.selectConversationModel("deepseek/deepseek-v4-flash")
+    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "low")
+    openCodeStore.selectConversationReasoningEffort("max")
+    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "max")
   }
 
   func testConversationConflictSelfHealsAndRetriesWithCurrentBinding() async throws {
@@ -3351,6 +3355,34 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertNotNil(client.recordedContextMode)
     XCTAssertNotNil(client.recordedExpectedExecutionBinding)
     XCTAssertFalse(store.isSendingChatMessage)
+  }
+  func testChatSessionsSurviveRestartViaRegistryFile() async throws {
+    let fileURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-sessions-restart-\\(UUID().uuidString).json")
+    let first = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: fileURL
+    )
+    let firstThreadID = first.currentChatThreadID()
+    first.newConversation()
+    let secondThreadID = first.currentChatThreadID()
+    XCTAssertNotEqual(secondThreadID, firstThreadID)
+    XCTAssertEqual(first.chatSessions.count, 2)
+
+    // A brand-new store instance (fresh App launch) reads the same file and
+    // restores both conversations plus the previously selected one.
+    let second = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: fileURL
+    )
+    XCTAssertEqual(second.chatSessions.count, 2)
+    XCTAssertTrue(second.chatSessions.contains { $0.threadID == firstThreadID })
+    XCTAssertTrue(second.chatSessions.contains { $0.threadID == secondThreadID })
+    XCTAssertEqual(second.selectedChatSessionID, secondThreadID)
+    XCTAssertEqual(second.currentChatThreadID(), secondThreadID)
+    try? FileManager.default.removeItem(at: fileURL)
   }
 }
 

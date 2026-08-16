@@ -68,11 +68,23 @@ func ProviderConversationModels(providerID string) []ConversationModel {
 			{ID: AnthropicConversationModelID, DisplayName: "Claude Sonnet 5"},
 		}
 	case "opencode":
+		// Grounded in the installed OpenCode CLI 1.18.3 model catalog
+		// (`opencode models` + models.dev cache). Provider prefixes and
+		// reasoning efforts follow the CLI: deepseek/*, minimax/*, zai/* (GLM
+		// uses the `zai` provider prefix with ZHIPU_API_KEY), and the hosted
+		// opencode/* free tier. `openai/*` is intentionally not listed because
+		// the Codex profile already covers OpenAI models and the OpenCode CLI
+		// does not expose an openai provider in this environment.
 		return []ConversationModel{
-			{ID: "deepseek/deepseek-chat", DisplayName: "DeepSeek Chat", ReasoningEfforts: []string{"low", "medium", "high", "minimal"}},
-			{ID: "minimax/MiniMax-M3", DisplayName: "MiniMax M3", ReasoningEfforts: []string{"low", "medium", "high", "minimal"}},
-			{ID: "zhipu/glm-4.5", DisplayName: "Zhipu GLM-4.5", ReasoningEfforts: []string{"low", "medium", "high", "minimal"}},
-			{ID: "openai/gpt-5.5", DisplayName: "OpenAI GPT-5.5", ReasoningEfforts: []string{"low", "medium", "high", "minimal"}},
+			{ID: "deepseek/deepseek-chat", DisplayName: "DeepSeek Chat"},
+			{ID: "deepseek/deepseek-reasoner", DisplayName: "DeepSeek Reasoner"},
+			{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"low", "high", "max"}},
+			{ID: "deepseek/deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"low", "high", "max"}},
+			{ID: "minimax/MiniMax-M2.7", DisplayName: "MiniMax M2.7"},
+			{ID: "minimax/MiniMax-M3", DisplayName: "MiniMax M3"},
+			{ID: "zai/glm-4.5", DisplayName: "Zhipu GLM-4.5"},
+			{ID: "zai/glm-5.2", DisplayName: "Zhipu GLM-5.2", ReasoningEfforts: []string{"high", "max"}},
+			{ID: "opencode/deepseek-v4-flash-free", DisplayName: "DeepSeek V4 Flash (OpenCode)", ReasoningEfforts: []string{"low", "high", "max"}},
 		}
 	default:
 		return nil

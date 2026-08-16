@@ -2791,26 +2791,54 @@ public func localProductConversationModels(
     case "anthropic":
         return [.init(modelID: "claude-sonnet-5", displayName: "Claude Sonnet 5", reasoningEfforts: [])]
     case "opencode":
+        // Grounded in the installed OpenCode CLI 1.18.3 model catalog
+        // (`opencode models`): provider prefixes and reasoning efforts follow
+        // the CLI (zai/ for GLM with ZHIPU_API_KEY, opencode/* free tier).
         return [
             .init(
                 modelID: "deepseek/deepseek-chat",
                 displayName: "DeepSeek Chat",
-                reasoningEfforts: ["low", "medium", "high", "minimal"]
+                reasoningEfforts: []
+            ),
+            .init(
+                modelID: "deepseek/deepseek-reasoner",
+                displayName: "DeepSeek Reasoner",
+                reasoningEfforts: []
+            ),
+            .init(
+                modelID: "deepseek/deepseek-v4-flash",
+                displayName: "DeepSeek V4 Flash",
+                reasoningEfforts: ["low", "high", "max"]
+            ),
+            .init(
+                modelID: "deepseek/deepseek-v4-pro",
+                displayName: "DeepSeek V4 Pro",
+                reasoningEfforts: ["low", "high", "max"]
+            ),
+            .init(
+                modelID: "minimax/MiniMax-M2.7",
+                displayName: "MiniMax M2.7",
+                reasoningEfforts: []
             ),
             .init(
                 modelID: "minimax/MiniMax-M3",
                 displayName: "MiniMax M3",
-                reasoningEfforts: ["low", "medium", "high", "minimal"]
+                reasoningEfforts: []
             ),
             .init(
-                modelID: "zhipu/glm-4.5",
+                modelID: "zai/glm-4.5",
                 displayName: "Zhipu GLM-4.5",
-                reasoningEfforts: ["low", "medium", "high", "minimal"]
+                reasoningEfforts: []
             ),
             .init(
-                modelID: "openai/gpt-5.5",
-                displayName: "OpenAI GPT-5.5",
-                reasoningEfforts: ["low", "medium", "high", "minimal"]
+                modelID: "zai/glm-5.2",
+                displayName: "Zhipu GLM-5.2",
+                reasoningEfforts: ["high", "max"]
+            ),
+            .init(
+                modelID: "opencode/deepseek-v4-flash-free",
+                displayName: "DeepSeek V4 Flash (OpenCode)",
+                reasoningEfforts: ["low", "high", "max"]
             ),
         ]
     default:

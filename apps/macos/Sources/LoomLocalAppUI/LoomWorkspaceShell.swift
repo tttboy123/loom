@@ -493,6 +493,32 @@ public struct LoomWorkspaceShell: View {
                         navigationButton(item, compact: compact)
                     }
 
+                    railSectionTitle("CONVERSATIONS")
+                    ForEach(store.chatSessions) { session in
+                        conversationButton(session, compact: compact)
+                    }
+                    Button {
+                        store.newConversation()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "square.and.pencil")
+                                .frame(width: 20)
+                            if !compact {
+                                Text("New Conversation")
+                                Spacer()
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: compact ? .center : .leading
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("New Conversation")
+                    .help("New Conversation")
+
                     if !compact, store.workspace.tasks.count > 1 {
                         railSectionTitle("RECENT")
                         ForEach(
@@ -604,6 +630,61 @@ public struct LoomWorkspaceShell: View {
             .padding(.horizontal, 10)
             .padding(.top, 16)
             .padding(.bottom, 3)
+    }
+
+    private func conversationButton(
+        _ session: LocalProductChatSession,
+        compact: Bool
+    ) -> some View {
+        let active = session.threadID == store.selectedChatSessionID
+        return Button {
+            store.selectChatSession(session.threadID)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: active ? "bubble.left.fill" : "bubble.left")
+                    .foregroundStyle(
+                        active ? LoomGraphite.accent : Color.secondary
+                    )
+                    .frame(width: 20)
+                if !compact {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(session.title)
+                            .font(.caption)
+                            .foregroundStyle(active ? Color.primary : Color.secondary)
+                            .lineLimit(1)
+                        Text(Self.conversationRelativeTime(session.updatedAt))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if active {
+                        Image(systemName: "checkmark")
+                            .font(.caption2)
+                            .foregroundStyle(LoomGraphite.accent)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 38)
+            .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
+            .background(
+                active ? LoomGraphite.accent.opacity(0.12) : Color.clear
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Conversation \(session.title)")
+    }
+
+    private static func conversationRelativeTime(_ date: Date) -> String {
+        let elapsed = Date().timeIntervalSince(date)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        if elapsed < 60 {
+            return "just now"
+        }
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func recentTaskButton(
