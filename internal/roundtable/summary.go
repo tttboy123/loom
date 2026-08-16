@@ -42,8 +42,9 @@ type SummaryMessage struct {
 // BuildAlignmentSummary normalizes the session view into the summary that
 // Conclude publishes to the Evidence Store. It is canonical: seats are
 // sorted, rounds keep Journal order, and message bodies/refs are copied
-// verbatim from the replayed facts.
-func BuildAlignmentSummary(view View) AlignmentSummary {
+// verbatim from the replayed facts. Empty artifact refs serialize as [] so
+// strict JSON decoders never see null.
+func BuildAlignmentSummary(view View, concludedAt time.Time) AlignmentSummary {
 	seatList := view.SeatsList()
 	seats := make([]SummarySeat, 0, len(seatList))
 	for _, seat := range seatList {
@@ -55,7 +56,7 @@ func BuildAlignmentSummary(view View) AlignmentSummary {
 	for _, round := range view.Rounds {
 		messages := make([]SummaryMessage, 0, len(round.Messages))
 		for _, message := range round.Messages {
-			refs := append([]string(nil), message.ArtifactRefs...)
+			refs := normalizedArtifactRefs(message.ArtifactRefs)
 			sort.Strings(refs)
 			messages = append(messages, SummaryMessage{
 				ID: message.ID, RoundID: message.RoundID,
@@ -70,6 +71,7 @@ func BuildAlignmentSummary(view View) AlignmentSummary {
 	return AlignmentSummary{
 		SchemaVersion: SchemaVersion, SessionID: view.Session.ID,
 		ModeratorSeat: view.Session.ModeratorSeat, Title: view.Session.Title,
-		Seats: seats, Rounds: rounds,
+		ConcludedAt: concludedAt,
+		Seats:       seats, Rounds: rounds,
 	}
 }

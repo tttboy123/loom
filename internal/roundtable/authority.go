@@ -328,7 +328,7 @@ func (authority *Authority) ProposeMessage(
 			SchemaVersion: SchemaVersion, SessionID: command.SessionID,
 			RoundID: command.RoundID, MessageID: command.MessageID,
 			WriterSeat: command.WriterSeat, TargetSeat: command.TargetSeat,
-			Body: command.Body, ArtifactRefs: append([]string(nil), command.ArtifactRefs...),
+			Body: command.Body, ArtifactRefs: normalizedArtifactRefs(command.ArtifactRefs),
 			BodyDigest: bodyDigest, ProposedAt: command.EmittedAt,
 		})
 		if err != nil {
@@ -504,12 +504,17 @@ func (authority *Authority) ConcludeSession(
 			!validCorrelationID(command.CorrelationID) {
 			return View{}, fact{}, ErrInvalidRoundtableSession
 		}
-		summary := BuildAlignmentSummary(state.view)
+		summary := BuildAlignmentSummary(state.view, command.EmittedAt)
 		encoded, err := json.Marshal(summary)
 		if err != nil {
 			return View{}, fact{}, err
 		}
 		summaryDigest := digestBytes(string(encoded))
+		// Publish-before-append is deliberate: the Journal fact must never
+		// reference a missing artifact. A concurrent CAS failure can leave an
+		// orphan digest-bound artifact (unreferenced, content-addressed,
+		// bounded) which is harmless; the reverse ordering would risk a
+		// committed fact pointing at a missing artifact.
 		if _, err := authority.evidence.Publish(
 			ctx, bytes.NewReader(encoded), summaryDigest,
 		); err != nil {

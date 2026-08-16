@@ -24,6 +24,7 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/production"
+	"loom-pi-rebuild/internal/roundtable"
 	"loom-pi-rebuild/internal/work"
 )
 
@@ -45,6 +46,7 @@ const (
 	ScreenAssets        Screen = "Evolution Assets"
 	ScreenQueue         Screen = "Queue"
 	ScreenWorkers       Screen = "Workers"
+	ScreenRoundtable    Screen = "Roundtable"
 	ScreenIntegration   Screen = "Integration"
 	ScreenPermissions   Screen = "Permissions"
 	ScreenExecution     Screen = "Execution"
@@ -69,6 +71,7 @@ var screens = []Screen{
 	ScreenAssets,
 	ScreenQueue,
 	ScreenWorkers,
+	ScreenRoundtable,
 	ScreenIntegration,
 	ScreenPermissions,
 	ScreenExecution,
@@ -476,6 +479,11 @@ type integrationFailedMsg struct{ err error }
 type queueCommandDoneMsg struct{ err error }
 type workersCommandDoneMsg struct{ err error }
 type integrationCommandDoneMsg struct{ err error }
+type roundtableLoadedMsg struct {
+	view roundtable.View
+	err  error
+}
+type roundtableCommandDoneMsg struct{ err error }
 
 type builderStartedMsg struct {
 	session app.BuilderSessionView
@@ -561,6 +569,7 @@ const (
 	entryPermissionProfile  = "permission_profile"
 	entryPermissionCall     = "permission_call"
 	entryCustomerRuleImport = "customer_rule_import"
+	entryRoundtableSession  = "roundtable_session"
 )
 
 type Model struct {
@@ -571,6 +580,7 @@ type Model struct {
 	assetClient            EvolutionAssetClient
 	queueClient            QueueClient
 	workersClient          WorkersClient
+	roundtableClient       RoundtableClient
 	integrationClient      IntegrationClient
 	permissionClient       PermissionClient
 	productionClient       ProductionClient
@@ -632,6 +642,10 @@ type Model struct {
 	evolutionAssets        api.EvolutionAssetSnapshot
 	queueSnapshot          api.QueueSnapshot
 	workersSnapshot        app.WorkersSnapshot
+	roundtableView         roundtable.View
+	roundtableSessionID    string
+	roundtableError        string
+	roundtableLoading      bool
 	integrationSnapshot    app.IntegrationSnapshot
 	permissionSnapshot     app.PermissionSnapshot
 	permissionAttention    app.PermissionAttention
@@ -698,6 +712,7 @@ func newModelWithContext(
 		assetClient:            assetClient,
 		queueClient:            queueClientFrom(client),
 		workersClient:          workersClientFrom(client),
+		roundtableClient:       roundtableClientFrom(client),
 		integrationClient:      integrationClientFrom(client),
 		permissionClient:       permissionClientFrom(client),
 		boundedExecutionClient: boundedExecutionClientFrom(client),
@@ -1042,6 +1057,26 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.lastError = ""
 		return model, model.loadIntegration()
+	case roundtableLoadedMsg:
+		if message.err != nil {
+			model.roundtableError = message.err.Error()
+			model.roundtableLoading = false
+			return model, nil
+		}
+		model.roundtableView = message.view
+		model.roundtableError = ""
+		model.roundtableLoading = false
+		return model, nil
+	case roundtableCommandDoneMsg:
+		model.roundtableLoading = false
+		if message.err != nil {
+			model.roundtableError = message.err.Error()
+			// Reload the authoritative Journal view so the next step re-derives
+			// from real state (e.g. a conflict means the hop already happened).
+			return model, model.loadRoundtable()
+		}
+		model.roundtableError = ""
+		return model, model.loadRoundtable()
 	case permissionsLoadedMsg:
 		model.loading = false
 		model.offline = false
@@ -1219,6 +1254,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadWorkers()
 			}
+			if model.Screen() == ScreenRoundtable {
+				model.roundtableLoading = true
+				return model, model.loadRoundtable()
+			}
 			if model.Screen() == ScreenIntegration {
 				model.loading = true
 				return model, model.loadIntegration()
@@ -1311,6 +1350,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return model, nil
 		case "r":
+			if model.Screen() == ScreenRoundtable && model.roundtableClient != nil &&
+				model.roundtableSessionID != "" {
+				model.roundtableLoading = true
+				return model, model.loadRoundtable()
+			}
 			model.loading = true
 			if model.Screen() == ScreenAssets {
 				return model, model.loadEvolutionAssets("")
@@ -1475,6 +1519,18 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.entry = []byte{}
 				return model, nil
 			}
+			if model.Screen() == ScreenRoundtable && model.roundtableClient != nil {
+				if model.roundtableLoading {
+					return model, nil
+				}
+				if model.roundtableSessionID == "" {
+					model.entryMode = entryRoundtableSession
+					model.entry = []byte(roundtableDefaultSession)
+					return model, nil
+				}
+				model.roundtableLoading = true
+				return model, model.roundtableAdvanceStep()
+			}
 			if model.Screen() == ScreenAssets && model.assetClient != nil {
 				model.evolutionCreateMode = "create_skill"
 				model.entryMode = entryEvolutionAsset
@@ -1592,6 +1648,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.standingOrderRevoke(orderID)
 			}
 		case "e":
+			if model.Screen() == ScreenRoundtable && model.roundtableClient != nil {
+				model.entryMode = entryRoundtableSession
+				model.entry = []byte(model.roundtableSessionID)
+				return model, nil
+			}
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
 				model.loading = true
 				return model, model.customerRuleEvaluate()
@@ -2603,6 +2664,8 @@ func (model Model) screenBody() string {
 		return model.renderQueueView()
 	case ScreenWorkers:
 		return model.renderWorkersView()
+	case ScreenRoundtable:
+		return model.renderRoundtableView()
 	case ScreenIntegration:
 		return model.renderIntegrationView()
 	default:
@@ -2776,6 +2839,8 @@ func (model Model) renderTeamBuilder() string {
 			prompt = "Task filter"
 		case entryEvolutionSearch:
 			prompt = "Asset search"
+		case entryRoundtableSession:
+			prompt = "Roundtable session id"
 		}
 		lines = append(
 			lines,
@@ -4174,6 +4239,24 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			model.loading = true
 			return model, model.createQueueJob(path)
+		}
+		if model.entryMode == entryRoundtableSession {
+			sessionID := strings.TrimSpace(sanitizeCell(string(model.entry), 128))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if sessionID == "" {
+				return model, nil
+			}
+			if sessionID != model.roundtableSessionID {
+				// Session switch: never let the previous session's cached view
+				// drive step derivation for the new session.
+				model.roundtableView = roundtable.View{}
+				model.roundtableError = ""
+			}
+			model.roundtableSessionID = sessionID
+			model.roundtableLoading = true
+			return model, model.roundtableAdvanceStep()
 		}
 		if model.entryMode == entryPermissionProfile {
 			profileID := strings.TrimSpace(sanitizeCell(string(model.entry), 128))

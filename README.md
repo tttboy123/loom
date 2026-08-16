@@ -115,7 +115,12 @@ Mission、Team、Node、Attempt、generation 和当前 Projection version：
 - 授权后的 tentative Frame、权威 timeline、cursor reconnect 与 `stream_gap`；
 - 客户 Rule、持久 Approval、bounded recovery 与独立 Verifier；
 - executor 只能提交 `ready_for_review`，不能自我宣布完成；
-- Pi 0.82.1、本地离线模型与 `loom.bridge.v1` 的受控真实执行闭环。
+- Pi 0.82.1、本地离线模型与 `loom.bridge.v1` 的受控真实执行闭环；
+- 受治理 **RoundTable 交接账本**：Moderator 主持多个席位、轮次与有界消息
+  （8 KiB），digest-only Artifact 引用，每跳主持人确认
+  （propose → relay → acknowledge → insert/drop），Conclude 发布
+  digest-bound `AlignmentSummary` 到 Evidence Store；全部写入走 Journal CAS，
+  重启重放同一视图/同一 digest。
 
 ### Phase 2A 开发预览
 
@@ -125,6 +130,16 @@ Mission、Team、Node、Attempt、generation 和当前 Projection version：
 - Codex native-auth 状态与 MiniMax/OS Secret Store Provider setup 边界；
 - Provider 管理入口、Team Builder preflight 和保存前确认；
 - Authorization、Review、Recovery 的单一 `mission_decision` IPC 边界。
+
+### Phase 4 · RoundTable（受治理交接）
+
+- macOS：侧边栏 **Roundtable** 面板，自引导双席位旅程
+  （建会话 → 加席位 → 开轮 → propose → relay → ack → insert → conclude），
+  可单步或一键跑完；
+- TUI：**Roundtable** 屏（`tab` 循环进入），`n` 走下一步、`r` 刷新重放、
+  `e` 切换会话；重启后同一会话重放同一状态，重复 `n` 不会二次继续；
+- 双端共用同一套 Journal 权威与 strict IPC（`roundtable_*`），
+  结论以证据里的 `AlignmentSummary` 工件为准。
 
 ### 尚未作为完成产品交付
 
@@ -178,8 +193,8 @@ Event Journal 是状态权威。Projection、Board、Timeline、Attention、通�
 
 | 表面 | 定位 | 当前状态 |
 |---|---|---|
-| **macOS App** | 普通用户的 Mission、Team、Decision 与 Evidence 工作台 | Phase 2A preview |
-| **TUI** | 终端中的 Mission Board、Team Builder、Runs、Attention 与 Timeline | Phase 2A preview |
+| **macOS App** | 普通用户的 Mission、Team、Decision、Evidence 与 RoundTable 工作台 | Phase 2A preview + RoundTable |
+| **TUI** | 终端中的 Mission Board、Team Builder、Runs、Attention、Timeline 与 RoundTable | Phase 2A preview + RoundTable |
 | **CLI** | 脚本化路由、只读查询、诊断和恢复 | 可用；不是主要交互产品 |
 | **loomd** | Runtime discovery、Projection、IPC 与受管执行服务 | 引擎可用；产品化启动仍受门禁约束 |
 

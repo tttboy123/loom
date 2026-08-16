@@ -2,6 +2,36 @@
 
 Updated: 2026-08-17
 
+## Phase 4 · 4.1 RoundTable（受治理交接）上线与稳定化 (2026-08-17)
+
+`CURRENT / 4.1 INSTALLED-LIVE PASS`: RoundTable is committed (01ff06c8 +
+this slice), the app is rebuilt + reinstalled at `/Users/lune/Applications/Loom.app`
+(v0.5.3; old preserved at `Loom.app.previous`), and the full dual-seat journey
+runs over the real installed socket: create → add writer/target seats → open
+round → propose → relay → ack → insert → conclude. The `AlignmentSummary`
+artifact exists in the Evidence Store, its SHA-256 equals the Journal's
+`summary_digest`, and a re-read after conclude returns the identical view
+digest (restart consistency; post-conclude writes rejected).
+
+`CURRENT / TUI`: new **Roundtable** screen (tab-cycled) drives the same
+Journal-authoritative journey with `n` next / `r` replay / `e` session; a
+loading guard prevents repeat-`n` double-continue; live frames end in
+`Session concluded · digest <64hex>`. macOS `RoundtableWorkbench` (sidebar
+Roundtable) remains the graphical dual-seat journey.
+
+`CURRENT / FIXES`:
+- `AlignmentSummary` now records a real `concluded_at` and serializes empty
+  artifact refs as `[]` (was zero timestamp / `null`).
+- The Journal `RoundtableMessageProposed` fact payload now stores
+  `artifact_refs: []` (was `null`), consistent with the replayed view.
+- TUI wire request types exported so the CLI/live driver can drive the journey.
+
+`VERIFICATION`: full Go suite green (serial, `-p 1`); `swift test` 244/0;
+race on roundtable+tui+loomd green; gofmt/vet/`git diff --check` clean;
+installed live IPC journey + TUI journey logs and per-gate evidence in
+`.loom-evidence/phase4/4.1-roundtable/`. Independent review performed;
+sign-off pending operator (08-review-signoff.md).
+
 ## Phase 2D Conversation Model Routing + Credential Gating FIX — Installed 0.5.3 (2026-08-17)
 
 `CURRENT / INSTALLED 0.5.3`: rebuilt and installed `/Users/lune/Applications/Loom.app`

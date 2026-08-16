@@ -38,6 +38,7 @@ open /path/to/Loom.app
 | Needs You | 注意力工作区（待你处理的可执行事实） |
 | Library | 演化资产库（Evolution Assets） |
 | Runtime & Providers | 运行时与 Provider 连接管理 |
+| Roundtable | 受治理交接账本：双席位旅程与 AlignmentSummary |
 
 底部连接脚注显示 daemon/投影状态（online/partial/preserved/unavailable
 等），语义与投影保持一致。
@@ -60,6 +61,19 @@ open /path/to/Loom.app
 - **Plan**：逻辑节点拓扑与状态；
 - **Changes**：ready_for_review / verification / acceptance 记录；
 - **Evidence**：Evidence 引用列表（完整权威活动加载后才显示）。
+
+### Roundtable（受治理交接）
+
+- 左侧导航 **Roundtable** 打开受治理交接工作台：
+  1. 填会话 ID 与标题，**Create session**（Moderator 席位自动创建）；
+  2. **Run full journey** 或逐步执行：加 Writer/Target 席位 → 开轮 →
+     propose（writer）→ relay（moderator）→ acknowledge（target）→
+     insert（moderator）→ conclude（moderator）；
+  3. 会话状态实时展示席位、轮次、消息状态与 body digest；
+- 结论生成 digest-bound `AlignmentSummary` 工件；会话一旦 concluded，
+  后续写入会被拒绝（状态里显示 Concluded）。
+- 模型层仍然按 Provider → Model → 推理强度三层选择，凭据未验证的模型
+  会被禁用并给出可操作提示。
 
 ## 与 TUI 的关系
 

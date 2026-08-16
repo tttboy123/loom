@@ -2334,6 +2334,7 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenAssets,
 		ScreenQueue,
 		ScreenWorkers,
+		ScreenRoundtable,
 		ScreenIntegration,
 		ScreenPermissions,
 		ScreenExecution,
@@ -2345,13 +2346,15 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 		if cmd != nil && want != ScreenAssets && want != ScreenQueue &&
-			want != ScreenWorkers && want != ScreenIntegration &&
+			want != ScreenWorkers && want != ScreenRoundtable &&
+			want != ScreenIntegration &&
 			want != ScreenExecution && want != ScreenProduction &&
 			want != ScreenAttention {
 			t.Fatalf("screen navigation produced command for %s", want)
 		}
 		if cmd == nil && (want == ScreenAssets || want == ScreenQueue ||
-			want == ScreenWorkers || want == ScreenIntegration ||
+			want == ScreenWorkers || want == ScreenRoundtable ||
+			want == ScreenIntegration ||
 			want == ScreenExecution || want == ScreenProduction ||
 			want == ScreenAttention) {
 			t.Fatalf("%s navigation omitted read IPC refresh", want)
