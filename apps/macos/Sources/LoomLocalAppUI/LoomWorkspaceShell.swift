@@ -974,6 +974,51 @@ public struct LoomWorkspaceShell: View {
         }
     }
 
+    /// First-run quick start: show the current conversation Provider status and
+    /// the 3-step path so a new user knows what to do next without reading docs.
+    @ViewBuilder
+    private var quickStartGuide: some View {
+        let profile = store.selectedConversationProfile
+        let providerReady = profile != nil
+        let folderReady = store.workspace.selectedFolderDisplayName != nil
+        let teamReady = !(store.snapshot?.teams.isEmpty ?? true)
+
+        VStack(alignment: .leading, spacing: 10) {
+            if providerReady, let profile {
+                Label(
+                    "Chat is ready with \(conversationProfileMenuLabel(profile))",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .foregroundStyle(LoomGraphite.statusSuccess)
+            } else {
+                Label(
+                    "Connect a Provider (Runtime & Providers) to start chatting",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .foregroundStyle(LoomGraphite.statusWarning)
+            }
+            Label(
+                folderReady ? "Folder: \(store.workspace.selectedFolderDisplayName ?? "")" : "1. Open Folder so work has a home",
+                systemImage: folderReady ? "checkmark.circle.fill" : "folder"
+            )
+            .foregroundStyle(folderReady ? LoomGraphite.statusSuccess : Color.secondary)
+            Label(
+                teamReady ? "Agent Team ready" : "2. Create an Agent Team when the work needs governed execution",
+                systemImage: teamReady ? "checkmark.circle.fill" : "person.3"
+            )
+            .foregroundStyle(teamReady ? LoomGraphite.statusSuccess : Color.secondary)
+        }
+        .font(.callout)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LoomGraphite.surface,
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Quick start: \(providerReady ? "chat ready" : "connect a provider"), \(folderReady ? "folder ready" : "open a folder"), \(teamReady ? "team ready" : "create a team when needed")")
+    }
+
     private var emptyConversation: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "bubble.left.and.text.bubble.right")
@@ -985,6 +1030,9 @@ public struct LoomWorkspaceShell: View {
             Text("Describe the outcome in your own words. Bring in an Agent Team only when the work needs governed execution.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            quickStartGuide
+
             if hasGovernanceActivity {
                 HStack(spacing: 14) {
                     Label("\(activeMissionCount) active", systemImage: "bolt")
@@ -1128,6 +1176,18 @@ public struct LoomWorkspaceShell: View {
                             }
                             .buttonStyle(.plain)
                             .help("Copy message text")
+                        }
+                        if isAgentProposal {
+                            Button {
+                                governance.open(.team)
+                                Task { await store.startBlankBuilder() }
+                            } label: {
+                                Label("Create Agent Team", systemImage: "person.3.badge.plus")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityLabel("Create Agent Team")
+                            .help("Start a governed Agent Team to execute this work")
                         }
                     }
                     Spacer(minLength: 0)

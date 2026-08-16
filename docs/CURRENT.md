@@ -12796,3 +12796,15 @@ executable Team exists. Verified: macOS `236` tests, `0` failures (`1` visual-
 export skip); live snapshot shows `saved_teams=0` so the guidance path is what
 users see; App rebuilt/reinstalled; `git diff --check` clean. Evidence:
 `.loom-evidence/phase2d/P2D-W2D-new-mission-clarity-v46.md`.
+
+`CURRENT / V47 FOLLOW-UP (LOWER-FRICTION QUICK START) (2026-08-16)`: the empty
+conversation now shows a quick-start guide with live status — "Chat is ready
+with <Provider>" (or "Connect a Provider"), "1. Open Folder", "2. Create an
+Agent Team when needed" — each with a checkmark once the prerequisite is met, so
+a first-run user sees the exact next step. Proposal messages now carry a
+**Create Agent Team** button (opens Teams + blank builder) instead of the
+"press u" hint. Verified: macOS `236` tests, `0` failures (`1` visual-export
+skip); live snapshot shows DeepSeek ready + no Team, so the guide renders the
+"Chat is ready with DeepSeek / create a Team when needed" state; App rebuilt +
+reinstalled; `git diff --check` clean. Evidence:
+`.loom-evidence/phase2d/P2D-W2D-lower-friction-quickstart-v47.md`.
