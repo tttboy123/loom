@@ -292,6 +292,22 @@ func (runtime *productCredentialVaultRuntime) DeleteRoleContextCapsule(
 	return runtime.store.DeleteRoleContextCapsule(ctx, authority)
 }
 
+func (runtime *productCredentialVaultRuntime) DeleteContextConversation(
+	ctx context.Context,
+	conversationID string,
+) error {
+	if runtime == nil || ctx == nil || ctx.Err() != nil {
+		return credentials.ErrCredentialStoreUnavailable
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.failure != nil || runtime.locked || runtime.closed ||
+		runtime.store == nil {
+		return runtime.safeFailure()
+	}
+	return runtime.store.DeleteContextConversation(ctx, conversationID)
+}
+
 func (runtime *productCredentialVaultRuntime) ReadRoleContextCapsule(
 	ctx context.Context,
 	authority contextcapsule.AuthorityRecord,
@@ -1239,6 +1255,15 @@ func (runtime *productCredentialVaultRecoveryRuntime) DeleteRoleContextCapsule(
 	return runtime.safeFailure()
 }
 
+func (runtime *productCredentialVaultRecoveryRuntime) DeleteContextConversation(
+	ctx context.Context, conversationID string,
+) error {
+	if active := runtime.activeRuntime(); active != nil {
+		return active.DeleteContextConversation(ctx, conversationID)
+	}
+	return runtime.safeFailure()
+}
+
 func (runtime *productCredentialVaultRecoveryRuntime) ReadRoleContextCapsule(
 	ctx context.Context, authority contextcapsule.AuthorityRecord,
 ) (contextcapsule.RoleContextCapsule, []byte, error) {
@@ -1414,6 +1439,34 @@ func (runtime *productCredentialVaultRecoveryRuntime) PutConversationDocument(
 		return active.PutConversationDocument(ctx, document)
 	}
 	clearProductCredentialBytes(document.Payload)
+	return runtime.safeFailure()
+}
+
+func (runtime *productCredentialVaultRuntime) DeleteConversationDocument(
+	ctx context.Context,
+	conversationID string,
+	kind string,
+) error {
+	if runtime == nil || ctx == nil || ctx.Err() != nil {
+		return credentials.ErrCredentialStoreUnavailable
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.failure != nil || runtime.locked || runtime.closed ||
+		runtime.store == nil {
+		return runtime.safeFailure()
+	}
+	return runtime.store.DeleteConversationDocument(
+		ctx, conversationID, kind,
+	)
+}
+
+func (runtime *productCredentialVaultRecoveryRuntime) DeleteConversationDocument(
+	ctx context.Context, conversationID string, kind string,
+) error {
+	if active := runtime.activeRuntime(); active != nil {
+		return active.DeleteConversationDocument(ctx, conversationID, kind)
+	}
 	return runtime.safeFailure()
 }
 

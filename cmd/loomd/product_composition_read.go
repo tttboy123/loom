@@ -19,6 +19,7 @@ type productReadRoute interface {
 	ReadLocalProductSnapshot(context.Context, api.LocalProductSnapshotRequest) (api.LocalProductSnapshot, error)
 	ReadLocalProductTimeline(context.Context, api.LocalProductTimelineRequest) (api.LocalProductTimelinePage, error)
 	ReadChatThread(context.Context, string) (api.LocalProductChatThread, error)
+	DeleteChatThread(context.Context, string) error
 	SendChatMessage(context.Context, api.LocalProductChatMessageRequest) (api.LocalProductChatThread, error)
 	SetAgentAttemptDiagnosticSource(api.AgentAttemptDiagnosticSource) error
 	SetGovernedTestReportSource(api.GovernedTestReportSource) error
@@ -174,6 +175,20 @@ func (slot *productReadRouteSlot) ReadChatThread(
 		return api.LocalProductChatThread{}, api.ErrLocalProductChatUnavailable
 	}
 	return slot.routes.route.ReadChatThread(ctx, threadID)
+}
+
+func (slot *productReadRouteSlot) DeleteChatThread(
+	ctx context.Context, threadID string,
+) error {
+	if slot == nil {
+		return api.ErrLocalProductChatUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return api.ErrLocalProductChatUnavailable
+	}
+	return slot.routes.route.DeleteChatThread(ctx, threadID)
 }
 
 func (slot *productReadRouteSlot) SendChatMessage(

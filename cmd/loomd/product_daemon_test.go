@@ -11674,3 +11674,30 @@ func TestOpenCodeResponderMissingModelCredentialReturnsActionableError(t *testin
 		t.Fatalf("responder must not run without a credential: env=%q secret=%d", client.envName, len(client.secret))
 	}
 }
+
+func TestProductCodexConversationUsageLimitMapsToActionableError(t *testing.T) {
+	err := productCodexConversationFailure(provider.ErrCodexConversationUsageLimit)
+	code, stage, retryable, ok := api.LocalProductConversationDispatchFailure(err)
+	if !ok || code != "provider_insufficient_balance" ||
+		stage != "provider_connect" || retryable {
+		t.Fatalf("code=%s stage=%s retryable=%v ok=%v", code, stage, retryable, ok)
+	}
+	info, ok := api.LocalProductConversationDispatchFailureDetails(err)
+	if !ok || !strings.Contains(info.UserMessage, "Codex") {
+		t.Fatalf("user message missing Codex hint: %#v", info)
+	}
+}
+
+func TestProductCodexConversationAuthMapsToActionableError(t *testing.T) {
+	err := productCodexConversationFailure(provider.ErrCodexConversationAuth)
+	code, _, _, ok := api.LocalProductConversationDispatchFailure(err)
+	if !ok || code != "provider_auth" {
+		t.Fatalf("code=%s ok=%v", code, ok)
+	}
+	// Unclassified failures pass through unchanged.
+	if err := productCodexConversationFailure(
+		provider.ErrCodexConversationUnavailable,
+	); !errors.Is(err, provider.ErrCodexConversationUnavailable) {
+		t.Fatalf("unclassified error changed: %v", err)
+	}
+}

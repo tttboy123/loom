@@ -1001,11 +1001,40 @@ func (responder *productCodexConversationResponder) Respond(
 		content, err = responder.client.Respond(ctx, prompt)
 	}
 	if err != nil {
-		return api.LocalProductConversationResponse{}, err
+		return api.LocalProductConversationResponse{},
+			productCodexConversationFailure(err)
 	}
 	return api.LocalProductConversationResponse{
 		Content: content, Tentative: true,
 	}, nil
+}
+
+// productCodexConversationFailure converts a Codex CLI failure into a specific,
+// user-actionable conversation dispatch error. The official Codex account often
+// has exhausted its credits while the user's own Codex configuration (for
+// example cc-switch routing to DeepSeek) still works — the message says so.
+func productCodexConversationFailure(err error) error {
+	if errors.Is(err, provider.ErrCodexConversationUsageLimit) {
+		return api.NewLocalProductConversationDispatchErrorWithDetails(
+			api.LocalProductConversationDispatchFailureInfo{
+				Code: "provider_insufficient_balance", Stage: "provider_connect",
+				Retryable:   false,
+				UserMessage: "Codex 官方账号用量已达上限。请在 Codex 设置中充值，或切换到此账号可用的模型（例如 DeepSeek V4，使用你的 Codex/cc-switch 配置）。",
+			},
+			err,
+		)
+	}
+	if errors.Is(err, provider.ErrCodexConversationAuth) {
+		return api.NewLocalProductConversationDispatchErrorWithDetails(
+			api.LocalProductConversationDispatchFailureInfo{
+				Code: "provider_auth", Stage: "provider_connect",
+				Retryable:   false,
+				UserMessage: "Codex 无法用所选 Provider 认证。检查你的 Codex 登录或 cc-switch Provider 配置，然后重试。",
+			},
+			err,
+		)
+	}
+	return err
 }
 
 func productCodexConversationPrompt(
@@ -6693,6 +6722,27 @@ func newProductRouteHandler(
 				return productServiceError(err)
 			}
 			return productResultResponse(result)
+		case "chat_thread_delete":
+			if service == nil {
+				return productErrorResponse(
+					"state_unavailable",
+					api.ErrLocalProductStateUnavailable,
+				)
+			}
+			var input api.LocalProductChatThreadRequest
+			if decodeExactProductParams(request.Params, &input) != nil {
+				return productErrorResponse(
+					"invalid_request",
+					api.ErrInvalidLocalProductChatRequest,
+				)
+			}
+			if err := service.DeleteChatThread(ctx, input.ThreadID); err != nil {
+				return productServiceError(err)
+			}
+			return productResultResponse(struct {
+				ThreadID string `json:"thread_id"`
+				Deleted  bool   `json:"deleted"`
+			}{ThreadID: input.ThreadID, Deleted: true})
 		case "chat_message":
 			if service == nil {
 				return productConversationResponseStage(productErrorResponse(

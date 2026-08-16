@@ -23,7 +23,13 @@ const (
 	DeepSeekConversationEndpoint = "https://api.deepseek.com/chat/completions"
 	KimiConversationEndpoint     = "https://api.moonshot.cn/v1/chat/completions"
 	MiniMaxConversationEndpoint  = "https://api.minimaxi.com/v1/chat/completions"
-	maxConversationContentBytes  = 4096
+	// maxConversationContentBytes bounds a single wire message. The Loom
+	// context capsule dispatch payload for `context:loom-native:v1` is allowed
+	// up to 32 KiB and grows with conversation history, so the per-message cap
+	// must match the adapter allowance or continuing a long thread would fail
+	// with an opaque "conversation unavailable". The 60 KiB total budget still
+	// bounds the whole turn.
+	maxConversationContentBytes = 32 << 10
 )
 
 var (

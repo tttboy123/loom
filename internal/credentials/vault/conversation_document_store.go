@@ -22,6 +22,7 @@ const (
 var (
 	ErrInvalidConversationDocument        = errors.New("invalid encrypted Conversation document")
 	ErrConversationDocumentConflict       = errors.New("encrypted Conversation document conflict")
+	ErrConversationDocumentNotFound       = errors.New("encrypted Conversation document not found")
 	ErrConversationDocumentAuthentication = errors.New("encrypted Conversation document authentication failed")
 )
 
@@ -406,6 +407,11 @@ func canonicalConversationDocumentAAD(
 	return body.Bytes(), nil
 }
 
+func validConversationDocumentIdentity(conversationID string, kind string) bool {
+	return validContextCapsuleIdentifier(conversationID) &&
+		validConversationDocumentKind(kind)
+}
+
 func validConversationDocument(document ConversationDocument) bool {
 	return validContextCapsuleIdentifier(document.ConversationID) &&
 		validConversationDocumentKind(document.Kind) && document.Revision > 0 &&
@@ -456,4 +462,59 @@ func clearConversationDocumentPayloads(documents []ConversationDocument) {
 	for index := range documents {
 		clearBytes(documents[index].Payload)
 	}
+}
+
+// DeleteConversationDocument removes the encrypted conversation document and
+// its associated data nonce for a conversation. It returns
+// ErrConversationDocumentNotFound when no document exists. Deleting is
+// idempotent-safe for the caller only when the document exists.
+func (store *VaultStore) DeleteConversationDocument(
+	ctx context.Context,
+	conversationID string,
+	kind string,
+) error {
+	if store == nil || ctx == nil || ctx.Err() != nil ||
+		!validConversationDocumentIdentity(conversationID, kind) {
+		return ErrInvalidConversationDocument
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed || store.validateRuntime() != nil {
+		return ErrVaultUnavailable
+	}
+	transaction, err := store.database.BeginTx(ctx, nil)
+	if err != nil {
+		return ErrVaultUnavailable
+	}
+	defer transaction.Rollback()
+	existing, found, err := readEncryptedConversationDocumentTx(
+		ctx, transaction, conversationID, kind,
+	)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrConversationDocumentNotFound
+	}
+	if _, err := transaction.ExecContext(
+		ctx,
+		`DELETE FROM encrypted_conversation_documents
+		  WHERE conversation_id = ? AND document_kind = ?`,
+		conversationID, kind,
+	); err != nil {
+		return ErrVaultUnavailable
+	}
+	if _, err := transaction.ExecContext(
+		ctx,
+		`DELETE FROM encrypted_conversation_data_nonces
+		  WHERE conversation_id = ?`,
+		conversationID,
+	); err != nil {
+		return ErrVaultUnavailable
+	}
+	_ = existing
+	if transaction.Commit() != nil {
+		return ErrVaultUnavailable
+	}
+	return nil
 }

@@ -19,6 +19,13 @@ const maxCodexConversationPromptBytes = 64 * 1024
 var (
 	ErrInvalidCodexConversationConfig = errors.New("invalid Codex conversation configuration")
 	ErrCodexConversationUnavailable   = errors.New("Codex conversation unavailable")
+	// ErrCodexConversationUsageLimit is returned when the Codex CLI reports the
+	// account has hit its usage/credit limit (for example official OpenAI Codex
+	// credits exhausted). It lets the responder surface an actionable message.
+	ErrCodexConversationUsageLimit = errors.New("Codex conversation usage limit reached")
+	// ErrCodexConversationAuth is returned when the Codex CLI fails to
+	// authenticate with the selected provider.
+	ErrCodexConversationAuth = errors.New("Codex conversation authentication failed")
 )
 
 type CodexConversationProcessRequest struct {
@@ -136,7 +143,17 @@ func (client *CodexConversationClient) RespondConfigured(
 			MaxOutputBytes:  client.maxOutputBytes,
 		},
 	)
-	if err != nil || len(output) > client.maxOutputBytes ||
+	if err != nil {
+		// Preserve specific, actionable Codex CLI failures (usage limit, auth)
+		// so the responder can surface a clear message instead of a generic
+		// runtime error.
+		if errors.Is(err, ErrCodexConversationUsageLimit) ||
+			errors.Is(err, ErrCodexConversationAuth) {
+			return "", err
+		}
+		return "", ErrCodexConversationUnavailable
+	}
+	if len(output) > client.maxOutputBytes ||
 		!utf8.Valid(output) || bytes.IndexByte(output, 0) >= 0 {
 		return "", ErrCodexConversationUnavailable
 	}
@@ -223,6 +240,14 @@ func (SystemCodexConversationRunner) RunCodexConversation(
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if diagnostic := stderr.buffer.String(); classifyCodexConversationFailure(diagnostic) {
+			if strings.Contains(diagnostic, "usage limit") ||
+				strings.Contains(diagnostic, "credits") ||
+				strings.Contains(diagnostic, "quota") {
+				return nil, ErrCodexConversationUsageLimit
+			}
+			return nil, ErrCodexConversationAuth
+		}
 		return nil, ErrCodexConversationUnavailable
 	}
 	after, identityErr := codexExecutableIdentity(request.ExecutablePath)
@@ -236,6 +261,9 @@ func (SystemCodexConversationRunner) RunCodexConversation(
 	defer file.Close()
 	response, err := io.ReadAll(io.LimitReader(file, int64(request.MaxOutputBytes+1)))
 	if err != nil || len(response) > request.MaxOutputBytes {
+		return nil, ErrCodexConversationUnavailable
+	}
+	if len(response) == 0 {
 		return nil, ErrCodexConversationUnavailable
 	}
 	return response, nil
@@ -307,4 +335,24 @@ func ensureCodexConversationDirectory(path string) error {
 		return ErrInvalidCodexConversationConfig
 	}
 	return nil
+}
+
+// classifyCodexConversationFailure reports whether the Codex CLI stderr shows a
+// known, actionable failure (usage limit, auth, or connection) rather than an
+// opaque runtime error.
+func classifyCodexConversationFailure(diagnostic string) bool {
+	if diagnostic == "" {
+		return false
+	}
+	lower := strings.ToLower(diagnostic)
+	for _, marker := range []string{
+		"usage limit", "credits", "quota",
+		"unauthorized", "authentication", "invalid api key", "401",
+		"connection refused", "connection error", "timed out",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }

@@ -30,6 +30,7 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case credentialRejected = "credential_rejected"
         case credentialRollbackFailed = "credential_rollback_failed"
         case conversationUnavailable = "conversation_unavailable"
+        case conversationLimit = "conversation_limit"
         case invalidResponse = "invalid_response"
         case providerAuth = "provider_auth"
         case providerRateLimit = "provider_rate_limit"
@@ -1939,6 +1940,16 @@ public final class LocalIPCClient:
         return try LocalProductWire.decodeChatThread(result)
     }
 
+    public func deleteChatThread(threadID: String) async throws {
+        guard Self.validIdentifier(threadID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        _ = try await call(
+            method: "chat_thread_delete",
+            params: LocalProductChatThreadRequest(threadID: threadID)
+        )
+    }
+
     public func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
         try await sendChatMessage(
             threadID: threadID,
@@ -2138,6 +2149,7 @@ public final class LocalIPCClient:
             "mission_execution",
             "side_task_handoff",
             "chat_thread",
+            "chat_thread_delete",
             "chat_message",
         ])
         guard LocalIPCWire.validRequestID(id), methods.contains(method) else {

@@ -317,3 +317,32 @@ type deepSeekConversationReaderFunc func([]byte) (int, error)
 func (read deepSeekConversationReaderFunc) Read(buffer []byte) (int, error) {
 	return read(buffer)
 }
+
+// TestOpenAICompatibleConversationAcceptsContextCapsuleSizedMessage guards the
+// regression where the Loom context capsule dispatch payload (allowed up to
+// 32 KiB by the `context:loom-native:v1` adapter) grows with conversation
+// history and exceeded the old 4096-byte per-message cap, making every later
+// turn on a continuing thread fail with an opaque "conversation unavailable".
+func TestOpenAICompatibleConversationAcceptsContextCapsuleSizedMessage(t *testing.T) {
+	doer := &deepSeekConversationDoer{model: DeepSeekConversationModelID, content: "ok"}
+	client, err := NewDeepSeekConversationClient(DeepSeekConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule := strings.Repeat(`{"item":"content","payload":"x"}`, 700)
+	if len(capsule) <= 4096 || len(capsule) > 32<<10 {
+		t.Fatalf("capsule fixture size %d must be >4096 and <=32KiB", len(capsule))
+	}
+	if _, err := client.Respond(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: capsule}},
+		[]byte("private-test-key"),
+	); err != nil {
+		t.Fatalf("context-capsule-sized message rejected: %v", err)
+	}
+	if doer.request == nil || !strings.Contains(doer.body, "provider=deepseek") {
+		t.Fatalf("request not dispatched: %#v", doer.request)
+	}
+}

@@ -196,7 +196,7 @@ func TestConversationContextTargetFreezesExactDeepSeekAccountModelAndPolicy(t *t
 		func(providerID, accountID string) (work.ProviderAccountPolicy, bool) {
 			return policy, providerID == "deepseek" && accountID == "deepseek.work"
 		},
-		&profileConversationLeaseRecorder{}, &profileDeepSeekClient{}, true,
+		&profileConversationLeaseRecorder{}, &profileDeepSeekClient{}, true, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -362,7 +362,7 @@ func TestConversationProfileRouterFreezesAndRevalidatesExactAccountPolicy(t *tes
 			return current, current.ProviderID() == providerID &&
 				current.ProviderAccountID() == accountID
 		},
-		leasing, client, true,
+		leasing, client, true, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -814,5 +814,56 @@ func TestConversationProfileRouterPreservesSpecificResponderFailure(t *testing.T
 	code, stage, retryable, ok := api.LocalProductConversationDispatchFailure(err)
 	if !ok || code != "provider_auth" || stage != "provider_connect" || retryable {
 		t.Fatalf("error code=%s stage=%s retryable=%v ok=%v", code, stage, retryable, ok)
+	}
+}
+
+func TestConversationProfileRouterRoutesCodexToCodexResponder(t *testing.T) {
+	opencodeCalls := 0
+	codexCalls := 0
+	opencodeResponder := profileConversationResponderFunc(func(
+		context.Context,
+		api.LocalProductConversationRequest,
+	) (api.LocalProductConversationResponse, error) {
+		opencodeCalls++
+		return api.LocalProductConversationResponse{}, errors.New("opencode must not serve codex")
+	})
+	codexResponder := profileConversationResponderFunc(func(
+		_ context.Context,
+		request api.LocalProductConversationRequest,
+	) (api.LocalProductConversationResponse, error) {
+		codexCalls++
+		if request.ModelID != "codex-default" {
+			return api.LocalProductConversationResponse{}, errors.New("wrong model")
+		}
+		return api.LocalProductConversationResponse{Content: "Codex reply", Tentative: true}, nil
+	})
+	router, err := newProductConversationProfileRouterWithPolicy(
+		opencodeResponder,
+		func(string) []projection.ProviderCredentialRecord {
+			return nil
+		},
+		func(string, string) (work.ProviderAccountPolicy, bool) {
+			return work.ProviderAccountPolicy{}, false
+		},
+		profileConversationLeasing(t, &profileConversationStore{secret: []byte("unused")}),
+		&profileDeepSeekClient{}, true, codexResponder,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := api.LocalProductConversationExecutionBinding{
+		SchemaVersion: 3, ProviderID: "openai",
+	}
+	response, err := router.Respond(context.Background(), api.LocalProductConversationRequest{
+		ThreadID:         "thread-codex-router",
+		ProfileID:        provider.CodexConversationProfileID,
+		ModelID:          "codex-default",
+		ExecutionBinding: &binding,
+		Messages:         []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil || response.Content != "Codex reply" || codexCalls != 1 ||
+		opencodeCalls != 0 {
+		t.Fatalf("response=%#v err=%v codexCalls=%d opencodeCalls=%d",
+			response, err, codexCalls, opencodeCalls)
 	}
 }

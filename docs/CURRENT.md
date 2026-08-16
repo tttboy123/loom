@@ -12703,3 +12703,61 @@ integration confirmed the correct provider/model shape:
   `opencode` → `OPENCODE_API_KEY`.
 - Verified live: `deepseek/deepseek-v4-flash` returns `FLASH-OK` through the
   CLI; OpenCode E2E still `E2E-OK`; Go + macOS `235` tests green.
+
+`CURRENT / V43 FOLLOW-UP (CODEX ROUTING + USAGE-LIMIT MESSAGE) (2026-08-16)`:
+"Conversation Provider runtime is unavailable." on the Codex profile was two
+bugs:
+- The Codex profile was served by the OpenCode responder whenever both runtimes
+  were configured (the router had a single default-responder slot and the Codex
+  client was only built when OpenCode was absent). The router now carries a
+  dedicated `codexResponder` and routes `conversation-openai-codex-default-v1`
+  to the Codex responder even when OpenCode is the default conversation
+  runtime; unit test `TestConversationProfileRouterRoutesCodexToCodexResponder`
+  locks this in.
+- The official OpenAI Codex account has exhausted its credits, so
+  `codex-default` (gateway/`--ignore-user-config`) fails with "You've hit your
+  usage limit". The Codex runner now classifies stderr
+  (`usage limit/credits/quota` → usage-limit, auth markers → auth) and the
+  client propagates those typed errors; the responder maps them to
+  `provider_insufficient_balance` / `provider_auth` with a clear Chinese
+  message ("Codex 官方账号用量已达上限…可切换 DeepSeek V4 使用你的
+  cc-switch 配置"). Swift shows "Codex account usage limit reached".
+- The user's working Codex path (cc-switch local proxy → DeepSeek) now works:
+  selecting `deepseek-v4-flash` on the Codex profile runs native auth
+  (no `--ignore-user-config`) and returns a real model reply.
+- Verified live: `codex-default` → clear usage-limit message;
+  `deepseek-v4-flash` → real reply; OpenCode E2E still `E2E-OK`; Go + macOS
+  `236` tests green.
+
+`CURRENT / V44 FOLLOW-UP (PROVIDER/MODEL/EFFORT MATRIX + OFFICIAL CATALOGS + DELETE
+CONVERSATION) (2026-08-16)`: ran the full Provider/Model/Reasoning-effort matrix
+live on the installed App and grounded every catalog in each Provider's official
+docs/API:
+
+- **Official catalog verification**: OpenAI/Codex grounded in the installed Codex
+  CLI 0.144.1 `~/.codex/models_cache.json` (replaced invented gpt-5.5-pro/gpt-5.2/
+  gpt-5.1-codex-max/o3; added per-model reasoning levels); DeepSeek grounded in
+  api-docs.deepseek.com + live API (deepseek-v4-flash/v4-pro with low/high/max);
+  OpenCode grounded in the installed CLI 1.18.3 models.dev cache (v4-pro high/max
+  corrected, glm-5.2 high/max); Kimi kimi-k3 low/high/max added; MiniMax and
+  Anthropic confirmed toggle/adaptive-only. Swift catalog mirrors Go.
+- **Live matrix E2E**: `TestLiveProviderModelEffortMatrixE2E` (gated by
+  `LOOM_LIVE_MATRIX_E2E=1`) drives the installed daemon across every selectable
+  Provider/Model/effort (Codex native DeepSeek V4, OpenCode deepseek/minimax,
+  DeepSeek brokered v4-flash/v4-pro low/high/max + legacy, MiniMax M3),
+  mid-conversation Provider/Model/effort switching, and multi-session isolation —
+  all cells pass with real replies (MiniMax classified rate-limit on repeat runs).
+- **Two real bugs fixed by the matrix**: (1) the 128-thread store cap returned an
+  opaque error with no recovery — now a typed `conversation_limit` with an
+  actionable Swift message plus a bounded encrypted delete-conversation capability
+  (`chat_thread_delete` route, `DeleteThread`, vault document+capsule delete,
+  Swift client/store/UI); (2) continuing a long thread failed after ~5 turns with
+  an opaque "conversation unavailable" because the context capsule dispatch payload
+  (allowed up to 32 KiB) exceeded the provider clients' 4096-byte per-message cap —
+  the per-message wire cap now matches the adapter allowance, with a regression
+  test.
+- **Verification**: Go suite green (only `internal/runtime/harnessadapter`
+  child-process tests are flaky under full parallel load, 3/3 pass in isolation,
+  unrelated); macOS `236` tests, `0` failures (`1` visual-export skip); live matrix
+  E2E PASS; OpenCode E2E `E2E-OK`; `git diff --check` clean. Evidence:
+  `.loom-evidence/phase2d/P2D-W2D-provider-model-effort-matrix-v44.md`.

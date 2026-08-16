@@ -11,6 +11,27 @@ import (
 // truth for which models a Provider supports and which reasoning efforts a
 // model supports, so the client can render dependent pickers and the router
 // can fail closed on unsupported combinations.
+//
+// Model lists and reasoning efforts are grounded in each Provider's official
+// documentation and the installed runtimes (verified 2026-08-16):
+//   - openai/Codex: installed Codex CLI 0.144.1 model catalog
+//     (~/.codex/models_cache.json) with per-model reasoning levels; native
+//     cc-switch DeepSeek V4 models carry none/high.
+//   - deepseek: api-docs.deepseek.com current models deepseek-v4-flash /
+//     deepseek-v4-pro with reasoning_effort low/high/max (medium/xhigh map to
+//     high); deepseek-chat / deepseek-reasoner remain as legacy aliases that
+//     map to v4-flash non-thinking / thinking modes.
+//   - kimi: platform.kimi.com kimi-k3 with reasoning_effort low/high/max;
+//     kimi-k2.6 is a thinking-toggle model with no effort parameter.
+//   - minimax: platform.minimax.io MiniMax-M3 reasoning toggle (effort values
+//     are accepted for compatibility but do not tune depth -> no picker).
+//   - anthropic: claude-sonnet-5 adaptive-only always-on thinking.
+//   - opencode: installed OpenCode CLI 1.18.3 model catalog (models.dev
+//     cache). Provider prefixes follow the CLI: deepseek/*, minimax/*, zai/*
+//     (GLM with ZHIPU_API_KEY), and the hosted opencode/* free tier.
+//     `openai/*` is intentionally not listed because the Codex profile already
+//     covers OpenAI models and the OpenCode CLI does not expose an openai
+//     provider in this environment.
 
 var (
 	ErrInvalidConversationModel = errors.New("invalid conversation model")
@@ -31,32 +52,33 @@ type ConversationModel struct {
 func ProviderConversationModels(providerID string) []ConversationModel {
 	switch providerID {
 	case "openai":
-		// Model list grounded in the Codex CLI 0.144.1 binary catalog
-		// (gpt-5.5 / gpt-5.5-pro / gpt-5.4 / gpt-5.4-mini / gpt-5.2 /
-		// gpt-5.1-codex-max / gpt-5.6-* / o3). `codex-default` is the Loom
-		// alias for the profile default (no --model override).
+		// Grounded in the installed Codex CLI 0.144.1 model catalog
+		// (~/.codex/models_cache.json). `codex-default` is the Loom alias for
+		// the profile default (no --model override). The native cc-switch
+		// DeepSeek V4 models run through the user's own Codex configuration.
 		return []ConversationModel{
-			{ID: "codex-default", DisplayName: "GPT-5.5 (Codex default)"},
-			{ID: "gpt-5.5", DisplayName: "GPT-5.5"},
-			{ID: "gpt-5.5-pro", DisplayName: "GPT-5.5 Pro"},
-			{ID: "gpt-5.4", DisplayName: "GPT-5.4"},
-			{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini"},
-			{ID: "gpt-5.2", DisplayName: "GPT-5.2"},
-			{ID: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max"},
-			{ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra"},
-			{ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol"},
-			{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna"},
-			{ID: "o3", DisplayName: "o3"},
+			{ID: "codex-default", DisplayName: "Codex default"},
+			{ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+			{ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+			{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
+			{ID: "gpt-5.5", DisplayName: "GPT-5.5", ReasoningEfforts: []string{"low", "medium", "high", "xhigh"}},
+			{ID: "gpt-5.4", DisplayName: "GPT-5.4", ReasoningEfforts: []string{"low", "medium", "high", "xhigh"}},
+			{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", ReasoningEfforts: []string{"low", "medium", "high", "xhigh"}},
+			{ID: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3 Codex Spark", ReasoningEfforts: []string{"low", "medium", "high", "xhigh"}},
+			{ID: "codex-auto-review", DisplayName: "Codex Auto Review", ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
 			{ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"none", "high"}},
 			{ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"none", "high"}},
 		}
 	case "deepseek":
 		return []ConversationModel{
-			{ID: "deepseek-chat", DisplayName: "DeepSeek Chat"},
-			{ID: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner"},
+			{ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"low", "high", "max"}},
+			{ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"low", "high", "max"}},
+			{ID: "deepseek-chat", DisplayName: "DeepSeek Chat (legacy alias)"},
+			{ID: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner (legacy alias)"},
 		}
 	case "kimi":
 		return []ConversationModel{
+			{ID: "kimi-k3", DisplayName: "Kimi K3", ReasoningEfforts: []string{"low", "high", "max"}},
 			{ID: KimiConversationModelID, DisplayName: "Kimi K2.6"},
 		}
 	case "minimax":
@@ -69,17 +91,14 @@ func ProviderConversationModels(providerID string) []ConversationModel {
 		}
 	case "opencode":
 		// Grounded in the installed OpenCode CLI 1.18.3 model catalog
-		// (`opencode models` + models.dev cache). Provider prefixes and
-		// reasoning efforts follow the CLI: deepseek/*, minimax/*, zai/* (GLM
-		// uses the `zai` provider prefix with ZHIPU_API_KEY), and the hosted
-		// opencode/* free tier. `openai/*` is intentionally not listed because
-		// the Codex profile already covers OpenAI models and the OpenCode CLI
-		// does not expose an openai provider in this environment.
+		// (`opencode models` + models.dev cache). Reasoning efforts follow each
+		// model's real capability: v4-flash -> low/high/max, v4-pro ->
+		// high/max, glm-5.2 -> high/max, toggle-only models -> none.
 		return []ConversationModel{
 			{ID: "deepseek/deepseek-chat", DisplayName: "DeepSeek Chat"},
 			{ID: "deepseek/deepseek-reasoner", DisplayName: "DeepSeek Reasoner"},
 			{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"low", "high", "max"}},
-			{ID: "deepseek/deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"low", "high", "max"}},
+			{ID: "deepseek/deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"high", "max"}},
 			{ID: "minimax/MiniMax-M2.7", DisplayName: "MiniMax M2.7"},
 			{ID: "minimax/MiniMax-M3", DisplayName: "MiniMax M3"},
 			{ID: "zai/glm-4.5", DisplayName: "Zhipu GLM-4.5"},

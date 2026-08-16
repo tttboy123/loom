@@ -2655,6 +2655,45 @@ final class LocalProductStoreTests: XCTestCase {
     )
   }
 
+  func testCodexUsageLimitShowsActionableGuidance() async throws {
+    let setup = try conversationProfileSetupSnapshot()
+    let incidentID = "loom-chat-codex-usage-limit-e2e"
+    let client = ChatRecordingClient(
+      recordedThread: LocalProductChatThread(
+        threadID: "thread-codex-limit",
+        messages: [],
+        canReply: false,
+        requiresConfirmation: false
+      ),
+      sendError: LocalIPCRemoteError(
+        code: .providerInsufficientBalance,
+        recoverable: false,
+        stage: .providerConnect,
+        incidentID: incidentID
+      )
+    )
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    client.replaceRecordedThread(LocalProductChatThread(
+      threadID: store.currentChatThreadID(),
+      messages: [],
+      canReply: true,
+      requiresConfirmation: false
+    ))
+    store.selectConversationProfile("conversation-deepseek-deepseek-chat-r2")
+
+    await store.sendChatMessage("hello from codex usage test")
+
+    XCTAssertEqual(store.chatOperationFailure?.code, .providerInsufficientBalance)
+    XCTAssertEqual(store.chatOperationFailure?.stage, .providerConnect)
+    XCTAssertEqual(
+      store.chatOperationFailure?.title,
+      "Codex account usage limit reached"
+    )
+    XCTAssertTrue(
+      store.chatOperationFailure?.detail.contains("DeepSeek V4") ?? false
+    )
+  }
+
   func testConversationModelProviderCredentialRequiredShowsActionableGuidance() async throws {
     let setup = try conversationProfileSetupSnapshot()
     let incidentID = "loom-chat-provider-auth-connect-e2e"

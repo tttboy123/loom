@@ -326,6 +326,7 @@ func validMethod(method string) bool {
 		"snapshot",
 		"timeline_page",
 		"chat_thread",
+		"chat_thread_delete",
 		"chat_message",
 		"mission_decision",
 		"mission_execution",

@@ -2755,19 +2755,51 @@ public func localProductConversationModels(
 ) -> [LocalProductConversationModelOption] {
     switch providerID {
     case "openai":
-        // Grounded in the Codex CLI 0.144.1 model catalog.
+        // Grounded in the installed Codex CLI 0.144.1 model catalog
+        // (~/.codex/models_cache.json): per-model reasoning levels plus the
+        // native cc-switch DeepSeek V4 models (none/high).
         return [
-            .init(modelID: "codex-default", displayName: "GPT-5.5 (Codex default)", reasoningEfforts: []),
-            .init(modelID: "gpt-5.5", displayName: "GPT-5.5", reasoningEfforts: []),
-            .init(modelID: "gpt-5.5-pro", displayName: "GPT-5.5 Pro", reasoningEfforts: []),
-            .init(modelID: "gpt-5.4", displayName: "GPT-5.4", reasoningEfforts: []),
-            .init(modelID: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", reasoningEfforts: []),
-            .init(modelID: "gpt-5.2", displayName: "GPT-5.2", reasoningEfforts: []),
-            .init(modelID: "gpt-5.1-codex-max", displayName: "GPT-5.1 Codex Max", reasoningEfforts: []),
-            .init(modelID: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", reasoningEfforts: []),
-            .init(modelID: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", reasoningEfforts: []),
-            .init(modelID: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", reasoningEfforts: []),
-            .init(modelID: "o3", displayName: "o3", reasoningEfforts: []),
+            .init(modelID: "codex-default", displayName: "Codex default", reasoningEfforts: []),
+            .init(
+                modelID: "gpt-5.6-sol",
+                displayName: "GPT-5.6 Sol",
+                reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+            ),
+            .init(
+                modelID: "gpt-5.6-terra",
+                displayName: "GPT-5.6 Terra",
+                reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+            ),
+            .init(
+                modelID: "gpt-5.6-luna",
+                displayName: "GPT-5.6 Luna",
+                reasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
+            ),
+            .init(
+                modelID: "gpt-5.5",
+                displayName: "GPT-5.5",
+                reasoningEfforts: ["low", "medium", "high", "xhigh"]
+            ),
+            .init(
+                modelID: "gpt-5.4",
+                displayName: "GPT-5.4",
+                reasoningEfforts: ["low", "medium", "high", "xhigh"]
+            ),
+            .init(
+                modelID: "gpt-5.4-mini",
+                displayName: "GPT-5.4 Mini",
+                reasoningEfforts: ["low", "medium", "high", "xhigh"]
+            ),
+            .init(
+                modelID: "gpt-5.3-codex-spark",
+                displayName: "GPT-5.3 Codex Spark",
+                reasoningEfforts: ["low", "medium", "high", "xhigh"]
+            ),
+            .init(
+                modelID: "codex-auto-review",
+                displayName: "Codex Auto Review",
+                reasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
+            ),
             .init(
                 modelID: "deepseek-v4-flash",
                 displayName: "DeepSeek V4 Flash",
@@ -2781,11 +2813,36 @@ public func localProductConversationModels(
         ]
     case "deepseek":
         return [
-            .init(modelID: "deepseek-chat", displayName: "DeepSeek Chat", reasoningEfforts: []),
-            .init(modelID: "deepseek-reasoner", displayName: "DeepSeek Reasoner", reasoningEfforts: []),
+            .init(
+                modelID: "deepseek-v4-flash",
+                displayName: "DeepSeek V4 Flash",
+                reasoningEfforts: ["low", "high", "max"]
+            ),
+            .init(
+                modelID: "deepseek-v4-pro",
+                displayName: "DeepSeek V4 Pro",
+                reasoningEfforts: ["low", "high", "max"]
+            ),
+            .init(
+                modelID: "deepseek-chat",
+                displayName: "DeepSeek Chat (legacy alias)",
+                reasoningEfforts: []
+            ),
+            .init(
+                modelID: "deepseek-reasoner",
+                displayName: "DeepSeek Reasoner (legacy alias)",
+                reasoningEfforts: []
+            ),
         ]
     case "kimi":
-        return [.init(modelID: "kimi-k2.6", displayName: "Kimi K2.6", reasoningEfforts: [])]
+        return [
+            .init(
+                modelID: "kimi-k3",
+                displayName: "Kimi K3",
+                reasoningEfforts: ["low", "high", "max"]
+            ),
+            .init(modelID: "kimi-k2.6", displayName: "Kimi K2.6", reasoningEfforts: []),
+        ]
     case "minimax":
         return [.init(modelID: "MiniMax-M3", displayName: "MiniMax M3", reasoningEfforts: [])]
     case "anthropic":
@@ -2813,7 +2870,7 @@ public func localProductConversationModels(
             .init(
                 modelID: "deepseek/deepseek-v4-pro",
                 displayName: "DeepSeek V4 Pro",
-                reasoningEfforts: ["low", "high", "max"]
+                reasoningEfforts: ["high", "max"]
             ),
             .init(
                 modelID: "minimax/MiniMax-M2.7",

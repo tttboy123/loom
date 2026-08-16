@@ -252,3 +252,10 @@ func (productConversationRouteFixture) SendMessage(
 		}},
 	}, nil
 }
+
+func (productConversationRouteFixture) DeleteThread(
+	_ context.Context,
+	threadID string,
+) error {
+	return nil
+}

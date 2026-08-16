@@ -275,6 +275,7 @@ final class LocalIPCClientTests: XCTestCase {
             "credential_rejected",
             "credential_rollback_failed",
             "conversation_unavailable",
+            "conversation_limit",
             "invalid_response",
             "provider_auth",
             "provider_rate_limit",

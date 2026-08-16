@@ -405,6 +405,14 @@ func (slot *productVaultRouteSlot) DeleteRoleContextCapsule(ctx context.Context,
 	}
 	return slot.routes.conversationCapsules.DeleteRoleContextCapsule(ctx, authority)
 }
+func (slot *productVaultRouteSlot) DeleteContextConversation(ctx context.Context, conversationID string) error {
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || nilProductAssetPort(slot.routes.conversationCapsules) {
+		return slot.unavailable()
+	}
+	return slot.routes.conversationCapsules.DeleteContextConversation(ctx, conversationID)
+}
 func (slot *productVaultRouteSlot) ConversationDocuments(ctx context.Context, kind string) ([]api.LocalProductChatDocument, error) {
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
@@ -425,6 +433,17 @@ func (slot *productVaultRouteSlot) PutConversationDocument(ctx context.Context, 
 		return slot.unavailable()
 	}
 	return slot.routes.documents.PutConversationDocument(ctx, document)
+}
+func (slot *productVaultRouteSlot) DeleteConversationDocument(ctx context.Context, conversationID string, kind string) error {
+	if slot == nil {
+		return credentials.ErrCredentialStoreUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || nilProductAssetPort(slot.routes.documents) {
+		return slot.unavailable()
+	}
+	return slot.routes.documents.DeleteConversationDocument(ctx, conversationID, kind)
 }
 func (slot *productVaultRouteSlot) RetrieveContextItem(ctx context.Context, request contextcapsule.RetrievalRequest) (contextcapsule.RetrievedItem, error) {
 	slot.mu.RLock()

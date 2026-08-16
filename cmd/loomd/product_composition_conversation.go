@@ -111,6 +111,21 @@ func (slot *productConversationRouteSlot) SendMessage(
 	return slot.routes.route.SendMessage(ctx, request)
 }
 
+func (slot *productConversationRouteSlot) DeleteThread(
+	ctx context.Context,
+	threadID string,
+) error {
+	if slot == nil {
+		return api.ErrLocalProductChatUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return api.ErrLocalProductChatUnavailable
+	}
+	return slot.routes.route.DeleteThread(ctx, threadID)
+}
+
 func (slot *productConversationRouteSlot) Close(context.Context) error {
 	if slot == nil {
 		return nil
@@ -219,8 +234,7 @@ func newProductConversationConstructionFactory(
 			openCodeClient = client
 		}
 		var codexClient *provider.CodexConversationClient
-		if conversationResponder == nil && openCodeClient == nil &&
-			setup.CodexExecutable != "" {
+		if setup.CodexExecutable != "" {
 			resolved, err := provider.ResolveCodexNativeExecutable(setup.CodexExecutable)
 			if err != nil {
 				return productConversationRoutes{}, errors.Join(
@@ -282,6 +296,10 @@ func newProductConversationConstructionFactory(
 		if leases == nil {
 			return productConversationRoutes{}, errProductConversationRouteUnavailable
 		}
+		var codexResponder api.LocalProductConversationResponder
+		if codexClient != nil {
+			codexResponder = &productCodexConversationResponder{client: codexClient}
+		}
 		if conversationResponder == nil && openCodeClient != nil {
 			// OpenCode is a native conversation profile that needs the Loom
 			// Vault lease access to inject the bound model's Provider
@@ -301,8 +319,8 @@ func newProductConversationConstructionFactory(
 				},
 			}
 		}
-		if conversationResponder == nil && codexClient != nil {
-			conversationResponder = &productCodexConversationResponder{client: codexClient}
+		if conversationResponder == nil && codexResponder != nil {
+			conversationResponder = codexResponder
 		}
 		router, err := newProductConversationProfileRouterWithPolicy(
 			conversationResponder,
@@ -312,7 +330,7 @@ func newProductConversationConstructionFactory(
 			func(providerID, accountID string) (work.ProviderAccountPolicy, bool) {
 				return readModel.GlobalReadView().ProviderAccountPolicy(providerID, accountID)
 			},
-			leases, deepSeekClient, true,
+			leases, deepSeekClient, true, codexResponder,
 			productConversationProviderRoute{
 				providerID: "anthropic", profileID: provider.AnthropicConversationAccountProfileID,
 				client: anthropicClient,

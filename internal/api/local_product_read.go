@@ -46,6 +46,7 @@ type LocalProductReadConfig struct {
 type LocalProductChatSource interface {
 	ChatThread(context.Context, string) (LocalProductChatThread, error)
 	SendMessage(context.Context, LocalProductChatMessageRequest) (LocalProductChatThread, error)
+	DeleteThread(context.Context, string) error
 }
 
 type LocalProductReadService struct {
@@ -165,6 +166,15 @@ func (service *LocalProductReadService) ReadChatThread(ctx context.Context, thre
 		return LocalProductChatThread{}, ErrLocalProductChatUnavailable
 	}
 	return service.chat.ChatThread(ctx, threadID)
+}
+
+func (service *LocalProductReadService) DeleteChatThread(
+	ctx context.Context, threadID string,
+) error {
+	if service == nil || service.chat == nil {
+		return ErrLocalProductChatUnavailable
+	}
+	return service.chat.DeleteThread(ctx, threadID)
 }
 
 func (service *LocalProductReadService) SendChatMessage(ctx context.Context, req LocalProductChatMessageRequest) (LocalProductChatThread, error) {

@@ -155,6 +155,7 @@ type productConversationProviderRoute struct {
 
 type productConversationProfileRouter struct {
 	defaultResponder        api.LocalProductConversationResponder
+	codexResponder          api.LocalProductConversationResponder
 	credential              productConversationCredentialLookup
 	policy                  productConversationPolicyLookup
 	leasing                 productCredentialLeaseAccess
@@ -174,7 +175,7 @@ func newProductConversationProfileRouter(
 		func(string, string) (work.ProviderAccountPolicy, bool) {
 			return work.ProviderAccountPolicy{}, false
 		},
-		leasing, deepSeek, false, additionalRoutes...,
+		leasing, deepSeek, false, nil, additionalRoutes...,
 	)
 }
 
@@ -185,6 +186,7 @@ func newProductConversationProfileRouterWithPolicy(
 	leasing productCredentialLeaseAccess,
 	deepSeek productDeepSeekConversationClient,
 	requireExecutionBinding bool,
+	codexResponder api.LocalProductConversationResponder,
 	additionalRoutes ...productConversationProviderRoute,
 ) (*productConversationProfileRouter, error) {
 	if credential == nil || policy == nil || leasing == nil || deepSeek == nil {
@@ -208,6 +210,7 @@ func newProductConversationProfileRouterWithPolicy(
 	}
 	return &productConversationProfileRouter{
 		defaultResponder:        defaultResponder,
+		codexResponder:          codexResponder,
 		credential:              credential,
 		policy:                  policy,
 		leasing:                 leasing,
@@ -314,10 +317,19 @@ func (router *productConversationProfileRouter) Respond(
 					)
 			}
 		}
-		if router.defaultResponder == nil {
+		// The Codex profile must be served by the Codex responder and the
+		// OpenCode profile by the OpenCode responder even when both runtimes
+		// are configured; otherwise codex-default would be sent to `opencode
+		// run` and fail with an opaque runtime error.
+		selectedResponder := router.defaultResponder
+		if request.ProfileID == provider.CodexConversationProfileID &&
+			router.codexResponder != nil {
+			selectedResponder = router.codexResponder
+		}
+		if selectedResponder == nil {
 			return api.LocalProductConversationResponse{}, api.ErrLocalProductChatUnavailable
 		}
-		response, err := router.defaultResponder.Respond(ctx, request)
+		response, err := selectedResponder.Respond(ctx, request)
 		if err == nil {
 			return response, nil
 		}

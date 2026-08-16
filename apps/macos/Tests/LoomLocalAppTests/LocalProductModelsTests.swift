@@ -880,13 +880,42 @@ final class LocalProductModelsTests: XCTestCase {
 func testConversationModelCatalogCoversCodexAndThreeLayers() {
     let codex = localProductConversationModels(providerID: "openai")
     XCTAssertTrue(codex.contains { $0.modelID == "codex-default" })
+    // Grounded in the installed Codex CLI 0.144.1 catalog: GPT-5.6-Sol carries
+    // low/medium/high/xhigh/max/ultra and GPT-5.5 carries low/medium/high/xhigh.
+    XCTAssertEqual(
+        Set(localProductConversationReasoningEfforts(providerID: "openai", modelID: "gpt-5.6-sol")),
+        Set(["low", "medium", "high", "xhigh", "max", "ultra"])
+    )
+    XCTAssertEqual(
+        Set(localProductConversationReasoningEfforts(providerID: "openai", modelID: "gpt-5.5")),
+        Set(["low", "medium", "high", "xhigh"])
+    )
     let opencode = localProductConversationModels(providerID: "opencode")
     XCTAssertTrue(opencode.contains { $0.modelID == "deepseek/deepseek-chat" })
+    // DeepSeek Chat is toggle-only in the OpenCode CLI: no effort values.
     XCTAssertTrue(
         localProductConversationReasoningEfforts(
             providerID: "opencode",
             modelID: "deepseek/deepseek-chat"
-        ).contains("medium")
+        ).isEmpty
+    )
+    // v4-pro exposes high/max (OpenCode CLI 1.18.3), v4-flash exposes
+    // low/high/max.
+    XCTAssertEqual(
+        Set(localProductConversationReasoningEfforts(providerID: "opencode", modelID: "deepseek/deepseek-v4-pro")),
+        Set(["high", "max"])
+    )
+    XCTAssertEqual(
+        Set(localProductConversationReasoningEfforts(providerID: "opencode", modelID: "deepseek/deepseek-v4-flash")),
+        Set(["low", "high", "max"])
+    )
+    // DeepSeek provider: v4 models carry low/high/max; legacy aliases none.
+    XCTAssertEqual(
+        Set(localProductConversationReasoningEfforts(providerID: "deepseek", modelID: "deepseek-v4-pro")),
+        Set(["low", "high", "max"])
+    )
+    XCTAssertTrue(
+        localProductConversationReasoningEfforts(providerID: "deepseek", modelID: "deepseek-chat").isEmpty
     )
     XCTAssertTrue(localProductConversationModels(providerID: "unknown").isEmpty)
 }

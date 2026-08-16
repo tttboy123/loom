@@ -801,6 +801,13 @@ func (store *recordingLocalProductConversationCapsuleStore) DeleteRoleContextCap
 	return nil
 }
 
+func (store *recordingLocalProductConversationCapsuleStore) DeleteContextConversation(
+	_ context.Context,
+	_ string,
+) error {
+	return nil
+}
+
 type recordedLocalProductConversationCapsule struct {
 	capsule contextcapsule.RoleContextCapsule
 	payload []byte
@@ -881,6 +888,127 @@ func (store *memoryLocalProductChatDocumentStore) PutConversationDocument(
 		return ErrLocalProductChatUnavailable
 	}
 	return nil
+}
+
+func (store *memoryLocalProductChatDocumentStore) DeleteConversationDocument(
+	_ context.Context,
+	conversationID string,
+	kind string,
+) error {
+	key := conversationID + "\x00" + kind
+	if _, found := store.documents[key]; !found {
+		return ErrLocalProductChatUnavailable
+	}
+	delete(store.documents, key)
+	return nil
+}
+
+type memoryLocalProductConversationContextCapsuleStore struct {
+	conversations map[string]struct{}
+}
+
+func newMemoryLocalProductConversationContextCapsuleStore() *memoryLocalProductConversationContextCapsuleStore {
+	return &memoryLocalProductConversationContextCapsuleStore{
+		conversations: map[string]struct{}{},
+	}
+}
+
+func (store *memoryLocalProductConversationContextCapsuleStore) PutRoleContextCapsule(
+	_ context.Context,
+	capsule contextcapsule.RoleContextCapsule,
+	_ []byte,
+) error {
+	if store.conversations == nil {
+		store.conversations = map[string]struct{}{}
+	}
+	store.conversations[capsule.Target().ConversationID] = struct{}{}
+	return nil
+}
+
+func (store *memoryLocalProductConversationContextCapsuleStore) DeleteRoleContextCapsule(
+	_ context.Context,
+	_ contextcapsule.AuthorityRecord,
+) error {
+	return nil
+}
+
+func (store *memoryLocalProductConversationContextCapsuleStore) DeleteContextConversation(
+	_ context.Context,
+	conversationID string,
+) error {
+	delete(store.conversations, conversationID)
+	return nil
+}
+
+func TestEncryptedPersistentChatAPIDeletesThreadAndFreesSlot(t *testing.T) {
+	documents := newMemoryLocalProductChatDocumentStore()
+	capsules := newMemoryLocalProductConversationContextCapsuleStore()
+	now := func() time.Time { return time.Unix(0, 0).UTC() }
+	chat, err := NewEncryptedPersistentLocalProductChatAPI(
+		context.Background(),
+		filepath.Join(privateLocalProductChatTestRoot(t), "chat-threads.json"),
+		documents,
+		now,
+		localProductConversationResponderFunc(func(
+			_ context.Context,
+			_ LocalProductConversationRequest,
+		) (LocalProductConversationResponse, error) {
+			return LocalProductConversationResponse{Content: "ok", Tentative: true}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if err := chat.SetConversationContextCapsuleRuntime(
+		localProductConversationContextTargetResolverFunc(func(
+			_ context.Context,
+			threadID string,
+			segmentID string,
+			profileID string,
+		) (contextcapsule.Target, error) {
+			return contextcapsule.Target{
+				ConversationID: threadID, TeamID: "conversation:" + threadID,
+				AgentID: "conversation-agent", RoleID: segmentID,
+				ProviderID: "opencode", ModelID: "opencode-default",
+				AuthMode: "native_auth", ContextAdapterID: "context:loom-native:v1",
+				DisclosurePolicyID:      "loom.local-conversation-disclosure",
+				DisclosurePolicyVersion: 1, TokenBudget: 8_192,
+			}, nil
+		}),
+		capsules,
+	); err != nil {
+		t.Fatalf("set capsule runtime: %v", err)
+	}
+	threadID := "thread-delete-test"
+	if _, err := chat.SendMessage(context.Background(), LocalProductChatMessageRequest{
+		ThreadID:    threadID,
+		Content:     "hello",
+		ProfileID:   "conversation-opencode-default-v1",
+		ContextMode: ContextModeStartClean,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if len(documents.documents) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(documents.documents))
+	}
+	if err := chat.DeleteThread(context.Background(), threadID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(documents.documents) != 0 {
+		t.Fatalf("expected 0 documents after delete, got %d", len(documents.documents))
+	}
+	if _, found := capsules.conversations[threadID]; found {
+		t.Fatalf("capsule conversation not removed")
+	}
+	// The thread slot is freed: a new conversation with the same ID works.
+	if _, err := chat.SendMessage(context.Background(), LocalProductChatMessageRequest{
+		ThreadID:    threadID,
+		Content:     "again",
+		ProfileID:   "conversation-opencode-default-v1",
+		ContextMode: ContextModeStartClean,
+	}); err != nil {
+		t.Fatalf("resend after delete: %v", err)
+	}
 }
 
 func TestChatAPIBindsVersionedProfileToConversation(t *testing.T) {

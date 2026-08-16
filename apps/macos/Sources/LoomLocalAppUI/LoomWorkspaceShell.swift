@@ -675,6 +675,13 @@ public struct LoomWorkspaceShell: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Conversation \(session.title)")
+        .contextMenu {
+            Button(role: .destructive) {
+                Task { await store.deleteChatSession(session.threadID) }
+            } label: {
+                Label("Delete Conversation", systemImage: "trash")
+            }
+        }
     }
 
     private static func conversationRelativeTime(_ date: Date) -> String {
@@ -1307,10 +1314,14 @@ public struct LoomWorkspaceShell: View {
 
     private func conversationReasoningEffortLabel(_ effort: String) -> String {
         switch effort {
+        case "none": return "None"
         case "minimal": return "Minimal"
         case "low": return "Low"
         case "medium": return "Medium"
         case "high": return "High"
+        case "xhigh": return "Extra high"
+        case "max": return "Max"
+        case "ultra": return "Ultra"
         default: return effort.capitalized
         }
     }

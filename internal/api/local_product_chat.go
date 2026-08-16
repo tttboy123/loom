@@ -277,6 +277,7 @@ type LocalProductChatDocumentStore interface {
 		string,
 	) ([]LocalProductChatDocument, error)
 	PutConversationDocument(context.Context, LocalProductChatDocument) error
+	DeleteConversationDocument(context.Context, string, string) error
 }
 
 // LocalProductConversationResponder is a non-authoritative conversational
@@ -311,6 +312,7 @@ type LocalProductConversationContextCapsuleStore interface {
 		context.Context,
 		contextcapsule.AuthorityRecord,
 	) error
+	DeleteContextConversation(context.Context, string) error
 }
 
 type LocalProductConversationScopeRequest struct {
@@ -552,7 +554,13 @@ func (api *LocalProductChatAPI) SendMessage(
 	if !threadExisted {
 		if len(api.threads) >= maxLocalProductChatThreads {
 			api.mu.Unlock()
-			return LocalProductChatThread{}, ErrLocalProductChatUnavailable
+			return LocalProductChatThread{}, NewLocalProductConversationDispatchError(
+				"conversation_limit", "conversation_dispatch", false,
+				errors.Join(
+					ErrLocalProductChatUnavailable,
+					errors.New("conversation thread limit reached"),
+				),
+			)
 		}
 		thread = pointerToChatThread(emptyLocalProductChatThread(req.ThreadID))
 		api.threads[req.ThreadID] = thread
@@ -895,6 +903,71 @@ func (api *LocalProductChatAPI) SendMessage(
 		return LocalProductChatThread{}, err
 	}
 	return *cloneChatThread(thread), nil
+}
+
+// DeleteThread removes a conversation thread from the in-memory store and the
+// encrypted document store, releasing its thread slot so new conversations can
+// start. Context capsules and their conversation key are removed with it.
+func (api *LocalProductChatAPI) DeleteThread(
+	ctx context.Context,
+	threadID string,
+) error {
+	if api == nil || ctx == nil || ctx.Err() != nil ||
+		!validLocalProductChatID(threadID) {
+		return ErrInvalidLocalProductChatRequest
+	}
+	if api.unavailable {
+		return ErrLocalProductChatUnavailable
+	}
+	api.mu.Lock()
+	thread, found := api.threads[threadID]
+	if !found {
+		api.mu.Unlock()
+		return nil
+	}
+	delete(api.threads, threadID)
+	api.mu.Unlock()
+
+	if api.contextCapsules != nil {
+		if err := api.contextCapsules.DeleteContextConversation(
+			ctx, threadID,
+		); err != nil && !isConversationThreadDeleteNotFound(err) {
+			// Restore the thread so a failed delete leaves state intact.
+			api.mu.Lock()
+			api.threads[threadID] = thread
+			api.mu.Unlock()
+			return err
+		}
+	}
+	if api.documents != nil {
+		if err := api.documents.DeleteConversationDocument(
+			ctx, threadID, localProductChatDocumentKind,
+		); err != nil && !isConversationThreadDeleteNotFound(err) {
+			api.mu.Lock()
+			api.threads[threadID] = thread
+			api.mu.Unlock()
+			return err
+		}
+	}
+	return nil
+}
+
+// isConversationThreadDeleteNotFound reports whether a delete cleanup error
+// simply means there was nothing to remove (no capsule conversation key or no
+// stored document). Deleting a conversation stays idempotent across those.
+func isConversationThreadDeleteNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	for _, marker := range []string{
+		"Context Capsule not found",
+		"Conversation document not found",
+	} {
+		if strings.Contains(err.Error(), marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (api *LocalProductChatAPI) deleteConversationContextCapsule(
@@ -2212,8 +2285,8 @@ func validLocalProductAttemptStatus(attempt LocalProductConversationAttempt) boo
 func validLocalProductAttemptFailureCode(value string) bool {
 	switch value {
 	case "conversation_unavailable", "invalid_response", "invalid_request",
-		"credential_unavailable", "provider_auth", "provider_rate_limit",
-		"provider_rejected", "provider_insufficient_balance",
+		"conversation_limit", "credential_unavailable", "provider_auth",
+		"provider_rate_limit", "provider_rejected", "provider_insufficient_balance",
 		"provider_model_unavailable", "provider_invalid_request",
 		"provider_unavailable", "state_unavailable", "timeout":
 		return true

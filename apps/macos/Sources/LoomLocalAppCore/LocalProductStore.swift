@@ -333,6 +333,7 @@ public protocol LocalProductClientProtocol {
     limit: Int
   ) async throws -> LocalProductTimelinePage
   func chatThread(threadID: String) async throws -> LocalProductChatThread
+  func deleteChatThread(threadID: String) async throws
   func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread
   func sendChatMessage(
     threadID: String,
@@ -374,6 +375,10 @@ public protocol LocalProductClientProtocol {
 
 extension LocalProductClientProtocol {
   public func chatThread(threadID: String) async throws -> LocalProductChatThread {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func deleteChatThread(threadID: String) async throws {
     throw LocalProductClientError.unavailable
   }
 
@@ -2405,6 +2410,32 @@ public final class LocalProductStore: ObservableObject {
   }
 
   /// Renames a conversation (for example from its first user message).
+  /// Deletes a conversation thread from the daemon and removes it from the
+  /// session registry, freeing a bounded conversation slot. The active session
+  /// falls back to the next available one (or stays blank).
+  public func deleteChatSession(_ threadID: String) async {
+    guard chatSessions.contains(where: { $0.threadID == threadID }) else {
+      return
+    }
+    do {
+      try await client.deleteChatThread(threadID: threadID)
+      chatSessions.removeAll { $0.threadID == threadID }
+      if selectedChatSessionID == threadID {
+        selectedChatSessionID = chatSessions.first?.threadID ?? ""
+        workspace.updateThreadAnchor(selectedChatSessionID)
+        chatThread = nil
+        chatOperationFailure = nil
+      }
+      persistChatSessions()
+      if !selectedChatSessionID.isEmpty {
+        Task { await loadChatThread() }
+      }
+    } catch {
+      // A failed delete keeps the session; surface the same failure mapping.
+      chatOperationFailure = Self.chatFailure(error, incidentID: Self.newChatIncidentID())
+    }
+  }
+
   public func renameChatSession(_ threadID: String, title: String) {
     guard let index = chatSessions.firstIndex(where: { $0.threadID == threadID })
     else {
@@ -3078,6 +3109,11 @@ public final class LocalProductStore: ObservableObject {
         "Conversation could not start",
         "Loom could not dispatch this message with the selected Profile. Open Runtime & Providers to check the runtime and the model's Provider Account, then retry."
       )
+    case (.conversationLimit, _):
+      presentation = (
+        "Conversation limit reached",
+        "Loom keeps a bounded set of conversations (128). Delete or archive older conversations, then start a new one. Your existing conversations are preserved."
+      )
     case (.stateUnavailable, .vaultKeyLoad):
       presentation = (
         "Credential Vault locked",
@@ -3128,6 +3164,11 @@ public final class LocalProductStore: ObservableObject {
         "Provider rejected request",
         "Check the selected account's access, balance, endpoint, and model, then retry."
       )
+	case (.providerInsufficientBalance, .providerConnect):
+	  presentation = (
+		"Codex account usage limit reached",
+		"Your Codex account has used up its credits. Add credits in Codex settings, or switch to a model this account can use (for example DeepSeek V4 with your Codex/cc-switch configuration)."
+	  )
 	case (.providerInsufficientBalance, _):
 	  presentation = (
 		"Provider balance required",
