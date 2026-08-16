@@ -860,6 +860,7 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var setupSnapshot: LocalProductSetupSnapshot?
   @Published public var selectedConversationModelID: String = ""
   @Published public var selectedConversationReasoningEffort: String = ""
+  @Published public private(set) var conversationModelSelectionNotice: String?
   @Published public private(set) var builderSession: LocalProductBuilderSession?
   @Published public private(set) var setupState: LocalProductSetupState = .idle
   @Published public private(set) var lastConfirmation: LocalProductBuilderConfirmation?
@@ -2871,8 +2872,15 @@ public final class LocalProductStore: ObservableObject {
   public var effectiveConversationModelID: String {
     let profile = selectedConversationProfile
     let providerID = profile?.providerID ?? ""
+    let catalog = localProductConversationModels(providerID: providerID)
     let selected = selectedConversationModelID
+    // A user selection is honored only when it is a real model of the
+    // selected Provider AND its owning Provider credential is usable. This
+    // prevents a stale cross-Provider selection (for example "deepseek-chat"
+    // left over from the DeepSeek profile) from displaying on a MiniMax or
+    // OpenCode conversation.
     if !selected.isEmpty,
+      catalog.contains(where: { $0.modelID == selected }),
       isConversationModelAvailable(
         providerID: providerID,
         modelID: selected
@@ -2887,7 +2895,7 @@ public final class LocalProductStore: ObservableObject {
       ) {
       return defaultModel
     }
-    return localProductConversationModels(providerID: providerID).first {
+    return catalog.first {
       isConversationModelAvailable(
         providerID: providerID,
         modelID: $0.modelID
@@ -2917,12 +2925,21 @@ public final class LocalProductStore: ObservableObject {
 
   public func selectConversationModel(_ modelID: String) {
     let providerID = selectedConversationProfile?.providerID ?? ""
-    guard isConversationModelAvailable(
-      providerID: providerID,
-      modelID: modelID
-    ) else {
+    let catalog = localProductConversationModels(providerID: providerID)
+    guard catalog.contains(where: { $0.modelID == modelID }),
+      isConversationModelAvailable(
+        providerID: providerID,
+        modelID: modelID
+      )
+    else {
+      conversationModelSelectionNotice =
+        conversationModelUnavailableReason(
+          providerID: providerID,
+          modelID: modelID
+        ) ?? "Model is not available for this Provider."
       return
     }
+    conversationModelSelectionNotice = nil
     selectedConversationModelID = modelID
     selectedConversationReasoningEffort = ""
     let efforts = localProductConversationReasoningEfforts(
@@ -3091,6 +3108,7 @@ public final class LocalProductStore: ObservableObject {
     selectedConversationModelID =
       selectedConversationProfile?.modelID ?? ""
     selectedConversationReasoningEffort = ""
+    conversationModelSelectionNotice = nil
     chatOperationFailure = nil
   }
 

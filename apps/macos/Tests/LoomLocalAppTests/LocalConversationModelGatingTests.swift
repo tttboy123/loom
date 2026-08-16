@@ -6,7 +6,8 @@ import XCTest
 final class LocalConversationModelGatingTests: XCTestCase {
     private func setupSnapshot(
         openCodeProfile: Bool,
-        deepSeekProfile: Bool
+        deepSeekProfile: Bool,
+        miniMaxProfile: Bool = false
     ) throws -> LocalProductSetupSnapshot {
         var profiles: [String] = []
         if openCodeProfile {
@@ -17,6 +18,11 @@ final class LocalConversationModelGatingTests: XCTestCase {
         if deepSeekProfile {
             profiles.append(
                 #"{"profile_id":"conversation-deepseek-deepseek-chat-r2","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.primary","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":2}"#
+            )
+        }
+        if miniMaxProfile {
+            profiles.append(
+                #"{"profile_id":"conversation-minimax-minimax-m3-r4","harness_adapter":"loom-native","provider_id":"minimax","provider_account_id":"minimax.primary","display_name":"MiniMax","protocol":"openai_compatible","model_id":"MiniMax-M3","auth_mode":"brokered","credential_revision":4}"#
             )
         }
         let json = """
@@ -119,6 +125,50 @@ final class LocalConversationModelGatingTests: XCTestCase {
         store.selectedConversationModelID = ""
         XCTAssertEqual(
             store.effectiveConversationModelID,
+            "opencode/deepseek-v4-flash-free"
+        )
+    }
+
+    func testEffectiveConversationModelIgnoresStaleCrossProviderSelection() throws {
+        let snapshot = try setupSnapshot(
+            openCodeProfile: false,
+            deepSeekProfile: false,
+            miniMaxProfile: true
+        )
+        let store = LocalProductStore(
+            client: StubLocalProductClient(snapshots: []),
+            initialSetupSnapshot: snapshot
+        )
+        // A stale "deepseek-chat" selection must not display on the MiniMax
+        // conversation even though MiniMax is verified: the model is not in
+        // the MiniMax catalog, so the effective model stays MiniMax-M3.
+        store.selectedConversationModelID = "deepseek-chat"
+        XCTAssertEqual(store.effectiveConversationModelID, "MiniMax-M3")
+        XCTAssertEqual(store.selectedConversationProfile?.providerID, "minimax")
+    }
+
+    func testSelectConversationModelSurfacesActionableNoticeWhenRefused() throws {
+        let snapshot = try setupSnapshot(
+            openCodeProfile: true,
+            deepSeekProfile: false
+        )
+        let store = LocalProductStore(
+            client: StubLocalProductClient(snapshots: []),
+            initialSetupSnapshot: snapshot
+        )
+        // zai/GLM has no verified account: selecting it is refused and the
+        // user sees an actionable notice instead of a silent no-op.
+        store.selectConversationModel("zai/glm-4.5")
+        XCTAssertEqual(store.selectedConversationModelID, "")
+        XCTAssertNotNil(store.conversationModelSelectionNotice)
+        XCTAssertTrue(
+            store.conversationModelSelectionNotice?.contains("zai") ?? false
+        )
+        // Selecting a usable model clears the notice.
+        store.selectConversationModel("opencode/deepseek-v4-flash-free")
+        XCTAssertNil(store.conversationModelSelectionNotice)
+        XCTAssertEqual(
+            store.selectedConversationModelID,
             "opencode/deepseek-v4-flash-free"
         )
     }

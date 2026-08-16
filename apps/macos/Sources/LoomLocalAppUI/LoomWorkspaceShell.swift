@@ -1292,6 +1292,23 @@ public struct LoomWorkspaceShell: View {
                 }
             }
 
+            if let notice = store.conversationModelSelectionNotice {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    Spacer()
+                }
+                .padding(.horizontal, 2)
+                .padding(.bottom, 2)
+                .accessibilityLabel("Model selection notice")
+            }
+
             HStack(alignment: .bottom, spacing: 10) {
                 TextField(
                     "Ask Loom or describe a task",

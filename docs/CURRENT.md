@@ -2,6 +2,22 @@
 
 Updated: 2026-08-17
 
+## Phase 2D Conversation Model Routing + Credential Gating FIX — Installed 0.5.3 (2026-08-17)
+
+`CURRENT / INSTALLED 0.5.3`: rebuilt and installed `/Users/lune/Applications/Loom.app`
+(v0.5.3 build 65; previous build preserved at `Loom.app.previous`). Live IPC
+`setup_snapshot` on the running daemon confirms the OpenCode conversation
+profile default is now `opencode/deepseek-v4-flash-free` (OpenCode's hosted
+free tier), not `deepseek-chat`; DeepSeek stays a separate verified-only
+brokered profile.
+- Effective model is strictly bound to the selected Provider's catalog: a
+  stale cross-Provider selection (e.g. `deepseek-chat` left on a MiniMax or
+  OpenCode conversation) can no longer display or dispatch.
+- Selecting an unavailable model (for example `zai/glm-*` or a MiniMax model
+  before MiniMax is verified) now surfaces an actionable in-composer notice
+  ("Requires a verified <provider> Provider credential...") instead of a
+  silent no-op; the notice clears on a successful selection or profile switch.
+
 ## Phase 2D Conversation Model Routing + Credential Gating FIX (2026-08-17)
 
 `CURRENT / FIXES`:
