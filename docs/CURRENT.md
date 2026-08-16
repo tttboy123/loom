@@ -29,8 +29,11 @@ Roundtable) remains the graphical dual-seat journey.
 `VERIFICATION`: full Go suite green (serial, `-p 1`); `swift test` 244/0;
 race on roundtable+tui+loomd green; gofmt/vet/`git diff --check` clean;
 installed live IPC journey + TUI journey logs and per-gate evidence in
-`.loom-evidence/phase4/4.1-roundtable/`. Independent review performed;
-sign-off pending operator (08-review-signoff.md).
+`.loom-evidence/phase4/4.1-roundtable/`. Independent review performed
+(BLOCK raised on TUI restart/entry hazards, resolved → APPROVE);
+sign-off pending operator (08-review-signoff.md). Frozen 4.2–4.5 slice
+prompts are ready in `09-next-slices-plan.md` and execute one-at-a-time after
+4.1 sign-off.
 
 ## Phase 2D Conversation Model Routing + Credential Gating FIX — Installed 0.5.3 (2026-08-17)
 
