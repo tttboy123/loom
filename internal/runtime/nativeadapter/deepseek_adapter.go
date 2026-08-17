@@ -711,6 +711,9 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 			}
 		}
 		if len(response.toolCalls) == 0 {
+			if response.content == "" {
+				response.content = "No further information was produced for this attempt after the available tools were used."
+			}
 			response.accounting = total
 			return openAICompatibleExchange{
 				deepSeekAgentResponse: response, contextDeliveries: deliveries,
@@ -726,7 +729,7 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 		for _, toolCall := range response.toolCalls {
 			if toolCall.Web != nil {
 				webResult, webErr := adapter.executeWebToolCall(
-					ctx, binding, *toolCall.Web,
+					ctx, binding, *toolCall.Web, int64(deliveries)+1,
 				)
 				if webErr != nil {
 					return openAICompatibleExchange{}, webErr
@@ -1031,10 +1034,10 @@ func decodeDeepSeekAgentResponse(
 	message := decoded.Choices[0].Message
 	content := strings.TrimSpace(message.Content)
 	// A tool call may be accompanied by a short content preamble (DeepSeek
-	// often emits "I'll search..." before the function call); otherwise a
-	// response with no tool call must carry non-empty content.
+	// often emits "I'll search..." before the function call). A response with
+	// no tool call may carry empty content; the exchange loop substitutes a
+	// bounded fallback so an exhausted model still completes the attempt.
 	if len(message.ToolCalls) > contextToolMaxCallsPerExchange ||
-		len(message.ToolCalls) == 0 && content == "" ||
 		len(content) > deepSeekAgentMaxContentBytes ||
 		!utf8.ValidString(content) || strings.IndexByte(content, 0) >= 0 {
 		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
@@ -1269,8 +1272,17 @@ func (adapter *deepSeekAgentAdapter) executeWebToolCall(
 	ctx context.Context,
 	binding loomruntime.ToolCallBinding,
 	call webAgentToolCall,
+	sequence int64,
 ) ([]byte, error) {
 	if adapter == nil || adapter.toolGateway == nil {
+		return nil, &deepSeekAgentProviderFailure{
+			reason: "context_retrieval_denied", stage: "context_retrieval",
+		}
+	}
+	// Each governed tool call needs a distinct 1-based sequence so the
+	// attempt loop can admit multiple calls in one step sequentially.
+	callContext, err := loomruntime.BindToolCallSequence(ctx, sequence)
+	if err != nil {
 		return nil, &deepSeekAgentProviderFailure{
 			reason: "context_retrieval_denied", stage: "context_retrieval",
 		}
@@ -1287,11 +1299,11 @@ func (adapter *deepSeekAgentAdapter) executeWebToolCall(
 			reason: "context_retrieval_denied", stage: "context_retrieval",
 		}
 	}
-	result, err := gateway.ExecuteToolCall(ctx, loomruntime.ToolCallEnvelope{
+	result, err := gateway.ExecuteToolCall(callContext, loomruntime.ToolCallEnvelope{
 		JobID: binding.WorkItemID, Call: call.Call,
 	}, binding)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := callContext.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
 		return nil, &deepSeekAgentProviderFailure{
@@ -1304,12 +1316,22 @@ func (adapter *deepSeekAgentAdapter) executeWebToolCall(
 		// tool. Never leak the denial reason.
 		return []byte(`{"error":"tool_denied","message":"The Loom governance gate did not allow this web tool call for this attempt. Use a different query or tool."}`), nil
 	}
-	content, err := reader.ReadToolCallResultContent(ctx, binding, result)
+	content, err := reader.ReadToolCallResultContent(callContext, binding, result)
 	if err != nil {
 		return []byte(`{"error":"tool_unavailable","message":"The web tool result could not be read for this attempt. Try a different query or tool."}`), nil
 	}
 	if len(content) == 0 || len(content) > contextToolMaxResultBytes {
 		return []byte(`{"error":"tool_unavailable","message":"The web tool result was empty or too large for this attempt."}`), nil
+	}
+	// Deliver the result to the attempt loop so the call is marked delivered;
+	// otherwise the call stays active and a subsequent (Exclusive) tool call
+	// in the same step is rejected as a conflict.
+	if acknowledger, ok := adapter.toolGateway.(loomruntime.ToolCallResultProofAcknowledger); ok {
+		if ackErr := acknowledger.AcknowledgeToolCallResultWithProof(
+			callContext, binding, result, attemptpayload.ProofRunStreamToolResult,
+		); ackErr != nil && callContext.Err() == nil {
+			return []byte(`{"error":"tool_result_delivery_failed","message":"The web tool result could not be delivered to the attempt. Try again."}`), nil
+		}
 	}
 	return content, nil
 }

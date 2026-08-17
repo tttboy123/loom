@@ -1,6 +1,7 @@
 package toolbroker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 type searchFixture struct {
 	query string
 	limit int
+	err   error
+	empty bool
 }
 
 func (fixture *searchFixture) Search(
@@ -24,6 +27,12 @@ func (fixture *searchFixture) Search(
 	limit int,
 ) ([]SearchResult, error) {
 	fixture.query, fixture.limit = query, limit
+	if fixture.err != nil {
+		return nil, fixture.err
+	}
+	if fixture.empty {
+		return []SearchResult{}, nil
+	}
 	return []SearchResult{{
 		Title: "Loom docs", URL: "https://example.com/loom", Snippet: "Current Loom documentation.",
 	}}, nil
@@ -96,6 +105,42 @@ func TestBrokerExecutesBoundedWebSearchFetchAndMCP(t *testing.T) {
 	if err != nil || mcpResult.Content != "bounded MCP result" ||
 		mcp.server != "github" || mcp.tool != "get_issue" || len(mcp.args) == 0 {
 		t.Fatalf("mcp=%#v fixture=%#v error=%v", mcpResult, mcp, err)
+	}
+}
+
+func TestBrokerReturnsBoundedMessageWhenSearchBackendEmptyOrBlocked(t *testing.T) {
+	// When the search backend is rate-limited (e.g. DuckDuckGo 202 from some
+	// IPs) or returns no hits, webSearch must return a bounded non-empty
+	// result instead of an error, so the attempt can complete and the model
+	// receives a clear message rather than an empty payload rejection.
+	blocked := &searchFixture{}
+	blocked.err = ErrToolFailed
+	broker, err := New(Config{
+		Search: blocked, Timeout: 10 * time.Second, MaxResultBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := broker.ExecuteProposalContent(
+		context.Background(),
+		permissions.ProposedCall{Tool: permissions.ToolWebSearch, Path: "multica github"},
+	)
+	if err != nil || len(content) == 0 || !bytes.Contains(content, []byte("search_unavailable")) {
+		t.Fatalf("blocked search content=%q error=%v", content, err)
+	}
+	empty := &searchFixture{empty: true}
+	broker, err = New(Config{
+		Search: empty, Timeout: 10 * time.Second, MaxResultBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err = broker.ExecuteProposalContent(
+		context.Background(),
+		permissions.ProposedCall{Tool: permissions.ToolWebSearch, Path: "no such thing"},
+	)
+	if err != nil || len(content) == 0 || !bytes.Contains(content, []byte("search_unavailable")) {
+		t.Fatalf("empty search content=%q error=%v", content, err)
 	}
 }
 

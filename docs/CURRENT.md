@@ -12,8 +12,11 @@ Updated: 2026-08-17
   DeepSeek 模型名格式校验、tool_calls `index` 字段、内容+工具调用并存、并行工具调用循环、
   Context 拒绝可恢复、Web 工具在 Mission 暴露（动态 Enrollment 物化 + App 派生环境合并）、
   远程工具免 worktree、gateway JobID=WorkItemID。
-- 已知剩余：本机 IP 的 DDG 搜索间歇被限流 → 空结果被 Attempt-Loop 结果提交拒绝，
-  Mission 不收敛（9 分钟超时）；WebFetch 默认 `ask` 需批准通道。见
+- V33b 追加：DDG 空结果返回受控 `search_unavailable` 消息；WebFetch 纳入只读放行；
+  工具结果 content-type 修复；多工具 sequence 绑定；空最终答案回填；evidence 提交
+  snapshot 补齐 policy/rate-card/capacity 流；verifier 错误传播 + 真实派发。
+- 已知剩余：独立 verifier 重试报 `binding_changed`（enrollment-bound profile 的
+  重试绑定契约），需单独切片。见
   `.loom-evidence/phase4/network-capability/P2D-W4-mission-web-tool-loop-live-v33.md`。
 
 ## Phase 4 · 4.1 RoundTable（受治理交接）上线与稳定化 (2026-08-17)

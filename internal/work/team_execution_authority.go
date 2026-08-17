@@ -1371,6 +1371,38 @@ func (authority *Authority) CommitTeamAttemptEvidence(
 	if err != nil {
 		return TeamExecutionRecord{}, err
 	}
+	// Account-managed runs carry ProviderAccountPolicyConfigured /
+	// ProviderModelRateCardConfigured / ProviderAccountCapacityReserved facts
+	// in their own streams; the run-authority replay validates the claim's
+	// policy, rate card and capacity references, so the snapshot must include
+	// those streams for the run's binding account (otherwise the replay
+	// reports a conflict and evidence commit fails for account-managed
+	// Missions).
+	if binding, found, bindingErr := assignedExecutionBindingForRun(
+		snapshot.Events(), input.RunID,
+	); bindingErr == nil && found && binding.ProviderAccountID != "" {
+		for _, accountStream := range []string{
+			providerAccountCapacityStream(binding.ProviderAccountID),
+			providerAccountPolicyStream(binding.ProviderAccountID),
+		} {
+			if !containsStreamID(streamIDs, accountStream) {
+				streamIDs = append(streamIDs, accountStream)
+			}
+		}
+		if binding.ModelID != "" {
+			rateCardStream := providerModelRateCardStream(
+				binding.ProviderID, binding.ProviderAccountID, binding.ModelID,
+			)
+			if !containsStreamID(streamIDs, rateCardStream) {
+				streamIDs = append(streamIDs, rateCardStream)
+			}
+		}
+		if refreshed, refreshErr := authority.store.ReadStreamSet(
+			ctx, streamIDs,
+		); refreshErr == nil {
+			snapshot = refreshed
+		}
+	}
 	team, err := replayTeamExecution(
 		input.TeamInstanceID,
 		filterTeamEvents(snapshot.Events(), teamExecutionStream(input.TeamInstanceID)),
@@ -2761,6 +2793,15 @@ func teamAttemptScheduledPayload(
 		attempt.workflowPath,
 		formatOptionalUTC(retryAt),
 	}
+}
+
+func containsStreamID(streams []string, wanted string) bool {
+	for _, stream := range streams {
+		if stream == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func teamExecutionBindingPayloadFrom(

@@ -58,3 +58,38 @@ LOOM_LIVE_WEB_MISSION=1 LOOM_LIVE_TEAM_E2E=1 LOOM_LIVE_NET=1 \
 ## 后续（不并入本切片）
 - 允许空/低信息搜索结果的受控提交（DDG 被限流时的容错）；
 - WebFetch 在 Mission 内的批准路径（或降级为可执行的只读策略）。
+
+
+## V33b · 追加修复（2026-08-17 第二轮，回答"空结果/WebFetch ask 怎么解决"）
+
+1. **DDG 空结果/被限流 → 受控非空结果**：`broker.webSearch` 在搜索后端返回空/错误时，
+   返回 `{"error":"search_unavailable",...}` 有界消息（不再 `ErrToolFailed`），模型可恢复并作答；
+   单元测试覆盖。
+2. **WebFetch 默认 ask → 只读放行**：`permissions.IsReadOnlyTool` 将 WebFetch 与 WebSearch
+   一并视为只读网络操作（SSRF-safe GET，无副作用），Mission 内无需批准通道即可执行。
+3. **工具结果持久化 content-type**：vault `validAttemptPayloadContentType` 接受标准
+   `text/plain; charset=utf-8`（此前只允许 `[a-z0-9/+.-]`，远程工具结果被拒 →
+   `result_persistence_failed`）。
+4. **多工具调用 sequence**：nativeadapter 每个工具调用绑定 `BindToolCallSequence(seq)`，
+   第二个（Exclusive）工具不再因 sequence=1 冲突（`dispatch_not_committed`）。
+5. **空最终答案受控回填**：模型在工具循环后返回空内容时，exchange loop 回填有界提示，
+   attempt 正常完成（不再 `runtime_process_failed`）。
+6. **Evidence 提交 snapshot 补齐**：`CommitTeamAttemptEvidence` 把 run 绑定账户的
+   provider-account-capacity / provider-account-policy / provider-model-rate-card 流纳入
+   snapshot，run-authority replay 不再报 `run authority conflict`；subagent 证据提交成功
+   （`EvidenceSubmitted` + `TeamNodeAttemptTerminal`）。
+7. **独立 verifier 可派发**：`commitTeamAttemptReceipt` 补上 `runIndependentVerifier` 的错误传播
+   （此前被吞 → 节点永远停在 ready_for_review）。live 已验证 verifier 真实派发并执行。
+
+### Live 观测（安装版）
+- subagent：`ToolCallAdmitted → ToolDispatchCommitted → ToolResultAccepted →
+  ToolExecutionCompleted → ToolResultDelivered → RunTerminalCommitted(succeeded) →
+  WorkItemReadyForReview`，Journal 记录 WebSearch 工具事实。
+- 证据提交：`EvidenceSubmitted + TeamNodeAttemptTerminal`（team-execution 流）。
+- verifier：`verifier-run-*` 真实 claim/start/terminal；其自身执行仍受 `binding_changed`
+  （重试绑定校验）阻塞 —— 这是剩余的 verifier 集成缺陷，见"后续"。
+
+### 后续（不并入本切片）
+- verifier 重试时 `ValidateAgentAttemptRestartBinding` 报 `binding_changed`
+  （verifier 使用 enrollment-bound profile，重试绑定契约不匹配）——需单独切片修复后，
+  subagent 接受 → main 派发 → Mission 收敛。

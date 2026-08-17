@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"loom-pi-rebuild/internal/attemptpayload"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,5 +266,18 @@ func testDigest(value string) string {
 func clearAttemptPayloads(payloads []AttemptPayload) {
 	for index := range payloads {
 		payloads[index].Close()
+	}
+}
+
+func TestValidAttemptPayloadContentTypeAcceptsCanonicalMIME(t *testing.T) {
+	// The vault content-type gate must accept the canonical Attempt payload
+	// MIME types, including the standard "text/plain; charset=utf-8" form
+	// used by governed remote-tool results. Rejecting it bricked web tool
+	// result persistence in Missions (result_persistence_failed).
+	if !validAttemptPayloadContentType(attemptpayload.ContentTypeJSON) ||
+		!validAttemptPayloadContentType(attemptpayload.ContentTypeTextUTF8) ||
+		validAttemptPayloadContentType("") ||
+		validAttemptPayloadContentType("text/html") {
+		t.Fatal("vault attempt payload content-type validation incorrect")
 	}
 }

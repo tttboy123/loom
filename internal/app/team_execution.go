@@ -823,6 +823,9 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 					result,
 					receipt,
 				)
+			if err != nil {
+				return err
+			}
 		}
 		planNode := appPlanNode(request.Plan, logicalNodeID)
 		if planNode.LogicalNodeID() == "" {

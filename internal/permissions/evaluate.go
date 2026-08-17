@@ -7,7 +7,12 @@ import (
 
 // IsReadOnlyTool reports whether a tool kind is on the read-only whitelist.
 func IsReadOnlyTool(kind ToolKind) bool {
-	return kind == ToolRead || kind == ToolGrep || kind == ToolWebSearch
+	// WebSearch and WebFetch are both read-only network operations: the
+	// SSRF-safe transport performs a bounded GET and never mutates local or
+	// remote state. Treating WebFetch as read-only keeps it usable inside a
+	// Mission (no interactive approval channel) exactly like WebSearch.
+	return kind == ToolRead || kind == ToolGrep ||
+		kind == ToolWebSearch || kind == ToolWebFetch
 }
 
 var readOnlyCommands = map[string]bool{
