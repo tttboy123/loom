@@ -270,10 +270,11 @@ func harnessMCPToolNames(lease HarnessContextMCPLease) []string {
 	if lease.URL == "" {
 		return nil
 	}
-	if !lease.ContextEnabled && !lease.ReadEnabled && !lease.GrepEnabled {
+	if !lease.ContextEnabled && !lease.ReadEnabled && !lease.GrepEnabled &&
+		!lease.WebSearchEnabled && !lease.WebFetchEnabled {
 		return []string{"loom_read_context"}
 	}
-	names := make([]string, 0, 3)
+	names := make([]string, 0, 5)
 	if lease.GrepEnabled {
 		names = append(names, "loom_grep_files")
 	}
@@ -282,6 +283,12 @@ func harnessMCPToolNames(lease HarnessContextMCPLease) []string {
 	}
 	if lease.ReadEnabled {
 		names = append(names, "loom_read_file")
+	}
+	if lease.WebSearchEnabled {
+		names = append(names, "loom_web_search")
+	}
+	if lease.WebFetchEnabled {
+		names = append(names, "loom_web_fetch")
 	}
 	return names
 }

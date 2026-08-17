@@ -39,11 +39,13 @@ const (
 )
 
 type HarnessContextMCPLease struct {
-	URL            string
-	Token          string
-	ContextEnabled bool
-	ReadEnabled    bool
-	GrepEnabled    bool
+	URL              string
+	Token            string
+	ContextEnabled   bool
+	ReadEnabled      bool
+	GrepEnabled      bool
+	WebSearchEnabled bool
+	WebFetchEnabled  bool
 }
 
 type harnessPreparedDelivery struct {
@@ -167,6 +169,10 @@ func newHarnessAttemptMCPWithContext(
 				tools["loom_read_file"] = tool
 			case permissions.ToolGrep:
 				tools["loom_grep_files"] = tool
+			case permissions.ToolWebSearch:
+				tools["loom_web_search"] = tool
+			case permissions.ToolWebFetch:
+				tools["loom_web_fetch"] = tool
 			}
 		}
 		if len(tools) == 0 {
@@ -193,9 +199,11 @@ func newHarnessAttemptMCPWithContext(
 	service := &harnessContextMCP{
 		lease: HarnessContextMCPLease{
 			URL: "http://127.0.0.1:" + port + "/mcp", Token: token,
-			ContextEnabled: contextPresent,
-			ReadEnabled:    tools["loom_read_file"] == permissions.ToolRead,
-			GrepEnabled:    tools["loom_grep_files"] == permissions.ToolGrep,
+			ContextEnabled:   contextPresent,
+			ReadEnabled:      tools["loom_read_file"] == permissions.ToolRead,
+			GrepEnabled:      tools["loom_grep_files"] == permissions.ToolGrep,
+			WebSearchEnabled: tools["loom_web_search"] == permissions.ToolWebSearch,
+			WebFetchEnabled:  tools["loom_web_fetch"] == permissions.ToolWebFetch,
 		},
 		attemptContext: ctx, retriever: config.Retriever, delivery: config.Delivery,
 		toolGateway: config.ToolGateway, toolBinding: config.ToolBinding, tools: tools,
@@ -795,6 +803,24 @@ func decodeHarnessToolCall(
 			return permissions.ProposedCall{}, false
 		}
 		return permissions.ProposedCall{Tool: tool, Path: value.Path, Pattern: value.Pattern}, true
+	case permissions.ToolWebSearch:
+		var value struct {
+			Query string `json:"query"`
+		}
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validHarnessToolArgument(value.Query, 512) {
+			return permissions.ProposedCall{}, false
+		}
+		return permissions.ProposedCall{Tool: tool, Path: value.Query}, true
+	case permissions.ToolWebFetch:
+		var value struct {
+			URL string `json:"url"`
+		}
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validHarnessToolArgument(value.URL, 2048) {
+			return permissions.ProposedCall{}, false
+		}
+		return permissions.ProposedCall{Tool: tool, Path: value.URL}, true
 	default:
 		return permissions.ProposedCall{}, false
 	}

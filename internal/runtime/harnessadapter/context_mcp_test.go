@@ -240,7 +240,7 @@ func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *tes
 	gateway := &harnessToolGatewayFixture{
 		allowed: []permissions.ToolKind{
 			permissions.ToolBash, permissions.ToolRead, permissions.ToolGrep,
-			permissions.ToolEdit, permissions.ToolWebSearch, permissions.ToolMCPTool,
+			permissions.ToolEdit,
 		},
 		contents: map[permissions.ToolKind][]byte{
 			permissions.ToolRead: []byte("bounded source content\n"),
