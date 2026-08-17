@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/runtime/piadapter"
@@ -164,12 +165,21 @@ func missionExecutionConfigFromDaemonBuild(
 		catalog := *config.Observer.LocalModelCatalog
 		execution.LocalModelCatalog = &catalog
 	}
+	// Explicit operator opt-in (launchctl setenv LOOM_ENABLE_WEB_TOOLS 1):
+	// enables the governed remote-tool broker (web search + web fetch). The
+	// default production composition stays fail-closed (nil).
+	if os.Getenv("LOOM_ENABLE_WEB_TOOLS") == "1" {
+		if brokerConfig, brokerErr := newProductDefaultRemoteToolBrokerConfig(); brokerErr == nil {
+			execution.RemoteToolBroker = brokerConfig
+		}
+	}
 	if execution.RuntimeInstanceID == "" &&
 		len(execution.RuntimeSearchPaths) == 0 &&
 		execution.LocalModelCatalog == nil &&
 		execution.CodexExecutable == "" &&
 		execution.ClaudeExecutable == "" &&
-		execution.OpenCodeExecutable == "" {
+		execution.OpenCodeExecutable == "" &&
+		execution.RemoteToolBroker == nil {
 		return nil
 	}
 	return execution
