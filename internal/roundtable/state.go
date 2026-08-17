@@ -13,13 +13,16 @@ import (
 )
 
 type sessionState struct {
-	found    bool
-	head     journal.StreamHead
-	session  Session
-	seats    map[string]Seat
-	messages map[string]Message
-	rounds   []roundRecord
-	view     View
+	found                  bool
+	head                   journal.StreamHead
+	session                Session
+	seats                  map[string]Seat
+	messages               map[string]Message
+	rounds                 []roundRecord
+	view                   View
+	concludedSummaryDigest string
+	concludedAt            time.Time
+	importedContracts      map[string]struct{}
 }
 
 type roundRecord struct {
@@ -163,9 +166,10 @@ func replaySession(
 	events []journal.Event,
 ) (sessionState, error) {
 	state := sessionState{
-		seats:    make(map[string]Seat),
-		messages: make(map[string]Message),
-		rounds:   make([]roundRecord, 0, 4),
+		seats:             make(map[string]Seat),
+		messages:          make(map[string]Message),
+		rounds:            make([]roundRecord, 0, 4),
+		importedContracts: make(map[string]struct{}),
 	}
 	for index, event := range events {
 		if event.StreamID != sessionStream(sessionID) ||
@@ -322,6 +326,28 @@ func applyFact(state *sessionState, event journal.Event) error {
 			return ErrRoundtableConflict
 		}
 		state.session.Concluded = true
+		state.concludedSummaryDigest = payload.SummaryDigest
+		state.concludedAt = payload.ConcludedAt
+		return nil
+	case FactSessionExported:
+		var payload sessionExportedPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID ||
+			!validSHA256Digest(payload.Digest) ||
+			payload.NotBefore.IsZero() || payload.ExpiresAt.IsZero() ||
+			!payload.ExpiresAt.After(payload.NotBefore) {
+			return ErrRoundtableConflict
+		}
+		return nil
+	case FactSessionImported:
+		var payload sessionImportedPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID ||
+			!validSHA256Digest(payload.ContractDigest) ||
+			!validSHA256Digest(payload.ViewDigest) {
+			return ErrRoundtableConflict
+		}
+		state.importedContracts[payload.ContractDigest] = struct{}{}
 		return nil
 	default:
 		return ErrRoundtableConflict
@@ -517,6 +543,25 @@ type concludedPayload struct {
 	SummaryDigest  string    `json:"summary_digest"`
 	ArtifactDigest string    `json:"artifact_digest"`
 	ConcludedAt    time.Time `json:"concluded_at"`
+}
+
+type sessionExportedPayload struct {
+	SchemaVersion int       `json:"schema_version"`
+	SessionID     string    `json:"session_id"`
+	ExportID      string    `json:"export_id"`
+	Digest        string    `json:"digest"`
+	NotBefore     time.Time `json:"not_before"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	ExportedAt    time.Time `json:"exported_at"`
+}
+
+type sessionImportedPayload struct {
+	SchemaVersion  int       `json:"schema_version"`
+	SessionID      string    `json:"session_id"`
+	ImportID       string    `json:"import_id"`
+	ContractDigest string    `json:"contract_digest"`
+	ViewDigest     string    `json:"view_digest"`
+	ImportedAt     time.Time `json:"imported_at"`
 }
 
 func (authority *Authority) deterministicID(parts ...string) string {

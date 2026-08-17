@@ -27,6 +27,8 @@ const (
 	FactMessageInserted = "RoundtableMessageInserted"
 	FactMessageDropped  = "RoundtableMessageDropped"
 	FactConcluded       = "RoundtableConcluded"
+	FactSessionExported = "RoundtableSessionExported"
+	FactSessionImported = "RoundtableSessionImported"
 )
 
 // Message status lifecycle.
