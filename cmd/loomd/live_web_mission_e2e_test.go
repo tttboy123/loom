@@ -17,6 +17,8 @@ import (
 	"loom-pi-rebuild/internal/localipc"
 )
 
+const liveWebMissionObjective = "Use the web_search tool to look up the GitHub repository multica-ai/multica and report its one-line description plus the source URL."
+
 // TestLiveMissionAgentCallsWebSearch is the final installed-live acceptance:
 // a real Mission whose subagent holds a web_search Enrollment runs a
 // web-requiring objective, and the Journal must record at least one execution
@@ -119,7 +121,7 @@ func TestLiveMissionAgentCallsWebSearch(t *testing.T) {
 	})
 
 	// 3. Preflight must resolve the Enrollment-bound subagent.
-	preflight, err := preflightMission(t, ctx, client, team)
+	preflight, err := preflightMission(t, ctx, client, team, liveWebMissionObjective)
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -136,8 +138,7 @@ func TestLiveMissionAgentCallsWebSearch(t *testing.T) {
 	// 4. Run a web-requiring objective: the model must use web_search.
 	run, err := runMissionWithObjective(
 		t, ctx, client, team, preflight,
-		"Use the web_search tool to look up the GitHub repository multica-ai/multica "+
-			"and report its one-line description plus the source URL.",
+		liveWebMissionObjective,
 	)
 	if err != nil {
 		t.Fatalf("run mission: %v", err)
@@ -171,12 +172,17 @@ func runMissionWithObjective(
 		var raw json.RawMessage
 		err := client.Call(ctx, "mission_execution", map[string]any{
 			"schema_version": 1, "operation": "start",
-			"mission_id":            "mission/" + team.TeamInstanceID,
-			"team_instance_id":      team.TeamInstanceID,
-			"work_package_id":       "work-package.coding",
-			"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f",
-			"objective":             objective,
-			"expected_view_version": currentViewVersion(t, ctx, client),
+			"mission_id":          "mission/" + team.TeamInstanceID,
+			"team_instance_id":    team.TeamInstanceID,
+			"work_package_id":     "work-package.coding",
+			"work_package_digest": "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f",
+			"objective":           objective,
+			// Start must reference the SAME view the preflight compiled
+			// against: fallback-decision preparation can advance the
+			// projection view between preflight and start, so a fresh
+			// currentViewVersion here would make the recomputed preflight
+			// digest mismatch.
+			"expected_view_version": preflight.Preflight.ViewVersion,
 			"preflight_digest":      preflight.Preflight.PreflightDigest,
 			"correlation_id":        matrixOperationID(),
 		}, &raw)
@@ -186,12 +192,20 @@ func runMissionWithObjective(
 				// The view advanced between preflight and start: re-preflight
 				// with a fresh digest + view version, then retry.
 				time.Sleep(2 * time.Second)
-				fresh, preflightErr := preflightMission(t, ctx, client, team)
+				fresh, preflightErr := preflightMission(t, ctx, client, team, objective)
 				if preflightErr != nil {
 					return missionRunResult{}, preflightErr
 				}
 				preflight = fresh
 				continue
+			}
+			if attempt == attempts-1 {
+				var remote *localipc.RemoteError
+				if errors.As(err, &remote) {
+					t.Logf("START conflict detail: code=%s stage=%q recoverable=%t", remote.Code, remote.Stage, remote.Recoverable)
+				} else {
+					t.Logf("START error detail: %+v", err)
+				}
 			}
 			return missionRunResult{}, err
 		}

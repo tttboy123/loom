@@ -610,6 +610,96 @@ func TestAuthoritativeMissionExecutionStartReturnsOnlyAfterProjectedDispatch(
 	}
 }
 
+func TestAuthoritativeMissionExecutionStartRejectsChangedObjective(t *testing.T) {
+	// The preflight digest freezes the full Mission Context command, including
+	// the objective. Start must replay the exact command that was preflighted;
+	// a client that swaps the objective between preflight and start must get a
+	// conflict instead of launching against a stale digest. This guards the
+	// live web-mission regression where preflight used one objective and start
+	// another (plan digest drifted -> mission_execution start conflict).
+	command := missionExecutionTestCommand("preflight")
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: command.TeamInstanceID,
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: command.Objective,
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{
+		version: command.ExpectedViewVersion,
+		execution: projection.TeamExecution{
+			TeamInstanceID: command.TeamInstanceID,
+			PlanDigest:     plan.Digest(), Status: "running",
+		},
+	}
+	compiler := &controlledMissionExecutionCompiler{
+		compilation: MissionExecutionCompilation{
+			Plan: plan,
+			Preflight: MissionExecutionPreflight{
+				SchemaVersion: MissionExecutionSchemaVersion,
+				MissionID:     command.MissionID, TeamInstanceID: command.TeamInstanceID,
+				WorkPackageID:     command.WorkPackageID,
+				WorkPackageDigest: command.WorkPackageDigest,
+				ViewVersion:       command.ExpectedViewVersion,
+				PlanDigest:        plan.Digest(), RuntimeInstanceID: "runtime-pi",
+				RuntimeProfileID: "pi-default", ModelID: "qwen",
+				AuthMode: "brokered", CapacityAvailable: 1,
+				BudgetStatus: "unavailable", SideEffects: []string{},
+				PermissionScopes: []string{"workspace"},
+				ApprovalPoints:   []string{"before_start"},
+				Nodes: []MissionExecutionNodePreview{{
+					LogicalNodeID: "main", Title: command.Objective,
+					Role: "main", DependsOn: []string{}, MaxAttempts: 2,
+				}},
+			},
+			Request: TeamExecutionRequest{Plan: plan},
+		},
+	}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler,
+			Runner: &controlledTeamExecutionRunner{state: state},
+			// No fallback preparer: keep the view stable so the only drift is
+			// the command objective.
+			VisibilityTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+
+	preflight, err := backend.PreflightMission(context.Background(), command)
+	if err != nil || preflight.PreflightDigest == "" {
+		t.Fatalf("preflight = %#v, %v", preflight, err)
+	}
+
+	drifted := command
+	drifted.Operation = "start"
+	drifted.Objective = "A different objective than the one preflighted"
+	drifted.CorrelationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	drifted.PreflightDigest = preflight.PreflightDigest
+	if _, err := backend.StartMission(context.Background(), drifted); !errors.Is(
+		err, ErrMissionExecutionConflict,
+	) {
+		t.Fatalf("start with drifted objective: err=%v want ErrMissionExecutionConflict", err)
+	}
+
+	// Control: replaying the exact preflighted command starts successfully.
+	replay := command
+	replay.Operation = "start"
+	replay.CorrelationID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	replay.PreflightDigest = preflight.PreflightDigest
+	result, err := backend.StartMission(context.Background(), replay)
+	if err != nil || result.Status != "running" {
+		t.Fatalf("start replay = %#v, err=%v want running", result, err)
+	}
+}
+
 func TestAuthoritativeMissionExecutionCallerCancellationJoinsUnreportedFlight(
 	t *testing.T,
 ) {

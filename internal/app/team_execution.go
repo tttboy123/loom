@@ -823,9 +823,6 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 					result,
 					receipt,
 				)
-			if err != nil {
-				return err
-			}
 		}
 		planNode := appPlanNode(request.Plan, logicalNodeID)
 		if planNode.LogicalNodeID() == "" {
@@ -2323,18 +2320,20 @@ func appRuntimeProfileFromFrozenBinding(
 	binding loomruntime.FrozenExecutionBinding,
 ) loomruntime.RuntimeProfile {
 	profile := loomruntime.RuntimeProfile{
-		ID:                   binding.ProfileID,
-		AdapterType:          binding.HarnessAdapter,
-		ProviderID:           binding.ProviderID,
-		ProviderAccountID:    binding.ProviderAccountID,
-		ModelID:              binding.ModelID,
-		AuthMode:             binding.AuthMode,
-		EndpointFingerprint:  binding.EndpointFingerprint,
-		CredentialReference:  binding.CredentialReference,
-		CredentialRevision:   binding.CredentialRevision,
-		ReasoningEffort:      binding.ReasoningEffort,
-		RequiredCapabilities: append([]string(nil), binding.Capabilities...),
-		Timeout:              binding.Timeout,
+		ID:                         binding.ProfileID,
+		AdapterType:                binding.HarnessAdapter,
+		ProviderID:                 binding.ProviderID,
+		ProviderAccountID:          binding.ProviderAccountID,
+		ModelID:                    binding.ModelID,
+		AuthMode:                   binding.AuthMode,
+		EndpointFingerprint:        binding.EndpointFingerprint,
+		CredentialReference:        binding.CredentialReference,
+		CredentialRevision:         binding.CredentialRevision,
+		ReasoningEffort:            binding.ReasoningEffort,
+		RequiredCapabilities:       append([]string(nil), binding.Capabilities...),
+		Timeout:                    binding.Timeout,
+		RemoteToolEnrollmentID:     binding.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: binding.RemoteToolEnrollmentDigest,
 	}
 	if binding.Budget != nil {
 		budget := *binding.Budget

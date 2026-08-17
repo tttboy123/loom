@@ -3708,35 +3708,6 @@ func buildProductMissionExecutionAPI(
 			return nil, nil, accessErr
 		}
 		harnessCredentialAccess = credentialAccess
-		adapterConstructors := []struct {
-			runtimeInstanceID string
-			construct         func(
-				string,
-				nativeadapter.CredentialAccess,
-				nativeadapter.AgentAttemptDiagnosticRecorder,
-				func() time.Time,
-				time.Duration,
-				int64,
-			) (supervisor.RuntimeAdapter, error)
-		}{
-			{productNativeAgentRuntimeInstanceID, nativeadapter.NewSystemDeepSeekAgentAdapter},
-			{productKimiAgentRuntimeInstanceID, nativeadapter.NewSystemKimiAgentAdapter},
-			{productMiniMaxAgentRuntimeInstanceID, nativeadapter.NewSystemMiniMaxAgentAdapter},
-		}
-		for _, candidate := range adapterConstructors {
-			agentAdapter, adapterErr := candidate.construct(
-				candidate.runtimeInstanceID,
-				credentialAccess,
-				config.Diagnostics,
-				now,
-				45*time.Second,
-				256*1024,
-			)
-			if adapterErr != nil {
-				return nil, nil, adapterErr
-			}
-			config.AgentAdapters = append(config.AgentAdapters, agentAdapter)
-		}
 	}
 	executionRoot := filepath.Join(filepath.Dir(statePath), "execution")
 	workspaceRoot := filepath.Join(executionRoot, "workspaces")
@@ -3850,6 +3821,37 @@ func buildProductMissionExecutionAPI(
 				productOpenCodeRuntimeInstanceID, config.OpenCodeExecutable,
 				harnessCredentialAccess, config.Diagnostics, now,
 				10*time.Minute, 256*1024, toolGateway,
+			)
+			if adapterErr != nil {
+				return nil, nil, adapterErr
+			}
+			config.AgentAdapters = append(config.AgentAdapters, agentAdapter)
+		}
+		adapterConstructors := []struct {
+			runtimeInstanceID string
+			construct         func(
+				string,
+				nativeadapter.CredentialAccess,
+				nativeadapter.AgentAttemptDiagnosticRecorder,
+				func() time.Time,
+				time.Duration,
+				int64,
+				loomruntime.AttemptToolGateway,
+			) (supervisor.RuntimeAdapter, error)
+		}{
+			{productNativeAgentRuntimeInstanceID, nativeadapter.NewSystemDeepSeekAgentAdapter},
+			{productKimiAgentRuntimeInstanceID, nativeadapter.NewSystemKimiAgentAdapter},
+			{productMiniMaxAgentRuntimeInstanceID, nativeadapter.NewSystemMiniMaxAgentAdapter},
+		}
+		for _, candidate := range adapterConstructors {
+			agentAdapter, adapterErr := candidate.construct(
+				candidate.runtimeInstanceID,
+				harnessCredentialAccess,
+				config.Diagnostics,
+				now,
+				45*time.Second,
+				256*1024,
+				toolGateway,
 			)
 			if adapterErr != nil {
 				return nil, nil, adapterErr

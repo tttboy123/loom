@@ -521,13 +521,22 @@ func (a *Adapter) executeApproved(
 		sandboxStarted, ToolDiagnosticSucceeded, "", false,
 	)
 	bindingStarted := a.now().UTC()
-	worktree, err := a.resolver.Resolve(ctx, proposal.JobID)
-	if err != nil {
-		a.recordToolDiagnostic(
-			ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
-			bindingStarted, ToolDiagnosticFailed, "worktree_unavailable", true,
-		)
-		return a.fail(ctx, proposal, executionID, callDigest, generation, events, "worktree resolution failed", "worktree_unavailable")
+	// Remote (web/MCP) tool calls are brokered by the remote executor and do
+	// not touch the local worktree; only workspace-bound tools need it.
+	needsWorktree := proposal.Call.Tool != permissions.ToolWebSearch &&
+		proposal.Call.Tool != permissions.ToolWebFetch &&
+		proposal.Call.Tool != permissions.ToolMCPTool
+	var worktree string
+	if needsWorktree {
+		resolved, resolveErr := a.resolver.Resolve(ctx, proposal.JobID)
+		if resolveErr != nil {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, "worktree_unavailable", true,
+			)
+			return a.fail(ctx, proposal, executionID, callDigest, generation, events, "worktree resolution failed", "worktree_unavailable")
+		}
+		worktree = resolved
 	}
 	var editContent []byte
 	switch proposal.Call.Tool {

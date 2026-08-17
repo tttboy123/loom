@@ -258,6 +258,68 @@ func testReasoningFrozenExecutionBinding(
 	return binding
 }
 
+func TestPhase2DTeamExecutionBindingPayloadRoundTripsRemoteToolEnrollment(t *testing.T) {
+	// The journal payload for a FrozenExecutionBinding must carry the
+	// remote-tool Enrollment fields: FreezeExecutionBinding digests an
+	// enrollment-bound binding in the v3 domain, and a payload that drops
+	// those fields makes frozenExecutionBindingFromPayload recompute a
+	// legacy digest and reject the event (bricking projection replay).
+	binding, err := loomruntime.FreezeExecutionBinding(
+		loomruntime.RuntimeProfile{
+			ID: "profile.web", AdapterType: "loom-native",
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+			ModelID: "deepseek-chat", AuthMode: loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("b", 64),
+			CredentialReference: "credential-ref-deepseek-primary",
+			CredentialRevision:  2,
+			RequiredCapabilities: []string{
+				loomruntime.CapabilityContextRetrieval,
+			},
+			Timeout:                    45 * time.Second,
+			RemoteToolEnrollmentID:     "enroll-web-live-001",
+			RemoteToolEnrollmentDigest: strings.Repeat("c", 64),
+		},
+		loomruntime.RuntimeInstance{
+			ID: "runtime-a", DeviceID: "device.local",
+			AdapterType: "loom-native", DisplayName: "Loom Native",
+			Status: loomruntime.RuntimeOnline,
+			ObservedCapabilities: []string{
+				loomruntime.CapabilityContextRetrieval,
+			},
+			Capacity: 2,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := teamExecutionBindingPayloadFrom(binding)
+	if payload == nil {
+		t.Fatal("payloadFrom returned nil")
+	}
+	if payload.RemoteToolEnrollmentID != binding.RemoteToolEnrollmentID ||
+		payload.RemoteToolEnrollmentDigest != binding.RemoteToolEnrollmentDigest {
+		t.Fatalf("payload dropped enrollment fields: %#v", payload)
+	}
+	restored, err := frozenExecutionBindingFromPayload(payload)
+	if err != nil {
+		t.Fatalf("round-trip restore error: %v", err)
+	}
+	if restored.BindingDigest != binding.BindingDigest ||
+		restored.RemoteToolEnrollmentID != binding.RemoteToolEnrollmentID ||
+		restored.RemoteToolEnrollmentDigest != binding.RemoteToolEnrollmentDigest {
+		t.Fatalf("round-trip binding = %#v want %#v", restored, binding)
+	}
+
+	dropped := *payload
+	dropped.RemoteToolEnrollmentID = ""
+	dropped.RemoteToolEnrollmentDigest = ""
+	if _, err := frozenExecutionBindingFromPayload(&dropped); !errors.Is(
+		err, loomruntime.ErrInvalidExecutionProfile,
+	) {
+		t.Fatalf("dropped-enrollment restore error = %v, want ErrInvalidExecutionProfile", err)
+	}
+}
+
 func TestPhase2DTeamDispatchRejectsTamperedExecutionBindingBeforeMutation(t *testing.T) {
 	store := openAuthorityStore(t)
 	authority := newAuthority(t, store, &mutableClock{now: testNow}, 0x64)

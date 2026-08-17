@@ -165,10 +165,45 @@ func productRemoteToolEnrollmentDeps(
 // Agents are already blocked by per-Agent preflight) and never produce a
 // capability. It returns nil when nothing materializes, so default production
 // without injected ports still exposes no remote tool capability.
-func newProductRemoteToolExecutorsFromEnrollments(
-	view projection.GlobalReadView,
+// productDynamicRemoteToolExecutor re-materializes the persisted active +
+// policy-current Enrollment set from the live projection on every operation,
+// so an Enrollment configured after daemon startup is picked up without a
+// restart. Materialization is cheap: members share the injected Search/MCP
+// ports. Fail-closed per Enrollment (unsupported adapter, missing port,
+// invalid limits) and fail-closed as a whole when nothing materializes.
+type productDynamicRemoteToolExecutor struct {
+	mu       sync.RWMutex
+	view     func() projection.GlobalReadView
+	deps     enrollment.MaterializeDeps
+	lifecycle context.Context
+	cancel    context.CancelCauseFunc
+	closed    bool
+}
+
+func newProductDynamicRemoteToolExecutor(
+	view func() projection.GlobalReadView,
 	deps enrollment.MaterializeDeps,
-) (execution.RemoteToolExecutor, error) {
+) (*productDynamicRemoteToolExecutor, error) {
+	if view == nil {
+		return nil, execution.ErrUnsupportedTool
+	}
+	lifecycle, cancel := context.WithCancelCause(context.Background())
+	return &productDynamicRemoteToolExecutor{
+		view: view, deps: deps, lifecycle: lifecycle, cancel: cancel,
+	}, nil
+}
+
+func (executor *productDynamicRemoteToolExecutor) materialize() []execution.RemoteToolExecutor {
+	if executor == nil {
+		return nil
+	}
+	executor.mu.RLock()
+	closed := executor.closed
+	executor.mu.RUnlock()
+	if closed {
+		return nil
+	}
+	view := executor.view()
 	materialized := make([]execution.RemoteToolExecutor, 0, 2)
 	for _, candidate := range view.RemoteToolBackendEnrollmentCatalog() {
 		if candidate.Status() != work.RemoteToolBackendEnrollmentActive {
@@ -180,18 +215,108 @@ func newProductRemoteToolExecutorsFromEnrollments(
 		if !ok || !remoteToolEnrollmentPolicyCurrent(candidate, policy) {
 			continue
 		}
-		executor, err := enrollment.Materialize(candidate, true, deps)
+		member, err := enrollment.Materialize(candidate, true, executor.deps)
 		if err != nil {
-			// Fail closed per Enrollment: unsupported adapter, missing typed
-			// port or invalid limits must never expose a capability.
 			continue
 		}
-		materialized = append(materialized, executor)
+		materialized = append(materialized, member)
 	}
-	if len(materialized) == 0 {
-		return nil, nil
+	return materialized
+}
+
+func (executor *productDynamicRemoteToolExecutor) AllowedRemoteTools() []permissions.ToolKind {
+	allowed := make([]permissions.ToolKind, 0, 4)
+	seen := make(map[permissions.ToolKind]struct{})
+	for _, member := range executor.materialize() {
+		for _, kind := range member.AllowedRemoteTools() {
+			if _, exists := seen[kind]; exists {
+				continue
+			}
+			seen[kind] = struct{}{}
+			allowed = append(allowed, kind)
+		}
 	}
-	return newProductCompositeRemoteToolExecutor(materialized)
+	return allowed
+}
+
+func (executor *productDynamicRemoteToolExecutor) ValidateProposal(
+	proposal permissions.ProposedCall,
+) error {
+	if executor == nil {
+		return execution.ErrUnsupportedTool
+	}
+	var lastErr error
+	for _, member := range executor.materialize() {
+		if err := member.ValidateProposal(proposal); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		return execution.ErrUnsupportedTool
+	}
+	return errors.Join(execution.ErrUnsupportedTool, lastErr)
+}
+
+func (executor *productDynamicRemoteToolExecutor) ExecuteProposalContent(
+	ctx context.Context,
+	proposal permissions.ProposedCall,
+) ([]byte, error) {
+	if executor == nil || ctx == nil {
+		return nil, execution.ErrUnsupportedTool
+	}
+	executor.mu.RLock()
+	if executor.closed {
+		executor.mu.RUnlock()
+		return nil, execution.ErrUnsupportedTool
+	}
+	lifecycle := executor.lifecycle
+	executor.mu.RUnlock()
+	for _, member := range executor.materialize() {
+		if err := member.ValidateProposal(proposal); err != nil {
+			continue
+		}
+		callContext, cancel := context.WithCancelCause(ctx)
+		stop := context.AfterFunc(lifecycle, func() {
+			cancel(context.Cause(lifecycle))
+		})
+		content, err := member.ExecuteProposalContent(callContext, proposal)
+		stop()
+		cancel(nil)
+		if err != nil {
+			return nil, err
+		}
+		if cause := context.Cause(lifecycle); cause != nil {
+			for index := range content {
+				content[index] = 0
+			}
+			return nil, execution.ErrUnsupportedTool
+		}
+		return content, nil
+	}
+	return nil, execution.ErrUnsupportedTool
+}
+
+func (executor *productDynamicRemoteToolExecutor) Close() error {
+	if executor == nil {
+		return nil
+	}
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if executor.closed {
+		return nil
+	}
+	executor.closed = true
+	executor.cancel(execution.ErrUnsupportedTool)
+	return nil
+}
+
+func newProductRemoteToolExecutorsFromEnrollments(
+	view func() projection.GlobalReadView,
+	deps enrollment.MaterializeDeps,
+) (execution.RemoteToolExecutor, error) {
+	return newProductDynamicRemoteToolExecutor(view, deps)
 }
 
 func remoteToolEnrollmentPolicyCurrent(

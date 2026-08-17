@@ -172,7 +172,8 @@ func TestProductRemoteToolExecutorsFromEnrollmentsMaterializesOnlyTrustedActive(
 	// With the Search port injected, exactly the trusted active Enrollment
 	// materializes (the unsupported adapter is skipped; revoked is skipped).
 	executor, err := newProductRemoteToolExecutorsFromEnrollments(
-		view, productRemoteToolEnrollmentDeps(&productRemoteToolBrokerConfig{
+		func() projection.GlobalReadView { return view },
+		productRemoteToolEnrollmentDeps(&productRemoteToolBrokerConfig{
 			Search: productEnrollmentSearchFixture{},
 		}),
 	)
@@ -196,10 +197,11 @@ func TestProductRemoteToolExecutorsFromEnrollmentsMaterializesOnlyTrustedActive(
 
 	// Without any injected port, the same Enrollments expose no capability.
 	withoutPort, err := newProductRemoteToolExecutorsFromEnrollments(
-		view, productRemoteToolEnrollmentDeps(nil),
+		func() projection.GlobalReadView { return view },
+		productRemoteToolEnrollmentDeps(nil),
 	)
-	if err != nil || withoutPort != nil {
-		t.Fatalf("port-less materialization = %#v error=%v", withoutPort, err)
+	if err != nil || withoutPort != nil && len(withoutPort.AllowedRemoteTools()) != 0 {
+		t.Fatalf("port-less materialization exposes tools = %#v error=%v", withoutPort, err)
 	}
 
 	// Revoking the remaining active Enrollment proves revocation makes the
@@ -218,13 +220,13 @@ func TestProductRemoteToolExecutorsFromEnrollmentsMaterializesOnlyTrustedActive(
 		t.Fatal(err)
 	}
 	afterRevoke, err := newProductRemoteToolExecutorsFromEnrollments(
-		readModel.GlobalReadView(),
+		func() projection.GlobalReadView { return readModel.GlobalReadView() },
 		productRemoteToolEnrollmentDeps(&productRemoteToolBrokerConfig{
 			Search: productEnrollmentSearchFixture{},
 		}),
 	)
-	if err != nil || afterRevoke != nil {
-		t.Fatalf("post-revoke materialization = %#v error=%v", afterRevoke, err)
+	if err != nil || afterRevoke != nil && len(afterRevoke.AllowedRemoteTools()) != 0 {
+		t.Fatalf("post-revoke materialization exposes tools = %#v error=%v", afterRevoke, err)
 	}
 }
 

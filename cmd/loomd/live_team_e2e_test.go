@@ -14,6 +14,8 @@ import (
 	"loom-pi-rebuild/internal/localipc"
 )
 
+const liveMissionE2EObjective = "Verify the mixed-provider Team runs end to end"
+
 // TestLiveMixedProviderTeamE2E drives the installed App daemon through the
 // G3/G4 acceptance gates: build and confirm a mixed-provider Agent Team
 // (DeepSeek + MiniMax + Zhipu), run a real Mission, and verify per-Agent
@@ -92,7 +94,7 @@ func TestLiveMixedProviderTeamE2E(t *testing.T) {
 	team := confirmMixedProviderTeam(t, ctx, client, roleOptions, "Live Mixed Provider Team")
 
 	// 7. Preflight a real Mission on this Team (paid real run).
-	preflight, err := preflightMission(t, ctx, client, team)
+	preflight, err := preflightMission(t, ctx, client, team, liveMissionE2EObjective)
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -378,6 +380,7 @@ type preflightEnvelope struct {
 			BlockReason   string `json:"block_reason"`
 		} `json:"nodes"`
 		PreflightDigest string `json:"preflight_digest"`
+		ViewVersion     string `json:"view_version"`
 	} `json:"preflight"`
 }
 
@@ -399,7 +402,7 @@ func countStatus(nodes []struct {
 	return count
 }
 
-func preflightMission(t *testing.T, ctx context.Context, client *localipc.Client, team teamSummary) (preflightEnvelope, error) {
+func preflightMission(t *testing.T, ctx context.Context, client *localipc.Client, team teamSummary, objective string) (preflightEnvelope, error) {
 	t.Helper()
 	const attempts = 5
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -410,7 +413,7 @@ func preflightMission(t *testing.T, ctx context.Context, client *localipc.Client
 			"team_instance_id":      team.TeamInstanceID,
 			"work_package_id":       "work-package.coding",
 			"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f",
-			"objective":             "Verify the mixed-provider Team runs end to end",
+			"objective":             objective,
 			"expected_view_version": currentViewVersion(t, ctx, client),
 			"correlation_id":        matrixOperationID(),
 		}, &raw)
@@ -463,8 +466,8 @@ func runMission(t *testing.T, ctx context.Context, client *localipc.Client, team
 			"team_instance_id":      team.TeamInstanceID,
 			"work_package_id":       "work-package.coding",
 			"work_package_digest":   "4eea514fca13aa241cd004277e31c9c1fe296d34646ceafd618809b6b22c8a4f",
-			"objective":             "Verify the mixed-provider Team runs end to end",
-			"expected_view_version": currentViewVersion(t, ctx, client),
+			"objective":             liveMissionE2EObjective,
+			"expected_view_version": preflight.Preflight.ViewVersion,
 			"preflight_digest":      preflight.Preflight.PreflightDigest,
 			"correlation_id":        matrixOperationID(),
 		}, &raw)
@@ -988,7 +991,7 @@ func TestLiveSingleAgentFailureIsolationE2E(t *testing.T) {
 		}
 	})
 
-	preflight, err := preflightMission(t, ctx, client, team)
+	preflight, err := preflightMission(t, ctx, client, team, liveMissionE2EObjective)
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -1175,7 +1178,7 @@ func TestLiveRemoteToolEnrollmentIsolationE2E(t *testing.T) {
 	})
 
 	// 4. Preflight: the Enrollment-bound subagent resolves (valid + active).
-	preflight, err := preflightMission(t, ctx, client, team)
+	preflight, err := preflightMission(t, ctx, client, team, liveMissionE2EObjective)
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -1218,7 +1221,7 @@ func TestLiveRemoteToolEnrollmentIsolationE2E(t *testing.T) {
 	) {
 		t.Logf("post-revoke directory enrollment %s status=%s", enrollment.EnrollmentID, enrollment.Status)
 	}
-	after, err := preflightMission(t, ctx, client, team)
+	after, err := preflightMission(t, ctx, client, team, liveMissionE2EObjective)
 	if err != nil {
 		t.Fatalf("post-revoke preflight: %v", err)
 	}

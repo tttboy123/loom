@@ -20,6 +20,7 @@ import (
 	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/prompting"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
@@ -105,6 +106,7 @@ type OpenAICompatibleAgentAdapterConfig struct {
 	Client            HTTPDoer
 	Now               func() time.Time
 	MaxResponseBytes  int64
+	ToolGateway       loomruntime.AttemptToolGateway
 }
 
 type DeepSeekAgentAdapterConfig = OpenAICompatibleAgentAdapterConfig
@@ -125,6 +127,7 @@ type deepSeekAgentAdapter struct {
 	client            HTTPDoer
 	now               func() time.Time
 	maxResponseBytes  int64
+	toolGateway       loomruntime.AttemptToolGateway
 }
 
 type deepSeekAgentDispatch struct {
@@ -179,6 +182,7 @@ func newOpenAICompatibleAgentAdapter(
 		client:            config.Client,
 		now:               config.Now,
 		maxResponseBytes:  config.MaxResponseBytes,
+		toolGateway:       config.ToolGateway,
 	}, nil
 }
 
@@ -189,6 +193,7 @@ func NewSystemDeepSeekAgentAdapter(
 	now func() time.Time,
 	timeout time.Duration,
 	maxResponseBytes int64,
+	toolGateway loomruntime.AttemptToolGateway,
 ) (supervisor.RuntimeAdapter, error) {
 	return newSystemOpenAICompatibleAgentAdapter(
 		runtimeInstanceID,
@@ -198,6 +203,7 @@ func NewSystemDeepSeekAgentAdapter(
 		timeout,
 		maxResponseBytes,
 		deepSeekAgentProvider(),
+		toolGateway,
 	)
 }
 
@@ -208,10 +214,11 @@ func NewSystemKimiAgentAdapter(
 	now func() time.Time,
 	timeout time.Duration,
 	maxResponseBytes int64,
+	toolGateway loomruntime.AttemptToolGateway,
 ) (supervisor.RuntimeAdapter, error) {
 	return newSystemOpenAICompatibleAgentAdapter(
 		runtimeInstanceID, credentialAccess, diagnostics, now, timeout,
-		maxResponseBytes, kimiAgentProvider(),
+		maxResponseBytes, kimiAgentProvider(), toolGateway,
 	)
 }
 
@@ -222,10 +229,11 @@ func NewSystemMiniMaxAgentAdapter(
 	now func() time.Time,
 	timeout time.Duration,
 	maxResponseBytes int64,
+	toolGateway loomruntime.AttemptToolGateway,
 ) (supervisor.RuntimeAdapter, error) {
 	return newSystemOpenAICompatibleAgentAdapter(
 		runtimeInstanceID, credentialAccess, diagnostics, now, timeout,
-		maxResponseBytes, miniMaxAgentProvider(),
+		maxResponseBytes, miniMaxAgentProvider(), toolGateway,
 	)
 }
 
@@ -237,6 +245,7 @@ func newSystemOpenAICompatibleAgentAdapter(
 	timeout time.Duration,
 	maxResponseBytes int64,
 	provider openAICompatibleAgentProvider,
+	toolGateway loomruntime.AttemptToolGateway,
 ) (supervisor.RuntimeAdapter, error) {
 	if timeout <= 0 || timeout > 2*time.Minute {
 		return nil, ErrInvalidOpenAICompatibleAgentAdapter
@@ -261,6 +270,7 @@ func newSystemOpenAICompatibleAgentAdapter(
 		},
 		Now:              now,
 		MaxResponseBytes: maxResponseBytes,
+		ToolGateway:      toolGateway,
 	}, provider)
 }
 
@@ -332,9 +342,22 @@ func (adapter *deepSeekAgentAdapter) Execute(
 			if len(secret) == 0 || len(secret) > 8192 {
 				return ErrAgentCredentialUnavailable
 			}
+			toolBinding := loomruntime.ToolCallBinding{
+				ConversationID:         request.ContextCapsule.ConversationID,
+				WorkItemID:             request.Binding.WorkItemID,
+				RunID:                  request.Binding.RunID,
+				ClaimGeneration:        request.Binding.ClaimGeneration,
+				RuntimeInstanceID:      request.Binding.RuntimeInstanceID,
+				AgentInstanceID:        request.Binding.SenderAgentInstanceID,
+				ExecutionBindingDigest: request.ExecutionBinding.BindingDigest,
+				CapsuleDigest:          request.ContextCapsule.CapsuleDigest,
+				ClaimID:                request.ClaimID,
+				IncidentID:             request.IncidentID,
+				JourneyID:              request.IncidentID,
+			}
 			candidate, callErr := adapter.callProvider(
 				leaseContext, dispatch.Prompt, secret, request.ContextDelivery,
-				request.AgentInputs,
+				request.AgentInputs, toolBinding,
 			)
 			if callErr == nil {
 				response = candidate
@@ -483,8 +506,15 @@ func containsNativeCapability(capabilities []string, target string) bool {
 
 type deepSeekAgentResponse struct {
 	content    string
-	toolCall   *contextToolCall
+	toolCalls  []nativeAgentToolCall
 	accounting *work.RunAccounting
+}
+
+type nativeAgentToolCall struct {
+	ID      string
+	Kind    permissions.ToolKind
+	Context *contextToolCall
+	Web     *webAgentToolCall
 }
 
 type contextToolCall struct {
@@ -492,7 +522,14 @@ type contextToolCall struct {
 	Proposal contextcapsule.RetrievalProposal
 }
 
+type webAgentToolCall struct {
+	ID   string
+	Kind permissions.ToolKind
+	Call permissions.ProposedCall
+}
+
 type openAICompatibleToolCallWire struct {
+	Index    int    `json:"index,omitempty"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -527,10 +564,19 @@ func (adapter *deepSeekAgentAdapter) callProvider(
 	secret []byte,
 	delivery contextcapsule.DeliveryBroker,
 	inputs loomruntime.AgentInputSource,
+	binding loomruntime.ToolCallBinding,
 ) (deepSeekAgentResponse, error) {
 	tools := []prompting.ToolCapability(nil)
 	if delivery != nil {
 		tools = []prompting.ToolCapability{prompting.ToolContextRead}
+	}
+	for _, kind := range adapter.allowedWebTools() {
+		switch kind {
+		case permissions.ToolWebSearch:
+			tools = append(tools, prompting.ToolWebSearch)
+		case permissions.ToolWebFetch:
+			tools = append(tools, prompting.ToolWebFetch)
+		}
 	}
 	systemPrompt, err := prompting.BuildSystemPrompt(prompting.Profile{
 		Mode: prompting.ModeAgent, ProviderID: adapter.provider.providerID,
@@ -544,7 +590,7 @@ func (adapter *deepSeekAgentAdapter) callProvider(
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
 	}
-	return adapter.callProviderMessages(ctx, messages, secret, delivery, inputs)
+	return adapter.callProviderMessages(ctx, messages, secret, delivery, inputs, binding)
 }
 
 func (adapter *deepSeekAgentAdapter) callProviderMessages(
@@ -553,13 +599,14 @@ func (adapter *deepSeekAgentAdapter) callProviderMessages(
 	secret []byte,
 	delivery contextcapsule.DeliveryBroker,
 	inputs loomruntime.AgentInputSource,
+	binding loomruntime.ToolCallBinding,
 ) (deepSeekAgentResponse, error) {
 	defer func() { clearOpenAICompatibleMessages(messages) }()
 	var total *work.RunAccounting
 	contextSequence := int64(1)
 	for {
 		response, err := adapter.callProviderExchange(
-			ctx, messages, secret, delivery, contextSequence,
+			ctx, messages, secret, delivery, contextSequence, binding,
 		)
 		if err != nil {
 			return deepSeekAgentResponse{}, err
@@ -631,6 +678,7 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 	secret []byte,
 	delivery contextcapsule.DeliveryBroker,
 	contextSequence int64,
+	binding loomruntime.ToolCallBinding,
 ) (openAICompatibleExchange, error) {
 	history := append([]openAICompatibleMessage(nil), messages...)
 	ownedStart := len(history)
@@ -662,50 +710,86 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 				reason: "provider_http", stage: "provider_http",
 			}
 		}
-		if response.toolCall == nil {
+		if len(response.toolCalls) == 0 {
 			response.accounting = total
 			return openAICompatibleExchange{
 				deepSeekAgentResponse: response, contextDeliveries: deliveries,
 			}, nil
 		}
-		if delivery == nil || deliveries >= contextToolMaxCallsPerExchange {
+		if deliveries >= contextToolMaxCallsPerExchange {
 			return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
 				reason: "context_retrieval_denied", stage: "context_retrieval",
 			}
 		}
-		payload, retrievalErr := delivery.Prepare(
-			ctx,
-			response.toolCall.Proposal,
-			contextcapsule.DeliveryRequest{
-				Sequence:    contextSequence + deliveries,
-				ContentType: "application/json",
-			},
-			marshalContextToolResult,
-		)
-		if retrievalErr != nil {
+		assistantWires := make([]openAICompatibleToolCallWire, 0, len(response.toolCalls))
+		results := make([]openAICompatibleMessage, 0, len(response.toolCalls))
+		for _, toolCall := range response.toolCalls {
+			if toolCall.Web != nil {
+				webResult, webErr := adapter.executeWebToolCall(
+					ctx, binding, *toolCall.Web,
+				)
+				if webErr != nil {
+					return openAICompatibleExchange{}, webErr
+				}
+				assistantWires = append(assistantWires, webToolCallWire(*toolCall.Web))
+				results = append(results, openAICompatibleMessage{
+					Role: "tool", ToolCallID: toolCall.Web.ID,
+					MutableContent: webResult,
+				})
+				deliveries++
+				continue
+			}
+			if toolCall.Context == nil || delivery == nil {
+				return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
+					reason: "context_retrieval_denied", stage: "context_retrieval",
+				}
+			}
+			payload, retrievalErr := delivery.Prepare(
+				ctx,
+				toolCall.Context.Proposal,
+				contextcapsule.DeliveryRequest{
+					Sequence:    contextSequence + deliveries,
+					ContentType: "application/json",
+				},
+				marshalContextToolResult,
+			)
+			if retrievalErr != nil {
+				payload.Close()
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return openAICompatibleExchange{}, ctxErr
+				}
+				// A denied or unretrievable Context item is a bounded tool
+				// result, not a terminal attempt failure: the model may
+				// recover with a different item or another tool (e.g. the
+				// governed web gateway). Never leak the retrieval reason.
+				if errors.Is(retrievalErr, contextcapsule.ErrContextRetrievalDenied) ||
+					errors.Is(retrievalErr, contextcapsule.ErrContextItemNotRetrievable) {
+					assistantWires = append(assistantWires, contextToolCallWire(*toolCall.Context))
+					results = append(results, openAICompatibleMessage{
+						Role: "tool", ToolCallID: toolCall.Context.ID,
+						MutableContent: []byte(`{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Use web_search for current external information or choose a different item."}`),
+					})
+					deliveries++
+					continue
+				}
+				return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
+					reason: "context_retrieval_denied", stage: "context_retrieval",
+				}
+			}
+			assistantWires = append(assistantWires, contextToolCallWire(*toolCall.Context))
+			results = append(results, openAICompatibleMessage{
+				Role: "tool", ToolCallID: toolCall.Context.ID,
+				MutableContent: bytes.Clone(payload.Content),
+			})
+			bindingRef := payload.Binding
 			payload.Close()
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return openAICompatibleExchange{}, ctxErr
-			}
-			return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
-				reason: "context_retrieval_denied", stage: "context_retrieval",
-			}
+			pending = &bindingRef
+			deliveries++
 		}
 		history = append(history,
-			openAICompatibleMessage{
-				Role: "assistant", ToolCalls: []openAICompatibleToolCallWire{
-					contextToolCallWire(*response.toolCall),
-				},
-			},
-			openAICompatibleMessage{
-				Role: "tool", ToolCallID: response.toolCall.ID,
-				MutableContent: bytes.Clone(payload.Content),
-			},
+			openAICompatibleMessage{Role: "assistant", ToolCalls: assistantWires},
 		)
-		binding := payload.Binding
-		payload.Close()
-		pending = &binding
-		deliveries++
+		history = append(history, results...)
 	}
 }
 
@@ -726,6 +810,7 @@ func (adapter *deepSeekAgentAdapter) callProviderRound(
 		Tools               []any             `json:"tools,omitempty"`
 		ToolChoice          string            `json:"tool_choice,omitempty"`
 		Stream              bool              `json:"stream"`
+		ParallelToolCalls   bool              `json:"parallel_tool_calls,omitempty"`
 		MaxTokens           int               `json:"max_tokens,omitempty"`
 		MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
 	}{
@@ -733,9 +818,23 @@ func (adapter *deepSeekAgentAdapter) callProviderRound(
 		Messages: wireMessages,
 		Stream:   false,
 	}
-	if allowContextTool {
-		requestBody.Tools = []any{contextToolDefinition()}
+	if allowContextTool || len(adapter.allowedWebTools()) > 0 {
+		requestBody.Tools = []any{}
 		requestBody.ToolChoice = "auto"
+		// The exchange loop executes one governed tool call per round; ask
+		// the provider for a single tool call at a time.
+		requestBody.ParallelToolCalls = false
+	}
+	if allowContextTool {
+		requestBody.Tools = append(requestBody.Tools, contextToolDefinition())
+	}
+	for _, kind := range adapter.allowedWebTools() {
+		switch kind {
+		case permissions.ToolWebSearch:
+			requestBody.Tools = append(requestBody.Tools, webSearchToolDefinition())
+		case permissions.ToolWebFetch:
+			requestBody.Tools = append(requestBody.Tools, webFetchToolDefinition())
+		}
 	}
 	if adapter.provider.completionTokenField == "max_tokens" {
 		requestBody.MaxTokens = 2048
@@ -923,29 +1022,50 @@ func decodeDeepSeekAgentResponse(
 		} `json:"usage"`
 	}
 	if rejectNativeDuplicateJSONKeys(body) != nil ||
-		json.Unmarshal(body, &decoded) != nil || decoded.Model != expectedModel ||
+		json.Unmarshal(body, &decoded) != nil ||
+		!validNativeAgentResponseModel(decoded.Model) ||
 		len(decoded.Choices) != 1 ||
 		decoded.Choices[0].Message.Role != "assistant" {
 		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
 	}
 	message := decoded.Choices[0].Message
 	content := strings.TrimSpace(message.Content)
-	if (content == "") == (len(message.ToolCalls) == 0) ||
-		len(message.ToolCalls) > 1 || len(content) > deepSeekAgentMaxContentBytes ||
+	// A tool call may be accompanied by a short content preamble (DeepSeek
+	// often emits "I'll search..." before the function call); otherwise a
+	// response with no tool call must carry non-empty content.
+	if len(message.ToolCalls) > contextToolMaxCallsPerExchange ||
+		len(message.ToolCalls) == 0 && content == "" ||
+		len(content) > deepSeekAgentMaxContentBytes ||
 		!utf8.ValidString(content) || strings.IndexByte(content, 0) >= 0 {
 		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
 	}
 	response := deepSeekAgentResponse{content: content}
-	if len(message.ToolCalls) == 1 {
-		wire, err := decodeContextToolCallWire(message.ToolCalls[0])
+	response.toolCalls = make([]nativeAgentToolCall, 0, len(message.ToolCalls))
+	for _, raw := range message.ToolCalls {
+		wire, err := decodeContextToolCallWire(raw)
 		if err != nil {
 			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
 		}
-		toolCall, err := decodeContextToolCall(wire)
-		if err != nil {
+		switch wire.Function.Name {
+		case "loom_read_context":
+			toolCall, decodeErr := decodeContextToolCall(wire)
+			if decodeErr != nil {
+				return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+			}
+			response.toolCalls = append(response.toolCalls, nativeAgentToolCall{
+				ID: wire.ID, Kind: permissions.ToolMCPTool, Context: &toolCall,
+			})
+		case "loom_web_search", "loom_web_fetch":
+			webCall, decodeErr := decodeWebToolCall(wire)
+			if decodeErr != nil {
+				return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+			}
+			response.toolCalls = append(response.toolCalls, nativeAgentToolCall{
+				ID: webCall.ID, Kind: webCall.Kind, Web: &webCall,
+			})
+		default:
 			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
 		}
-		response.toolCall = &toolCall
 	}
 	if decoded.Usage == nil {
 		return response, nil
@@ -978,6 +1098,220 @@ func decodeContextToolCallWire(raw json.RawMessage) (openAICompatibleToolCallWir
 		return openAICompatibleToolCallWire{}, ErrDeepSeekAgentProtocol
 	}
 	return wire, nil
+}
+
+func (adapter *deepSeekAgentAdapter) allowedWebTools() []permissions.ToolKind {
+	if adapter == nil || adapter.toolGateway == nil {
+		return nil
+	}
+	provider, ok := adapter.toolGateway.(loomruntime.ToolCallCapabilityProvider)
+	if !ok {
+		return nil
+	}
+	allowed := []permissions.ToolKind(nil)
+	for _, kind := range provider.AllowedToolCalls() {
+		switch kind {
+		case permissions.ToolWebSearch, permissions.ToolWebFetch:
+			allowed = append(allowed, kind)
+		}
+	}
+	return allowed
+}
+
+func validNativeAgentResponseModel(value string) bool {
+	if value == "" || len(value) > 128 || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '_' || character == '-' || character == '.' ||
+			character == ':' || character == '/' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func webSearchToolDefinition() any {
+	return struct {
+		Type     string `json:"type"`
+		Function any    `json:"function"`
+	}{
+		Type: "function",
+		Function: struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Strict      bool   `json:"strict"`
+			Parameters  any    `json:"parameters"`
+		}{
+			Name:        "loom_web_search",
+			Description: "Search the live internet through the Loom-governed web gateway and return concise results.",
+			Strict:      true,
+			Parameters: struct {
+				Type                 string         `json:"type"`
+				Properties           map[string]any `json:"properties"`
+				Required             []string       `json:"required"`
+				AdditionalProperties bool           `json:"additionalProperties"`
+			}{
+				Type: "object",
+				Properties: map[string]any{
+					"query": map[string]any{"type": "string"},
+				},
+				Required:             []string{"query"},
+				AdditionalProperties: false,
+			},
+		},
+	}
+}
+
+func webFetchToolDefinition() any {
+	return struct {
+		Type     string `json:"type"`
+		Function any    `json:"function"`
+	}{
+		Type: "function",
+		Function: struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Strict      bool   `json:"strict"`
+			Parameters  any    `json:"parameters"`
+		}{
+			Name:        "loom_web_fetch",
+			Description: "Fetch one public URL through the Loom-governed web gateway and return its text content.",
+			Strict:      true,
+			Parameters: struct {
+				Type                 string         `json:"type"`
+				Properties           map[string]any `json:"properties"`
+				Required             []string       `json:"required"`
+				AdditionalProperties bool           `json:"additionalProperties"`
+			}{
+				Type: "object",
+				Properties: map[string]any{
+					"url": map[string]any{"type": "string"},
+				},
+				Required:             []string{"url"},
+				AdditionalProperties: false,
+			},
+		},
+	}
+}
+
+func decodeWebToolCall(wire openAICompatibleToolCallWire) (webAgentToolCall, error) {
+	if !validContextToolIdentifier(wire.ID, 128) || wire.Type != "function" ||
+		wire.Function.Arguments == "" ||
+		len(wire.Function.Arguments) > contextToolMaxArgumentsBytes ||
+		rejectNativeDuplicateJSONKeys([]byte(wire.Function.Arguments)) != nil {
+		return webAgentToolCall{}, ErrDeepSeekAgentProtocol
+	}
+	decoder := json.NewDecoder(strings.NewReader(wire.Function.Arguments))
+	decoder.DisallowUnknownFields()
+	switch wire.Function.Name {
+	case "loom_web_search":
+		var arguments struct {
+			Query string `json:"query"`
+		}
+		if decoder.Decode(&arguments) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validWebToolArgument(arguments.Query, 512) {
+			return webAgentToolCall{}, ErrDeepSeekAgentProtocol
+		}
+		return webAgentToolCall{
+			ID: wire.ID, Kind: permissions.ToolWebSearch,
+			Call: permissions.ProposedCall{Tool: permissions.ToolWebSearch, Path: arguments.Query},
+		}, nil
+	case "loom_web_fetch":
+		var arguments struct {
+			URL string `json:"url"`
+		}
+		if decoder.Decode(&arguments) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validWebToolArgument(arguments.URL, 2048) {
+			return webAgentToolCall{}, ErrDeepSeekAgentProtocol
+		}
+		return webAgentToolCall{
+			ID: wire.ID, Kind: permissions.ToolWebFetch,
+			Call: permissions.ProposedCall{Tool: permissions.ToolWebFetch, Path: arguments.URL},
+		}, nil
+	default:
+		return webAgentToolCall{}, ErrDeepSeekAgentProtocol
+	}
+}
+
+func validWebToolArgument(value string, max int) bool {
+	if value == "" || len(value) > max || !utf8.ValidString(value) ||
+		strings.TrimSpace(value) != value || strings.IndexByte(value, 0) >= 0 {
+		return false
+	}
+	return true
+}
+
+func webToolCallWire(call webAgentToolCall) openAICompatibleToolCallWire {
+	wire := openAICompatibleToolCallWire{ID: call.ID, Type: "function"}
+	switch call.Kind {
+	case permissions.ToolWebSearch:
+		wire.Function.Name = "loom_web_search"
+		arguments, _ := json.Marshal(struct {
+			Query string `json:"query"`
+		}{call.Call.Path})
+		wire.Function.Arguments = string(arguments)
+	case permissions.ToolWebFetch:
+		wire.Function.Name = "loom_web_fetch"
+		arguments, _ := json.Marshal(struct {
+			URL string `json:"url"`
+		}{call.Call.Path})
+		wire.Function.Arguments = string(arguments)
+	}
+	return wire
+}
+
+func (adapter *deepSeekAgentAdapter) executeWebToolCall(
+	ctx context.Context,
+	binding loomruntime.ToolCallBinding,
+	call webAgentToolCall,
+) ([]byte, error) {
+	if adapter == nil || adapter.toolGateway == nil {
+		return nil, &deepSeekAgentProviderFailure{
+			reason: "context_retrieval_denied", stage: "context_retrieval",
+		}
+	}
+	gateway, ok := adapter.toolGateway.(loomruntime.AttemptToolGateway)
+	if !ok {
+		return nil, &deepSeekAgentProviderFailure{
+			reason: "context_retrieval_denied", stage: "context_retrieval",
+		}
+	}
+	reader, readerOK := adapter.toolGateway.(loomruntime.ToolCallResultContentReader)
+	if !readerOK {
+		return nil, &deepSeekAgentProviderFailure{
+			reason: "context_retrieval_denied", stage: "context_retrieval",
+		}
+	}
+	result, err := gateway.ExecuteToolCall(ctx, loomruntime.ToolCallEnvelope{
+		JobID: binding.WorkItemID, Call: call.Call,
+	}, binding)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, &deepSeekAgentProviderFailure{
+			reason: "context_retrieval_denied", stage: "context_retrieval",
+		}
+	}
+	if result.Verdict != permissions.VerdictAllow {
+		// A governance denial/ask is a bounded tool result, not a terminal
+		// attempt failure: the model may recover with a different query or
+		// tool. Never leak the denial reason.
+		return []byte(`{"error":"tool_denied","message":"The Loom governance gate did not allow this web tool call for this attempt. Use a different query or tool."}`), nil
+	}
+	content, err := reader.ReadToolCallResultContent(ctx, binding, result)
+	if err != nil {
+		return []byte(`{"error":"tool_unavailable","message":"The web tool result could not be read for this attempt. Try a different query or tool."}`), nil
+	}
+	if len(content) == 0 || len(content) > contextToolMaxResultBytes {
+		return []byte(`{"error":"tool_unavailable","message":"The web tool result was empty or too large for this attempt."}`), nil
+	}
+	return content, nil
 }
 
 func contextToolDefinition() any {

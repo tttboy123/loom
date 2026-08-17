@@ -2013,21 +2013,23 @@ func teamContextSelectionDigest(selections []TeamAttemptSelection) string {
 }
 
 type teamExecutionBindingPayload struct {
-	ProfileID           string   `json:"profile_id"`
-	HarnessAdapter      string   `json:"harness_adapter"`
-	RuntimeInstanceID   string   `json:"runtime_instance_id"`
-	ProviderID          string   `json:"provider_id"`
-	ProviderAccountID   string   `json:"provider_account_id"`
-	ModelID             string   `json:"model_id"`
-	AuthMode            string   `json:"auth_mode"`
-	EndpointFingerprint string   `json:"endpoint_fingerprint"`
-	CredentialReference string   `json:"credential_reference"`
-	CredentialRevision  int64    `json:"credential_revision"`
-	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
-	TimeoutNanoseconds  int64    `json:"timeout_nanoseconds"`
-	Budget              *int64   `json:"budget"`
-	Capabilities        []string `json:"capabilities"`
-	BindingDigest       string   `json:"binding_digest"`
+	ProfileID                  string   `json:"profile_id"`
+	HarnessAdapter             string   `json:"harness_adapter"`
+	RuntimeInstanceID          string   `json:"runtime_instance_id"`
+	ProviderID                 string   `json:"provider_id"`
+	ProviderAccountID          string   `json:"provider_account_id"`
+	ModelID                    string   `json:"model_id"`
+	AuthMode                   string   `json:"auth_mode"`
+	EndpointFingerprint        string   `json:"endpoint_fingerprint"`
+	CredentialReference        string   `json:"credential_reference"`
+	CredentialRevision         int64    `json:"credential_revision"`
+	ReasoningEffort            string   `json:"reasoning_effort,omitempty"`
+	TimeoutNanoseconds         int64    `json:"timeout_nanoseconds"`
+	Budget                     *int64   `json:"budget"`
+	Capabilities               []string `json:"capabilities"`
+	BindingDigest              string   `json:"binding_digest"`
+	RemoteToolEnrollmentID     string   `json:"remote_tool_enrollment_id,omitempty"`
+	RemoteToolEnrollmentDigest string   `json:"remote_tool_enrollment_digest,omitempty"`
 }
 
 type teamAttemptTerminalPayload struct {
@@ -2769,20 +2771,22 @@ func teamExecutionBindingPayloadFrom(
 		return nil
 	}
 	payload := &teamExecutionBindingPayload{
-		ProfileID:           validated.ProfileID,
-		HarnessAdapter:      validated.HarnessAdapter,
-		RuntimeInstanceID:   validated.RuntimeInstanceID,
-		ProviderID:          validated.ProviderID,
-		ProviderAccountID:   validated.ProviderAccountID,
-		ModelID:             validated.ModelID,
-		AuthMode:            string(validated.AuthMode),
-		EndpointFingerprint: validated.EndpointFingerprint,
-		CredentialReference: validated.CredentialReference,
-		CredentialRevision:  validated.CredentialRevision,
-		ReasoningEffort:     validated.ReasoningEffort,
-		TimeoutNanoseconds:  int64(validated.Timeout),
-		Capabilities:        append([]string(nil), validated.Capabilities...),
-		BindingDigest:       validated.BindingDigest,
+		ProfileID:                  validated.ProfileID,
+		HarnessAdapter:             validated.HarnessAdapter,
+		RuntimeInstanceID:          validated.RuntimeInstanceID,
+		ProviderID:                 validated.ProviderID,
+		ProviderAccountID:          validated.ProviderAccountID,
+		ModelID:                    validated.ModelID,
+		AuthMode:                   string(validated.AuthMode),
+		EndpointFingerprint:        validated.EndpointFingerprint,
+		CredentialReference:        validated.CredentialReference,
+		CredentialRevision:         validated.CredentialRevision,
+		ReasoningEffort:            validated.ReasoningEffort,
+		TimeoutNanoseconds:         int64(validated.Timeout),
+		Capabilities:               append([]string(nil), validated.Capabilities...),
+		BindingDigest:              validated.BindingDigest,
+		RemoteToolEnrollmentID:     validated.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: validated.RemoteToolEnrollmentDigest,
 	}
 	if validated.Budget != nil {
 		budget := *validated.Budget
@@ -2798,20 +2802,22 @@ func frozenExecutionBindingFromPayload(
 		return loomruntime.FrozenExecutionBinding{}, nil
 	}
 	binding := loomruntime.FrozenExecutionBinding{
-		ProfileID:           input.ProfileID,
-		HarnessAdapter:      input.HarnessAdapter,
-		RuntimeInstanceID:   input.RuntimeInstanceID,
-		ProviderID:          input.ProviderID,
-		ProviderAccountID:   input.ProviderAccountID,
-		ModelID:             input.ModelID,
-		AuthMode:            loomruntime.AuthMode(input.AuthMode),
-		EndpointFingerprint: input.EndpointFingerprint,
-		CredentialReference: input.CredentialReference,
-		CredentialRevision:  input.CredentialRevision,
-		ReasoningEffort:     input.ReasoningEffort,
-		Timeout:             time.Duration(input.TimeoutNanoseconds),
-		Capabilities:        append([]string(nil), input.Capabilities...),
-		BindingDigest:       input.BindingDigest,
+		ProfileID:                  input.ProfileID,
+		HarnessAdapter:             input.HarnessAdapter,
+		RuntimeInstanceID:          input.RuntimeInstanceID,
+		ProviderID:                 input.ProviderID,
+		ProviderAccountID:          input.ProviderAccountID,
+		ModelID:                    input.ModelID,
+		AuthMode:                   loomruntime.AuthMode(input.AuthMode),
+		EndpointFingerprint:        input.EndpointFingerprint,
+		CredentialReference:        input.CredentialReference,
+		CredentialRevision:         input.CredentialRevision,
+		ReasoningEffort:            input.ReasoningEffort,
+		Timeout:                    time.Duration(input.TimeoutNanoseconds),
+		Capabilities:               append([]string(nil), input.Capabilities...),
+		BindingDigest:              input.BindingDigest,
+		RemoteToolEnrollmentID:     input.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: input.RemoteToolEnrollmentDigest,
 	}
 	if input.Budget != nil {
 		budget := *input.Budget

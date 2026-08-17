@@ -2,6 +2,20 @@
 
 Updated: 2026-08-17
 
+## Phase 4 · 联网工具链安装版 Mission 全链路（V33，2026-08-17）
+
+- 安装版 live 验证：Mission 子 Agent（DeepSeek + web_search Enrollment）模型主动调用
+  `loom_web_search` → Attempt-Loop 准入 → 执行适配器授权 → 真实执行；
+  Journal 记录 `ToolCallAdmitted` / `ToolExecutionProposed` / `ToolExecutionAllowed` 与
+  WebSearch 工具事实。
+- 修复：Enrollment binding digest 往返（journal 不再砖）、supervisor profile 保留 enrollment、
+  DeepSeek 模型名格式校验、tool_calls `index` 字段、内容+工具调用并存、并行工具调用循环、
+  Context 拒绝可恢复、Web 工具在 Mission 暴露（动态 Enrollment 物化 + App 派生环境合并）、
+  远程工具免 worktree、gateway JobID=WorkItemID。
+- 已知剩余：本机 IP 的 DDG 搜索间歇被限流 → 空结果被 Attempt-Loop 结果提交拒绝，
+  Mission 不收敛（9 分钟超时）；WebFetch 默认 `ask` 需批准通道。见
+  `.loom-evidence/phase4/network-capability/P2D-W4-mission-web-tool-loop-live-v33.md`。
+
 ## Phase 4 · 4.1 RoundTable（受治理交接）上线与稳定化 (2026-08-17)
 
 `CURRENT / 4.1 INSTALLED-LIVE PASS`: RoundTable is committed (01ff06c8 +

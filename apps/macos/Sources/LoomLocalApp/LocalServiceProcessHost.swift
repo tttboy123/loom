@@ -46,10 +46,15 @@ final class LocalServiceProcessHost: ObservableObject {
             logger.error("bundled service environment unavailable")
             return false
         }
-        child.environment = [
-            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-            "PATH": servicePath,
-        ]
+        // Merge the caller's environment (which carries explicit operator
+        // opt-ins such as LOOM_ENABLE_WEB_TOOLS) with the canonical HOME/PATH
+        // the bundled service needs. Replacing the whole environment here
+        // would silently drop those opt-ins.
+        var serviceEnvironment = bundledServiceEnvironment()
+        serviceEnvironment["HOME"] =
+            FileManager.default.homeDirectoryForCurrentUser.path
+        serviceEnvironment["PATH"] = servicePath
+        child.environment = serviceEnvironment
         guard let console = daemonConsoleHandle() else {
             logger.error("bundled service diagnostics unavailable")
             return false
@@ -91,6 +96,25 @@ final class LocalServiceProcessHost: ObservableObject {
             process?.terminate()
         }
         try? consoleHandle?.close()
+    }
+
+    private func bundledServiceEnvironment() -> [String: String] {
+        // Read the inherited environment via the Darwin C boundary so the
+        // bundled service inherits explicit operator opt-ins.
+        var values = [String: String]()
+        var index = 0
+        while let entry = environ[index] {
+            let pair = String(cString: entry)
+            if let equals = pair.firstIndex(of: "=") {
+                let key = String(pair[..<equals])
+                let value = String(pair[pair.index(after: equals)...])
+                if !key.isEmpty && !value.isEmpty {
+                    values[key] = value
+                }
+            }
+            index += 1
+        }
+        return values
     }
 
     private var defaultSocketExists: Bool {

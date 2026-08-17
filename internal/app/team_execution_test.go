@@ -3903,6 +3903,66 @@ func TestPhase2DTeamExecutionRejectsUnapprovedFallbackBindingChange(t *testing.T
 	}
 }
 
+func TestPhase2DTeamExecutionProfileFromFrozenBindingPreservesEnrollment(t *testing.T) {
+	// appRuntimeProfileFromFrozenBinding must round-trip the remote-tool
+	// Enrollment fields. validateTeamExecutionRequest replaces each node's
+	// Profile with this conversion; dropping the fields made the supervisor
+	// recompute a legacy binding digest while the Route Segment / journal
+	// binding carried the v3 digest, so every enrollment-bound Mission start
+	// failed with ErrInvalidManagedExecution (surfaced as state_unavailable).
+	binding, err := loomruntime.FreezeExecutionBinding(
+		loomruntime.RuntimeProfile{
+			ID: "profile.web", AdapterType: "loom-native",
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+			ModelID: "deepseek-chat", AuthMode: loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("b", 64),
+			CredentialReference: "credential-ref-deepseek-primary",
+			CredentialRevision:  2,
+			RequiredCapabilities: []string{
+				loomruntime.CapabilityContextRetrieval,
+			},
+			Timeout:                    45 * time.Second,
+			RemoteToolEnrollmentID:     "enroll-web-live-001",
+			RemoteToolEnrollmentDigest: strings.Repeat("c", 64),
+		},
+		loomruntime.RuntimeInstance{
+			ID: "runtime.loom-native.local", DeviceID: "device.local",
+			AdapterType: "loom-native", DisplayName: "Loom Native",
+			Status: loomruntime.RuntimeOnline,
+			ObservedCapabilities: []string{
+				loomruntime.CapabilityContextRetrieval,
+			},
+			Capacity: 2,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := appRuntimeProfileFromFrozenBinding(binding)
+	if profile.RemoteToolEnrollmentID != binding.RemoteToolEnrollmentID ||
+		profile.RemoteToolEnrollmentDigest != binding.RemoteToolEnrollmentDigest {
+		t.Fatalf("profile dropped enrollment: %#v", profile)
+	}
+	// The profile must re-freeze to the exact same binding digest so the
+	// Route Segment, journal binding and supervisor recomputation all agree.
+	refrozen, err := loomruntime.FreezeExecutionBinding(
+		profile,
+		loomruntime.RuntimeInstance{
+			ID: binding.RuntimeInstanceID, DeviceID: "device.local",
+			AdapterType: binding.HarnessAdapter, DisplayName: "Loom Native",
+			Status: loomruntime.RuntimeOnline,
+			ObservedCapabilities: append(
+				[]string(nil), binding.Capabilities...,
+			),
+			Capacity: 2,
+		},
+	)
+	if err != nil || refrozen.BindingDigest != binding.BindingDigest {
+		t.Fatalf("refrozen digest = %s err=%v want %s",
+			refrozen.BindingDigest, err, binding.BindingDigest)
+	}
+}
+
 func TestPhase2DTeamExecutionUsesOnlyExactApprovedFallbackBinding(t *testing.T) {
 	fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
 	fixture.request.Nodes[0].Executor = newTeamCanarySupervisor(

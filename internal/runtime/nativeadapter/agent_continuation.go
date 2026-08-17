@@ -233,6 +233,19 @@ func (adapter *deepSeekAgentAdapter) callProviderContinuation(
 	}
 	return adapter.callProviderMessages(
 		ctx, messages, secret, request.ContextDelivery, request.NextInputs,
+		loomruntime.ToolCallBinding{
+			ConversationID:         request.ContextCapsule.ConversationID,
+			WorkItemID:             request.WorkItemID,
+			RunID:                  request.RunID,
+			ClaimGeneration:        request.ClaimGeneration,
+			RuntimeInstanceID:      request.ExecutionBinding.RuntimeInstanceID,
+			AgentInstanceID:        request.AgentInstanceID,
+			ExecutionBindingDigest: request.ExecutionBinding.BindingDigest,
+			CapsuleDigest:          request.ContextCapsule.CapsuleDigest,
+			ClaimID:                request.ClaimID,
+			IncidentID:             request.IncidentID,
+			JourneyID:              request.IncidentID,
+		},
 	)
 }
 

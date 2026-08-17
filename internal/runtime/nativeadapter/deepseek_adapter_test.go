@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/permissions"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
@@ -771,6 +773,11 @@ func TestLoomNativeDeepSeekContextRetrievalDenialIsContentFree(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(
 			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-context-1","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"` + omitted.ItemID + `\",\"content_digest\":\"` + omitted.ContentDigest + `\",\"artifact_ref\":\"` + omitted.ArtifactRef + `\"}"}}]}}]}`,
 		)),
+	}, {
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"final answer"}}]}`,
+		)),
 	}}}
 	diagnostics := &agentDiagnosticRecorderFixture{}
 	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
@@ -788,16 +795,19 @@ func TestLoomNativeDeepSeekContextRetrievalDenialIsContentFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames := request.FrameSink.(*frameSinkFixture).frames
-	if len(frames) != 2 || string(frames[1].Payload()) !=
-		`{"status":"failed","reason":"context_retrieval_denied"}` ||
+	// The denied retrieval is a bounded, content-free tool result: the model
+	// recovers and produces a final answer (never a terminal denial leak).
+	if len(frames) != 3 || string(frames[2].Payload()) !=
+		`{"status":"succeeded","reason":""}` ||
 		!result.DispatchAcknowledged() || !result.ResultAcknowledged() {
 		t.Fatalf("result=%#v frames=%#v", result, frames)
 	}
-	if len(doer.bodies) != 1 || len(diagnostics.records) != 1 ||
-		diagnostics.records[0].Stage != "context_retrieval" ||
-		diagnostics.records[0].ErrorCode != "context_retrieval_denied" ||
-		diagnostics.records[0].Retryable {
-		t.Fatalf("requests=%d diagnostics=%#v", len(doer.bodies), diagnostics.records)
+	// The denial tool result sent back to the provider must be the generic
+	// content-free marker (the item id/digest legitimately appear only in the
+	// echoed tool-call arguments, never in the denial message).
+	if len(doer.bodies) != 2 ||
+		!bytes.Contains(doer.bodies[1], []byte(`context_item_unavailable`)) {
+		t.Fatalf("denial not surfaced as a bounded tool result: %d bodies", len(doer.bodies))
 	}
 }
 
@@ -1608,5 +1618,56 @@ func TestLoomNativeDispatchAcceptsLargeMissionRoleContextPrompt(t *testing.T) {
 	dispatch, err := decodeDeepSeekAgentDispatch(payload)
 	if err != nil || !strings.Contains(dispatch.Prompt, "mixed-provider Team") {
 		t.Fatalf("large context dispatch = %#v, %v", dispatch, err)
+	}
+}
+
+func TestNativeAdapterWebToolDecodeAndModelFormat(t *testing.T) {
+	// web_search decode
+	search, err := decodeWebToolCall(openAICompatibleToolCallWire{
+		ID: "call-1", Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "loom_web_search", Arguments: `{"query":"multica github"}`},
+	})
+	if err != nil || search.Kind != permissions.ToolWebSearch ||
+		search.Call.Path != "multica github" {
+		t.Fatalf("web_search decode = %#v, %v", search, err)
+	}
+	// web_fetch decode
+	fetch, err := decodeWebToolCall(openAICompatibleToolCallWire{
+		ID: "call-2", Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "loom_web_fetch", Arguments: `{"url":"https://example.com"}`},
+	})
+	if err != nil || fetch.Kind != permissions.ToolWebFetch ||
+		fetch.Call.Path != "https://example.com" {
+		t.Fatalf("web_fetch decode = %#v, %v", fetch, err)
+	}
+	// unknown tool rejected
+	if _, err := decodeWebToolCall(openAICompatibleToolCallWire{
+		ID: "call-3", Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "loom_read_context", Arguments: `{}`},
+	}); err == nil {
+		t.Fatal("unknown tool accepted")
+	}
+	// tool definitions are well-formed function schemas
+	for _, definition := range []any{webSearchToolDefinition(), webFetchToolDefinition()} {
+		if _, err := json.Marshal(definition); err != nil {
+			t.Fatalf("tool definition marshal: %v", err)
+		}
+	}
+	// relaxed response-model format check (DeepSeek returns deepseek-v4-flash
+	// for a deepseek-chat request; exact-equality would reject every turn)
+	if !validNativeAgentResponseModel("deepseek-v4-flash") ||
+		!validNativeAgentResponseModel("deepseek-chat") ||
+		validNativeAgentResponseModel("") ||
+		validNativeAgentResponseModel("bad model!") {
+		t.Fatal("response model format validation incorrect")
 	}
 }
