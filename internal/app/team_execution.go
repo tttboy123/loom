@@ -38,6 +38,23 @@ var (
 
 const teamAttemptCommitTimeout = 15 * time.Second
 
+// verifierDispatchKind is the bridge dispatch kind the independent verifier
+// sends to the runtime adapter. It is a strict single-prompt envelope
+// (schema v1, kind pi_verifier_prompt) so the adapter can decode it into a
+// real model prompt; the verifier has no context capsule of its own.
+const verifierDispatchKind = "pi_verifier_prompt"
+
+// verifierSourceExcerptBytes bounds how much of the source attempt output is
+// embedded in the verifier prompt. Verifier prompts must stay far below the
+// adapter prompt limit while still giving the verifier enough output to judge.
+const verifierSourceExcerptBytes = 8 * 1024
+
+// verifierSourceReadBoundBytes bounds the artifact read when composing the
+// verifier prompt. The artifact carries the full bounded frame transcript of
+// the source attempt, which can exceed the excerpt; the read only needs to be
+// large enough to never reject a valid attempt artifact.
+const verifierSourceReadBoundBytes = 512 * 1024
+
 type ManagedNodeExecutor interface {
 	Execute(context.Context, supervisor.ExecuteInput) (supervisor.Outcome, error)
 }
@@ -117,6 +134,10 @@ type TeamExecutionRequest struct {
 	OutputObserver       NodeOutputObserver
 	ContextCapsules      TeamContextCapsuleStore
 	AssetSourceStreamIDs []string
+	// Objective is the confirmed Mission objective carried into the verifier
+	// prompt so the independent verifier can judge criterion "result satisfies
+	// the confirmed Mission objective" against the actual objective text.
+	Objective string
 }
 
 type TeamAssetMaterializationRequest struct {
@@ -949,6 +970,120 @@ func (coordinator *TeamCoordinator) scheduleTeamRecoveryDecision(
 	return err
 }
 
+// verifierSourceArtifact is the minimal read shape of a finalized attempt
+// artifact used to give the independent verifier a bounded view of the source
+// node output (digest-addressed, never a secret or credential).
+type verifierSourceArtifact struct {
+	EvidenceID       string   `json:"evidence_id"`
+	TeamInstanceID   string   `json:"team_instance_id"`
+	LogicalNodeID    string   `json:"logical_node_id"`
+	AttemptNumber    int      `json:"attempt_number"`
+	WorkItemID       string   `json:"work_item_id"`
+	RunID            string   `json:"run_id"`
+	AuthorizedFrames []string `json:"authorized_frames"`
+	Status           string   `json:"status"`
+	Reason           string   `json:"reason"`
+}
+
+// renderVerifierPrompt builds the single-prompt envelope for the independent
+// verifier. The verifier has no context capsule of its own, so the dispatch
+// must carry a self-contained prompt: the acceptance criteria, the source
+// provenance digests, and a bounded excerpt of the source output frames. Only
+// output content is included; credentials and prompts never leave the attempt.
+func renderVerifierPrompt(
+	ctx context.Context,
+	store *evidence.Store,
+	sourceReceipt evidence.AttemptReceipt,
+	contract verification.AcceptanceContract,
+	source verification.DeterministicVerificationInput,
+	objective string,
+) (string, error) {
+	if store == nil || ctx == nil || sourceReceipt.Digest() == "" {
+		return "", ErrInvalidTeamCoordinator
+	}
+	artifactBytes, err := store.ReadArtifact(
+		ctx,
+		sourceReceipt.Digest(),
+		verifierSourceReadBoundBytes,
+	)
+	if err != nil {
+		return "", err
+	}
+	var artifact verifierSourceArtifact
+	if err := json.Unmarshal(artifactBytes, &artifact); err != nil ||
+		artifact.EvidenceID == "" ||
+		artifact.EvidenceID != sourceReceipt.EvidenceID() {
+		return "", ErrInvalidTeamCoordinator
+	}
+	output := renderVerifierSourceOutput(artifact.AuthorizedFrames)
+	if len(output) > verifierSourceExcerptBytes {
+		output = output[:verifierSourceExcerptBytes]
+	}
+	var builder strings.Builder
+	builder.WriteString("You are the independent verifier for a governed Loom team attempt.\n")
+	builder.WriteString("Evaluate the authorized source result below against every criterion.\n")
+	builder.WriteString("Return exactly one allowed verifier reason code and no other text: criteria_satisfied, criteria_not_satisfied, or insufficient_evidence.\n")
+	builder.WriteString("Acceptance risk: ")
+	builder.WriteString(string(contract.Risk()))
+	if objective != "" {
+		builder.WriteString("\n\nConfirmed Mission objective:\n")
+		builder.WriteString(objective)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\nAcceptance criteria:\n")
+	for _, criterion := range contract.Criteria() {
+		builder.WriteString("- ")
+		builder.WriteString(criterion)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("\nSource provenance (digest-only refs):\n")
+	builder.WriteString("  source_work_item_id: ")
+	builder.WriteString(source.WorkItemID)
+	builder.WriteString("\n  source_run_id: ")
+	builder.WriteString(source.RunID)
+	builder.WriteString("\n  source_evidence_digest: ")
+	builder.WriteString(source.SourceEvidenceDigest)
+	builder.WriteString("\n  source_output_summary_digest: ")
+	builder.WriteString(source.OutputSummaryDigest)
+	builder.WriteString("\n  attempt_status: ")
+	builder.WriteString(artifact.Status)
+	if artifact.Reason != "" {
+		builder.WriteString("\n  attempt_reason: ")
+		builder.WriteString(artifact.Reason)
+	}
+	builder.WriteString("\n\nAuthorized source result:\n")
+	builder.WriteString(output)
+	builder.WriteString("\n\nReturn only the allowed verifier reason code. Do not reveal secrets, tokens, or credentials.")
+	return builder.String(), nil
+}
+
+func renderVerifierSourceOutput(frames []string) string {
+	if len(frames) == 0 {
+		return "(no output frames recorded)"
+	}
+	var builder strings.Builder
+	for _, line := range frames {
+		frame, err := bridgev1.DecodeLine([]byte(line))
+		if err != nil || frame.Type() != bridgev1.MessageEvent {
+			continue
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal(frame.Payload(), &payload) != nil {
+			continue
+		}
+		if payload.Delta == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(payload.Delta)
+	}
+	return builder.String()
+}
+
 func (coordinator *TeamCoordinator) runIndependentVerifier(
 	ctx context.Context,
 	request TeamExecutionRequest,
@@ -1261,36 +1396,27 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			evidence.AttemptReceipt{},
 			err
 	}
+	verifierPrompt, err := renderVerifierPrompt(
+		ctx,
+		coordinator.evidenceStore,
+		sourceReceipt,
+		semantics.AcceptanceContract,
+		source,
+		request.Objective,
+	)
+	if err != nil {
+		return verification.VerifierCandidate{},
+			evidence.AttemptReceipt{},
+			err
+	}
 	payload, err := json.Marshal(struct {
-		TeamInstanceID            string   `json:"team_instance_id"`
-		PlanDigest                string   `json:"plan_digest"`
-		LogicalNodeID             string   `json:"logical_node_id"`
-		SourceAttemptNumber       int      `json:"source_attempt_number"`
-		SourceWorkItemID          string   `json:"source_work_item_id"`
-		SourceRunID               string   `json:"source_run_id"`
-		SourceEvidenceDigest      string   `json:"source_evidence_digest"`
-		SourceOutputSummaryDigest string   `json:"source_output_summary_digest"`
-		AcceptanceContractDigest  string   `json:"acceptance_contract_digest"`
-		Risk                      string   `json:"risk"`
-		Criteria                  []string `json:"criteria"`
-		AllowedReasonCodes        []string `json:"allowed_reason_codes"`
+		SchemaVersion int    `json:"schema_version"`
+		Kind          string `json:"kind"`
+		Prompt        string `json:"prompt"`
 	}{
-		source.TeamInstanceID,
-		source.PlanDigest,
-		source.LogicalNodeID,
-		source.AttemptNumber,
-		source.WorkItemID,
-		source.RunID,
-		sourceReceipt.Digest(),
-		sourceReceipt.OutputSummary().Digest(),
-		semantics.AcceptanceContract.Digest(),
-		string(semantics.AcceptanceContract.Risk()),
-		semantics.AcceptanceContract.Criteria(),
-		[]string{
-			string(verification.VerifierReasonCriteriaSatisfied),
-			string(verification.VerifierReasonCriteriaNotSatisfied),
-			string(verification.VerifierReasonInsufficientEvidence),
-		},
+		SchemaVersion: 1,
+		Kind:          verifierDispatchKind,
+		Prompt:        verifierPrompt,
 	})
 	if err != nil {
 		return verification.VerifierCandidate{},

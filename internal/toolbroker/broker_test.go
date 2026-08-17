@@ -67,6 +67,55 @@ func (fixture *mcpFixture) CallTool(
 	return "bounded MCP result", nil
 }
 
+type failingHTTPFixture struct {
+	request *http.Request
+	err     error
+	status  int
+}
+
+func (fixture *failingHTTPFixture) Do(request *http.Request) (*http.Response, error) {
+	fixture.request = request
+	if fixture.err != nil {
+		return nil, fixture.err
+	}
+	return &http.Response{
+		StatusCode: fixture.status,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    request,
+	}, nil
+}
+
+func TestBrokerWebFetchFailuresAreBoundedToolResults(t *testing.T) {
+	for name, fixture := range map[string]*failingHTTPFixture{
+		"transport":  {err: errors.New("connection refused")},
+		"bad status": {status: http.StatusForbidden},
+		"empty body": {status: http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			broker, err := New(Config{
+				Search: &searchFixture{}, HTTP: fixture,
+				Timeout: 10 * time.Second, MaxResultBytes: 4096,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := broker.Execute(context.Background(), Call{
+				Tool: permissions.ToolWebFetch, URL: "https://example.com/unavailable",
+			})
+			if err != nil {
+				t.Fatalf("fetch failure must be bounded, got error: %v", err)
+			}
+			if result.Content == "" || !strings.Contains(result.Content, "error") {
+				t.Fatalf("bounded failure content missing: %q", result.Content)
+			}
+			if result.Sources != nil && len(result.Sources) != 0 {
+				t.Fatalf("bounded failure must not carry sources: %#v", result.Sources)
+			}
+		})
+	}
+}
+
 func TestBrokerExecutesBoundedWebSearchFetchAndMCP(t *testing.T) {
 	search := &searchFixture{}
 	httpClient := &httpFixture{}

@@ -24,6 +24,7 @@ import (
 	"loom-pi-rebuild/internal/prompting"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
+	"loom-pi-rebuild/internal/verification"
 	"loom-pi-rebuild/internal/work"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
@@ -44,6 +45,7 @@ const (
 	MiniMaxAgentEndpoint             = "https://api.minimaxi.com/v1/chat/completions"
 	MiniMaxAgentEndpointFingerprint  = "e06a7ee6786ad3f758a129ef7f6c214e9a17ff88c4326bb1e0e82b93c94ca561"
 
+	piVerifierPromptKind           = "pi_verifier_prompt"
 	deepSeekAgentMaxPromptBytes    = 64 * 1024
 	deepSeekAgentMaxContentBytes   = 4096
 	contextToolMaxArgumentsBytes   = 2048
@@ -134,6 +136,9 @@ type deepSeekAgentDispatch struct {
 	SchemaVersion int    `json:"schema_version"`
 	Kind          string `json:"kind"`
 	Prompt        string `json:"prompt"`
+	// verifier is set only for the governed independent-verifier dispatch
+	// kind; it is not part of the wire payload.
+	verifier bool
 }
 
 type deepSeekAgentProviderFailure struct {
@@ -394,12 +399,17 @@ func (adapter *deepSeekAgentAdapter) Execute(
 	); err != nil {
 		return supervisor.AdapterResult{}, err
 	}
+	status := "succeeded"
+	reason := ""
+	if dispatch.verifier {
+		status, reason = verifierTerminalFromVerdict(response.content)
+	}
 	return adapter.publish(
 		ctx,
 		request,
 		response.content,
-		"succeeded",
-		"",
+		status,
+		reason,
 		response.accounting,
 	)
 }
@@ -486,10 +496,12 @@ func (adapter *deepSeekAgentAdapter) validateRequest(
 			dispatch.DisclosureReceiptDigest != authority.DisclosureReceiptDigest {
 			return ErrAgentExecutionBindingChanged
 		}
-	} else if request.ContextDelivery != nil || containsNativeCapability(
-		binding.Capabilities,
-		loomruntime.CapabilityContextRetrieval,
-	) {
+	} else if request.ContextDelivery != nil {
+		// A delivery without a retriever is inconsistent and rejected. A
+		// completely context-free Execute (no retriever, no delivery, empty
+		// capsule) is valid even when the binding lists the context_retrieval
+		// capability: the independent verifier runs exactly this shape, and
+		// governed attempts always carry retriever+delivery together.
 		return ErrAgentExecutionBindingChanged
 	}
 	return nil
@@ -1683,7 +1695,8 @@ func decodeDeepSeekAgentDispatch(payload []byte) (deepSeekAgentDispatch, error) 
 	decoder.DisallowUnknownFields()
 	var dispatch deepSeekAgentDispatch
 	if decoder.Decode(&dispatch) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
-		dispatch.SchemaVersion != 1 || dispatch.Kind != "pi_rpc_prompt" ||
+		dispatch.SchemaVersion != 1 ||
+		(dispatch.Kind != "pi_rpc_prompt" && dispatch.Kind != piVerifierPromptKind) ||
 		dispatch.Prompt == "" || len(dispatch.Prompt) > deepSeekAgentMaxPromptBytes ||
 		!utf8.ValidString(dispatch.Prompt) || strings.IndexByte(dispatch.Prompt, 0) >= 0 {
 		return deepSeekAgentDispatch{}, errors.Join(ErrDeepSeekAgentProtocol, supervisor.ErrBridgeSession)
@@ -1692,7 +1705,78 @@ func decodeDeepSeekAgentDispatch(payload []byte) (deepSeekAgentDispatch, error) 
 	if err != nil || !bytes.Equal(canonical, payload) {
 		return deepSeekAgentDispatch{}, errors.Join(ErrDeepSeekAgentProtocol, supervisor.ErrBridgeSession)
 	}
+	dispatch.verifier = dispatch.Kind == piVerifierPromptKind
 	return dispatch, nil
+}
+
+// verifierTerminalFromVerdict maps the independent verifier model response to
+// the terminal status/reason consumed by the acceptance authority. An
+// unparseable or missing verdict fails closed as insufficient evidence so the
+// acceptance cannot silently pass without a verifier judgment.
+func verifierTerminalFromVerdict(content string) (string, string) {
+	verdict, ok := parseVerifierVerdict(content)
+	switch {
+	case ok && verdict == "satisfied":
+		return "succeeded", ""
+	case ok && verdict == "not_satisfied":
+		return "failed", string(verification.VerifierReasonCriteriaNotSatisfied)
+	default:
+		return "failed", string(verification.VerifierReasonInsufficientEvidence)
+	}
+}
+
+// parseVerifierVerdict extracts the verifier decision from the model
+// response. The verifier prompt asks for exactly one allowed reason code, so
+// a bare reason code is accepted directly; a JSON object with a "verdict"
+// field (with optional surrounding prose) is accepted too. A missing or
+// ambiguous verdict is never accepted.
+func parseVerifierVerdict(content string) (string, bool) {
+	if content == "" {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(content)
+	switch trimmed {
+	case "satisfied", "criteria_satisfied",
+		"not_satisfied", "criteria_not_satisfied",
+		"insufficient_evidence":
+		return normalizeVerifierVerdict(trimmed), true
+	}
+	index := strings.Index(content, `"verdict"`)
+	if index < 0 {
+		return "", false
+	}
+	remainder := content[index+len(`"verdict"`):]
+	colon := strings.Index(remainder, ":")
+	if colon < 0 {
+		return "", false
+	}
+	value := strings.TrimSpace(remainder[colon+1:])
+	if len(value) < 2 || value[0] != '"' {
+		return "", false
+	}
+	end := strings.Index(value[1:], `"`)
+	if end < 0 {
+		return "", false
+	}
+	verdict := value[1 : 1+end]
+	normalized := normalizeVerifierVerdict(verdict)
+	if normalized == "" {
+		return "", false
+	}
+	return normalized, true
+}
+
+func normalizeVerifierVerdict(value string) string {
+	switch value {
+	case "satisfied", "criteria_satisfied":
+		return "satisfied"
+	case "not_satisfied", "criteria_not_satisfied":
+		return "not_satisfied"
+	case "insufficient_evidence":
+		return "insufficient_evidence"
+	default:
+		return ""
+	}
 }
 
 func deepSeekAgentHTTPFailureReason(status int) string {

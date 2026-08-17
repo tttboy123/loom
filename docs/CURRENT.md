@@ -2,6 +2,32 @@
 
 Updated: 2026-08-17
 
+## Phase 4 · 联网工具链安装版 Mission 全链路（V33c，2026-08-17 · 闭环）
+
+`CURRENT / 4.1-W4 INSTALLED-LIVE PASS`: 安装版 Loom 真实 Mission **完整收敛到
+`succeeded`**。子 Agent（DeepSeek + web_search Enrollment）模型主动调用
+`loom_web_search`/`loom_web_fetch` → Attempt-Loop 准入 → 授权 → 真实执行 → 投递 →
+**独立 Verifier 真实跑模型并验收** → 主节点派发并验收 → `TeamExecutionTerminal`。
+`TestLiveMissionAgentCallsWebSearch`（`LOOM_LIVE_WEB_MISSION=1 LOOM_LIVE_TEAM_E2E=1
+LOOM_LIVE_NET=1`）**PASS（30.88s）**，Journal WebSearch/WebFetch 工具事实 20 条。
+全量 Go 测试 + Swift 测试全绿，`git diff --check` 干净。
+
+本轮闭合 V33 的剩余缺陷（均以安装版 live 复现 → 离线重放定位 → 修复 → 重跑验证）：
+- **verifier dispatch 无法被真实 adapter 解码**：改发 `pi_verifier_prompt` 自包含
+  prompt（含验收标准、digest-only 溯源与 8 KiB 有界 source 摘录）；adapter 解析
+  verdict（fail-closed `insufficient_evidence`）。
+- **verifier 证据提交 replay 缺账户流**：`CommitVerifierEvidence` /
+  `CommitTeamNodeAcceptance` / `validateVerifierAcceptanceLineage` 补齐
+  policy/capacity/rate-card 流（与 `CommitTeamAttemptEvidence` 一致）。
+- **verifier 看不到 Mission objective**：`TeamExecutionRequest.Objective` 写入 prompt。
+- **web_fetch 失败是致命错误**：改为受控 `fetch_*` bounded result（模型可恢复、
+  attempt-loop 可闭合），与 webSearch 一致。
+- **主节点 WorkItem 标题（objective 132B）超 128B 不可重放**：新增
+  `maxWorkItemTitleBytes=4096` + `validWorkItemTitle`，写入端与重放端一致。
+
+证据：
+`.loom-evidence/phase4/network-capability/P2D-W4-mission-web-tool-loop-live-v33c.md`。
+
 ## Phase 4 · 联网工具链安装版 Mission 全链路（V33，2026-08-17）
 
 - 安装版 live 验证：Mission 子 Agent（DeepSeek + web_search Enrollment）模型主动调用

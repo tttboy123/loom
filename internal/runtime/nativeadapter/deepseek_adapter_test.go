@@ -1195,9 +1195,19 @@ func TestDeepSeekAgentAdapterRequiresFrozenCapabilityAndBrokerTogether(t *testin
 			if test.attachRetriever {
 				request.ContextRetriever = &contextRetrieverFixture{}
 			}
-			if _, err := adapter.Execute(context.Background(), request); !errors.Is(
-				err, ErrAgentExecutionBindingChanged,
-			) {
+			_, err = adapter.Execute(context.Background(), request)
+			if test.name == "frozen capability without broker" {
+				// A completely context-free Execute (no retriever, no
+				// delivery) is valid even when the binding lists the
+				// context_retrieval capability: the independent verifier
+				// runs exactly this shape. It must not be rejected as a
+				// binding change.
+				if errors.Is(err, ErrAgentExecutionBindingChanged) {
+					t.Fatalf("context-free Execute() error = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrAgentExecutionBindingChanged) {
 				t.Fatalf("Execute() error = %v", err)
 			}
 			if access.uses != 0 || doer.requests != 0 || len(diagnostics.records) != 1 ||
@@ -1669,5 +1679,58 @@ func TestNativeAdapterWebToolDecodeAndModelFormat(t *testing.T) {
 		validNativeAgentResponseModel("") ||
 		validNativeAgentResponseModel("bad model!") {
 		t.Fatal("response model format validation incorrect")
+	}
+}
+
+func TestVerifierPromptDispatchDecodesStrictly(t *testing.T) {
+	payload := []byte(`{"schema_version":1,"kind":"pi_verifier_prompt","prompt":"Verify the source attempt output against the criteria and reply with a JSON verdict."}`)
+	dispatch, err := decodeDeepSeekAgentDispatch(payload)
+	if err != nil {
+		t.Fatalf("verifier dispatch decode = %v", err)
+	}
+	if !dispatch.verifier || dispatch.Kind != piVerifierPromptKind ||
+		!strings.Contains(dispatch.Prompt, "Verify the source attempt") {
+		t.Fatalf("verifier dispatch = %#v", dispatch)
+	}
+	// A plain mission dispatch must stay non-verifier.
+	mission, err := decodeDeepSeekAgentDispatch([]byte(`{"schema_version":1,"kind":"pi_rpc_prompt","prompt":"Implement the bounded change"}`))
+	if err != nil || mission.verifier {
+		t.Fatalf("mission dispatch verifier flag = %#v, %v", mission, err)
+	}
+	// Unknown fields and wrong kinds are rejected.
+	for _, bad := range []string{
+		`{"schema_version":1,"kind":"pi_verifier_prompt","prompt":"x","extra":1}`,
+		`{"schema_version":2,"kind":"pi_verifier_prompt","prompt":"x"}`,
+		`{"schema_version":1,"kind":"pi_rpc_prompt","prompt":""}`,
+	} {
+		if _, err := decodeDeepSeekAgentDispatch([]byte(bad)); err == nil {
+			t.Fatalf("accepted malformed dispatch %s", bad)
+		}
+	}
+}
+
+func TestVerifierTerminalFromVerdict(t *testing.T) {
+	for _, test := range []struct {
+		content string
+		status  string
+		reason  string
+	}{
+		{`{"verdict":"satisfied","summary":"ok"}`, "succeeded", ""},
+		{`Here is my review: {"verdict":"satisfied"}`, "succeeded", ""},
+		{`{"verdict":"criteria_satisfied"}`, "succeeded", ""},
+		{"criteria_satisfied", "succeeded", ""},
+		{"criteria_not_satisfied", "failed", "criteria_not_satisfied"},
+		{"insufficient_evidence", "failed", "insufficient_evidence"},
+		{`{"verdict":"not_satisfied","summary":"missing source URL"}`, "failed", "criteria_not_satisfied"},
+		{`{"verdict":"insufficient_evidence"}`, "failed", "insufficient_evidence"},
+		{`I cannot verify this.`, "failed", "insufficient_evidence"},
+		{``, "failed", "insufficient_evidence"},
+		{`{"verdict":"maybe"}`, "failed", "insufficient_evidence"},
+	} {
+		status, reason := verifierTerminalFromVerdict(test.content)
+		if status != test.status || reason != test.reason {
+			t.Fatalf("verdict %q = (%q,%q), want (%q,%q)",
+				test.content, status, reason, test.status, test.reason)
+		}
 	}
 }

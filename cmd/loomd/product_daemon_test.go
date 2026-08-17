@@ -8916,6 +8916,47 @@ func TestProductPiRuntimeAdapterAuthorizesSourceBeforeIndependentVerifier(
 	}
 }
 
+func TestProductPiRuntimeAdapterAcceptsSelfContainedVerifierPrompt(t *testing.T) {
+	delegate := &productPiAdapterFixture{verifierOutput: "criteria_satisfied"}
+	adapter, err := newProductPiRuntimeAdapter(delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifierSink := &productRecordingFrameSink{}
+	verifier := productAdapterRequest(
+		t,
+		"verifier-run",
+		productPiVerifierPromptEnvelope{
+			SchemaVersion: 1,
+			Kind:          "pi_verifier_prompt",
+			Prompt: "Evaluate the authorized source result. " +
+				"Return exactly one allowed verifier reason code and no other text: " +
+				"criteria_satisfied, criteria_not_satisfied, or insufficient_evidence.",
+		},
+		verifierSink,
+	)
+	result, err := adapter.Execute(context.Background(), verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(delegate.prompts) != 1 ||
+		!strings.Contains(delegate.prompts[0], "allowed verifier reason code") ||
+		len(verifierSink.frames) != 4 ||
+		len(result.InboundFrames()) != 4 {
+		t.Fatalf(
+			"prompts=%#v frames=%d result=%d",
+			delegate.prompts,
+			len(verifierSink.frames),
+			len(result.InboundFrames()),
+		)
+	}
+	terminal := verifierSink.frames[3]
+	if terminal.Type() != bridgev1.MessageResult ||
+		string(terminal.Payload()) != `{"reason":"","status":"succeeded"}` {
+		t.Fatalf("verifier terminal = %s %s", terminal.Type(), terminal.Payload())
+	}
+}
+
 func TestProductPiRuntimeAdapterRejectsUnacceptedSourceAndFailsClosedVerifier(
 	t *testing.T,
 ) {

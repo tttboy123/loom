@@ -2831,6 +2831,19 @@ type productPiVerifierDispatch struct {
 	AllowedReasonCodes        []string `json:"allowed_reason_codes"`
 }
 
+// productPiVerifierPromptEnvelope is the self-contained independent-verifier
+// dispatch produced by the Team coordinator. The prompt already carries the
+// acceptance criteria and the bounded authorized source output, so the Pi
+// runtime forwards it to the delegate as a plain pi_rpc_prompt instead of
+// re-rendering from captured source output.
+const productPiVerifierPromptLimit = 64 * 1024
+
+type productPiVerifierPromptEnvelope struct {
+	SchemaVersion int    `json:"schema_version"`
+	Kind          string `json:"kind"`
+	Prompt        string `json:"prompt"`
+}
+
 func newProductPiRuntimeAdapter(
 	delegate supervisor.RuntimeAdapter,
 ) (*productPiRuntimeAdapter, error) {
@@ -2870,7 +2883,13 @@ func (adapter *productPiRuntimeAdapter) Execute(
 	}
 	verifier, ok := decodeProductPiVerifierDispatch(request.Dispatch.Payload())
 	if !ok {
-		return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
+		envelope, envelopeOK := decodeProductPiVerifierPromptEnvelope(
+			request.Dispatch.Payload(),
+		)
+		if !envelopeOK {
+			return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
+		}
+		return adapter.executeVerifierPrompt(ctx, request, envelope.Prompt)
 	}
 	return adapter.executeVerifier(ctx, request, verifier)
 }
@@ -2937,6 +2956,62 @@ func (adapter *productPiRuntimeAdapter) executeVerifier(
 		return supervisor.AdapterResult{}, err
 	}
 	buffer, err := newProductVerifierBuffer(request.Binding, dispatch.MessageID())
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	prepared := request
+	prepared.Dispatch = dispatch
+	prepared.FrameSink = buffer
+	delegateResult, err := adapter.delegate.Execute(ctx, prepared)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	if delegateResult.ExitCode() != 0 ||
+		!delegateResult.DispatchAcknowledged() ||
+		!delegateResult.ResultAcknowledged() || !buffer.terminal {
+		return supervisor.AdapterResult{}, app.ErrMissionExecutionConflict
+	}
+	if !buffer.succeeded {
+		return delegateResult, nil
+	}
+	reasonCode := strings.TrimSpace(string(buffer.output))
+	if !productVerifierReasonAllowed(reasonCode) {
+		reasonCode = "insufficient_evidence"
+	}
+	return publishProductVerifierResult(
+		ctx,
+		request,
+		reasonCode,
+		delegateResult.Stderr(),
+	)
+}
+
+func (adapter *productPiRuntimeAdapter) executeVerifierPrompt(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	prompt string,
+) (supervisor.AdapterResult, error) {
+	if adapter == nil || adapter.delegate == nil || ctx == nil ||
+		request.FrameSink == nil || prompt == "" ||
+		len(prompt) > productPiVerifierPromptLimit {
+		return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
+	}
+	payload, err := json.Marshal(productPiPromptDispatch{
+		SchemaVersion: 1,
+		Kind:          "pi_rpc_prompt",
+		Prompt:        prompt,
+	})
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	dispatch, err := productFrameWithPayload(request.Dispatch, payload)
+	if err != nil {
+		return supervisor.AdapterResult{}, err
+	}
+	buffer, err := newProductVerifierBuffer(
+		request.Binding,
+		dispatch.MessageID(),
+	)
 	if err != nil {
 		return supervisor.AdapterResult{}, err
 	}
@@ -3158,6 +3233,21 @@ func decodeProductPiVerifierDispatch(
 		}
 	}
 	return dispatch, true
+}
+
+func decodeProductPiVerifierPromptEnvelope(
+	payload []byte,
+) (productPiVerifierPromptEnvelope, bool) {
+	var envelope productPiVerifierPromptEnvelope
+	if !decodeProductExactJSON(payload, &envelope) ||
+		envelope.SchemaVersion != 1 ||
+		envelope.Kind != "pi_verifier_prompt" ||
+		envelope.Prompt == "" || len(envelope.Prompt) > 64*1024 ||
+		!utf8.ValidString(envelope.Prompt) ||
+		strings.IndexByte(envelope.Prompt, 0) >= 0 {
+		return productPiVerifierPromptEnvelope{}, false
+	}
+	return envelope, true
 }
 
 func decodeProductExactJSON(payload []byte, destination any) bool {

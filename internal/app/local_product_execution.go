@@ -1823,6 +1823,7 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		OutputObserver:       outputObserver,
 		ContextCapsules:      compiler.contextCapsules,
 		AssetSourceStreamIDs: assetSourceStreams,
+		Objective:            command.Objective,
 	}
 	return MissionExecutionCompilation{
 		Plan: plan, Preflight: preflight, Request: request,
