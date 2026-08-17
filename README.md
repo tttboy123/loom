@@ -116,6 +116,7 @@ Mission、Team、Node、Attempt、generation 和当前 Projection version：
 - 客户 Rule、持久 Approval、bounded recovery 与独立 Verifier；
 - executor 只能提交 `ready_for_review`，不能自我宣布完成；
 - Pi 0.82.1、本地离线模型与 `loom.bridge.v1` 的受控真实执行闭环。
+- 基于 mcp-go 的 Tencent Cloud MCP Server 演示组件（stdio JSON-RPC、与核心解耦、Tencent PoC 链路）；
 
 ### Phase 2A 开发预览
 
