@@ -21,6 +21,24 @@ type productRemoteToolBrokerConfig struct {
 	MaxResultBytes int
 }
 
+// newProductDefaultRemoteToolBrokerConfig returns an explicitly-opted
+// remote-tool configuration: a real governed web-search backend
+// (DuckDuckGo Lite over the SSRF-safe transport) plus bounded WebFetch.
+// Production composition stays fail-closed (nil) unless a caller opts in;
+// web_search enrollments only materialize when a trusted Search backend is
+// injected.
+func newProductDefaultRemoteToolBrokerConfig() (*productRemoteToolBrokerConfig, error) {
+	search, err := toolbroker.NewDDGSearchClient(20*time.Second, 5, 48<<10)
+	if err != nil {
+		return nil, err
+	}
+	return &productRemoteToolBrokerConfig{
+		Search: search, WebFetch: true,
+		Timeout:        20 * time.Second,
+		MaxResultBytes: 32 << 10,
+	}, nil
+}
+
 type productRemoteToolExecutor struct {
 	mu        sync.RWMutex
 	broker    *toolbroker.Broker
