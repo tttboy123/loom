@@ -1437,6 +1437,10 @@ public struct LoomWorkspaceShell: View {
                         modelID: model.modelID
                     )
                     Button {
+                        // Keep unavailable models clickable so the user learns
+                        // exactly why the model cannot run (the store records a
+                        // selection notice with the owning Provider instead of
+                        // silently doing nothing).
                         store.selectConversationModel(model.modelID)
                     } label: {
                         Label(
@@ -1445,8 +1449,8 @@ public struct LoomWorkspaceShell: View {
                                 ? "checkmark"
                                 : "circle"
                         )
+                        .foregroundStyle(available ? Color.primary : Color.secondary)
                     }
-                    .disabled(!available)
                     .help(
                         available
                             ? "Model depends on the Provider"
@@ -1464,7 +1468,7 @@ public struct LoomWorkspaceShell: View {
                 }) {
                     Divider()
                     Text(
-                        "Models whose Provider credential is not verified are disabled. Configure and verify the Provider account to enable them."
+                        "Models whose Provider credential is not verified are shown dimmed. Choose one to see why it cannot run."
                     )
                     .font(.caption2)
                     .foregroundStyle(.secondary)

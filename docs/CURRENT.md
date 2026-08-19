@@ -13325,3 +13325,14 @@ running）。Go contextcapsule/nativeadapter/app/work/supervisor 全绿。
 governance 决策（coding work package 的 workspace-write 需审批点），
 以及测试环境中多个历史卡死 Mission 的并发恢复竞争；无会话胶囊 Mission 的
 attempt 生命周期（含重试）已可正常推进到 awaiting_recovery。
+
+## 模型选择器 UX：不可用模型可点击并给出原因（2026-08-20）
+
+`CURRENT / FIXED`: 用户视角审查发现：Provider 目录里未验证 Provider 的模型在
+模型菜单中是 `.disabled` 的，用户点击无效且看不到具体原因（help 提示在禁用项上
+不可靠）。这直接对应 "Minimax 认证没通过还能选模型 / 一直显示 deepseek-chat"
+的困惑。修复：不可用模型改为**可点击 + 灰色显示**，点击后走
+`selectConversationModel` → 显示精确原因 notice（"Requires a verified minimax
+Provider credential. Open Provider Account to configure and verify minimax..."）。
+store 侧已有 `testSelectConversationModelSurfacesActionableNoticeWhenRefused`
+覆盖；Swift 254 绿。安装版已重装。
