@@ -1335,10 +1335,60 @@ func TestAuthoritativeMissionRestartResumesOneExactExpiredLineage(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer other.Close()
-	if err := other.ResumeProjectedMissions(
-		context.Background(),
-	); !errors.Is(err, ErrMissionExecutionConflict) {
-		t.Fatalf("unknown restart status error = %v", err)
+	if err := other.ResumeProjectedMissions(context.Background()); err != nil {
+		t.Fatalf("unknown restart status must not brick startup: %v", err)
+	}
+	if runner.Calls() != 1 {
+		t.Fatalf("unknown restart status runner calls = %d", runner.Calls())
+	}
+}
+
+func TestAuthoritativeMissionRestartSkipsUnresumableProjection(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-unresumable",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Bounded task",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{
+		version: strings.Repeat("a", 64),
+		executions: []projection.TeamExecution{{
+			TeamInstanceID: plan.TeamInstanceID(), PlanDigest: plan.Digest(),
+			Status: "running",
+			Nodes: []projection.TeamExecutionNode{{
+				LogicalNodeID: "main", Status: "running", CurrentAttempt: 1,
+			}},
+		}},
+	}
+	runner := &controlledTeamExecutionRunner{state: state}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state,
+			Compiler: &controlledMissionExecutionCompiler{
+				recoveryErr: work.ErrTeamExecutionConflict,
+			},
+			Runner: runner, VisibilityTimeout: time.Second,
+			Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	// A projected Mission that cannot be reconstructed (for example its
+	// execution binding drifted after the App was killed) must be skipped,
+	// not treated as a fatal startup error.
+	if err := backend.ResumeProjectedMissions(context.Background()); err != nil {
+		t.Fatalf("unresumable projection must not brick startup: %v", err)
+	}
+	if runner.Calls() != 0 {
+		t.Fatalf("unresumable projection runner calls = %d", runner.Calls())
 	}
 }
 

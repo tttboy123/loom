@@ -2069,6 +2069,63 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(store.workbench.route, .mission(missionID))
   }
 
+  func testMissionStartSurfacesRemoteExecutionErrorCodeNotGenericUnavailable()
+    async throws
+  {
+    let snapshot = try executableMissionSnapshot()
+    let remoteError = LocalIPCRemoteError(
+      code: .busy,
+      recoverable: true,
+      stage: .daemonAdmission,
+      incidentID: "incident-mission-busy-1",
+      safeMessage: "UI Mission Team already has a running Mission."
+    )
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      startError: remoteError
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: .coding
+    )
+    XCTAssertEqual(store.executionState, .ready)
+
+    await store.startPreflightedMission()
+
+    // The daemon's real error code must survive the client boundary instead
+    // of collapsing into the generic "unavailable".
+    XCTAssertEqual(store.executionState, .failed(reason: "busy"))
+    XCTAssertEqual(client.commands.map(\.operation), ["preflight", "start"])
+  }
+
+  func testMissionStartSurfacesTransportFailureAsUnavailableWhenUnknown()
+    async throws
+  {
+    let snapshot = try executableMissionSnapshot()
+    struct UnknownError: Error {}
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      startError: UnknownError()
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: .coding
+    )
+    XCTAssertEqual(store.executionState, .ready)
+
+    await store.startPreflightedMission()
+
+    XCTAssertEqual(store.executionState, .failed(reason: "unavailable"))
+  }
+
   func testMissionContextEditInvalidatesReadyPreflightBeforeStart() async throws {
     let snapshot = try executableMissionSnapshot()
     let client = ExecutionStubClient(snapshot: snapshot)
@@ -4145,6 +4202,7 @@ private final class ExecutionStubClient:
   private let additionalPreflightNodeStatus: String?
   private let suspendPreflight: Bool
   private let startResultStatus: String
+  private let startError: Error?
   private var snapshotAfterPreflight: LocalProductSnapshot?
   private var preflightStarted = false
   private var preflightContinuation: CheckedContinuation<Void, Never>?
@@ -4154,13 +4212,15 @@ private final class ExecutionStubClient:
     preflightNodeStatus: String = "ready",
     additionalPreflightNodeStatus: String? = nil,
     suspendPreflight: Bool = false,
-    startResultStatus: String = "running"
+    startResultStatus: String = "running",
+    startError: Error? = nil
   ) {
     fixedSnapshot = snapshot
     self.preflightNodeStatus = preflightNodeStatus
     self.additionalPreflightNodeStatus = additionalPreflightNodeStatus
     self.suspendPreflight = suspendPreflight
     self.startResultStatus = startResultStatus
+    self.startError = startError
   }
 
   func waitForPreflightStart() async {
@@ -4262,6 +4322,9 @@ private final class ExecutionStubClient:
           "nodes":[\(nodes)]}}
         """
     } else if command.operation == "start" {
+      if let startError {
+        throw startError
+      }
       let postStartJSON = MissionOrchestrationTests.snapshotJSON
         .replacingOccurrences(of: "mission/team-1", with: command.missionID)
         .replacingOccurrences(

@@ -2635,11 +2635,18 @@ func (backend *AuthoritativeMissionExecutionBackend) ResumeProjectedMissions(
 		}
 		if projected.Status != "running" &&
 			projected.Status != "awaiting_recovery" {
-			return ErrMissionExecutionConflict
+			// A projected Mission in an unrecognized non-terminal state must
+			// not brick daemon startup. Leave it untouched (it stays visible
+			// on the Mission Board) instead of failing the whole service.
+			continue
 		}
 		request, err := reconstructor.ReconstructMissionExecution(ctx, projected)
 		if err != nil || request.Plan.Digest() != projected.PlanDigest {
-			return errors.Join(ErrMissionExecutionConflict, err)
+			// An unresumable projected Mission (for example its execution
+			// binding drifted after the App was killed) must not prevent the
+			// daemon from serving. Skip it so the rest of the product starts;
+			// the Mission remains visible for governance attention.
+			continue
 		}
 		delay, err := missionExecutionRecoveryDelay(
 			recoveryState,

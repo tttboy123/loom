@@ -5991,6 +5991,9 @@ public final class LocalProductStore: ObservableObject {
     if let clientError = error as? LocalProductClientError {
       return clientError.rawValue
     }
+    if let remoteError = error as? LocalIPCRemoteError {
+      return remoteError.code.rawValue
+    }
     if let wireError = error as? LocalProductWireError {
       switch wireError {
       case .unsupportedSchema: return "unsupported_schema"

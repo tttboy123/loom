@@ -2999,6 +2999,14 @@ public struct MissionWorkbench: View {
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityLabel("Review preflight blocked. \(missionReviewBlockedReason)")
           }
+          if missionFailureShowsMissionBoard {
+            Button("Open Mission Board") {
+              showNewMission = false
+              store.showMissionBoard()
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Open Mission Board to inspect the running Mission")
+          }
         }
     }
   }
@@ -3208,8 +3216,43 @@ public struct MissionWorkbench: View {
     case .awaitingRecovery: return "Mission is waiting for bounded recovery."
     case .succeeded: return "Mission completed with accepted Evidence."
     case .cancelled: return "Mission was cancelled with authoritative terminal Evidence."
-    case .failed(let reason): return "Mission could not proceed: \(reason)"
+    case .failed(let reason): return missionFailureLabel(reason)
     }
+  }
+
+  /// Maps daemon execution-rejection codes to user-facing, actionable copy so
+  /// a failed start never shows a cryptic raw error. Unknown codes still show
+  /// the stable reason so diagnostics remain searchable.
+  private func missionFailureLabel(_ reason: String) -> String {
+    switch reason {
+    case "busy":
+      return "This Team already has a running Mission. Open the Mission Board to follow it, or wait for it to finish."
+    case "conflict":
+      return "The Mission state changed (for example this Team is already running). Review preflight, then retry."
+    case "stale_view":
+      return "Loom's view changed. Review preflight again, then retry."
+    case "stale_generation":
+      return "The Mission plan moved on. Review preflight again, then retry."
+    case "state_unavailable":
+      return "Execution is unavailable right now. Check Runtime & Providers, then retry."
+    case "timeout":
+      return "Starting the Mission timed out. Retry."
+    case "preflight_expired":
+      return "Preflight expired. Review preflight again, then retry."
+    case "preflight_required":
+      return "Review preflight before starting the Mission."
+    case "projection_visibility_failed":
+      return "The Mission started, but Loom could not yet show it. Open the Mission Board in a moment."
+    case "invalid_response":
+      return "Loom received an invalid execution response. Retry, or open the Mission Board to inspect state."
+    default:
+      return "Mission could not proceed: \(reason)"
+    }
+  }
+
+  private var missionFailureShowsMissionBoard: Bool {
+    guard case .failed(let reason) = store.executionState else { return false }
+    return ["busy", "conflict", "projection_visibility_failed"].contains(reason)
   }
 
   private func railButton(
