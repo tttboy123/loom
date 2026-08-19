@@ -2027,6 +2027,48 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.commands[2].expectedViewVersion, store.snapshot?.viewVersion)
   }
 
+  func testMissionStartReachesSucceededAndOpensMissionRoom() async throws {
+    let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
+      of: "\"teams\":[]",
+      with: """
+        "teams":[{
+          "team_instance_id":"team-1",
+          "display_name":"Coding Team",
+          "source_kind":"saved_team",
+          "state":"created",
+          "confirmed":true,
+          "executable":true,
+          "read_only":false
+        }]
+        """
+    ).replacingOccurrences(
+      of: "\"view_version\":\"view-1\"",
+      with: "\"view_version\":\"\(String(repeating: "b", count: 64))\""
+    )
+    let snapshot = try LocalProductWire.decodeSnapshot(Data(json.utf8))
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      startResultStatus: "succeeded"
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: LocalProductWorkPackageOption.coding
+    )
+    XCTAssertEqual(store.executionState, .ready)
+
+    await store.startPreflightedMission()
+
+    XCTAssertEqual(store.executionState, .succeeded)
+    XCTAssertNil(store.executionPreflight)
+    XCTAssertEqual(client.commands.map(\.operation), ["preflight", "start"])
+    let missionID = try XCTUnwrap(store.executionResult?.missionID)
+    XCTAssertEqual(store.workbench.route, .mission(missionID))
+  }
+
   func testMissionContextEditInvalidatesReadyPreflightBeforeStart() async throws {
     let snapshot = try executableMissionSnapshot()
     let client = ExecutionStubClient(snapshot: snapshot)
@@ -4102,6 +4144,7 @@ private final class ExecutionStubClient:
   private let preflightNodeStatus: String
   private let additionalPreflightNodeStatus: String?
   private let suspendPreflight: Bool
+  private let startResultStatus: String
   private var snapshotAfterPreflight: LocalProductSnapshot?
   private var preflightStarted = false
   private var preflightContinuation: CheckedContinuation<Void, Never>?
@@ -4110,12 +4153,14 @@ private final class ExecutionStubClient:
     snapshot: LocalProductSnapshot,
     preflightNodeStatus: String = "ready",
     additionalPreflightNodeStatus: String? = nil,
-    suspendPreflight: Bool = false
+    suspendPreflight: Bool = false,
+    startResultStatus: String = "running"
   ) {
     fixedSnapshot = snapshot
     self.preflightNodeStatus = preflightNodeStatus
     self.additionalPreflightNodeStatus = additionalPreflightNodeStatus
     self.suspendPreflight = suspendPreflight
+    self.startResultStatus = startResultStatus
   }
 
   func waitForPreflightStart() async {
@@ -4240,7 +4285,7 @@ private final class ExecutionStubClient:
       body = """
         {"schema_version":1,"operation":"start","result":{
           "schema_version":1,"mission_id":"\(command.missionID)",
-          "team_instance_id":"\(command.teamInstanceID)","status":"running",
+          "team_instance_id":"\(command.teamInstanceID)","status":"\(startResultStatus)",
           "view_version":"\(String(repeating: "e", count: 64))",
           "execution_digest":"\(String(repeating: "f", count: 64))"}}
         """
