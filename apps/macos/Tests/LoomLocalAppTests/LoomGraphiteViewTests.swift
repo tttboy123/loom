@@ -223,7 +223,23 @@ final class LoomGraphiteViewTests: XCTestCase {
 		XCTAssertTrue(source.contains("_budget_units"))
     }
 
-    func testNewMissionSheetAutoSelectsFirstExecutableTeamAndExplainsDisabledReview() throws {
+    func testChatProposalEscalatesToMissionWithPrefilledObjective() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    // A Loom proposal must offer a one-click governed escalation.
+    XCTAssertTrue(source.contains(#"Label("Run as Mission", systemImage: "play.circle")"#))
+    XCTAssertTrue(source.contains("runMissionFromChat(message)"))
+    XCTAssertTrue(source.contains("pendingMissionObjective = objective"))
+    XCTAssertTrue(source.contains("fullGovernancePresentation = .newMission"))
+    XCTAssertTrue(source.contains("chatMissionObjective("))
+  }
+
+  func testNewMissionSheetAutoSelectsFirstExecutableTeamAndExplainsDisabledReview() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
