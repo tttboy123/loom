@@ -74,7 +74,7 @@ public struct RoundtableWorkbench: View {
         case "pending": return .relay
         case "relayed": return .acknowledge
         case "acknowledged": return .insert
-        default: return .insert
+        default: return .conclude
         }
     }
 
@@ -426,7 +426,10 @@ public struct RoundtableWorkbench: View {
         }
         guard view != nil else { return }
         var attempts = 0
-        while currentStep != .conclude && attempts < 12 {
+        // Drive every step to the end: the loop must also run the final
+        // Conclude (moderator) step so the full journey actually concludes
+        // instead of parking on the last action with no visible way to finish.
+        while !(view?.session.concluded ?? false) && attempts < 13 {
             await runNextStep()
             attempts += 1
             if store.roundtableError != nil { break }
