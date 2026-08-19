@@ -13287,3 +13287,22 @@ Swift 254 绿（1 跳过）。
 
 `CURRENT / KNOWN ISSUE`: 无真实会话胶囊启动的 Mission 在首次 context-read
 工具派发后停滞（Journal 停在 ToolDispatchCommitted），需聚焦修复。
+
+## context-read 有界拒绝修复（2026-08-19 · `3f529e7e`）
+
+`CURRENT / FIXED`: 深挖确认无会话胶囊 Mission 卡点的两层根因并修复：
+1. **DeliveryCoordinator.Prepare**：retriever 有界拒绝（ErrContextRetrievalDenied /
+   ErrContextItemNotRetrievable）时不再直接返回错误，而是写入并 accept 一个
+   "context_item_unavailable" 的 payload fact，使 Attempt-loop step 有已投递
+   事实、能正常 finalize（否则 EndStep 报 Attempt loop conflict 卡死）。
+2. **deepSeekAgentAdapter**：同一 step 内第二次 context-read 无法派发
+   （ErrInvalidContextDelivery 且已有投递）时，以有界 content-free 结果结束
+   exchange，而不是终态失败。
+RED-first：coordinator denied-payload 测试 + adapter 二次派发完成测试。
+安装版 live 验证：IPC Mission 的第一次 attempt 现可完成 4 次有界 context-read
+并 StepEnded/TurnEnded（此前永远卡在第一次派发）。Go
+contextcapsule/nativeadapter/app/work/supervisor 全绿。
+
+`CURRENT / KNOWN ISSUE`: 重试的 attempt 仍可能在首次 context-read 派发后停滞
+（测试环境含多个卡死 Mission 叠加，疑与 journal 并发恢复竞争有关）；Mission
+到 succeeded 的完整收敛仍需一次聚焦排查（重试路径）。
