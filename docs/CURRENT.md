@@ -13393,3 +13393,16 @@ with DeepSeek / Agent Team ready；发送消息 → DeepSeek 真实回复渲染
 （Loom Native · deepseek.primary · deepseek-chat）。环境已清理：仅
 UI Mission Team 可运行，15 个测试团队已归档。证据：
 `.loom-evidence/phase4/e2e-smoke-20260820/`。
+
+## Failed step 可终结修复（2026-08-20 · `02d4c9c8`）
+
+`CURRENT / FIXED`: 定位 Mission 卡在第一个 context-read 派发的精确机制：
+有界拒绝 payload 已 accept（ToolResultAccepted）但从未 delivered，导致
+EndStep 无论 final 还是 failed 都返回 Attempt loop conflict，step 永久
+open。修复：EndStep 在 Outcome==AttemptStepFailed 时容忍未投递的 tool call，
+失败 attempt 可终结并让 Mission 推进到 recovery/failure。RED-first 测试 +
+Go work/app/contextcapsule/nativeadapter 全绿。
+
+`CURRENT / KNOWN`: 该环境下 round-2 模型调用若持续挂起（超时未触发），
+adapter 不会返回错误，attempt 仍停在派发后；修复保证一旦失败路径触发即能
+终结。证据：`.loom-evidence/phase4/failed-step-finalize-fix/`。
