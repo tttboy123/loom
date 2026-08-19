@@ -1693,6 +1693,13 @@ public struct LoomWorkspaceShell: View {
                         Label("Open Credential Vault", systemImage: "key")
                     }
                 }
+                if failure.isRouteRecoveryAvailable {
+                    Button {
+                        fullGovernancePresentation = .runtimeProviders
+                    } label: {
+                        Label("Switch Provider", systemImage: "arrow.triangle.swap")
+                    }
+                }
                 Button {
                     prepareChatDiagnosticPreview()
                 } label: {
@@ -2100,7 +2107,31 @@ public struct LoomWorkspaceShell: View {
             .buttonStyle(.borderedProminent)
             .disabled(!session.canConfirm || store.setupState == .loading)
             .accessibilityLabel("Confirm Agent Team and create governed Team")
+
+            if !session.canConfirm && store.setupState != .loading {
+                builderConfirmBlockedHint(
+                    session: session,
+                    uncommittedName: builderName,
+                    uncommittedPurpose: builderPurpose
+                )
+            }
         }
+    }
+
+    private func builderConfirmBlockedHint(
+        session: LocalProductBuilderSession,
+        uncommittedName: String,
+        uncommittedPurpose: String
+    ) -> some View {
+        let message = session.preview.confirmationBlockedMessage(
+            uncommittedName: uncommittedName,
+            uncommittedPurpose: uncommittedPurpose
+        )
+        return Label(message, systemImage: "info.circle")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("Team confirmation blocked. \(message)")
     }
 
 	private func builderRoleEditor(

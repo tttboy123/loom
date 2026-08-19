@@ -302,6 +302,20 @@ public struct LocalProductChatOperationFailure: Equatable, Sendable {
   public let title: String
   public let detail: String
 
+  /// True when the failure is a provider-route problem (account balance,
+  /// authentication, model availability, provider availability) where retrying
+  /// in place keeps failing; the actionable recovery is to switch Provider.
+  public var isRouteRecoveryAvailable: Bool {
+    switch code {
+    case .providerInsufficientBalance, .providerAuth,
+         .providerModelUnavailable, .providerUnavailable,
+         .conversationUnavailable:
+      return true
+    default:
+      return false
+    }
+  }
+
   public init(
     code: LocalIPCRemoteError.Code,
     stage: LocalIPCRemoteError.Stage,

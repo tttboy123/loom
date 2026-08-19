@@ -2122,6 +2122,31 @@ public struct LocalProductBuilderPreview: Codable, Equatable, Sendable {
     }
 }
 
+extension LocalProductBuilderPreview {
+    /// Explains why a governed Team draft cannot be confirmed yet. The Team
+    /// builder commits each field on Return; a user who types without Return
+    /// sees the Confirm button disabled, so the message must say what to do.
+    public func confirmationBlockedMessage(
+        uncommittedName: String,
+        uncommittedPurpose: String
+    ) -> String {
+        let nameEdited = !uncommittedName.isEmpty
+            && uncommittedName != name
+        let purposeEdited = !uncommittedPurpose.isEmpty
+            && uncommittedPurpose != purpose
+        if nameEdited || purposeEdited {
+            return "Press Return in Team name / Bounded purpose to apply the changes, then confirm."
+        }
+        if !compatibilityGaps.isEmpty {
+            let count = compatibilityGaps.count
+            return "Resolve \(count) compatibility issue"
+                + (count == 1 ? "" : "s")
+                + " before confirming."
+        }
+        return "Complete the required fields to enable confirmation."
+    }
+}
+
 public struct LocalProductBuilderSession: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let draftID: String

@@ -2904,6 +2904,108 @@ final class LocalProductStoreTests: XCTestCase {
     )
   }
 
+  func testProviderRouteFailuresOfferSwitchProviderRecovery() {
+    let failure = LocalProductChatOperationFailure(
+      code: .providerInsufficientBalance,
+      stage: .providerConnect,
+      recoverable: false,
+      incidentID: "loom-chat-recovery-test",
+      title: "Provider balance required",
+      detail: "Add funds to the selected Provider Account, then retry."
+    )
+    XCTAssertTrue(failure.isRouteRecoveryAvailable)
+
+    let auth = LocalProductChatOperationFailure(
+      code: .providerAuth,
+      stage: .providerConnect,
+      recoverable: false,
+      incidentID: "loom-chat-recovery-auth",
+      title: "Provider authentication failed",
+      detail: "Reconnect the selected Provider Account."
+    )
+    XCTAssertTrue(auth.isRouteRecoveryAvailable)
+
+    let model = LocalProductChatOperationFailure(
+      code: .providerModelUnavailable,
+      stage: .providerHTTP,
+      recoverable: false,
+      incidentID: "loom-chat-recovery-model",
+      title: "Model unavailable",
+      detail: "Select a model available to this Provider Account."
+    )
+    XCTAssertTrue(model.isRouteRecoveryAvailable)
+
+    // A rate limit is recoverable in place and must NOT suggest switching.
+    let rate = LocalProductChatOperationFailure(
+      code: .providerRateLimit,
+      stage: .providerHTTP,
+      recoverable: true,
+      incidentID: "loom-chat-recovery-rate",
+      title: "Provider rate limit reached",
+      detail: "Retry after the limit resets."
+    )
+    XCTAssertFalse(rate.isRouteRecoveryAvailable)
+
+    // A transport failure is recoverable in place and must NOT suggest switching.
+    let transport = LocalProductChatOperationFailure(
+      code: .stateUnavailable,
+      stage: .udsTransport,
+      recoverable: true,
+      incidentID: "loom-chat-recovery-transport",
+      title: "Local service unavailable",
+      detail: "Reopen Loom or retry."
+    )
+    XCTAssertFalse(transport.isRouteRecoveryAvailable)
+  }
+
+  func testBuilderConfirmationBlockedMessageExplainsActionableRecovery() throws {
+    let preview = try builderPreviewFixture(compatibilityGaps: [])
+    // Uncommitted edits: tell the user to press Return.
+    XCTAssertTrue(
+      preview.confirmationBlockedMessage(
+        uncommittedName: "Draft Name",
+        uncommittedPurpose: ""
+      ).contains("Press Return")
+    )
+    // Committed fields with compatibility gaps: tell the user to resolve them.
+    let gappy = try builderPreviewFixture(
+      compatibilityGaps: ["unverified credential"]
+    )
+    XCTAssertTrue(
+      gappy.confirmationBlockedMessage(
+        uncommittedName: "",
+        uncommittedPurpose: ""
+      ).contains("compatibility issue")
+    )
+    // No edits and no gaps: generic required-fields hint.
+    XCTAssertTrue(
+      preview.confirmationBlockedMessage(
+        uncommittedName: "",
+        uncommittedPurpose: ""
+      ).contains("required fields")
+    )
+  }
+
+  private func builderPreviewFixture(
+    compatibilityGaps: [String]
+  ) throws -> LocalProductBuilderPreview {
+    let data = try JSONSerialization.data(withJSONObject: [
+      "name": "Current Team",
+      "purpose": "Current purpose",
+      "roles": [],
+      "permissions": [],
+      "resources": [],
+      "compatibility_gaps": compatibilityGaps,
+      "requested_concurrency": 1,
+      "maximum_budget_credits": 100,
+      "estimated_maximum_cost": "up to 100 credits",
+    ])
+    return try JSONDecoder().decode(
+      LocalProductBuilderPreview.self,
+      from: data
+    )
+  }
+
   private final class ChatRecordingClient: LocalProductClientProtocol {
     private(set) var recordedThread: LocalProductChatThread?
     private(set) var recordedProfileID = ""
