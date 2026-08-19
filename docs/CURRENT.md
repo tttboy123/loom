@@ -2,6 +2,19 @@
 
 Updated: 2026-08-19
 
+## macOS 默认会话 Provider 修复（2026-08-19 · `852bac5b`）
+
+`CURRENT / DEFAULT PROFILE`: 之前默认会话 Provider 取列表第一个 = Codex（官方账号常
+无余额）→ 开箱第一次聊天即 `provider_insufficient_balance`。现改为
+`setupConversationProfiles` 排序：**用户配置并验证的 brokered 账号优先（最可能可用），
+其次 native OpenCode，Codex 最后**；默认（= 列表第一）指向可用路由。
+安装版 live 验证：全新启动默认 Provider = OpenCode（DeepSeek V4 Flash via opencode），
+首次聊天 `succeeded`（conversation-opencode-default-v1，5.1s）；当 brokered 账号
+验证后会被排在 native 之前（Go 单测覆盖 [DeepSeek, Kimi, MiniMax, OpenCode, Codex]）。
+另确认：切换 Provider 的 "Change conversation route" 不会重复弹窗
+（`forceNewConversationSegment` 在确认后置位、线程刷新后复位）。
+
+
 ## macOS UI 用户视角验证 + UX 迭代（2026-08-19）
 
 `CURRENT / UI USER-PERSPECTIVE`: 用安装版 App 真实 UI 走查（辅助功能树 + Vision OCR）：
