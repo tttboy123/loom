@@ -2,6 +2,20 @@
 
 Updated: 2026-08-19
 
+## New Mission sheet 预选 Team + 禁用原因提示（2026-08-19 · `f65830b4`）
+
+`CURRENT / NEW MISSION`: 发现并修复：欢迎页 "Start Mission" 入口打开 New Mission
+sheet 时未预选 Team（只有 rail 按钮会预选），导致主入口下 "Review preflight" 被
+静默禁用。修复：sheet `.onAppear` 统一预选第一个可执行 Team；并在禁用时显示原因
+（"Enter a Mission objective first." / "Select a Team to run this Mission." /
+"Confirm the Mission context to enable preflight review."）。Swift 251 测试全绿。
+
+`CURRENT / VERIFICATION BOUNDARY（诚实）`: 本机 Chrome 覆盖在 Loom 窗口之上且
+系统阻止焦点抢占，盲 UI 自动化无法再把 Loom 置前点击，因此本修复的用户视角复验
+暂不可行（代码 + 单测 + 上一轮已证的 Start Mission → sheet 打开）。用户可按
+ACCEPTANCE-CHECKLIST 在安装版上验收。
+
+
 ## Start Mission → New Mission sheet 入口打通（2026-08-19）
 
 `CURRENT / START MISSION ENTRY`: 安装版验证：欢迎页有 Team 时显示 "Start Mission"
