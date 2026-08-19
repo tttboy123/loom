@@ -13271,3 +13271,19 @@ socket 存在即不拉起 daemon），清理 run/ 后正常。证据：
 均为 IPC 启动、胶囊不在 vault；链路 delivery.Prepare→retriever→vault 返回
 非 bounded 错误，adapter 期望终态失败但实际停滞。需聚焦修复
 （缺失胶囊按 bounded tool error 处理并继续，或 attempt 增加超时/恢复）。
+
+## App 首启等待 daemon socket 修复（2026-08-19）
+
+`CURRENT / FIXED`: 首次启动时，若 daemon 因恢复卡死 Mission（含 context capsule
+读取）而需要 20-30s 才创建 socket，App 原本只等 2s（8×250ms）就放弃，表现为
+"Local service unavailable / Try Again" 反复出现。修复：
+- `LocalServiceProcessHost.waitForDefaultSocket` 默认改为 40×500ms（20s），
+  socket 出现即快速返回；
+- `prepareLocalService` 在启动 foreground fallback daemon 后再等待 socket，
+  不再立即返回失败。
+安装版验证：清理 run/ 后冷启动，App 在 daemon 恢复完成后显示
+"Local service ready / Chat is ready with DeepSeek / Agent Team ready"。
+Swift 254 绿（1 跳过）。
+
+`CURRENT / KNOWN ISSUE`: 无真实会话胶囊启动的 Mission 在首次 context-read
+工具派发后停滞（Journal 停在 ToolDispatchCommitted），需聚焦修复。

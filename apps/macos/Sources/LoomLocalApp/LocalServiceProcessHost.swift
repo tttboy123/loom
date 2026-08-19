@@ -75,8 +75,8 @@ final class LocalServiceProcessHost: ObservableObject {
     }
 
     func waitForDefaultSocket(
-        maxAttempts: Int = 8,
-        delayNanoseconds: UInt64 = 250_000_000
+        maxAttempts: Int = 40,
+        delayNanoseconds: UInt64 = 500_000_000
     ) async -> Bool {
         for attempt in 0..<max(maxAttempts, 1) {
             if defaultSocketExists { return true }
