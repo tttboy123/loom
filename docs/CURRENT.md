@@ -2,6 +2,20 @@
 
 Updated: 2026-08-19
 
+## Start Mission → New Mission sheet 入口打通（2026-08-19）
+
+`CURRENT / START MISSION ENTRY`: 安装版验证：欢迎页有 Team 时显示 "Start Mission"
+主操作，**点击后 New Mission sheet 正常打开**（含 Mission objective 输入、
+Mission context 确认、Review preflight 命令栏）。截图证据
+`.loom-evidence/phase4/network-capability/ui-user-perspective/07-start-mission-sheet.png`。
+
+`CURRENT / UI 点击链边界（诚实）`: sheet 内 "Review preflight"/"Start Mission"
+按钮不响应合成鼠标/AXPress（SwiftUI sheet 内容不在 AX 树），盲自动化无法驱动；
+但该链路每一层都有权威覆盖：store 单测（objective+confirm→preflight→start→
+succeeded→mission room）+ daemon live 测试（真实 Mission 收敛 succeeded）。
+Start Mission 入口按钮本身已实机验证可点击打开 sheet。
+
+
 ## store 级 Mission 成功态测试（2026-08-19 · `9c0c60fb`）
 
 `CURRENT / MISSION SUCCEEDED TEST`: 新增
