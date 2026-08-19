@@ -2,6 +2,30 @@
 
 Updated: 2026-08-19
 
+## Mission Start 错误韧性 + daemon 砖块修复（2026-08-19 · `473995d4`）
+
+`CURRENT / VERIFIED`: 用户视角复验发现并修复两个真实缺陷：
+1. **Start Mission 失败提示不可读**：Team 已运行另一 Mission 时，daemon 的
+   busy/conflict 被 Swift 折叠成 `unavailable`。修复：
+   `closedClientReason` 保留 daemon 真实 code；MissionWorkbench 渲染可操作
+   文案（"The Mission state changed (for example this Team is already running).
+   Review preflight, then retry."）并提供 **Open Mission Board** 恢复按钮。
+2. **单个不可恢复 Mission 砖掉 daemon**：早前 IPC 测试留下的
+   running+run-terminal 不一致 Mission 使 `ResumeProjectedMissions` 重建失败
+   → daemon 无法启动 → App 停在 "Local service unavailable"。修复：重建失败
+   跳过该 Mission（不 brick），其余功能正常。
+
+安装版 live 验证：daemon 在含卡死 Mission 的 DB 上正常启动；用户视角走完
+New Mission → 预选 Team → 目标 → 确认 → preflight(2 Agent) → Start Mission
+→ 可读错误 + Open Mission Board → Mission Board 显示运行中 Mission。
+证据：`.loom-evidence/phase4/mission-start-error-resilience/`。
+测试：Swift 254 绿（1 跳过）；Go app/work/supervisor/nativeadapter/toolbroker 绿。
+
+`CURRENT / KNOWN BOUNDARY`: 被跳过的卡死 Mission 在 Board 仍显示 running
+（占用该 Team），不阻断 daemon 与其它功能；彻底清理需后续治理路径。
+
+## New Mission sheet Team 预选修复——用户视角复验（2026-08-19）
+
 ## New Mission sheet Team 预选修复——用户视角复验（2026-08-19）
 
 `CURRENT / VERIFIED`: 临时最小化 Chrome 后将 Loom 置前，复验上一轮修复
