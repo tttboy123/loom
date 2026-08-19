@@ -2796,6 +2796,12 @@ public struct MissionWorkbench: View {
       if newMissionObjective.isEmpty, let prefill = initialMissionObjective {
         newMissionObjective = prefill
       }
+      // Pre-select the first executable Team so "Review preflight" is not
+      // silently disabled for every entry path (rail and welcome "Start
+      // Mission" both land here). The Team picker still lets the user change it.
+      if newMissionTeamID.isEmpty {
+        newMissionTeamID = executableTeams.first?.teamInstanceID ?? ""
+      }
     }
     .onChange(of: newMissionObjective) { _, _ in missionContextDidChange() }
     .onChange(of: confirmedMissionConstraints) { _, _ in missionContextDidChange() }
@@ -2983,8 +2989,33 @@ public struct MissionWorkbench: View {
               || !missionContextConfirmed || missionContextValidationMessage != nil
               || store.executionState == .preflighting || store.executionState == .starting
           )
+          if newMissionObjective.trimmingCharacters(
+            in: .whitespacesAndNewlines
+          ).isEmpty || newMissionTeamID.isEmpty || !missionContextConfirmed
+          {
+            Text(missionReviewBlockedReason)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityLabel("Review preflight blocked. \(missionReviewBlockedReason)")
+          }
         }
     }
+  }
+
+  private var missionReviewBlockedReason: String {
+    if newMissionObjective.trimmingCharacters(
+      in: .whitespacesAndNewlines
+    ).isEmpty {
+      return "Enter a Mission objective first."
+    }
+    if newMissionTeamID.isEmpty {
+      return "Select a Team to run this Mission."
+    }
+    if let message = missionContextValidationMessage {
+      return message
+    }
+    return "Confirm the Mission context to enable preflight review."
   }
 
   private var missionContextCanConfirm: Bool {

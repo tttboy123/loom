@@ -223,7 +223,30 @@ final class LoomGraphiteViewTests: XCTestCase {
 		XCTAssertTrue(source.contains("_budget_units"))
     }
 
-    func testWorkspaceShellOffersNewMissionFromRailAndComposer() throws {
+    func testNewMissionSheetAutoSelectsFirstExecutableTeamAndExplainsDisabledReview() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Sources/LoomLocalAppUI/MissionWorkbench.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    // Every entry path into the New Mission sheet must pre-select the first
+    // executable Team; otherwise Review preflight is silently disabled.
+    XCTAssertTrue(
+      source.contains("if newMissionTeamID.isEmpty {")
+    )
+    XCTAssertTrue(
+      source.contains("newMissionTeamID = executableTeams.first?.teamInstanceID ?? \"\"")
+    )
+    // The disabled Review-preflight action must explain what is missing.
+    XCTAssertTrue(source.contains("missionReviewBlockedReason"))
+    XCTAssertTrue(source.contains("Enter a Mission objective first."))
+    XCTAssertTrue(source.contains("Select a Team to run this Mission."))
+    XCTAssertTrue(source.contains("Confirm the Mission context to enable preflight review."))
+  }
+
+  func testWorkspaceShellOffersNewMissionFromRailAndComposer() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
