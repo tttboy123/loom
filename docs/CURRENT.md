@@ -2,6 +2,15 @@
 
 Updated: 2026-08-19
 
+## 空会话主操作：有 Team 时引导 "Start Mission"（2026-08-19 · `dabb9fd2`）
+
+`CURRENT / START MISSION`: 之前有已确认 Team 时，空聊天的唯一按钮仍是
+"Use Agent Team"（会再开一个 Team 构建器，对已有 Team 的用户是死胡同）。
+现在：有 Team → 主操作 = **"Start Mission"**（打开 New Mission 填写目标）；
+无 Team → 仍是 "Use Agent Team"（先建队）。安装版 OCR 验证：欢迎页显示
+"Start Mission"（且 quick-start 显示 "Agent Team ready"）。Swift 249 测试全绿。
+
+
 ## Team 构建器 "type + Confirm" 直通（2026-08-19 · `6af220d7`）
 
 `CURRENT / BUILDER CONFIRM`: Team 构建器的 Team name / Bounded purpose 字段原需按
