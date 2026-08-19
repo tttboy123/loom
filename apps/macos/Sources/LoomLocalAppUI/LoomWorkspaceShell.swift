@@ -533,7 +533,9 @@ public struct LoomWorkspaceShell: View {
                     .help("New Conversation")
 
                     railSectionTitle("AGENT TEAMS")
-                    let teams = store.snapshot?.teams ?? []
+                    // Only runnable (non-archived) Teams belong in the rail;
+                    // archived Teams remain visible in the Teams governance view.
+                    let teams = store.snapshot?.teams.filter(\.executable) ?? []
                     if teams.isEmpty {
                         if !compact {
                             Text("No Agent Teams yet")

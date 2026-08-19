@@ -365,6 +365,33 @@ func TestGlobalReadViewReturnsBoundedStableProductPages(t *testing.T) {
 	}
 }
 
+func TestGlobalReadViewArchivedTeamDefinitionIsNotExecutable(t *testing.T) {
+	snapshot := emptySnapshot()
+	snapshot.TeamDefinitions = make(map[string]TeamDefinitionRecord)
+	snapshot.TeamDefinitions["team-def-active"] = TeamDefinitionRecord{
+		ID: "team-def-active", Status: "active",
+	}
+	snapshot.TeamDefinitions["team-def-archived"] = TeamDefinitionRecord{
+		ID: "team-def-archived", Status: "archived",
+	}
+	snapshot.Teams["team-active"] = TeamInstance{
+		ID: "team-active", TeamDefinitionID: "team-def-active",
+	}
+	snapshot.Teams["team-archived"] = TeamInstance{
+		ID: "team-archived", TeamDefinitionID: "team-def-archived",
+	}
+	view := mustBuildGlobalReadView(t, snapshot, nil, nil)
+
+	active, ok := view.TeamTimelineAnchor("team-active")
+	if !ok || !active.Confirmed || !active.Executable || active.ReadOnly {
+		t.Fatalf("active anchor = %#v, %v", active, ok)
+	}
+	archived, ok := view.TeamTimelineAnchor("team-archived")
+	if !ok || !archived.Confirmed || archived.Executable || archived.ReadOnly {
+		t.Fatalf("archived anchor must stay visible but be non-executable: %#v, %v", archived, ok)
+	}
+}
+
 func TestGlobalReadViewTeamTimelineAnchorIsExactReadOnlyAndTerminal(t *testing.T) {
 	snapshot := emptySnapshot()
 	snapshot.Teams["team-saved"] = TeamInstance{ID: "team-saved"}

@@ -560,11 +560,20 @@ func (view GlobalReadView) TeamTimelineAnchor(
 	}
 	if team, ok := view.Team(teamInstanceID); ok &&
 		team.ID == teamInstanceID {
+		executable := true
+		if definition, defOK := view.TeamDefinition(
+			team.TeamDefinitionID,
+		); defOK {
+			// Archiving a Team definition must make its instances
+			// non-executable: the saved team stays visible (and its history
+			// readable) but can no longer launch Missions.
+			executable = definition.Status != "archived"
+		}
 		return TeamTimelineAnchor{
 			TeamInstanceID: teamInstanceID,
 			Kind:           "saved_team",
 			Confirmed:      true,
-			Executable:     true,
+			Executable:     executable,
 		}, true
 	}
 	execution, ok := view.TeamExecution(teamInstanceID)
