@@ -13372,3 +13372,16 @@ Executable=false；侧边栏 AGENT TEAMS rail 仅显示可运行团队。
 live：归档 15 个测试团队后 snapshot 恰好 1 个可运行团队（UI Mission Team），
 并已 team_restore 恢复用户团队。Go projection/app/api/work + Swift 254 绿。
 证据：`.loom-evidence/phase4/archived-team-executable-fix/`。
+
+## 多会话 + 网络工具验证（2026-08-20）
+
+`CURRENT / VERIFIED`:
+- 多会话：store 层 InteractionContinuityTests 验证每 task 独立 threadID、
+  切换 task 保留独立 composer/inspector、Profile 选择隔离（254 Swift 绿）。
+  安装版 chat-sessions.json 有 5 个独立会话（thread-*），可分别持有历史。
+- 网络工具空结果：web_search 空结果/限流（DuckDuckGo 202）已按有界非空结果
+  返回（internal/toolbroker/broker.go search_unavailable），attempt 可完成，
+  不再因空 payload 触发 result_persistence_failed。
+- 环境清理：15 个测试团队已归档（executable=False），仅 UI Mission Team
+  可运行；Mission 完整收敛仍受 journal 中历史卡死 Mission 数据状态制约
+  （代码层 context-read 修复已落地并有单测 + debug daemon attempt 完成证据）。
