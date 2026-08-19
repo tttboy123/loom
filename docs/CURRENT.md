@@ -13385,3 +13385,11 @@ live：归档 15 个测试团队后 snapshot 恰好 1 个可运行团队（UI Mi
 - 环境清理：15 个测试团队已归档（executable=False），仅 UI Mission Team
   可运行；Mission 完整收敛仍受 journal 中历史卡死 Mission 数据状态制约
   （代码层 context-read 修复已落地并有单测 + debug daemon attempt 完成证据）。
+
+## E2E Smoke：安装版开箱即用（2026-08-20）
+
+`CURRENT / VERIFIED`: 冷启动安装版 App → Local service ready / Chat is ready
+with DeepSeek / Agent Team ready；发送消息 → DeepSeek 真实回复渲染
+（Loom Native · deepseek.primary · deepseek-chat）。环境已清理：仅
+UI Mission Team 可运行，15 个测试团队已归档。证据：
+`.loom-evidence/phase4/e2e-smoke-20260820/`。
