@@ -13363,3 +13363,12 @@ Swift 254 绿。
   loom-native/opencode/pi runtimes 仍 online，凭据完整。
 - 回车发送、Provider 切换 + 路由确认正常。
 证据：`.loom-evidence/phase4/governance-ui-verification/`。
+
+## 归档 Team 清理 + 可执行性修复（2026-08-20 · `3659f38e`）
+
+`CURRENT / FIXED`: 归档团队此前不会变为不可执行（TeamTimelineAnchor 无条件
+Executable=true），侧边栏也被已归档团队污染。修复：定义 Status=archived →
+Executable=false；侧边栏 AGENT TEAMS rail 仅显示可运行团队。
+live：归档 15 个测试团队后 snapshot 恰好 1 个可运行团队（UI Mission Team），
+并已 team_restore 恢复用户团队。Go projection/app/api/work + Swift 254 绿。
+证据：`.loom-evidence/phase4/archived-team-executable-fix/`。
