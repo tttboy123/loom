@@ -2,6 +2,16 @@
 
 Updated: 2026-08-19
 
+## store 级 Mission 成功态测试（2026-08-19 · `9c0c60fb`）
+
+`CURRENT / MISSION SUCCEEDED TEST`: 新增
+`testMissionStartReachesSucceededAndOpensMissionRoom`（ExecutionStubClient 支持
+配置 start 结果状态）：确认可执行 Team → preflight ready → start(succeeded) →
+`executionState == .succeeded` 且 `workbench.route == .mission(...)`。
+补上了用户可见状态链在 store 层的最后一段（此前测到 running+cancel；daemon 层
+由 live 测试覆盖 succeeded）。Swift 250 测试全绿。
+
+
 ## 空会话主操作：有 Team 时引导 "Start Mission"（2026-08-19 · `dabb9fd2`）
 
 `CURRENT / START MISSION`: 之前有已确认 Team 时，空聊天的唯一按钮仍是
