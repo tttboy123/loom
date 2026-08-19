@@ -1033,7 +1033,8 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var emptyConversation: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let teamReady = !(store.snapshot?.teams.isEmpty ?? true)
+        return VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "bubble.left.and.text.bubble.right")
                 .font(.system(size: 26, weight: .regular))
                 .foregroundStyle(LoomGraphite.accent)
@@ -1071,15 +1072,27 @@ public struct LoomWorkspaceShell: View {
                 .accessibilityLabel("Open Folder")
                 .help("Open Folder")
 
+                // With a confirmed Team the primary action is to run a
+                // Mission; "Use Agent Team" would start another builder and
+                // dead-end the user who already has a Team.
                 Button {
-                    governance.open(.team)
-                    Task { await store.startBlankBuilder() }
+                    if teamReady {
+                        fullGovernancePresentation = .newMission
+                    } else {
+                        governance.open(.team)
+                        Task { await store.startBlankBuilder() }
+                    }
                 } label: {
-                    Label("Use Agent Team", systemImage: "person.3")
+                    Label(
+                        teamReady ? "Start Mission" : "Use Agent Team",
+                        systemImage: teamReady
+                            ? "flag.checkered"
+                            : "person.3"
+                    )
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Use Agent Team")
-                .help("Use Agent Team")
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel(teamReady ? "Start Mission" : "Use Agent Team")
+                .help(teamReady ? "Start a governed Mission with your Team" : "Use Agent Team")
             }
         }
         .frame(maxWidth: 560, alignment: .leading)

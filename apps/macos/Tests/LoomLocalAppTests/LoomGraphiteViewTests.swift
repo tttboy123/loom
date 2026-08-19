@@ -156,7 +156,22 @@ final class LoomGraphiteViewTests: XCTestCase {
         XCTAssertFalse(source.contains("NSWorkspace.shared.open(diagnosticsDirectory)"))
     }
 
-    func testWorkspaceShellConsumesAgentTeamBuilderSession() throws {
+    func testEmptyConversationOffersStartMissionWhenTeamReady() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    // With a confirmed Team the empty conversation must lead to a Mission,
+    // not to another Team builder (a dead end for the user who already has one).
+    XCTAssertTrue(source.contains("teamReady ? \"Start Mission\" : \"Use Agent Team\""))
+    XCTAssertTrue(source.contains("fullGovernancePresentation = .newMission"))
+    XCTAssertTrue(source.contains("startBlankBuilder()"))
+  }
+
+  func testWorkspaceShellConsumesAgentTeamBuilderSession() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -314,7 +329,10 @@ final class LoomGraphiteViewTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             source.components(separatedBy: ".help(\"Use Agent Team\")").count - 1,
-            2
+            1
+        )
+        XCTAssertTrue(
+            source.contains("\"Start a governed Mission with your Team\"")
         )
         XCTAssertTrue(source.contains(".accessibilityLabel(actionLabel)"))
         XCTAssertTrue(source.contains(".help(actionLabel)"))
