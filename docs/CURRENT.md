@@ -13336,3 +13336,16 @@ attempt 生命周期（含重试）已可正常推进到 awaiting_recovery。
 Provider credential. Open Provider Account to configure and verify minimax..."）。
 store 侧已有 `testSelectConversationModelSurfacesActionableNoticeWhenRefused`
 覆盖；Swift 254 绿。安装版已重装。
+
+## RoundTable 全旅程 + 两个 UX 修复（2026-08-20）
+
+`CURRENT / VERIFIED`: 用户视角走查 RoundTable（Phase 4.1）发现并修复引导按钮
+无法完成最后一步的问题：
+- `currentStep` 在消息 inserted 后不再卡在 .insert，而是推进到 .conclude；
+- `runFullJourney` 驱动到 `session.concluded`（包含 Conclude 步）。
+安装版 live：点 "Run full journey" 完整走通 create → seats → round → propose
+→ relay → acknowledge → insert → **conclude**，Journal 记录
+RoundtableConcluded + digest-bound AlignmentSummary（0a204e8d…）。
+另：模型选择器不可用模型改为可点击并显示原因（f409e1fb）。
+证据：`.loom-evidence/phase4/roundtable-user-journey/`。
+Swift 254 绿。
