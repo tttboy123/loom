@@ -2,6 +2,23 @@
 
 Updated: 2026-08-19
 
+## macOS 默认 Provider + Team 构建器确认（2026-08-19 · `852bac5b` `e748c80d`）
+
+`CURRENT / DEFAULT PROVIDER`: 默认会话 Provider 修复（见上节，`852bac5b`）。
+安装版验证：DeepSeek 凭据验证后，profile 顺序 = [DeepSeek, OpenCode, Codex]，
+默认 = DeepSeek；未验证时默认 = OpenCode，首次聊天成功。
+
+`CURRENT / TEAM BUILDER CONFIRM`: "Confirm Agent Team" 之前在治理检查器 ScrollView
+内部，目的较长/窗口较矮时被推到折叠线以下、无任何提示。改为**固定 footer**（滚动区
+下方常驻显示确认按钮 + 被禁原因提示）。安装版验证：draft 打开时确认按钮始终可见；
+"Press Return in Team name / Bounded purpose…" / "Complete the required fields…"
+提示按状态渲染。Swift 246 测试全绿。
+
+`CURRENT / REMAINING`: Team→Mission 的 UI 全点击闭环仍受盲 UI 自动化限制（合成 Return
+不触发 SwiftUI onSubmit），daemon 层 Team/Mission 已由自动化 live 测试证明收敛；
+真实用户按 Return 提交属标准 SwiftUI 行为。
+
+
 ## macOS 默认会话 Provider 修复（2026-08-19 · `852bac5b`）
 
 `CURRENT / DEFAULT PROFILE`: 之前默认会话 Provider 取列表第一个 = Codex（官方账号常
