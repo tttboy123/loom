@@ -787,6 +787,20 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 					deliveries++
 					continue
 				}
+				// The Attempt-loop admits at most one Context dispatch per
+				// step. When a second Context-read cannot be dispatched after a
+				// prior bounded delivery, end the exchange with the bounded
+				// content-free result so the attempt completes cleanly instead
+				// of failing terminally (which previously stalled the attempt
+				// on an Attempt-loop conflict).
+				if errors.Is(retrievalErr, contextcapsule.ErrInvalidContextDelivery) &&
+					deliveries > 0 {
+					response.content = "No further information was produced for this attempt after the available tools were used."
+					response.accounting = total
+					return openAICompatibleExchange{
+						deepSeekAgentResponse: response, contextDeliveries: deliveries,
+					}, nil
+				}
 				return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
 					reason: "context_retrieval_denied", stage: "context_retrieval",
 				}

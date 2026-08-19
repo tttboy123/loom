@@ -1,6 +1,7 @@
 package contextcapsule_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -51,6 +52,54 @@ func (*deliveryStoreFixture) MarkAttemptPayloadDelivered(
 	return errors.New("unexpected delivered transition")
 }
 
+type writingDeliveryStoreFixture struct {
+	payload attemptpayload.Payload
+	writes  int
+}
+
+func (store *writingDeliveryStoreFixture) PutAttemptPayload(
+	_ context.Context,
+	payload attemptpayload.Payload,
+) error {
+	store.writes++
+	store.payload = cloneDeliveryPayload(payload)
+	return nil
+}
+
+func (store *writingDeliveryStoreFixture) ReadAttemptPayload(
+	context.Context,
+	attemptpayload.Binding,
+) (attemptpayload.Payload, error) {
+	return attemptpayload.Payload{}, errors.New("unexpected payload read")
+}
+
+func (*writingDeliveryStoreFixture) ListPendingAttemptPayloads(
+	context.Context,
+	attemptpayload.Scope,
+) ([]attemptpayload.Payload, error) {
+	return nil, nil
+}
+
+func (*writingDeliveryStoreFixture) MarkAttemptPayloadDelivered(
+	context.Context,
+	attemptpayload.Binding,
+) error {
+	return errors.New("unexpected delivered transition")
+}
+
+type deniedRetrieverFixture struct {
+	calls int
+	err   error
+}
+
+func (retriever *deniedRetrieverFixture) Retrieve(
+	context.Context,
+	contextcapsule.RetrievalProposal,
+) (contextcapsule.RetrievedItem, error) {
+	retriever.calls++
+	return contextcapsule.RetrievedItem{}, retriever.err
+}
+
 type deliveryFactAuthorityFixture struct {
 	accepted []attemptpayload.Binding
 }
@@ -98,6 +147,57 @@ func (retriever *countingRetrieverFixture) Retrieve(
 		return item, nil
 	}
 	return contextcapsule.RetrievedItem{}, errors.New("unexpected retrieval")
+}
+
+func TestDeliveryCoordinatorWritesBoundedDeniedPayloadOnUnretrievableItem(t *testing.T) {
+	capsule := testRetrievalCapsule(t)
+	omitted := capsule.Omitted()[0]
+	store := &writingDeliveryStoreFixture{}
+	facts := &deliveryFactAuthorityFixture{}
+	retriever := &deniedRetrieverFixture{err: contextcapsule.ErrContextItemNotRetrievable}
+	coordinator, err := contextcapsule.NewDeliveryCoordinator(
+		capsule.AuthorityRecord(),
+		contextcapsule.AttemptIdentity{
+			WorkItemID: "work-1", RunID: "run-1", ClaimGeneration: 2,
+			RuntimeInstanceID:      "runtime-1",
+			ExecutionBindingDigest: strings.Repeat("a", 64),
+			IncidentID:             "incident-1", ClaimID: "claim-1",
+		},
+		retriever, store, facts,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := coordinator.Prepare(
+		context.Background(),
+		contextcapsule.RetrievalProposal{
+			ItemID: omitted.ItemID, ContentDigest: omitted.ContentDigest,
+			ArtifactRef: omitted.ArtifactRef,
+		},
+		contextcapsule.DeliveryRequest{
+			Sequence: 1, ContentType: "application/json",
+		},
+		func(contextcapsule.RetrievalProposal, contextcapsule.RetrievedItem) ([]byte, error) {
+			t.Fatal("encoder must not run for a denied item")
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("bounded denial must produce a delivered payload, got error: %v", err)
+	}
+	defer delivery.Close()
+	if delivery.Status != attemptpayload.StatusPending {
+		t.Fatalf("delivery status = %v", delivery.Status)
+	}
+	if !bytes.Contains(delivery.Content, []byte("context_item_unavailable")) {
+		t.Fatalf("denial payload missing bounded marker: %s", delivery.Content)
+	}
+	if store.writes != 1 {
+		t.Fatalf("payload writes = %d, want 1", store.writes)
+	}
+	if len(facts.accepted) != 1 || facts.accepted[0] != delivery.Binding {
+		t.Fatalf("accepted = %#v", facts.accepted)
+	}
 }
 
 func TestDeliveryCoordinatorRecoversPendingPayloadWithoutReexecutingTool(t *testing.T) {

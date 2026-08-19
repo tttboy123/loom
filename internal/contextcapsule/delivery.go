@@ -135,6 +135,34 @@ func (coordinator *DeliveryCoordinator) Prepare(
 	item, err := coordinator.retriever.Retrieve(ctx, proposal)
 	if err != nil {
 		item.Close()
+		// A bounded retrieval denial is a content-free tool result that the
+		// Attempt-loop still needs as a delivered payload fact; otherwise the
+		// step ends with an undispatched Context call and finalization fails
+		// with an Attempt-loop conflict (stalling the whole attempt).
+		if errors.Is(err, ErrContextRetrievalDenied) ||
+			errors.Is(err, ErrContextItemNotRetrievable) {
+			content := []byte(`{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Use web_search for current external information or choose a different item."}`)
+			deniedDigest := sha256.Sum256(content)
+			deniedBinding := attemptpayload.Binding{
+				PayloadID: deterministicDeliveryPayloadID(coordinator.authority.Scope, callID, request),
+				Scope:     coordinator.authority.Scope,
+				CallID:    callID, Sequence: request.Sequence,
+				ContentType:   request.ContentType,
+				ContentDigest: hex.EncodeToString(deniedDigest[:]),
+			}
+			denied := attemptpayload.Payload{
+				Binding: deniedBinding, Status: attemptpayload.StatusPending, Content: content,
+			}
+			if putErr := coordinator.store.PutAttemptPayload(ctx, denied); putErr != nil {
+				denied.Close()
+				return attemptpayload.Payload{}, errors.Join(ErrInvalidContextDelivery, putErr)
+			}
+			if acceptErr := coordinator.facts.Accept(ctx, coordinator.authority, deniedBinding); acceptErr != nil {
+				denied.Close()
+				return attemptpayload.Payload{}, errors.Join(ErrInvalidContextDelivery, acceptErr)
+			}
+			return denied, nil
+		}
 		return attemptpayload.Payload{}, err
 	}
 	content, encodeErr := encode(proposal, item)

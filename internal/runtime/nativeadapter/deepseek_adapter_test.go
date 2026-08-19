@@ -168,6 +168,41 @@ type contextRetrieverFixture struct {
 	calls   int
 }
 
+// conflictingContextDeliveryFixture reproduces the production failure where the
+// first context-read is a bounded denial (ErrContextItemNotRetrievable) and a
+// second context-read in the same step cannot be dispatched because the
+// Attempt-loop admits only one tool dispatch per step (ErrInvalidContextDelivery).
+type conflictingContextDeliveryFixture struct {
+	retriever contextcapsule.Retriever
+	prepare   int
+}
+
+func (delivery *conflictingContextDeliveryFixture) Prepare(
+	ctx context.Context,
+	proposal contextcapsule.RetrievalProposal,
+	request contextcapsule.DeliveryRequest,
+	encode contextcapsule.DeliveryEncoder,
+) (attemptpayload.Payload, error) {
+	delivery.prepare++
+	if delivery.prepare == 1 {
+		item, err := delivery.retriever.Retrieve(ctx, proposal)
+		item.Close()
+		if err != nil {
+			return attemptpayload.Payload{}, err
+		}
+		return attemptpayload.Payload{}, contextcapsule.ErrContextItemNotRetrievable
+	}
+	return attemptpayload.Payload{}, contextcapsule.ErrInvalidContextDelivery
+}
+
+func (delivery *conflictingContextDeliveryFixture) Acknowledge(
+	context.Context,
+	attemptpayload.Binding,
+	attemptpayload.DeliveryProof,
+) error {
+	return nil
+}
+
 type contextDeliveryFixture struct {
 	retriever contextcapsule.Retriever
 	payload   attemptpayload.Payload
@@ -808,6 +843,62 @@ func TestLoomNativeDeepSeekContextRetrievalDenialIsContentFree(t *testing.T) {
 	if len(doer.bodies) != 2 ||
 		!bytes.Contains(doer.bodies[1], []byte(`context_item_unavailable`)) {
 		t.Fatalf("denial not surfaced as a bounded tool result: %d bodies", len(doer.bodies))
+	}
+}
+
+func TestLoomNativeDeepSeekCompletesWhenSecondContextReadCannotDispatch(t *testing.T) {
+	request, omitted := deepSeekRetrievalAdapterRequest(t)
+	retriever := &contextRetrieverFixture{
+		want: contextcapsule.RetrievalProposal{
+			ItemID: omitted.ItemID, ContentDigest: omitted.ContentDigest,
+			ArtifactRef: omitted.ArtifactRef,
+		},
+		err: contextcapsule.ErrContextItemNotRetrievable,
+	}
+	delivery := &conflictingContextDeliveryFixture{retriever: retriever}
+	request.ContextRetriever = retriever
+	request.ContextDelivery = delivery
+	toolResponse := func(id string) *http.Response {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"` + id + `","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"` + omitted.ItemID + `\",\"content_digest\":\"` + omitted.ContentDigest + `\",\"artifact_ref\":\"` + omitted.ArtifactRef + `\"}"}}]}}]}`,
+		))}
+	}
+	doer := &contextRetrievalHTTPDoerFixture{responses: []*http.Response{
+		toolResponse("call-context-1"),
+		toolResponse("call-context-2"),
+	}}
+	diagnostics := &agentDiagnosticRecorderFixture{}
+	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
+		RuntimeInstanceID: "loom-native-local",
+		CredentialAccess:  &credentialAccessFixture{secret: []byte("private-deepseek-key")},
+		Diagnostics:       diagnostics, Client: doer,
+		Now:              func() time.Time { return time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC) },
+		MaxResponseBytes: 64 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("second undispatchable context-read must not fail the attempt: %v", err)
+	}
+	if delivery.prepare != 2 {
+		t.Fatalf("delivery.prepare = %d, want 2", delivery.prepare)
+	}
+	// The attempt completes with the bounded content-free result instead of
+	// stalling on a terminal Attempt-loop conflict.
+	if !result.ResultAcknowledged() {
+		t.Fatalf("result not acknowledged: %#v", result)
+	}
+	frames := request.FrameSink.(*frameSinkFixture).frames
+	if len(frames) != 3 {
+		t.Fatalf("frames = %#v", frames)
+	}
+	if string(frames[1].Payload()) != `{"delta":"No further information was produced for this attempt after the available tools were used."}` {
+		t.Fatalf("unexpected bounded completion frame: %s", frames[1].Payload())
+	}
+	if string(frames[2].Payload()) != `{"status":"succeeded","reason":""}` {
+		t.Fatalf("unexpected result frame: %s", frames[2].Payload())
 	}
 }
 
