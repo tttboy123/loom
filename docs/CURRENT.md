@@ -13254,3 +13254,20 @@ stage. G3/G4 source proofs remain green (`TestFourProviderTeam*`,
 `TestPhase2DPerAgentFailureIsolationMatrix`). No remote capability is
 published by default. Evidence:
 `.loom-evidence/phase2d/P2D-W2D-mixed-provider-team-live-gate-v49.md`.
+
+## Mission 生命周期验证 + context-read 卡点（2026-08-19）
+
+`CURRENT / VERIFIED`: 通过 IPC 创建真实 Team（UI Verify Team 2），并真实启动
+Mission：preflight（2 nodes ready，DeepSeek）→ start → running；subagent 实际
+调用 DeepSeek 并提交 context-read 工具派发（Journal 事件 AttemptLoopStarted→
+ModelRequestAdmitted→ToolCallAdmitted→ToolDispatchCommitted）。含 2 个卡死
+Mission 的 DB 上 daemon 正常启动并服务（socket 1s，App Local service ready）。
+此前 App 反复 "Local service unavailable" 的主因是陈旧 socket 文件（App 见
+socket 存在即不拉起 daemon），清理 run/ 后正常。证据：
+`.loom-evidence/phase4/mission-lifecycle-verification/`。
+
+`CURRENT / KNOWN ISSUE`: **无真实会话胶囊启动的 Mission 在首次 context-read
+工具派发后停滞**（>30 分钟无新事件，mission 一直 running）。两个卡死 Mission
+均为 IPC 启动、胶囊不在 vault；链路 delivery.Prepare→retriever→vault 返回
+非 bounded 错误，adapter 期望终态失败但实际停滞。需聚焦修复
+（缺失胶囊按 bounded tool error 处理并继续，或 attempt 增加超时/恢复）。
