@@ -4378,6 +4378,27 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  /// Commits any uncommitted Team name / Bounded purpose edits, then confirms
+  /// the draft. The builder fields apply on Return; a user who types and
+  /// clicks Confirm directly must not be blocked by that hidden step.
+  public func confirmBuilderCommitting(
+    name: String,
+    purpose: String
+  ) async {
+    guard let session = builderSession else { return }
+    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedPurpose = purpose.trimmingCharacters(
+      in: .whitespacesAndNewlines
+    )
+    if !trimmedName.isEmpty, trimmedName != session.preview.name {
+      await editBuilder(field: "team_name", value: trimmedName)
+    }
+    if !trimmedPurpose.isEmpty, trimmedPurpose != session.preview.purpose {
+      await editBuilder(field: "purpose", value: trimmedPurpose)
+    }
+    await confirmBuilder()
+  }
+
   public func confirmBuilder() async {
     guard setupState != .loading else { return }
     guard let setupClient, let builderSession, builderSession.canConfirm else {

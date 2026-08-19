@@ -1601,6 +1601,47 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertTrue(store.snapshot?.teams.first?.executable == true)
   }
 
+  func testConfirmBuilderCommittingAppliesUncommittedFieldsFirst() async throws {
+    let client = try ProviderSetupStubClient(materializesTeam: true)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    await store.startBlankBuilder()
+    XCTAssertTrue(try XCTUnwrap(store.builderSession).canConfirm)
+
+    // Type name + purpose without the Return-commit step, then Confirm.
+    await store.confirmBuilderCommitting(
+      name: "UI Mission Team",
+      purpose: "Verify the governed journey"
+    )
+
+    // The uncommitted name/purpose edits were sent to the daemon before confirm.
+    XCTAssertEqual(
+      client.builderEdits.map(\.field),
+      ["team_name", "purpose"]
+    )
+    XCTAssertEqual(client.builderEdits.first?.value, "UI Mission Team")
+    XCTAssertEqual(client.builderEdits.last?.value, "Verify the governed journey")
+    XCTAssertEqual(client.builderConfirmRequestCount, 1)
+    XCTAssertEqual(store.snapshot?.teams.count, 1)
+  }
+
+  func testConfirmBuilderCommittingSkipsUnchangedFields() async throws {
+    let client = try ProviderSetupStubClient(materializesTeam: true)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    await store.startBlankBuilder()
+    // Preview name is "Controlled Team"; passing the same value must not edit.
+    await store.confirmBuilderCommitting(
+      name: "Controlled Team",
+      purpose: "One bounded Mission"
+    )
+
+    XCTAssertTrue(client.builderEdits.isEmpty)
+    XCTAssertEqual(client.builderConfirmRequestCount, 1)
+  }
+
   func testExecutableTeamsExposesOnlyConfirmedRunnableTeams() async throws {
     let client = try ProviderSetupStubClient(materializesTeam: true)
     let store = LocalProductStore(client: client)

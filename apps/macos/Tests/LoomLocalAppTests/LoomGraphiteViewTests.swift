@@ -166,7 +166,7 @@ final class LoomGraphiteViewTests: XCTestCase {
 
         XCTAssertTrue(source.contains("if let session = store.builderSession"))
         XCTAssertTrue(source.contains("await store.answerBuilder(option.id)"))
-        XCTAssertTrue(source.contains("await store.confirmBuilder()"))
+        XCTAssertTrue(source.contains("await store.confirmBuilderCommitting("))
         XCTAssertTrue(source.contains("store.cancelBuilder()"))
         XCTAssertTrue(source.contains("store.builderRecoveryMessage"))
         XCTAssertTrue(source.contains("Loom proposal, untrusted"))

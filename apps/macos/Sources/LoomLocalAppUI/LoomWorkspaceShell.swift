@@ -2110,7 +2110,12 @@ public struct LoomWorkspaceShell: View {
         if let session = store.builderSession {
             VStack(alignment: .leading, spacing: 8) {
                 Button {
-                    Task { await store.confirmBuilder() }
+                    Task {
+                        await store.confirmBuilderCommitting(
+                            name: builderName,
+                            purpose: builderPurpose
+                        )
+                    }
                 } label: {
                     Label("Confirm Agent Team", systemImage: "checkmark")
                         .frame(maxWidth: .infinity)
