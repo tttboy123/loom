@@ -1778,6 +1778,10 @@ public struct LoomWorkspaceShell: View {
                 governanceContent
                     .padding(16)
             }
+            if governance.destination == .team, store.builderSession != nil {
+                Divider()
+                teamBuilderConfirmFooter
+            }
         }
         .background(LoomGraphite.surface)
         .accessibilityElement(children: .contain)
@@ -2098,23 +2102,31 @@ public struct LoomWorkspaceShell: View {
                     .accessibilityLabel("Updating Agent Team draft")
             }
 
-            Button {
-                Task { await store.confirmBuilder() }
-            } label: {
-                Label("Confirm Agent Team", systemImage: "checkmark")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!session.canConfirm || store.setupState == .loading)
-            .accessibilityLabel("Confirm Agent Team and create governed Team")
+        }
+    }
 
-            if !session.canConfirm && store.setupState != .loading {
-                builderConfirmBlockedHint(
-                    session: session,
-                    uncommittedName: builderName,
-                    uncommittedPurpose: builderPurpose
-                )
+    @ViewBuilder
+    private var teamBuilderConfirmFooter: some View {
+        if let session = store.builderSession {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    Task { await store.confirmBuilder() }
+                } label: {
+                    Label("Confirm Agent Team", systemImage: "checkmark")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!session.canConfirm || store.setupState == .loading)
+                .accessibilityLabel("Confirm Agent Team and create governed Team")
+                if !session.canConfirm && store.setupState != .loading {
+                    builderConfirmBlockedHint(
+                        session: session,
+                        uncommittedName: builderName,
+                        uncommittedPurpose: builderPurpose
+                    )
+                }
             }
+            .padding(16)
         }
     }
 
