@@ -2,6 +2,25 @@
 
 Updated: 2026-08-19
 
+## Team 构建器 "type + Confirm" 直通（2026-08-19 · `6af220d7`）
+
+`CURRENT / BUILDER CONFIRM`: Team 构建器的 Team name / Bounded purpose 字段原需按
+Return 才提交（`.onSubmit`），用户直接点 Confirm 会被禁用按钮挡住。新增
+`LocalProductStore.confirmBuilderCommitting(name:purpose:)`：点 Confirm 时先自动
+提交变更的字段再确认。daemon 流程验证：`builder_start → edit team_name/purpose →
+validate → confirm` 成功创建 Team（`team_instance_created=true`；且确认 must 同时有
+name+purpose，否则 can_confirm=false）。Swift 248 测试全绿（新增 2 个）。
+
+`CURRENT / VERIFICATION STATUS`:
+- daemon 层 Team 创建与 Mission 收敛（含独立 Verifier、Web 工具）由自动化 live 测试
+  证明（succeeded / TeamExecutionTerminal=1）。
+- UI 用户视角已验证：默认 Provider（DeepSeek/OpenCode）、聊天真实回复、三层选择、
+  复制、多会话、失败横幅 + Switch Provider、Team 构建器渲染、sticky Confirm footer、
+  "type + Confirm" 逻辑（单测）。
+- UI 全点击闭环（点 Confirm → Mission 面板启动）受盲 UI 自动化限制（SwiftUI 合成
+  事件不触发部分按钮），需人手/真实输入确认；非产品缺陷。
+
+
 ## macOS 默认 Provider + Team 构建器确认（2026-08-19 · `852bac5b` `e748c80d`）
 
 `CURRENT / DEFAULT PROVIDER`: 默认会话 Provider 修复（见上节，`852bac5b`）。
