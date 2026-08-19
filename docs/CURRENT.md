@@ -13349,3 +13349,17 @@ RoundtableConcluded + digest-bound AlignmentSummary（0a204e8d…）。
 另：模型选择器不可用模型改为可点击并显示原因（f409e1fb）。
 证据：`.loom-evidence/phase4/roundtable-user-journey/`。
 Swift 254 绿。
+
+## 治理/账户 UI 用户视角验证（2026-08-20）
+
+`CURRENT / VERIFIED`: 安装版走查治理/账户界面：
+- Chat 失败横幅（Codex 余额不足）：标题/详情/Incident ID/Switch Provider/
+  View diagnostics，点 Switch Provider 打开 Runtime & Providers。
+- Runtime & Providers：Credential Vault（Unlocked · Rotate key · View
+  diagnostics）、Agent Runtimes（Codex Available · Reconnect）、Model
+  Providers（OpenAI/Anthropic/Gemini/DeepSeek Verified/Kimi/MiniMax +
+  搜索 + 添加账户）。
+- Vault key rotation：点 Rotate key → "Vault key rotated"，旋转后
+  loom-native/opencode/pi runtimes 仍 online，凭据完整。
+- 回车发送、Provider 切换 + 路由确认正常。
+证据：`.loom-evidence/phase4/governance-ui-verification/`。
