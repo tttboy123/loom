@@ -2,6 +2,17 @@
 
 Updated: 2026-08-19
 
+## New Mission sheet Team 预选修复——用户视角复验（2026-08-19）
+
+`CURRENT / VERIFIED`: 临时最小化 Chrome 后将 Loom 置前，复验上一轮修复
+（`f65830b4`）：点击欢迎页 "Start Mission" → New Mission sheet 打开且
+**Team 已预选 "UI Mission Team"**；填入 objective、勾选 "I confirm this Mission
+context" 后，**"Review preflight" 不再被静默禁用（无禁用原因提示出现）**。
+截图证据 `ui-user-perspective/08-new-mission-team-preselected.png`。
+sheet 内按钮的合成点击仍受 SwiftUI 限制（CGEvent 不触发），但按钮已处于可用态，
+该层后续由 store/daemon 测试覆盖。
+
+
 ## New Mission sheet 预选 Team + 禁用原因提示（2026-08-19 · `f65830b4`）
 
 `CURRENT / NEW MISSION`: 发现并修复：欢迎页 "Start Mission" 入口打开 New Mission
