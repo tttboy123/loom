@@ -1812,35 +1812,39 @@ func TestLocalProductSetupPublishesReadyConversationProfiles(t *testing.T) {
 	if len(snapshot.ConversationProfiles) != 5 {
 		t.Fatalf("profiles = %#v", snapshot.ConversationProfiles)
 	}
+	// The default conversation profile is the first entry; user-configured
+	// verified brokered accounts come first (most likely to work out of the
+	// box), then native OpenCode, and Codex last (its official account is
+	// frequently quota-limited).
 	if snapshot.ConversationProfiles[0].ProfileID !=
-		"conversation-openai-codex-default-v1" ||
-		snapshot.ConversationProfiles[0].ProviderID != "openai" ||
+		"conversation-deepseek-deepseek-chat-r2" ||
+		snapshot.ConversationProfiles[0].ProviderID != "deepseek" ||
+		snapshot.ConversationProfiles[0].ProviderAccountID != "deepseek.primary" ||
+		snapshot.ConversationProfiles[0].HarnessAdapter != "loom-native" ||
+		snapshot.ConversationProfiles[0].ModelID != "deepseek-chat" ||
+		snapshot.ConversationProfiles[0].CredentialRevision != 2 ||
 		snapshot.ConversationProfiles[1].ProfileID !=
-			"conversation-opencode-default-v1" ||
-		snapshot.ConversationProfiles[1].ProviderID != "opencode" ||
-		snapshot.ConversationProfiles[1].HarnessAdapter != "opencode" ||
-		snapshot.ConversationProfiles[1].Protocol != "opencode_agent" ||
-		snapshot.ConversationProfiles[1].ModelID !=
-			provider.OpenCodeConversationDefaultModel ||
-		snapshot.ConversationProfiles[2].ProfileID !=
-			"conversation-deepseek-deepseek-chat-r2" ||
-		snapshot.ConversationProfiles[2].ProviderID != "deepseek" ||
-		snapshot.ConversationProfiles[2].ProviderAccountID != "deepseek.primary" ||
-		snapshot.ConversationProfiles[2].HarnessAdapter != "loom-native" ||
-		snapshot.ConversationProfiles[2].ModelID != "deepseek-chat" ||
-		snapshot.ConversationProfiles[2].CredentialRevision != 2 ||
-		snapshot.ConversationProfiles[3].ProfileID !=
 			"conversation-kimi-kimi-k2.6-r3" ||
-		snapshot.ConversationProfiles[3].ProviderID != "kimi" ||
-		snapshot.ConversationProfiles[3].ModelID != "kimi-k2.6" ||
-		snapshot.ConversationProfiles[3].CredentialRevision != 3 ||
-		snapshot.ConversationProfiles[4].ProfileID !=
+		snapshot.ConversationProfiles[1].ProviderID != "kimi" ||
+		snapshot.ConversationProfiles[1].ModelID != "kimi-k2.6" ||
+		snapshot.ConversationProfiles[1].CredentialRevision != 3 ||
+		snapshot.ConversationProfiles[2].ProfileID !=
 			"conversation-minimax-minimax-m3-r4" ||
-		snapshot.ConversationProfiles[4].ProviderID != "minimax" ||
-		snapshot.ConversationProfiles[4].ProviderAccountID != "minimax.primary" ||
-		snapshot.ConversationProfiles[4].HarnessAdapter != "loom-native" ||
-		snapshot.ConversationProfiles[4].ModelID != "MiniMax-M3" ||
-		snapshot.ConversationProfiles[4].CredentialRevision != 4 {
+		snapshot.ConversationProfiles[2].ProviderID != "minimax" ||
+		snapshot.ConversationProfiles[2].ProviderAccountID != "minimax.primary" ||
+		snapshot.ConversationProfiles[2].HarnessAdapter != "loom-native" ||
+		snapshot.ConversationProfiles[2].ModelID != "MiniMax-M3" ||
+		snapshot.ConversationProfiles[2].CredentialRevision != 4 ||
+		snapshot.ConversationProfiles[3].ProfileID !=
+			"conversation-opencode-default-v1" ||
+		snapshot.ConversationProfiles[3].ProviderID != "opencode" ||
+		snapshot.ConversationProfiles[3].HarnessAdapter != "opencode" ||
+		snapshot.ConversationProfiles[3].Protocol != "opencode_agent" ||
+		snapshot.ConversationProfiles[3].ModelID !=
+			provider.OpenCodeConversationDefaultModel ||
+		snapshot.ConversationProfiles[4].ProfileID !=
+			"conversation-openai-codex-default-v1" ||
+		snapshot.ConversationProfiles[4].ProviderID != "openai" {
 		t.Fatalf("profiles = %#v", snapshot.ConversationProfiles)
 	}
 }
@@ -1902,13 +1906,25 @@ func TestSetupConversationProfilesOpenCodeDefaultIsNativeFreeTier(t *testing.T) 
 		if len(profiles) < 2 {
 			t.Fatalf("profiles = %#v", profiles)
 		}
-		opencode := profiles[1]
-		if opencode.ProfileID != provider.OpenCodeConversationProfileID ||
+		var opencode *ConversationProviderProfile
+		for index := range profiles {
+			if profiles[index].ProfileID == provider.OpenCodeConversationProfileID {
+				opencode = &profiles[index]
+				break
+			}
+		}
+		if opencode == nil ||
 			opencode.ModelID != provider.OpenCodeConversationDefaultModel {
-			t.Fatalf("opencode profile = %#v", opencode)
+			t.Fatalf("opencode profile = %#v", profiles)
 		}
 		if provider.OpenCodeConversationDefaultModel != "opencode/deepseek-v4-flash-free" {
 			t.Fatalf("OpenCode default model = %q", provider.OpenCodeConversationDefaultModel)
+		}
+		// Native profiles are always last, with Codex (the frequently
+		// quota-limited official account) after OpenCode so the default
+		// conversation profile prefers a working route.
+		if profiles[len(profiles)-1].ProfileID != provider.CodexConversationProfileID {
+			t.Fatalf("Codex must be the last profile: %#v", profiles)
 		}
 	}
 }

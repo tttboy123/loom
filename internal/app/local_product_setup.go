@@ -978,20 +978,12 @@ func setupConversationProfiles(
 		}
 	}
 	profiles := make([]ConversationProviderProfile, 0, 1+len(providerAccounts))
-	if auth.Status == "available" && auth.AuthMode == "native_auth" {
-		profiles = append(profiles, ConversationProviderProfile{
-			ProfileID:      provider.CodexConversationProfileID,
-			HarnessAdapter: "codex", ProviderID: "openai", DisplayName: "Codex",
-			Protocol: "openai_responses", ModelID: "codex-default",
-			AuthMode: "native_auth",
-		})
-		profiles = append(profiles, ConversationProviderProfile{
-			ProfileID:      provider.OpenCodeConversationProfileID,
-			HarnessAdapter: "opencode", ProviderID: "opencode", DisplayName: "OpenCode",
-			Protocol: "opencode_agent", ModelID: openCodeConversationDefaultModel(),
-			AuthMode: "native_auth",
-		})
-	}
+	// User-configured verified brokered accounts come first: they carry an
+	// explicit API key the user added and verified, so they are the most likely
+	// to work out of the box (the default conversation profile is the first
+	// entry). Native auth profiles go last, with OpenCode before Codex, because
+	// the Codex official CLI account is frequently quota-limited while OpenCode
+	// runs against the user's own configured providers.
 	ordered := make([]ProviderAccountDirectoryEntry, 0, len(accounts))
 	for _, entry := range accounts {
 		ordered = append(ordered, entry)
@@ -1062,6 +1054,20 @@ func setupConversationProfiles(
 			PolicyVersion:      profile.PolicyVersion, PolicyRevision: profile.PolicyRevision,
 			PolicyDigest: profile.PolicyDigest, TrustDomain: profile.TrustDomain,
 			RetentionMode: profile.RetentionMode, DataRegion: profile.DataRegion,
+		})
+	}
+	if auth.Status == "available" && auth.AuthMode == "native_auth" {
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.OpenCodeConversationProfileID,
+			HarnessAdapter: "opencode", ProviderID: "opencode", DisplayName: "OpenCode",
+			Protocol: "opencode_agent", ModelID: openCodeConversationDefaultModel(),
+			AuthMode: "native_auth",
+		})
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.CodexConversationProfileID,
+			HarnessAdapter: "codex", ProviderID: "openai", DisplayName: "Codex",
+			Protocol: "openai_responses", ModelID: "codex-default",
+			AuthMode: "native_auth",
 		})
 	}
 	return profiles
