@@ -1,6 +1,26 @@
 # Current State
 
-Updated: 2026-08-17
+Updated: 2026-08-19
+
+## macOS UI 用户视角验证 + UX 迭代（2026-08-19）
+
+`CURRENT / UI USER-PERSPECTIVE`: 用安装版 App 真实 UI 走查（辅助功能树 + Vision OCR）：
+回车发送、OpenCode 真实回复、Provider/Model/推理强度三层选择、路由切换确认、
+文本复制、多会话、Team 构建器、失败可见性均通过。
+
+本轮 UX 迭代（`d68b4e13`，Swift 246 测试全绿）：
+- Chat 失败横幅新增 **"Switch Provider"** 一键恢复（provider 路由类失败 → Runtime &
+  Providers），用户视角已验证（Codex 余额不足横幅显示该按钮并打开治理页）。
+- Team 构建器 Confirm 被禁用时显示可操作提示（未提交编辑 → "Press Return…"；
+  兼容性缺口 → "Resolve N compatibility issues…"），消息逻辑在 Core 并单测覆盖。
+
+已知遗留（非本轮范围）：
+- 默认 Provider 仍是 Codex（官方账号无余额）→ 开箱第一次聊天失败；已有明确错误 +
+  Switch Provider 恢复，但默认选可用账号的策略未改。
+- 聊天 Provider 菜单仅 Codex + OpenCode；切换 Provider 每次都弹路由确认。
+
+证据：`.loom-evidence/phase4/network-capability/ui-user-perspective/`。
+
 
 ## Phase 4 · 联网工具链安装版 Mission 全链路（V33c，2026-08-17 · 闭环）
 
