@@ -13306,3 +13306,22 @@ contextcapsule/nativeadapter/app/work/supervisor 全绿。
 `CURRENT / KNOWN ISSUE`: 重试的 attempt 仍可能在首次 context-read 派发后停滞
 （测试环境含多个卡死 Mission 叠加，疑与 journal 并发恢复竞争有关）；Mission
 到 succeeded 的完整收敛仍需一次聚焦排查（重试路径）。
+
+## context-read 重试 attempt 事实竞态修复（2026-08-19 · `a19afb6d`）
+
+`CURRENT / FIXED`: 用完整 goroutine dump + 分阶段 debug 定位重试 attempt 停滞的
+精确根因：确定性 Context call id 在重试 attempt 上与上一 attempt 的 payload
+index 碰撞，`DeliveryCoordinator.Prepare` 的 fact lookup 对已派发调用报错 →
+该调用没有 delivered fact → Attempt-loop EndStep 报 `Attempt loop conflict`
+→ attempt 永久卡住。修复：Prepare 把 fact-lookup 错误与 retriever 有界拒绝统一
+走 `writeBoundedDeniedPayload`，让每个已派发 Context 调用都获得 delivered
+"context_item_unavailable" fact。RED-first：
+`TestDeliveryCoordinatorWritesDeniedPayloadWhenFactLookupRaces`。
+live 验证（debug daemon）：attempt 完成有界 context-read → ack ok →
+StepEnded/TurnEnded；重试 attempt 不再卡死在首/二次派发（此前 attempt 永久
+running）。Go contextcapsule/nativeadapter/app/work/supervisor 全绿。
+
+`CURRENT / KNOWN ISSUE`: Mission 到 succeeded 的完整收敛还依赖 recovery/
+governance 决策（coding work package 的 workspace-write 需审批点），
+以及测试环境中多个历史卡死 Mission 的并发恢复竞争；无会话胶囊 Mission 的
+attempt 生命周期（含重试）已可正常推进到 awaiting_recovery。
