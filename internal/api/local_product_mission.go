@@ -3,6 +3,7 @@ package api
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"loom-pi-rebuild/internal/projection"
 )
@@ -194,11 +195,12 @@ func localProductMissionBlockReason(
 			return reason
 		}
 	}
-	// A node the projection still marks "running" whose current attempt Run is
-	// already terminal (reconciled as failed/cancelled) also surfaces its
-	// terminal reason so the board card can tell the user what happened.
+	// A node the projection still marks "running" or "awaiting_recovery" whose
+	// current attempt Run is already terminal (reconciled as failed/cancelled)
+	// also surfaces its terminal reason so the board card can tell the user
+	// what happened.
 	for _, node := range execution.Nodes {
-		if node.Status != "running" {
+		if node.Status != "running" && node.Status != "awaiting_recovery" {
 			continue
 		}
 		if reason := projectedNodeTerminalReason(view, execution, node); reason != "" {
@@ -249,15 +251,24 @@ func reconciledMissionStatus(
 	execution projection.TeamExecution,
 ) string {
 	status := missionStatus(execution)
-	if status != "running" {
+	if status != "running" && status != "awaiting_recovery" {
 		return status
 	}
 	terminal := ""
 	for _, node := range execution.Nodes {
-		if node.Status != "running" {
+		// A node the projection still marks "running" or "awaiting_recovery"
+		// whose current attempt Run is terminal, with no future retry
+		// scheduled (and no retry that is still due), reflects the terminal
+		// Run outcome. This covers interrupted daemons (Run terminal before
+		// TeamNodeAttemptTerminal) and pre-fix recovery records whose retry
+		// time passed without a new attempt.
+		if node.Status != "running" && node.Status != "awaiting_recovery" {
 			continue
 		}
-		if node.CurrentAttempt <= 0 || !node.RetryAt.IsZero() {
+		if node.CurrentAttempt <= 0 {
+			return status
+		}
+		if !node.RetryAt.IsZero() && node.RetryAt.After(time.Now()) {
 			return status
 		}
 		attempt, ok := findProjectedAttempt(

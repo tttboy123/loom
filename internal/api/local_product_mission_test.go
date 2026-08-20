@@ -133,6 +133,14 @@ func TestLocalProductMissionBlockReasonSurfacesTerminalFailure(t *testing.T) {
 		got != "failed" && got != "running" {
 		t.Fatalf("reconciled status = %q", got)
 	}
+
+	// awaiting_recovery nodes whose retry time passed without a new attempt
+	// (pre-fix recovery records) surface the terminal reason too.
+	execution.Nodes[1].Status = "awaiting_recovery"
+	execution.Nodes[1].Attempts[1].TerminalReason = "provider_http"
+	if reason := localProductMissionBlockReason(view, execution); reason != "provider_http" {
+		t.Fatalf("awaiting_recovery BlockReason = %q, want provider_http", reason)
+	}
 }
 
 func TestMissionLifecycleNeverCreatesAttentionLanes(t *testing.T) {

@@ -2,6 +2,19 @@
 
 Updated: 2026-08-20
 
+## awaiting_recovery 只读收敛 + 首页计数一致（2026-08-20）
+
+`CURRENT / VERIFIED`: pre-fix 残留的 awaiting_recovery Mission（retry 已过时
+但从未执行）现在被只读收敛为 failed（`reconciledMissionStatus` 覆盖
+awaiting_recovery + 无未来 retry 检查；board 同步；block-reason 覆盖）。
+首页 "need you" 改为 `countActiveAttention`：只算可执行团队且 Mission 未完成
+的项，与 activeMissionCount 一致。安装版 live（LoomBuild34）：awaiting_recovery
+3 个 → failed（provider_http），**首页 0 active · 0 need you**，环境彻底干净。
+证据：`.loom-evidence/phase4/recovery-reconcile-and-clean-home/`。
+测试：`go test ./internal/api/` 全绿；`swift build --build-tests` 0 error；
+`git diff --check` 干净。
+
+
 ## 治理处置验收：归档团队 → Mission 移入历史（2026-08-20）
 
 `CURRENT / VERIFIED`: 用户处置无法恢复的 blocked Mission 的路径 = 归档其

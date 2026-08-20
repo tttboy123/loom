@@ -1630,21 +1630,8 @@ func deriveBoardAndAttentionWithSources(
 		// no scheduled retry reflects the terminal Run outcome (for example the
 		// daemon was interrupted between the Run terminal and the coordinator's
 		// TeamNodeAttemptTerminal record). Never writes the journal.
-		if row.Status == "running" && row.CurrentAttempt > 0 &&
-			row.RetryAt == "" {
-			if attempt, attemptOK := findProjectedAttempt(
-				execution, node.LogicalNodeID, node.CurrentAttempt,
-			); attemptOK {
-				if run, runOK := view.Run(attempt.RunID); runOK &&
-					(run.TerminalStatus == "failed" ||
-						run.TerminalStatus == "cancelled") {
-					row.Status = run.TerminalStatus
-					if row.TerminalReason == "" {
-						row.TerminalReason = run.TerminalReason
-					}
-					row.FailureDiagnosticAvailable = true
-				}
-			}
+		if (row.Status == "running" || row.Status == "awaiting_recovery") &&
+			row.CurrentAttempt > 0 && row.RetryAt == "" {
 		}
 		board.nodes = append(board.nodes, row)
 		if node.Status == "blocked" || node.Status == "human_required" {

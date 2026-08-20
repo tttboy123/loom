@@ -1078,7 +1078,7 @@ public struct LoomWorkspaceShell: View {
                 HStack(spacing: 14) {
                     Label("\(activeMissionCount) active", systemImage: "bolt")
                     Label(
-                        "\(store.snapshot?.attention.count ?? 0) need you",
+                        "\(activeAttentionCount) need you",
                         systemImage: "exclamationmark.bubble"
                     )
                 }
@@ -1086,7 +1086,7 @@ public struct LoomWorkspaceShell: View {
                 .foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(
-                    "\(activeMissionCount) active missions, \(store.snapshot?.attention.count ?? 0) items need you"
+                    "\(activeMissionCount) active missions, \(activeAttentionCount) items need you"
                 )
             }
             HStack(spacing: 10) {
@@ -1952,7 +1952,7 @@ public struct LoomWorkspaceShell: View {
     private var overviewPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             metricRow("Active missions", value: "\(activeMissionCount)", symbol: "bolt")
-            metricRow("Needs you", value: "\(store.snapshot?.attention.count ?? 0)", symbol: "exclamationmark.bubble")
+            metricRow("Needs you", value: "\(activeAttentionCount)", symbol: "exclamationmark.bubble")
             metricRow("Teams", value: "\(store.snapshot?.teams.count ?? 0)", symbol: "person.3")
             metricRow("Accepted evidence", value: "\(store.snapshot?.evidence.count ?? 0)", symbol: "checkmark.seal")
         }
@@ -3074,6 +3074,17 @@ public struct LoomWorkspaceShell: View {
         )
     }
 
+    /// "Needs you" should only reflect actionable items: attention on an
+    /// executable Team whose Mission is still active (non-Complete). Historical
+    /// or archived-Team attention is not something the user must act on.
+    private var activeAttentionCount: Int {
+        countActiveAttention(
+            teams: store.snapshot?.teams ?? [],
+            missions: store.snapshot?.missions ?? [],
+            attention: store.snapshot?.attention ?? []
+        )
+    }
+
     /// A Mission is actionable only while its Team is executable; archiving a
     /// Team moves its Missions out of the active count and active board lanes
     /// (they stay visible in the Complete lane as history).
@@ -3235,5 +3246,25 @@ func countActiveMissions(
   )
   return missions.filter {
     $0.lane != "Complete" && executableTeams.contains($0.teamInstanceID)
+  }.count
+}
+
+
+/// "Needs you" should only reflect actionable items: attention on an
+/// executable Team whose Mission is still active (non-Complete).
+func countActiveAttention(
+  teams: [LocalProductTeamSummary],
+  missions: [LocalProductMissionSummary],
+  attention: [LocalProductAttention]
+) -> Int {
+  let executableTeams = Set(
+    teams.filter { $0.executable }.map { $0.teamInstanceID }
+  )
+  let activeMissionTeams = Set(
+    missions.filter { $0.lane != "Complete" }.map { $0.teamInstanceID }
+  )
+  return attention.filter {
+    executableTeams.contains($0.teamInstanceID)
+      && activeMissionTeams.contains($0.teamInstanceID)
   }.count
 }

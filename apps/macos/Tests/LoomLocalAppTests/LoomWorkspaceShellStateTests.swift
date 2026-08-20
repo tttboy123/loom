@@ -202,4 +202,45 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
 
 
 
+    func testCountActiveAttentionExcludesHistoricalAndArchivedTeams() throws {
+        let teams = try JSONDecoder().decode(
+            [LocalProductTeamSummary].self,
+            from: Data("""
+            [
+              {"team_instance_id":"team-exec","display_name":"Exec","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
+              {"team_instance_id":"team-archived","display_name":"Archived","source_kind":"saved_team","state":"created","confirmed":true,"executable":false,"read_only":false}
+            ]
+            """.utf8)
+        )
+        let digest = String(repeating: "a", count: 64)
+        func mission(_ team: String, _ lane: String) -> LocalProductMissionSummary {
+            try! JSONDecoder().decode(
+                LocalProductMissionSummary.self,
+                from: Data("""
+                {"schema_version":1,"mission_id":"mission/\(team)","team_instance_id":"\(team)","title":"M","source_kind":"team_execution","lane":"\(lane)","status":"blocked","priority":"normal","plan_digest":"\(digest)","simple":true,"node_count":1,"completed_node_count":0,"active_node_count":0,"review_node_count":0,"attention_count":1,"current_node_id":"main","last_milestone":"blocked","team_pulse":[],"topology":[]}
+                """.utf8)
+            )
+        }
+        let missions = [
+            mission("team-exec", "Orchestrating"),
+            mission("team-exec", "Complete"),
+            mission("team-archived", "Orchestrating"),
+        ]
+        let attention = try JSONDecoder().decode(
+            [LocalProductAttention].self,
+            from: Data("""
+            [
+              {"attention_id":"a1","kind":"verification_failed","severity":"critical","team_instance_id":"team-exec","logical_node_id":"main","work_item_id":"w1","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"},
+              {"attention_id":"a2","kind":"verification_failed","severity":"critical","team_instance_id":"team-exec","logical_node_id":"main","work_item_id":"w2","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"},
+              {"attention_id":"a3","kind":"blocked","severity":"critical","team_instance_id":"team-archived","logical_node_id":"main","work_item_id":"w3","approval_request_id":"","runtime_instance_id":"r1","status":"blocked","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"}
+            ]
+            """.utf8)
+        )
+        XCTAssertEqual(
+            countActiveAttention(teams: teams, missions: missions, attention: attention),
+            1
+        )
+    }
+
+
 }
