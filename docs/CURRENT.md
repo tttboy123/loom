@@ -2,6 +2,16 @@
 
 Updated: 2026-08-20
 
+## 治理处置验收：归档团队 → Mission 移入历史（2026-08-20）
+
+`CURRENT / VERIFIED`: 用户处置无法恢复的 blocked Mission 的路径 = 归档其
+Team。`team_archive` 对 3 个 blocked 测试团队生效（archived）；归档后 daemon
+快照：非 Complete Mission 从 6 → **可执行团队仅 2**（UI Trace/UI Wrap2 的
+awaiting_recovery 保留），4 个移入历史。验证了 `88318570`（归档团队 Mission
+不计 active）在真实治理流程生效。证据：
+`.loom-evidence/phase4/governance-disposal/`。
+
+
 ## 归档团队的 Mission 不再计入 active（2026-08-20）
 
 `CURRENT / VERIFIED`: 已归档（不可执行）团队的 Mission 不再计入首页
