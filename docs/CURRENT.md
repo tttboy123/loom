@@ -2,6 +2,15 @@
 
 Updated: 2026-08-20
 
+## 最终回归门（2026-08-20 · HEAD ef76086d）
+
+`CURRENT / VERIFIED`: `go test ./... -p 1` 全绿；`swift build --build-tests`
+0 error；`git diff --check` 干净；工作树干净；daemon healthy。环境干净（App
+首页 0 active / 0 need you）；核心旅程在干净环境全部复验通过。
+证据：`.loom-evidence/phase4/final-regression-gate/` 与
+`acceptance-matrix-20260820`。
+
+
 ## awaiting_recovery 只读收敛 + 首页计数一致（2026-08-20）
 
 `CURRENT / VERIFIED`: pre-fix 残留的 awaiting_recovery Mission（retry 已过时
