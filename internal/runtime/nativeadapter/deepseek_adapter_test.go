@@ -866,6 +866,9 @@ func TestLoomNativeDeepSeekCompletesWhenSecondContextReadCannotDispatch(t *testi
 	doer := &contextRetrievalHTTPDoerFixture{responses: []*http.Response{
 		toolResponse("call-context-1"),
 		toolResponse("call-context-2"),
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"final answer after bounded context denials"}}]}`,
+		))},
 	}}
 	diagnostics := &agentDiagnosticRecorderFixture{}
 	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
@@ -885,8 +888,11 @@ func TestLoomNativeDeepSeekCompletesWhenSecondContextReadCannotDispatch(t *testi
 	if delivery.prepare != 2 {
 		t.Fatalf("delivery.prepare = %d, want 2", delivery.prepare)
 	}
-	// The attempt completes with the bounded content-free result instead of
-	// stalling on a terminal Attempt-loop conflict.
+	// A second Context-read in the same step cannot be dispatched again, so
+	// the adapter surfaces the same bounded denial inline and lets the model
+	// answer. The attempt must complete as SUCCEEDED with the model's answer
+	// (the step stays finalizable because every DISPATCHED call was
+	// delivered); it must never hang or fail terminally.
 	if !result.ResultAcknowledged() {
 		t.Fatalf("result not acknowledged: %#v", result)
 	}
@@ -894,8 +900,8 @@ func TestLoomNativeDeepSeekCompletesWhenSecondContextReadCannotDispatch(t *testi
 	if len(frames) != 3 {
 		t.Fatalf("frames = %#v", frames)
 	}
-	if string(frames[1].Payload()) != `{"delta":"No further information was produced for this attempt after the available tools were used."}` {
-		t.Fatalf("unexpected bounded completion frame: %s", frames[1].Payload())
+	if !bytes.Contains(frames[1].Payload(), []byte("final answer after bounded context denials")) {
+		t.Fatalf("unexpected completion frame: %s", frames[1].Payload())
 	}
 	if string(frames[2].Payload()) != `{"status":"succeeded","reason":""}` {
 		t.Fatalf("unexpected result frame: %s", frames[2].Payload())
@@ -1147,7 +1153,7 @@ func TestLoomNativeDeepSeekSupportsBoundedSequentialContextToolCalls(t *testing.
 	}
 }
 
-func TestLoomNativeDeepSeekRejectsContextToolCallBeyondAttemptBound(t *testing.T) {
+func TestLoomNativeDeepSeekContextReadExhaustionCompletesCleanly(t *testing.T) {
 	request, omitted := deepSeekRetrievalAdapterRequest(t)
 	retriever := &contextRetrieverFixture{
 		want: contextcapsule.RetrievalProposal{
@@ -1171,6 +1177,13 @@ func TestLoomNativeDeepSeekRejectsContextToolCallBeyondAttemptBound(t *testing.T
 	for index := 1; index <= contextToolMaxCallsPerExchange+1; index++ {
 		doer.responses = append(doer.responses, toolResponse(index))
 	}
+	// After the exhaustion directive the model answers without further tools.
+	doer.responses = append(doer.responses, &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"final answer after exhaustion"}}]}`,
+		)),
+	})
 	diagnostics := &agentDiagnosticRecorderFixture{}
 	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
 		RuntimeInstanceID: "loom-native-local",
@@ -1189,27 +1202,82 @@ func TestLoomNativeDeepSeekRejectsContextToolCallBeyondAttemptBound(t *testing.T
 	if retriever.calls != contextToolMaxCallsPerExchange ||
 		delivery.prepare != contextToolMaxCallsPerExchange ||
 		delivery.acks != contextToolMaxCallsPerExchange ||
-		len(doer.bodies) != contextToolMaxCallsPerExchange+1 {
+		len(doer.bodies) != contextToolMaxCallsPerExchange+2 {
 		t.Fatalf("bounded calls retriever=%d prepare=%d ack=%d provider=%d", retriever.calls, delivery.prepare, delivery.acks, len(doer.bodies))
 	}
-	for index, body := range doer.bodies {
-		advertisesTool := bytes.Contains(body, []byte(`"tools"`))
-		if index < contextToolMaxCallsPerExchange && !advertisesTool {
-			t.Fatalf("Provider request %d omitted bounded Context tool", index)
-		}
-		if index == contextToolMaxCallsPerExchange && advertisesTool {
-			t.Fatal("Provider request beyond Context bound still advertised a tool")
-		}
+	// The final Provider request must NOT advertise the context tool and must
+	// surface the exhaustion directive in the conversation history.
+	last := doer.bodies[len(doer.bodies)-1]
+	if bytes.Contains(last, []byte(`"tools"`)) {
+		t.Fatal("final Provider request after exhaustion still advertised a tool")
+	}
+	if !bytes.Contains(last, []byte("context-read limit for this attempt is exhausted")) {
+		t.Fatal("exhaustion directive was not surfaced to the Provider in the final request")
 	}
 	frames := request.FrameSink.(*frameSinkFixture).frames
-	if len(frames) != 2 || string(frames[1].Payload()) !=
-		`{"status":"failed","reason":"context_retrieval_denied"}` ||
+	if len(frames) != 3 || string(frames[2].Payload()) !=
+		`{"status":"succeeded","reason":""}` ||
+		!bytes.Contains(frames[1].Payload(), []byte("final answer after exhaustion")) ||
 		!result.DispatchAcknowledged() || !result.ResultAcknowledged() {
 		t.Fatalf("bounded result=%#v frames=%#v", result, frames)
 	}
 	if len(diagnostics.records) != 1 ||
-		diagnostics.records[0].Stage != "context_retrieval" ||
-		diagnostics.records[0].Retryable {
+		diagnostics.records[0].Result != "succeeded" {
+		t.Fatalf("diagnostics = %#v", diagnostics.records)
+	}
+}
+
+func TestLoomNativeDeepSeekContextReadExhaustionEndsCleanlyWhenModelIgnoresDirective(t *testing.T) {
+	request, omitted := deepSeekRetrievalAdapterRequest(t)
+	retriever := &contextRetrieverFixture{
+		want: contextcapsule.RetrievalProposal{
+			ItemID: omitted.ItemID, ContentDigest: omitted.ContentDigest,
+			ArtifactRef: omitted.ArtifactRef,
+		},
+		content: []byte("scoped omitted context must only enter the second Provider request"),
+	}
+	delivery := &contextDeliveryFixture{retriever: retriever}
+	request.ContextRetriever = retriever
+	request.ContextDelivery = delivery
+	toolResponse := func(index int) *http.Response {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			fmt.Sprintf(
+				`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-context-%d","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"%s\",\"content_digest\":\"%s\",\"artifact_ref\":\"%s\"}"}}]}}]}`,
+				index, omitted.ItemID, omitted.ContentDigest, omitted.ArtifactRef,
+			),
+		))}
+	}
+	doer := &contextRetrievalHTTPDoerFixture{}
+	for index := 1; index <= contextToolMaxCallsPerExchange+2; index++ {
+		doer.responses = append(doer.responses, toolResponse(index))
+	}
+	diagnostics := &agentDiagnosticRecorderFixture{}
+	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
+		RuntimeInstanceID: "loom-native-local",
+		CredentialAccess:  &credentialAccessFixture{secret: []byte("private-deepseek-key")},
+		Diagnostics:       diagnostics, Client: doer,
+		Now:              func() time.Time { return time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC) },
+		MaxResponseBytes: 64 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The exchange must end cleanly (succeeded with the bounded fallback) even
+	// when the model keeps calling the tool after the exhaustion directive:
+	// a denied context item must never become a terminal attempt failure.
+	frames := request.FrameSink.(*frameSinkFixture).frames
+	if len(frames) != 3 || string(frames[2].Payload()) !=
+		`{"status":"succeeded","reason":""}` ||
+		!bytes.Contains(frames[1].Payload(), []byte("No further information was produced")) ||
+		!result.DispatchAcknowledged() || !result.ResultAcknowledged() {
+		t.Fatalf("bounded result=%#v frames=%#v", result, frames)
+	}
+	if len(diagnostics.records) != 1 ||
+		diagnostics.records[0].Result != "succeeded" {
 		t.Fatalf("diagnostics = %#v", diagnostics.records)
 	}
 }

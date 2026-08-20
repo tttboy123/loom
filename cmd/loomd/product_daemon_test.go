@@ -8385,8 +8385,11 @@ func TestProductMissionExecutionCompositionReconcilesExactJournalLineageBeforeIP
 	if unknown != nil {
 		_ = unknown.Close()
 	}
-	if !errors.Is(err, app.ErrMissionExecutionConflict) {
-		t.Fatalf("unknown Journal recipe error = %v", err)
+	// Unknown Journal recipes must never brick daemon startup: the daemon
+	// starts and the unresumable Mission is skipped for governance attention
+	// (daemon resilience fix; the projection keeps the Mission visible).
+	if err != nil {
+		t.Fatalf("unknown Journal recipe bricked daemon startup: %v", err)
 	}
 }
 

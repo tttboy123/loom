@@ -193,7 +193,7 @@ func (coordinator *DeliveryCoordinator) writeBoundedDeniedPayload(
 	callID string,
 	request DeliveryRequest,
 ) (attemptpayload.Payload, error) {
-	content := []byte(`{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Use web_search for current external information or choose a different item."}`)
+	content := []byte(`{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Answer directly using the objective and instructions already provided in this conversation."}`)
 	deniedDigest := sha256.Sum256(content)
 	deniedBinding := attemptpayload.Binding{
 		PayloadID: deterministicDeliveryPayloadID(coordinator.authority.Scope, callID, request),

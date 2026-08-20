@@ -51,6 +51,12 @@ const (
 	contextToolMaxArgumentsBytes   = 2048
 	contextToolMaxResultBytes      = 32 << 10
 	contextToolMaxCallsPerExchange = 4
+	// contextReadExhaustionDirective tells the model, once the bounded
+	// context-read budget for an exchange is exhausted, to stop calling
+	// tools and answer from its objective and instructions. A denied
+	// Context item must never become a terminal attempt failure.
+	contextReadExhaustionDirective = "The context-read limit for this attempt is exhausted and no further tools are available. Do not call any tools. Produce your best final answer now based on the objective and instructions in this conversation."
+	contextReadBoundedDenial       = `{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Answer directly using the objective and instructions already provided in this conversation."}`
 )
 
 var (
@@ -697,6 +703,8 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 	defer func() { clearOpenAICompatibleMessages(history[ownedStart:]) }()
 	var total *work.RunAccounting
 	var pending *attemptpayload.Binding
+	var exhaustionPrompted bool
+	var bestContent string
 	deliveries := int64(0)
 	for {
 		response, err := adapter.callProviderRound(
@@ -705,6 +713,9 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 		)
 		if err != nil {
 			return openAICompatibleExchange{}, err
+		}
+		if response.content != "" {
+			bestContent = response.content
 		}
 		if pending != nil {
 			if err := delivery.Acknowledge(
@@ -732,9 +743,26 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 			}, nil
 		}
 		if deliveries >= contextToolMaxCallsPerExchange {
-			return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
-				reason: "context_retrieval_denied", stage: "context_retrieval",
+			if !exhaustionPrompted {
+				exhaustionPrompted = true
+				history = append(history, openAICompatibleMessage{
+					Role:           "user",
+					MutableContent: []byte(contextReadExhaustionDirective),
+				})
+				continue
 			}
+			// The model still requested tools after the exhaustion directive;
+			// end the exchange cleanly with the best content produced so far
+			// so the attempt can complete instead of failing terminally.
+			content := bestContent
+			if content == "" {
+				content = "No further information was produced for this attempt after the available tools were used."
+			}
+			response.content = content
+			response.accounting = total
+			return openAICompatibleExchange{
+				deepSeekAgentResponse: response, contextDeliveries: deliveries,
+			}, nil
 		}
 		assistantWires := make([]openAICompatibleToolCallWire, 0, len(response.toolCalls))
 		results := make([]openAICompatibleMessage, 0, len(response.toolCalls))
@@ -782,28 +810,26 @@ func (adapter *deepSeekAgentAdapter) callProviderExchange(
 					assistantWires = append(assistantWires, contextToolCallWire(*toolCall.Context))
 					results = append(results, openAICompatibleMessage{
 						Role: "tool", ToolCallID: toolCall.Context.ID,
-						MutableContent: []byte(`{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Use web_search for current external information or choose a different item."}`),
+						MutableContent: []byte(contextReadBoundedDenial),
 					})
 					deliveries++
 					continue
 				}
-				// The Attempt-loop admits at most one Context dispatch per
-				// step. When a second Context-read cannot be dispatched after a
-				// prior bounded delivery, end the exchange with the bounded
-				// content-free result so the attempt completes cleanly instead
-				// of failing terminally (which previously stalled the attempt
-				// on an Attempt-loop conflict).
-				if errors.Is(retrievalErr, contextcapsule.ErrInvalidContextDelivery) &&
-					deliveries > 0 {
-					response.content = "No further information was produced for this attempt after the available tools were used."
-					response.accounting = total
-					return openAICompatibleExchange{
-						deepSeekAgentResponse: response, contextDeliveries: deliveries,
-					}, nil
-				}
-				return openAICompatibleExchange{}, &deepSeekAgentProviderFailure{
-					reason: "context_retrieval_denied", stage: "context_retrieval",
-				}
+				// A second Context-read in the same step cannot be dispatched
+				// again (native adapters run Context reads exclusively). The
+				// step already carries the first dispatched call, so surface
+				// the same bounded denial inline (no new dispatch, no fact)
+				// and let the model recover and answer. This keeps the step
+				// finalizable as FINAL (all dispatched calls delivered) instead
+				// of failing terminally or leaving an undelivered call that
+				// stalls the attempt-loop on a StepEnd conflict.
+				assistantWires = append(assistantWires, contextToolCallWire(*toolCall.Context))
+				results = append(results, openAICompatibleMessage{
+					Role: "tool", ToolCallID: toolCall.Context.ID,
+					MutableContent: []byte(contextReadBoundedDenial),
+				})
+				deliveries++
+				continue
 			}
 			assistantWires = append(assistantWires, contextToolCallWire(*toolCall.Context))
 			results = append(results, openAICompatibleMessage{

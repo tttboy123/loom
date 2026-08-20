@@ -1,6 +1,34 @@
 # Current State
 
-Updated: 2026-08-19
+Updated: 2026-08-20
+
+## Mission 用户视角收敛：永久 running → succeeded（2026-08-20）
+
+`CURRENT / VERIFIED`: 安装版 App（重建于 HEAD + 本轮修复）上，真实 Mission
+**完整收敛到 `succeeded`**（subagent → 独立 Verifier 验收 → 主节点 →
+独立 Verifier 验收 → `TeamExecutionTerminal`，约 26 秒），不再永久 running。
+此前多轮用户反馈的 "Mission 一直 running / 无法对话" 根因闭环：
+
+1. context-read 有界拒绝指引误导模型调用其没有的 web_search / 换 item，
+   模型连环 context-read 触发 native Exclusive 每步一 dispatch 冲突 →
+   `context_retrieval_denied`。修复：拒绝消息改为
+   "Answer directly using the objective and instructions already provided"；
+   native 第二步 context-read 内联返回同一有界拒绝（不产生新 dispatch/fact），
+   模型可恢复作答，step 保持可 FINAL 终结；context-read 耗尽时先注入
+   exhaustion directive 让其直接作答，再以最佳内容干净收尾。
+2. 失败 attempt 可终结（`02d4c9c8` 延续）：StepEnded/TurnEnded 一定写出，
+   Mission 从永久 running 变为可恢复/可治理（blocked → 重试 → succeeded）。
+
+证据：`.loom-evidence/phase4/mission-success-convergence/`（含 journal 成功链、
+快照轮询、时间线）。测试：`go test ./... -p 1` 全绿；`go test -race`
+nativeadapter/contextcapsule/cmd/loomd 全绿；`go vet` 0 告警；`gofmt`（改动
+文件）0；`git diff --check` 干净；`swift test` 通过。
+
+`CURRENT / KNOWN BOUNDARY`: 环境仍含约 22 个历史卡死 Mission（journal
+append-only，无法删除）；它们显示 running/awaiting_recovery 占用 Mission
+Board，但不阻断 daemon 与新 Mission。Swift 254 条全量在本机 `swift test`
+不可复现（仅 15 条被发现），为环境工具链限制，非本轮回归。
+
 
 ## Mission Start 错误韧性 + daemon 砖块修复（2026-08-19 · `473995d4`）
 
