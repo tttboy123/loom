@@ -2,6 +2,16 @@
 
 Updated: 2026-08-20
 
+## Attention（Needs You）可点击直达 Mission（2026-08-20）
+
+`CURRENT / VERIFIED`: "Needs you" 列表的每条 Attention 现在可点击，直接打开
+对应 Mission 房间（`openMissionAndActivate("mission/<teamID>")`），卡片底部
+有 "Open Mission →" 提示，accessibility/help 同步。用户从"需要处理"一步跳到
+处理现场。证据：`.loom-evidence/phase4/attention-actionable/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；安装版（LoomBuild28）构建并安装成功。
+
+
 ## RoundTable 会话恢复（2026-08-20）
 
 `CURRENT / VERIFIED`: RoundTable 关闭再打开不再丢失会话——`onAppear` 自动

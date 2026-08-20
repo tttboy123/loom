@@ -4628,31 +4628,46 @@ public struct MissionWorkbench: View {
           ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
               ForEach(snapshot.attention) { item in
-                VStack(alignment: .leading, spacing: 7) {
-                  HStack {
-                    Text(humanStatus(item.kind))
-                      .font(.headline)
-                    Spacer()
-                    Text(humanStatus(item.severity))
-                      .font(.caption.weight(.semibold))
-                      .foregroundStyle(.orange)
+                Button {
+                  Task { await store.openMissionAndActivate(
+                    "mission/\(item.teamInstanceID)"
+                  ) }
+                } label: {
+                  VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                      Text(humanStatus(item.kind))
+                        .font(.headline)
+                      Spacer()
+                      Text(humanStatus(item.severity))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    }
+                    Text(humanStatus(item.status))
+                      .foregroundStyle(.secondary)
+                    if !item.actionRequired.isEmpty {
+                      Text(item.actionRequired)
+                        .font(.callout)
+                    }
+                    Label("Open Mission", systemImage: "arrow.right.circle")
+                      .font(.caption.weight(.medium))
+                      .foregroundStyle(LoomGraphite.accent)
                   }
-                  Text(humanStatus(item.status))
-                    .foregroundStyle(.secondary)
-                  if !item.actionRequired.isEmpty {
-                    Text(item.actionRequired)
-                      .font(.callout)
-                  }
-                }
-                .padding(14)
-                .background(
-                  LoomGraphite.surface,
-                  in: RoundedRectangle(
-                    cornerRadius: LoomGraphite.cardRadius,
-                    style: .continuous
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(14)
+                  .background(
+                    LoomGraphite.surface,
+                    in: RoundedRectangle(
+                      cornerRadius: LoomGraphite.cardRadius,
+                      style: .continuous
+                    )
                   )
+                  .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                  "\(humanStatus(item.kind)): \(item.actionRequired). Open Mission"
                 )
-                .accessibilityElement(children: .combine)
+                .help("Open the Mission that needs attention")
               }
             }
             .padding(18)
