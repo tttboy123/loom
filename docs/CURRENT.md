@@ -2,6 +2,17 @@
 
 Updated: 2026-08-20
 
+## TUI Board 状态文案与 App 对齐（2026-08-20）
+
+`CURRENT / VERIFIED`: App 端 Board 已改为人性化结果，但 TUI Board 仍显示
+"Complete · Failed"。新增 `missionBoardRowStatus`（与 App
+`missionBoardDetailText` 同语义）；TUI live（PTY 连接安装版 daemon）：
+`UI Mission Team · Failed`、`Mission Verify 4 · Orchestrating · Blocked`、
+`Clean Accept · Succeeded`，双端口径一致。证据：
+`.loom-evidence/phase4/tui-board-detail-label/`。
+验证：`go test ./internal/tui/` 与 `go test ./... -p 1` 全绿；
+`git diff --check` 干净。
+
 ## 首页快速开始清单：消除孤立编号（2026-08-20 · LoomBuild38）
 
 `CURRENT / VERIFIED`: 快速开始清单在"未选文件夹但 Team 已就绪"时残留孤立的
