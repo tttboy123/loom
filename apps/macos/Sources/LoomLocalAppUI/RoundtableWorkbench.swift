@@ -10,7 +10,7 @@ public struct RoundtableWorkbench: View {
     @ObservedObject private var store: LocalProductStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var sessionID = ""
+    @State private var sessionID = RoundtableWorkbench.buildSuggestedSessionID()
     @State private var resumeSessionID = ""
     @State private var title = "Diagnosis handoff"
     @State private var messageBody = "Diagnosis: the daemon build_execution path is over-constrained; recommend a bounded retry."
@@ -25,6 +25,18 @@ public struct RoundtableWorkbench: View {
 
     public init(store: LocalProductStore) {
         self.store = store
+    }
+
+    /// Pre-fill a usable, time-based session id so the moderator does not have
+    /// to hand-craft one. Users can still overwrite it before creating.
+    static func buildSuggestedSessionID(
+        from date: Date = Date()
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd-HHmm"
+        return "rt-" + formatter.string(from: date)
     }
 
     private enum Step: Int, CaseIterable {

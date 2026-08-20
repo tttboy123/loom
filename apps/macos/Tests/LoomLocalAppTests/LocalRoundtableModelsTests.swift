@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import LoomLocalAppUI
 @testable import LoomLocalAppCore
 
 final class LocalRoundtableModelsTests: XCTestCase {
@@ -78,5 +79,18 @@ final class LocalRoundtableModelsTests: XCTestCase {
             "schema_version", "session_id", "round_id", "message_id",
             "writer_seat", "target_seat", "body", "artifact_refs", "correlation_id",
         ])
+    }
+
+    func testSuggestedSessionIDIsUsableAndChanges() throws {
+        let a = RoundtableWorkbench.buildSuggestedSessionID(from: Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertFalse(a.isEmpty)
+        XCTAssertNil(a.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines))
+        XCTAssertLessThanOrEqual(a.count, 128)
+        let pattern = try NSRegularExpression(pattern: #"^rt-\d{8}-\d{4}$"#)
+        let range = NSRange(a.startIndex..<a.endIndex, in: a)
+        XCTAssertNotNil(pattern.firstMatch(in: a, range: range))
+
+        let b = RoundtableWorkbench.buildSuggestedSessionID(from: Date(timeIntervalSince1970: 1_700_000_120))
+        XCTAssertNotEqual(a, b)
     }
 }

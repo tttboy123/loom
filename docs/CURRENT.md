@@ -2,6 +2,24 @@
 
 Updated: 2026-08-20
 
+## RoundTable 新建 Session ID 预填（降门槛）· live 验收（2026-08-20 · LoomBuild51）
+
+`CURRENT / VERIFIED`：针对“新建受治理交接时需手工编造 Session ID、用起来成本高”的
+痛点，新建表单的 Session ID 字段改为**预填基于本地时刻的建议值**（`rt-yyyyMMdd-HHmm`），
+用户可保留直接创建，也可改写。安装版（LoomBuild51 → `/Users/lune/Applications/Loom.app`）
+真实 UI 走查：打开 Roundtable sheet，Session ID 字段 value=`rt-20260820-1807`（预填，
+无需手编）；直接点 “Create session”（无手工键入）→ 自动加 3 seat → “Run full journey”
+→ propose/relay/ack/insert → **concluded**。daemon `roundtable_snapshot` 返回 session
+id=`rt-20260820-1807`（== 预填值）、`concluded:true`、msg-1 `inserted`；内容寻址
+AlignmentSummary artifact
+`state/evidence/artifacts/sha256/70/70d90cdd…5610` 的 `shasum` 与其自身内容寻址路径
+一致（digest-bound）。实现为 RED-first：先加 `testSuggestedSessionIDIsUsableAndChanges`
+（编译红）→ 实现 `RoundtableWorkbench.buildSuggestedSessionID(from:)`（`rt-yyyyMMdd-HHmm`）。
+门禁：`swift test --filter LocalRoundtableModelsTests` 4/4；全量 `swift test` **278/1 跳过**；
+`go test ./... -p 1` 全绿；`go vet` zero；`git diff --check` 干净。注：`gofmt -l`
+列出的存量未格式化 Go 文件与本次改动无关，按“保留既有工作树改动”纪律不触碰。
+证据：`.loom-evidence/phase4/roundtable-prefilled-session-id-20260820/`。
+
 ## RoundTable 全旅程 UI live 复验（2026-08-20 · 当前构建 LoomBuild50）
 
 `CURRENT / VERIFIED`：在安装版 App 里用**真实 UI 交互**（AppleScript 置前 +
