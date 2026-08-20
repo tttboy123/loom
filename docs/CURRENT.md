@@ -2,6 +2,23 @@
 
 Updated: 2026-08-20
 
+## RoundTable 全旅程 UI live 复验（2026-08-20 · 当前构建 LoomBuild50）
+
+`CURRENT / VERIFIED`：在安装版 App 里用**真实 UI 交互**（AppleScript 置前 +
+鼠标点击 + 键入/paste）完整走通 RoundTable 受治理交接：create → 自动加
+3 seat → run full journey → open round → propose/relay/ack/insert →
+**concluded**。独立核对 managed daemon Journal 与内容寻址 AlignmentSummary
+Artifact：`state/evidence/artifacts/sha256/a9/a9b00ec39e…ac43` 的
+`shasum` 与其自身内容寻址路径一致（digest-bound）。关键走查结论：
+上一轮 AX drive 让 "Create session" 看似无效（snapshot `not_found`）实为
+**AX 措施假象而非用户缺陷**——`AXUIElementSetAttributeValue` 不会更新 SwiftUI
+`$sessionID` binding（按钮保持 disabled），且 `/usr/bin/open -a` 置前会因
+ChatGPT 抢占而不稳；用真实鼠标点击 + `tell application "Loom" to activate`
+后 Create 正常、视图自动切换、错误 banner 正确浮现。证据：
+`.loom-evidence/phase4/roundtable-ui-current-build-20260820/`。
+本轮为纯 live 复验（无源码变更）；回归基线 `swift test` 277/1 跳过、
+`go test ./... -p 1` 全绿。
+
 ## Chat 发送/Session 用户流验收（2026-08-20 · LoomBuild50）
 
 `CURRENT / VERIFIED`: 安装版 App（LoomBuild50 → /Users/lune/Applications/Loom.app）
