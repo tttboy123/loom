@@ -208,6 +208,7 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
             from: Data("""
             [
               {"team_instance_id":"team-exec","display_name":"Exec","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
+              {"team_instance_id":"team-historical","display_name":"Historical","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
               {"team_instance_id":"team-archived","display_name":"Archived","source_kind":"saved_team","state":"created","confirmed":true,"executable":false,"read_only":false}
             ]
             """.utf8)
@@ -223,24 +224,45 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         }
         let missions = [
             mission("team-exec", "Orchestrating"),
-            mission("team-exec", "Complete"),
+            mission("team-historical", "Complete"),
             mission("team-archived", "Orchestrating"),
         ]
         let attention = try JSONDecoder().decode(
             [LocalProductAttention].self,
             from: Data("""
             [
-              {"attention_id":"a1","kind":"verification_failed","severity":"critical","team_instance_id":"team-exec","logical_node_id":"main","work_item_id":"w1","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"},
-              {"attention_id":"a2","kind":"verification_failed","severity":"critical","team_instance_id":"team-exec","logical_node_id":"main","work_item_id":"w2","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"},
-              {"attention_id":"a3","kind":"blocked","severity":"critical","team_instance_id":"team-archived","logical_node_id":"main","work_item_id":"w3","approval_request_id":"","runtime_instance_id":"r1","status":"blocked","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"}
+              {"schema_version":1,"attention_id":"a1","kind":"verification_failed","severity":"critical","team_instance_id":"team-exec","logical_node_id":"main","work_item_id":"w1","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"},
+              {"schema_version":1,"attention_id":"a2","kind":"verification_failed","severity":"critical","team_instance_id":"team-historical","logical_node_id":"main","work_item_id":"w2","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"},
+              {"schema_version":1,"attention_id":"a3","kind":"blocked","severity":"critical","team_instance_id":"team-archived","logical_node_id":"main","work_item_id":"w3","approval_request_id":"","runtime_instance_id":"r1","status":"blocked","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"}
             ]
             """.utf8)
         )
+        // Only a1 is actionable: a2 sits on a Team whose Mission is already
+        // Complete (history), and a3 sits on an archived (non-executable) Team.
         XCTAssertEqual(
             countActiveAttention(teams: teams, missions: missions, attention: attention),
             1
         )
     }
 
+    func testMissionBoardDetailTextIsNotContradictory() {
+        // A finished Mission sits in the "Complete" lane with a terminal
+        // outcome; "Complete · failed" reads contradictory, so the detail
+        // should lead with the humanized outcome instead.
+        XCTAssertEqual(missionBoardDetailText(lane: "Complete", status: "failed"), "Failed")
+        XCTAssertEqual(missionBoardDetailText(lane: "Complete", status: "blocked"), "Blocked")
+        XCTAssertEqual(missionBoardDetailText(lane: "Complete", status: "succeeded"), "Succeeded")
+        // Active lanes keep both the lane and the humanized state.
+        XCTAssertEqual(
+            missionBoardDetailText(lane: "Orchestrating", status: "running"),
+            "Orchestrating · Running"
+        )
+        XCTAssertEqual(
+            missionBoardDetailText(lane: "Review", status: "blocked"),
+            "Review · Blocked"
+        )
+        XCTAssertEqual(missionBoardDetailText(lane: "Proposed", status: ""), "Proposed")
+        XCTAssertEqual(missionBoardDetailText(lane: "", status: "failed"), "Failed")
+    }
 
 }

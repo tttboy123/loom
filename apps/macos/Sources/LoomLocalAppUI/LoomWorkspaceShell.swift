@@ -2015,7 +2015,10 @@ public struct LoomWorkspaceShell: View {
                     } label: {
                         inspectorRow(
                             title: mission.title,
-                            detail: "\(mission.lane) · \(mission.status)",
+                            detail: missionBoardDetailText(
+                                lane: mission.lane,
+                                status: mission.status
+                            ),
                             symbol: mission.attentionCount > 0
                                 ? "exclamationmark.circle.fill"
                                 : "circle.dashed"
@@ -3220,6 +3223,27 @@ public struct LoomWorkspaceShell: View {
         }
         store.selectWorkspaceFolderDisplayName(url.lastPathComponent)
     }
+}
+
+/// Humanized board detail for a Mission row. A Mission that reached the
+/// "Complete" lane already tells the user it finished, so a raw
+/// "Complete · failed" reads contradictory; lead with the humanized terminal
+/// outcome instead ("Failed" / "Blocked" / "Succeeded"). Active lanes keep
+/// both lane and state ("Orchestrating · Running").
+func missionBoardDetailText(lane: String, status: String) -> String {
+    let humanizedStatus = status.isEmpty
+        ? ""
+        : status.prefix(1).uppercased() + status.dropFirst()
+    if lane == "Complete" {
+        return humanizedStatus.isEmpty ? "Complete" : humanizedStatus
+    }
+    if lane.isEmpty {
+        return humanizedStatus
+    }
+    if humanizedStatus.isEmpty {
+        return lane
+    }
+    return "\(lane) · \(humanizedStatus)"
 }
 
 /// Builds a copyable transcript of a conversation: one "Speaker: content" line

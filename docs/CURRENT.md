@@ -2,6 +2,22 @@
 
 Updated: 2026-08-20
 
+## Board 状态文案修复 + 全量 Swift 套件打通（2026-08-20 · LoomBuild36）
+
+`CURRENT / VERIFIED`: 治理面板 Mission 行 "Complete · failed" 自相矛盾 →
+新增 `missionBoardDetailText`（Complete 车道只显示人性化结果
+Failed/Blocked/Succeeded；活跃车道显示 "Orchestrating · Running"）。
+安装版 live（LoomBuild36）：Board 面板 AX 标签从
+"UI Mission Team, Complete · failed" → **"UI Mission Team, Failed"**。
+顺带修复两个潜伏 XCTest 失败（attention fixture 缺 schema_version；
+countActiveAttention 测试期望值与语义不符，重写为三团队真实覆盖
+historical+archived 排除）。**全量 Swift XCTest：`swift test --filter
+LoomLocalAppTests` → 265 用例，0 失败（1 视觉导出按设计跳过）** ——
+修正此前"仅 15-16 条"的观察（那是未加 filter 的 Swift Testing 子集）。
+证据：`.loom-evidence/phase4/mission-board-detail-label/`。
+验证：`swift build --build-tests` 0 error；`go test ./... -p 1` 全绿；
+`git diff --check` 干净。
+
 ## 会话内整段可拖选复制：Selectable Text 模式（2026-08-20 · LoomBuild35）
 
 `CURRENT / VERIFIED`: 用户要求"在整个窗口中拖拽覆盖对话内容一起复制"。
