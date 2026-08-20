@@ -31,6 +31,19 @@
 - 幻影收敛: missions `{failed:20, awaiting_recovery:3, blocked:3, succeeded:2}`,
   active(non-Complete) = 6
 
+## 视觉证据
+- `01-home.png`：健康首页（"Local service ready / Chat is ready with
+  DeepSeek · deepseek.primary / Agent Team ready / New task"）。
+
+## 诚实发现（本轮回归扫尾）
+- 多次重装/重启后，App 可能残留陈旧的 "Local service unavailable" 连接状态
+  （daemon 实际健康，探针正常）；干净重启 App 后恢复。非代码回归——正常用户
+  不会在 App 运行中反复重装。已记录为环境 artifact。
+- 回归验证：`go test ./... -p 1` 全绿；`swift build --build-tests` 0 error；
+  daemon healthy（serving_request / projection current）；状态稳定
+  （20 failed / 3 blocked / 3 awaiting_recovery / 3 succeeded，active=6）；
+  聊天 HEALTHY 回复成功。
+
 ## 运行态
 - runtimes: loom-native / opencode / pi 均 online
 - 最近对话 thread: thread-acc-*（DeepSeek / OpenCode / 多会话隔离）
