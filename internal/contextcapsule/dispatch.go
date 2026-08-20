@@ -173,7 +173,7 @@ func contextAdapterPromptLimit(adapterID string) (int, bool) {
 		return 32 << 10, true
 	case "context:pi:v1", "context:pi-cli:v1":
 		return 6 << 10, true
-	case "context:codex:v1", "context:claude-code:v1":
+	case "context:codex:v1", "context:claude-code:v1", "context:opencode:v1":
 		return 64 << 10, true
 	default:
 		return 0, false

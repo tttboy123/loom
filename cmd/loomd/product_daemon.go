@@ -5397,6 +5397,16 @@ func productSetupCatalogForView(
 			return app.LocalProductSetupCatalog{},
 				errors.New("setup runtime unavailable")
 		}
+		modelIDs := append([]string{}, runtime.ModelIDs...)
+		if runtime.ID == productOpenCodeRuntimeInstanceID && len(modelIDs) == 0 {
+			// OpenCode keeps its own native auth and its model set is
+			// dynamic ("provider/model" identities from the grounded
+			// conversation catalog); the installed CLI does not probe
+			// models, so publish the catalog so Team roles can bind it.
+			for _, model := range provider.ProviderConversationModels("opencode") {
+				modelIDs = append(modelIDs, model.ID)
+			}
+		}
 		observationsByProbe[runtime.SourceProbeID] = append(
 			observationsByProbe[runtime.SourceProbeID],
 			loomruntime.RuntimeObservation{
@@ -5413,7 +5423,7 @@ func productSetupCatalogForView(
 					),
 					Capacity: runtime.Capacity,
 				},
-				ModelIDs: append([]string{}, runtime.ModelIDs...),
+				ModelIDs: modelIDs,
 			},
 		)
 	}
@@ -5440,6 +5450,7 @@ func productSetupCatalogForView(
 	nativeRuntimes := make(map[string]loomruntime.RuntimeObservation)
 	var claudeCodeRuntime *loomruntime.RuntimeObservation
 	var codexRuntime *loomruntime.RuntimeObservation
+	var opencodeRuntime *loomruntime.RuntimeObservation
 	for _, observation := range discovery.Observations() {
 		if observation.Instance.Status != loomruntime.RuntimeOnline ||
 			observation.Instance.Capacity <= 0 || len(observation.ModelIDs) == 0 {
@@ -5480,9 +5491,20 @@ func productSetupCatalogForView(
 			copy := observation
 			codexRuntime = &copy
 		}
+
+		if observation.Instance.ID == productOpenCodeRuntimeInstanceID &&
+			observation.Instance.AdapterType == harnessadapter.OpenCodeAdapterType &&
+			observation.Instance.Capacity > 0 &&
+			productAgentContainsString(
+				observation.ModelIDs, provider.OpenCodeConversationDefaultModel,
+			) {
+			copy := observation
+			opencodeRuntime = &copy
+		}
 	}
 	if localRuntime != nil || len(nativeRuntimes) > 0 ||
-		claudeCodeRuntime != nil || codexRuntime != nil {
+		claudeCodeRuntime != nil || codexRuntime != nil ||
+		opencodeRuntime != nil {
 		definitions = []agents.AgentDefinition{
 			{
 				ID:       "loom-main-coordinator",
@@ -5733,6 +5755,50 @@ func productSetupCatalogForView(
 		concurrencyCeiling = max(
 			concurrencyCeiling,
 			min(codexRuntime.Instance.Capacity, 2),
+		)
+	}
+	if opencodeRuntime != nil {
+		copy := *opencodeRuntime
+		mainProfile := loomruntime.RuntimeProfile{
+			ID:          "loom-opencode-main-native",
+			AdapterType: harnessadapter.OpenCodeAdapterType,
+			ProviderID:  "opencode",
+			ModelID:     provider.OpenCodeConversationDefaultModel,
+			AuthMode:    loomruntime.AuthNative,
+			RequiredCapabilities: productHarnessProfileCapabilities(
+				copy,
+				[]string{"workspace_edit"},
+			),
+			Timeout: 10 * time.Minute,
+		}
+		subProfile := mainProfile
+		subProfile.ID = "loom-opencode-subagent-native"
+		profiles = append(profiles, mainProfile, subProfile)
+		roleOptions = append(roleOptions,
+			app.SetupRoleOption{
+				ID:                "opencode-coordinator",
+				Kind:              "main",
+				AgentDefinitionID: definitions[0].ID,
+				RuntimeProfileID:  mainProfile.ID,
+				RuntimeInstanceID: productOpenCodeRuntimeInstanceID,
+				SkillRevisionIDs:  []string{}, PermissionIDs: []string{},
+				ResourceIDs:    []string{},
+				Responsibility: "Coordinate bounded work and review with OpenCode",
+			},
+			app.SetupRoleOption{
+				ID:                "opencode-bounded-worker",
+				Kind:              "subagent",
+				AgentDefinitionID: definitions[1].ID,
+				RuntimeProfileID:  subProfile.ID,
+				RuntimeInstanceID: productOpenCodeRuntimeInstanceID,
+				SkillRevisionIDs:  []string{}, PermissionIDs: []string{},
+				ResourceIDs:    []string{},
+				Responsibility: "Deliver one bounded task with OpenCode for review",
+			},
+		)
+		concurrencyCeiling = max(
+			concurrencyCeiling,
+			min(opencodeRuntime.Instance.Capacity, 2),
 		)
 	}
 	roleOptions = productExpandSpecialistRoleOptions(definitions, roleOptions)

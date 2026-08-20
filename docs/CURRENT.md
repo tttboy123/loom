@@ -2,6 +2,24 @@
 
 Updated: 2026-08-20
 
+## Phase 2D 核心验收：混合 Provider Team 闭环（2026-08-20 · LoomBuild46）
+
+`CURRENT / VERIFIED`: 同一 Team 不同 Agent 绑定独立 Provider/Harness/模型并
+真实执行成功。关闭三个叠加根因：目录为 opencode 运行时合成模型并发布 5 个
+opencode 原生角色选项（provider=opencode/adapter=opencode/auth=native/
+model=opencode/deepseek-v4-flash-free）；`contextAdapterPromptLimit` 加
+`context:opencode:v1`（修复 preflight invalid_request）；opencode harness
+适配器新增原生认证路径（validateRequest 接受 AuthNative、Execute 原生直跑、
+RunHarness 仅 brokered 要求 secret）。安装版 live（LoomBuild46）：混合 Team
+（main=deepseek/loom-native/deepseek-chat + subagent=opencode/opencode/
+opencode/deepseek-v4-flash-free）preflight 双绑定 ready，Mission "What is
+9*9?" → **succeeded ~10s**，治理链含 TeamNodeAcceptanceCommitted×2（含
+opencode 子代理）+ TeamExecutionTerminal；归档后环境 0 active。证据：
+`.loom-evidence/phase4/mixed-provider-team/`。
+测试：新增 3 个 RED-first Go 测试（目录发布 opencode 选项 / context
+adapter 白名单 / 原生认证执行）；`go test ./... -p 1` 全绿；`gofmt` 干净；
+`swift build --build-tests` 0 error；`git diff --check` 干净。
+
 ## Mission 全生命周期复验（2026-08-20 · 当前构建 LoomBuild39）
 
 `CURRENT / VERIFIED`: 10 个 UI/UX 提交后的当前构建完整跑通

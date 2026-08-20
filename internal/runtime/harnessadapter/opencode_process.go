@@ -44,7 +44,7 @@ func (runner *openCodeProcessRunner) RunHarness(
 ) (HarnessProcessResult, error) {
 	defer zeroHarnessBytes(request.Prompt)
 	if runner == nil || ctx == nil || !validOpenCodeProcessRequest(request) ||
-		len(secret) == 0 || len(secret) > 8192 {
+		request.RequiresCredential && (len(secret) == 0 || len(secret) > 8192) {
 		return HarnessProcessResult{}, ErrInvalidOpenCodeAdapter
 	}
 	// The Loom system prompt is prepended to the model-visible message because

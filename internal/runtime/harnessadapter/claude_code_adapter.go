@@ -58,6 +58,11 @@ type HarnessProcessRequest struct {
 	Timeout         time.Duration
 	MaxOutputBytes  int
 	ContextMCP      HarnessContextMCPLease
+	// RequiresCredential is true when the execution binding is brokered and a
+	// non-empty credential secret must be injected. Native-auth harnesses
+	// (for example OpenCode using its own auth store) run with an empty
+	// secret.
+	RequiresCredential bool
 }
 
 type HarnessProcessResult struct {

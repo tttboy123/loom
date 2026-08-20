@@ -21,6 +21,7 @@ import (
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/harnessadapter"
 	"loom-pi-rebuild/internal/runtime/nativeadapter"
@@ -1746,4 +1747,99 @@ func TestProductMissionExecutorConstructsBrokeredOnlyWithoutLocalModel(t *testin
 	}); !errors.Is(err, app.ErrInvalidMissionExecution) {
 		t.Fatalf("legacy pi-cli binding without model = %v, want invalid execution", err)
 	}
+}
+
+func TestProductSetupCatalogPublishesOpenCodeNativeAgentProfile(t *testing.T) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	readModel := projection.New(database)
+	executable := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 10, 16, 30, 0, 0, time.UTC)
+	// Loom-native runtime first so agent definitions and the brokered
+	// DeepSeek options exist, mirroring the installed environment.
+	if err := ensureProductNativeAgentRuntime(
+		context.Background(), store, readModel, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProductOpenCodeAgentRuntime(
+		context.Background(), store, readModel, now, executable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "configure-deepseek-opencode-catalog", ProviderID: "deepseek",
+			CredentialReference: "credential-ref-deepseek-opencode-catalog",
+			ExpectedRevision:    0, OccurredAt: now.Add(time.Second),
+			Status: credentials.CredentialConfigured,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "verify-deepseek-opencode-catalog", ProviderID: "deepseek",
+			CredentialReference: configured.CredentialReference,
+			ExpectedRevision:    configured.Revision,
+			OccurredAt:          now.Add(2 * time.Second),
+			Status:              credentials.CredentialVerified,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := productSetupCatalogForView(
+		context.Background(), readModel.GlobalReadView(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opencodeProfiles := 0
+	for _, profile := range catalog.RuntimeProfiles {
+		if profile.AdapterType != harnessadapter.OpenCodeAdapterType {
+			continue
+		}
+		opencodeProfiles++
+		if profile.ProviderID != "opencode" ||
+			profile.AuthMode != loomruntime.AuthNative ||
+			profile.ModelID != provider.OpenCodeConversationDefaultModel {
+			t.Fatalf("OpenCode profile = %#v", profile)
+		}
+	}
+	opencodeOptions := 0
+	for _, option := range catalog.RoleOptions {
+		if option.RuntimeInstanceID != productOpenCodeRuntimeInstanceID {
+			continue
+		}
+		opencodeOptions++
+		if option.RuntimeProfileID == "" ||
+			option.AgentDefinitionID == "" {
+			t.Fatalf("OpenCode option = %#v", option)
+		}
+	}
+	if opencodeProfiles < 2 || opencodeOptions < 2 {
+		t.Fatalf(
+			"OpenCode profiles=%d options=%d catalog=%#v",
+			opencodeProfiles, opencodeOptions, catalog,
+		)
+	}
+	assertProductSetupCatalogRoleOptionsFreezable(t, catalog)
 }

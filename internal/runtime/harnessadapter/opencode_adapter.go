@@ -150,31 +150,54 @@ func (adapter *openCodeAdapter) Execute(
 		return supervisor.AdapterResult{}, errors.Join(ErrHarnessProtocol, adaptErr)
 	}
 	var processResult HarnessProcessResult
-	credentialErr := adapter.credentialAccess.UseCredential(
-		ctx,
-		request.ExecutionBinding,
-		func(leaseContext context.Context, secret []byte) error {
-			processRequest := HarnessProcessRequest{
-				ExecutablePath: adapter.executablePath,
-				WorkspacePath:  request.WorkspacePath,
-				HomePath:       request.HomePath,
-				TempPath:       request.TempPath,
-				ModelID:        modelIdentity,
-				Prompt:         prompt,
-				SystemPrompt:   systemPrompt,
-				Timeout:        request.ExecutionBinding.Timeout,
-				MaxOutputBytes: adapter.maxOutputBytes,
-				ContextMCP:     harnessContextMCPLease(contextService),
-			}
-			candidate, runErr := adapter.runner.RunHarness(
-				leaseContext, processRequest, secret,
-			)
-			if runErr == nil {
-				processResult = candidate
-			}
-			return runErr
-		},
-	)
+	requiresCredential := request.ExecutionBinding.AuthMode == loomruntime.AuthBrokered
+	var credentialErr error
+	if requiresCredential {
+		credentialErr = adapter.credentialAccess.UseCredential(
+			ctx,
+			request.ExecutionBinding,
+			func(leaseContext context.Context, secret []byte) error {
+				processRequest := HarnessProcessRequest{
+					ExecutablePath:     adapter.executablePath,
+					WorkspacePath:      request.WorkspacePath,
+					HomePath:           request.HomePath,
+					TempPath:           request.TempPath,
+					ModelID:            modelIdentity,
+					Prompt:             prompt,
+					SystemPrompt:       systemPrompt,
+					Timeout:            request.ExecutionBinding.Timeout,
+					MaxOutputBytes:     adapter.maxOutputBytes,
+					ContextMCP:         harnessContextMCPLease(contextService),
+					RequiresCredential: true,
+				}
+				candidate, runErr := adapter.runner.RunHarness(
+					leaseContext, processRequest, secret,
+				)
+				if runErr == nil {
+					processResult = candidate
+				}
+				return runErr
+			},
+		)
+	} else {
+		// Native auth: OpenCode uses its own auth store through HOME; no Loom
+		// credential is leased or injected.
+		processRequest := HarnessProcessRequest{
+			ExecutablePath: adapter.executablePath,
+			WorkspacePath:  request.WorkspacePath,
+			HomePath:       request.HomePath,
+			TempPath:       request.TempPath,
+			ModelID:        modelIdentity,
+			Prompt:         prompt,
+			SystemPrompt:   systemPrompt,
+			Timeout:        request.ExecutionBinding.Timeout,
+			MaxOutputBytes: adapter.maxOutputBytes,
+			ContextMCP:     harnessContextMCPLease(contextService),
+		}
+		processResult, credentialErr = adapter.runner.RunHarness(
+			ctx, processRequest, nil,
+		)
+	}
 	if credentialErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			_ = adapter.recordDiagnostic(
@@ -219,8 +242,10 @@ func (adapter *openCodeAdapter) validateRequest(request supervisor.AdapterReques
 	if err != nil || binding.HarnessAdapter != OpenCodeAdapterType ||
 		binding.RuntimeInstanceID != adapter.runtimeInstanceID ||
 		binding.RuntimeInstanceID != request.Binding.RuntimeInstanceID ||
-		binding.AuthMode != loomruntime.AuthBrokered ||
-		binding.CredentialReference == "" || binding.CredentialRevision <= 0 ||
+		(binding.AuthMode != loomruntime.AuthBrokered &&
+			binding.AuthMode != loomruntime.AuthNative) ||
+		binding.AuthMode == loomruntime.AuthBrokered &&
+			(binding.CredentialReference == "" || binding.CredentialRevision <= 0) ||
 		!containsHarnessCapability(binding.Capabilities, "workspace_edit") {
 		return ErrHarnessExecutionBindingChanged
 	}

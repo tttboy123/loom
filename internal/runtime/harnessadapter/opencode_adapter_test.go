@@ -216,3 +216,87 @@ func (fixture *harnessCommandRunnerFixture) RunCommand(
 	}
 	return HarnessCommandResult{Stdout: fixture.stdout, ExitCode: 0}, nil
 }
+
+func openCodeNativeAdapterRequest(t testing.TB) supervisor.AdapterRequest {
+	t.Helper()
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "profile.opencode.native.v1", AdapterType: OpenCodeAdapterType,
+		ProviderID: "opencode", ProviderAccountID: "",
+		ModelID: "opencode/deepseek-v4-flash-free", AuthMode: loomruntime.AuthNative,
+		RequiredCapabilities: []string{"workspace_edit"},
+		Timeout:              2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime.opencode.local", DeviceID: "device.local",
+		AdapterType: OpenCodeAdapterType, DisplayName: "OpenCode",
+		ExecutableVersion: "1.18.3", Status: loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{"workspace_edit"}, Capacity: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := bridgev1.NewFrame(bridgev1.FrameInput{
+		MessageID:     "77777777-7777-4777-8777-777777777777",
+		CorrelationID: "88888888-8888-4888-8888-888888888888",
+		WorkItemID:    "work-opencode-native-1", RunID: "run-opencode-native-1", ClaimGeneration: 1,
+		RuntimeInstanceID: "runtime.opencode.local", SenderAgentInstanceID: "agent-opencode-native-1",
+		Sequence: 1, Type: bridgev1.MessageDispatch,
+		EmittedAt: time.Date(2026, 8, 16, 15, 59, 59, 0, time.UTC),
+		Payload:   []byte(`{"schema_version":1,"kind":"pi_rpc_prompt","prompt":"Answer with OpenCode native"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	return supervisor.AdapterRequest{
+		WorkspacePath: root, HomePath: root, TempPath: root,
+		Binding: bridgev1.RunStreamBinding{
+			WorkItemID: "work-opencode-native-1", RunID: "run-opencode-native-1", ClaimGeneration: 1,
+			RuntimeInstanceID: "runtime.opencode.local", SenderAgentInstanceID: "agent-opencode-native-1",
+		},
+		ExecutionBinding: binding, Dispatch: dispatch, FrameSink: &frameSinkFixture{},
+	}
+}
+
+func TestOpenCodeAdapterRunsNativeAuthWithoutCredential(t *testing.T) {
+	access := &credentialAccessFixture{secret: []byte("must-not-be-leased")}
+	runner := &processRunnerFixture{result: HarnessProcessResult{
+		Content: "Native OpenCode answer",
+	}}
+	diagnostics := &diagnosticRecorderFixture{}
+	adapter, err := NewOpenCodeAdapter(OpenCodeAdapterConfig{
+		RuntimeInstanceID: "runtime.opencode.local",
+		ExecutablePath:    "/opt/loom/bin/opencode",
+		CredentialAccess:  access,
+		Diagnostics:       diagnostics,
+		Runner:            runner,
+		Now:               func() time.Time { return time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC) },
+		MaxOutputBytes:    64 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := openCodeNativeAdapterRequest(t)
+	if _, err := adapter.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if access.uses != 0 {
+		t.Fatalf("native auth must not lease a brokered credential: uses=%d", access.uses)
+	}
+	if runner.runs != 1 {
+		t.Fatalf("runner runs = %d", runner.runs)
+	}
+	if runner.request.ModelID != "opencode/deepseek-v4-flash-free" {
+		t.Fatalf("model identity = %q", runner.request.ModelID)
+	}
+	if runner.request.RequiresCredential {
+		t.Fatal("native auth must not require a credential secret")
+	}
+}
