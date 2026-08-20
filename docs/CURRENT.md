@@ -2,6 +2,14 @@
 
 Updated: 2026-08-20
 
+## 混合 Provider Team 的 App 可视化复验（2026-08-20 · LoomBuild47）
+
+`CURRENT / VERIFIED`: 已成功的混合 Mission 在 App Mission 工作台里两个
+Agent 的 Provider/Harness/Model 清晰可见（main=DeepSeek · deepseek.primary ·
+deepseek-chat；subagent=OpenCode · OpenCode ·
+opencode/deepseek-v4-flash-free；2 nodes / 2 complete）。证据：
+`.loom-evidence/phase4/mixed-team-ui-display/`。
+
 ## OpenCode 角色命名修正（2026-08-20 · LoomBuild47）
 
 `CURRENT / VERIFIED`: Team 构建器角色菜单里 OpenCode 选项显示 "Opencode"
