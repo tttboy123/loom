@@ -2,6 +2,20 @@
 
 Updated: 2026-08-20
 
+## 幻影 running Mission 只读收敛（2026-08-20）
+
+`CURRENT / VERIFIED`: 20 个历史 Mission 因 `TeamNodeAttemptTerminal` 事件缺失
+（daemon 中断窗口）在投影里永久 "running"，尽管 Run 已全部终态。新增只读
+收敛（不写 journal）：`reconciledMissionStatus` 在 running 节点当前 attempt
+Run 已终态且无重试调度时反映真实终态（failed/cancelled）；succeeded-run 无
+协调器记录时保守保持 running。Board 节点与 board.status 同步。安装版 live：
+首页 active **26 → 6**，20 个幻影 → failed/Complete 车道 + 原因
+runtime_process_failed；Board status failed。重启一致性通过。
+证据：`.loom-evidence/phase4/phantom-mission-reconciliation/`。
+测试：`go test ./... -p 1` 全绿；`gofmt`/`git diff --check` 干净；
+`swift build --build-tests` 0 error。
+
+
 ## 侧边栏同名会话日期消歧（2026-08-20）
 
 `CURRENT / VERIFIED`: 会话标题取自首条用户消息，多个会话可能同名（如两个

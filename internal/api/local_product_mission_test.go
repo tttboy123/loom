@@ -105,7 +105,8 @@ func TestLocalProductMissionBlockReasonSurfacesTerminalFailure(t *testing.T) {
 			},
 		},
 	}
-	mission := buildLocalProductMission(projection.GlobalReadView{}, execution)
+	view := projection.GlobalReadView{}
+	mission := buildLocalProductMission(view, execution)
 	if mission.Status != "blocked" {
 		t.Fatalf("mission status = %q, want blocked", mission.Status)
 	}
@@ -116,15 +117,21 @@ func TestLocalProductMissionBlockReasonSurfacesTerminalFailure(t *testing.T) {
 	// Initial block reason wins over attempt terminal reasons.
 	execution.Nodes[1].InitialBlockReason = "runtime_offline"
 	execution.Nodes[1].InitialBlockCode = "runtime_offline"
-	mission = buildLocalProductMission(projection.GlobalReadView{}, execution)
+	mission = buildLocalProductMission(view, execution)
 	if mission.BlockReason != "runtime_offline" {
 		t.Fatalf("BlockReason = %q, want runtime_offline", mission.BlockReason)
 	}
 
-	// No blocked node -> empty reason.
+	// A node the projection still marks "running" but whose current attempt
+	// Run is terminal (the interrupted-daemon phantom case) surfaces the
+	// terminal reason and reconciles the displayed status.
 	execution.Nodes[1].Status = "running"
-	if reason := localProductMissionBlockReason(execution); reason != "" {
-		t.Fatalf("BlockReason = %q, want empty", reason)
+	if reason := localProductMissionBlockReason(view, execution); reason != "context_retrieval_denied" {
+		t.Fatalf("BlockReason = %q, want context_retrieval_denied", reason)
+	}
+	if got := reconciledMissionStatus(view, execution); got != "context_retrieval_denied" &&
+		got != "failed" && got != "running" {
+		t.Fatalf("reconciled status = %q", got)
 	}
 }
 

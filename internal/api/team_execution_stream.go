@@ -1568,7 +1568,7 @@ func deriveBoardAndAttentionWithSources(
 		schemaVersion:  timelineSchemaVersion,
 		teamInstanceID: teamInstanceID,
 		planDigest:     execution.PlanDigest,
-		status:         execution.Status,
+		status:         reconciledMissionStatus(view, execution),
 		viewVersion:    view.Version(),
 		nodes:          make([]NodeBoardRow, 0, len(execution.Nodes)),
 	}
@@ -1623,6 +1623,27 @@ func deriveBoardAndAttentionWithSources(
 					runtimeRecord.StatusChangedAt,
 					"restore_runtime",
 				))
+			}
+		}
+		// Read-model-only reconciliation: a node the projection still marks
+		// "running" whose current attempt Run is already terminal and which has
+		// no scheduled retry reflects the terminal Run outcome (for example the
+		// daemon was interrupted between the Run terminal and the coordinator's
+		// TeamNodeAttemptTerminal record). Never writes the journal.
+		if row.Status == "running" && row.CurrentAttempt > 0 &&
+			row.RetryAt == "" {
+			if attempt, attemptOK := findProjectedAttempt(
+				execution, node.LogicalNodeID, node.CurrentAttempt,
+			); attemptOK {
+				if run, runOK := view.Run(attempt.RunID); runOK &&
+					(run.TerminalStatus == "failed" ||
+						run.TerminalStatus == "cancelled") {
+					row.Status = run.TerminalStatus
+					if row.TerminalReason == "" {
+						row.TerminalReason = run.TerminalReason
+					}
+					row.FailureDiagnosticAvailable = true
+				}
 			}
 		}
 		board.nodes = append(board.nodes, row)

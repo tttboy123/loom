@@ -93,7 +93,7 @@ func buildLocalProductMission(
 	view projection.GlobalReadView,
 	execution projection.TeamExecution,
 ) LocalProductMissionSummary {
-	status := missionStatus(execution)
+	status := reconciledMissionStatus(view, execution)
 	lane := missionLaneForStatus(status, execution.Status != "")
 	title := "Historical mission"
 	sourceKind := "historical_execution_only"
@@ -118,7 +118,7 @@ func buildLocalProductMission(
 		TeamPulse:      make([]LocalProductMissionPulse, 0, len(execution.Nodes)),
 		Topology:       make([]LocalProductMissionNode, 0, len(execution.Nodes)),
 		LastMilestone:  humanMissionMilestone(status),
-		BlockReason:    localProductMissionBlockReason(execution),
+		BlockReason:    localProductMissionBlockReason(view, execution),
 	}
 	for _, node := range execution.Nodes {
 		state := missionPulseState(node.Status)
@@ -176,8 +176,13 @@ func buildLocalProductMission(
 // board card can tell the user the concrete reason (for example
 // context_retrieval_denied) instead of only "Blocked". It prefers the
 // blocked node's initial block reason, then the current attempt's terminal
-// reason, then any terminal attempt reason.
-func localProductMissionBlockReason(execution projection.TeamExecution) string {
+// reason, then any terminal attempt reason, then the terminal Run reason
+// recorded in the projection (read-model fallback for a node the coordinator
+// never marked terminal).
+func localProductMissionBlockReason(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+) string {
 	for _, node := range execution.Nodes {
 		if node.Status != "blocked" {
 			continue
@@ -185,20 +190,97 @@ func localProductMissionBlockReason(execution projection.TeamExecution) string {
 		if node.InitialBlockReason != "" {
 			return node.InitialBlockReason
 		}
-		if attempt, ok := findProjectedAttempt(
-			execution,
-			node.LogicalNodeID,
-			node.CurrentAttempt,
-		); ok && attempt.TerminalReason != "" {
-			return attempt.TerminalReason
+		if reason := projectedNodeTerminalReason(view, execution, node); reason != "" {
+			return reason
 		}
-		for _, attempt := range node.Attempts {
-			if attempt.TerminalReason != "" {
-				return attempt.TerminalReason
-			}
+	}
+	// A node the projection still marks "running" whose current attempt Run is
+	// already terminal (reconciled as failed/cancelled) also surfaces its
+	// terminal reason so the board card can tell the user what happened.
+	for _, node := range execution.Nodes {
+		if node.Status != "running" {
+			continue
+		}
+		if reason := projectedNodeTerminalReason(view, execution, node); reason != "" {
+			return reason
 		}
 	}
 	return ""
+}
+
+func projectedNodeTerminalReason(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+	node projection.TeamExecutionNode,
+) string {
+	if attempt, ok := findProjectedAttempt(
+		execution, node.LogicalNodeID, node.CurrentAttempt,
+	); ok {
+		if attempt.TerminalReason != "" {
+			return attempt.TerminalReason
+		}
+		if run, runOK := view.Run(attempt.RunID); runOK &&
+			run.TerminalReason != "" {
+			return run.TerminalReason
+		}
+	}
+	for _, attempt := range node.Attempts {
+		if attempt.TerminalReason != "" {
+			return attempt.TerminalReason
+		}
+		if run, runOK := view.Run(attempt.RunID); runOK &&
+			run.TerminalReason != "" {
+			return run.TerminalReason
+		}
+	}
+	return ""
+}
+
+// reconciledMissionStatus is a read-model-only correction for a Mission the
+// projection still marks "running" even though every running node's current
+// attempt Run is already terminal (failed/cancelled) and no retry is
+// scheduled. This can happen when the daemon is interrupted between committing
+// a Run terminal and the coordinator recording TeamNodeAttemptTerminal. It
+// never writes the journal; it reflects terminal Run facts already in the
+// projection. A terminal SUCCEEDED run without the coordinator record is kept
+// "running" because the verification/acceptance chain has not completed.
+func reconciledMissionStatus(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+) string {
+	status := missionStatus(execution)
+	if status != "running" {
+		return status
+	}
+	terminal := ""
+	for _, node := range execution.Nodes {
+		if node.Status != "running" {
+			continue
+		}
+		if node.CurrentAttempt <= 0 || !node.RetryAt.IsZero() {
+			return status
+		}
+		attempt, ok := findProjectedAttempt(
+			execution, node.LogicalNodeID, node.CurrentAttempt,
+		)
+		if !ok {
+			return status
+		}
+		run, runOK := view.Run(attempt.RunID)
+		if !runOK || run.TerminalStatus == "" {
+			return status
+		}
+		if run.TerminalStatus == "succeeded" {
+			return status
+		}
+		if terminal == "" {
+			terminal = run.TerminalStatus
+		}
+	}
+	if terminal != "" {
+		return terminal
+	}
+	return status
 }
 
 func missionStatus(execution projection.TeamExecution) string {
