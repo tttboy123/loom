@@ -2,6 +2,15 @@
 
 Updated: 2026-08-20
 
+## Mission 全生命周期复验（2026-08-20 · 当前构建 LoomBuild39）
+
+`CURRENT / VERIFIED`: 10 个 UI/UX 提交后的当前构建完整跑通
+Team 构建 → Preflight（真实绑定 deepseek.primary/deepseek-chat/loom-native，
+2 节点）→ Mission 启动 → **~10s 收敛 succeeded** → 治理链完整提交
+（TeamNodeAcceptanceCommitted ×2 / WorkItemVerificationCommitted ×2 /
+TeamExecutionTerminal）→ 归档后环境回到 0 active。证据：
+`.loom-evidence/phase4/mission-e2e-current-build/`。
+
 ## 端到端用户旅程复验（2026-08-20 · LoomBuild39）
 
 `CURRENT / VERIFIED`: 安装版 App 真实 daemon + DeepSeek 全旅程复验：
