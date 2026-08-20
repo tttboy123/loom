@@ -3925,7 +3925,7 @@ public struct MissionWorkbench: View {
       TextEditor(text: $sideTaskRequest)
         .frame(minHeight: 150)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(LoomGraphite.separator))
-      Text(store.sideTaskOperationStatus)
+      Text(sideTaskStatusLabelText(store.sideTaskOperationStatus))
         .font(.caption).foregroundStyle(.secondary)
       HStack {
         Spacer()
@@ -5999,5 +5999,34 @@ public struct LoomDecisionSheet: View {
     case .recovery: return "Recovery"
     case .fallback: return "Fallback Route"
     }
+  }
+}
+
+/// Maps raw side-task operation statuses (including daemon rejection codes)
+/// to user-facing, actionable copy so a failed proposal/creation never shows a
+/// cryptic error code. Friendly in-flight states pass through unchanged;
+/// unknown codes keep the stable reason for diagnostics.
+func sideTaskStatusLabelText(_ raw: String) -> String {
+  switch raw {
+  case "Idle", "Proposing", "Creating", "Confirmation required":
+    return raw
+  case "proposal_unavailable":
+    return "A proposal is not available right now. Review the request and try again."
+  case "proposal_required":
+    return "Review the proposal before creating the side task."
+  case "invalid_request", "invalid_response":
+    return "Loom rejected the side task request. Review the fields and try again."
+  case "state_unavailable", "unavailable":
+    return "Side tasks are unavailable right now. Try again."
+  case "conflict", "stale_view", "stale_generation":
+    return "The workspace state changed. Review the request, then try again."
+  case "timeout":
+    return "The request timed out. Try again."
+  case "capability_gap":
+    return "This Agent Team cannot run that kind of side task yet."
+  case "not_found":
+    return "The side task or Team no longer exists. Refresh and try again."
+  default:
+    return "Side task could not proceed: \(raw)"
   }
 }

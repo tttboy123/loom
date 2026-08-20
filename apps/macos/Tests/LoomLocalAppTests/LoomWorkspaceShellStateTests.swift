@@ -85,6 +85,18 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         XCTAssertEqual(hidden.panelPlacement, .hidden)
     }
 
+    func testSideTaskStatusLabelMapsRawCodesToReadableCopy() {
+        XCTAssertEqual(sideTaskStatusLabelText("invalid_request"),
+                       "Loom rejected the side task request. Review the fields and try again.")
+        XCTAssertEqual(sideTaskStatusLabelText("state_unavailable"),
+                       "Side tasks are unavailable right now. Try again.")
+        XCTAssertEqual(sideTaskStatusLabelText("capability_gap"),
+                       "This Agent Team cannot run that kind of side task yet.")
+        XCTAssertEqual(sideTaskStatusLabelText("Proposing"), "Proposing")
+        XCTAssertEqual(sideTaskStatusLabelText("Idle"), "Idle")
+        XCTAssertTrue(sideTaskStatusLabelText("unexpected_code").contains("unexpected_code"))
+    }
+
     func testConversationDisambiguationSuffixDistinguishesSameDayAndOlder() {
         let calendar = Calendar.current
         let now = Date()

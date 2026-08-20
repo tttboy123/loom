@@ -2,6 +2,20 @@
 
 Updated: 2026-08-20
 
+## 错误码/错误提示统一收尾（2026-08-20）
+
+`CURRENT / VERIFIED`: 系统性复查用户可见错误文案，发现并修复一个泄漏点：
+Side Task 面板直接显示 `closedClientReason` 的原始错误码。新增
+`sideTaskStatusLabelText(_:)` 把 daemon 拒绝码映射为可读、可操作文案
+（invalid_request / state_unavailable / conflict / stale_view / timeout /
+capability_gap / not_found 等）；进行态透传；未知码保留稳定原因。
+其余错误面（聊天失败横幅、Mission start 失败、连接条、setup）复查均已有
+人话文案；Journey 诊断行保留原始状态码（monospaced 诊断用途）。
+证据：`.loom-evidence/phase4/error-copy-unification/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；安装版（LoomBuild25）正常渲染。
+
+
 ## 幻影 running Mission 只读收敛（2026-08-20）
 
 `CURRENT / VERIFIED`: 20 个历史 Mission 因 `TeamNodeAttemptTerminal` 事件缺失
