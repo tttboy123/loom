@@ -3010,26 +3010,65 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var attentionPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if (store.snapshot?.attention ?? []).isEmpty {
+        let teams = store.snapshot?.teams ?? []
+        let missions = store.snapshot?.missions ?? []
+        let attention = store.snapshot?.attention ?? []
+        let actionable = actionableAttention(
+            teams: teams, missions: missions, attention: attention
+        )
+        let historical = historicalAttention(
+            teams: teams, missions: missions, attention: attention
+        )
+        return VStack(alignment: .leading, spacing: 0) {
+            if attention.isEmpty {
                 emptyPanelState("Nothing needs your attention", symbol: "checkmark.circle")
             } else {
-                ForEach(store.snapshot?.attention ?? []) { item in
-                    Button {
-                        store.showMissionAttention()
-                        fullGovernancePresentation = .workbench
-                    } label: {
-                        inspectorRow(
-                            title: SafeText.sanitize(item.actionRequired, limit: 120),
-                            detail: humanized(item.severity),
-                            symbol: "exclamationmark.triangle"
-                        )
+                if actionable.isEmpty {
+                    emptyPanelState("Nothing needs your attention", symbol: "checkmark.circle")
+                } else {
+                    ForEach(actionable) { item in
+                        attentionRow(item)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open item needing attention")
+                }
+                if !historical.isEmpty {
+                    Divider()
+                    Label(
+                        "History (\(historical.count)) — archived teams or completed Missions",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 8)
+                    ForEach(historical.prefix(6)) { item in
+                        attentionRow(item)
+                            .opacity(0.62)
+                    }
+                    if historical.count > 6 {
+                        Text("+\(historical.count - 6) more in Mission history")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
         }
+    }
+
+    private func attentionRow(_ item: LocalProductAttention) -> some View {
+        Button {
+            store.showMissionAttention()
+            fullGovernancePresentation = .workbench
+        } label: {
+            inspectorRow(
+                title: attentionActionTitle(
+                    actionRequired: item.actionRequired,
+                    kind: item.kind
+                ),
+                detail: humanized(item.severity),
+                symbol: "exclamationmark.triangle"
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open item needing attention")
     }
 
     private var libraryPanel: some View {
@@ -3318,6 +3357,58 @@ func countActiveMissions(
   }.count
 }
 
+
+/// Attention items a user can actually act on: on an executable Team whose
+/// Mission is still active (non-Complete). Items on archived Teams or on
+/// Teams whose Missions are already Complete are history, not action.
+func actionableAttention(
+  teams: [LocalProductTeamSummary],
+  missions: [LocalProductMissionSummary],
+  attention: [LocalProductAttention]
+) -> [LocalProductAttention] {
+  let executableTeams = Set(
+    teams.filter { $0.executable }.map { $0.teamInstanceID }
+  )
+  let activeMissionTeams = Set(
+    missions.filter { $0.lane != "Complete" }.map { $0.teamInstanceID }
+  )
+  return attention.filter {
+    executableTeams.contains($0.teamInstanceID)
+      && activeMissionTeams.contains($0.teamInstanceID)
+  }
+}
+
+/// The complement of `actionableAttention`: items on archived Teams or on
+/// Teams whose Missions are already Complete (preserved for the governance
+/// trail, but not something the user must act on).
+func historicalAttention(
+  teams: [LocalProductTeamSummary],
+  missions: [LocalProductMissionSummary],
+  attention: [LocalProductAttention]
+) -> [LocalProductAttention] {
+  let actionable = Set(
+    actionableAttention(
+      teams: teams, missions: missions, attention: attention
+    ).map(\.attentionID)
+  )
+  return attention.filter { !actionable.contains($0.attentionID) }
+}
+
+/// Humanized title for an attention item: prefer `action_required`, fall back
+/// to `kind`, then to a generic prompt.
+func attentionActionTitle(actionRequired: String, kind: String) -> String {
+  let safe = SafeText.sanitize(
+    actionRequired.isEmpty ? kind : actionRequired,
+    limit: 120
+  )
+    .replacingOccurrences(of: "_", with: " ")
+    .replacingOccurrences(of: "-", with: " ")
+    .trimmingCharacters(in: .whitespaces)
+  if safe.isEmpty {
+    return "Needs your attention"
+  }
+  return safe.prefix(1).uppercased() + safe.dropFirst()
+}
 
 /// "Needs you" should only reflect actionable items: attention on an
 /// executable Team whose Mission is still active (non-Complete).

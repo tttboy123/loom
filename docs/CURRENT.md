@@ -2,6 +2,20 @@
 
 Updated: 2026-08-20
 
+## Attention 面板：可操作项与历史分离 + 文案人性化（2026-08-20 · LoomBuild37）
+
+`CURRENT / VERIFIED`: "Items needing attention" 面板此前把所有 attention
+原样列出（含已归档/已 Complete 团队），标题是原始 code（inspect_failure），
+与首页 "need you = 0" 矛盾。新增 `actionableAttention` / `historicalAttention`
+（口径与 `countActiveAttention` 统一）与 `attentionActionTitle` 人话化；
+面板改为：可操作项优先，0 项显示 "Nothing needs your attention"，历史单列
+"History (N) — archived teams or completed Missions" 置灰。安装版 live
+（LoomBuild37）：OCR 显示 "Nothing needs your attention" + "History (7)"
++ "Inspect failure · Critical" 人话行。证据：
+`.loom-evidence/phase4/attention-panel-actionability/`。
+验证：**全量 Swift XCTest 266 用例 0 失败**（`swift test --filter
+LoomLocalAppTests`）；`go test ./... -p 1` 全绿；`git diff --check` 干净。
+
 ## Board 状态文案修复 + 全量 Swift 套件打通（2026-08-20 · LoomBuild36）
 
 `CURRENT / VERIFIED`: 治理面板 Mission 行 "Complete · failed" 自相矛盾 →

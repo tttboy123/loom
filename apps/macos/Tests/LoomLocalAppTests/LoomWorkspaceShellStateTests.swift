@@ -245,6 +245,60 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         )
     }
 
+    func testActionableAttentionSplitsActionableFromHistory() throws {
+        let teams = try JSONDecoder().decode(
+            [LocalProductTeamSummary].self,
+            from: Data("""
+            [
+              {"team_instance_id":"team-exec","display_name":"Exec","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
+              {"team_instance_id":"team-archived","display_name":"Archived","source_kind":"saved_team","state":"created","confirmed":true,"executable":false,"read_only":false}
+            ]
+            """.utf8)
+        )
+        let digest = String(repeating: "a", count: 64)
+        func mission(_ team: String, _ lane: String) -> LocalProductMissionSummary {
+            try! JSONDecoder().decode(
+                LocalProductMissionSummary.self,
+                from: Data("""
+                {"schema_version":1,"mission_id":"mission/\(team)","team_instance_id":"\(team)","title":"M","source_kind":"team_execution","lane":"\(lane)","status":"blocked","priority":"normal","plan_digest":"\(digest)","simple":true,"node_count":1,"completed_node_count":0,"active_node_count":0,"review_node_count":0,"attention_count":1,"current_node_id":"main","last_milestone":"blocked","team_pulse":[],"topology":[]}
+                """.utf8)
+            )
+        }
+        let missions = [
+            mission("team-exec", "Orchestrating"),
+            mission("team-archived", "Orchestrating"),
+        ]
+        func attention(_ id: String, _ team: String) -> LocalProductAttention {
+            try! JSONDecoder().decode(
+                LocalProductAttention.self,
+                from: Data("""
+                {"schema_version":1,"attention_id":"\(id)","kind":"verification_failed","severity":"critical","team_instance_id":"\(team)","logical_node_id":"main","work_item_id":"w","approval_request_id":"","runtime_instance_id":"r1","status":"failed","occurred_at":"2026-08-20T00:00:00Z","action_required":"inspect_failure"}
+                """.utf8)
+            )
+        }
+        let items = [
+            attention("a1", "team-exec"),
+            attention("a2", "team-archived"),
+        ]
+        let actionable = actionableAttention(
+            teams: teams, missions: missions, attention: items
+        )
+        let historical = historicalAttention(
+            teams: teams, missions: missions, attention: items
+        )
+        XCTAssertEqual(actionable.map(\.attentionID), ["a1"])
+        XCTAssertEqual(historical.map(\.attentionID), ["a2"])
+        XCTAssertEqual(
+            attentionActionTitle(actionRequired: "inspect_failure", kind: "verification_failed"),
+            "Inspect failure"
+        )
+        XCTAssertEqual(
+            attentionActionTitle(actionRequired: "", kind: "blocked"),
+            "Blocked"
+        )
+        XCTAssertEqual(attentionActionTitle(actionRequired: "", kind: ""), "Needs your attention")
+    }
+
     func testMissionBoardDetailTextIsNotContradictory() {
         // A finished Mission sits in the "Complete" lane with a terminal
         // outcome; "Complete · failed" reads contradictory, so the detail
