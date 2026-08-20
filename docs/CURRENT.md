@@ -2,6 +2,21 @@
 
 Updated: 2026-08-20
 
+## Chat 发送/Session 用户流验收（2026-08-20 · LoomBuild50）
+
+`CURRENT / VERIFIED`: 安装版 App（LoomBuild50 → /Users/lune/Applications/Loom.app）
+Chat 发送按钮与回车发送端到端打通：composer 设值 → Send 点击/回车 → 发送 →
+daemon 线程（当前选中 Session B thread-cd315d48）新增 user 消息并回填 loom 回复
+（2+3等于5。/ 7×8等于56。/ 2+2等于4。），UI 逐条渲染 `You: … / Loom: …`。
+本轮同时闭合累计 6 个 Swift 修复（心跳探测 + 自动重连 + partial 归一化 +
+Library/Runs 历史 64 条脚注 + MissionWorkbench 非懒加载 VStack）+ 1 个 Go
+测试 hermetic 修复（`LOOM_ENABLE_WEB_TOOLS` 不再破坏空执行配置断言）。此前已验收
+的会话隔离（8 个 Session 可切换）、多消息跨条复制双路径、Provider/Model/推理
+强度三层菜单、错误码/错误提示 + incident 后缀保持生效。证据：
+`.loom-evidence/phase4/chat-send-e2e-loombuild50-20260820/`。
+验证：`swift test` 277 通过 / 1 跳过 / 0 失败；`go test ./... -p 1` 全绿；
+`go vet` / `gofmt` / `git diff --check` 干净。
+
 ## 混合 Provider Team 的 App 可视化复验（2026-08-20 · LoomBuild47）
 
 `CURRENT / VERIFIED`: 已成功的混合 Mission 在 App Mission 工作台里两个
