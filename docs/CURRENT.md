@@ -2,6 +2,14 @@
 
 Updated: 2026-08-20
 
+## 端到端用户旅程复验（2026-08-20 · LoomBuild39）
+
+`CURRENT / VERIFIED`: 安装版 App 真实 daemon + DeepSeek 全旅程复验：
+DeepSeek 真实回复（"7 * 8 = 56"）、路由标签 + 上下文披露、Selectable text
+整段复制（剪贴板两行）、多会话隔离（A=56 / B=blue 无串扰）。期间一次
+"Showing last loaded..." 为已知环境 artifact（kill+清 socket+重开即恢复，
+非回归）。证据：`.loom-evidence/phase4/e2e-user-journey-20260820/`。
+
 ## Mission 工作台工具栏文案与全端对齐（2026-08-20 · LoomBuild39）
 
 `CURRENT / VERIFIED`: 打开已失败的历史 Mission 时，工作台工具栏副标题仍
