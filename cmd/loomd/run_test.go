@@ -19,6 +19,11 @@ import (
 func TestMissionExecutionConfigFromDaemonBuildPreservesExactRuntimeBinding(
 	t *testing.T,
 ) {
+	// The daemon build may be running under an ambient opt-in (launchctl
+	// LOOM_ENABLE_WEB_TOOLS=1) that fabricates a remote-tool broker even for an
+	// empty build config. Pin it off so the assertions below test the build
+	// mapping itself, not the surrounding environment.
+	t.Setenv("LOOM_ENABLE_WEB_TOOLS", "")
 	searchPaths := []string{"/opt/pi-a", "/opt/pi-b"}
 	catalog := &piadapter.PiLocalModelCatalogConfig{
 		PrivateRoot:    "/private/model",
