@@ -2,6 +2,20 @@
 
 Updated: 2026-08-20
 
+## 归档团队的 Mission 不再计入 active（2026-08-20）
+
+`CURRENT / VERIFIED`: 已归档（不可执行）团队的 Mission 不再计入首页
+"active" 与 Board 活跃车道（视为历史，Complete 车道保留）。新增
+`countActiveMissions(teams:missions:)` + `missionOnArchivedTeam`；安装版 live：
+首页 active **6 → 5**（UI Verify Team 6 为归档团队被排除）。测试
+`testCountActiveMissionsExcludesArchivedTeamMissions`。
+证据：`.loom-evidence/phase4/archived-team-missions-history/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；LoomBuild31 App 健康。
+备注：重装后偶发 unavailable 为陈旧 socket artifact（清 socket + 干净重启
+即恢复，非回归）。
+
+
 ## "Run as Mission" objective 边界改进（2026-08-20）
 
 `CURRENT / VERIFIED`: 聊天提案转 Mission 时，提案超长（>4096）会截断到

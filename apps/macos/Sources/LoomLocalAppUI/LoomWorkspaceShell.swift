@@ -3068,7 +3068,25 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var activeMissionCount: Int {
-        (store.snapshot?.missions ?? []).filter { $0.lane != "Complete" }.count
+        countActiveMissions(
+            teams: store.snapshot?.teams ?? [],
+            missions: store.snapshot?.missions ?? []
+        )
+    }
+
+    /// A Mission is actionable only while its Team is executable; archiving a
+    /// Team moves its Missions out of the active count and active board lanes
+    /// (they stay visible in the Complete lane as history).
+    private func missionTeamExecutable(
+        _ mission: LocalProductMissionSummary
+    ) -> Bool {
+        guard !mission.teamInstanceID.isEmpty,
+              let teams = store.snapshot?.teams else {
+            return false
+        }
+        return teams.contains {
+            $0.teamInstanceID == mission.teamInstanceID && $0.executable
+        }
     }
 
     private var hasGovernanceActivity: Bool {
@@ -3202,4 +3220,20 @@ func chatMissionObjectiveText(
         }
     }
     return ""
+}
+
+
+/// Counts Missions a user can actually act on: not Complete and on an
+/// executable (non-archived) Team. Archiving a Team moves its Missions out of
+/// the active count.
+func countActiveMissions(
+  teams: [LocalProductTeamSummary],
+  missions: [LocalProductMissionSummary]
+) -> Int {
+  let executableTeams = Set(
+    teams.filter { $0.executable }.map { $0.teamInstanceID }
+  )
+  return missions.filter {
+    $0.lane != "Complete" && executableTeams.contains($0.teamInstanceID)
+  }.count
 }

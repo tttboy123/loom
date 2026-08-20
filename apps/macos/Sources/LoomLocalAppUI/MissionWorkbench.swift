@@ -3356,9 +3356,25 @@ public struct MissionWorkbench: View {
     .background(LoomGraphite.canvas)
   }
 
+  /// Mission id is "mission/<teamID>"; a Mission whose Team was archived is
+  /// historical, so it is hidden from active lanes and kept in Complete.
+  private func missionOnArchivedTeam(
+    _ item: MissionListItem,
+    _ archivedTeams: Set<String>
+  ) -> Bool {
+    guard item.id.hasPrefix("mission/") else { return false }
+    let teamID = String(item.id.dropFirst("mission/".count))
+    return archivedTeams.contains(teamID)
+  }
+
   private func missionLane(_ lane: MissionLane) -> some View {
+    let archivedTeams = Set(
+      (store.snapshot?.teams ?? []).filter { !$0.executable }
+        .map { $0.teamInstanceID }
+    )
     let missions = store.workbench.missions.filter {
       $0.lane == lane
+        && (lane == .complete || !missionOnArchivedTeam($0, archivedTeams))
         && (store.workbench.boardFilter.isEmpty
           || $0.title.localizedCaseInsensitiveContains(
             store.workbench.boardFilter
