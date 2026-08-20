@@ -31,6 +31,11 @@
 - 幻影收敛: missions `{failed:20, awaiting_recovery:3, blocked:3, succeeded:2}`,
   active(non-Complete) = 6
 
+## TUI 双端验证（2026-08-20 追加）
+- `go build ./cmd/loom/` 通过；`./loom app` 连接安装版 daemon 成功。
+- 渲染 Home / New Mission / Chat 屏，键盘提示完整（i 消息 / enter 发送 /
+  n New Mission / g Board / q 退出），无 unavailable 状态。
+
 ## 视觉证据
 - `01-home.png`：健康首页（"Local service ready / Chat is ready with
   DeepSeek · deepseek.primary / Agent Team ready / New task"）。
