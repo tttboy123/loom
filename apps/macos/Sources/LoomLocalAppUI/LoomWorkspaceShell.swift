@@ -1063,12 +1063,22 @@ public struct LoomWorkspaceShell: View {
                 .foregroundStyle(LoomGraphite.statusWarning)
             }
             Label(
-                folderReady ? "Folder: \(store.workspace.selectedFolderDisplayName ?? "")" : "1. Open Folder so work has a home",
+                quickStartStepLabel(
+                    ready: folderReady,
+                    value: store.workspace.selectedFolderDisplayName ?? "",
+                    done: "Folder: %@",
+                    pending: "Open Folder so work has a home"
+                ),
                 systemImage: folderReady ? "checkmark.circle.fill" : "folder"
             )
             .foregroundStyle(folderReady ? LoomGraphite.statusSuccess : Color.secondary)
             Label(
-                teamReady ? "Agent Team ready" : "2. Create an Agent Team when the work needs governed execution",
+                quickStartStepLabel(
+                    ready: teamReady,
+                    value: "",
+                    done: "Agent Team ready",
+                    pending: "Create an Agent Team when the work needs governed execution"
+                ),
                 systemImage: teamReady ? "checkmark.circle.fill" : "person.3"
             )
             .foregroundStyle(teamReady ? LoomGraphite.statusSuccess : Color.secondary)
@@ -3392,6 +3402,25 @@ func historicalAttention(
     ).map(\.attentionID)
   )
   return attention.filter { !actionable.contains($0.attentionID) }
+}
+
+/// One quick-start checklist step. Pending steps are plain imperatives
+/// (no "1." / "2." numbering, which left an orphaned "1." when the second
+/// step was already done); ready steps show their done label, substituting
+/// the optional value into "%@" when present.
+func quickStartStepLabel(
+    ready: Bool,
+    value: String,
+    done: String,
+    pending: String
+) -> String {
+    if !ready {
+        return SafeText.sanitize(pending, limit: 160)
+    }
+    if done.contains("%@") {
+        return SafeText.sanitize(done.replacingOccurrences(of: "%@", with: value), limit: 160)
+    }
+    return SafeText.sanitize(done, limit: 160)
 }
 
 /// Humanized title for an attention item: prefer `action_required`, fall back

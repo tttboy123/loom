@@ -2,6 +2,18 @@
 
 Updated: 2026-08-20
 
+## 首页快速开始清单：消除孤立编号（2026-08-20 · LoomBuild38）
+
+`CURRENT / VERIFIED`: 快速开始清单在"未选文件夹但 Team 已就绪"时残留孤立的
+"1."（无 "2."），新用户易误读。新增 `quickStartStepLabel(ready:value:done:
+pending:)`：pending 一律无编号祈使句，ready 显示完成文案（`%@` 代入文件夹
+名）；去掉 "1."/"2." 前缀。安装版 live（LoomBuild38）：空会话 OCR 显示
+"Chat is ready with DeepSeek" / "Open Folder so work has a home" /
+"Agent Team ready"，无孤立编号。证据：
+`.loom-evidence/phase4/quickstart-checklist-wording/`。
+验证：**全量 Swift XCTest 267 用例 0 失败**；`go test ./... -p 1` 全绿；
+`git diff --check` 干净。
+
 ## Attention 面板：可操作项与历史分离 + 文案人性化（2026-08-20 · LoomBuild37）
 
 `CURRENT / VERIFIED`: "Items needing attention" 面板此前把所有 attention

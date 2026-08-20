@@ -299,6 +299,31 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         XCTAssertEqual(attentionActionTitle(actionRequired: "", kind: ""), "Needs your attention")
     }
 
+    func testQuickStartStepLabelKeepsConsistentChecklistWording() {
+        // Pending steps carry no orphaned numbers ("1." with no "2.").
+        XCTAssertEqual(
+            quickStartStepLabel(
+                ready: false, value: "",
+                done: "Folder: X", pending: "Open Folder so work has a home"
+            ),
+            "Open Folder so work has a home"
+        )
+        XCTAssertEqual(
+            quickStartStepLabel(
+                ready: true, value: "X",
+                done: "Folder: %@", pending: "Open Folder so work has a home"
+            ),
+            "Folder: X"
+        )
+        XCTAssertEqual(
+            quickStartStepLabel(
+                ready: true, value: "",
+                done: "Agent Team ready", pending: "Create an Agent Team when the work needs governed execution"
+            ),
+            "Agent Team ready"
+        )
+    }
+
     func testMissionBoardDetailTextIsNotContradictory() {
         // A finished Mission sits in the "Complete" lane with a terminal
         // outcome; "Complete · failed" reads contradictory, so the detail
