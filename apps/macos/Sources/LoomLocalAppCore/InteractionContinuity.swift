@@ -377,7 +377,7 @@ public struct LocalProductRoleReview: Equatable, Sendable, Identifiable {
             )
     }
 
-	fileprivate static func providerName(
+	static func providerName(
 		providerID: String,
 		authMode: String
 	) -> String {
@@ -387,6 +387,7 @@ public struct LocalProductRoleReview: Equatable, Sendable, Identifiable {
 		case "deepseek": return "DeepSeek"
 		case "moonshot": return "Moonshot / Kimi"
 		case "minimax": return "MiniMax"
+		case "opencode": return "OpenCode"
 		default:
 			if !providerID.isEmpty {
 				return humanized(providerID, fallback: "Configured provider")

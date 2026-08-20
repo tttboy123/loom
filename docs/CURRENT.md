@@ -2,6 +2,15 @@
 
 Updated: 2026-08-20
 
+## OpenCode 角色命名修正（2026-08-20 · LoomBuild47）
+
+`CURRENT / VERIFIED`: Team 构建器角色菜单里 OpenCode 选项显示 "Opencode"
+→ `providerName` 增加 `case "opencode": return "OpenCode"`。安装版 live：
+角色菜单显示 "Coordinate bounded work and review with **OpenCode** ·
+**OpenCode** · opencode/deepseek-v4-flash-free"。新增
+`testProviderNameUsesCanonicalDisplayNames`；全量 Swift XCTest 268 用例
+0 失败。证据：`.loom-evidence/phase4/opencode-role-label/`。
+
 ## Phase 2D 核心验收：混合 Provider Team 闭环（2026-08-20 · LoomBuild46）
 
 `CURRENT / VERIFIED`: 同一 Team 不同 Agent 绑定独立 Provider/Harness/模型并

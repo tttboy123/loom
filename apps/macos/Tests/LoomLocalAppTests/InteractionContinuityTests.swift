@@ -477,4 +477,21 @@ final class InteractionContinuityTests: XCTestCase {
 			)
 		)
     }
+
+    func testProviderNameUsesCanonicalDisplayNames() {
+        XCTAssertEqual(
+            LocalProductRoleReview.providerName(providerID: "opencode", authMode: "native_auth"),
+            "OpenCode"
+        )
+        XCTAssertEqual(
+            LocalProductRoleReview.providerName(providerID: "deepseek", authMode: "brokered"),
+            "DeepSeek"
+        )
+        XCTAssertEqual(
+            LocalProductRoleReview.providerName(providerID: "minimax", authMode: "brokered"),
+            "MiniMax"
+        )
+    }
+
+
 }
