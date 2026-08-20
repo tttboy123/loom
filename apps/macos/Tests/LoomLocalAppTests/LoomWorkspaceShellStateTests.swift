@@ -168,6 +168,84 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         XCTAssertEqual(objective.count, 4096)
     }
 
+    func testComposerNewMissionObjectivePrefillsFromLatestConversation() {
+        // Empty or missing thread leaves the New Mission sheet blank.
+        XCTAssertEqual(composerNewMissionObjective(thread: nil), "")
+        XCTAssertEqual(
+            composerNewMissionObjective(
+                thread: LocalProductChatThread(
+                    threadID: "t0", messages: [], canReply: true,
+                    requiresConfirmation: false
+                )
+            ),
+            ""
+        )
+
+        // A conversation ending in a proposal is pre-filled with that proposal.
+        let proposalThread = LocalProductChatThread(
+            threadID: "t1",
+            messages: [
+                LocalProductChatMessage(
+                    messageID: "u1", role: "user", content: "Original ask",
+                    tentative: false
+                ),
+                LocalProductChatMessage(
+                    messageID: "p1", role: "proposal", content: "Proposed plan",
+                    tentative: true
+                ),
+            ],
+            canReply: true, requiresConfirmation: false
+        )
+        XCTAssertEqual(composerNewMissionObjective(thread: proposalThread), "Proposed plan")
+
+        // A conversation ending in a user message is pre-filled with that message.
+        let userThread = LocalProductChatThread(
+            threadID: "t2",
+            messages: [
+                LocalProductChatMessage(
+                    messageID: "l1", role: "loom", content: "Answer", tentative: false
+                ),
+                LocalProductChatMessage(
+                    messageID: "u2", role: "user", content: "Follow-up ask",
+                    tentative: false
+                ),
+            ],
+            canReply: true, requiresConfirmation: false
+        )
+        XCTAssertEqual(composerNewMissionObjective(thread: userThread), "Follow-up ask")
+
+        // A conversation ending in a Loom reply falls back to the latest user
+        // ask so the assistant's answer is not used as the Mission objective.
+        let loomReplyThread = LocalProductChatThread(
+            threadID: "t5",
+            messages: [
+                LocalProductChatMessage(
+                    messageID: "u4", role: "user", content: "Original ask",
+                    tentative: false
+                ),
+                LocalProductChatMessage(
+                    messageID: "l4", role: "loom", content: "2+2 is 4.",
+                    tentative: false
+                ),
+            ],
+            canReply: true, requiresConfirmation: false
+        )
+        XCTAssertEqual(composerNewMissionObjective(thread: loomReplyThread), "Original ask")
+
+        // An over-long latest message is truncated to the 4096 limit.
+        let longThread = LocalProductChatThread(
+            threadID: "t3",
+            messages: [
+                LocalProductChatMessage(
+                    messageID: "u3", role: "user",
+                    content: String(repeating: "y", count: 5000), tentative: false
+                ),
+            ],
+            canReply: true, requiresConfirmation: false
+        )
+        XCTAssertEqual(composerNewMissionObjective(thread: longThread).count, 4096)
+    }
+
 
     func testCountActiveMissionsExcludesArchivedTeamMissions() throws {
         let teams = try JSONDecoder().decode(

@@ -2,6 +2,25 @@
 
 Updated: 2026-08-20
 
+## Chat → New Mission 预填（降门槛）· live 验收（2026-08-20 · LoomBuild52）
+
+`CURRENT / VERIFIED`：针对“New Mission 我没看懂 / 用起来成本高”的痛点，
+composer 头部与导航栏的 **New Mission** 按钮此前打开的空 objective 表单改为
+**从当前会话预填**：新增纯函数 `composerNewMissionObjective(thread:)`，反向扫描
+最新一条 proposal 或 user 提问（两者中较新者优先）作为 objective，**绝不用
+Loom 助手回复当 objective**（会回退到最新 user 提问）；超过 4096 截断；空会话
+/仅 Loom 回复保持空白。两个按钮都改为先 `pendingMissionObjective =
+composerNewMissionObjective(...)` 再打开表单。安装版 LoomBuild52 真实 UI 走查：
+选中会话“What is 2+2? Please answer in one sentence.”（线程 = You 提问 + Loom
+回复“2+2 is 4.”），点 New Mission → 表单 objective 字段 value=
+`What is 2+2? Please answer in one sentence.`（= user 提问，而非 “2+2 is 4.”），
+随后 Close（未启动真实 Mission）。RED-first：先加
+`testComposerNewMissionObjectivePrefillsFromLatestConversation`（编译红），随后
+live 复验发现“末尾是 Loom 回复时误用回复内容”的真 bug → 加用例（红）→ 改为
+role-aware 修复（绿）。门禁：全量 `swift test` **279/1 跳过/0 失败**（+15 Swift
+Testing）、`go test ./... -p 1` 全绿、`go vet` zero、`git diff --check` 干净。
+证据：`.loom-evidence/phase4/chat-to-mission-prefill-20260820-1903/`。
+
 ## RoundTable 新建 Session ID 预填（降门槛）· live 验收（2026-08-20 · LoomBuild51）
 
 `CURRENT / VERIFIED`：针对“新建受治理交接时需手工编造 Session ID、用起来成本高”的

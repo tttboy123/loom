@@ -481,6 +481,9 @@ public struct LoomWorkspaceShell: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
                     Button {
+                        pendingMissionObjective = composerNewMissionObjective(
+                            thread: store.chatThread
+                        )
                         store.showMissionBoard()
                         fullGovernancePresentation = .newMission
                     } label: {
@@ -501,7 +504,7 @@ public struct LoomWorkspaceShell: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("New Mission")
-                    .help("New Mission")
+                    .help("Start a governed Mission from this conversation")
 
                     ForEach(LoomWorkspaceNavigationItem.allCases) { item in
                         navigationButton(item, compact: compact)
@@ -1369,6 +1372,9 @@ public struct LoomWorkspaceShell: View {
                 .help("Use Agent Team")
 
                 Button {
+                    pendingMissionObjective = composerNewMissionObjective(
+                        thread: store.chatThread
+                    )
                     store.showMissionBoard()
                     fullGovernancePresentation = .newMission
                 } label: {
@@ -1377,7 +1383,7 @@ public struct LoomWorkspaceShell: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("New Mission")
-                .help("New Mission")
+                .help("Start a governed Mission from this conversation")
 
                 if let folder = store.workspace.selectedFolderDisplayName {
                     Text(folder)
@@ -3353,6 +3359,23 @@ func chatMissionObjectiveText(
             if !value.isEmpty {
                 return String(value.prefix(limit))
             }
+        }
+    }
+    return ""
+}
+
+/// Latest conversation context to pre-fill a Mission when the user turns a
+/// chat into a governed Mission from the composer or navigation rail. Prefers
+/// the newest message that is a proposal or a user ask (in that order of
+/// recency), so a Loom/assistant reply is never used as the Mission objective.
+/// The result is truncated to the Mission objective limit. An empty or missing
+/// thread, or a thread with no user ask or proposal, produces an empty
+/// objective.
+func composerNewMissionObjective(thread: LocalProductChatThread?) -> String {
+    guard let messages = thread?.messages, !messages.isEmpty else { return "" }
+    for candidate in messages.reversed() {
+        if candidate.role == "proposal" || candidate.role == "user" {
+            return chatMissionObjectiveText(around: candidate, thread: thread)
         }
     }
     return ""
