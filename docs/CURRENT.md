@@ -2,6 +2,18 @@
 
 Updated: 2026-08-20
 
+## 用户视角验收矩阵（2026-08-20 · LoomBuild25）
+
+`CURRENT / VERIFIED`: 在安装版 App 上把 13 项核心用户旅程全部复验并归档为
+验收矩阵：开箱即用、DeepSeek/OpenCode 聊天、三层选择+逐条实际模型/推理强度、
+多会话隔离、Team 构建器、Mission→succeeded 全治理链（AcceptanceCommitted×2
++ TeamExecutionTerminal）、Mission 失败隔离、幻影收敛（active 26→6）、
+RoundTable 全旅程（conclude=True）、重启一致性、复制、错误文案人话化。
+证据：`.loom-evidence/phase4/acceptance-matrix-20260820/`（含逐项结果与输出
+摘录）。运行态：runtimes 全 online；本轮新增 Mission Accept Verify 收敛
+succeeded（治理链 10 事件完整）。
+
+
 ## 错误码/错误提示统一收尾（2026-08-20）
 
 `CURRENT / VERIFIED`: 系统性复查用户可见错误文案，发现并修复一个泄漏点：
