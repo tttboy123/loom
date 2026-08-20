@@ -35,6 +35,13 @@
 - `go build ./cmd/loom/` 通过；`./loom app` 连接安装版 daemon 成功。
 - 渲染 Home / New Mission / Chat 屏，键盘提示完整（i 消息 / enter 发送 /
   n New Mission / g Board / q 退出），无 unavailable 状态。
+- PTY 实测多屏渲染**真实 daemon 状态**：
+  - Board：`UI Mission Team · Complete · Failed`、`Mission Verify 4 ·
+    Orchestrating · Blocked`、`UI Trace Team · Orchestrating · Awaiting recovery`
+    ——与 App/daemon 投影完全一致（幻影 failed、blocked、awaiting_recovery）；
+  - Teams / Evidence（真实 digest 列表）/ Mission Detail / Evolution Assets
+    （Journey + promotion sources）均正常。
+- Roundtable 屏代码已接 `loadRoundtable()`；App 端全旅程已验证。
 
 ## 视觉证据
 - `01-home.png`：健康首页（"Local service ready / Chat is ready with
