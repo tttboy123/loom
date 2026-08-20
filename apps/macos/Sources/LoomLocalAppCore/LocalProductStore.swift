@@ -940,6 +940,7 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var executionSnapshot: ExecutionSnapshot?
   @Published public private(set) var productionSnapshot: ProductionSnapshot?
   @Published public private(set) var roundtableError: String?
+  @Published public private(set) var roundtableLastSessionID: String?
   @Published public var selectedSection: LocalProductSection = .home
   @Published public var selectedTeamID: String?
 
@@ -1386,7 +1387,7 @@ public final class LocalProductStore: ObservableObject {
       roundtableError = "Roundtable invalid_request: session, title and moderator seat are required"
       return nil
     }
-    return await runRoundtable {
+    let created = await runRoundtable {
       try await roundtableClient.roundtableCreateSession(
         LocalRoundtableSessionCreateRequest(
           schemaVersion: 1, sessionID: sessionID, moderatorSeat: moderatorSeat,
@@ -1394,6 +1395,33 @@ public final class LocalProductStore: ObservableObject {
         )
       )
     }
+    if created != nil {
+      roundtableLastSessionID = created?.session.id ?? sessionID
+    }
+    return created
+  }
+
+  /// Reopens an existing governed handoff session by ID so closing and
+  /// reopening the Roundtable workbench never loses the user's session.
+  public func roundtableLoadSession(
+    sessionID: String
+  ) async -> LocalRoundtableView? {
+    let bounded = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let roundtableClient, !bounded.isEmpty else {
+      roundtableError = "Roundtable invalid_request: session is required"
+      return nil
+    }
+    let view = await runRoundtable {
+      try await roundtableClient.roundtableSnapshot(
+        LocalRoundtableSnapshotRequest(
+          schemaVersion: 1, sessionID: bounded
+        )
+      )
+    }
+    if view != nil {
+      roundtableLastSessionID = bounded
+    }
+    return view
   }
 
   public func roundtableAddSeat(

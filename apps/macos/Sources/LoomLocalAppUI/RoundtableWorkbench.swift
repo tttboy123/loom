@@ -11,6 +11,7 @@ public struct RoundtableWorkbench: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var sessionID = ""
+    @State private var resumeSessionID = ""
     @State private var title = "Diagnosis handoff"
     @State private var messageBody = "Diagnosis: the daemon build_execution path is over-constrained; recommend a bounded retry."
     @State private var view: LocalRoundtableView?
@@ -108,6 +109,18 @@ public struct RoundtableWorkbench: View {
             .background(LoomGraphite.canvas)
         }
         .background(LoomGraphite.canvas)
+        .onAppear {
+            if view == nil, let lastID = store.roundtableLastSessionID {
+                Task {
+                    if let loaded = await store.roundtableLoadSession(
+                        sessionID: lastID
+                    ) {
+                        view = loaded
+                        sessionID = loaded.session.id
+                    }
+                }
+            }
+        }
     }
 
     private var header: some View {
@@ -181,10 +194,58 @@ public struct RoundtableWorkbench: View {
                 .disabled(busy || sessionID.trimmingCharacters(in: .whitespaces).isEmpty)
                 .help("Creates the roundtable session with the moderator seat")
             }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Resume a session")
+                    .font(.subheadline.weight(.semibold))
+                Text("Closing this panel keeps the session on the daemon. Reopen it by ID to continue or inspect the concluded summary.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    TextField("Session ID to open", text: $resumeSessionID)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        openSession()
+                    } label: {
+                        Label("Open", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(busy || resumeSessionID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Opens the existing roundtable session by ID")
+                }
+                if let lastID = store.roundtableLastSessionID,
+                   lastID != resumeSessionID {
+                    Button {
+                        resumeSessionID = lastID
+                        openSession()
+                    } label: {
+                        Label("Resume last: \(lastID)", systemImage: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .help("Reopens the most recently used session")
+                }
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(LoomGraphite.raised, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func openSession() {
+        let id = resumeSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        busy = true
+        Task {
+            defer { busy = false }
+            if let loaded = await store.roundtableLoadSession(sessionID: id) {
+                view = loaded
+                sessionID = loaded.session.id
+            }
+        }
     }
 
     private var journeyPanel: some View {

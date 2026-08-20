@@ -2,6 +2,18 @@
 
 Updated: 2026-08-20
 
+## RoundTable 会话恢复（2026-08-20）
+
+`CURRENT / VERIFIED`: RoundTable 关闭再打开不再丢失会话——`onAppear` 自动
+恢复上次会话；创建表单新增 "Resume a session" 区块（按 ID 打开 + "Resume
+last" 一键恢复），可查看 concluded 摘要。Store 新增
+`roundtableLastSessionID` + `roundtableLoadSession`（封装 daemon
+`roundtable_snapshot`）。daemon 侧按 ID 读会话验证通过。证据：
+`.loom-evidence/phase4/roundtable-session-resume/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；安装版（LoomBuild27）构建并安装成功。
+
+
 ## Mission Board "Hide completed" 开关（2026-08-20）
 
 `CURRENT / VERIFIED`: Mission Board 固定 5 条横向车道，历史任务多时 Complete
