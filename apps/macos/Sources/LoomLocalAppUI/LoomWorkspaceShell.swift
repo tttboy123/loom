@@ -2986,6 +2986,13 @@ public struct LoomWorkspaceShell: View {
                         symbol: "checkmark.seal"
                     )
                 }
+                if store.snapshot?.evidencePage.hasMore == true {
+                    Text("Showing the 64 most recent records")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                }
             }
         }
     }

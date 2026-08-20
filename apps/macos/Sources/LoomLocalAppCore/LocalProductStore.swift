@@ -340,6 +340,18 @@ public struct LocalProductChatOperationFailure: Equatable, Sendable {
 }
 
 public protocol LocalProductClientProtocol {
+  /// Whether this client can heartbeat-probe the resident service socket while
+  /// the store currently believes it is online. Production IPC clients answer
+  /// true; test doubles default to false so they never probe unexpectedly.
+  var supportsHeartbeatProbe: Bool { get }
+
+  /// Heartbeat probe against the resident service socket. Production clients
+  /// round-trip a `ping` IPC call; test doubles without an implementation fall
+  /// back to the default below. Declared on the protocol (not only in the
+  /// extension) so existential dispatch reaches the conforming type's real
+  /// implementation instead of statically selecting the default.
+  func ping() async throws -> Bool
+
   func snapshot(limit: Int) async throws -> LocalProductSnapshot
   func timeline(
     teamInstanceID: String,
@@ -388,6 +400,12 @@ public protocol LocalProductClientProtocol {
 }
 
 extension LocalProductClientProtocol {
+  public var supportsHeartbeatProbe: Bool { false }
+
+  public func ping() async throws -> Bool {
+    throw LocalProductClientError.unavailable
+  }
+
   public func chatThread(threadID: String) async throws -> LocalProductChatThread {
     throw LocalProductClientError.unavailable
   }
@@ -2275,7 +2293,7 @@ public final class LocalProductStore: ObservableObject {
         connectionState = .stale(
           reason: closedReason(next.reason, fallback: "stale_view")
         )
-      } else if next.partial {
+      } else if next.partial && isUserVisibleDegradation(next) {
         connectionState = .partial(
           reason: closedReason(next.reason, fallback: "partial_view")
         )
@@ -2312,6 +2330,50 @@ public final class LocalProductStore: ObservableObject {
       else { return }
       do {
         try await Task.sleep(nanoseconds: delayNanoseconds)
+      } catch {
+        return
+      }
+    }
+  }
+
+  /// Keeps watching the resident service after the initial bounded retry window
+  /// and re-establishes the connection on its own whenever it becomes
+  /// unavailable, stale, or partial. Rehydrates the refresh-dependent surfaces
+  /// on every transition back to online. Runs until the enclosing task is
+  /// cancelled (the hosting view owns the task lifecycle).
+  public func reconnectWhileUnavailable(
+    pollNanoseconds: UInt64 = 5_000_000_000,
+    retryDelayNanoseconds: UInt64 = 250_000_000
+  ) async {
+    var wasOnlineAtLastPoll = connectionState == .online
+    while !Task.isCancelled {
+      if connectionState != .online {
+        await connectWithRetry(
+          maxAttempts: 12,
+          delayNanoseconds: retryDelayNanoseconds
+        )
+      } else if client.supportsHeartbeatProbe {
+        // While nominally online, probe the resident socket so a silent daemon
+        // exit is detected within the poll window instead of on the next user
+        // action. A failed probe flips the store offline and the next poll
+        // reconnects on its own as soon as the daemon is back.
+        do {
+          _ = try await client.ping()
+        } catch {
+          connectionState = .offline(reason: closedClientReason(error))
+        }
+      }
+      let isOnline = connectionState == .online
+      if isOnline && !wasOnlineAtLastPoll {
+        async let setup: Void = refreshSetup()
+        async let permissions: Void = refreshPermissions()
+        async let executions: Void = refreshExecutions()
+        async let production: Void = refreshProduction()
+        _ = await (setup, permissions, executions, production)
+      }
+      wasOnlineAtLastPoll = isOnline
+      do {
+        try await Task.sleep(nanoseconds: pollNanoseconds)
       } catch {
         return
       }
@@ -6015,8 +6077,45 @@ public final class LocalProductStore: ObservableObject {
   private func closedReason(_ value: String, fallback: String) -> String {
     let allowed = Set([
       "projection_refresh_failed", "partial_view", "stale_view",
+      "observer_models_timeout", "observer_version_timeout",
+      "side_tasks_limit_reached",
     ])
     return allowed.contains(value) ? value : fallback
+  }
+
+  /// Decides whether a partial snapshot is a user-visible degradation.
+  ///
+  /// The daemon marks `partial` for two very different reasons:
+  /// - real degradation: runtime observation timouts, truncated side-task
+  ///   decisions, or unknown server conditions (fail conservatively);
+  /// - navigation truncation: runtimes/teams/missions lists that overflow a
+  ///   page hide reachable destinations, so the user genuinely cannot see
+  ///   everything from the current view.
+  ///
+  /// Historical run/evidence lists also overflow at 64 entries, but that is a
+  /// normal rich-data condition: the newest records stay fully useful and the
+  /// UI shows an explicit "Showing the 64 most recent …" footnote instead of
+  /// pretending the list is complete. Those must not downgrade the whole
+  /// connection surface to "Some information is unavailable".
+  private func isUserVisibleDegradation(_ snapshot: LocalProductSnapshot) -> Bool {
+    switch snapshot.reason {
+    case "observer_models_timeout", "observer_version_timeout",
+      "side_tasks_limit_reached":
+      return true
+    default:
+      break
+    }
+    if snapshot.runtimePage.hasMore
+      || snapshot.teamPage.hasMore
+      || snapshot.missionPage.hasMore
+    {
+      return true
+    }
+    if snapshot.runPage.hasMore || snapshot.evidencePage.hasMore {
+      return false
+    }
+    // Unknown partial states stay conservative.
+    return true
   }
 
   private func closedClientReason(_ error: Error) -> String {

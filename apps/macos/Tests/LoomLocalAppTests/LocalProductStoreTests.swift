@@ -652,6 +652,198 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.snapshotRequestCount, 3)
   }
 
+  func testReconnectWhileUnavailableRecoversWithoutManualRefresh() async throws {
+    let expected = LocalProductSnapshot.empty(viewVersion: "view-ready")
+    let client = RecoveringLocalProductClient(
+      failuresRemaining: 5,
+      snapshot: expected
+    )
+    let store = LocalProductStore(client: client)
+
+    // A cold start that exhausts the initial bounded retry window.
+    await store.connectWithRetry(maxAttempts: 2, delayNanoseconds: 0)
+    XCTAssertEqual(store.snapshot, nil)
+    XCTAssertEqual(store.connectionState, .offline(reason: "unavailable"))
+
+    // The resident service comes back later; the monitor must recover on its own.
+    let monitor = Task {
+      await store.reconnectWhileUnavailable(
+        pollNanoseconds: 10_000_000,
+        retryDelayNanoseconds: 0
+      )
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while store.connectionState != .online && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    monitor.cancel()
+    await monitor.value
+
+    XCTAssertEqual(store.snapshot, expected)
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertEqual(client.snapshotRequestCount, 6)
+  }
+
+  func testReconnectMonitorProbesSilentDaemonDeathAndRecovers() async throws {
+    // The daemon can exit without the app ever issuing a request, so the
+    // monitor must proactively probe the socket while it believes it is
+    // online. A dead daemon is detected within one poll window, the store
+    // flips offline, and the next poll reconnects on its own once the daemon
+    // is back without any manual refresh.
+    let snapshot = LocalProductSnapshot.empty(viewVersion: "view-1")
+    let client = PingProbeClient(
+      snapshot: snapshot,
+      pingFailuresRemaining: 3
+    )
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    XCTAssertEqual(store.connectionState, .online)
+
+    let monitor = Task {
+      await store.reconnectWhileUnavailable(
+        pollNanoseconds: 10_000_000,
+        retryDelayNanoseconds: 0
+      )
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while client.pingCount < 4 && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    monitor.cancel()
+    await monitor.value
+
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertGreaterThanOrEqual(client.pingCount, 4)
+    XCTAssertGreaterThanOrEqual(client.snapshotRequestCount, 4)
+  }
+
+  func testRunHistoryPageOverflowNormalizesToOnline() async {
+    // Rich history (>64 runs) is a normal condition, not a degradation: the
+    // run list paginates and the "Load more" control stays visible. The
+    // connection surface must not show the "Some information is unavailable"
+    // banner for this.
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "",
+      runPage: LocalProductPageCursor(nextCursor: "cursor-2", hasMore: true)
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.snapshot, snapshot)
+    XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testEvidenceHistoryPageOverflowNormalizesToOnline() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "",
+      evidencePage: LocalProductPageCursor(nextCursor: "cursor-2", hasMore: true)
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testNavigationTruncationKeepsDegradedPartialState() async {
+    // Truncated navigation surfaces (runtimes/teams/missions) hide reachable
+    // destinations, so the user genuinely cannot see everything; keep partial.
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "",
+      teamPage: LocalProductPageCursor(nextCursor: "cursor-2", hasMore: true)
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.connectionState, .partial(reason: "partial_view"))
+  }
+
+  func testObserverModelsTimeoutKeepsDegradedPartialState() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "observer_models_timeout"
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(
+      store.connectionState,
+      .partial(reason: "observer_models_timeout")
+    )
+  }
+
+  func testObserverVersionTimeoutKeepsDegradedPartialState() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "observer_version_timeout"
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(
+      store.connectionState,
+      .partial(reason: "observer_version_timeout")
+    )
+  }
+
+  func testSideTasksLimitReasonKeepsDegradedPartialState() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "side_tasks_limit_reached"
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(
+      store.connectionState,
+      .partial(reason: "side_tasks_limit_reached")
+    )
+  }
+
+  func testUnknownPartialKeepsDegradedState() async {
+    // Unknown partial states stay conservative: fail toward the banner rather
+    // than hiding a real degradation the client cannot classify.
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: ""
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.connectionState, .partial(reason: "partial_view"))
+  }
+
   func testRefreshPreservesSelectedTaskDraftAndInspector() async throws {
     let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
       of: "\"teams\":[]",
@@ -4415,6 +4607,72 @@ final class StubLocalProductClient: LocalProductClientProtocol {
     timelineRequestCount += 1
     lastTimelineLimit = limit
     lastTimelineTeamID = teamInstanceID
+    throw LocalProductClientError.notFound
+  }
+}
+
+private final class RecoveringLocalProductClient: LocalProductClientProtocol {
+  private var failuresRemaining: Int
+  private let snapshot: LocalProductSnapshot
+  private(set) var snapshotRequestCount = 0
+
+  init(failuresRemaining: Int, snapshot: LocalProductSnapshot) {
+    self.failuresRemaining = failuresRemaining
+    self.snapshot = snapshot
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    snapshotRequestCount += 1
+    if failuresRemaining > 0 {
+      failuresRemaining -= 1
+      throw LocalProductClientError.unavailable
+    }
+    return snapshot
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
+    throw LocalProductClientError.notFound
+  }
+}
+
+/// A production-like client that can heartbeat-probe the resident socket:
+/// `ping` fails while the simulated daemon is down and succeeds once it is
+/// back, while `snapshot` always works once reachable.
+private final class PingProbeClient: LocalProductClientProtocol {
+  var supportsHeartbeatProbe: Bool { true }
+  private var pingFailuresRemaining: Int
+  private let snapshot: LocalProductSnapshot
+  private(set) var pingCount = 0
+  private(set) var snapshotRequestCount = 0
+
+  init(snapshot: LocalProductSnapshot, pingFailuresRemaining: Int) {
+    self.snapshot = snapshot
+    self.pingFailuresRemaining = pingFailuresRemaining
+  }
+
+  func ping() async throws -> Bool {
+    pingCount += 1
+    if pingFailuresRemaining > 0 {
+      pingFailuresRemaining -= 1
+      throw LocalProductClientError.unavailable
+    }
+    return true
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    snapshotRequestCount += 1
+    return snapshot
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
     throw LocalProductClientError.notFound
   }
 }

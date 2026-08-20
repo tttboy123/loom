@@ -4750,7 +4750,9 @@ public struct MissionWorkbench: View {
       workspaceReadBanner
       if let snapshot = store.snapshot {
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: 18) {
+          // Non-lazy so the capped-history footnote stays in the view hierarchy
+          // for assistive access and for users who have not scrolled to the end.
+          VStack(alignment: .leading, spacing: 18) {
             HStack {
               VStack(alignment: .leading, spacing: 3) {
                 Text("Assets")
@@ -5014,6 +5016,12 @@ public struct MissionWorkbench: View {
             } else {
               ForEach(Array(snapshot.runs.reversed())) { run in
                 historyRunCard(run, snapshot: snapshot)
+              }
+              if snapshot.runPage.hasMore {
+                Text("Showing the 64 most recent Runs · older Runs remain in the Journal timeline.")
+                  .font(.caption2)
+                  .foregroundStyle(.secondary)
+                  .padding(.top, 2)
               }
             }
 

@@ -663,6 +663,8 @@ public final class LocalIPCClient:
     LocalRoundtableClientProtocol,
     LocalProductAssetClientProtocol
 {
+    public var supportsHeartbeatProbe: Bool { true }
+
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
     public static let maximumRequestTimeoutSeconds = 55

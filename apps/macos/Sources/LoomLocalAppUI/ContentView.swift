@@ -31,6 +31,7 @@
                      async let executions: Void = store.refreshExecutions()
                      async let production: Void = store.refreshProduction()
                      _ = await (setup, permissions, executions, production)
+                     await store.reconnectWhileUnavailable()
                  }
              }
              .frame(minWidth: 900, minHeight: 580)
