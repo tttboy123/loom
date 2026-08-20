@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -2041,7 +2042,14 @@ func (model Model) renderGovernanceSummary() string {
 		lines = append(
 			lines,
 			fmt.Sprintf("Active missions · %d", active),
-			fmt.Sprintf("Needs you · %d", len(model.snapshot.Attention)),
+			fmt.Sprintf(
+				"Needs you · %d",
+				countActionableAttention(
+					model.snapshot.Teams,
+					model.snapshot.Missions,
+					model.snapshot.Attention,
+				),
+			),
 			fmt.Sprintf("Teams · %d", len(model.snapshot.Teams)),
 			fmt.Sprintf("Runtimes · %d", len(model.snapshot.Runtimes)),
 		)
@@ -2098,7 +2106,7 @@ func (model Model) renderGovernanceSummary() string {
 		}
 	case "Attention":
 		for _, item := range model.snapshot.Attention[:min(8, len(model.snapshot.Attention))] {
-			lines = append(lines, "· "+sanitizeCell(item.ActionRequired, 30))
+			lines = append(lines, "· "+attentionActionTitle(item.ActionRequired, item.Kind))
 		}
 		if len(model.snapshot.Attention) == 0 {
 			lines = append(lines, "Nothing needs you")
@@ -2574,10 +2582,36 @@ func (model Model) screenBody() string {
 			}
 			lines[0] += " · v view"
 		}
-		for _, item := range model.snapshot.Attention {
+		actionable := actionableAttentionItems(
+			model.snapshot.Teams,
+			model.snapshot.Missions,
+			model.snapshot.Attention,
+		)
+		historical := historicalAttentionItems(
+			model.snapshot.Teams,
+			model.snapshot.Missions,
+			model.snapshot.Attention,
+		)
+		if len(actionable) == 0 && len(historical) > 0 {
+			lines = append(lines, styleSection(
+				"Nothing needs you · history ("+strconv.Itoa(len(historical))+")",
+			))
+		}
+		for _, item := range actionable {
 			lines = append(lines, fmt.Sprintf(
 				"• %s",
-				sanitizeCell(item.ActionRequired, 64),
+				attentionActionTitle(item.ActionRequired, item.Kind),
+			))
+		}
+		if len(actionable) > 0 && len(historical) > 0 {
+			lines = append(lines, styleSection(
+				"History ("+strconv.Itoa(len(historical))+") · archived teams or completed Missions",
+			))
+		}
+		for _, item := range historical {
+			lines = append(lines, fmt.Sprintf(
+				"• %s",
+				attentionActionTitle(item.ActionRequired, item.Kind),
 			))
 		}
 		for _, decision := range model.permissionAttention.Decisions {
@@ -4715,6 +4749,78 @@ func humanizeStatus(value string) string {
 	value = strings.TrimSpace(strings.ReplaceAll(value, "_", " "))
 	if value == "" {
 		return "Ready"
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+// actionableAttentionItems mirrors the macOS App's actionableAttention:
+// attention on an executable Team whose Mission is still active (non-Complete).
+func actionableAttentionItems(
+	teams []api.LocalProductTeamSummary,
+	missions []api.LocalProductMissionSummary,
+	attention []api.AttentionItem,
+) []api.AttentionItem {
+	executableTeams := make(map[string]bool)
+	for _, team := range teams {
+		if team.Executable {
+			executableTeams[team.TeamInstanceID] = true
+		}
+	}
+	activeMissionTeams := make(map[string]bool)
+	for _, mission := range missions {
+		if mission.Lane != "Complete" {
+			activeMissionTeams[mission.TeamInstanceID] = true
+		}
+	}
+	result := make([]api.AttentionItem, 0, len(attention))
+	for _, item := range attention {
+		if executableTeams[item.TeamInstanceID] &&
+			activeMissionTeams[item.TeamInstanceID] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// historicalAttentionItems is the complement of actionableAttentionItems:
+// items on archived Teams or on Teams whose Missions are already Complete.
+func historicalAttentionItems(
+	teams []api.LocalProductTeamSummary,
+	missions []api.LocalProductMissionSummary,
+	attention []api.AttentionItem,
+) []api.AttentionItem {
+	actionable := make(map[string]bool)
+	for _, item := range actionableAttentionItems(teams, missions, attention) {
+		actionable[item.AttentionID] = true
+	}
+	result := make([]api.AttentionItem, 0, len(attention))
+	for _, item := range attention {
+		if !actionable[item.AttentionID] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// countActionableAttention mirrors the macOS App's countActiveAttention.
+func countActionableAttention(
+	teams []api.LocalProductTeamSummary,
+	missions []api.LocalProductMissionSummary,
+	attention []api.AttentionItem,
+) int {
+	return len(actionableAttentionItems(teams, missions, attention))
+}
+
+// attentionActionTitle mirrors the macOS App's attentionActionTitle:
+// prefer the raw action_required code humanized, fall back to kind, then to a
+// generic prompt.
+func attentionActionTitle(actionRequired, kind string) string {
+	value := strings.TrimSpace(strings.ReplaceAll(actionRequired, "_", " "))
+	if value == "" {
+		value = strings.TrimSpace(strings.ReplaceAll(kind, "_", " "))
+	}
+	if value == "" {
+		return "Needs your attention"
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
 }

@@ -1992,7 +1992,9 @@ func TestModelRendersEveryBoundedScreenAndTeamTimelineInteraction(
 		{ScreenBoard, "Delivery Team"},
 		{ScreenTeamBuilder, "What would you like"},
 		{ScreenRuns, "Work 1"},
-		{ScreenAttention, "review"},
+		// The fixture's attention item sits on a non-executable Team whose
+		// Mission is Complete, so it renders in the history section.
+		{ScreenAttention, "history"},
 		{ScreenTimeline, "Choose a task"},
 	} {
 		model.screenIndex = indexOfScreen(test.screen)
@@ -3274,5 +3276,40 @@ func TestMissionBoardRowStatusLeadsWithHumanizedOutcome(t *testing.T) {
 	}
 	if got := missionBoardRowStatus("", "failed"); got != "Failed" {
 		t.Fatalf("empty/failed = %q", got)
+	}
+}
+
+func TestAttentionActionTitleHumanizesRawCodes(t *testing.T) {
+	// Mirror the macOS App's attentionActionTitle: prefer action_required,
+	// fall back to kind, then to a generic prompt.
+	if got := attentionActionTitle("inspect_failure", "verification_failed"); got != "Inspect failure" {
+		t.Fatalf("action_required = %q, want %q", got, "Inspect failure")
+	}
+	if got := attentionActionTitle("", "blocked"); got != "Blocked" {
+		t.Fatalf("kind fallback = %q, want %q", got, "Blocked")
+	}
+	if got := attentionActionTitle("", ""); got != "Needs your attention" {
+		t.Fatalf("empty = %q, want %q", got, "Needs your attention")
+	}
+}
+
+func TestCountActionableAttentionMatchesAppSemantics(t *testing.T) {
+	teams := []api.LocalProductTeamSummary{
+		{TeamInstanceID: "team-exec", Executable: true},
+		{TeamInstanceID: "team-historical", Executable: true},
+		{TeamInstanceID: "team-archived", Executable: false},
+	}
+	missions := []api.LocalProductMissionSummary{
+		{TeamInstanceID: "team-exec", Lane: "Orchestrating"},
+		{TeamInstanceID: "team-historical", Lane: "Complete"},
+		{TeamInstanceID: "team-archived", Lane: "Orchestrating"},
+	}
+	attention := []api.AttentionItem{
+		{AttentionID: "a1", TeamInstanceID: "team-exec"},
+		{AttentionID: "a2", TeamInstanceID: "team-historical"},
+		{AttentionID: "a3", TeamInstanceID: "team-archived"},
+	}
+	if got := countActionableAttention(teams, missions, attention); got != 1 {
+		t.Fatalf("countActionableAttention = %d, want 1", got)
 	}
 }

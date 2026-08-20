@@ -2,6 +2,18 @@
 
 Updated: 2026-08-20
 
+## TUI Attention/Overview 与 App 口径统一（2026-08-20）
+
+`CURRENT / VERIFIED`: App 端已拆"可操作 + 历史"并人话化，TUI 仍显示
+"Needs you · 7"（实际可操作 0）且列原始 `inspect_failure`。新增
+`actionableAttentionItems` / `historicalAttentionItems` /
+`countActionableAttention` / `attentionActionTitle`（与 App 同语义）；
+Overview "Needs you" 改用可操作计数；Attention 屏显示
+"Nothing needs you · history (7)" + "Inspect failure" 人话行。TUI live
+（PTY）：Overview "Needs you · 0"，Attention 屏与 App 完全一致。证据：
+`.loom-evidence/phase4/tui-attention-actionability/`。
+验证：`go test ./... -p 1` 全绿；`gofmt` 干净；`git diff --check` 干净。
+
 ## TUI Board 状态文案与 App 对齐（2026-08-20）
 
 `CURRENT / VERIFIED`: App 端 Board 已改为人性化结果，但 TUI Board 仍显示
