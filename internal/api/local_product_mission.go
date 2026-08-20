@@ -57,6 +57,7 @@ type LocalProductMissionSummary struct {
 	AttentionCount     int                        `json:"attention_count"`
 	CurrentNodeID      string                     `json:"current_node_id"`
 	LastMilestone      string                     `json:"last_milestone"`
+	BlockReason        string                     `json:"block_reason,omitempty"`
 	TeamPulse          []LocalProductMissionPulse `json:"team_pulse"`
 	Topology           []LocalProductMissionNode  `json:"topology"`
 }
@@ -117,6 +118,7 @@ func buildLocalProductMission(
 		TeamPulse:      make([]LocalProductMissionPulse, 0, len(execution.Nodes)),
 		Topology:       make([]LocalProductMissionNode, 0, len(execution.Nodes)),
 		LastMilestone:  humanMissionMilestone(status),
+		BlockReason:    localProductMissionBlockReason(execution),
 	}
 	for _, node := range execution.Nodes {
 		state := missionPulseState(node.Status)
@@ -168,6 +170,35 @@ func buildLocalProductMission(
 			mission.Topology[j].LogicalNodeID
 	})
 	return mission
+}
+
+// localProductMissionBlockReason surfaces why a Mission is blocked so the
+// board card can tell the user the concrete reason (for example
+// context_retrieval_denied) instead of only "Blocked". It prefers the
+// blocked node's initial block reason, then the current attempt's terminal
+// reason, then any terminal attempt reason.
+func localProductMissionBlockReason(execution projection.TeamExecution) string {
+	for _, node := range execution.Nodes {
+		if node.Status != "blocked" {
+			continue
+		}
+		if node.InitialBlockReason != "" {
+			return node.InitialBlockReason
+		}
+		if attempt, ok := findProjectedAttempt(
+			execution,
+			node.LogicalNodeID,
+			node.CurrentAttempt,
+		); ok && attempt.TerminalReason != "" {
+			return attempt.TerminalReason
+		}
+		for _, attempt := range node.Attempts {
+			if attempt.TerminalReason != "" {
+				return attempt.TerminalReason
+			}
+		}
+	}
+	return ""
 }
 
 func missionStatus(execution projection.TeamExecution) string {

@@ -2,6 +2,19 @@
 
 Updated: 2026-08-20
 
+## Mission Board 展示 blocked 原因（2026-08-20）
+
+`CURRENT / VERIFIED`: Mission 卡片现在显示**为什么被 block**（如
+"Context Retrieval Denied" / "Provider Http"），不再只有 "Blocked"。
+`LocalProductMissionSummary` 新增 `block_reason`（Go 推导：blocked 节点
+InitialBlockReason → attempt TerminalReason）；Swift strict allowlist 同步
+加入 `block_reason`（避免严格解码拒收），卡片在状态下方渲染 ⚠ 原因。
+安装版 live：blocked 任务携带 context_retrieval_denied（×2）/ provider_http；
+App 正常渲染。证据：`.loom-evidence/phase4/mission-block-reason/`。
+测试：Go `go test ./... -p 1` + `-race ./internal/api/` 绿；Swift
+`swift build --build-tests` 0 error；`gofmt`/`git diff --check` 干净。
+
+
 ## 会话回复展示实际模型与推理强度（2026-08-20）
 
 `CURRENT / VERIFIED`: 每条回复的路由标签现在展示**实际派发**的模型与推理

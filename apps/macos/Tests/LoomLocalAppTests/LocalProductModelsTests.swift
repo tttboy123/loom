@@ -250,6 +250,39 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertTrue(attempt.retryable)
     }
 
+    func testMissionSummaryDecodesBlockReason() throws {
+        let data = """
+        {
+          "schema_version": 1,
+          "mission_id": "mission/team-blocked-1",
+          "team_instance_id": "team-blocked-1",
+          "title": "Blocked Mission",
+          "source_kind": "team_execution",
+          "lane": "Orchestrating",
+          "status": "blocked",
+          "priority": "normal",
+          "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "simple": true,
+          "node_count": 1,
+          "completed_node_count": 0,
+          "active_node_count": 0,
+          "review_node_count": 0,
+          "attention_count": 1,
+          "current_node_id": "main",
+          "last_milestone": "blocked",
+          "block_reason": "context_retrieval_denied",
+          "team_pulse": [],
+          "topology": []
+        }
+        """
+        let decoded = try JSONDecoder().decode(
+            LocalProductMissionSummary.self,
+            from: Data(data.utf8)
+        )
+        XCTAssertEqual(decoded.status, "blocked")
+        XCTAssertEqual(decoded.blockReason, "context_retrieval_denied")
+    }
+
     func testConversationAttemptDecodesActualModelAndReasoningEffort() throws {
         let thread = try LocalProductWire.decodeChatThread(
             Data(

@@ -88,6 +88,46 @@ func TestLocalProductMissionFacadeUsesRealProjectionAndPreservesStaleView(
 	}
 }
 
+func TestLocalProductMissionBlockReasonSurfacesTerminalFailure(t *testing.T) {
+	execution := projection.TeamExecution{
+		TeamInstanceID: "team-blocked-1",
+		Status:         "running",
+		Nodes: []projection.TeamExecutionNode{
+			{LogicalNodeID: "main", Status: "pending"},
+			{
+				LogicalNodeID:  "subagent-1",
+				Status:         "blocked",
+				CurrentAttempt: 2,
+				Attempts: []projection.TeamExecutionAttempt{
+					{AttemptNumber: 1, TerminalReason: "provider_http"},
+					{AttemptNumber: 2, TerminalReason: "context_retrieval_denied"},
+				},
+			},
+		},
+	}
+	mission := buildLocalProductMission(projection.GlobalReadView{}, execution)
+	if mission.Status != "blocked" {
+		t.Fatalf("mission status = %q, want blocked", mission.Status)
+	}
+	if mission.BlockReason != "context_retrieval_denied" {
+		t.Fatalf("BlockReason = %q, want context_retrieval_denied", mission.BlockReason)
+	}
+
+	// Initial block reason wins over attempt terminal reasons.
+	execution.Nodes[1].InitialBlockReason = "runtime_offline"
+	execution.Nodes[1].InitialBlockCode = "runtime_offline"
+	mission = buildLocalProductMission(projection.GlobalReadView{}, execution)
+	if mission.BlockReason != "runtime_offline" {
+		t.Fatalf("BlockReason = %q, want runtime_offline", mission.BlockReason)
+	}
+
+	// No blocked node -> empty reason.
+	execution.Nodes[1].Status = "running"
+	if reason := localProductMissionBlockReason(execution); reason != "" {
+		t.Fatalf("BlockReason = %q, want empty", reason)
+	}
+}
+
 func TestMissionLifecycleNeverCreatesAttentionLanes(t *testing.T) {
 	for status, want := range map[string]MissionLane{
 		"planned":             MissionLaneProposed,

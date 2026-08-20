@@ -3413,6 +3413,19 @@ public struct MissionWorkbench: View {
         Text(humanStatus(mission.status))
           .font(.caption)
           .foregroundStyle(.secondary)
+        if let blockReason = record?.blockReason,
+           !blockReason.isEmpty,
+           mission.status == "blocked" {
+          Label(
+            missionHumanStatus(blockReason),
+            systemImage: "exclamationmark.triangle"
+          )
+          .font(.caption2)
+          .foregroundStyle(.orange)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("Blocked because \(missionHumanStatus(blockReason))")
+        }
         if let record {
           Group {
             if let pulse = record.teamPulse.first {

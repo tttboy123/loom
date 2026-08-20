@@ -405,6 +405,7 @@ public struct LocalProductMissionSummary:
     public let attentionCount: Int
     public let currentNodeID: String
     public let lastMilestone: String
+    public let blockReason: String?
     public let teamPulse: [LocalProductMissionPulse]
     public let topology: [LocalProductMissionNode]
 
@@ -424,6 +425,7 @@ public struct LocalProductMissionSummary:
         case attentionCount = "attention_count"
         case currentNodeID = "current_node_id"
         case lastMilestone = "last_milestone"
+        case blockReason = "block_reason"
         case teamPulse = "team_pulse"
         case topology
     }
@@ -446,6 +448,7 @@ public struct LocalProductMissionSummary:
         attentionCount: Int,
         currentNodeID: String,
         lastMilestone: String,
+        blockReason: String? = nil,
         teamPulse: [LocalProductMissionPulse],
         topology: [LocalProductMissionNode]
     ) {
@@ -466,6 +469,7 @@ public struct LocalProductMissionSummary:
         self.attentionCount = attentionCount
         self.currentNodeID = currentNodeID
         self.lastMilestone = lastMilestone
+        self.blockReason = blockReason
         self.teamPulse = teamPulse
         self.topology = topology
     }
@@ -478,7 +482,8 @@ public struct LocalProductMissionSummary:
                 "source_kind", "lane", "status", "priority", "plan_digest",
                 "simple", "node_count", "completed_node_count",
                 "active_node_count", "review_node_count", "attention_count",
-                "current_node_id", "last_milestone", "team_pulse", "topology",
+                "current_node_id", "last_milestone", "block_reason",
+                "team_pulse", "topology",
             ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
@@ -507,6 +512,7 @@ public struct LocalProductMissionSummary:
         attentionCount = try values.decode(Int.self, forKey: .attentionCount)
         currentNodeID = try values.decode(String.self, forKey: .currentNodeID)
         lastMilestone = try values.decode(String.self, forKey: .lastMilestone)
+        blockReason = try values.decodeIfPresent(String.self, forKey: .blockReason)
         teamPulse = try values.decode(
             [LocalProductMissionPulse].self,
             forKey: .teamPulse
