@@ -3280,6 +3280,17 @@ public struct MissionWorkbench: View {
         Label("Board", systemImage: "rectangle.3.group")
           .foregroundStyle(LoomGraphite.accent)
         Spacer()
+        Toggle(
+          "Hide completed",
+          isOn: Binding(
+            get: { store.workbench.boardHideCompleted },
+            set: { store.updateMissionBoardHideCompleted($0) }
+          )
+        )
+        .toggleStyle(.checkbox)
+        .font(.caption)
+        .help("Hide the Complete lane to focus on active Missions")
+        .accessibilityLabel("Hide completed Missions")
         TextField("Filter Missions", text: missionFilter)
           .textFieldStyle(.roundedBorder)
           .frame(width: 190)
@@ -3319,7 +3330,9 @@ public struct MissionWorkbench: View {
         ScrollView(.horizontal, showsIndicators: true) {
           HStack(alignment: .top, spacing: 12) {
             ForEach(MissionLane.allCases, id: \.self) { lane in
-              missionLane(lane)
+              if !(store.workbench.boardHideCompleted && lane == .complete) {
+                missionLane(lane)
+              }
             }
           }
           .padding(16)

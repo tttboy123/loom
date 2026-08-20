@@ -2,6 +2,17 @@
 
 Updated: 2026-08-20
 
+## Mission Board "Hide completed" 开关（2026-08-20）
+
+`CURRENT / VERIFIED`: Mission Board 固定 5 条横向车道，历史任务多时 Complete
+车道拥挤。头部新增 "Hide completed" 复选框：勾选后跳过 Complete 车道，聚焦
+活跃工作（Proposed/Ready/Orchestrating/Review）。`MissionWorkspaceState` 新增
+`boardHideCompleted`（+setter/store 方法），纯显示偏好，不改权威状态。
+单元测试 `testMissionWorkspaceBoardHideCompletedTogglesLane`；`swift build
+--build-tests` 0 error；`git diff --check` 干净；安装版（LoomBuild26）构建并
+安装成功。证据：`.loom-evidence/phase4/mission-board-hide-completed/`。
+
+
 ## 用户视角验收矩阵（2026-08-20 · LoomBuild25）
 
 `CURRENT / VERIFIED`: 在安装版 App 上把 13 项核心用户旅程全部复验并归档为

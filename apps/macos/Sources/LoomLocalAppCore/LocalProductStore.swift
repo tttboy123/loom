@@ -4129,6 +4129,10 @@ public final class LocalProductStore: ObservableObject {
     workbench.updateBoardFilter(value)
   }
 
+  public func updateMissionBoardHideCompleted(_ value: Bool) {
+    workbench.updateBoardHideCompleted(value)
+  }
+
   public func updateMissionComposerDraft(_ value: String) {
     workbench.updateComposerDraft(value)
   }
