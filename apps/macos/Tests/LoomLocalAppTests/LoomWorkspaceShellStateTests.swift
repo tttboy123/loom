@@ -131,4 +131,42 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         )
         XCTAssertEqual(conversationTranscriptText([]), "")
     }
+    func testChatMissionObjectivePrefersProposalAndTruncatesLongText() {
+        let thread = LocalProductChatThread(
+            threadID: "t1",
+            messages: [
+                LocalProductChatMessage(
+                    messageID: "u1", role: "user", content: "Original ask", tentative: false
+                ),
+                LocalProductChatMessage(
+                    messageID: "p1", role: "proposal", content: "Proposed plan", tentative: true
+                ),
+            ],
+            canReply: true, requiresConfirmation: false
+        )
+        let proposal = LocalProductChatMessage(
+            messageID: "p1", role: "proposal", content: "Proposed plan", tentative: true
+        )
+        XCTAssertEqual(
+            chatMissionObjectiveText(around: proposal, thread: thread),
+            "Proposed plan"
+        )
+        // Empty proposal falls back to the latest user message.
+        let emptyProposal = LocalProductChatMessage(
+            messageID: "p2", role: "proposal", content: "", tentative: true
+        )
+        XCTAssertEqual(
+            chatMissionObjectiveText(around: emptyProposal, thread: thread),
+            "Original ask"
+        )
+        // Over-long proposal is truncated to the 4096 limit.
+        let longProposal = LocalProductChatMessage(
+            messageID: "p3", role: "proposal",
+            content: String(repeating: "x", count: 5000), tentative: true
+        )
+        let objective = chatMissionObjectiveText(around: longProposal, thread: thread)
+        XCTAssertEqual(objective.count, 4096)
+    }
+
+
 }

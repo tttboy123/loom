@@ -1587,7 +1587,7 @@ public struct LoomWorkspaceShell: View {
     }
 
     private func runMissionFromChat(_ message: LocalProductChatMessage) {
-        let objective = chatMissionObjective(
+        let objective = chatMissionObjectiveText(
             around: message,
             thread: store.chatThread
         )
@@ -1602,24 +1602,7 @@ public struct LoomWorkspaceShell: View {
         around message: LocalProductChatMessage,
         thread: LocalProductChatThread?
     ) -> String {
-        let trimmedProposal = message.displayContent.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        if !trimmedProposal.isEmpty,
-           trimmedProposal.utf8.count <= 4_096 {
-            return trimmedProposal
-        }
-        for candidate in (thread?.messages ?? []).reversed() {
-            if candidate.role == "user" {
-                let value = candidate.displayContent.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-                if !value.isEmpty && value.utf8.count <= 4_096 {
-                    return value
-                }
-            }
-        }
-        return ""
+        chatMissionObjectiveText(around: message, thread: thread)
     }
 
     private func copyChatMessage(_ text: String) {
@@ -3191,4 +3174,32 @@ func conversationDisambiguationSuffix(for date: Date, now: Date = Date()) -> Str
         formatter.dateFormat = "MMM d"
     }
     return formatter.string(from: date)
+}
+
+/// Builds a Mission objective from a chat proposal, falling back to the
+/// latest user message. A proposal longer than the Mission objective limit is
+/// truncated to the limit so the New Mission sheet starts with a useful draft
+/// instead of an empty field.
+func chatMissionObjectiveText(
+    around message: LocalProductChatMessage,
+    thread: LocalProductChatThread?
+) -> String {
+    let limit = 4_096
+    let trimmedProposal = message.displayContent.trimmingCharacters(
+        in: .whitespacesAndNewlines
+    )
+    if !trimmedProposal.isEmpty {
+        return String(trimmedProposal.prefix(limit))
+    }
+    for candidate in (thread?.messages ?? []).reversed() {
+        if candidate.role == "user" {
+            let value = candidate.displayContent.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if !value.isEmpty {
+                return String(value.prefix(limit))
+            }
+        }
+    }
+    return ""
 }

@@ -2,6 +2,16 @@
 
 Updated: 2026-08-20
 
+## "Run as Mission" objective 边界改进（2026-08-20）
+
+`CURRENT / VERIFIED`: 聊天提案转 Mission 时，提案超长（>4096）会截断到
+4096 作为 objective 起点，不再得到空字段；提案空时回退最新用户消息。
+提取 `chatMissionObjectiveText`（可测）+ 单元测试（优先提案/回退用户消息/
+截断）。证据：`.loom-evidence/phase4/run-as-mission-objective/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；安装版（LoomBuild30）构建并安装成功，App 健康。
+
+
 ## Mission Room Outcome 显示 blocked/failed 原因与下一步（2026-08-20）
 
 `CURRENT / VERIFIED`: 打开 Mission Room 时，Outcome 卡片对 blocked/failed 任务
