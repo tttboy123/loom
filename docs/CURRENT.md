@@ -2,6 +2,20 @@
 
 Updated: 2026-08-20
 
+## 侧边栏同名会话日期消歧（2026-08-20）
+
+`CURRENT / VERIFIED`: 会话标题取自首条用户消息，多个会话可能同名（如两个
+"hello"）。侧边栏现在对同名会话追加短日期后缀（今天 `h:mm a`，更早
+`MMM d`，例如 "hello · 11:10 上午" / "hello · 8月 17"），一眼可分。
+纯函数 `conversationDisambiguationSuffix(for:now:)` + 单元测试；独立校验
+today/older 后缀互不相同。安装版（LoomBuild22）正常渲染。
+本轮测试覆盖：OpenCode Profile 聊天（OPENCODE-OK）、多会话隔离
+（T1=ALPHA/T2=BETA 无串扰）。证据：
+`.loom-evidence/phase4/sidebar-session-disambiguation/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净。
+
+
 ## 会话内多消息跨条复制（2026-08-20）
 
 `CURRENT / VERIFIED`: 聊天时间线从 `LazyVStack` 改为非懒加载 `VStack` 并加

@@ -687,6 +687,20 @@ public struct LoomWorkspaceShell: View {
             .padding(.bottom, 3)
     }
 
+    /// Sidebar titles come from the first user message, so several
+    /// conversations can share the same label (e.g. "hello"). When another
+    /// session has the same title, append a short date so they are
+    /// distinguishable at a glance without reading the relative time.
+    private func conversationButtonTitle(
+        for session: LocalProductChatSession
+    ) -> String {
+        let sameTitle = store.chatSessions.filter {
+            $0.title == session.title
+        }
+        guard sameTitle.count > 1 else { return session.title }
+        return "\(session.title) · \(conversationDisambiguationSuffix(for: session.createdAt))"
+    }
+
     private func conversationButton(
         _ session: LocalProductChatSession,
         compact: Bool
@@ -703,7 +717,7 @@ public struct LoomWorkspaceShell: View {
                     .frame(width: 20)
                 if !compact {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(session.title)
+                        Text(conversationButtonTitle(for: session))
                             .font(.caption)
                             .foregroundStyle(active ? Color.primary : Color.secondary)
                             .lineLimit(1)
@@ -3164,4 +3178,17 @@ func conversationTranscriptText(_ messages: [LocalProductChatMessage]) -> String
         return "\(speaker): \(message.displayContent)"
     }
     return parts.joined(separator: "\n\n")
+}
+
+/// Short date suffix appended to a sidebar conversation title when another
+/// session shares the same auto-title: time-of-day for today, otherwise the
+/// month + day (for example "hello · 4:30 PM" / "hello · Aug 20").
+func conversationDisambiguationSuffix(for date: Date, now: Date = Date()) -> String {
+    let formatter = DateFormatter()
+    if Calendar.current.isDate(date, inSameDayAs: now) {
+        formatter.dateFormat = "h:mm a"
+    } else {
+        formatter.dateFormat = "MMM d"
+    }
+    return formatter.string(from: date)
 }

@@ -85,6 +85,18 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         XCTAssertEqual(hidden.panelPlacement, .hidden)
     }
 
+    func testConversationDisambiguationSuffixDistinguishesSameDayAndOlder() {
+        let calendar = Calendar.current
+        let now = Date()
+        let today = calendar.date(byAdding: .minute, value: -5, to: now)!
+        let older = calendar.date(byAdding: .day, value: -3, to: now)!
+        let suffixToday = conversationDisambiguationSuffix(for: today, now: now)
+        let suffixOlder = conversationDisambiguationSuffix(for: older, now: now)
+        XCTAssertFalse(suffixToday.isEmpty)
+        XCTAssertFalse(suffixOlder.isEmpty)
+        XCTAssertNotEqual(suffixToday, suffixOlder)
+    }
+
     func testConversationTranscriptTextBuildsReadableCopyableThread() {
         let messages = [
             LocalProductChatMessage(
