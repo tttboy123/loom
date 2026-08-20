@@ -2,6 +2,17 @@
 
 Updated: 2026-08-20
 
+## Mission 工作台工具栏文案与全端对齐（2026-08-20 · LoomBuild39）
+
+`CURRENT / VERIFIED`: 打开已失败的历史 Mission 时，工作台工具栏副标题仍
+显示 "Complete · Failed"（Board 面板与 TUI 已修复）。工具栏副标题改用
+`missionBoardDetailText`（Complete 车道只显示 Failed/Blocked/Succeeded）。
+安装版 live（LoomBuild39）：打开 "UI Mission Team" 工作台，AX 工具栏副标题
+**"Failed"**（原 "Complete · Failed"）。证据：
+`.loom-evidence/phase4/mission-workbench-detail-label/`。
+验证：**全量 Swift XCTest 267 用例 0 失败**；`go test ./... -p 1` 全绿；
+`git diff --check` 干净。
+
 ## TUI Attention/Overview 与 App 口径统一（2026-08-20）
 
 `CURRENT / VERIFIED`: App 端已拆"可操作 + 历史"并人话化，TUI 仍显示

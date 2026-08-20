@@ -3506,7 +3506,7 @@ public struct MissionWorkbench: View {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(
-      "\(displayTitle), \(mission.lane.rawValue), \(humanStatus(mission.status))"
+      "\(displayTitle), \(missionBoardDetailText(lane: mission.lane.rawValue, status: mission.status))"
     )
   }
 
@@ -3589,7 +3589,10 @@ public struct MissionWorkbench: View {
           teams: store.snapshot?.teams ?? []
         ),
         subtitle: record.map {
-          "\($0.lane) · \(humanStatus($0.status))"
+          missionBoardDetailText(
+            lane: $0.lane,
+            status: $0.status
+          )
         } ?? "Unavailable"
       )
       ScrollView {
