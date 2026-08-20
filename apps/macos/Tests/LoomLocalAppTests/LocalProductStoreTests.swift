@@ -3355,6 +3355,8 @@ final class LocalProductStoreTests: XCTestCase {
               attemptID: "attempt-1",
               segmentID: segmentID,
               profileID: profileID,
+              modelID: nil,
+              reasoningEffort: nil,
               contextMode: contextMode ?? .startClean,
               contextCapsuleDigest: String(repeating: "a", count: 64),
               executionBinding: responseExecutionBinding,

@@ -2,6 +2,21 @@
 
 Updated: 2026-08-20
 
+## 会话回复展示实际模型与推理强度（2026-08-20）
+
+`CURRENT / VERIFIED`: 每条回复的路由标签现在展示**实际派发**的模型与推理
+强度（`Loom Native · deepseek.primary · deepseek-v4-flash · high`），不再
+停留在 profile 默认 model——直接回应"模型对不齐、不知道这条回复用了什么"
+的反馈。`LocalProductConversationAttempt` 新增 `model_id`/`reasoning_effort`
+（Go omitempty + Swift decodeIfPresent，旧响应向前兼容）；UI 按 segment 内
+用户轮次匹配 attempt，优先显示实际值，回退 profile 默认。
+安装版 live：发 v4-flash+high → 回复成功且 attempt 带 model/effort；
+同线程切 v4-pro/high 继续成功；无效组合 fail-closed。
+证据：`.loom-evidence/phase4/conversation-model-transparency/`。
+测试：Go `go test ./... -p 1` 全绿；Swift `swift build --build-tests` 0 error；
+`gofmt`/`git diff --check` 干净。
+
+
 ## Mission 用户视角收敛：永久 running → succeeded（2026-08-20）
 
 `CURRENT / VERIFIED`: 安装版 App（重建于 HEAD + 本轮修复）上，真实 Mission

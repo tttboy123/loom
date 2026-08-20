@@ -1634,7 +1634,53 @@ public struct LoomWorkspaceShell: View {
         let account = profile.providerAccountID.isEmpty
             ? profile.providerID
             : profile.providerAccountID
-        return [harness, account, profile.modelID]
+        let actualModel = conversationAttemptModelLabel(for: message)
+        // Prefer the model and reasoning effort actually used for this reply
+        // (per-attempt) over the profile default so the label never shows a
+        // stale "aligned" model after a mid-conversation switch.
+        let model = actualModel ?? profile.modelID
+        return [harness, account, model]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
+    /// Returns "model · reasoning-effort" for the attempt that produced this
+    /// reply, matching each reply to the user turn it answers (one attempt is
+    /// recorded per dispatched user message within the same segment).
+    private func conversationAttemptModelLabel(
+        for message: LocalProductChatMessage
+    ) -> String? {
+        guard message.role != "user",
+              let thread = store.chatThread else {
+            return nil
+        }
+        var userTurnsBefore = 0
+        var foundSelf = false
+        for candidate in thread.messages {
+            if candidate.segmentID != message.segmentID {
+                continue
+            }
+            if candidate.messageID == message.messageID {
+                foundSelf = true
+                break
+            }
+            if candidate.role == "user" {
+                userTurnsBefore += 1
+            }
+        }
+        guard foundSelf, userTurnsBefore > 0,
+              userTurnsBefore <= thread.attempts.count,
+              thread.attempts[userTurnsBefore - 1].segmentID == message.segmentID
+        else {
+            return nil
+        }
+        let attempt = thread.attempts[userTurnsBefore - 1]
+        let model = (attempt.modelID ?? "").trimmingCharacters(in: .whitespaces)
+        let effort = (attempt.reasoningEffort ?? "").trimmingCharacters(in: .whitespaces)
+        if model.isEmpty && effort.isEmpty {
+            return nil
+        }
+        return [model, effort]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
     }

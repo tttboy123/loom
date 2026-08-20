@@ -250,6 +250,76 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertTrue(attempt.retryable)
     }
 
+    func testConversationAttemptDecodesActualModelAndReasoningEffort() throws {
+        let thread = try LocalProductWire.decodeChatThread(
+            Data(
+                """
+                {
+                  "thread_id":"thread-deepseek",
+                  "profile_id":"conversation-deepseek-deepseek-chat-r6",
+                  "segments":[],
+                  "attempts":[{
+                    "attempt_id":"attempt-1",
+                    "segment_id":"segment-1",
+                    "profile_id":"conversation-deepseek-deepseek-chat-r6",
+                    "model_id":"deepseek-v4-pro",
+                    "reasoning_effort":"high",
+                    "context_mode":"summary_only",
+                    "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "disclosure_receipt_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "disclosed_context_count":1,
+                    "omitted_context_count":1,
+                    "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "status":"succeeded",
+                    "failure_code":"",
+                    "started_at":"2026-08-11T04:00:00Z"
+                  }],
+                  "messages":[],
+                  "can_reply":true,
+                  "requires_confirmation":false
+                }
+                """.utf8
+            )
+        )
+        let attempt = try XCTUnwrap(thread.attempts.first)
+        XCTAssertEqual(attempt.modelID, "deepseek-v4-pro")
+        XCTAssertEqual(attempt.reasoningEffort, "high")
+    }
+
+    func testConversationAttemptDecodesMissingModelAndEffortAsNil() throws {
+        let thread = try LocalProductWire.decodeChatThread(
+            Data(
+                """
+                {
+                  "thread_id":"thread-deepseek",
+                  "profile_id":"conversation-deepseek-deepseek-chat-r6",
+                  "segments":[],
+                  "attempts":[{
+                    "attempt_id":"attempt-1",
+                    "segment_id":"segment-1",
+                    "profile_id":"conversation-deepseek-deepseek-chat-r6",
+                    "context_mode":"summary_only",
+                    "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "disclosure_receipt_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "disclosed_context_count":1,
+                    "omitted_context_count":1,
+                    "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "status":"succeeded",
+                    "failure_code":"",
+                    "started_at":"2026-08-11T04:00:00Z"
+                  }],
+                  "messages":[],
+                  "can_reply":true,
+                  "requires_confirmation":false
+                }
+                """.utf8
+            )
+        )
+        let attempt = try XCTUnwrap(thread.attempts.first)
+        XCTAssertNil(attempt.modelID)
+        XCTAssertNil(attempt.reasoningEffort)
+    }
+
     func testConversationDisclosureDecodingKeepsLegacyCompatibilityAndRejectsDrift() throws {
         let legacy = """
             {

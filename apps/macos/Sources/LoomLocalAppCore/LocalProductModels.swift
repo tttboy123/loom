@@ -2108,6 +2108,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
     public let attemptID: String
     public let segmentID: String
     public let profileID: String
+    public let modelID: String?
+    public let reasoningEffort: String?
     public let contextMode: LocalProductConversationContextMode
     public let contextCapsuleDigest: String
     public let disclosureReceiptDigest: String
@@ -2129,6 +2131,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         case attemptID = "attempt_id"
         case segmentID = "segment_id"
         case profileID = "profile_id"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
         case contextMode = "context_mode"
         case contextCapsuleDigest = "context_capsule_digest"
         case disclosureReceiptDigest = "disclosure_receipt_digest"
@@ -2151,6 +2155,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         attemptID: String,
         segmentID: String,
         profileID: String,
+        modelID: String? = nil,
+        reasoningEffort: String? = nil,
         contextMode: LocalProductConversationContextMode,
         contextCapsuleDigest: String,
         disclosureReceiptDigest: String = "",
@@ -2171,6 +2177,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         self.attemptID = attemptID
         self.segmentID = segmentID
         self.profileID = profileID
+        self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
         self.contextMode = contextMode
         self.contextCapsuleDigest = contextCapsuleDigest
         self.disclosureReceiptDigest = disclosureReceiptDigest
@@ -2194,6 +2202,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         attemptID = try values.decode(String.self, forKey: .attemptID)
         segmentID = try values.decode(String.self, forKey: .segmentID)
         profileID = try values.decode(String.self, forKey: .profileID)
+        modelID = try values.decodeIfPresent(String.self, forKey: .modelID)
+        reasoningEffort = try values.decodeIfPresent(String.self, forKey: .reasoningEffort)
         contextMode = try values.decode(
             LocalProductConversationContextMode.self,
             forKey: .contextMode

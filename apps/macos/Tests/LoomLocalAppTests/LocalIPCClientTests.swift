@@ -10,6 +10,8 @@ final class LocalIPCClientTests: XCTestCase {
             attemptID: "attempt-1",
             segmentID: "segment-1",
             profileID: "conversation-deepseek-r6",
+            modelID: "deepseek-v4-flash",
+            reasoningEffort: "high",
             contextMode: .summaryOnly,
             contextCapsuleDigest: String(repeating: "a", count: 64),
             bindingDigest: String(repeating: "b", count: 64),

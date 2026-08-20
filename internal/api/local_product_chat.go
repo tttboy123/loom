@@ -84,6 +84,8 @@ type LocalProductConversationAttempt struct {
 	AttemptID               string                                    `json:"attempt_id"`
 	SegmentID               string                                    `json:"segment_id"`
 	ProfileID               string                                    `json:"profile_id"`
+	ModelID                 string                                    `json:"model_id,omitempty"`
+	ReasoningEffort         string                                    `json:"reasoning_effort,omitempty"`
 	ContextMode             LocalProductContextMode                   `json:"context_mode"`
 	ContextCapsuleDigest    string                                    `json:"context_capsule_digest"`
 	DisclosureReceiptDigest string                                    `json:"disclosure_receipt_digest,omitempty"`
@@ -741,6 +743,8 @@ func (api *LocalProductChatAPI) SendMessage(
 			AttemptID:               fmt.Sprintf("attempt-%d", len(thread.Attempts)+1),
 			SegmentID:               segmentID,
 			ProfileID:               targetProfileID,
+			ModelID:                 strings.TrimSpace(req.ModelID),
+			ReasoningEffort:         strings.TrimSpace(req.ReasoningEffort),
 			ContextMode:             segmentMode,
 			ContextCapsuleDigest:    disclosure.CapsuleDigest,
 			DisclosureReceiptDigest: disclosure.ReceiptDigest,
