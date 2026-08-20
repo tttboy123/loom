@@ -2,6 +2,17 @@
 
 Updated: 2026-08-20
 
+## Mission Room Outcome 显示 blocked/failed 原因与下一步（2026-08-20）
+
+`CURRENT / VERIFIED`: 打开 Mission Room 时，Outcome 卡片对 blocked/failed 任务
+直接显示 ⚠ 具体原因（如 Context Retrieval Denied）+ 下一步提示（打开
+Inspector 看节点级失败，或用该 Team 开新 Mission）——用户一眼看到"为什么 +
+做什么"。数据来自已收敛的 `block_reason`。证据：
+`.loom-evidence/phase4/mission-room-outcome-reason/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；安装版（LoomBuild29）构建并安装成功。
+
+
 ## Attention（Needs You）可点击直达 Mission（2026-08-20）
 
 `CURRENT / VERIFIED`: "Needs you" 列表的每条 Attention 现在可点击，直接打开

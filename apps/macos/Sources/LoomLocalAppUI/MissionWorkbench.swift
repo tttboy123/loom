@@ -3578,12 +3578,7 @@ public struct MissionWorkbench: View {
       )
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
-          contentBlock(
-            title: "Outcome",
-            icon: "scope",
-            text: record?.lastMilestone
-              ?? "No authoritative Mission record is available."
-          )
+          missionOutcomeBlock(record)
           contentBlock(
             title: "Plan",
             icon: "point.3.connected.trianglepath.dotted",
@@ -4264,6 +4259,49 @@ public struct MissionWorkbench: View {
     .padding(.horizontal, 18)
     .frame(height: 58)
     .background(.bar)
+  }
+
+  /// Mission room Outcome card: the milestone plus, when the Mission is
+  /// blocked or failed, the concrete reason and the next step, so a user
+  /// opening the room immediately sees why and what to do.
+  private func missionOutcomeBlock(
+    _ record: LocalProductMissionSummary?
+  ) -> some View {
+    let milestone = record?.lastMilestone
+      ?? "No authoritative Mission record is available."
+    let reason = (record?.blockReason ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let needsReason =
+      record?.status == "blocked" || record?.status == "failed"
+    return VStack(alignment: .leading, spacing: 8) {
+      Label("Outcome", systemImage: "scope")
+        .font(.subheadline.weight(.semibold))
+      Text(milestone)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+      if needsReason, !reason.isEmpty {
+        Label(
+          missionHumanStatus(reason),
+          systemImage: "exclamationmark.triangle"
+        )
+        .font(.callout.weight(.medium))
+        .foregroundStyle(.orange)
+        .textSelection(.enabled)
+        Text("This Mission cannot proceed on its own. Open the Inspector for node-level failure details, or start a new Mission with the Team.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      LoomGraphite.surface,
+      in: RoundedRectangle(
+        cornerRadius: LoomGraphite.cardRadius,
+        style: .continuous
+      )
+    )
   }
 
   private func contentBlock(
