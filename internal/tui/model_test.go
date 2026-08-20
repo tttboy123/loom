@@ -3248,3 +3248,31 @@ func TestModelTeamBuilderAnswersAndMasksCredentialEntry(t *testing.T) {
 		t.Fatalf("credential calls = %d", client.credentials)
 	}
 }
+
+func TestMissionBoardRowStatusLeadsWithHumanizedOutcome(t *testing.T) {
+	// A finished Mission sits in the Complete lane with a terminal outcome;
+	// "Complete · Failed" reads contradictory, so the row should lead with
+	// the humanized outcome, mirroring the macOS App.
+	if got := missionBoardRowStatus("Complete", "failed"); got != "Failed" {
+		t.Fatalf("Complete/failed = %q, want %q", got, "Failed")
+	}
+	if got := missionBoardRowStatus("Complete", "blocked"); got != "Blocked" {
+		t.Fatalf("Complete/blocked = %q, want %q", got, "Blocked")
+	}
+	if got := missionBoardRowStatus("Complete", "succeeded"); got != "Succeeded" {
+		t.Fatalf("Complete/succeeded = %q, want %q", got, "Succeeded")
+	}
+	// Active lanes keep both lane and state.
+	if got := missionBoardRowStatus("Orchestrating", "running"); got != "Orchestrating · Running" {
+		t.Fatalf("Orchestrating/running = %q", got)
+	}
+	if got := missionBoardRowStatus("Review", "blocked"); got != "Review · Blocked" {
+		t.Fatalf("Review/blocked = %q", got)
+	}
+	if got := missionBoardRowStatus("Proposed", ""); got != "Proposed" {
+		t.Fatalf("Proposed/empty = %q", got)
+	}
+	if got := missionBoardRowStatus("", "failed"); got != "Failed" {
+		t.Fatalf("empty/failed = %q", got)
+	}
+}

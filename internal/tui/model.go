@@ -2201,11 +2201,12 @@ func (model Model) screenBody() string {
 				marker = styleSelectedMarker("›")
 			}
 			row := fmt.Sprintf(
-				"%s %s · %s · %s",
+				"%s %s · %s",
 				marker,
 				model.missionDisplayTitle(mission),
-				sanitizeCell(string(mission.Lane), 18),
-				styleStatus(humanizeStatus(mission.Status)),
+				styleStatus(
+					missionBoardRowStatus(string(mission.Lane), mission.Status),
+				),
 			)
 			if index+1 == model.selected {
 				row = styleSelected(row)
@@ -4716,6 +4717,27 @@ func humanizeStatus(value string) string {
 		return "Ready"
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+// missionBoardRowStatus mirrors the macOS App's missionBoardDetailText: a
+// Mission that reached the Complete lane already tells the user it finished,
+// so "Complete · Failed" reads contradictory — lead with the humanized
+// terminal outcome instead. Active lanes keep both lane and state.
+func missionBoardRowStatus(lane, status string) string {
+	humanized := humanizeStatus(status)
+	if lane == "Complete" {
+		if humanized == "Ready" {
+			return "Complete"
+		}
+		return humanized
+	}
+	if lane == "" {
+		return humanized
+	}
+	if humanized == "Ready" {
+		return lane
+	}
+	return lane + " · " + humanized
 }
 
 func (model Model) missionDisplayTitle(
