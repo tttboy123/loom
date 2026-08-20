@@ -352,6 +352,7 @@ public struct LoomWorkspaceShell: View {
     @State private var pendingConversationRouteTransition:
         LocalProductConversationRouteTransition?
     @FocusState private var composerFocused: Bool
+    @State private var chatSelectMode = false
 
     public init(store: LocalProductStore) {
         self.store = store
@@ -855,6 +856,8 @@ public struct LoomWorkspaceShell: View {
                         Group {
                             if store.chatThread?.messages.isEmpty ?? true {
                                 emptyConversation
+                            } else if chatSelectMode {
+                                chatTranscriptView
                             } else {
                                 chatTimeline
                             }
@@ -940,6 +943,28 @@ public struct LoomWorkspaceShell: View {
                     .help("Copy the whole conversation")
                     .accessibilityLabel("Copy conversation")
                     .disabled(store.chatThread?.messages.isEmpty ?? true)
+
+                    Button {
+                        chatSelectMode.toggle()
+                    } label: {
+                        Image(
+                            systemName: chatSelectMode
+                                ? "bubble.left.and.bubble.right"
+                                : "text.alignleft"
+                        )
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help(
+                        chatSelectMode
+                            ? "Show message bubbles"
+                            : "Show the whole conversation as one selectable text"
+                    )
+                    .accessibilityLabel(
+                        chatSelectMode
+                            ? "Show message bubbles"
+                            : "Selectable conversation text"
+                    )
 
                     Button {
                         store.newConversation()
@@ -1124,6 +1149,26 @@ public struct LoomWorkspaceShell: View {
         }
         .frame(maxWidth: 560, alignment: .leading)
         .padding(.top, 48)
+    }
+
+    /// Selectable-text mode: the whole conversation is rendered as a single
+    /// Text view, so dragging across the window selects several messages at
+    /// once and copies them together. SwiftUI text selection never merges
+    /// across separate Text views (each bubble is its own view), so this is
+    /// the reliable way to satisfy "drag over the whole conversation to copy".
+    private var chatTranscriptView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(
+                "Selectable text — drag across any part of the conversation to copy several messages at once.",
+                systemImage: "text.cursor"
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(conversationTranscriptText(store.chatThread?.messages ?? []))
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var chatTimeline: some View {

@@ -2,6 +2,22 @@
 
 Updated: 2026-08-20
 
+## 会话内整段可拖选复制：Selectable Text 模式（2026-08-20 · LoomBuild35）
+
+`CURRENT / VERIFIED`: 用户要求"在整个窗口中拖拽覆盖对话内容一起复制"。
+上一版容器级 `.textSelection(.enabled)` 在 macOS 上无法跨独立 Text 视图合并
+选区，逐条复制仍是唯一路径。本次新增 `chatSelectMode` 切换（头部
+"Selectable conversation text" 按钮）：开启后整段会话渲染为**单个**
+`Text(conversationTranscriptText(...))`，一个 Text view 的选区可覆盖整个
+窗口，拖拽即可跨多条消息一起复制；保留默认气泡视图与逐条复制、
+"Copy conversation" 一键兜底。安装版 live（LoomBuild35）：真实双消息会话
+（DeepSeek 回答 "2+2 is 4."），Selectable text 模式 OCR 显示
+`You: ...` + `Loom: ...` 单一文本块；Copy conversation 剪贴板得到
+`You: What is 2+2? Please answer in one sentence.\n\nLoom: 2+2 is 4.`；
+切回气泡正常。证据：`.loom-evidence/phase4/conversation-multiselect-copy/`。
+验证：`swift build --build-tests` 0 error；`go test ./... -p 1` 全绿；
+`git diff --check` 干净。
+
 ## 最终回归门（2026-08-20 · HEAD ef76086d）
 
 `CURRENT / VERIFIED`: `go test ./... -p 1` 全绿；`swift build --build-tests`
