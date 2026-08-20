@@ -60,6 +60,16 @@
   （20 failed / 3 blocked / 3 awaiting_recovery / 3 succeeded，active=6）；
   聊天 HEALTHY 回复成功。
 
+## 干净环境复验（2026-08-20 · 环境 active=0 后）
+在环境彻底干净（首页 0 active / 0 need you）后重跑核心旅程，全部通过：
+- DeepSeek 聊天 `CLEAN-DS`（attempt: succeeded, deepseek-v4-flash, high）
+- OpenCode 聊天 `CLEAN-OC`（attempt: succeeded）
+- 多会话隔离：T-A 回复 AAA2，无串扰
+- RoundTable 全旅程：conclude=True, snapshot(2 seats, concluded)
+- 新团队 "Clean Accept" Mission → **succeeded ~11s**（2 nodes，
+  治理链含 TeamNodeAcceptanceCommitted + TeamExecutionTerminal）
+- daemon healthy（serving_request）；missions {failed:23, blocked:3, succeeded:3}
+
 ## 运行态
 - runtimes: loom-native / opencode / pi 均 online
 - 最近对话 thread: thread-acc-*（DeepSeek / OpenCode / 多会话隔离）
