@@ -41,6 +41,10 @@
     ——与 App/daemon 投影完全一致（幻影 failed、blocked、awaiting_recovery）；
   - Teams / Evidence（真实 digest 列表）/ Mission Detail / Evolution Assets
     （Journey + promotion sources）均正常。
+- 更多屏（PTY tab 循环）渲染真实 daemon 状态：Runtimes（3 个 online）、
+  Runs/History（Terminal Failed/Succeeded 工作项）、Attention（7 项
+  inspect_failure，与 App "7 need you" 一致）、Execution（WebSearch/WebFetch
+  工具执行历史：Completed/Failed）、Workers、Integration、Customer Rules。
 - Roundtable 屏代码已接 `loadRoundtable()`；App 端全旅程已验证。
 
 ## 视觉证据
