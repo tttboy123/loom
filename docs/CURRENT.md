@@ -2,6 +2,20 @@
 
 Updated: 2026-08-20
 
+## 会话内多消息跨条复制（2026-08-20）
+
+`CURRENT / VERIFIED`: 聊天时间线从 `LazyVStack` 改为非懒加载 `VStack` 并加
+容器级 `.textSelection(.enabled)`——用户可在会话窗口内**拖拽覆盖多条消息一起
+复制**（此前每条消息独立可选，只能逐条复制）。另在头部新增
+"Copy conversation"按钮：一键把整段会话格式化为 `You: ...` / `Loom: ...`
+转写复制（空会话禁用），作为拖选的可靠兜底。新增
+`conversationTranscriptText(_:)` + 单元测试；真实数据验证输出
+`You: What is 2+2?\n\nLoom: 4`。证据：
+`.loom-evidence/phase4/conversation-multiselect-copy/`。
+验证：`swift build --build-tests` 0 error；`go build ./...` OK；
+`git diff --check` 干净；安装版（LoomBuild21）正常渲染、按钮在头部。
+
+
 ## Mission Board 展示 blocked 原因（2026-08-20）
 
 `CURRENT / VERIFIED`: Mission 卡片现在显示**为什么被 block**（如

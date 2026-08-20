@@ -1,4 +1,5 @@
 import XCTest
+@testable import LoomLocalAppCore
 @testable import LoomLocalAppUI
 
 final class LoomWorkspaceShellStateTests: XCTestCase {
@@ -82,5 +83,28 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
             panelMode: .hidden
         )
         XCTAssertEqual(hidden.panelPlacement, .hidden)
+    }
+
+    func testConversationTranscriptTextBuildsReadableCopyableThread() {
+        let messages = [
+            LocalProductChatMessage(
+                messageID: "m1", segmentID: "s1", role: "user",
+                content: "First question", tentative: false
+            ),
+            LocalProductChatMessage(
+                messageID: "m2", segmentID: "s1", role: "loom",
+                content: "First answer", tentative: false
+            ),
+            LocalProductChatMessage(
+                messageID: "m3", segmentID: "s1", role: "proposal",
+                content: "A proposed next step", tentative: true
+            ),
+        ]
+        let text = conversationTranscriptText(messages)
+        XCTAssertEqual(
+            text,
+            "You: First question\n\nLoom: First answer\n\nLoom proposal: A proposed next step"
+        )
+        XCTAssertEqual(conversationTranscriptText([]), "")
     }
 }

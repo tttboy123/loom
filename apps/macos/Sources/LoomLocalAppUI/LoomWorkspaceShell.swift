@@ -917,6 +917,17 @@ public struct LoomWorkspaceShell: View {
                     .accessibilityLabel("Switch conversation")
 
                     Button {
+                        copyConversationTranscript()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy the whole conversation")
+                    .accessibilityLabel("Copy conversation")
+                    .disabled(store.chatThread?.messages.isEmpty ?? true)
+
+                    Button {
                         store.newConversation()
                     } label: {
                         Image(systemName: "square.and.pencil")
@@ -1102,7 +1113,11 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var chatTimeline: some View {
-        LazyVStack(alignment: .leading, spacing: 18) {
+        // A non-lazy VStack keeps every message in one selectable region so a
+        // user can drag across the whole conversation and copy several
+        // messages together (LazyVStack splits rows into separate hosting
+        // views, which breaks cross-message text selection on macOS).
+        VStack(alignment: .leading, spacing: 18) {
             ForEach(store.chatThread?.messages ?? [], id: \.messageID) { message in
                 let isAgentProposal = message.role == "proposal"
                 HStack(alignment: .top, spacing: 10) {
@@ -1257,6 +1272,7 @@ public struct LoomWorkspaceShell: View {
                 }
             }
         }
+        .textSelection(.enabled)
     }
 
     private var composer: some View {
@@ -1593,6 +1609,17 @@ public struct LoomWorkspaceShell: View {
     }
 
     private func copyChatMessage(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// Copies the whole visible conversation as a readable transcript so the
+    /// user never has to copy messages one by one.
+    private func copyConversationTranscript() {
+        guard let thread = store.chatThread else { return }
+        let text = conversationTranscriptText(thread.messages)
+        guard !text.isEmpty else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -3122,4 +3149,19 @@ public struct LoomWorkspaceShell: View {
         }
         store.selectWorkspaceFolderDisplayName(url.lastPathComponent)
     }
+}
+
+/// Builds a copyable transcript of a conversation: one "Speaker: content" line
+/// per message, blank-line separated, so the whole thread can be copied at once.
+func conversationTranscriptText(_ messages: [LocalProductChatMessage]) -> String {
+    let parts = messages.map { message -> String in
+        let speaker: String
+        switch message.role {
+        case "user": speaker = "You"
+        case "proposal": speaker = "Loom proposal"
+        default: speaker = "Loom"
+        }
+        return "\(speaker): \(message.displayContent)"
+    }
+    return parts.joined(separator: "\n\n")
 }
