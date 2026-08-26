@@ -294,6 +294,7 @@ internal/app/               Mission and setup coordination
 internal/contextcapsule/    Context admission, packing and disclosure
 internal/credentials/       Credential contracts and Loom Vault
 internal/harnessgateway/    Segment Sessions and Harness lifecycle
+internal/mcp/tencent/       Decoupled Tencent Cloud MCP demo component
 internal/provider/          Provider and model catalogs/adapters
 internal/runtime/           Harness adapters and runtime discovery
 internal/work/              Mission, Run, Attempt and authority
