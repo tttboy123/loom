@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,9 +48,13 @@ func openExecStore(t testing.TB) *journal.Store {
 
 type fixedResolver struct {
 	root string
+	err  error
 }
 
 func (resolver fixedResolver) Resolve(ctx context.Context, jobID string) (string, error) {
+	if resolver.err != nil {
+		return "", resolver.err
+	}
 	return resolver.root, nil
 }
 
@@ -98,6 +103,61 @@ type remoteToolExecutorFixture struct {
 	beforeExecute func() error
 }
 
+type scopedRemoteToolExecutorFixture struct {
+	remoteToolExecutorFixture
+	expectedScope       RemoteToolScope
+	scopedAllowedKinds  []permissions.ToolKind
+	denyScopedAllowed   bool
+	scopedValidateErr   error
+	beforeScopedExecute func()
+	scopedAllowed       int
+	scopedValid         int
+	scopedExecute       int
+}
+
+func (fixture *scopedRemoteToolExecutorFixture) AllowedRemoteToolsForScope(
+	scope RemoteToolScope,
+) []permissions.ToolKind {
+	fixture.scopedAllowed++
+	if scope != fixture.expectedScope {
+		return nil
+	}
+	if fixture.denyScopedAllowed {
+		return nil
+	}
+	if fixture.scopedAllowedKinds != nil {
+		return append([]permissions.ToolKind(nil), fixture.scopedAllowedKinds...)
+	}
+	return []permissions.ToolKind{permissions.ToolMCPTool}
+}
+
+func (fixture *scopedRemoteToolExecutorFixture) ValidateProposalForScope(
+	_ context.Context,
+	scope RemoteToolScope,
+	_ permissions.ProposedCall,
+) error {
+	fixture.scopedValid++
+	if scope != fixture.expectedScope {
+		return errors.New("remote tool scope mismatch")
+	}
+	return fixture.scopedValidateErr
+}
+
+func (fixture *scopedRemoteToolExecutorFixture) ExecuteProposalContentForScope(
+	_ context.Context,
+	scope RemoteToolScope,
+	_ permissions.ProposedCall,
+) ([]byte, error) {
+	fixture.scopedExecute++
+	if scope != fixture.expectedScope {
+		return nil, errors.New("remote tool scope mismatch")
+	}
+	if fixture.beforeScopedExecute != nil {
+		fixture.beforeScopedExecute()
+	}
+	return bytes.Clone(fixture.content), nil
+}
+
 func (fixture *remoteToolExecutorFixture) AllowedRemoteTools() []permissions.ToolKind {
 	if fixture.allowed != nil {
 		return append([]permissions.ToolKind(nil), fixture.allowed...)
@@ -134,11 +194,226 @@ func TestP2DRemoteToolMustBeExplicitlyPublishedBeforeValidation(t *testing.T) {
 	})
 	if err != nil || result.Verdict != permissions.VerdictDeny ||
 		result.ErrorCode != "remote_tool_unavailable" || dispatch.wasCommitted() ||
-		remote.validateCalls != 0 || remote.executeCalls != 0 {
+		remote.validateCalls != 1 || remote.executeCalls != 0 {
 		t.Fatalf(
 			"result=%#v dispatch=%t validate=%d execute=%d err=%v",
 			result, dispatch.wasCommitted(), remote.validateCalls, remote.executeCalls, err,
 		)
+	}
+}
+
+func TestP2DRemoteToolUsesExactFrozenEnrollmentScope(t *testing.T) {
+	store := openExecStore(t)
+	authority, err := permissions.NewAuthority(store, func() time.Time {
+		return time.Date(2026, 8, 22, 9, 55, 0, 0, time.UTC)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := "p-mcp-scope"
+	if _, err = authority.DefineProfile(context.Background(), permissions.ProfileInput{
+		ProfileID: profileID, Mode: permissions.ModeDefault,
+		Rules: []permissions.Rule{{
+			RuleID: "allow-scoped-mcp", Scope: permissions.ScopeJob,
+			ScopeID: execTestJobA, Action: permissions.ActionAllow,
+			Tool: permissions.ToolMCPTool, Pattern: "mcp.live.probe/*",
+		}},
+	}, "op-"+profileID, execTestCorrelation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = authority.BindJob(
+		context.Background(), execTestJobA, profileID,
+		"op-bind-"+profileID, execTestCorrelation,
+	); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := permissions.Replay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := RemoteToolScope{
+		EnrollmentID:     "enrollment.mcp.primary",
+		EnrollmentDigest: strings.Repeat("a", 64),
+	}
+	remote := &scopedRemoteToolExecutorFixture{
+		remoteToolExecutorFixture: remoteToolExecutorFixture{
+			content: []byte("bounded scoped MCP result"),
+		},
+		expectedScope: scope,
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	ctx, err := BindRemoteToolScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(ctx, Proposal{
+		JobID: execTestJobA, OperationID: "op-mcp-scoped",
+		JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolMCPTool,
+			Path: "mcp.live.probe/lookup", Command: `{"value":"phase2d"}`,
+		},
+		DispatchGate:     &recordingDispatchGate{},
+		ResultCommitGate: &resultCommitGateFixture{store: store},
+	})
+	if err != nil || result.Verdict != permissions.VerdictAllow ||
+		remote.scopedAllowed == 0 || remote.scopedValid != 2 ||
+		remote.scopedExecute != 1 || remote.validateCalls != 0 ||
+		remote.executeCalls != 0 {
+		t.Fatalf("result=%#v scoped=%d/%d/%d unscoped=%d/%d err=%v",
+			result, remote.scopedAllowed, remote.scopedValid, remote.scopedExecute,
+			remote.validateCalls, remote.executeCalls, err)
+	}
+	result.Close()
+}
+
+func TestP2DScopedRemoteBindingRevocationBeforeDispatchKeepsTypedCode(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-scoped-revoked", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := RemoteToolScope{
+		EnrollmentID:     "enrollment.web.revoked",
+		EnrollmentDigest: strings.Repeat("b", 64),
+	}
+	remote := &scopedRemoteToolExecutorFixture{
+		expectedScope:     scope,
+		denyScopedAllowed: true,
+		scopedValidateErr: ErrRemoteToolBindingRevoked,
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 22, 10, 5, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	ctx, err := BindRemoteToolScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch := &recordingDispatchGate{}
+	result, err := adapter.Execute(ctx, Proposal{
+		JobID: execTestJobA, OperationID: "op-scoped-revoked-before-dispatch",
+		JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolWebSearch, Path: "bounded query",
+		},
+		DispatchGate: dispatch, ResultCommitGate: &resultCommitGateFixture{store: store},
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_binding_revoked" || dispatch.wasCommitted() ||
+		remote.scopedValid != 1 || remote.scopedExecute != 0 {
+		t.Fatalf(
+			"result=%#v dispatch=%t validate=%d execute=%d err=%v",
+			result, dispatch.wasCommitted(), remote.scopedValid, remote.scopedExecute, err,
+		)
+	}
+}
+
+func TestP2DScopedRemoteBindingPolicyDriftBeforeDispatchKeepsTypedCode(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-scoped-policy-drift", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := RemoteToolScope{
+		EnrollmentID:     "enrollment.web.policy-drift",
+		EnrollmentDigest: strings.Repeat("d", 64),
+	}
+	remote := &scopedRemoteToolExecutorFixture{
+		expectedScope:     scope,
+		denyScopedAllowed: true,
+		scopedValidateErr: ErrRemoteToolBindingPolicyDrift,
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 22, 10, 7, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	ctx, err := BindRemoteToolScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch := &recordingDispatchGate{}
+	result, err := adapter.Execute(ctx, Proposal{
+		JobID: execTestJobA, OperationID: "op-scoped-policy-drift-before-dispatch",
+		JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolWebSearch, Path: "bounded query",
+		},
+		DispatchGate: dispatch, ResultCommitGate: &resultCommitGateFixture{store: store},
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_binding_policy_drift" || dispatch.wasCommitted() ||
+		remote.scopedValid != 1 || remote.scopedExecute != 0 {
+		t.Fatalf(
+			"result=%#v dispatch=%t validate=%d execute=%d err=%v",
+			result, dispatch.wasCommitted(), remote.scopedValid, remote.scopedExecute, err,
+		)
+	}
+}
+
+func TestP2DScopedRemoteBindingRevokedAfterBackendReturnCannotCommit(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-scoped-commit-race", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := RemoteToolScope{
+		EnrollmentID:     "enrollment.web.commit-race",
+		EnrollmentDigest: strings.Repeat("c", 64),
+	}
+	remote := &scopedRemoteToolExecutorFixture{
+		remoteToolExecutorFixture: remoteToolExecutorFixture{
+			content: []byte("private result must never commit"),
+		},
+		expectedScope:      scope,
+		scopedAllowedKinds: []permissions.ToolKind{permissions.ToolWebSearch},
+	}
+	remote.beforeScopedExecute = func() {
+		remote.scopedValidateErr = ErrRemoteToolBindingRevoked
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 22, 10, 10, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	ctx, err := BindRemoteToolScope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultGate := &resultCommitGateFixture{store: store}
+	result, err := adapter.Execute(ctx, Proposal{
+		JobID: execTestJobA, OperationID: "op-scoped-revoke-before-commit",
+		JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolWebSearch, Path: "bounded query",
+		},
+		DispatchGate: &recordingDispatchGate{}, ResultCommitGate: resultGate,
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_binding_revoked" || remote.scopedExecute != 1 ||
+		remote.scopedValid != 2 || resultGate.calls != 0 {
+		t.Fatalf(
+			"result=%#v validate=%d execute=%d commits=%d err=%v",
+			result, remote.scopedValid, remote.scopedExecute, resultGate.calls, err,
+		)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == EventToolCompleted {
+			t.Fatal("revoked scoped result appended ToolExecutionCompleted")
+		}
+		if bytes.Contains(event.PayloadJSON, []byte("private result must never commit")) {
+			t.Fatal("revoked scoped result leaked into Journal")
+		}
 	}
 }
 
@@ -374,6 +649,96 @@ func TestRedB1_AllowExecutesExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestP2DAttemptWorktreeBindingExecutesWithoutQueueCandidate(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-attempt-worktree", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &recordingExecutor{}
+	adapter := mustAdapter(
+		t, store, projection, executor,
+		func() time.Time { return time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC) },
+	)
+	adapter.resolver = fixedResolver{err: errors.New("queue candidate unavailable")}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := BindAttemptWorktree(context.Background(), AttemptWorktreeBinding{
+		JobID: execTestJobA, RunID: "run-managed-worktree",
+		ClaimGeneration: 1, WorkspacePath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(ctx, Proposal{
+		JobID: execTestJobA, OperationID: "op-attempt-worktree",
+		JourneyID: execTestCorrelation,
+		Call:      permissions.ProposedCall{Tool: permissions.ToolBash, Command: "pwd"},
+	})
+	if err != nil || result.Verdict != permissions.VerdictAllow || executor.runCount() != 1 {
+		t.Fatalf("result=%#v runs=%d err=%v", result, executor.runCount(), err)
+	}
+	if got := executor.runs[0].Worktree; got != root {
+		t.Fatalf("run worktree = %q, want %q", got, root)
+	}
+}
+
+func TestP2DAttemptWorktreeBindingDoesNotCrossJobs(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-attempt-worktree-job", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &recordingExecutor{}
+	adapter := mustAdapter(
+		t, store, projection, executor,
+		func() time.Time { return time.Date(2026, 8, 25, 10, 5, 0, 0, time.UTC) },
+	)
+	adapter.resolver = fixedResolver{err: errors.New("queue candidate unavailable")}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := BindAttemptWorktree(context.Background(), AttemptWorktreeBinding{
+		JobID: "job-other", RunID: "run-other",
+		ClaimGeneration: 1, WorkspacePath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(ctx, Proposal{
+		JobID: execTestJobA, OperationID: "op-attempt-worktree-mismatch",
+		JourneyID: execTestCorrelation,
+		Call:      permissions.ProposedCall{Tool: permissions.ToolBash, Command: "pwd"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != permissions.VerdictDeny || result.ErrorCode != "worktree_unavailable" ||
+		executor.runCount() != 0 {
+		t.Fatalf("result=%#v runs=%d", result, executor.runCount())
+	}
+}
+
+func TestP2DBindAttemptWorktreeRejectsSymlinkRoot(t *testing.T) {
+	realRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BindAttemptWorktree(context.Background(), AttemptWorktreeBinding{
+		JobID: execTestJobA, RunID: "run-link",
+		ClaimGeneration: 1, WorkspacePath: link,
+	}); !errors.Is(err, ErrInvalidExecutionInput) {
+		t.Fatalf("BindAttemptWorktree symlink error = %v", err)
+	}
+}
+
 func TestP2DExecutionCommitsDispatchBeforeSideEffect(t *testing.T) {
 	store := openExecStore(t)
 	projection, err := mustProfileProjection(t, store, "p-dispatch-before-side-effect", nil)
@@ -516,6 +881,45 @@ func TestP2DRemoteResultIsCommittedBeforeExecutionTerminal(t *testing.T) {
 	}
 }
 
+func TestP2DRemoteBindingRevocationKeepsSpecificTerminalCode(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-remote-binding-revoked", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &remoteToolExecutorFixture{
+		executeErr: ErrRemoteToolBindingRevoked,
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 14, 12, 2, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	result, err := adapter.Execute(context.Background(), Proposal{
+		JobID: execTestJobA, OperationID: "op-remote-binding-revoked",
+		JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolWebSearch, Path: "bounded query",
+		},
+		DispatchGate:     &recordingDispatchGate{},
+		ResultCommitGate: &resultCommitGateFixture{store: store},
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_binding_revoked" || remote.executeCalls != 1 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, remote.executeCalls, err)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == EventToolFailed &&
+			bytes.Contains(event.PayloadJSON, []byte("remote_tool_binding_revoked")) {
+			return
+		}
+	}
+	t.Fatal("specific remote binding failure was not retained in the terminal fact")
+}
+
 func TestP2DRemoteResultCommitFailureNeverReplaysRemoteCall(t *testing.T) {
 	store := openExecStore(t)
 	projection, err := mustProfileProjection(t, store, "p-web-result-failure", nil)
@@ -549,6 +953,103 @@ func TestP2DRemoteResultCommitFailureNeverReplaysRemoteCall(t *testing.T) {
 	second, err := adapter.Execute(context.Background(), proposal)
 	if err != nil || second.Verdict != permissions.VerdictDeny || remote.executeCalls != 1 {
 		t.Fatalf("replay result=%#v calls=%d err=%v", second, remote.executeCalls, err)
+	}
+}
+
+func TestP2DRemoteResultCommitBindingFailureKeepsTypedTerminalCode(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-web-result-binding-failure", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &remoteToolExecutorFixture{content: []byte("private revoked result")}
+	resultGate := &resultCommitGateFixture{
+		store: store, err: ErrRemoteToolBindingPolicyDrift,
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 22, 10, 15, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	result, err := adapter.Execute(context.Background(), Proposal{
+		JobID: execTestJobA, OperationID: "op-web-result-binding-failure",
+		JourneyID: execTestCorrelation,
+		Call: permissions.ProposedCall{
+			Tool: permissions.ToolWebSearch, Path: "bounded query",
+		},
+		DispatchGate: &recordingDispatchGate{}, ResultCommitGate: resultGate,
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_binding_policy_drift" || resultGate.calls != 1 {
+		t.Fatalf("result=%#v commits=%d err=%v", result, resultGate.calls, err)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == EventToolCompleted {
+			t.Fatal("commit-time policy drift appended ToolExecutionCompleted")
+		}
+	}
+}
+
+func TestP2DRemoteResultRollbackFailureIsContentFreeAndNeverCompletes(t *testing.T) {
+	store := openExecStore(t)
+	projection, err := mustProfileProjection(t, store, "p-web-result-rollback-failure", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateContent := []byte("private encrypted rollback result")
+	remote := &remoteToolExecutorFixture{content: privateContent}
+	resultGate := &resultCommitGateFixture{
+		store: store,
+		err: errors.Join(
+			ErrRemoteToolResultRollback,
+			ErrRemoteToolBindingPolicyDrift,
+			errors.New("encrypted payload rollback unavailable"),
+		),
+	}
+	adapter := mustAdapter(
+		t, store, projection, &recordingExecutor{},
+		func() time.Time { return time.Date(2026, 8, 23, 10, 15, 0, 0, time.UTC) },
+	).WithRemoteToolExecutor(remote)
+	call := permissions.ProposedCall{
+		Tool: permissions.ToolWebSearch, Path: "bounded rollback query",
+	}
+	result, err := adapter.Execute(context.Background(), Proposal{
+		JobID: execTestJobA, OperationID: "op-web-result-rollback-failure",
+		JourneyID: execTestCorrelation, Call: call,
+		DispatchGate: &recordingDispatchGate{}, ResultCommitGate: resultGate,
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_result_rollback_failed" || resultGate.calls != 1 {
+		t.Fatalf("result=%#v commits=%d err=%v", result, resultGate.calls, err)
+	}
+	if strings.Contains(result.Note, string(privateContent)) ||
+		strings.Contains(result.Denial.Reason, string(privateContent)) ||
+		strings.Contains(result.Note, call.Path) || strings.Contains(result.Denial.Reason, call.Path) {
+		t.Fatalf("rollback diagnostic leaked content or arguments: %#v", result)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundFailure := false
+	for _, event := range events {
+		if event.Type == EventToolCompleted {
+			t.Fatal("rollback failure appended ToolExecutionCompleted")
+		}
+		if bytes.Contains(event.PayloadJSON, privateContent) ||
+			bytes.Contains(event.PayloadJSON, []byte(call.Path)) {
+			t.Fatalf("Journal event %s leaked rollback content/query", event.Type)
+		}
+		if event.Type == EventToolFailed &&
+			bytes.Contains(event.PayloadJSON, []byte("remote_tool_result_rollback_failed")) {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Fatal("rollback failure was not diagnosable from the content-free terminal code")
 	}
 }
 

@@ -1,0 +1,10 @@
+51:AXStaticText :: You: Session B marker: name the color of the sky in one word.
+53:Loom: blue
+55:You: 请用一句话回答：2+3等于几？
+57:Loom: 2+3等于5。
+59:You: 请用一句话回答：2+3等于几？
+61:Loom: 2+3等于5。
+63:You: 回车发送测试：7*8等于几？
+65:Loom: 7×8等于56。
+67:You: 是否已显示回复确认：2+2等于几？
+69:Loom: 2+2等于4。

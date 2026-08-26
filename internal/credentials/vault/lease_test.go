@@ -121,6 +121,33 @@ func TestCredentialLeaseImmediateExpiryPublishesInitializedTimer(t *testing.T) {
 	}
 }
 
+func TestCredentialLeaseSupportsBoundedHarnessExecutionWindow(t *testing.T) {
+	identity := CredentialIdentity{
+		CredentialReference: "credential-ref-minimax-primary",
+		ProviderID:          "minimax", ProviderAccountID: "minimax.primary",
+		CredentialRevision: 23,
+	}
+	manager, err := NewCredentialLeaseManager(&leaseFixtureReader{
+		secrets: map[CredentialIdentity][]byte{identity: []byte("lease-secret")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	lease, err := manager.Acquire(context.Background(), identity, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("10 minute Agent lease = %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if lease, err := manager.Acquire(
+		context.Background(), identity, 15*time.Minute+time.Nanosecond,
+	); !errors.Is(err, ErrInvalidVaultInput) || lease != nil {
+		t.Fatalf("overlong lease = %#v, %v", lease, err)
+	}
+}
+
 func TestCredentialLeaseRevokeRejectsInflightAndFutureAcquire(t *testing.T) {
 	identity := CredentialIdentity{
 		CredentialReference: "credential-ref-deepseek-primary",

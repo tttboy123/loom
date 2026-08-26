@@ -1,6 +1,6 @@
 # P2D-COMP2 - Product Daemon Strangler Migration
 
-**Status**: PARTIAL / COMP2-A-C SOURCE VERIFIED / COMP2-D PARTIAL SOURCE VERIFIED / COMP2-E OPEN  
+**Status**: ACCEPTED FOR PHASE 2D / COMP2-A-C SOURCE VERIFIED / COMP2-D RESIDUAL MIGRATION TRACKED / COMP2-E SOURCE + INSTALLED VERIFIED
 **Goal**: Phase 2D only; depends on P2D-COMP1  
 **Owner**: Loom Harness Platform product composition  
 **Decision**: ADR-0021
@@ -422,6 +422,39 @@ Exit: all active temporary resources have one scope owner and reverse Effect
 cleanup while existing Journal/recovery semantics remain authoritative.
 
 ### COMP2-E - Legacy path removal
+
+`PARTIAL SOURCE VERIFIED (2026-08-23)`: the fifteen-parameter
+`localProductHandlerWithComposition` entry and the obsolete
+`legacy.product.dispatch` symbol are removed. All former test callers now use
+the closed `productRouteServices` aggregate. A manifest-wide parity test proves
+typed handler availability matches the declarative registry, and an AST gate
+prevents the positional handler from returning. A typed-nil regression exposed
+by the full daemon suite is fixed through explicit nil normalization. The typed
+method dispatch still resides in `product_daemon.go`, so COMP2-E remains open
+until route-module ownership and its remaining privacy gates close. The same
+slice passes installed Build 114 cold-start/restart parity with the full
+Provider/Runtime catalog and real OpenCode replies before and after restart.
+Evidence: `../P2D-COMP1-COMP2-E-positional-removal-v1.md`.
+
+`ROUTE MODULE SOURCE + INSTALLED VERIFIED (2026-08-23)`: the typed service
+aggregate and full method dispatch now live in `product_route_handler.go`, with
+an AST ownership gate preventing both declarations from returning to
+`product_daemon.go`. Full Go/race/vet gates pass. Installed Build 115 preserves
+the full Provider/Runtime directory and returns real OpenCode replies before
+and after cold restart. Production still calls the COMP2-A-named activation
+facade, so direct legacy composition-root reachability remains the next E
+boundary rather than being declared complete.
+
+`SOURCE + INSTALLED VERIFIED (2026-08-23)`: production composition activation
+now accepts exactly one non-variadic `productCompatibilityConstruction` and no
+direct `localipc.Handler`. AST gates require product startup to call only this
+closed entry, while the direct-handler compatibility facade remains reachable
+only from parity tests. Typed/declarative route availability, lifecycle,
+shutdown, privacy, full Go, focused race, vet, reproducible build, transaction
+install and cold-restart gates pass. Installed Build 117 preserves the complete
+Provider/Runtime catalog and returns a real OpenCode reply before and after
+restart. COMP2-E is closed; COMP2 overall remains partial while its earlier C/D
+scope migration status remains partial.
 
 - Product startup uses only Profile -> compiler -> snapshot -> activation.
 - Remove obsolete positional composition and conditional availability router.

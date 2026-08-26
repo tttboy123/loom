@@ -15,18 +15,22 @@ func TestClientUsesExtendedTimeoutOnlyForLongOperations(t *testing.T) {
 		timeout:         5 * time.Second,
 		extendedTimeout: 10 * time.Second,
 	}
-	for _, method := range []string{"credential_verify", "mission_execution"} {
+	for _, method := range []string{"credential_verify"} {
 		if got := client.timeoutForMethod(method); got != 10*time.Second {
 			t.Fatalf("timeoutForMethod(%q) = %s, want 10s", method, got)
 		}
 	}
-	for _, method := range []string{"chat_message", "agent_attempt_recovery"} {
-		if got := client.timeoutForMethod(method); got != 55*time.Second {
-			t.Fatalf("timeoutForMethod(%s) = %s, want 55s", method, got)
-		}
+	if got := client.timeoutForMethod("mission_execution"); got != 185*time.Second {
+		t.Fatalf("timeoutForMethod(mission_execution) = %s, want 185s", got)
+	}
+	if got := client.timeoutForMethod("chat_message"); got != 1810*time.Second {
+		t.Fatalf("timeoutForMethod(chat_message) = %s, want 1810s", got)
+	}
+	if got := client.timeoutForMethod("agent_attempt_recovery"); got != 55*time.Second {
+		t.Fatalf("timeoutForMethod(agent_attempt_recovery) = %s, want 55s", got)
 	}
 	for _, method := range []string{
-		"ping", "snapshot", "timeline_page", "chat_thread",
+		"ping", "snapshot", "timeline_page", "chat_thread", "chat_context_disclosure",
 	} {
 		if got := client.timeoutForMethod(method); got != 5*time.Second {
 			t.Fatalf("timeoutForMethod(%q) = %s, want 5s", method, got)
@@ -119,7 +123,10 @@ func TestExtendedClientReceivesControlledServerDeadlineResponse(t *testing.T) {
 	}
 	started := time.Now()
 	var result map[string]any
-	err = client.Call(context.Background(), "mission_execution", struct{}{}, &result)
+	// Keep this bounded response test on the generic extended operation budget;
+	// mission execution has a larger production budget because new-attempt
+	// preflight may persist encrypted Context Capsules.
+	err = client.Call(context.Background(), "credential_verify", struct{}{}, &result)
 	if elapsed := time.Since(started); elapsed < extendedRequestDeadline ||
 		elapsed >= 15*time.Second {
 		t.Fatalf("controlled response elapsed = %s, want [10s, 15s)", elapsed)

@@ -89,6 +89,7 @@ public struct MissionWorkspaceState: Equatable, Sendable {
     public private(set) var missions: [MissionListItem] = []
     public private(set) var boardLane: MissionLane?
     public private(set) var boardFilter = ""
+    public private(set) var boardHideCompleted = false
     public private(set) var boardAnchor = "top"
     private var continuityByMission: [String: MissionContinuity] = [:]
 
@@ -153,6 +154,10 @@ public struct MissionWorkspaceState: Equatable, Sendable {
 
     public mutating func updateBoardFilter(_ value: String) {
         boardFilter = String(value.prefix(256))
+    }
+
+    public mutating func updateBoardHideCompleted(_ value: Bool) {
+        boardHideCompleted = value
     }
 
     public mutating func updateBoardAnchor(_ value: String) {

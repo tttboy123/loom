@@ -1,3 +1,5 @@
+import Combine
+import Darwin
 import Foundation
 import XCTest
 
@@ -233,6 +235,41 @@ final class LocalProductStoreTests: XCTestCase {
       })?.revision,
       2
     )
+  }
+
+  func testCredentialCandidateImportUsesSecretlessIPCAndRefreshesVerifiedAccount()
+    async throws
+  {
+    let client = try ProviderSetupStubClient(deepSeekEnabled: true)
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+    let candidate = try JSONDecoder().decode(
+      LocalProductCredentialImportCandidate.self,
+      from: Data(
+        """
+        {"candidate_id":"\(String(repeating: "c", count: 64))",
+         "candidate_digest":"\(String(repeating: "d", count: 64))",
+         "source_application":"CC Switch","display_name":"DeepSeek",
+         "target_provider_id":"deepseek","protocol":"openai_responses",
+         "endpoint":"https://api.deepseek.com","endpoint_fingerprint":"\(String(repeating: "e", count: 64))",
+         "model_ids":["deepseek-chat"],
+         "import_mode":"exact_provider","current":true,
+         "credential_available":true,"review_policy_version":1,
+         "review_policy_digest":"\(String(repeating: "f", count: 64))"}
+        """.utf8
+      )
+    )
+
+    await store.importCredentialCandidate(candidate)
+
+    XCTAssertEqual(client.importedCredentialCandidateIDs, [candidate.id])
+    XCTAssertEqual(store.providerOperationStatus["deepseek.primary"], "Verified")
+    XCTAssertEqual(
+      store.setupSnapshot?.providerAccounts.first?.revision,
+      2
+    )
+    XCTAssertTrue(client.genericConfigureProviderIDs.isEmpty)
+    XCTAssertTrue(client.genericVerifyProviderIDs.isEmpty)
   }
 
   func testDeepSeekMigrationReentryImportsIntoVaultThenVerifies() async throws {
@@ -587,6 +624,7 @@ final class LocalProductStoreTests: XCTestCase {
     await store.openMissionAndActivate("mission/team-1")
     XCTAssertNil(store.executionResult)
     let sideTask = try XCTUnwrap(store.snapshot?.sideTasks.first)
+    XCTAssertTrue(store.canDecideSideTask(sideTask))
 
     await store.decideSideTask(sideTask, decision: "discard")
 
@@ -650,6 +688,287 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(store.snapshot, expected)
     XCTAssertEqual(store.connectionState, .online)
     XCTAssertEqual(client.snapshotRequestCount, 3)
+  }
+
+  func testConnectWithRetryKeepsColdStartInLoadingStateBetweenAttempts() async {
+    let expected = LocalProductSnapshot.empty(viewVersion: "view-ready")
+    let client = StubLocalProductClient(
+      snapshots: [
+        .failure(LocalProductClientError.unavailable),
+        .success(expected),
+      ]
+    )
+    let store = LocalProductStore(client: client)
+    var publishedStates: [LocalProductConnectionState] = []
+    let observation = store.$connectionState.sink { state in
+      publishedStates.append(state)
+    }
+    defer { observation.cancel() }
+
+    let connection = Task {
+      await store.connectWithRetry(
+        maxAttempts: 2,
+        delayNanoseconds: 250_000_000
+      )
+    }
+    while client.snapshotRequestCount < 1 { await Task.yield() }
+    try? await Task.sleep(nanoseconds: 10_000_000)
+
+    XCTAssertEqual(store.connectionState, .loading)
+    XCTAssertFalse(
+      publishedStates.contains(.offline(reason: "unavailable")),
+      "cold-start retries must not publish a transient unavailable state"
+    )
+    await connection.value
+    XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testReconnectWhileUnavailableRecoversWithoutManualRefresh() async throws {
+    let expected = LocalProductSnapshot.empty(viewVersion: "view-ready")
+    let client = RecoveringLocalProductClient(
+      failuresRemaining: 5,
+      snapshot: expected
+    )
+    let store = LocalProductStore(client: client)
+
+    // A cold start that exhausts the initial bounded retry window.
+    await store.connectWithRetry(maxAttempts: 2, delayNanoseconds: 0)
+    XCTAssertEqual(store.snapshot, nil)
+    XCTAssertEqual(store.connectionState, .offline(reason: "unavailable"))
+
+    // The resident service comes back later; the monitor must recover on its own.
+    let monitor = Task {
+      await store.reconnectWhileUnavailable(
+        pollNanoseconds: 10_000_000,
+        retryDelayNanoseconds: 0
+      )
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while store.connectionState != .online && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    monitor.cancel()
+    await monitor.value
+
+    XCTAssertEqual(store.snapshot, expected)
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertEqual(client.snapshotRequestCount, 6)
+  }
+
+  func testReconnectMonitorRetriesSetupProfilesAfterTransientSetupFailure() async throws {
+    let client = try ProviderSetupStubClient(setupFailuresRemaining: 1)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    await store.refreshSetup()
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertEqual(store.setupState, .unavailable(reason: "unavailable"))
+    XCTAssertNil(store.setupSnapshot)
+
+    let monitor = Task {
+      await store.reconnectWhileUnavailable(
+        pollNanoseconds: 10_000_000,
+        retryDelayNanoseconds: 0
+      )
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while store.setupSnapshot == nil && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    monitor.cancel()
+    await monitor.value
+
+    XCTAssertNotNil(store.setupSnapshot)
+    XCTAssertEqual(store.setupState, .ready)
+    XCTAssertGreaterThanOrEqual(client.setupRequestCount, 2)
+  }
+
+  func testReconnectMonitorRetriesEmptySetupSnapshotWithoutLosingInventory() async throws {
+    let client = try ProviderSetupStubClient(emptySetupSnapshotsRemaining: 1)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    await store.refreshSetup()
+    XCTAssertEqual(store.setupState, .unavailable(reason: "empty_setup"))
+    XCTAssertNil(store.setupSnapshot)
+
+    let monitor = Task {
+      await store.reconnectWhileUnavailable(
+        pollNanoseconds: 10_000_000,
+        retryDelayNanoseconds: 0
+      )
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while (store.setupSnapshot?.providers.isEmpty ?? true) && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    monitor.cancel()
+    await monitor.value
+
+    XCTAssertEqual(store.setupState, .ready)
+    XCTAssertFalse(store.setupSnapshot?.providers.isEmpty ?? true)
+    XCTAssertGreaterThanOrEqual(client.setupRequestCount, 2)
+  }
+
+  func testReconnectMonitorProbesSilentDaemonDeathAndRecovers() async throws {
+    // The daemon can exit without the app ever issuing a request, so the
+    // monitor must proactively probe the socket while it believes it is
+    // online. A dead daemon is detected within one poll window, the store
+    // flips offline, and the next poll reconnects on its own once the daemon
+    // is back without any manual refresh.
+    let snapshot = LocalProductSnapshot.empty(viewVersion: "view-1")
+    let client = PingProbeClient(
+      snapshot: snapshot,
+      pingFailuresRemaining: 3
+    )
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    XCTAssertEqual(store.connectionState, .online)
+
+    let monitor = Task {
+      await store.reconnectWhileUnavailable(
+        pollNanoseconds: 10_000_000,
+        retryDelayNanoseconds: 0
+      )
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while client.pingCount < 4 && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    monitor.cancel()
+    await monitor.value
+
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertGreaterThanOrEqual(client.pingCount, 4)
+    XCTAssertGreaterThanOrEqual(client.snapshotRequestCount, 4)
+  }
+
+  func testRunHistoryPageOverflowNormalizesToOnline() async {
+    // Rich history (>64 runs) is a normal condition, not a degradation: the
+    // run list paginates and the "Load more" control stays visible. The
+    // connection surface must not show the "Some information is unavailable"
+    // banner for this.
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "",
+      runPage: LocalProductPageCursor(nextCursor: "cursor-2", hasMore: true)
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.snapshot, snapshot)
+    XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testEvidenceHistoryPageOverflowNormalizesToOnline() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "",
+      evidencePage: LocalProductPageCursor(nextCursor: "cursor-2", hasMore: true)
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testNavigationPaginationKeepsHealthyConnectionState() async {
+    // Navigation surfaces paginate independently. More records do not make a
+    // healthy daemon or conversation unavailable at the global connection
+    // level.
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "",
+      teamPage: LocalProductPageCursor(nextCursor: "cursor-2", hasMore: true)
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testObserverModelsTimeoutKeepsDegradedPartialState() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "observer_models_timeout"
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(
+      store.connectionState,
+      .partial(reason: "observer_models_timeout")
+    )
+  }
+
+  func testObserverVersionTimeoutKeepsDegradedPartialState() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "observer_version_timeout"
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(
+      store.connectionState,
+      .partial(reason: "observer_version_timeout")
+    )
+  }
+
+  func testSideTasksLimitReasonKeepsDegradedPartialState() async {
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: "side_tasks_limit_reached"
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(
+      store.connectionState,
+      .partial(reason: "side_tasks_limit_reached")
+    )
+  }
+
+  func testUnknownPartialKeepsDegradedState() async {
+    // Unknown partial states stay conservative: fail toward the banner rather
+    // than hiding a real degradation the client cannot classify.
+    let snapshot = LocalProductSnapshot(
+      viewVersion: "view-1",
+      partial: true,
+      reason: ""
+    )
+    let store = LocalProductStore(
+      client: StubLocalProductClient(snapshots: [.success(snapshot)])
+    )
+
+    await store.refresh()
+
+    XCTAssertEqual(store.connectionState, .partial(reason: "partial_view"))
   }
 
   func testRefreshPreservesSelectedTaskDraftAndInspector() async throws {
@@ -1186,13 +1505,14 @@ final class LocalProductStoreTests: XCTestCase {
     }
   }
 
-  func testTimelineRejectsGapAndBoundedPageOverflowWithoutPartialPublication() async throws {
+  func testTimelinePublishesCurrentBoardButNotHistoryWhenStreamHasGap() async throws {
     let snapshot = try timelineSnapshot(teamIDs: ["team-1"])
     let gapClient = TimelinePagingStubClient(
       snapshot: snapshot,
       pages: [
         "": try timelinePage(
           teamID: "team-1",
+          nextCursor: "",
           hasMore: false,
           gap: true,
           records: []
@@ -1203,8 +1523,73 @@ final class LocalProductStoreTests: XCTestCase {
     await gapStore.refresh()
     gapStore.selectTeam(snapshot.teams[0])
     await gapStore.activateSelectedTeam()
-    XCTAssertNil(gapStore.timeline)
+    XCTAssertEqual(gapStore.timeline?.teamInstanceID, "team-1")
+    XCTAssertEqual(gapStore.timeline?.gap?.reason, "cursor_conflict")
     XCTAssertEqual(gapStore.timelineState, .unavailable)
+    XCTAssertEqual(gapStore.connectionState, .online)
+
+    XCTAssertFalse(gapStore.canCreateSideTask(for: "mission/team-1"))
+
+    var pages: [String: LocalProductTimelinePage] = [:]
+    for index in 0..<8 {
+      let cursor = index == 0 ? "" : "cursor-\(index)"
+      pages[cursor] = try timelinePage(
+        teamID: "team-1",
+        nextCursor: "cursor-\(index + 1)",
+        hasMore: true,
+        records: []
+      )
+    }
+    let overflowClient = TimelinePagingStubClient(snapshot: snapshot, pages: pages)
+    let overflowStore = LocalProductStore(client: overflowClient)
+    await overflowStore.refresh()
+    overflowStore.selectTeam(snapshot.teams[0])
+    await overflowStore.activateSelectedTeam()
+    XCTAssertNil(overflowStore.timeline)
+    XCTAssertEqual(overflowStore.timelineState, .unavailable)
+  }
+
+  func testInstalledMissionPublishesBoundAgentBoardAcrossRecoverableGap() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard environment["LOOM_LIVE_MISSION_BOARD"] == "1" else {
+      throw XCTSkip("installed Mission board gate is opt-in")
+    }
+    let missionID = try XCTUnwrap(environment["LOOM_LIVE_MISSION_ID"])
+    let socketPath = environment["LOOM_SOCKET_PATH"]
+      ?? "/Users/lune/Library/Application Support/Loom/run/loomd.sock"
+    let client = try LocalIPCClient(socketPath: socketPath)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    let mission = try XCTUnwrap(
+      store.snapshot?.missions.first { $0.missionID == missionID }
+    )
+    let direct = try await client.timeline(
+      teamInstanceID: mission.teamInstanceID,
+      cursor: "",
+      limit: 64
+    )
+    XCTAssertNotNil(direct.gap)
+    XCTAssertTrue(direct.board.nodes.allSatisfy(\.executionBindingAvailable))
+    let opened = await store.openMissionAndActivate(missionID)
+    XCTAssertTrue(opened)
+
+    let timeline = try XCTUnwrap(
+      store.timeline,
+      "state=\(store.timelineState) connection=\(store.connectionState)"
+    )
+    XCTAssertNotNil(timeline.gap)
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertEqual(store.timelineState, .unavailable)
+    XCTAssertFalse(timeline.board.nodes.isEmpty)
+    XCTAssertTrue(timeline.board.nodes.allSatisfy(\.executionBindingAvailable))
+    XCTAssertTrue(timeline.board.nodes.allSatisfy {
+      !$0.harnessAdapter.isEmpty && !$0.providerID.isEmpty && !$0.modelID.isEmpty
+    })
+  }
+
+  func testTimelineRejectsBoundedPageOverflowWithoutPartialPublication() async throws {
+    let snapshot = try timelineSnapshot(teamIDs: ["team-1"])
 
     var pages: [String: LocalProductTimelinePage] = [:]
     for index in 0..<8 {
@@ -1374,12 +1759,131 @@ final class LocalProductStoreTests: XCTestCase {
         try timelinePage(teamID: "team-1", hasMore: false, records: [])
       )
     )
-    await load.value
+    let activationSucceeded = await load.value
 
+    XCTAssertFalse(activationSucceeded)
     XCTAssertEqual(store.workbench.route, .board)
     XCTAssertNil(store.timeline)
     XCTAssertEqual(store.timelineState, .idle)
     XCTAssertEqual(store.connectionState, .online)
+  }
+
+  func testVisibleMissionRefreshPreservesObservedTentativeOutputAtTerminal() async throws {
+    let running = try missionActivitySnapshot(status: "running", lane: "Orchestrating")
+    let terminal = try missionActivitySnapshot(status: "succeeded", lane: "Complete")
+    let teamID = try XCTUnwrap(running.missions.first?.teamInstanceID)
+    let tentative = timelineRecord(
+      deliveryID: "visible-output-1",
+      kind: "node_output_delta",
+      teamID: teamID,
+      authority: "tentative",
+      logicalNodeID: "main",
+      attemptNumber: 1,
+      sourceSequence: 1,
+      textDelta: "Implemented the game loop."
+    )
+    let client = MissionActivityRefreshStubClient(
+      snapshots: [running, terminal],
+      pages: [
+        try timelinePage(
+          teamID: teamID, boardStatus: "running", hasMore: false,
+          records: [tentative]
+        ),
+        try timelinePage(
+          teamID: teamID, boardStatus: "succeeded", hasMore: false,
+          records: []
+        ),
+      ]
+    )
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    let opened = await store.openMissionAndActivate("mission/team-1")
+    XCTAssertTrue(opened)
+    XCTAssertEqual(store.timeline?.records.count, 1)
+
+    let refreshed = await store.refreshVisibleMissionActivity("mission/team-1")
+    XCTAssertTrue(refreshed)
+
+    XCTAssertEqual(store.snapshot?.missions.first?.status, "succeeded")
+    XCTAssertEqual(store.timeline?.board.status, "succeeded")
+    XCTAssertEqual(store.timeline?.records.count, 1)
+    XCTAssertEqual(
+      store.timeline?.records.first?.payload.textDelta,
+      "Implemented the game loop."
+    )
+    XCTAssertEqual(client.timelineRequestCount, 2)
+  }
+
+  func testVisibleMissionFollowSurvivesTransientTimelineFailure() async throws {
+    let running = try missionActivitySnapshot(
+      status: "running", lane: "Orchestrating"
+    )
+    let terminal = try missionActivitySnapshot(
+      status: "succeeded", lane: "Complete"
+    )
+    let client = MissionActivityTimelineFailureStubClient(
+      snapshots: [running, running, terminal]
+    )
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    store.openMission("mission/team-1")
+    await store.followVisibleMissionActivity(
+      "mission/team-1", pollNanoseconds: 250_000_000
+    )
+
+    XCTAssertEqual(store.snapshot?.missions.first?.status, "succeeded")
+    XCTAssertEqual(client.snapshotRequestCount, 3)
+    XCTAssertGreaterThanOrEqual(client.timelineRequestCount, 1)
+    XCTAssertEqual(store.workbench.route, .mission("mission/team-1"))
+  }
+
+  func testVisibleMissionRefreshKeepsLastActivityDuringCursorConflict() async throws {
+    let running = try missionActivitySnapshot(
+      status: "running", lane: "Orchestrating"
+    )
+    let teamID = try XCTUnwrap(running.missions.first?.teamInstanceID)
+    let tentative = timelineRecord(
+      deliveryID: "visible-output-before-cursor-conflict",
+      kind: "node_output_delta",
+      teamID: teamID,
+      authority: "tentative",
+      textDelta: "First visible Agent update."
+    )
+    let client = MissionActivityTimelineSequenceStubClient(
+      snapshots: [running, running],
+      pages: [
+        .success(
+          try timelinePage(
+            teamID: teamID, boardStatus: "running", hasMore: false,
+            records: [tentative]
+          )
+        ),
+        .failure(
+          LocalIPCRemoteError(
+            code: .cursorConflict,
+            recoverable: true
+          )
+        ),
+      ]
+    )
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    let opened = await store.openMissionAndActivate("mission/team-1")
+    XCTAssertTrue(opened)
+    XCTAssertEqual(store.timelineState, .loaded)
+
+    let refreshed = await store.refreshVisibleMissionActivity("mission/team-1")
+    XCTAssertTrue(refreshed)
+
+    XCTAssertEqual(store.connectionState, .online)
+    XCTAssertEqual(store.timelineState, .loaded)
+    XCTAssertEqual(
+      store.timeline?.records.first?.payload.textDelta,
+      "First visible Agent update."
+    )
   }
 
   func testNewMissionSelectionFencesLateTimelineSuccessAndError() async throws {
@@ -1414,10 +1918,12 @@ final class LocalProductStoreTests: XCTestCase {
       }
       await client.waitForSuspendedRequest()
 
-      await store.openMissionAndActivate("mission/team-2")
+      let currentActivationSucceeded = await store.openMissionAndActivate("mission/team-2")
       await client.resolveSuspended(with: lateResult)
-      await staleLoad.value
+      let staleActivationSucceeded = await staleLoad.value
 
+      XCTAssertTrue(currentActivationSucceeded)
+      XCTAssertFalse(staleActivationSucceeded)
       XCTAssertEqual(store.workbench.route, .mission("mission/team-2"))
       XCTAssertEqual(store.timeline?.teamInstanceID, "team-2")
       XCTAssertEqual(store.timeline?.records.map(\.deliveryID), ["delivery-team-2"])
@@ -1599,6 +2105,47 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(store.snapshot?.teams.count, 1)
     XCTAssertEqual(store.snapshot?.teams.first?.teamInstanceID, "team-instance-fixture")
     XCTAssertTrue(store.snapshot?.teams.first?.executable == true)
+  }
+
+  func testConfirmBuilderCommittingAppliesUncommittedFieldsFirst() async throws {
+    let client = try ProviderSetupStubClient(materializesTeam: true)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    await store.startBlankBuilder()
+    XCTAssertTrue(try XCTUnwrap(store.builderSession).canConfirm)
+
+    // Type name + purpose without the Return-commit step, then Confirm.
+    await store.confirmBuilderCommitting(
+      name: "UI Mission Team",
+      purpose: "Verify the governed journey"
+    )
+
+    // The uncommitted name/purpose edits were sent to the daemon before confirm.
+    XCTAssertEqual(
+      client.builderEdits.map(\.field),
+      ["team_name", "purpose"]
+    )
+    XCTAssertEqual(client.builderEdits.first?.value, "UI Mission Team")
+    XCTAssertEqual(client.builderEdits.last?.value, "Verify the governed journey")
+    XCTAssertEqual(client.builderConfirmRequestCount, 1)
+    XCTAssertEqual(store.snapshot?.teams.count, 1)
+  }
+
+  func testConfirmBuilderCommittingSkipsUnchangedFields() async throws {
+    let client = try ProviderSetupStubClient(materializesTeam: true)
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    await store.startBlankBuilder()
+    // Preview name is "Controlled Team"; passing the same value must not edit.
+    await store.confirmBuilderCommitting(
+      name: "Controlled Team",
+      purpose: "One bounded Mission"
+    )
+
+    XCTAssertTrue(client.builderEdits.isEmpty)
+    XCTAssertEqual(client.builderConfirmRequestCount, 1)
   }
 
   func testExecutableTeamsExposesOnlyConfirmedRunnableTeams() async throws {
@@ -1858,6 +2405,19 @@ final class LocalProductStoreTests: XCTestCase {
   }
 
   func testMissionPreflightAndStartUseVisibleConfirmedTeamWithoutTypedIDs() async throws {
+    let workspaceRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-mission-workspace-\(UUID().uuidString)")
+    let preflightWorkspace = workspaceRoot.appendingPathComponent("selected")
+    let laterWorkspace = workspaceRoot.appendingPathComponent("changed-after-preflight")
+    try FileManager.default.createDirectory(
+      at: preflightWorkspace,
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+      at: laterWorkspace,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: workspaceRoot) }
     let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
       of: "\"teams\":[]",
       with: """
@@ -1879,6 +2439,12 @@ final class LocalProductStoreTests: XCTestCase {
     let client = ExecutionStubClient(snapshot: snapshot)
     let store = LocalProductStore(client: client)
     await store.refresh()
+    store.selectWorkspaceFolder(
+      workspaceRoot
+        .appendingPathComponent("intermediate")
+        .appendingPathComponent("..")
+        .appendingPathComponent("selected")
+    )
 
     let freshViewVersion = String(repeating: "f", count: 64)
     let freshJSON = json.replacingOccurrences(
@@ -1926,7 +2492,8 @@ final class LocalProductStoreTests: XCTestCase {
       team: snapshot.teams[0],
       workPackage: LocalProductWorkPackageOption.coding,
       confirmedConstraints: ["Do not change public APIs"],
-      acceptedDecisions: ["Use the existing execution adapter"]
+      acceptedDecisions: ["Use the existing execution adapter"],
+      newAttempt: true
     )
 
     XCTAssertEqual(store.executionState, .ready)
@@ -1934,6 +2501,8 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.commands.map(\.operation), ["preflight"])
     XCTAssertEqual(client.commands[0].missionID, "mission/team-1")
     XCTAssertEqual(client.commands[0].workPackageID, "work-package.coding")
+    XCTAssertEqual(client.commands[0].workspacePath, preflightWorkspace.path)
+    XCTAssertEqual(store.workspace.selectedFolderDisplayName, "selected")
     XCTAssertEqual(client.commands[0].contextVersion, 1)
     XCTAssertEqual(client.commands[0].confirmedConstraints, ["Do not change public APIs"])
     XCTAssertEqual(
@@ -1947,12 +2516,18 @@ final class LocalProductStoreTests: XCTestCase {
     )
     XCTAssertEqual(client.snapshotRequestCount, 3)
 
+    store.selectWorkspaceFolder(laterWorkspace)
+
     await store.startPreflightedMission()
 
     XCTAssertEqual(store.executionState, .running)
     XCTAssertNil(store.executionPreflight)
     XCTAssertEqual(client.commands.map(\.operation), ["preflight", "start"])
     XCTAssertEqual(client.commands[1].preflightDigest, String(repeating: "d", count: 64))
+    XCTAssertTrue(client.commands[1].newAttempt)
+    XCTAssertNotEqual(client.commands[1].correlationID, store.evolutionAssetJourneyID)
+    XCTAssertNotEqual(client.commands[1].correlationID, client.commands[0].correlationID)
+    XCTAssertEqual(client.commands[1].workspacePath, preflightWorkspace.path)
     XCTAssertEqual(
       client.commands[1].confirmedConstraints,
       client.commands[0].confirmedConstraints
@@ -1984,6 +2559,105 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.commands[2].attemptNumber, 1)
     XCTAssertEqual(client.commands[2].claimGeneration, 3)
     XCTAssertEqual(client.commands[2].expectedViewVersion, store.snapshot?.viewVersion)
+  }
+
+  func testMissionStartReachesSucceededAndOpensMissionRoom() async throws {
+    let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
+      of: "\"teams\":[]",
+      with: """
+        "teams":[{
+          "team_instance_id":"team-1",
+          "display_name":"Coding Team",
+          "source_kind":"saved_team",
+          "state":"created",
+          "confirmed":true,
+          "executable":true,
+          "read_only":false
+        }]
+        """
+    ).replacingOccurrences(
+      of: "\"view_version\":\"view-1\"",
+      with: "\"view_version\":\"\(String(repeating: "b", count: 64))\""
+    )
+    let snapshot = try LocalProductWire.decodeSnapshot(Data(json.utf8))
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      startResultStatus: "succeeded"
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: LocalProductWorkPackageOption.coding
+    )
+    XCTAssertEqual(store.executionState, .ready)
+
+    await store.startPreflightedMission()
+
+    XCTAssertEqual(store.executionState, .succeeded)
+    XCTAssertNil(store.executionPreflight)
+    XCTAssertEqual(client.commands.map(\.operation), ["preflight", "start"])
+    let missionID = try XCTUnwrap(store.executionResult?.missionID)
+    XCTAssertEqual(store.workbench.route, .mission(missionID))
+  }
+
+  func testMissionStartSurfacesRemoteExecutionErrorCodeNotGenericUnavailable()
+    async throws
+  {
+    let snapshot = try executableMissionSnapshot()
+    let remoteError = LocalIPCRemoteError(
+      code: .busy,
+      recoverable: true,
+      stage: .daemonAdmission,
+      incidentID: "incident-mission-busy-1",
+      safeMessage: "UI Mission Team already has a running Mission."
+    )
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      startError: remoteError
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: .coding
+    )
+    XCTAssertEqual(store.executionState, .ready)
+
+    await store.startPreflightedMission()
+
+    // The daemon's real error code must survive the client boundary instead
+    // of collapsing into the generic "unavailable".
+    XCTAssertEqual(store.executionState, .failed(reason: "busy"))
+    XCTAssertEqual(client.commands.map(\.operation), ["preflight", "start"])
+  }
+
+  func testMissionStartSurfacesTransportFailureAsUnavailableWhenUnknown()
+    async throws
+  {
+    let snapshot = try executableMissionSnapshot()
+    struct UnknownError: Error {}
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      startError: UnknownError()
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: .coding
+    )
+    XCTAssertEqual(store.executionState, .ready)
+
+    await store.startPreflightedMission()
+
+    XCTAssertEqual(store.executionState, .failed(reason: "unavailable"))
   }
 
   func testMissionContextEditInvalidatesReadyPreflightBeforeStart() async throws {
@@ -2185,9 +2859,12 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.commands.map(\.operation), ["preflight"])
   }
 
-  func testPlainChatMessageDoesNotCreateTeamOrMission() async {
+  func testPlainChatMessageDoesNotCreateTeamOrMission() async throws {
     let client = ChatRecordingClient()
-    let store = LocalProductStore(client: client)
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
 
     await store.sendChatMessage("Plan a vacation")
 
@@ -2199,9 +2876,144 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertFalse(client.setupStarted)
   }
 
-  func testChatMessageAppearsWhileConversationRuntimeIsResponding() async {
-    let client = ChatRecordingClient(blockSend: true)
+  func testConversationContextDisclosureLoadsExactSegmentMetadata() async throws {
+    let segment = LocalProductConversationSegment(
+      segmentID: "segment-2",
+      profileID: "conversation-deepseek-r6",
+      contextMode: .summaryOnly,
+      contextCapsuleDigest: String(repeating: "a", count: 64),
+      disclosureReceiptDigest: String(repeating: "b", count: 64),
+      disclosedContextCount: 1,
+      omittedContextCount: 1,
+      contextTokenBudget: 8_192,
+      contextTokenCount: 36,
+      bindingDigest: String(repeating: "c", count: 64)
+    )
+    let client = ChatRecordingClient(
+      recordedThread: LocalProductChatThread(
+        threadID: "thread-disclosure",
+        profileID: segment.profileID,
+        segments: [segment],
+        messages: [],
+        canReply: true,
+        requiresConfirmation: false
+      )
+    )
     let store = LocalProductStore(client: client)
+    store.newConversation()
+    client.replaceRecordedThread(
+      LocalProductChatThread(
+        threadID: store.currentChatThreadID(),
+        profileID: segment.profileID,
+        segments: [segment],
+        messages: [],
+        canReply: true,
+        requiresConfirmation: false
+      )
+    )
+    await store.loadChatThread()
+    await store.loadConversationContextDisclosure(segment)
+
+    let identity = LocalProductContextDisclosureIdentity(
+      threadID: store.currentChatThreadID(),
+      segmentID: segment.segmentID,
+      contextCapsuleDigest: segment.contextCapsuleDigest,
+      disclosureReceiptDigest: segment.disclosureReceiptDigest
+    )
+    let disclosure = store.conversationContextDisclosures[identity]
+    XCTAssertEqual(disclosure?.segmentID, segment.segmentID)
+    XCTAssertEqual(disclosure?.disclosed.count, 1)
+    XCTAssertEqual(disclosure?.omitted.first?.omissionReason, "budget_exceeded")
+    XCTAssertTrue(disclosure?.omitted.first?.retrievable ?? false)
+    XCTAssertEqual(client.recordedDisclosureSegmentIDs, [segment.segmentID])
+    XCTAssertNil(
+      store.conversationContextDisclosureFailures[
+        identity
+      ]
+    )
+  }
+
+  func testConversationContextDisclosureSeparatesSegmentsSharingCapsule() async throws {
+    let capsuleDigest = String(repeating: "a", count: 64)
+    let firstReceipt = String(repeating: "b", count: 64)
+    let secondReceipt = String(repeating: "d", count: 64)
+    let firstSegment = LocalProductConversationSegment(
+      segmentID: "segment-shared-1",
+      profileID: "conversation-deepseek-r6",
+      contextMode: .summaryOnly,
+      contextCapsuleDigest: capsuleDigest,
+      disclosureReceiptDigest: firstReceipt,
+      disclosedContextCount: 1,
+      omittedContextCount: 1,
+      contextTokenBudget: 8_192,
+      contextTokenCount: 36,
+      bindingDigest: String(repeating: "c", count: 64)
+    )
+    let secondSegment = LocalProductConversationSegment(
+      segmentID: "segment-shared-2",
+      profileID: firstSegment.profileID,
+      contextMode: .summaryOnly,
+      contextCapsuleDigest: capsuleDigest,
+      disclosureReceiptDigest: secondReceipt,
+      disclosedContextCount: 1,
+      omittedContextCount: 1,
+      contextTokenBudget: 8_192,
+      contextTokenCount: 36,
+      bindingDigest: String(repeating: "e", count: 64)
+    )
+    let client = ChatRecordingClient(
+      disclosureReceiptDigests: [secondSegment.segmentID: secondReceipt]
+    )
+    let store = LocalProductStore(client: client)
+    let threadID = store.currentChatThreadID()
+    client.replaceRecordedThread(
+      LocalProductChatThread(
+        threadID: threadID,
+        profileID: firstSegment.profileID,
+        segments: [firstSegment, secondSegment],
+        messages: [],
+        canReply: true,
+        requiresConfirmation: false
+      )
+    )
+    await store.loadChatThread()
+
+    await store.loadConversationContextDisclosure(firstSegment)
+    await store.loadConversationContextDisclosure(secondSegment)
+
+    let firstIdentity = LocalProductContextDisclosureIdentity(
+      threadID: threadID,
+      segmentID: firstSegment.segmentID,
+      contextCapsuleDigest: capsuleDigest,
+      disclosureReceiptDigest: firstReceipt
+    )
+    let secondIdentity = LocalProductContextDisclosureIdentity(
+      threadID: threadID,
+      segmentID: secondSegment.segmentID,
+      contextCapsuleDigest: capsuleDigest,
+      disclosureReceiptDigest: secondReceipt
+    )
+    XCTAssertNotEqual(firstIdentity, secondIdentity)
+    XCTAssertEqual(
+      store.conversationContextDisclosures[firstIdentity]?.segmentID,
+      firstSegment.segmentID
+    )
+    XCTAssertEqual(
+      store.conversationContextDisclosures[secondIdentity]?.segmentID,
+      secondSegment.segmentID
+    )
+    XCTAssertEqual(
+      client.recordedDisclosureSegmentIDs,
+      [firstSegment.segmentID, secondSegment.segmentID]
+    )
+  }
+
+  func testChatMessageAppearsWhileConversationRuntimeIsResponding() async throws {
+    let client = ChatRecordingClient(blockSend: true)
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
 
     let sending = Task { await store.sendChatMessage("hello") }
     await client.waitForSendStart()
@@ -2218,6 +3030,149 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(store.chatThread?.messages.last?.role, "loom")
   }
 
+  func testChatResponsesAreTrackedPerConversationForConcurrencyAndExactStop() async throws {
+    let client = ChatRecordingClient(blockSend: true)
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+
+    let firstThreadID = store.currentChatThreadID()
+    let first = Task { await store.sendChatMessage("first concurrent response") }
+    await client.waitForSendStarts(1)
+    XCTAssertTrue(store.isSendingChatMessage)
+
+    store.newConversation()
+    let secondThreadID = store.currentChatThreadID()
+    XCTAssertNotEqual(firstThreadID, secondThreadID)
+    XCTAssertFalse(store.isSendingChatMessage)
+
+    let second = Task { await store.sendChatMessage("second concurrent response") }
+    await client.waitForSendStarts(2)
+    XCTAssertTrue(store.isSendingChatMessage)
+
+    store.selectChatSession(firstThreadID)
+    XCTAssertTrue(store.isSendingChatMessage)
+    await store.cancelActiveChatResponse()
+    XCTAssertEqual(client.recordedCancelThreadID, firstThreadID)
+    XCTAssertNotNil(client.recordedCancelIncidentID)
+
+    store.selectChatSession(secondThreadID)
+    XCTAssertTrue(store.isSendingChatMessage)
+    client.releaseSends()
+    await first.value
+    await second.value
+    XCTAssertFalse(store.isSendingChatMessage)
+    XCTAssertEqual(store.chatThread?.threadID, secondThreadID)
+  }
+
+  func testNewConversationStartsWithAnEmptyComposerDraft() throws {
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+    store.updateComposerDraft("draft from the previous conversation")
+
+    store.newConversation()
+
+    XCTAssertEqual(store.workspace.selectedContinuity.composerDraft, "")
+  }
+
+  func testCancellingChatResponseKeepsOriginalSendIdentityUntilSendSettles() async throws {
+    let client = ChatRecordingClient(
+      blockSend: true,
+      blockCancel: true,
+      responseAttemptStatus: "cancelled"
+    )
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+
+    let sending = Task { await store.sendChatMessage("private prompt") }
+    await client.waitForSendStart()
+    let activeThreadID = try XCTUnwrap(store.activeChatResponseThreadID)
+    let activeIncidentID = try XCTUnwrap(store.activeChatResponseIncidentID)
+
+    let cancelling = Task { await store.cancelActiveChatResponse() }
+    await client.waitForCancelStart()
+
+    XCTAssertTrue(store.isSendingChatMessage)
+    XCTAssertTrue(store.isCancellingChatResponse)
+    XCTAssertEqual(client.recordedCancelThreadID, activeThreadID)
+    XCTAssertEqual(client.recordedCancelIncidentID, activeIncidentID)
+
+    client.releaseCancel()
+    await cancelling.value
+
+    XCTAssertTrue(store.isSendingChatMessage)
+    XCTAssertFalse(store.isCancellingChatResponse)
+    XCTAssertEqual(store.activeChatResponseThreadID, activeThreadID)
+    XCTAssertEqual(store.activeChatResponseIncidentID, activeIncidentID)
+    XCTAssertNil(store.chatThread?.attempts.last)
+    XCTAssertNil(store.chatOperationFailure)
+
+    client.releaseSend()
+    await sending.value
+
+    XCTAssertFalse(store.isSendingChatMessage)
+    XCTAssertNil(store.activeChatResponseThreadID)
+    XCTAssertNil(store.activeChatResponseIncidentID)
+    XCTAssertEqual(store.chatThread?.attempts.last?.status, "cancelled")
+    XCTAssertNil(store.chatOperationFailure)
+  }
+
+  func testCancelNotFoundRaceRefreshesAndSettlesWithoutFailureBanner() async throws {
+    let threadID = "thread-cancel-race"
+    let settledThread = LocalProductChatThread(
+      threadID: threadID,
+      messages: [
+        LocalProductChatMessage(
+          messageID: "settled-1", role: "loom", content: "Settled response",
+          tentative: false
+        )
+      ],
+      canReply: true,
+      requiresConfirmation: false
+    )
+    let client = ChatRecordingClient(
+      blockSend: true,
+      recordedThread: settledThread,
+      cancelError: LocalIPCRemoteError(
+        code: .notFound,
+        recoverable: false,
+        stage: .conversationDispatch,
+        incidentID: "cancel-race"
+      )
+    )
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+    store.newConversation()
+    let selectedThreadID = store.currentChatThreadID()
+    client.replaceRecordedThread(
+      LocalProductChatThread(
+        threadID: selectedThreadID,
+        messages: settledThread.messages,
+        canReply: true,
+        requiresConfirmation: false
+      )
+    )
+
+    let sending = Task { await store.sendChatMessage("already settled") }
+    await client.waitForSendStart()
+    await store.cancelActiveChatResponse()
+
+    XCTAssertTrue(store.isSendingChatMessage)
+    XCTAssertFalse(store.isCancellingChatResponse)
+    XCTAssertEqual(store.chatThread?.messages.last?.content, "Settled response")
+    XCTAssertNil(store.chatOperationFailure)
+
+    client.releaseSend()
+    await sending.value
+  }
+
   func testExplicitAgentTriggerRequiresConfirmationAndDoesNotAutoCreateTeam() async {
     let client = ChatRecordingClient()
     let store = LocalProductStore(client: client)
@@ -2231,7 +3186,13 @@ final class LocalProductStoreTests: XCTestCase {
   }
 
   func testConversationProfileSwitchKeepsVisibleThreadAndCreatesRouteSegment() async throws {
-    let client = ChatRecordingClient()
+    let client = ChatRecordingClient(responseExecutionBinding:
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "loom-native",
+        providerID: "deepseek", providerAccountID: "deepseek.primary",
+        credentialRevision: 2, modelID: "deepseek-chat"
+      )
+    )
     let setup = try conversationProfileSetupSnapshot()
     let store = LocalProductStore(
       client: client,
@@ -2249,10 +3210,14 @@ final class LocalProductStoreTests: XCTestCase {
     )
     XCTAssertEqual(store.chatThread?.profileID, client.recordedProfileID)
 
-    store.selectConversationProfile(
+    let codexTransition = try XCTUnwrap(store.requestConversationProfileSelection(
       "conversation-openai-codex-default-v1"
-    )
-    store.conversationContextMode = .summaryOnly
+    ))
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      codexTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
     await store.sendChatMessage("continue with Codex")
 
     XCTAssertEqual(store.currentChatThreadID(), firstThreadID)
@@ -2262,10 +3227,14 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(
       store.chatThread?.segments.last?.profileID, "conversation-openai-codex-default-v1")
 
-    store.selectConversationProfile(
+    let anthropicTransition = try XCTUnwrap(store.requestConversationProfileSelection(
       "conversation-anthropic-claude-sonnet-5-account-work-r5"
-    )
-    store.conversationContextMode = .summaryOnly
+    ))
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      anthropicTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
     await store.sendChatMessage("continue with Anthropic")
 
     XCTAssertEqual(store.currentChatThreadID(), firstThreadID)
@@ -2281,7 +3250,7 @@ final class LocalProductStoreTests: XCTestCase {
     )
   }
 
-  func testMultipleConversationSessionsSwitchAndAutoTitle() async throws {
+  func testMultipleConversationSessionsNeverPersistMessageAsTitle() async throws {
     let client = ChatRecordingClient()
     let store = LocalProductStore(
       client: client,
@@ -2302,14 +3271,15 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(store.chatSessions.count, 2)
     XCTAssertEqual(store.selectedChatSessionID, secondThreadID)
 
-    // Sending in the new conversation records it against the new thread and
-    // auto-titles the session from the first user message.
+    // Sending records the new thread without copying message content into the
+    // plaintext navigation registry.
     await store.sendChatMessage("Fix the flaky login test")
     XCTAssertEqual(client.recordedThreadID, secondThreadID)
     let secondTitle = try XCTUnwrap(
       store.chatSessions.first { $0.threadID == secondThreadID }?.title
     )
-    XCTAssertEqual(secondTitle, "Fix the flaky login test")
+    XCTAssertEqual(secondTitle, "Conversation 2")
+    XCTAssertFalse(secondTitle.contains("flaky login"))
 
     // Switching back restores the first conversation.
     store.selectChatSession(firstThreadID)
@@ -2338,7 +3308,13 @@ final class LocalProductStoreTests: XCTestCase {
   }
 
   func testConversationRouteTransitionRequiresConfirmationAfterHistory() async throws {
-    let client = ChatRecordingClient()
+    let client = ChatRecordingClient(responseExecutionBinding:
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "loom-native",
+        providerID: "deepseek", providerAccountID: "deepseek.primary",
+        credentialRevision: 2, modelID: "deepseek-chat"
+      )
+    )
     let store = LocalProductStore(
       client: client,
       initialSetupSnapshot: try conversationProfileSetupSnapshot()
@@ -2368,7 +3344,8 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertTrue(
       store.confirmConversationRouteTransition(
         transition,
-        contextMode: .summaryOnly
+        contextMode: .summaryOnly,
+        trustBoundaryAcknowledged: true
       )
     )
     // Regression: after confirming a profile switch, sending must NOT
@@ -2380,6 +3357,345 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(
       client.recordedProfileID,
       "conversation-openai-codex-default-v1"
+    )
+    XCTAssertEqual(
+      client.recordedExpectedExecutionBinding,
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4,
+        harnessAdapter: "codex",
+        providerID: "openai",
+        modelID: "codex-default"
+      )
+    )
+  }
+
+  func testDirectProfileTransitionUsesFrozenSegmentTrustBoundary() async throws {
+    let setup = try trustBoundaryProfileSetupSnapshot()
+    let frozenBinding = LocalProductConversationExecutionBinding(
+      schemaVersion: 4, harnessAdapter: "loom-native",
+      providerID: "deepseek", providerAccountID: "deepseek.work",
+      credentialRevision: 7, modelID: "deepseek-chat",
+      providerAccountPolicyVersion: 2,
+      providerAccountPolicyRevision: 3,
+      providerAccountPolicyDigest: String(repeating: "a", count: 64),
+      trustDomain: "external_provider",
+      retentionMode: "provider_default",
+      dataRegion: "global"
+    )
+    let client = ChatRecordingClient()
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    store.selectConversationProfile("conversation-deepseek-work-r7")
+    let threadID = store.currentChatThreadID()
+    client.replaceRecordedThread(LocalProductChatThread(
+      threadID: threadID,
+      profileID: "conversation-deepseek-work-r7",
+      segments: [LocalProductConversationSegment(
+        segmentID: "segment-1",
+        profileID: "conversation-deepseek-work-r7",
+        contextMode: .startClean,
+        contextCapsuleDigest: String(repeating: "c", count: 64),
+        executionBinding: frozenBinding,
+        bindingDigest: String(repeating: "d", count: 64)
+      )],
+      messages: [LocalProductChatMessage(
+        messageID: "message-1", segmentID: "segment-1", role: "user",
+        content: "existing", tentative: false
+      )],
+      canReply: true,
+      requiresConfirmation: false
+    ))
+    await store.loadChatThread()
+
+    let transition = try XCTUnwrap(
+      store.requestConversationProfileSelection("conversation-anthropic-work-r5")
+    )
+
+    XCTAssertEqual(transition.sourceExecutionBinding, frozenBinding)
+    XCTAssertEqual(
+      transition.trustBoundaryChanges.map(\.dimension),
+      [.trustDomain, .retentionMode, .dataRegion]
+    )
+    XCTAssertEqual(
+      transition.trustBoundaryChanges.map(\.sourceValue),
+      ["external_provider", "provider_default", "global"]
+    )
+    XCTAssertEqual(
+      transition.trustBoundaryChanges.map(\.targetValue),
+      ["enterprise_tenant", "zero_data_retention", "apac"]
+    )
+    XCTAssertFalse(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: false
+    ))
+    XCTAssertEqual(
+      store.selectedConversationProfileID,
+      "conversation-deepseek-work-r7"
+    )
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    await store.sendChatMessage("continue under reviewed trust")
+    let acknowledgement = try XCTUnwrap(
+      client.recordedTrustBoundaryAcknowledgement
+    )
+    let expectedAcknowledgement = try XCTUnwrap(
+      LocalProductTrustBoundaryAcknowledgement.reviewed(
+        threadID: threadID,
+        sourceSegment: try XCTUnwrap(store.chatThread?.segments.first),
+        targetProfileID: transition.target.profileID,
+        targetExecutionBinding: transition.targetExecutionBinding,
+        targetReasoningEffort: transition.targetReasoningEffort,
+        contextMode: .summaryOnly
+      )
+    )
+    XCTAssertEqual(acknowledgement, expectedAcknowledgement)
+    XCTAssertEqual(acknowledgement.sourceSegmentID, "segment-1")
+    XCTAssertEqual(acknowledgement.sourceBindingDigest, String(repeating: "d", count: 64))
+    XCTAssertEqual(acknowledgement.targetProfileID, transition.target.profileID)
+    XCTAssertEqual(acknowledgement.targetExecutionBinding, transition.targetExecutionBinding)
+    XCTAssertEqual(acknowledgement.contextMode, .summaryOnly)
+    XCTAssertTrue(acknowledgement.acknowledged)
+    XCTAssertEqual(acknowledgement.reviewDigest.utf8.count, 64)
+  }
+
+  func testMissingFrozenSourceAuthorityFailsClosedEvenWhenAcknowledged() async throws {
+    let setup = try trustBoundaryProfileSetupSnapshot()
+    let client = ChatRecordingClient()
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    store.selectConversationProfile("conversation-deepseek-work-r7")
+    let threadID = store.currentChatThreadID()
+    client.replaceRecordedThread(LocalProductChatThread(
+      threadID: threadID,
+      profileID: "conversation-deepseek-work-r7",
+      segments: [LocalProductConversationSegment(
+        segmentID: "segment-without-authority",
+        profileID: "conversation-deepseek-work-r7",
+        contextMode: .startClean,
+        contextCapsuleDigest: String(repeating: "c", count: 64),
+        bindingDigest: String(repeating: "d", count: 64)
+      )],
+      messages: [LocalProductChatMessage(
+        messageID: "message-1", segmentID: "segment-without-authority",
+        role: "user", content: "existing", tentative: false
+      )],
+      canReply: true,
+      requiresConfirmation: false
+    ))
+    await store.loadChatThread()
+
+    let transition = try XCTUnwrap(
+      store.requestConversationProfileSelection("conversation-anthropic-work-r5")
+    )
+
+    XCTAssertNil(transition.sourceExecutionBinding)
+    XCTAssertFalse(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    XCTAssertEqual(
+      store.selectedConversationProfileID,
+      "conversation-deepseek-work-r7"
+    )
+  }
+
+  func testLegacyDirectProfileTransitionRequiresUnknownTrustBoundaryReview() throws {
+    let setup = try trustBoundaryProfileSetupSnapshot()
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: setup
+    )
+    store.selectConversationProfile("conversation-deepseek-work-r7")
+    let source = try XCTUnwrap(store.selectedConversationProfile)
+    let target = try XCTUnwrap(store.availableConversationProfiles.first {
+      $0.profileID == "conversation-anthropic-work-r5"
+    })
+
+    let transition = LocalProductConversationRouteTransition(
+      source: source,
+      target: target,
+      threadID: "thread-legacy",
+      sourceExecutionBinding: nil,
+      generation: 1
+    )
+
+    XCTAssertEqual(
+      transition.trustBoundaryChanges.map(\.dimension),
+      [.trustDomain, .retentionMode, .dataRegion]
+    )
+    XCTAssertEqual(
+      transition.trustBoundaryChanges.map(\.sourceValue),
+      ["unavailable", "unavailable", "unavailable"]
+    )
+  }
+
+  func testIncompletePolicyAuthorityReviewsAllTrustDimensionsAsUnavailable() throws {
+    let setup = try trustBoundaryProfileSetupSnapshot()
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: setup
+    )
+    store.selectConversationProfile("conversation-deepseek-work-r7")
+    let source = try XCTUnwrap(store.selectedConversationProfile)
+    let target = try XCTUnwrap(store.availableConversationProfiles.first {
+      $0.profileID == "conversation-anthropic-work-r5"
+    })
+    let incompleteSource = LocalProductConversationExecutionBinding(
+      schemaVersion: 4, harnessAdapter: "loom-native",
+      providerID: "deepseek", providerAccountID: "deepseek.work",
+      credentialRevision: 7, modelID: "deepseek-chat",
+      providerAccountPolicyVersion: 1,
+      providerAccountPolicyRevision: 3,
+      providerAccountPolicyDigest: String(repeating: "a", count: 64)
+    )
+
+    let sourceUnknown = LocalProductConversationRouteTransition(
+      source: source,
+      target: target,
+      threadID: "thread-incomplete-source",
+      sourceExecutionBinding: incompleteSource,
+      generation: 1
+    )
+
+    XCTAssertEqual(
+      sourceUnknown.trustBoundaryChanges.map(\.dimension),
+      [.trustDomain, .retentionMode, .dataRegion]
+    )
+    XCTAssertEqual(
+      sourceUnknown.trustBoundaryChanges.map(\.sourceValue),
+      ["unavailable", "unavailable", "unavailable"]
+    )
+
+    let incompleteTarget = LocalProductConversationExecutionBinding(
+      schemaVersion: 4, harnessAdapter: "loom-native",
+      providerID: "anthropic", providerAccountID: "anthropic.work",
+      credentialRevision: 5, modelID: "claude-sonnet-5",
+      providerAccountPolicyVersion: 1,
+      providerAccountPolicyRevision: 8,
+      providerAccountPolicyDigest: String(repeating: "e", count: 64)
+    )
+    let targetUnknown = LocalProductConversationRouteTransition(
+      source: source,
+      target: target,
+      threadID: "thread-incomplete-target",
+      sourceExecutionBinding: LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "loom-native",
+        providerID: "deepseek", providerAccountID: "deepseek.work",
+        credentialRevision: 7, modelID: "deepseek-chat",
+        providerAccountPolicyVersion: 2,
+        providerAccountPolicyRevision: 4,
+        providerAccountPolicyDigest: String(repeating: "b", count: 64),
+        trustDomain: "enterprise_tenant",
+        retentionMode: "zero_data_retention", dataRegion: "apac"
+      ),
+      targetExecutionBinding: incompleteTarget,
+      generation: 2
+    )
+
+    XCTAssertEqual(
+      targetUnknown.trustBoundaryChanges.map(\.dimension),
+      [.trustDomain, .retentionMode, .dataRegion]
+    )
+    XCTAssertEqual(
+      targetUnknown.trustBoundaryChanges.map(\.targetValue),
+      ["unavailable", "unavailable", "unavailable"]
+    )
+  }
+
+  func testTrustAuthorityCompletenessRequiresEveryV2PolicyField() {
+    func binding(
+      policyVersion: Int = 2,
+      policyRevision: Int64 = 1,
+      policyDigest: String = String(repeating: "a", count: 64),
+      trustDomain: String = "enterprise_tenant",
+      retentionMode: String = "zero_data_retention",
+      dataRegion: String = "apac"
+    ) -> LocalProductConversationExecutionBinding {
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "loom-native",
+        providerID: "deepseek", providerAccountID: "deepseek.work",
+        credentialRevision: 7, modelID: "deepseek-chat",
+        providerAccountPolicyVersion: policyVersion,
+        providerAccountPolicyRevision: policyRevision,
+        providerAccountPolicyDigest: policyDigest,
+        trustDomain: trustDomain,
+        retentionMode: retentionMode,
+        dataRegion: dataRegion
+      )
+    }
+
+    XCTAssertTrue(conversationExecutionBindingHasCompletePolicyAuthority(binding()))
+    XCTAssertFalse(conversationExecutionBindingHasCompletePolicyAuthority(
+      binding(policyVersion: 1)
+    ))
+    XCTAssertFalse(conversationExecutionBindingHasCompletePolicyAuthority(
+      binding(policyRevision: 0)
+    ))
+    XCTAssertFalse(conversationExecutionBindingHasCompletePolicyAuthority(
+      binding(policyDigest: String(repeating: "a", count: 63))
+    ))
+    XCTAssertFalse(conversationExecutionBindingHasCompletePolicyAuthority(
+      binding(trustDomain: "")
+    ))
+    XCTAssertFalse(conversationExecutionBindingHasCompletePolicyAuthority(
+      binding(retentionMode: "")
+    ))
+    XCTAssertFalse(conversationExecutionBindingHasCompletePolicyAuthority(
+      binding(dataRegion: "")
+    ))
+  }
+
+  func testStaleTransitionReplayPreservesConversationAndExpectedBinding() async throws {
+    let client = ChatRecordingClient(responseExecutionBinding:
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "loom-native",
+        providerID: "deepseek", providerAccountID: "deepseek.primary",
+        credentialRevision: 2, modelID: "deepseek-chat"
+      )
+    )
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+    store.selectConversationProfile("conversation-deepseek-deepseek-chat-r2")
+    await store.sendChatMessage("hello")
+    store.updateComposerDraft("keep this draft")
+    let stale = try XCTUnwrap(store.requestConversationProfileSelection(
+      "conversation-openai-codex-default-v1"
+    ))
+    let current = try XCTUnwrap(store.requestConversationProfileSelection(
+      "conversation-openai-codex-default-v1"
+    ))
+    let selection = store.selectedConversationProfileID
+    let draft = store.workspace.selectedContinuity.composerDraft
+    let thread = store.chatThread
+
+    XCTAssertFalse(store.confirmConversationRouteTransition(
+      stale,
+      contextMode: .continueWithContext
+    ))
+    XCTAssertEqual(store.selectedConversationProfileID, selection)
+    XCTAssertEqual(store.workspace.selectedContinuity.composerDraft, draft)
+    XCTAssertEqual(store.chatThread, thread)
+    XCTAssertEqual(stale.sourceExecutionBinding, current.sourceExecutionBinding)
+
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      current,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    await store.sendChatMessage("continue")
+    XCTAssertEqual(
+      client.recordedExpectedExecutionBinding,
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4,
+        harnessAdapter: "codex",
+        providerID: "openai",
+        modelID: "codex-default"
+      )
     )
   }
 
@@ -2396,10 +3712,14 @@ final class LocalProductStoreTests: XCTestCase {
         "conversation-openai-codex-default-v1"
       )
     )
+    store.updateComposerDraft("preserve this draft")
 
     store.selectConversationProfile(
       "conversation-anthropic-claude-sonnet-5-account-work-r5"
     )
+    let draft = store.workspace.selectedContinuity.composerDraft
+    let thread = store.chatThread
+    let frozenBinding = transition.sourceExecutionBinding
 
     XCTAssertFalse(
       store.confirmConversationRouteTransition(
@@ -2411,6 +3731,37 @@ final class LocalProductStoreTests: XCTestCase {
       store.selectedConversationProfileID,
       "conversation-anthropic-claude-sonnet-5-account-work-r5"
     )
+    XCTAssertEqual(store.workspace.selectedContinuity.composerDraft, draft)
+    XCTAssertEqual(store.chatThread, thread)
+    XCTAssertEqual(transition.sourceExecutionBinding, frozenBinding)
+  }
+
+  func testConversationRouteTransitionFailsClosedAfterThreadDrift() async throws {
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+    store.selectConversationProfile("conversation-deepseek-deepseek-chat-r2")
+    await store.sendChatMessage("hello")
+    let transition = try XCTUnwrap(store.requestConversationProfileSelection(
+      "conversation-openai-codex-default-v1"
+    ))
+
+    store.newConversation()
+    store.updateComposerDraft("new thread draft")
+    let selection = store.selectedConversationProfileID
+    let draft = store.workspace.selectedContinuity.composerDraft
+    let thread = store.chatThread
+    let threadID = store.currentChatThreadID()
+
+    XCTAssertFalse(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .continueWithContext
+    ))
+    XCTAssertEqual(store.selectedConversationProfileID, selection)
+    XCTAssertEqual(store.workspace.selectedContinuity.composerDraft, draft)
+    XCTAssertEqual(store.chatThread, thread)
+    XCTAssertEqual(store.currentChatThreadID(), threadID)
   }
 
   func testConversationPolicyDriftRequiresConfirmedNewSegmentAfterRestart() async throws {
@@ -2434,7 +3785,9 @@ final class LocalProductStoreTests: XCTestCase {
        "skills":[],"permissions":[],"resources":[]}
       """.utf8))
     let currentBinding = LocalProductConversationExecutionBinding(
+      schemaVersion: 4, harnessAdapter: "loom-native",
       providerID: "deepseek", providerAccountID: "deepseek.work",
+      credentialRevision: 7, modelID: "deepseek-chat",
       providerAccountPolicyVersion: 2,
       providerAccountPolicyRevision: 4,
       providerAccountPolicyDigest: String(repeating: "b", count: 64),
@@ -2453,7 +3806,9 @@ final class LocalProductStoreTests: XCTestCase {
         contextMode: .startClean,
         contextCapsuleDigest: String(repeating: "c", count: 64),
         executionBinding: LocalProductConversationExecutionBinding(
+          schemaVersion: 4, harnessAdapter: "loom-native",
           providerID: "deepseek", providerAccountID: "deepseek.work",
+          credentialRevision: 6, modelID: "deepseek-chat",
           providerAccountPolicyVersion: 2,
           providerAccountPolicyRevision: 3,
           providerAccountPolicyDigest: String(repeating: "a", count: 64),
@@ -2479,7 +3834,8 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(transition.target.policyRevision, 4)
     XCTAssertTrue(store.confirmConversationRouteTransition(
       transition,
-      contextMode: .summaryOnly
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
     ))
 
     await store.sendChatMessage("continue under the new policy")
@@ -2487,6 +3843,133 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.recordedExpectedExecutionBinding, currentBinding)
     XCTAssertEqual(client.recordedThreadID, threadID)
     XCTAssertNil(store.requestConversationDispatchTransition())
+  }
+
+  func testTrustBoundaryRebindConfirmationCannotBeReplayedBeforeSend() async throws {
+    let setup = try trustBoundaryProfileSetupSnapshot()
+    let targetBinding = LocalProductConversationExecutionBinding(
+      schemaVersion: 4, harnessAdapter: "loom-native",
+      providerID: "deepseek", providerAccountID: "deepseek.work",
+      credentialRevision: 7, modelID: "deepseek-chat",
+      providerAccountPolicyVersion: 2,
+      providerAccountPolicyRevision: 4,
+      providerAccountPolicyDigest: String(repeating: "b", count: 64),
+      trustDomain: "enterprise_tenant",
+      retentionMode: "zero_data_retention", dataRegion: "apac"
+    )
+    let client = ChatRecordingClient(responseExecutionBinding: targetBinding)
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    store.selectConversationProfile("conversation-deepseek-work-r7")
+    let threadID = store.currentChatThreadID()
+    client.replaceRecordedThread(LocalProductChatThread(
+      threadID: threadID,
+      profileID: "conversation-deepseek-work-r7",
+      segments: [LocalProductConversationSegment(
+        segmentID: "segment-1",
+        profileID: "conversation-deepseek-work-r7",
+        contextMode: .startClean,
+        contextCapsuleDigest: String(repeating: "c", count: 64),
+        executionBinding: LocalProductConversationExecutionBinding(
+          schemaVersion: 4, harnessAdapter: "loom-native",
+          providerID: "deepseek", providerAccountID: "deepseek.work",
+          credentialRevision: 7, modelID: "deepseek-chat",
+          providerAccountPolicyVersion: 2,
+          providerAccountPolicyRevision: 3,
+          providerAccountPolicyDigest: String(repeating: "a", count: 64),
+          trustDomain: "external_provider",
+          retentionMode: "provider_default", dataRegion: "global"
+        ),
+        bindingDigest: String(repeating: "d", count: 64)
+      )],
+      messages: [LocalProductChatMessage(
+        messageID: "msg-1", segmentID: "segment-1", role: "user",
+        content: "existing", tentative: false
+      )],
+      canReply: true,
+      requiresConfirmation: false
+    ))
+    await store.loadChatThread()
+
+    let transition = try XCTUnwrap(store.requestConversationDispatchTransition())
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    XCTAssertFalse(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .continueWithContext,
+      trustBoundaryAcknowledged: true
+    ))
+
+    await store.sendChatMessage("continue once")
+    XCTAssertEqual(client.recordedContextMode, .summaryOnly)
+    XCTAssertEqual(
+      client.recordedTrustBoundaryAcknowledgement?.contextMode,
+      .summaryOnly
+    )
+  }
+
+  func testConversationModelRebindConfirmationFreezesSelectedNonDefaultModel() async throws {
+    let setup = try conversationProfileSetupSnapshot()
+    let selectedBinding = LocalProductConversationExecutionBinding(
+      schemaVersion: 4, harnessAdapter: "loom-native",
+      providerID: "deepseek", providerAccountID: "deepseek.primary",
+      credentialRevision: 2, modelID: "deepseek-reasoner"
+    )
+    let client = ChatRecordingClient(responseExecutionBinding: selectedBinding)
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    store.selectConversationProfile(
+      "conversation-deepseek-deepseek-chat-r2"
+    )
+    let threadID = store.currentChatThreadID()
+    client.replaceRecordedThread(LocalProductChatThread(
+      threadID: threadID,
+      profileID: "conversation-deepseek-deepseek-chat-r2",
+      segments: [LocalProductConversationSegment(
+        segmentID: "segment-1",
+        profileID: "conversation-deepseek-deepseek-chat-r2",
+        contextMode: .startClean,
+        contextCapsuleDigest: String(repeating: "a", count: 64),
+        executionBinding: LocalProductConversationExecutionBinding(
+          schemaVersion: 4, harnessAdapter: "loom-native",
+          providerID: "deepseek", providerAccountID: "deepseek.primary",
+          credentialRevision: 2, modelID: "deepseek-chat"
+        ),
+        bindingDigest: String(repeating: "b", count: 64)
+      )],
+      messages: [LocalProductChatMessage(
+        messageID: "msg-1", segmentID: "segment-1", role: "user",
+        content: "existing", tentative: false
+      )],
+      canReply: true,
+      requiresConfirmation: false
+    ))
+    await store.loadChatThread()
+    // Simulate a restored non-default selection whose persisted segment still
+    // carries the previous model binding.
+    store.selectedConversationModelID = "deepseek-reasoner"
+
+    let transition = try XCTUnwrap(store.requestConversationDispatchTransition())
+    XCTAssertTrue(transition.rebindsCurrentRoute)
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+
+    await store.sendChatMessage("continue with reasoner")
+    XCTAssertEqual(
+      client.recordedExpectedExecutionBinding?.modelID,
+      "deepseek-reasoner"
+    )
+    XCTAssertEqual(client.recordedExpectedExecutionBinding, selectedBinding)
+    let acknowledgement = try XCTUnwrap(
+      client.recordedTrustBoundaryAcknowledgement
+    )
+    XCTAssertEqual(acknowledgement.targetExecutionBinding, selectedBinding)
+    XCTAssertEqual(acknowledgement.targetReasoningEffort, "")
+    XCTAssertEqual(acknowledgement.reviewDigest.utf8.count, 64)
   }
 
   func testBlankConversationProfileSelectionDoesNotRequireTransitionReview() throws {
@@ -2799,6 +4282,10 @@ final class LocalProductStoreTests: XCTestCase {
         profileID: "conversation-openai-codex-default-v1",
         contextMode: .startClean,
         contextCapsuleDigest: String(repeating: "a", count: 64),
+        executionBinding: LocalProductConversationExecutionBinding(
+          schemaVersion: 4, harnessAdapter: "codex",
+          providerID: "openai", modelID: "codex-default"
+        ),
         bindingDigest: String(repeating: "b", count: 64)
       )],
       messages: [LocalProductChatMessage(
@@ -2827,9 +4314,18 @@ final class LocalProductStoreTests: XCTestCase {
       canReply: true,
       requiresConfirmation: false
     ))
+    await store.loadChatThread()
     store.selectConversationProfile(
       "conversation-deepseek-deepseek-chat-r2"
     )
+    let reviewedTransition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      reviewedTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
 
     await store.sendChatMessage("retry this message")
 
@@ -2862,7 +4358,8 @@ final class LocalProductStoreTests: XCTestCase {
     )
     XCTAssertTrue(store.confirmConversationRouteTransition(
       transition,
-      contextMode: .summaryOnly
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
     ))
     XCTAssertEqual(store.currentChatThreadID(), threadID)
   }
@@ -2904,6 +4401,162 @@ final class LocalProductStoreTests: XCTestCase {
     )
   }
 
+  func testProviderRouteFailuresOfferSwitchProviderRecovery() {
+    let failure = LocalProductChatOperationFailure(
+      code: .providerInsufficientBalance,
+      stage: .providerConnect,
+      recoverable: false,
+      incidentID: "loom-chat-recovery-test",
+      title: "Provider balance required",
+      detail: "Add funds to the selected Provider Account, then retry."
+    )
+    XCTAssertTrue(failure.isRouteRecoveryAvailable)
+
+    let auth = LocalProductChatOperationFailure(
+      code: .providerAuth,
+      stage: .providerConnect,
+      recoverable: false,
+      incidentID: "loom-chat-recovery-auth",
+      title: "Provider authentication failed",
+      detail: "Reconnect the selected Provider Account."
+    )
+    XCTAssertTrue(auth.isRouteRecoveryAvailable)
+
+    let model = LocalProductChatOperationFailure(
+      code: .providerModelUnavailable,
+      stage: .providerHTTP,
+      recoverable: false,
+      incidentID: "loom-chat-recovery-model",
+      title: "Model unavailable",
+      detail: "Select a model available to this Provider Account."
+    )
+    XCTAssertTrue(model.isRouteRecoveryAvailable)
+
+    // A rate limit is recoverable in place and must NOT suggest switching.
+    let rate = LocalProductChatOperationFailure(
+      code: .providerRateLimit,
+      stage: .providerHTTP,
+      recoverable: true,
+      incidentID: "loom-chat-recovery-rate",
+      title: "Provider rate limit reached",
+      detail: "Retry after the limit resets."
+    )
+    XCTAssertFalse(rate.isRouteRecoveryAvailable)
+
+    // A transport failure is recoverable in place and must NOT suggest switching.
+    let transport = LocalProductChatOperationFailure(
+      code: .stateUnavailable,
+      stage: .udsTransport,
+      recoverable: true,
+      incidentID: "loom-chat-recovery-transport",
+      title: "Local service unavailable",
+      detail: "Reopen Loom or retry."
+    )
+    XCTAssertFalse(transport.isRouteRecoveryAvailable)
+  }
+
+  func testBuilderConfirmationBlockedMessageExplainsActionableRecovery() throws {
+    let preview = try builderPreviewFixture(compatibilityGaps: [])
+    // Uncommitted edits: tell the user to press Return.
+    XCTAssertTrue(
+      preview.confirmationBlockedMessage(
+        uncommittedName: "Draft Name",
+        uncommittedPurpose: ""
+      ).contains("Press Return")
+    )
+    // Committed fields with compatibility gaps: tell the user to resolve them.
+    let gappy = try builderPreviewFixture(
+      compatibilityGaps: ["unverified credential"]
+    )
+    XCTAssertTrue(
+      gappy.confirmationBlockedMessage(
+        uncommittedName: "",
+        uncommittedPurpose: ""
+      ).contains("compatibility issue")
+    )
+    // No edits and no gaps: generic required-fields hint.
+    XCTAssertTrue(
+      preview.confirmationBlockedMessage(
+        uncommittedName: "",
+        uncommittedPurpose: ""
+      ).contains("required fields")
+    )
+  }
+
+  private func builderPreviewFixture(
+    compatibilityGaps: [String]
+  ) throws -> LocalProductBuilderPreview {
+    let data = try JSONSerialization.data(withJSONObject: [
+      "name": "Current Team",
+      "purpose": "Current purpose",
+      "roles": [],
+      "permissions": [],
+      "resources": [],
+      "compatibility_gaps": compatibilityGaps,
+      "requested_concurrency": 1,
+      "maximum_budget_credits": 100,
+      "estimated_maximum_cost": "up to 100 credits",
+    ])
+    return try JSONDecoder().decode(
+      LocalProductBuilderPreview.self,
+      from: data
+    )
+  }
+
+  private func primeDeletionContextDisclosureCaches(
+    in store: LocalProductStore,
+    client: ChatRecordingClient
+  ) async throws -> (
+    loaded: LocalProductContextDisclosureIdentity,
+    failed: LocalProductContextDisclosureIdentity
+  ) {
+    let threadID = store.currentChatThreadID()
+    let loadedSegment = LocalProductConversationSegment(
+      segmentID: "segment-loaded",
+      profileID: "conversation-deepseek-r6",
+      contextMode: .summaryOnly,
+      contextCapsuleDigest: String(repeating: "a", count: 64),
+      disclosureReceiptDigest: String(repeating: "b", count: 64),
+      disclosedContextCount: 1,
+      omittedContextCount: 1,
+      contextTokenBudget: 8_192,
+      contextTokenCount: 36,
+      bindingDigest: String(repeating: "c", count: 64)
+    )
+    let failedSegment = LocalProductConversationSegment(
+      segmentID: "segment-failed",
+      profileID: loadedSegment.profileID,
+      contextMode: .summaryOnly,
+      contextCapsuleDigest: loadedSegment.contextCapsuleDigest,
+      disclosureReceiptDigest: loadedSegment.disclosureReceiptDigest,
+      disclosedContextCount: 2,
+      omittedContextCount: 1,
+      contextTokenBudget: 8_192,
+      contextTokenCount: 48,
+      bindingDigest: String(repeating: "d", count: 64)
+    )
+    client.replaceRecordedThread(
+      LocalProductChatThread(
+        threadID: threadID,
+        profileID: loadedSegment.profileID,
+        segments: [loadedSegment, failedSegment],
+        messages: [],
+        canReply: true,
+        requiresConfirmation: false
+      )
+    )
+    await store.loadChatThread()
+    let loadedIdentity = try XCTUnwrap(
+      store.conversationContextDisclosureIdentity(for: loadedSegment)
+    )
+    let failedIdentity = try XCTUnwrap(
+      store.conversationContextDisclosureIdentity(for: failedSegment)
+    )
+    await store.loadConversationContextDisclosure(loadedSegment)
+    await store.loadConversationContextDisclosure(failedSegment)
+    return (loadedIdentity, failedIdentity)
+  }
+
   private final class ChatRecordingClient: LocalProductClientProtocol {
     private(set) var recordedThread: LocalProductChatThread?
     private(set) var recordedProfileID = ""
@@ -2911,12 +4564,22 @@ final class LocalProductStoreTests: XCTestCase {
     private(set) var recordedContextMode: LocalProductConversationContextMode?
     private(set) var recordedExpectedExecutionBinding:
       LocalProductConversationExecutionBinding?
+    private(set) var recordedTrustBoundaryAcknowledgement:
+      LocalProductTrustBoundaryAcknowledgement?
+    private(set) var sendCallCount = 0
     private(set) var setupStarted = false
+    private(set) var recordedDisclosureSegmentIDs: [String] = []
+    private(set) var recordedCancelThreadID = ""
+    private(set) var recordedCancelIncidentID = ""
     private let blockSend: Bool
+    private let blockCancel: Bool
     private let blockLoad: Bool
     private let sendError: Error?
+    private let cancelError: Error?
+    private let deleteError: Error?
     var failNextSend: Error?
     private let attemptFailureCode: String?
+    private let responseAttemptStatus: String?
     private let attemptFailureStage: String?
 	private let attemptHTTPStatus: Int
 	private let attemptProviderCode: String
@@ -2924,30 +4587,49 @@ final class LocalProductStoreTests: XCTestCase {
 	private let attemptRetryAfterSeconds: Int64
     private let attemptRetryable: Bool
     private let responseExecutionBinding: LocalProductConversationExecutionBinding?
+    private let disclosureReceiptDigests: [String: String]
     private var sendStarted = false
+    private var cancelStarted = false
     private var loadStarted = false
-    private var sendContinuation: CheckedContinuation<Void, Never>?
+    private var sendContinuations: [String: CheckedContinuation<Void, Never>] = [:]
+    private let sendStateLock = NSLock()
+
+    private func withSendStateLock<T>(_ body: () -> T) -> T {
+      sendStateLock.lock()
+      defer { sendStateLock.unlock() }
+      return body()
+    }
+    private var cancelContinuation: CheckedContinuation<Void, Never>?
     private var loadContinuation: CheckedContinuation<Void, Never>?
 
     init(
       blockSend: Bool = false,
+      blockCancel: Bool = false,
       blockLoad: Bool = false,
       recordedThread: LocalProductChatThread? = nil,
       sendError: Error? = nil,
+      cancelError: Error? = nil,
+      deleteError: Error? = nil,
       attemptFailureCode: String? = nil,
+      responseAttemptStatus: String? = nil,
       attemptFailureStage: String? = nil,
 	  attemptHTTPStatus: Int = 0,
 	  attemptProviderCode: String = "",
 	  attemptFailureMessage: String = "",
       attemptRetryAfterSeconds: Int64 = 0,
       attemptRetryable: Bool = false,
-      responseExecutionBinding: LocalProductConversationExecutionBinding? = nil
+      responseExecutionBinding: LocalProductConversationExecutionBinding? = nil,
+      disclosureReceiptDigests: [String: String] = [:]
     ) {
       self.blockSend = blockSend
+      self.blockCancel = blockCancel
       self.blockLoad = blockLoad
       self.recordedThread = recordedThread
       self.sendError = sendError
+      self.cancelError = cancelError
+      self.deleteError = deleteError
       self.attemptFailureCode = attemptFailureCode
+      self.responseAttemptStatus = responseAttemptStatus
       self.attemptFailureStage = attemptFailureStage
 	  self.attemptHTTPStatus = attemptHTTPStatus
 	  self.attemptProviderCode = attemptProviderCode
@@ -2955,17 +4637,47 @@ final class LocalProductStoreTests: XCTestCase {
 	  self.attemptRetryAfterSeconds = attemptRetryAfterSeconds
       self.attemptRetryable = attemptRetryable
       self.responseExecutionBinding = responseExecutionBinding
+      self.disclosureReceiptDigests = disclosureReceiptDigests
     }
 
     func waitForSendStart() async {
-      while !sendStarted {
+      while true {
+        let started = withSendStateLock { sendStarted }
+        if started { return }
         await Task.yield()
       }
     }
 
     func releaseSend() {
-      sendContinuation?.resume()
-      sendContinuation = nil
+      releaseSends()
+    }
+
+    func waitForSendStarts(_ count: Int) async {
+      while true {
+        let startedCount = withSendStateLock { sendContinuations.count }
+        if startedCount >= count { return }
+        await Task.yield()
+      }
+    }
+
+    func releaseSends() {
+      let continuations = withSendStateLock {
+        let values = Array(sendContinuations.values)
+        sendContinuations.removeAll()
+        return values
+      }
+      continuations.forEach { $0.resume() }
+    }
+
+    func waitForCancelStart() async {
+      while !cancelStarted {
+        await Task.yield()
+      }
+    }
+
+    func releaseCancel() {
+      cancelContinuation?.resume()
+      cancelContinuation = nil
     }
 
     func waitForLoadStart() async {
@@ -3009,6 +4721,60 @@ final class LocalProductStoreTests: XCTestCase {
           canReply: true,
           requiresConfirmation: false
         )
+    }
+
+    func chatContextDisclosure(
+      threadID: String,
+      segmentID: String
+    ) async throws -> LocalProductContextDisclosure {
+      recordedDisclosureSegmentIDs.append(segmentID)
+      let receiptDigest = disclosureReceiptDigests[segmentID]
+        ?? String(repeating: "b", count: 64)
+      return try LocalProductWire.decodeContextDisclosure(
+        Data(
+          """
+          {
+            "schema_version":1,
+            "thread_id":"\(threadID)",
+            "segment_id":"\(segmentID)",
+            "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "disclosure_receipt_digest":"\(receiptDigest)",
+            "disclosed":[{
+              "kind":"confirmed_user_constraint","trust":"authoritative",
+              "scope":"conversation_shared","token_count":12,
+              "omission_reason":"","retrievable":false
+            }],
+            "omitted":[{
+              "kind":"untrusted_model_output","trust":"untrusted",
+              "scope":"conversation_shared","token_count":24,
+              "omission_reason":"budget_exceeded","retrievable":true
+            }]
+          }
+          """.utf8
+        )
+      )
+    }
+
+    func cancelChatResponse(
+      threadID: String,
+      incidentID: String
+    ) async throws {
+      recordedCancelThreadID = threadID
+      recordedCancelIncidentID = incidentID
+      cancelStarted = true
+      if blockCancel {
+        await withCheckedContinuation { continuation in
+          cancelContinuation = continuation
+        }
+      }
+      if let cancelError { throw cancelError }
+    }
+
+    func deleteChatThread(threadID: String) async throws {
+      if let deleteError { throw deleteError }
+      if recordedThread?.threadID == threadID {
+        recordedThread = nil
+      }
     }
 
     func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
@@ -3058,14 +4824,42 @@ final class LocalProductStoreTests: XCTestCase {
       expectedExecutionBinding: LocalProductConversationExecutionBinding?,
       incidentID: String
     ) async throws -> LocalProductChatThread {
-      sendStarted = true
-      recordedThreadID = threadID
-      recordedProfileID = profileID
-      recordedContextMode = contextMode
-      recordedExpectedExecutionBinding = expectedExecutionBinding
+      try await sendChatMessage(
+        threadID: threadID,
+        content: content,
+        profileID: profileID,
+        modelID: "",
+        reasoningEffort: "",
+        contextMode: contextMode,
+        expectedExecutionBinding: expectedExecutionBinding,
+        trustBoundaryAcknowledgement: nil,
+        incidentID: incidentID
+      )
+    }
+
+    func sendChatMessage(
+      threadID: String,
+      content: String,
+      profileID: String,
+      modelID: String,
+      reasoningEffort: String,
+      contextMode: LocalProductConversationContextMode?,
+      expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+      trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+      incidentID: String
+    ) async throws -> LocalProductChatThread {
+      withSendStateLock {
+        sendCallCount += 1
+        sendStarted = true
+        recordedThreadID = threadID
+        recordedProfileID = profileID
+        recordedContextMode = contextMode
+        recordedExpectedExecutionBinding = expectedExecutionBinding
+        recordedTrustBoundaryAcknowledgement = trustBoundaryAcknowledgement
+      }
       if blockSend {
         await withCheckedContinuation { continuation in
-          sendContinuation = continuation
+          withSendStateLock { sendContinuations[threadID] = continuation }
         }
       }
       if let sendError {
@@ -3084,7 +4878,7 @@ final class LocalProductStoreTests: XCTestCase {
             profileID: profileID,
             contextMode: contextMode ?? .startClean,
             contextCapsuleDigest: String(repeating: "a", count: 64),
-            executionBinding: responseExecutionBinding,
+            executionBinding: expectedExecutionBinding ?? responseExecutionBinding,
             bindingDigest: String(repeating: "b", count: 64)
           ))
       }
@@ -3113,6 +4907,8 @@ final class LocalProductStoreTests: XCTestCase {
               attemptID: "attempt-1",
               segmentID: segmentID,
               profileID: profileID,
+              modelID: nil,
+              reasoningEffort: nil,
               contextMode: contextMode ?? .startClean,
               contextCapsuleDigest: String(repeating: "a", count: 64),
               executionBinding: responseExecutionBinding,
@@ -3126,6 +4922,25 @@ final class LocalProductStoreTests: XCTestCase {
 			  failureMessage: attemptFailureMessage,
 			  retryAfterSeconds: attemptRetryAfterSeconds,
               retryable: attemptRetryable
+            )
+          ]
+        } ?? responseAttemptStatus.map { status in
+          [
+            LocalProductConversationAttempt(
+              attemptID: "attempt-1",
+              segmentID: segmentID,
+              profileID: profileID,
+              modelID: nil,
+              reasoningEffort: nil,
+              contextMode: contextMode ?? .startClean,
+              contextCapsuleDigest: String(repeating: "a", count: 64),
+              executionBinding: responseExecutionBinding,
+              bindingDigest: String(repeating: "b", count: 64),
+              incidentID: incidentID,
+              status: status,
+              failureCode: "",
+              failureStage: "",
+              retryable: false
             )
           ]
         } ?? [],
@@ -3154,7 +4969,7 @@ final class LocalProductStoreTests: XCTestCase {
           "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
           "providers":[],
           "conversation_profiles":[
-            {"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"Codex","protocol":"openai_responses","model_id":"codex-default","auth_mode":"native_auth","credential_revision":0},
+            {"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"OpenAI","protocol":"openai_responses","model_id":"codex-default","auth_mode":"native_auth","credential_revision":0},
             {"profile_id":"conversation-anthropic-claude-sonnet-5-account-work-r5","harness_adapter":"loom-native","provider_id":"anthropic","provider_account_id":"anthropic.work","display_name":"Anthropic","protocol":"anthropic_messages","model_id":"claude-sonnet-5","auth_mode":"brokered","credential_revision":5},
             {"profile_id":"conversation-deepseek-deepseek-chat-r2","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.primary","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":2}
           ],
@@ -3162,6 +4977,26 @@ final class LocalProductStoreTests: XCTestCase {
           "skills":[],"permissions":[],"resources":[]
         }
         """#.utf8))
+  }
+
+  private func trustBoundaryProfileSetupSnapshot() throws -> LocalProductSetupSnapshot {
+    try LocalProductSetupWire.decodeSnapshot(Data(
+      #"""
+      {
+        "schema_version":1,
+        "view_version":"view-trust-boundary",
+        "codex":{"provider_id":"codex","auth_mode":"native_auth","credential_reference":"","revision":0,"status":"available","reason":""},
+        "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
+        "providers":[],"provider_accounts":[],
+        "conversation_profiles":[
+          {"profile_id":"conversation-deepseek-work-r7","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.work","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":7,"policy_version":2,"policy_revision":4,"policy_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","trust_domain":"enterprise_tenant","retention_mode":"zero_data_retention","data_region":"apac"},
+          {"profile_id":"conversation-anthropic-work-r5","harness_adapter":"loom-native","provider_id":"anthropic","provider_account_id":"anthropic.work","display_name":"Anthropic","protocol":"anthropic_messages","model_id":"claude-sonnet-5","auth_mode":"brokered","credential_revision":5,"policy_version":2,"policy_revision":8,"policy_digest":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","trust_domain":"enterprise_tenant","retention_mode":"zero_data_retention","data_region":"apac"}
+        ],
+        "runtimes":[],"saved_teams":[],"templates":[],"role_options":[],
+        "skills":[],"permissions":[],"resources":[]
+      }
+      """#.utf8
+    ))
   }
 
   func testAgentAttemptRecoveryRequiresConfirmationBeforeResume() async throws {
@@ -3360,7 +5195,7 @@ final class LocalProductStoreTests: XCTestCase {
           "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
           "providers":[],
           "conversation_profiles":[
-            {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"deepseek/deepseek-chat","auth_mode":"native_auth","credential_revision":0}
+            {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"opencode/big-pickle","auth_mode":"native_auth","credential_revision":0}
           ],
           "runtimes":[],"saved_teams":[],"templates":[],"role_options":[],
           "skills":[],"permissions":[],"resources":[]
@@ -3369,26 +5204,176 @@ final class LocalProductStoreTests: XCTestCase {
       )
     )
     let openCodeStore = LocalProductStore(client: client, initialSetupSnapshot: openCodeSnapshot)
-    XCTAssertEqual(openCodeStore.effectiveConversationModelID, "deepseek/deepseek-chat")
+    // The OpenCode profile defaults to its own hosted free-tier model, which
+    // needs no verified Provider credential.
+    XCTAssertEqual(
+      openCodeStore.effectiveConversationModelID,
+      "opencode/big-pickle"
+    )
     XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
-    // DeepSeek Chat is toggle-only in the OpenCode CLI: no effort values.
+    // A cross-Provider model whose owning Provider is not verified is refused
+    // at selection time instead of failing at send time.
     openCodeStore.selectConversationModel("deepseek/deepseek-chat")
+    XCTAssertEqual(
+      openCodeStore.effectiveConversationModelID,
+      "opencode/big-pickle"
+    )
+    // The installed default advertises no reasoning variants, so unsupported
+    // effort changes remain fail-closed.
+    openCodeStore.selectConversationModel("opencode/big-pickle")
     XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
-    // Effort-capable models expose their exact CLI values.
-    openCodeStore.selectConversationModel("deepseek/deepseek-v4-flash")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "low")
     openCodeStore.selectConversationReasoningEffort("max")
-    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "max")
+    XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
   }
 
-  func testConversationConflictSelfHealsAndRetriesWithCurrentBinding() async throws {
-    let client = ChatRecordingClient()
+  func testModelAndReasoningSelectionForceExplicitConversationSegment() async throws {
+    let client = ChatRecordingClient(responseExecutionBinding:
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4,
+        harnessAdapter: "codex",
+        providerID: "openai",
+        modelID: "codex-default"
+      )
+    )
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+    await store.sendChatMessage("first model")
+    XCTAssertNil(client.recordedContextMode)
+
+    store.selectConversationModel("gpt-5.5")
+    await store.sendChatMessage("must review model change")
+    XCTAssertEqual(client.sendCallCount, 1)
+    XCTAssertEqual(
+      store.workspace.selectedContinuity.composerDraft,
+      "must review model change"
+    )
+    let modelTransition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertTrue(modelTransition.rebindsCurrentRoute)
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      modelTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    await store.sendChatMessage("second model")
+    XCTAssertEqual(client.recordedContextMode, .summaryOnly)
+    let modelAcknowledgement = try XCTUnwrap(
+      client.recordedTrustBoundaryAcknowledgement
+    )
+    XCTAssertEqual(modelAcknowledgement.targetExecutionBinding.modelID, "gpt-5.5")
+    XCTAssertEqual(
+      modelAcknowledgement.targetReasoningEffort,
+      modelTransition.targetReasoningEffort
+    )
+    XCTAssertEqual(modelAcknowledgement.reviewDigest.utf8.count, 64)
+
+    store.selectConversationReasoningEffort("high")
+    await store.sendChatMessage("must review reasoning change")
+    XCTAssertEqual(client.sendCallCount, 2)
+    XCTAssertEqual(
+      store.workspace.selectedContinuity.composerDraft,
+      "must review reasoning change"
+    )
+    let reasoningTransition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertTrue(reasoningTransition.rebindsCurrentRoute)
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      reasoningTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    await store.sendChatMessage("higher reasoning")
+    XCTAssertEqual(client.recordedContextMode, .summaryOnly)
+    let reasoningAcknowledgement = try XCTUnwrap(
+      client.recordedTrustBoundaryAcknowledgement
+    )
+    XCTAssertEqual(reasoningAcknowledgement.targetExecutionBinding.modelID, "gpt-5.5")
+    XCTAssertEqual(reasoningAcknowledgement.targetReasoningEffort, "high")
+    XCTAssertEqual(reasoningAcknowledgement.reviewDigest.utf8.count, 64)
+  }
+
+  func testModelAndReasoningChangesConsumeConfirmedTransitionBeforeSend() async throws {
+    let client = ChatRecordingClient(responseExecutionBinding:
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "codex",
+        providerID: "openai", modelID: "codex-default"
+      )
+    )
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot()
+    )
+    await store.sendChatMessage("first turn")
+
+    store.selectConversationModel("gpt-5.5")
+    let modelTransition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      modelTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+
+    store.selectConversationModel("gpt-5.4")
+    await store.sendChatMessage("must review the replacement model")
+    XCTAssertEqual(client.sendCallCount, 1)
+    XCTAssertEqual(
+      store.workspace.selectedContinuity.composerDraft,
+      "must review the replacement model"
+    )
+    let replacementModelTransition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertEqual(replacementModelTransition.targetExecutionBinding.modelID, "gpt-5.4")
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      replacementModelTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+
+    store.selectConversationReasoningEffort("high")
+    await store.sendChatMessage("must review the replacement reasoning")
+    XCTAssertEqual(client.sendCallCount, 1)
+    XCTAssertEqual(
+      store.workspace.selectedContinuity.composerDraft,
+      "must review the replacement reasoning"
+    )
+    let replacementReasoningTransition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertEqual(replacementReasoningTransition.targetReasoningEffort, "high")
+  }
+
+  func testConversationConflictRequiresFreshExplicitRouteConfirmation() async throws {
+    let client = ChatRecordingClient(responseExecutionBinding:
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4, harnessAdapter: "loom-native",
+        providerID: "deepseek", providerAccountID: "deepseek.primary",
+        credentialRevision: 2, modelID: "deepseek-chat"
+      )
+    )
     let store = LocalProductStore(
       client: client,
       initialSetupSnapshot: try conversationProfileSetupSnapshot()
     )
     store.selectConversationProfile("conversation-deepseek-deepseek-chat-r2")
     await store.sendChatMessage("hello")
+
+    let initialTransition = try XCTUnwrap(
+      store.requestConversationProfileSelection(
+        "conversation-openai-codex-default-v1"
+      )
+    )
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      initialTransition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
 
     client.failNextSend = LocalIPCRemoteError(
       code: .conflict,
@@ -3398,20 +5383,39 @@ final class LocalProductStoreTests: XCTestCase {
     )
     await store.sendChatMessage("continue after conflict")
 
-    // The conflict was self-healed: the retry passed the current binding and
-    // a context mode, and no failure surfaced.
+    XCTAssertNotNil(store.chatOperationFailure)
+    XCTAssertEqual(client.sendCallCount, 2)
+    XCTAssertEqual(client.recordedContextMode, .summaryOnly)
+    XCTAssertNotNil(client.recordedExpectedExecutionBinding)
+    XCTAssertEqual(
+      store.workspace.selectedContinuity.composerDraft,
+      "continue after conflict"
+    )
+
+    let transition = try XCTUnwrap(
+      store.requestConversationDispatchTransition()
+    )
+    XCTAssertTrue(store.confirmConversationRouteTransition(
+      transition,
+      contextMode: .summaryOnly,
+      trustBoundaryAcknowledged: true
+    ))
+    await store.sendChatMessage("continue after conflict")
+
     XCTAssertNil(store.chatOperationFailure)
+    XCTAssertEqual(client.sendCallCount, 3)
     XCTAssertEqual(
       client.recordedProfileID,
-      "conversation-deepseek-deepseek-chat-r2"
+      "conversation-openai-codex-default-v1"
     )
     XCTAssertNotNil(client.recordedContextMode)
     XCTAssertNotNil(client.recordedExpectedExecutionBinding)
     XCTAssertFalse(store.isSendingChatMessage)
   }
   func testChatSessionsSurviveRestartViaRegistryFile() async throws {
-    let fileURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("loom-sessions-restart-\\(UUID().uuidString).json")
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-sessions-restart-\(UUID().uuidString)")
+    let fileURL = directory.appendingPathComponent("chat-sessions.json")
     let first = LocalProductStore(
       client: ChatRecordingClient(),
       initialSetupSnapshot: try conversationProfileSetupSnapshot(),
@@ -3435,7 +5439,474 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertTrue(second.chatSessions.contains { $0.threadID == secondThreadID })
     XCTAssertEqual(second.selectedChatSessionID, secondThreadID)
     XCTAssertEqual(second.currentChatThreadID(), secondThreadID)
-    try? FileManager.default.removeItem(at: fileURL)
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testPrivateRegistriesUseOwnerOnlyStorageAndMetadataOnlyPayloads() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-private-registries-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let presentationsURL = directory.appendingPathComponent("mission-presentations.json")
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    let fullMessage = String(repeating: "private transcript content ", count: 16)
+    await store.sendChatMessage(fullMessage)
+    store.saveMissionPresentation(
+      missionID: "mission/private-storage",
+      title: "Private storage",
+      conversationThreadID: store.currentChatThreadID()
+    )
+
+    let directoryMode = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions]
+        as? NSNumber
+    ).intValue
+    XCTAssertEqual(directoryMode & 0o777, 0o700)
+    for url in [sessionsURL, presentationsURL] {
+      let mode = try XCTUnwrap(
+        FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]
+          as? NSNumber
+      ).intValue
+      XCTAssertEqual(mode & 0o777, 0o600)
+    }
+
+    let sessionsData = try Data(contentsOf: sessionsURL)
+    let root = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: sessionsData) as? [String: Any]
+    )
+    let sessions = try XCTUnwrap(root["sessions"] as? [[String: Any]])
+    let persistedSession = try XCTUnwrap(sessions.first)
+    XCTAssertEqual(
+      Set(persistedSession.keys),
+      ["threadID", "title", "createdAt", "updatedAt"]
+    )
+    XCTAssertLessThanOrEqual(
+      (persistedSession["title"] as? String)?.utf8.count ?? .max,
+      80
+    )
+    XCTAssertFalse(String(decoding: sessionsData, as: UTF8.self).contains(fullMessage))
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testDeletingLastChatSessionCannotResurrectItAfterRestart() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-delete-last-session-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let first = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: sessionsURL
+    )
+    let deletedThreadID = first.currentChatThreadID()
+
+    await first.deleteChatSession(deletedThreadID)
+    XCTAssertTrue(first.chatSessions.isEmpty)
+
+    let restarted = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: sessionsURL
+    )
+    XCTAssertEqual(restarted.chatSessions.count, 1)
+    XCTAssertFalse(restarted.chatSessions.contains { $0.threadID == deletedThreadID })
+    XCTAssertNotEqual(restarted.currentChatThreadID(), deletedThreadID)
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testSuccessfulChatDeletionClearsDisclosureCachesAndPersistsUnlinkedMissions()
+    async throws
+  {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-delete-chat-cleanup-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let presentationsURL = directory.appendingPathComponent("mission-presentations.json")
+    let client = ChatRecordingClient()
+    let store = LocalProductStore(
+      client: client,
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    let deletedThreadID = store.currentChatThreadID()
+    let identities = try await primeDeletionContextDisclosureCaches(
+      in: store,
+      client: client
+    )
+    store.saveMissionPresentation(
+      missionID: "mission/linked",
+      title: "Keep this Mission",
+      conversationThreadID: deletedThreadID
+    )
+
+    XCTAssertNotNil(store.conversationContextDisclosures[identities.loaded])
+    XCTAssertNotNil(store.conversationContextDisclosureFailures[identities.failed])
+    XCTAssertEqual(
+      store.missionPresentations["mission/linked"]?.conversationThreadID,
+      deletedThreadID
+    )
+
+    await store.deleteChatSession(deletedThreadID)
+
+    XCTAssertFalse(store.chatSessions.contains { $0.threadID == deletedThreadID })
+    XCTAssertTrue(store.conversationContextDisclosures.isEmpty)
+    XCTAssertTrue(store.conversationContextDisclosuresInFlight.isEmpty)
+    XCTAssertTrue(store.conversationContextDisclosureFailures.isEmpty)
+    XCTAssertEqual(
+      store.missionPresentations["mission/linked"]?.title,
+      "Keep this Mission"
+    )
+    XCTAssertEqual(
+      store.missionPresentations["mission/linked"]?.conversationThreadID,
+      ""
+    )
+
+    let restarted = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    XCTAssertEqual(
+      restarted.missionPresentations["mission/linked"]?.title,
+      "Keep this Mission"
+    )
+    XCTAssertEqual(
+      restarted.missionPresentations["mission/linked"]?.conversationThreadID,
+      ""
+    )
+    XCTAssertNil(restarted.conversationLinkedToMission("mission/linked"))
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testFailedChatDeletionPreservesDisclosureSessionsAndMissionRelationships()
+    async throws
+  {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-failed-delete-chat-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let presentationsURL = directory.appendingPathComponent("mission-presentations.json")
+    let client = ChatRecordingClient(deleteError: LocalProductClientError.unavailable)
+    let store = LocalProductStore(
+      client: client,
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    let threadID = store.currentChatThreadID()
+    let identities = try await primeDeletionContextDisclosureCaches(
+      in: store,
+      client: client
+    )
+    store.saveMissionPresentation(
+      missionID: "mission/still-linked",
+      title: "Preserve this relationship",
+      conversationThreadID: threadID
+    )
+    let sessionsBefore = store.chatSessions
+    let disclosureBefore = store.conversationContextDisclosures
+    let disclosureFailuresBefore = store.conversationContextDisclosureFailures
+    let presentationBefore = store.missionPresentations["mission/still-linked"]
+    let persistedSessionsBefore = try Data(contentsOf: sessionsURL)
+    let persistedPresentationsBefore = try Data(contentsOf: presentationsURL)
+
+    await store.deleteChatSession(threadID)
+
+    XCTAssertEqual(store.chatSessions, sessionsBefore)
+    XCTAssertEqual(store.selectedChatSessionID, threadID)
+    XCTAssertEqual(store.chatThread?.threadID, threadID)
+    XCTAssertEqual(store.conversationContextDisclosures, disclosureBefore)
+    XCTAssertEqual(
+      store.conversationContextDisclosureFailures,
+      disclosureFailuresBefore
+    )
+    XCTAssertNotNil(store.conversationContextDisclosures[identities.loaded])
+    XCTAssertNotNil(store.conversationContextDisclosureFailures[identities.failed])
+    XCTAssertEqual(
+      store.missionPresentations["mission/still-linked"],
+      presentationBefore
+    )
+    XCTAssertEqual(
+      store.conversationLinkedToMission("mission/still-linked")?.threadID,
+      threadID
+    )
+    XCTAssertEqual(try Data(contentsOf: sessionsURL), persistedSessionsBefore)
+    XCTAssertEqual(
+      try Data(contentsOf: presentationsURL),
+      persistedPresentationsBefore
+    )
+    XCTAssertNotNil(store.chatOperationFailure)
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testPrivateRegistrySafetyRejectsWrongOwnerTypeLinksAndPermissions() {
+    let owner = geteuid()
+    XCTAssertTrue(
+      LocalPrivateRegistryStorage.isSafeRegularFileMetadata(
+        mode: mode_t(S_IFREG | S_IRUSR | S_IWUSR),
+        ownerUID: owner,
+        linkCount: 1,
+        effectiveUID: owner
+      )
+    )
+    XCTAssertFalse(
+      LocalPrivateRegistryStorage.isSafeRegularFileMetadata(
+        mode: mode_t(S_IFREG | S_IRUSR | S_IWUSR),
+        ownerUID: owner &+ 1,
+        linkCount: 1,
+        effectiveUID: owner
+      )
+    )
+    XCTAssertFalse(
+      LocalPrivateRegistryStorage.isSafeRegularFileMetadata(
+        mode: mode_t(S_IFLNK | S_IRUSR | S_IWUSR),
+        ownerUID: owner,
+        linkCount: 1,
+        effectiveUID: owner
+      )
+    )
+    XCTAssertFalse(
+      LocalPrivateRegistryStorage.isSafeRegularFileMetadata(
+        mode: mode_t(S_IFREG | S_IRUSR | S_IWUSR),
+        ownerUID: owner,
+        linkCount: 2,
+        effectiveUID: owner
+      )
+    )
+    XCTAssertFalse(
+      LocalPrivateRegistryStorage.isSafeRegularFileMetadata(
+        mode: mode_t(S_IFREG | S_IRUSR | S_IWUSR | S_IRGRP),
+        ownerUID: owner,
+        linkCount: 1,
+        effectiveUID: owner
+      )
+    )
+  }
+
+  func testPrivateRegistryRejectsUnsafeExistingSymlink() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-registry-symlink-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let target = directory.appendingPathComponent("target.json")
+    let registry = directory.appendingPathComponent("chat-sessions.json")
+    let marker = Data("do-not-replace".utf8)
+    try marker.write(to: target)
+    try FileManager.default.createSymbolicLink(at: registry, withDestinationURL: target)
+
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: registry
+    )
+
+    XCTAssertEqual(store.chatSessions.count, 1)
+    XCTAssertEqual(try Data(contentsOf: target), marker)
+    let values = try registry.resourceValues(forKeys: [.isSymbolicLinkKey])
+    XCTAssertTrue(values.isSymbolicLink == true)
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testPrivateRegistryMigratesControlledLegacy0644AndRejectsUnsafeObjects() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-registry-unsafe-objects-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+      at: root,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let fixtureDirectory = root.appendingPathComponent("fixture")
+    let fixtureURL = fixtureDirectory.appendingPathComponent("chat-sessions.json")
+    let fixture = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: fixtureURL
+    )
+    fixture.newConversation()
+    let persistedTwoSessionRegistry = try Data(contentsOf: fixtureURL)
+
+    let permissiveDirectory = root.appendingPathComponent("permissive-file")
+    try FileManager.default.createDirectory(
+      at: permissiveDirectory,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let permissiveURL = permissiveDirectory.appendingPathComponent("chat-sessions.json")
+    try persistedTwoSessionRegistry.write(to: permissiveURL)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o644],
+      ofItemAtPath: permissiveURL.path
+    )
+    let migratedStore = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: permissiveURL
+    )
+    XCTAssertEqual(migratedStore.chatSessions.count, 2)
+    let permissiveMode = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: permissiveURL.path)[.posixPermissions]
+        as? NSNumber
+    ).intValue
+    XCTAssertEqual(permissiveMode & 0o777, 0o600)
+
+    let worldWritableDirectory = root.appendingPathComponent("world-writable-file")
+    try FileManager.default.createDirectory(
+      at: worldWritableDirectory,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let worldWritableURL = worldWritableDirectory.appendingPathComponent("chat-sessions.json")
+    try persistedTwoSessionRegistry.write(to: worldWritableURL)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o666],
+      ofItemAtPath: worldWritableURL.path
+    )
+    let worldWritableStore = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: worldWritableURL
+    )
+    XCTAssertEqual(worldWritableStore.chatSessions.count, 1)
+    let worldWritableMode = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: worldWritableURL.path)[.posixPermissions]
+        as? NSNumber
+    ).intValue
+    XCTAssertEqual(worldWritableMode & 0o777, 0o666)
+
+    let hardLinkDirectory = root.appendingPathComponent("hard-link")
+    try FileManager.default.createDirectory(
+      at: hardLinkDirectory,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let hardLinkTarget = hardLinkDirectory.appendingPathComponent("target.json")
+    let hardLinkURL = hardLinkDirectory.appendingPathComponent("chat-sessions.json")
+    try persistedTwoSessionRegistry.write(to: hardLinkTarget)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o600],
+      ofItemAtPath: hardLinkTarget.path
+    )
+    try FileManager.default.linkItem(at: hardLinkTarget, to: hardLinkURL)
+    let hardLinkStore = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: hardLinkURL
+    )
+    XCTAssertEqual(hardLinkStore.chatSessions.count, 1)
+    XCTAssertEqual(try Data(contentsOf: hardLinkTarget), persistedTwoSessionRegistry)
+
+    let typeDirectory = root.appendingPathComponent("directory-target")
+    try FileManager.default.createDirectory(
+      at: typeDirectory,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let directoryURL = typeDirectory.appendingPathComponent("chat-sessions.json")
+    try FileManager.default.createDirectory(
+      at: directoryURL,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let directoryStore = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: directoryURL
+    )
+    XCTAssertEqual(directoryStore.chatSessions.count, 1)
+    var isDirectory: ObjCBool = false
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory)
+    )
+    XCTAssertTrue(isDirectory.boolValue)
+
+    let unsafeParent = root.appendingPathComponent("unsafe-parent")
+    try FileManager.default.createDirectory(
+      at: unsafeParent,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o755]
+    )
+    let unsafeParentURL = unsafeParent.appendingPathComponent("chat-sessions.json")
+    _ = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: unsafeParentURL
+    )
+    XCTAssertFalse(FileManager.default.fileExists(atPath: unsafeParentURL.path))
+    try? FileManager.default.removeItem(at: root)
+  }
+
+  func testMissionPresentationPersistsTitleAndConversationRelationship() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-mission-presentation-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let presentationsURL = directory.appendingPathComponent("mission-presentations.json")
+    let first = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    let threadID = first.currentChatThreadID()
+    first.saveMissionPresentation(
+      missionID: "mission/team-one",
+      title: "Restore Provider directory",
+      conversationThreadID: threadID,
+      workspacePath: directory.path
+    )
+
+    let second = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    XCTAssertEqual(
+      second.missionPresentations["mission/team-one"]?.title,
+      "Restore Provider directory"
+    )
+    XCTAssertEqual(
+      second.missionPresentations["mission/team-one"]?.workspacePath,
+      directory.path
+    )
+    XCTAssertEqual(
+      second.conversationLinkedToMission("mission/team-one")?.threadID,
+      threadID
+    )
+    XCTAssertEqual(
+      second.missionIDsLinkedToConversation(threadID),
+      ["mission/team-one"]
+    )
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testConversationCanLinkToMultipleIndependentMissions() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-conversation-missions-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let presentationsURL = directory.appendingPathComponent("mission-presentations.json")
+    let store = LocalProductStore(
+      client: ChatRecordingClient(),
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: sessionsURL,
+      missionPresentationsFileURL: presentationsURL
+    )
+    let threadID = store.currentChatThreadID()
+    store.saveMissionPresentation(
+      missionID: "mission/team-one",
+      title: "Implement the provider fix",
+      conversationThreadID: threadID
+    )
+    store.saveMissionPresentation(
+      missionID: "mission/team-two",
+      title: "Review the provider fix",
+      conversationThreadID: threadID
+    )
+    store.saveMissionPresentation(
+      missionID: "mission/unrelated",
+      title: "Unrelated work",
+      conversationThreadID: nil
+    )
+
+    XCTAssertEqual(
+      store.missionIDsLinkedToConversation(threadID),
+      ["mission/team-two", "mission/team-one"]
+    )
+    XCTAssertEqual(store.missionIDsLinkedToConversation("thread-missing"), [])
+    try? FileManager.default.removeItem(at: directory)
   }
 }
 
@@ -3735,6 +6206,91 @@ private final class TimelinePagingStubClient: LocalProductClientProtocol {
   }
 }
 
+private final class MissionActivityRefreshStubClient: LocalProductClientProtocol {
+  private var snapshots: [LocalProductSnapshot]
+  private var pages: [LocalProductTimelinePage]
+  private(set) var timelineRequestCount = 0
+
+  init(snapshots: [LocalProductSnapshot], pages: [LocalProductTimelinePage]) {
+    self.snapshots = snapshots
+    self.pages = pages
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    guard !snapshots.isEmpty else { throw LocalProductClientError.notFound }
+    if snapshots.count == 1 { return snapshots[0] }
+    return snapshots.removeFirst()
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
+    timelineRequestCount += 1
+    guard cursor.isEmpty, !pages.isEmpty else {
+      throw LocalProductClientError.notFound
+    }
+    return pages.removeFirst()
+  }
+}
+
+private final class MissionActivityTimelineFailureStubClient: LocalProductClientProtocol {
+  private var snapshots: [LocalProductSnapshot]
+  private(set) var snapshotRequestCount = 0
+  private(set) var timelineRequestCount = 0
+
+  init(snapshots: [LocalProductSnapshot]) {
+    self.snapshots = snapshots
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    snapshotRequestCount += 1
+    guard !snapshots.isEmpty else { throw LocalProductClientError.notFound }
+    if snapshots.count == 1 { return snapshots[0] }
+    return snapshots.removeFirst()
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
+    timelineRequestCount += 1
+    throw LocalProductClientError.unavailable
+  }
+}
+
+private final class MissionActivityTimelineSequenceStubClient: LocalProductClientProtocol {
+  private var snapshots: [LocalProductSnapshot]
+  private var pages: [Result<LocalProductTimelinePage, Error>]
+
+  init(
+    snapshots: [LocalProductSnapshot],
+    pages: [Result<LocalProductTimelinePage, Error>]
+  ) {
+    self.snapshots = snapshots
+    self.pages = pages
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    guard !snapshots.isEmpty else { throw LocalProductClientError.notFound }
+    if snapshots.count == 1 { return snapshots[0] }
+    return snapshots.removeFirst()
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
+    guard cursor.isEmpty, !pages.isEmpty else {
+      throw LocalProductClientError.notFound
+    }
+    return try pages.removeFirst().get()
+  }
+}
+
 private actor SuspendedTimelineStubClient: LocalProductClientProtocol {
   private let fixedSnapshot: LocalProductSnapshot
   private let immediatePages: [String: LocalProductTimelinePage]
@@ -3837,21 +6393,46 @@ private func twoMissionSnapshot() throws -> LocalProductSnapshot {
   )
 }
 
-private func timelineRecord(
+private func missionActivitySnapshot(
+  status: String,
+  lane: String
+) throws -> LocalProductSnapshot {
+  var object = try XCTUnwrap(
+    JSONSerialization.jsonObject(
+      with: Data(MissionOrchestrationTests.snapshotJSON.utf8)
+    ) as? [String: Any]
+  )
+  var missions = try XCTUnwrap(object["missions"] as? [[String: Any]])
+  missions[0]["status"] = status
+  missions[0]["lane"] = lane
+  missions[0]["active_node_count"] = status == "running" ? 1 : 0
+  missions[0]["completed_node_count"] = status == "succeeded" ? 1 : 0
+  object["missions"] = missions
+  return try LocalProductWire.decodeSnapshot(
+    JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+  )
+}
+
+func timelineRecord(
   schemaVersion: Int = 1,
   deliveryID: String,
   kind: String,
   teamID: String,
-  status: String = ""
+  status: String = "",
+  authority: String = "journal",
+  logicalNodeID: String = "main",
+  attemptNumber: Int = 2,
+  sourceSequence: Int64 = 1,
+  textDelta: String = ""
 ) -> String {
   """
   {"schema_version":\(schemaVersion),"delivery_id":"\(deliveryID)","kind":"\(kind)",
-   "authority":"journal","team_instance_id":"\(teamID)",
-   "logical_node_id":"main","attempt_number":2,
-   "source_stream_id":"work-item/work-1","source_sequence":1,
+   "authority":"\(authority)","team_instance_id":"\(teamID)",
+   "logical_node_id":"\(logicalNodeID)","attempt_number":\(attemptNumber),
+   "source_stream_id":"work-item/work-1","source_sequence":\(sourceSequence),
    "source_event_id":"event-1","occurred_at":"2026-08-03T00:00:00Z",
    "cursor":"record-cursor","payload":{"status":"\(status)","reason_code":"",
-    "action":"","warning_code":"","retry_at":"","text_delta":"",
+    "action":"","warning_code":"","retry_at":"","text_delta":"\(textDelta)",
     "evidence_digest":"\(String(repeating: "a", count: 64))",
     "cost":{"observed":false,"amount_microunits":null,"currency":""}}}
   """
@@ -3872,7 +6453,7 @@ private func timelineAttention(
   """
 }
 
-private func timelinePage(
+func timelinePage(
   schemaVersion: Int = 1,
   teamID: String,
   viewVersion: String = "view-1",
@@ -3950,6 +6531,8 @@ private final class ExecutionStubClient:
   private let preflightNodeStatus: String
   private let additionalPreflightNodeStatus: String?
   private let suspendPreflight: Bool
+  private let startResultStatus: String
+  private let startError: Error?
   private var snapshotAfterPreflight: LocalProductSnapshot?
   private var preflightStarted = false
   private var preflightContinuation: CheckedContinuation<Void, Never>?
@@ -3958,12 +6541,16 @@ private final class ExecutionStubClient:
     snapshot: LocalProductSnapshot,
     preflightNodeStatus: String = "ready",
     additionalPreflightNodeStatus: String? = nil,
-    suspendPreflight: Bool = false
+    suspendPreflight: Bool = false,
+    startResultStatus: String = "running",
+    startError: Error? = nil
   ) {
     fixedSnapshot = snapshot
     self.preflightNodeStatus = preflightNodeStatus
     self.additionalPreflightNodeStatus = additionalPreflightNodeStatus
     self.suspendPreflight = suspendPreflight
+    self.startResultStatus = startResultStatus
+    self.startError = startError
   }
 
   func waitForPreflightStart() async {
@@ -4062,9 +6649,13 @@ private final class ExecutionStubClient:
           "model_id":"qwen","auth_mode":"brokered","capacity_available":1,
           "budget_status":"unavailable","side_effects":[],
           "permission_scopes":["workspace"],"approval_points":["before_start"],
+          "new_attempt":\(command.newAttempt),
           "nodes":[\(nodes)]}}
         """
     } else if command.operation == "start" {
+      if let startError {
+        throw startError
+      }
       let postStartJSON = MissionOrchestrationTests.snapshotJSON
         .replacingOccurrences(of: "mission/team-1", with: command.missionID)
         .replacingOccurrences(
@@ -4088,7 +6679,7 @@ private final class ExecutionStubClient:
       body = """
         {"schema_version":1,"operation":"start","result":{
           "schema_version":1,"mission_id":"\(command.missionID)",
-          "team_instance_id":"\(command.teamInstanceID)","status":"running",
+          "team_instance_id":"\(command.teamInstanceID)","status":"\(startResultStatus)",
           "view_version":"\(String(repeating: "e", count: 64))",
           "execution_digest":"\(String(repeating: "f", count: 64))"}}
         """
@@ -4126,7 +6717,7 @@ private final class ExecutionStubClient:
   }
 }
 
-private final class StubLocalProductClient: LocalProductClientProtocol {
+final class StubLocalProductClient: LocalProductClientProtocol {
   private var snapshots: [Result<LocalProductSnapshot, Error>]
   private(set) var snapshotRequestCount = 0
   private(set) var timelineRequestCount = 0
@@ -4153,6 +6744,72 @@ private final class StubLocalProductClient: LocalProductClientProtocol {
     timelineRequestCount += 1
     lastTimelineLimit = limit
     lastTimelineTeamID = teamInstanceID
+    throw LocalProductClientError.notFound
+  }
+}
+
+private final class RecoveringLocalProductClient: LocalProductClientProtocol {
+  private var failuresRemaining: Int
+  private let snapshot: LocalProductSnapshot
+  private(set) var snapshotRequestCount = 0
+
+  init(failuresRemaining: Int, snapshot: LocalProductSnapshot) {
+    self.failuresRemaining = failuresRemaining
+    self.snapshot = snapshot
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    snapshotRequestCount += 1
+    if failuresRemaining > 0 {
+      failuresRemaining -= 1
+      throw LocalProductClientError.unavailable
+    }
+    return snapshot
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
+    throw LocalProductClientError.notFound
+  }
+}
+
+/// A production-like client that can heartbeat-probe the resident socket:
+/// `ping` fails while the simulated daemon is down and succeeds once it is
+/// back, while `snapshot` always works once reachable.
+private final class PingProbeClient: LocalProductClientProtocol {
+  var supportsHeartbeatProbe: Bool { true }
+  private var pingFailuresRemaining: Int
+  private let snapshot: LocalProductSnapshot
+  private(set) var pingCount = 0
+  private(set) var snapshotRequestCount = 0
+
+  init(snapshot: LocalProductSnapshot, pingFailuresRemaining: Int) {
+    self.snapshot = snapshot
+    self.pingFailuresRemaining = pingFailuresRemaining
+  }
+
+  func ping() async throws -> Bool {
+    pingCount += 1
+    if pingFailuresRemaining > 0 {
+      pingFailuresRemaining -= 1
+      throw LocalProductClientError.unavailable
+    }
+    return true
+  }
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    snapshotRequestCount += 1
+    return snapshot
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
     throw LocalProductClientError.notFound
   }
 }
@@ -4279,6 +6936,8 @@ final class ProviderSetupStubClient:
   private let disconnected: LocalProductSetupSnapshot
   private let connected: LocalProductSetupSnapshot
   private let connectsAfterStart: Bool
+  private var setupFailuresRemaining: Int
+  private var emptySetupSnapshotsRemaining: Int
   private let miniMaxConfigured: Bool
   private let mismatchedMiniMaxRefresh: Bool
   private let miniMaxTerminalStatus: String
@@ -4329,6 +6988,7 @@ final class ProviderSetupStubClient:
   private(set) var genericVerifyAccountIDs: [String] = []
   private(set) var genericReplaceProviderIDs: [String] = []
   private(set) var genericReplaceAccountIDs: [String] = []
+  private(set) var importedCredentialCandidateIDs: [String] = []
   private(set) var vaultRotationRequestCount = 0
   private(set) var vaultLockRequestCount = 0
   private(set) var vaultUnlockRequestCount = 0
@@ -4362,6 +7022,8 @@ final class ProviderSetupStubClient:
 
   init(
     connectsAfterStart: Bool = true,
+    setupFailuresRemaining: Int = 0,
+    emptySetupSnapshotsRemaining: Int = 0,
     miniMaxConfigured: Bool = false,
     mismatchedMiniMaxRefresh: Bool = false,
     miniMaxTerminalStatus: String = "verified",
@@ -4393,6 +7055,8 @@ final class ProviderSetupStubClient:
       miniMaxRevision: miniMaxConfigured ? 1 : 0
     )
     self.connectsAfterStart = connectsAfterStart
+    self.setupFailuresRemaining = setupFailuresRemaining
+    self.emptySetupSnapshotsRemaining = emptySetupSnapshotsRemaining
     self.miniMaxConfigured = miniMaxConfigured
     self.mismatchedMiniMaxRefresh = mismatchedMiniMaxRefresh
     self.miniMaxTerminalStatus = miniMaxTerminalStatus
@@ -4454,6 +7118,14 @@ final class ProviderSetupStubClient:
 
   func setupSnapshot() async throws -> LocalProductSetupSnapshot {
     setupRequestCount += 1
+    if setupFailuresRemaining > 0 {
+      setupFailuresRemaining -= 1
+      throw LocalProductClientError.unavailable
+    }
+    if emptySetupSnapshotsRemaining > 0 {
+      emptySetupSnapshotsRemaining -= 1
+      return try Self.emptySnapshot()
+    }
     if deepSeekEnabled {
       return try Self.snapshot(
         codexStatus: "not_logged_in",
@@ -4785,6 +7457,29 @@ final class ProviderSetupStubClient:
       ))
   }
 
+  func importCredentialCandidate(
+    candidateID: String,
+    providerID: String,
+    providerAccountID: String
+  ) async throws -> LocalProductCredentialSetupResult {
+    guard deepSeekEnabled, providerID == "deepseek",
+      providerAccountID == "deepseek.primary", deepSeekRevision == 0
+    else {
+      throw LocalProductClientError.invalidRequest
+    }
+    importedCredentialCandidateIDs.append(candidateID)
+    deepSeekAccountID = providerAccountID
+    deepSeekRevision = 2
+    return try LocalProductSetupWire.decodeCredentialResult(
+      Data(
+        """
+        {"provider_id":"deepseek","revision":2,
+         "status":"verified","reason":""}
+        """.utf8
+      )
+    )
+  }
+
   func configureCredential(
     providerID: String,
     providerAccountID: String,
@@ -5017,6 +7712,23 @@ final class ProviderSetupStubClient:
         """.utf8
       )
     )
+  }
+
+  private static func emptySnapshot() throws -> LocalProductSetupSnapshot {
+    let populated = try snapshot(codexStatus: "available")
+    let encoded = try JSONEncoder().encode(populated)
+    var object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    for key in [
+      "providers", "provider_accounts", "conversation_profiles", "runtimes",
+      "saved_teams", "templates", "role_options", "skills", "permissions",
+      "resources",
+    ] {
+      object[key] = []
+    }
+    let data = try JSONSerialization.data(withJSONObject: object)
+    return try LocalProductSetupWire.decodeSnapshot(data)
   }
 }
 

@@ -26,7 +26,7 @@ loom
 ```text
 Board → New Mission → Mission → Team Builder → Runs/History → Compare
 → Attention → Team Timeline → Evolution Assets → Development Queue
-→ Worker Pools → Integration → (Board)
+→ Worker Pools → Roundtable → Integration → (Board)
 ```
 
 ## 全局按键
@@ -108,6 +108,20 @@ Context/Changes/Evidence 活动页。`r` 翻页刷新（有 next cursor 时）�
 | `]` | 下一页 |
 | `y` | 提交待确认动作（activate/reject/retain/promote/...） |
 | `esc` | 取消待确认动作 |
+
+### Roundtable（受治理交接）
+
+- 入口：`tab` 循环到 **Roundtable** 屏；
+- 按键：
+  - `n`：走下一步（无会话时进入会话 ID 输入，默认 `rt-tui`，回车创建；
+    有会话时按 建会话 → 加席位 → 开轮 → propose → relay → ack →
+    insert → conclude 顺序推进，每一步都显示当前 acting seat）；
+  - `r`：从 Journal 重放刷新（重启后同一会话回到同一状态，重复 `n`
+    不会二次继续）；
+  - `e`：切换/重设会话 ID（回车确认）；
+  - `q`：退出。
+- 屏上展示：Session、当前 Next step、席位（moderator/writer/target）、
+  轮次、消息状态与 body digest；concluded 后显示 AlignmentSummary digest。
 
 ### Development Queue（开发队列）
 

@@ -89,6 +89,36 @@ func TestRebuildFromCommittedJournalIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestRebuildReusesVerifiedSnapshotUntilAppendOnlyRevisionAdvances(t *testing.T) {
+	ctx := context.Background()
+	source := &revisionCountingSource{
+		revision: 1,
+		events: []journal.Event{
+			projectionEvent("evt-mode", "mode-stream", 1, "idem-mode", "ModeSelected", map[string]string{
+				"mode": "agent",
+			}),
+		},
+	}
+	projection := newForTestSource(source)
+	if err := projection.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := projection.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := source.eventCallCount(); got != 1 {
+		t.Fatalf("unchanged append-only source replay count = %d, want 1", got)
+	}
+
+	source.setRevision(2)
+	if err := projection.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := source.eventCallCount(); got != 2 {
+		t.Fatalf("advanced append-only source replay count = %d, want 2", got)
+	}
+}
+
 func TestRebuildCanonicalizesOutOfOrderAndDuplicateEvents(t *testing.T) {
 	ctx := context.Background()
 	mode := projectionEvent("evt-mode", "stream-a", 1, "idem-mode", "ModeSelected", map[string]string{"mode": "conversation"})
@@ -1271,6 +1301,44 @@ func assertSavedTeamProjectionRebuildError(t *testing.T, events []journal.Event)
 
 type eventSliceSource struct {
 	events []journal.Event
+}
+
+type revisionCountingSource struct {
+	mu       sync.Mutex
+	revision int64
+	events   []journal.Event
+	calls    int
+}
+
+func (s *revisionCountingSource) Revision(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revision, nil
+}
+
+func (s *revisionCountingSource) Events(ctx context.Context) ([]journal.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	return append([]journal.Event(nil), s.events...), nil
+}
+
+func (s *revisionCountingSource) setRevision(revision int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revision = revision
+}
+
+func (s *revisionCountingSource) eventCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
 
 func (s eventSliceSource) Events(ctx context.Context) ([]journal.Event, error) {

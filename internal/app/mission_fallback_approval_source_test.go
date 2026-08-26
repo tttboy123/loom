@@ -17,6 +17,7 @@ import (
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/state"
 	"loom-pi-rebuild/internal/teams"
+	"loom-pi-rebuild/internal/verification"
 	"loom-pi-rebuild/internal/work"
 )
 
@@ -711,6 +712,9 @@ func TestDynamicFallbackApprovalRecompilesAndReplaysIntoTeamBoardProjection(
 			barrier:     &teamCanaryBarrier{release: make(chan struct{})},
 			adapterType: "loom-native", runtimeID: reviewInstance.ID,
 			calls: &reviewCalls,
+			outputDelta: string(
+				verification.VerifierReasonCriteriaSatisfied,
+			),
 		},
 	)
 	verifierExecutor := newTeamCanarySupervisor(
@@ -719,6 +723,9 @@ func TestDynamicFallbackApprovalRecompilesAndReplaysIntoTeamBoardProjection(
 			barrier:     &teamCanaryBarrier{release: make(chan struct{})},
 			adapterType: "codex", runtimeID: primaryInstance.ID,
 			calls: &verifierCalls,
+			outputDelta: string(
+				verification.VerifierReasonCriteriaSatisfied,
+			),
 		},
 	)
 	for index := range approved.Request.Nodes {

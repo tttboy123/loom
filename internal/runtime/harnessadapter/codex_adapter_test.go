@@ -266,7 +266,7 @@ func TestCodexAdapterCancellationRevokesContextMCPBeforeRunnerReturns(t *testing
 	}
 }
 
-func TestCodexAdapterAcknowledgesContextOnlyAfterValidatedHarnessFinalOutput(t *testing.T) {
+func TestCodexAdapterAcknowledgesContextAfterBoundHTTPResponse(t *testing.T) {
 	request := harnessContextAdapterRequest(
 		t, codexAdapterRequest(t, CodexProviderID, CodexModelID), "context:codex:v1",
 	)
@@ -307,8 +307,9 @@ func TestCodexAdapterAcknowledgesContextOnlyAfterValidatedHarnessFinalOutput(t *
 			if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("retrieved")) {
 				return fmt.Errorf("context MCP status=%d body=%s", response.StatusCode, body)
 			}
-			if delivery.acks != 0 || delivery.payload.Status != attemptpayload.StatusPending {
-				return errors.New("HTTP write prematurely acknowledged context delivery")
+			if delivery.acks != 1 || delivery.payload.Status != attemptpayload.StatusDelivered ||
+				delivery.proof != attemptpayload.ProofHarnessToolResponse {
+				return errors.New("HTTP response did not acknowledge context delivery")
 			}
 			return nil
 		},
@@ -328,13 +329,13 @@ func TestCodexAdapterAcknowledgesContextOnlyAfterValidatedHarnessFinalOutput(t *
 		t.Fatal(err)
 	}
 	if delivery.prepares != 1 || delivery.acks != 1 ||
-		delivery.proof != attemptpayload.ProofHarnessFinalOutput ||
+		delivery.proof != attemptpayload.ProofHarnessToolResponse ||
 		delivery.payload.Status != attemptpayload.StatusDelivered {
 		t.Fatalf("Harness delivery = %#v", delivery)
 	}
 }
 
-func TestHarnessAdaptersAcknowledgeMultipleContextReadsOnlyAfterFinalOutput(t *testing.T) {
+func TestHarnessAdaptersAcknowledgeEachContextHTTPResponse(t *testing.T) {
 	tests := []struct {
 		name             string
 		contextAdapterID string
@@ -436,8 +437,8 @@ func TestHarnessAdaptersAcknowledgeMultipleContextReadsOnlyAfterFinalOutput(t *t
 							bytes.Contains(body, []byte("context_retrieval_denied")) {
 							return fmt.Errorf("context MCP status=%d body=%s", response.StatusCode, body)
 						}
-						if len(delivery.ackSequences) != 0 {
-							return errors.New("Context delivery acknowledged before Harness final output")
+						if len(delivery.ackSequences) != index+1 {
+							return errors.New("Context HTTP response was not acknowledged")
 						}
 					}
 					return nil
@@ -451,7 +452,7 @@ func TestHarnessAdaptersAcknowledgeMultipleContextReadsOnlyAfterFinalOutput(t *t
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(delivery.ackSequences, []int64{1, 2}) {
-				t.Fatalf("final-output acknowledgements = %v", delivery.ackSequences)
+				t.Fatalf("HTTP response acknowledgements = %v", delivery.ackSequences)
 			}
 		})
 	}
@@ -545,8 +546,8 @@ func TestHarnessAdaptersRouteGovernedReadAndGrepThroughAttemptMCP(t *testing.T) 
 							!bytes.Contains(body, []byte(`"verdict":"allow"`)) {
 							return fmt.Errorf("tool MCP status=%d body=%s read=%v", response.StatusCode, body, readErr)
 						}
-						if len(gateway.ackSequences) != 0 {
-							return errors.New("ToolCall result acknowledged before Harness final output")
+						if len(gateway.ackSequences) != index+1 {
+							return errors.New("ToolCall HTTP response was not acknowledged")
 						}
 					}
 					return nil

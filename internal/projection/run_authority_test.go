@@ -107,6 +107,114 @@ func TestPhase2DRunProjectionCarriesValidatedExecutionBinding(t *testing.T) {
 	}
 }
 
+func TestPhase2DRunProjectionRoundTripsRemoteToolEnrollmentBinding(t *testing.T) {
+	// A FrozenExecutionBinding that carries a remote-tool Enrollment is
+	// digested in the v3 domain (loom.frozen-execution-binding.v3). The
+	// journal payload and the projection must round-trip the enrollment
+	// fields, otherwise the projection recomputes a legacy digest and
+	// rejects the event — bricking journal replay (daemon build_state
+	// failure) for any mission whose subagent holds a web/MCP Enrollment.
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "profile.web", AdapterType: "loom-native",
+		ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+		ModelID: "deepseek-chat", AuthMode: loomruntime.AuthBrokered,
+		EndpointFingerprint: strings.Repeat("b", 64),
+		CredentialReference: "credential-ref-deepseek-primary",
+		CredentialRevision:  2,
+		RequiredCapabilities: []string{
+			loomruntime.CapabilityContextRetrieval,
+		},
+		Timeout:                    45 * time.Second,
+		RemoteToolEnrollmentID:     "enroll-web-live-001",
+		RemoteToolEnrollmentDigest: strings.Repeat("c", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-1", DeviceID: "device-1", AdapterType: "loom-native",
+		DisplayName: "Fixture", Status: loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{loomruntime.CapabilityContextRetrieval},
+		Capacity:             1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := loomruntime.FreezeExecutionBinding(profile, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.RemoteToolEnrollmentID != profile.RemoteToolEnrollmentID ||
+		binding.RemoteToolEnrollmentDigest != profile.RemoteToolEnrollmentDigest {
+		t.Fatalf("frozen binding dropped enrollment: %#v", binding)
+	}
+
+	withFields := func(enrollmentID, enrollmentDigest string) projectedExecutionBindingPayload {
+		return projectedExecutionBindingPayload{
+			ProfileID: binding.ProfileID, HarnessAdapter: binding.HarnessAdapter,
+			RuntimeInstanceID: binding.RuntimeInstanceID,
+			ProviderID:        binding.ProviderID, ProviderAccountID: binding.ProviderAccountID,
+			ModelID: binding.ModelID, AuthMode: string(binding.AuthMode),
+			EndpointFingerprint: binding.EndpointFingerprint,
+			CredentialReference: binding.CredentialReference,
+			CredentialRevision:  binding.CredentialRevision,
+			ReasoningEffort:     binding.ReasoningEffort,
+			TimeoutNanoseconds:  int64(binding.Timeout), Budget: binding.Budget,
+			Capabilities:               append([]string(nil), binding.Capabilities...),
+			BindingDigest:              binding.BindingDigest,
+			RemoteToolEnrollmentID:     enrollmentID,
+			RemoteToolEnrollmentDigest: enrollmentDigest,
+		}
+	}
+
+	events := validRunAuthorityProjectionEvents()
+	for index := range events {
+		if events[index].Type != "WorkItemAssigned" {
+			continue
+		}
+		var assignment map[string]any
+		if err := json.Unmarshal(events[index].PayloadJSON, &assignment); err != nil {
+			t.Fatal(err)
+		}
+		assignment["execution_binding"] = withFields(
+			binding.RemoteToolEnrollmentID,
+			binding.RemoteToolEnrollmentDigest,
+		)
+		events[index].PayloadJSON = projectionPayload(t, assignment)
+	}
+	snapshot, err := replay(context.Background(), events)
+	if err != nil {
+		t.Fatalf("enrollment-bound WorkItemAssigned replay error: %v", err)
+	}
+	run := snapshot.Runs["run-1"]
+	if !run.ExecutionBindingAvailable ||
+		run.ExecutionBinding.BindingDigest != binding.BindingDigest ||
+		run.ExecutionBinding.RemoteToolEnrollmentID != binding.RemoteToolEnrollmentID ||
+		run.ExecutionBinding.RemoteToolEnrollmentDigest != binding.RemoteToolEnrollmentDigest {
+		t.Fatalf("projected enrollment binding = %#v", run.ExecutionBinding)
+	}
+
+	// Regression: dropping the enrollment fields (the pre-fix journal shape)
+	// recomputes the legacy digest and must be rejected.
+	broken := validRunAuthorityProjectionEvents()
+	for index := range broken {
+		if broken[index].Type != "WorkItemAssigned" {
+			continue
+		}
+		var assignment map[string]any
+		if err := json.Unmarshal(broken[index].PayloadJSON, &assignment); err != nil {
+			t.Fatal(err)
+		}
+		assignment["execution_binding"] = withFields("", "")
+		broken[index].PayloadJSON = projectionPayload(t, assignment)
+	}
+	if _, err := replay(context.Background(), broken); !errors.Is(
+		err, ErrInvalidProjectionEvent,
+	) {
+		t.Fatalf("dropped-enrollment binding replay error = %v, want ErrInvalidProjectionEvent", err)
+	}
+}
+
 func TestPhase2DRunProjectionCarriesValidatedProviderAccounting(t *testing.T) {
 	events := validRunAuthorityProjectionEvents()
 	for index := range events {

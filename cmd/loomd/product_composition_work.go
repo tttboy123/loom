@@ -472,22 +472,18 @@ func newProductWorkRouteFactory(
 		remoteEffect = effect
 		adapterRemote := remote
 		enrollmentRemote, enrollmentErr := newProductRemoteToolExecutorsFromEnrollments(
-			readModel.GlobalReadView(),
+			func() projection.GlobalReadView { return readModel.GlobalReadView() },
 			productRemoteToolEnrollmentDeps(remoteConfig),
 		)
 		if enrollmentErr != nil {
 			return closeOnFailure(errProductWorkExecutionConstruction, enrollmentErr)
 		}
 		if enrollmentRemote != nil {
-			enrollmentComposite, compositeOK := enrollmentRemote.(*productCompositeRemoteToolExecutor)
-			if !compositeOK {
-				return closeOnFailure(
-					errProductWorkExecutionConstruction,
-					execution.ErrUnsupportedTool,
-				)
-			}
 			enrollmentEffect := composition.NewEffect(func(context.Context) error {
-				return enrollmentComposite.Close()
+				if closer, ok := enrollmentRemote.(interface{ Close() error }); ok {
+					return closer.Close()
+				}
+				return nil
 			})
 			switch {
 			case adapterRemote == nil:

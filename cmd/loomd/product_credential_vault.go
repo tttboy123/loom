@@ -129,7 +129,13 @@ func newProductCredentialVaultRuntime(
 		_ = vaultStore.Close()
 		return nil, err
 	}
-	verifier, err := provider.NewSystemCatalogCredentialVerifier(5*time.Second, 64*1024)
+	fixedVerifier, err := provider.NewSystemCatalogCredentialVerifier(5*time.Second, 64*1024)
+	if err != nil {
+		_ = leasing.Close()
+		_ = vaultStore.Close()
+		return nil, err
+	}
+	verifier, err := newProductAccountCredentialVerifier(fixedVerifier, journalStore)
 	if err != nil {
 		_ = leasing.Close()
 		_ = vaultStore.Close()
@@ -421,6 +427,21 @@ func (runtime *productCredentialVaultRuntime) MarkAttemptPayloadDelivered(
 		return runtime.safeFailure()
 	}
 	return runtime.store.MarkAttemptPayloadDelivered(ctx, binding)
+}
+
+func (runtime *productCredentialVaultRuntime) DeleteAttemptPayload(
+	ctx context.Context,
+	binding attemptpayload.Binding,
+) error {
+	if runtime == nil || ctx == nil || ctx.Err() != nil {
+		return credentials.ErrCredentialStoreUnavailable
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.failure != nil || runtime.locked || runtime.closed || runtime.store == nil {
+		return runtime.safeFailure()
+	}
+	return runtime.store.DeleteAttemptPayload(ctx, binding)
 }
 
 func (runtime *productCredentialVaultRuntime) PutAgentInput(
@@ -786,9 +807,18 @@ func (runtime *productCredentialVaultRuntime) UnlockCredentialVault(
 			credentials.ErrCredentialStoreUnavailable,
 		)
 	}
-	verifier, err := provider.NewSystemCatalogCredentialVerifier(
+	fixedVerifier, err := provider.NewSystemCatalogCredentialVerifier(
 		5*time.Second, 64*1024,
 	)
+	if err != nil {
+		_ = leasing.Close()
+		_ = vaultStore.Close()
+		return credentials.WithCredentialFailureStage(
+			credentials.CredentialStageVaultOpen,
+			credentials.ErrCredentialStoreUnavailable,
+		)
+	}
+	verifier, err := newProductAccountCredentialVerifier(fixedVerifier, runtime.journalStore)
 	if err != nil {
 		_ = leasing.Close()
 		_ = vaultStore.Close()
@@ -1324,6 +1354,15 @@ func (runtime *productCredentialVaultRecoveryRuntime) MarkAttemptPayloadDelivere
 ) error {
 	if active := runtime.activeRuntime(); active != nil {
 		return active.MarkAttemptPayloadDelivered(ctx, binding)
+	}
+	return runtime.safeFailure()
+}
+
+func (runtime *productCredentialVaultRecoveryRuntime) DeleteAttemptPayload(
+	ctx context.Context, binding attemptpayload.Binding,
+) error {
+	if active := runtime.activeRuntime(); active != nil {
+		return active.DeleteAttemptPayload(ctx, binding)
 	}
 	return runtime.safeFailure()
 }

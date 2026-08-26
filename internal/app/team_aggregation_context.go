@@ -22,6 +22,8 @@ const maxTeamAggregationSourceBytes = int64(1 << 20)
 
 type TeamAggregationExecution struct {
 	MaxSourceArtifactBytes int64
+	CapacityAuthority      contextcapsule.CapacityAuthority
+	TokenCounter           contextcapsule.TokenCounter
 }
 
 type TeamAggregationSource struct {
@@ -92,6 +94,8 @@ func buildTeamAggregationContextCapsule(
 	node teams.ExecutionNode,
 	base contextcapsule.RoleContextCapsule,
 	sources []TeamAggregationSource,
+	capacityAuthority contextcapsule.CapacityAuthority,
+	tokenCounter contextcapsule.TokenCounter,
 ) (contextcapsule.RoleContextCapsule, error) {
 	plannedNode, found := missionContextPlanNode(plan, node.LogicalNodeID())
 	if !found || !sameTeamAggregationNode(plannedNode, node) ||
@@ -103,7 +107,19 @@ func buildTeamAggregationContextCapsule(
 		len(sources) != len(node.DependsOn()) || len(sources) < 2 {
 		return contextcapsule.RoleContextCapsule{}, ErrInvalidTeamCoordinator
 	}
-	return buildTeamSourceContextCapsule(plan, node, base, sources, true)
+	items, err := buildTeamSourceContextItems(plan, node, sources, true)
+	if err != nil {
+		return contextcapsule.RoleContextCapsule{}, err
+	}
+	capsule, err := contextcapsule.ExtendRoleContextCapsuleWithCapacity(
+		base, items, capacityAuthority, tokenCounter,
+	)
+	if err != nil {
+		return contextcapsule.RoleContextCapsule{}, fmt.Errorf(
+			"%w: %w", ErrInvalidTeamCoordinator, err,
+		)
+	}
+	return capsule, nil
 }
 
 func sameTeamDependencyNode(left, right teams.ExecutionNode) bool {
@@ -123,6 +139,8 @@ func buildTeamDependencyContextCapsule(
 	node teams.ExecutionNode,
 	base contextcapsule.RoleContextCapsule,
 	sources []TeamAggregationSource,
+	capacityAuthority contextcapsule.CapacityAuthority,
+	tokenCounter contextcapsule.TokenCounter,
 ) (contextcapsule.RoleContextCapsule, error) {
 	plannedNode, found := missionContextPlanNode(plan, node.LogicalNodeID())
 	if !found || !sameTeamDependencyNode(plannedNode, node) {
@@ -147,16 +165,32 @@ func buildTeamDependencyContextCapsule(
 			"%w: dependency source count mismatch", ErrInvalidTeamCoordinator,
 		)
 	}
-	return buildTeamSourceContextCapsule(plan, node, base, sources, false)
+	items, err := buildTeamSourceContextItems(plan, node, sources, false)
+	if err != nil {
+		return contextcapsule.RoleContextCapsule{}, err
+	}
+	if _, capacityBound := base.CapacityProjection(); !capacityBound {
+		return contextcapsule.RoleContextCapsule{}, fmt.Errorf(
+			"%w: dependency Capsule has no capacity authority", ErrInvalidTeamCoordinator,
+		)
+	}
+	capsule, err := contextcapsule.ExtendRoleContextCapsuleWithCapacity(
+		base, items, capacityAuthority, tokenCounter,
+	)
+	if err != nil {
+		return contextcapsule.RoleContextCapsule{}, fmt.Errorf(
+			"%w: %w", ErrInvalidTeamCoordinator, err,
+		)
+	}
+	return capsule, nil
 }
 
-func buildTeamSourceContextCapsule(
+func buildTeamSourceContextItems(
 	plan teams.ExecutionPlan,
 	node teams.ExecutionNode,
-	base contextcapsule.RoleContextCapsule,
 	sources []TeamAggregationSource,
 	aggregation bool,
-) (contextcapsule.RoleContextCapsule, error) {
+) ([]contextcapsule.ItemInput, error) {
 	items := make([]contextcapsule.ItemInput, 0, len(sources)*3)
 	ordered := append([]TeamAggregationSource(nil), sources...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].LogicalNodeID < ordered[j].LogicalNodeID })
@@ -187,7 +221,7 @@ func buildTeamSourceContextCapsule(
 			source.AcceptanceDecisionTime.IsZero() ||
 			source.AcceptanceDecisionTime.Location() != time.UTC ||
 			len(source.Content) == 0 || int64(len(source.Content)) > maxTeamAggregationSourceBytes {
-			return contextcapsule.RoleContextCapsule{}, ErrInvalidTeamCoordinator
+			return nil, ErrInvalidTeamCoordinator
 		}
 		authorityContent, err := json.Marshal(teamAggregationSourceAuthority{
 			SchemaVersion: 1, Scope: evidence.AggregationScopeAuthorizedOutputEvents,
@@ -198,7 +232,7 @@ func buildTeamSourceContextCapsule(
 			EvidenceDigest: source.EvidenceDigest, OutputSummaryDigest: source.OutputSummaryDigest,
 		})
 		if err != nil {
-			return contextcapsule.RoleContextCapsule{}, ErrInvalidTeamCoordinator
+			return nil, ErrInvalidTeamCoordinator
 		}
 		testReports := make([]teamObservedTestReport, len(source.GovernedTestReports))
 		orderedReports := append(
@@ -228,7 +262,7 @@ func buildTeamSourceContextCapsule(
 			TestReports:                testReports,
 		})
 		if err != nil {
-			return contextcapsule.RoleContextCapsule{}, ErrInvalidTeamCoordinator
+			return nil, ErrInvalidTeamCoordinator
 		}
 		prefixLabel := "dependency-source"
 		authorityKind := contextcapsule.KindDependencySource
@@ -261,19 +295,14 @@ func buildTeamSourceContextCapsule(
 				Trust: contextcapsule.TrustUntrusted, Scope: contextcapsule.ScopeRoleRestricted,
 				Priority:   contextcapsule.PriorityHistory,
 				TokenCount: missionContextTokenCount(source.Content), Content: append([]byte(nil), source.Content...),
-				SourceType:    contextcapsule.SourceModelOutput,
-				SourceRef:     "attempt-output:" + source.EvidenceDigest,
-				AllowedRoleID: node.LogicalNodeID(),
+				SourceType:     contextcapsule.SourceModelOutput,
+				SourceRef:      "attempt-output:" + source.EvidenceDigest,
+				AllowedRoleID:  node.LogicalNodeID(),
+				PolicyFiltered: !contextcapsule.ValidDispatchText(source.Content),
 			},
 		)
 	}
-	capsule, err := contextcapsule.ExtendRoleContextCapsule(base, items)
-	if err != nil {
-		return contextcapsule.RoleContextCapsule{}, fmt.Errorf(
-			"%w: %w", ErrInvalidTeamCoordinator, err,
-		)
-	}
-	return capsule, nil
+	return items, nil
 }
 
 func sameTeamAggregationNode(left, right teams.ExecutionNode) bool {
@@ -310,9 +339,15 @@ func (coordinator *TeamCoordinator) prepareAggregationExecution(
 	defer zeroTeamDependencySources(sources)
 	capsule, err := buildTeamAggregationContextCapsule(
 		request.Plan, node, execution.ContextCapsule, sources,
+		execution.Aggregation.CapacityAuthority,
+		execution.Aggregation.TokenCounter,
 	)
 	if err != nil {
-		return TeamNodeExecution{}, fmt.Errorf("%w: build aggregation Capsule: %v", ErrInvalidTeamCoordinator, err)
+		return TeamNodeExecution{}, fmt.Errorf(
+			"%w: build aggregation Capsule: %w",
+			ErrInvalidTeamCoordinator,
+			err,
+		)
 	}
 	return coordinator.rebuildTeamContextExecution(ctx, request, execution, capsule)
 }
@@ -333,6 +368,7 @@ func (coordinator *TeamCoordinator) prepareDependencyContextExecution(
 	defer zeroTeamDependencySources(sources)
 	capsule, err := buildTeamDependencyContextCapsule(
 		request.Plan, node, execution.ContextCapsule, sources,
+		execution.ContextCapacityAuthority, execution.ContextTokenCounter,
 	)
 	if err != nil {
 		return TeamNodeExecution{}, fmt.Errorf("%w: build dependency Capsule: %v", ErrInvalidTeamCoordinator, err)
@@ -462,7 +498,18 @@ func (coordinator *TeamCoordinator) rebuildTeamContextExecution(
 ) (TeamNodeExecution, error) {
 	payload, err := contextcapsule.RenderDispatchPayload(capsule)
 	if err != nil {
-		return TeamNodeExecution{}, fmt.Errorf("%w: render Role Context Capsule: %v", ErrInvalidTeamCoordinator, err)
+		// A prior model output may be valid at rest but disallowed on the
+		// provider wire. Rebuild once with the capsule's policy filter; authority
+		// and observed items still fail closed in RebuildDispatchSafe.
+		if safeCapsule, rebuildErr := contextcapsule.RebuildDispatchSafe(
+			capsule, teamContextTokenCounter(execution, capsule),
+		); rebuildErr == nil {
+			capsule = safeCapsule
+			payload, err = contextcapsule.RenderDispatchPayload(capsule)
+		}
+		if err != nil {
+			return TeamNodeExecution{}, fmt.Errorf("%w: render Role Context Capsule: %v", ErrInvalidTeamCoordinator, err)
+		}
 	}
 	if request.ContextCapsules != nil {
 		if err := request.ContextCapsules.PutRoleContextCapsule(ctx, capsule, payload); err != nil {
@@ -493,6 +540,31 @@ func (coordinator *TeamCoordinator) rebuildTeamContextExecution(
 	}
 	execution.routeSegment = routeSegment
 	return execution, nil
+}
+
+func teamContextTokenCounter(
+	execution TeamNodeExecution,
+	capsule contextcapsule.RoleContextCapsule,
+) contextcapsule.TokenCounter {
+	projection, ok := capsule.CapacityProjection()
+	if !ok {
+		return nil
+	}
+	for _, counter := range []contextcapsule.TokenCounter{
+		execution.ContextTokenCounter,
+		func() contextcapsule.TokenCounter {
+			if execution.Aggregation == nil {
+				return nil
+			}
+			return execution.Aggregation.TokenCounter
+		}(),
+	} {
+		if !nilAppInterface(counter) && counter.ID() == projection.TokenCounterID &&
+			counter.Version() == projection.TokenCounterVersion {
+			return counter
+		}
+	}
+	return nil
 }
 
 func zeroTeamDependencySources(sources []TeamAggregationSource) {

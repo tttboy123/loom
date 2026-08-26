@@ -448,6 +448,8 @@ final class InteractionContinuityTests: XCTestCase {
 		for field in [
 			"subagent_add", "subagent_remove",
 			"main_fallback_role", "subagent_fallback_role",
+			"main_parallel_route_add", "subagent_parallel_route_add",
+			"main_parallel_route_remove", "subagent_parallel_route_remove",
 			"main_harness_route", "subagent_harness_route",
 			"main_provider_account_route", "subagent_provider_account_route",
 			"main_model", "subagent_model",
@@ -477,4 +479,21 @@ final class InteractionContinuityTests: XCTestCase {
 			)
 		)
     }
+
+    func testProviderNameUsesCanonicalDisplayNames() {
+        XCTAssertEqual(
+            LocalProductRoleReview.providerName(providerID: "opencode", authMode: "native_auth"),
+            "OpenCode"
+        )
+        XCTAssertEqual(
+            LocalProductRoleReview.providerName(providerID: "deepseek", authMode: "brokered"),
+            "DeepSeek"
+        )
+        XCTAssertEqual(
+            LocalProductRoleReview.providerName(providerID: "minimax", authMode: "brokered"),
+            "MiniMax"
+        )
+    }
+
+
 }

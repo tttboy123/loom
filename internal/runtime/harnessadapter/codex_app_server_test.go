@@ -3,6 +3,7 @@ package harnessadapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -63,8 +64,8 @@ func TestCodexAppServerContinuesAgentInputOnOneThread(t *testing.T) {
 		requests[2].Method != "turn/start" || requests[3].Method != "turn/start" {
 		t.Fatalf("methods = %#v", requests)
 	}
-	if sessions.request.Directory != root || requests[1].CWD != root ||
-		requests[1].ApprovalPolicy != "never" || requests[1].SandboxType != "readOnly" ||
+	if sessions.request.Directory != root+"/workspace" || requests[1].CWD != root+"/workspace" ||
+		requests[1].ApprovalPolicy != "never" || requests[1].SandboxType != "read-only" ||
 		len(requests[1].WritableRoots) != 0 {
 		t.Fatalf("ungoverned app-server boundary command=%#v thread=%#v",
 			sessions.request, requests[1])
@@ -171,9 +172,133 @@ func TestCodexAppServerAcceptsBoundTurnStartedBeforeTurnStartResponse(t *testing
 	}
 }
 
+func TestCodexAppServerTurnStartAcceptsConfiguredConversationModelIDs(t *testing.T) {
+	t.Parallel()
+	for _, modelID := range []string{"codex-default", "gpt-5.6-sol"} {
+		payload, err := marshalCodexTurnStart(
+			"loom-turn-start-1", "thread-locked-1", modelID, "", []byte("private prompt"),
+		)
+		if err != nil {
+			t.Fatalf("model %q rejected: %v", modelID, err)
+		}
+		var request struct {
+			Params struct {
+				Model string `json:"model"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(payload, &request) != nil || request.Params.Model != modelID {
+			t.Fatalf("model metadata mismatch for %q", modelID)
+		}
+		zeroHarnessBytes(payload)
+	}
+	if _, err := marshalCodexTurnStart(
+		"loom-turn-start-1", "thread-locked-1", " invalid-model", "", []byte("private prompt"),
+	); !errors.Is(err, ErrHarnessProtocol) {
+		t.Fatalf("invalid model error = %v", err)
+	}
+	agentRequest := HarnessProcessRequest{
+		ExecutablePath: "/opt/loom/bin/codex", WorkspacePath: "/private/workspace",
+		HomePath: "/private/home", TempPath: "/private/tmp",
+		ModelID: "codex-default", Prompt: []byte("private prompt"),
+		SystemPrompt: "governed system prompt", Timeout: time.Minute,
+		MaxOutputBytes: 1 << 16,
+	}
+	if validCodexProcessRequest(agentRequest) {
+		t.Fatal("agent process request accepted a non-frozen model")
+	}
+	agentRequest.ModelID = CodexModelID
+	if !validCodexProcessRequest(agentRequest) {
+		t.Fatal("agent process request rejected its frozen model")
+	}
+}
+
+func TestCodexAppServerLifecycleNotificationsRemainBoundAndClosed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		method   string
+		params   string
+		threadID string
+		wantErr  bool
+	}{
+		{
+			name: "active status", method: "thread/status/changed",
+			params:   `{"threadId":"thread-locked-1","status":{"type":"active","activeFlags":[]}}`,
+			threadID: "thread-locked-1",
+		},
+		{
+			name: "wrong thread", method: "thread/status/changed",
+			params:   `{"threadId":"thread-substituted","status":{"type":"active","activeFlags":[]}}`,
+			threadID: "thread-locked-1", wantErr: true,
+		},
+		{
+			name: "invalid active flag", method: "thread/status/changed",
+			params:   `{"threadId":"thread-locked-1","status":{"type":"active","activeFlags":["unknown"]}}`,
+			threadID: "thread-locked-1", wantErr: true,
+		},
+		{
+			name: "bound warning", method: "warning",
+			params:   `{"threadId":"thread-locked-1","message":"bounded warning"}`,
+			threadID: "thread-locked-1",
+		},
+		{
+			name: "rate limit update", method: "account/rateLimits/updated",
+			params: `{"rateLimits":{"planType":"plus"}}`,
+		},
+		{
+			name: "MCP startup ready", method: "mcpServer/startupStatus/updated",
+			params:   `{"name":"workspace","status":"ready","threadId":"thread-locked-1"}`,
+			threadID: "thread-locked-1",
+		},
+		{
+			name: "MCP startup wrong thread", method: "mcpServer/startupStatus/updated",
+			params:   `{"name":"workspace","status":"ready","threadId":"thread-substituted"}`,
+			threadID: "thread-locked-1", wantErr: true,
+		},
+		{
+			name: "MCP startup invalid status", method: "mcpServer/startupStatus/updated",
+			params:   `{"name":"workspace","status":"unknown","threadId":"thread-locked-1"}`,
+			threadID: "thread-locked-1", wantErr: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handled, err := acceptCodexAppServerLifecycleNotification(
+				test.method, json.RawMessage(test.params), test.threadID,
+			)
+			if !handled || (err != nil) != test.wantErr {
+				t.Fatalf("handled=%t err=%v", handled, err)
+			}
+		})
+	}
+	handled, err := acceptCodexAppServerLifecycleNotification(
+		"future/status/updated", json.RawMessage(`{"status":"ready"}`), "thread-locked-1",
+	)
+	if handled || err != nil {
+		t.Fatalf("unknown lifecycle notification handled=%t err=%v", handled, err)
+	}
+	completed := false
+	if err := acceptCodexInterruptNotification(
+		"mcpServer/startupStatus/updated",
+		json.RawMessage(`{"name":"workspace","status":"ready","threadId":"thread-locked-1"}`),
+		"thread-locked-1", "turn-1", &completed,
+	); err != nil || completed {
+		t.Fatalf("interrupt lifecycle err=%v completed=%t", err, completed)
+	}
+	if err := acceptCodexInterruptNotification(
+		"item/reasoning/summaryTextDelta",
+		json.RawMessage(`{"threadId":"thread-locked-1","turnId":"turn-1","itemId":"reasoning-1","summaryIndex":0,"delta":"bounded"}`),
+		"thread-locked-1", "turn-1", &completed,
+	); err != nil || completed {
+		t.Fatalf("interrupt progress err=%v completed=%t", err, completed)
+	}
+}
+
 type codexAppServerRequestSnapshot struct {
 	Method         string
+	Model          string
 	ThreadID       string
+	TurnID         string
 	Text           string
 	CWD            string
 	ApprovalPolicy string
@@ -188,31 +313,50 @@ type codexAppServerSessionFixture struct {
 	turnSequence              int
 	substitution              string
 	turnStartedBeforeResponse bool
+	resolvedModel             string
+	modelDrift                bool
+	cancelBeforeTurnResponse  bool
+	dropTurnStartResponse     bool
+	turnStartWritten          chan struct{}
+	turnStartWrittenOnce      sync.Once
+	turnStartRecoveryPending  bool
+	turnStartRecoveryBounded  bool
+	turnStartResponseBounded  bool
+	holdFirstTurn             bool
+	firstTurnResponseRead     chan struct{}
+	firstTurnResponseOnce     sync.Once
+	interruptBehavior         string
+	interruptBeforeResponse   bool
+	interruptPending          bool
+	interruptReadBounded      bool
+	opaqueCancellationError   bool
 	closed                    bool
 	waited                    bool
 	aborted                   bool
 }
 
 func newCodexAppServerSessionFixture() *codexAppServerSessionFixture {
-	return &codexAppServerSessionFixture{lines: make(chan []byte, 16)}
+	return &codexAppServerSessionFixture{
+		lines:            make(chan []byte, 16),
+		turnStartWritten: make(chan struct{}), firstTurnResponseRead: make(chan struct{}),
+	}
 }
 
 func (session *codexAppServerSessionFixture) WriteLine(
-	_ context.Context,
+	ctx context.Context,
 	payload []byte,
 ) error {
 	var request struct {
 		ID     string `json:"id"`
 		Method string `json:"method"`
 		Params struct {
+			Model          string `json:"model"`
 			ThreadID       string `json:"threadId"`
+			TurnID         string `json:"turnId"`
 			CWD            string `json:"cwd"`
 			ApprovalPolicy string `json:"approvalPolicy"`
-			Sandbox        struct {
-				Type          string   `json:"type"`
-				WritableRoots []string `json:"writableRoots"`
-			} `json:"sandbox"`
-			Input []struct {
+			Sandbox        string `json:"sandbox"`
+			Input          []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"input"`
@@ -222,10 +366,11 @@ func (session *codexAppServerSessionFixture) WriteLine(
 		return ErrHarnessProtocol
 	}
 	snapshot := codexAppServerRequestSnapshot{
-		Method: request.Method, ThreadID: request.Params.ThreadID,
-		CWD: request.Params.CWD, ApprovalPolicy: request.Params.ApprovalPolicy,
-		SandboxType:   request.Params.Sandbox.Type,
-		WritableRoots: append([]string(nil), request.Params.Sandbox.WritableRoots...),
+		Method: request.Method, Model: request.Params.Model,
+		ThreadID: request.Params.ThreadID,
+		TurnID:   request.Params.TurnID,
+		CWD:      request.Params.CWD, ApprovalPolicy: request.Params.ApprovalPolicy,
+		SandboxType: request.Params.Sandbox,
 	}
 	if len(request.Params.Input) == 1 {
 		snapshot.Text = request.Params.Input[0].Text
@@ -249,17 +394,66 @@ func (session *codexAppServerSessionFixture) WriteLine(
 				"platformOs":     "macos",
 			},
 		})
+		session.enqueue(map[string]any{
+			"method": "configWarning",
+			"params": map[string]any{"summary": "bounded warning", "details": nil},
+		})
+		session.enqueue(map[string]any{
+			"method": "remoteControl/status/changed",
+			"params": map[string]any{"status": "disabled"},
+		})
 	case "thread/start":
 		threadID := "thread-locked-1"
 		if session.substitution == "thread" {
 			threadID = ""
 		}
+		resolvedModel := request.Params.Model
+		if resolvedModel == "" {
+			resolvedModel = session.resolvedModel
+			if resolvedModel == "" {
+				resolvedModel = "gpt-5.6-sol"
+			}
+		}
+		if session.modelDrift {
+			resolvedModel = "gpt-5.6-sol"
+		}
 		session.enqueue(map[string]any{
-			"id":     request.ID,
-			"result": map[string]any{"thread": map[string]any{"id": threadID}},
+			"id": request.ID,
+			"result": map[string]any{
+				"thread": map[string]any{"id": threadID}, "model": resolvedModel,
+			},
+		})
+		session.enqueue(map[string]any{
+			"method": "thread/started",
+			"params": map[string]any{"thread": map[string]any{"id": threadID}},
 		})
 	case "turn/start":
 		turnID := "turn-locked-" + string(rune('0'+turnSequence))
+		if session.cancelBeforeTurnResponse && turnSequence == 1 {
+			session.turnStartWrittenOnce.Do(func() {
+				close(session.turnStartWritten)
+			})
+			<-ctx.Done()
+			if session.dropTurnStartResponse {
+				session.mu.Lock()
+				session.turnStartRecoveryPending = true
+				session.mu.Unlock()
+				return nil
+			}
+		}
+		session.enqueue(map[string]any{
+			"method": "thread/status/changed",
+			"params": map[string]any{
+				"threadId": request.Params.ThreadID,
+				"status":   map[string]any{"type": "active", "activeFlags": []string{}},
+			},
+		})
+		session.enqueue(map[string]any{
+			"method": "warning",
+			"params": map[string]any{
+				"threadId": request.Params.ThreadID, "message": "bounded warning",
+			},
+		})
 		if session.turnStartedBeforeResponse {
 			session.enqueue(map[string]any{
 				"method": "turn/started",
@@ -275,6 +469,9 @@ func (session *codexAppServerSessionFixture) WriteLine(
 				"id": turnID, "status": "inProgress",
 			}},
 		})
+		if session.holdFirstTurn && turnSequence == 1 {
+			return nil
+		}
 		notificationTurnID := turnID
 		if session.substitution == "turn" {
 			notificationTurnID = "turn-substituted"
@@ -283,6 +480,21 @@ func (session *codexAppServerSessionFixture) WriteLine(
 		if turnSequence == 2 {
 			content = "second reply"
 		}
+		session.enqueue(map[string]any{
+			"method": "mcpServer/startupStatus/updated",
+			"params": map[string]any{
+				"name": "workspace", "status": "ready",
+				"threadId": request.Params.ThreadID,
+			},
+		})
+		session.enqueue(map[string]any{
+			"method": "item/reasoning/summaryPartAdded",
+			"params": map[string]any{
+				"threadId": request.Params.ThreadID,
+				"turnId":   notificationTurnID,
+				"itemId":   "reasoning-1", "summaryIndex": 0,
+			},
+		})
 		session.enqueue(map[string]any{
 			"method": "item/completed",
 			"params": map[string]any{
@@ -314,6 +526,44 @@ func (session *codexAppServerSessionFixture) WriteLine(
 				"turn":     map[string]any{"id": notificationTurnID, "status": "completed"},
 			},
 		})
+	case "turn/interrupt":
+		session.mu.Lock()
+		behavior := session.interruptBehavior
+		beforeResponse := session.interruptBeforeResponse
+		if behavior == "timeout" {
+			session.interruptPending = true
+		}
+		session.mu.Unlock()
+		if behavior == "timeout" {
+			return nil
+		}
+		completionTurnID := request.Params.TurnID
+		completionStatus := "interrupted"
+		if behavior == "mismatch" {
+			completionTurnID = "turn-substituted"
+		} else if behavior == "status-mismatch" {
+			completionStatus = "completed"
+		}
+		completion := map[string]any{
+			"method": "turn/completed",
+			"params": map[string]any{
+				"threadId": request.Params.ThreadID,
+				"turn": map[string]any{
+					"id": completionTurnID, "status": completionStatus,
+				},
+			},
+		}
+		response := map[string]any{"id": request.ID, "result": map[string]any{}}
+		if behavior == "response-mismatch" {
+			response["id"] = "loom-turn-interrupt-substituted"
+		}
+		if beforeResponse {
+			session.enqueue(completion)
+			session.enqueue(response)
+		} else {
+			session.enqueue(response)
+			session.enqueue(completion)
+		}
 	default:
 		return ErrHarnessProtocol
 	}
@@ -332,12 +582,53 @@ func (session *codexAppServerSessionFixture) enqueue(value any) {
 	session.lines <- payload
 }
 
-func (session *codexAppServerSessionFixture) ReadLine(context.Context) ([]byte, error) {
-	line, ok := <-session.lines
-	if !ok {
-		return nil, io.EOF
+func (session *codexAppServerSessionFixture) ReadLine(ctx context.Context) ([]byte, error) {
+	session.mu.Lock()
+	interruptPending := session.interruptPending
+	turnStartRecoveryPending := session.turnStartRecoveryPending
+	if interruptPending {
+		_, session.interruptReadBounded = ctx.Deadline()
 	}
-	return line, nil
+	if turnStartRecoveryPending {
+		_, session.turnStartRecoveryBounded = ctx.Deadline()
+	}
+	session.mu.Unlock()
+	if interruptPending {
+		return nil, context.DeadlineExceeded
+	}
+	if turnStartRecoveryPending {
+		return nil, context.DeadlineExceeded
+	}
+	if err := ctx.Err(); err != nil {
+		if session.opaqueCancellationError {
+			return nil, ErrHarnessProcessUnavailable
+		}
+		return nil, err
+	}
+	select {
+	case line, ok := <-session.lines:
+		if !ok {
+			return nil, io.EOF
+		}
+		var envelope struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(line, &envelope) == nil && envelope.ID == "loom-turn-start-1" {
+			_, responseReadBounded := ctx.Deadline()
+			session.mu.Lock()
+			session.turnStartResponseBounded = responseReadBounded
+			session.mu.Unlock()
+			session.firstTurnResponseOnce.Do(func() {
+				close(session.firstTurnResponseRead)
+			})
+		}
+		return line, nil
+	case <-ctx.Done():
+		if session.opaqueCancellationError {
+			return nil, ErrHarnessProcessUnavailable
+		}
+		return nil, ctx.Err()
+	}
 }
 
 func (session *codexAppServerSessionFixture) CloseInput() error {
@@ -371,15 +662,17 @@ func (session *codexAppServerSessionFixture) requestsSnapshot() []codexAppServer
 }
 
 type codexContinuationSessionRunnerFixture struct {
-	session HarnessStreamSession
-	request HarnessSessionRequest
+	session      HarnessStreamSession
+	request      HarnessSessionRequest
+	startContext context.Context
 }
 
 func (runner *codexContinuationSessionRunnerFixture) StartSession(
-	_ context.Context,
+	ctx context.Context,
 	request HarnessSessionRequest,
 ) (HarnessStreamSession, error) {
 	runner.request = request
+	runner.startContext = ctx
 	return runner.session, nil
 }
 

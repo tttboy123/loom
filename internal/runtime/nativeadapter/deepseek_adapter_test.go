@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/permissions"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
@@ -164,6 +166,41 @@ type contextRetrieverFixture struct {
 	content []byte
 	err     error
 	calls   int
+}
+
+// conflictingContextDeliveryFixture reproduces the production failure where the
+// first context-read is a bounded denial (ErrContextItemNotRetrievable) and a
+// second context-read in the same step cannot be dispatched because the
+// Attempt-loop admits only one tool dispatch per step (ErrInvalidContextDelivery).
+type conflictingContextDeliveryFixture struct {
+	retriever contextcapsule.Retriever
+	prepare   int
+}
+
+func (delivery *conflictingContextDeliveryFixture) Prepare(
+	ctx context.Context,
+	proposal contextcapsule.RetrievalProposal,
+	request contextcapsule.DeliveryRequest,
+	encode contextcapsule.DeliveryEncoder,
+) (attemptpayload.Payload, error) {
+	delivery.prepare++
+	if delivery.prepare == 1 {
+		item, err := delivery.retriever.Retrieve(ctx, proposal)
+		item.Close()
+		if err != nil {
+			return attemptpayload.Payload{}, err
+		}
+		return attemptpayload.Payload{}, contextcapsule.ErrContextItemNotRetrievable
+	}
+	return attemptpayload.Payload{}, contextcapsule.ErrInvalidContextDelivery
+}
+
+func (delivery *conflictingContextDeliveryFixture) Acknowledge(
+	context.Context,
+	attemptpayload.Binding,
+	attemptpayload.DeliveryProof,
+) error {
+	return nil
 }
 
 type contextDeliveryFixture struct {
@@ -771,6 +808,11 @@ func TestLoomNativeDeepSeekContextRetrievalDenialIsContentFree(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(
 			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-context-1","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"` + omitted.ItemID + `\",\"content_digest\":\"` + omitted.ContentDigest + `\",\"artifact_ref\":\"` + omitted.ArtifactRef + `\"}"}}]}}]}`,
 		)),
+	}, {
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"final answer"}}]}`,
+		)),
 	}}}
 	diagnostics := &agentDiagnosticRecorderFixture{}
 	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
@@ -788,16 +830,81 @@ func TestLoomNativeDeepSeekContextRetrievalDenialIsContentFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames := request.FrameSink.(*frameSinkFixture).frames
-	if len(frames) != 2 || string(frames[1].Payload()) !=
-		`{"status":"failed","reason":"context_retrieval_denied"}` ||
+	// The denied retrieval is a bounded, content-free tool result: the model
+	// recovers and produces a final answer (never a terminal denial leak).
+	if len(frames) != 3 || string(frames[2].Payload()) !=
+		`{"status":"succeeded","reason":""}` ||
 		!result.DispatchAcknowledged() || !result.ResultAcknowledged() {
 		t.Fatalf("result=%#v frames=%#v", result, frames)
 	}
-	if len(doer.bodies) != 1 || len(diagnostics.records) != 1 ||
-		diagnostics.records[0].Stage != "context_retrieval" ||
-		diagnostics.records[0].ErrorCode != "context_retrieval_denied" ||
-		diagnostics.records[0].Retryable {
-		t.Fatalf("requests=%d diagnostics=%#v", len(doer.bodies), diagnostics.records)
+	// The denial tool result sent back to the provider must be the generic
+	// content-free marker (the item id/digest legitimately appear only in the
+	// echoed tool-call arguments, never in the denial message).
+	if len(doer.bodies) != 2 ||
+		!bytes.Contains(doer.bodies[1], []byte(`context_item_unavailable`)) {
+		t.Fatalf("denial not surfaced as a bounded tool result: %d bodies", len(doer.bodies))
+	}
+}
+
+func TestLoomNativeDeepSeekCompletesWhenSecondContextReadCannotDispatch(t *testing.T) {
+	request, omitted := deepSeekRetrievalAdapterRequest(t)
+	retriever := &contextRetrieverFixture{
+		want: contextcapsule.RetrievalProposal{
+			ItemID: omitted.ItemID, ContentDigest: omitted.ContentDigest,
+			ArtifactRef: omitted.ArtifactRef,
+		},
+		err: contextcapsule.ErrContextItemNotRetrievable,
+	}
+	delivery := &conflictingContextDeliveryFixture{retriever: retriever}
+	request.ContextRetriever = retriever
+	request.ContextDelivery = delivery
+	toolResponse := func(id string) *http.Response {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"` + id + `","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"` + omitted.ItemID + `\",\"content_digest\":\"` + omitted.ContentDigest + `\",\"artifact_ref\":\"` + omitted.ArtifactRef + `\"}"}}]}}]}`,
+		))}
+	}
+	doer := &contextRetrievalHTTPDoerFixture{responses: []*http.Response{
+		toolResponse("call-context-1"),
+		toolResponse("call-context-2"),
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"final answer after bounded context denials"}}]}`,
+		))},
+	}}
+	diagnostics := &agentDiagnosticRecorderFixture{}
+	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
+		RuntimeInstanceID: "loom-native-local",
+		CredentialAccess:  &credentialAccessFixture{secret: []byte("private-deepseek-key")},
+		Diagnostics:       diagnostics, Client: doer,
+		Now:              func() time.Time { return time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC) },
+		MaxResponseBytes: 64 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("second undispatchable context-read must not fail the attempt: %v", err)
+	}
+	if delivery.prepare != 2 {
+		t.Fatalf("delivery.prepare = %d, want 2", delivery.prepare)
+	}
+	// A second Context-read in the same step cannot be dispatched again, so
+	// the adapter surfaces the same bounded denial inline and lets the model
+	// answer. The attempt must complete as SUCCEEDED with the model's answer
+	// (the step stays finalizable because every DISPATCHED call was
+	// delivered); it must never hang or fail terminally.
+	if !result.ResultAcknowledged() {
+		t.Fatalf("result not acknowledged: %#v", result)
+	}
+	frames := request.FrameSink.(*frameSinkFixture).frames
+	if len(frames) != 3 {
+		t.Fatalf("frames = %#v", frames)
+	}
+	if !bytes.Contains(frames[1].Payload(), []byte("final answer after bounded context denials")) {
+		t.Fatalf("unexpected completion frame: %s", frames[1].Payload())
+	}
+	if string(frames[2].Payload()) != `{"status":"succeeded","reason":""}` {
+		t.Fatalf("unexpected result frame: %s", frames[2].Payload())
 	}
 }
 
@@ -1046,7 +1153,7 @@ func TestLoomNativeDeepSeekSupportsBoundedSequentialContextToolCalls(t *testing.
 	}
 }
 
-func TestLoomNativeDeepSeekRejectsContextToolCallBeyondAttemptBound(t *testing.T) {
+func TestLoomNativeDeepSeekContextReadExhaustionCompletesCleanly(t *testing.T) {
 	request, omitted := deepSeekRetrievalAdapterRequest(t)
 	retriever := &contextRetrieverFixture{
 		want: contextcapsule.RetrievalProposal{
@@ -1070,6 +1177,13 @@ func TestLoomNativeDeepSeekRejectsContextToolCallBeyondAttemptBound(t *testing.T
 	for index := 1; index <= contextToolMaxCallsPerExchange+1; index++ {
 		doer.responses = append(doer.responses, toolResponse(index))
 	}
+	// After the exhaustion directive the model answers without further tools.
+	doer.responses = append(doer.responses, &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"final answer after exhaustion"}}]}`,
+		)),
+	})
 	diagnostics := &agentDiagnosticRecorderFixture{}
 	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
 		RuntimeInstanceID: "loom-native-local",
@@ -1088,27 +1202,82 @@ func TestLoomNativeDeepSeekRejectsContextToolCallBeyondAttemptBound(t *testing.T
 	if retriever.calls != contextToolMaxCallsPerExchange ||
 		delivery.prepare != contextToolMaxCallsPerExchange ||
 		delivery.acks != contextToolMaxCallsPerExchange ||
-		len(doer.bodies) != contextToolMaxCallsPerExchange+1 {
+		len(doer.bodies) != contextToolMaxCallsPerExchange+2 {
 		t.Fatalf("bounded calls retriever=%d prepare=%d ack=%d provider=%d", retriever.calls, delivery.prepare, delivery.acks, len(doer.bodies))
 	}
-	for index, body := range doer.bodies {
-		advertisesTool := bytes.Contains(body, []byte(`"tools"`))
-		if index < contextToolMaxCallsPerExchange && !advertisesTool {
-			t.Fatalf("Provider request %d omitted bounded Context tool", index)
-		}
-		if index == contextToolMaxCallsPerExchange && advertisesTool {
-			t.Fatal("Provider request beyond Context bound still advertised a tool")
-		}
+	// The final Provider request must NOT advertise the context tool and must
+	// surface the exhaustion directive in the conversation history.
+	last := doer.bodies[len(doer.bodies)-1]
+	if bytes.Contains(last, []byte(`"tools"`)) {
+		t.Fatal("final Provider request after exhaustion still advertised a tool")
+	}
+	if !bytes.Contains(last, []byte("context-read limit for this attempt is exhausted")) {
+		t.Fatal("exhaustion directive was not surfaced to the Provider in the final request")
 	}
 	frames := request.FrameSink.(*frameSinkFixture).frames
-	if len(frames) != 2 || string(frames[1].Payload()) !=
-		`{"status":"failed","reason":"context_retrieval_denied"}` ||
+	if len(frames) != 3 || string(frames[2].Payload()) !=
+		`{"status":"succeeded","reason":""}` ||
+		!bytes.Contains(frames[1].Payload(), []byte("final answer after exhaustion")) ||
 		!result.DispatchAcknowledged() || !result.ResultAcknowledged() {
 		t.Fatalf("bounded result=%#v frames=%#v", result, frames)
 	}
 	if len(diagnostics.records) != 1 ||
-		diagnostics.records[0].Stage != "context_retrieval" ||
-		diagnostics.records[0].Retryable {
+		diagnostics.records[0].Result != "succeeded" {
+		t.Fatalf("diagnostics = %#v", diagnostics.records)
+	}
+}
+
+func TestLoomNativeDeepSeekContextReadExhaustionEndsCleanlyWhenModelIgnoresDirective(t *testing.T) {
+	request, omitted := deepSeekRetrievalAdapterRequest(t)
+	retriever := &contextRetrieverFixture{
+		want: contextcapsule.RetrievalProposal{
+			ItemID: omitted.ItemID, ContentDigest: omitted.ContentDigest,
+			ArtifactRef: omitted.ArtifactRef,
+		},
+		content: []byte("scoped omitted context must only enter the second Provider request"),
+	}
+	delivery := &contextDeliveryFixture{retriever: retriever}
+	request.ContextRetriever = retriever
+	request.ContextDelivery = delivery
+	toolResponse := func(index int) *http.Response {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			fmt.Sprintf(
+				`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-context-%d","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"%s\",\"content_digest\":\"%s\",\"artifact_ref\":\"%s\"}"}}]}}]}`,
+				index, omitted.ItemID, omitted.ContentDigest, omitted.ArtifactRef,
+			),
+		))}
+	}
+	doer := &contextRetrievalHTTPDoerFixture{}
+	for index := 1; index <= contextToolMaxCallsPerExchange+2; index++ {
+		doer.responses = append(doer.responses, toolResponse(index))
+	}
+	diagnostics := &agentDiagnosticRecorderFixture{}
+	adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
+		RuntimeInstanceID: "loom-native-local",
+		CredentialAccess:  &credentialAccessFixture{secret: []byte("private-deepseek-key")},
+		Diagnostics:       diagnostics, Client: doer,
+		Now:              func() time.Time { return time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC) },
+		MaxResponseBytes: 64 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The exchange must end cleanly (succeeded with the bounded fallback) even
+	// when the model keeps calling the tool after the exhaustion directive:
+	// a denied context item must never become a terminal attempt failure.
+	frames := request.FrameSink.(*frameSinkFixture).frames
+	if len(frames) != 3 || string(frames[2].Payload()) !=
+		`{"status":"succeeded","reason":""}` ||
+		!bytes.Contains(frames[1].Payload(), []byte("No further information was produced")) ||
+		!result.DispatchAcknowledged() || !result.ResultAcknowledged() {
+		t.Fatalf("bounded result=%#v frames=%#v", result, frames)
+	}
+	if len(diagnostics.records) != 1 ||
+		diagnostics.records[0].Result != "succeeded" {
 		t.Fatalf("diagnostics = %#v", diagnostics.records)
 	}
 }
@@ -1185,9 +1354,19 @@ func TestDeepSeekAgentAdapterRequiresFrozenCapabilityAndBrokerTogether(t *testin
 			if test.attachRetriever {
 				request.ContextRetriever = &contextRetrieverFixture{}
 			}
-			if _, err := adapter.Execute(context.Background(), request); !errors.Is(
-				err, ErrAgentExecutionBindingChanged,
-			) {
+			_, err = adapter.Execute(context.Background(), request)
+			if test.name == "frozen capability without broker" {
+				// A completely context-free Execute (no retriever, no
+				// delivery) is valid even when the binding lists the
+				// context_retrieval capability: the independent verifier
+				// runs exactly this shape. It must not be rejected as a
+				// binding change.
+				if errors.Is(err, ErrAgentExecutionBindingChanged) {
+					t.Fatalf("context-free Execute() error = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrAgentExecutionBindingChanged) {
 				t.Fatalf("Execute() error = %v", err)
 			}
 			if access.uses != 0 || doer.requests != 0 || len(diagnostics.records) != 1 ||
@@ -1608,5 +1787,109 @@ func TestLoomNativeDispatchAcceptsLargeMissionRoleContextPrompt(t *testing.T) {
 	dispatch, err := decodeDeepSeekAgentDispatch(payload)
 	if err != nil || !strings.Contains(dispatch.Prompt, "mixed-provider Team") {
 		t.Fatalf("large context dispatch = %#v, %v", dispatch, err)
+	}
+}
+
+func TestNativeAdapterWebToolDecodeAndModelFormat(t *testing.T) {
+	// web_search decode
+	search, err := decodeWebToolCall(openAICompatibleToolCallWire{
+		ID: "call-1", Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "loom_web_search", Arguments: `{"query":"multica github"}`},
+	})
+	if err != nil || search.Kind != permissions.ToolWebSearch ||
+		search.Call.Path != "multica github" {
+		t.Fatalf("web_search decode = %#v, %v", search, err)
+	}
+	// web_fetch decode
+	fetch, err := decodeWebToolCall(openAICompatibleToolCallWire{
+		ID: "call-2", Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "loom_web_fetch", Arguments: `{"url":"https://example.com"}`},
+	})
+	if err != nil || fetch.Kind != permissions.ToolWebFetch ||
+		fetch.Call.Path != "https://example.com" {
+		t.Fatalf("web_fetch decode = %#v, %v", fetch, err)
+	}
+	// unknown tool rejected
+	if _, err := decodeWebToolCall(openAICompatibleToolCallWire{
+		ID: "call-3", Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "loom_read_context", Arguments: `{}`},
+	}); err == nil {
+		t.Fatal("unknown tool accepted")
+	}
+	// tool definitions are well-formed function schemas
+	for _, definition := range []any{webSearchToolDefinition(), webFetchToolDefinition()} {
+		if _, err := json.Marshal(definition); err != nil {
+			t.Fatalf("tool definition marshal: %v", err)
+		}
+	}
+	// relaxed response-model format check (DeepSeek returns deepseek-v4-flash
+	// for a deepseek-chat request; exact-equality would reject every turn)
+	if !validNativeAgentResponseModel("deepseek-v4-flash") ||
+		!validNativeAgentResponseModel("deepseek-chat") ||
+		validNativeAgentResponseModel("") ||
+		validNativeAgentResponseModel("bad model!") {
+		t.Fatal("response model format validation incorrect")
+	}
+}
+
+func TestVerifierPromptDispatchDecodesStrictly(t *testing.T) {
+	payload := []byte(`{"schema_version":1,"kind":"pi_verifier_prompt","prompt":"Verify the source attempt output against the criteria and reply with a JSON verdict."}`)
+	dispatch, err := decodeDeepSeekAgentDispatch(payload)
+	if err != nil {
+		t.Fatalf("verifier dispatch decode = %v", err)
+	}
+	if !dispatch.verifier || dispatch.Kind != piVerifierPromptKind ||
+		!strings.Contains(dispatch.Prompt, "Verify the source attempt") {
+		t.Fatalf("verifier dispatch = %#v", dispatch)
+	}
+	// A plain mission dispatch must stay non-verifier.
+	mission, err := decodeDeepSeekAgentDispatch([]byte(`{"schema_version":1,"kind":"pi_rpc_prompt","prompt":"Implement the bounded change"}`))
+	if err != nil || mission.verifier {
+		t.Fatalf("mission dispatch verifier flag = %#v, %v", mission, err)
+	}
+	// Unknown fields and wrong kinds are rejected.
+	for _, bad := range []string{
+		`{"schema_version":1,"kind":"pi_verifier_prompt","prompt":"x","extra":1}`,
+		`{"schema_version":2,"kind":"pi_verifier_prompt","prompt":"x"}`,
+		`{"schema_version":1,"kind":"pi_rpc_prompt","prompt":""}`,
+	} {
+		if _, err := decodeDeepSeekAgentDispatch([]byte(bad)); err == nil {
+			t.Fatalf("accepted malformed dispatch %s", bad)
+		}
+	}
+}
+
+func TestVerifierTerminalFromVerdict(t *testing.T) {
+	for _, test := range []struct {
+		content string
+		status  string
+		reason  string
+	}{
+		{`{"verdict":"satisfied","summary":"ok"}`, "succeeded", ""},
+		{`Here is my review: {"verdict":"satisfied"}`, "succeeded", ""},
+		{`{"verdict":"criteria_satisfied"}`, "succeeded", ""},
+		{"criteria_satisfied", "succeeded", ""},
+		{"criteria_not_satisfied", "failed", "criteria_not_satisfied"},
+		{"insufficient_evidence", "failed", "insufficient_evidence"},
+		{`{"verdict":"not_satisfied","summary":"missing source URL"}`, "failed", "criteria_not_satisfied"},
+		{`{"verdict":"insufficient_evidence"}`, "failed", "insufficient_evidence"},
+		{`I cannot verify this.`, "failed", "insufficient_evidence"},
+		{``, "failed", "insufficient_evidence"},
+		{`{"verdict":"maybe"}`, "failed", "insufficient_evidence"},
+	} {
+		status, reason := verifierTerminalFromVerdict(test.content)
+		if status != test.status || reason != test.reason {
+			t.Fatalf("verdict %q = (%q,%q), want (%q,%q)",
+				test.content, status, reason, test.status, test.reason)
+		}
 	}
 }

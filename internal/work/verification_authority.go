@@ -193,6 +193,59 @@ type teamNodeAcceptancePayload struct {
 	CreditsBefore             int    `json:"credits_before"`
 }
 
+// appendProviderAccountRunStreams adds the provider-account policy, capacity
+// and model rate-card streams for a run's frozen binding so run-authority
+// replays can validate account-managed claims (claim contract v2 carries
+// policy/rate-card/capacity references). Mirrors CommitTeamAttemptEvidence.
+func appendProviderAccountRunStreams(
+	streamIDs []string,
+	binding FrozenExecutionBinding,
+) []string {
+	if binding.ProviderAccountID == "" {
+		return streamIDs
+	}
+	for _, accountStream := range []string{
+		providerAccountCapacityStream(binding.ProviderAccountID),
+		providerAccountPolicyStream(binding.ProviderAccountID),
+	} {
+		if !containsStreamID(streamIDs, accountStream) {
+			streamIDs = append(streamIDs, accountStream)
+		}
+	}
+	if binding.ModelID != "" {
+		rateCardStream := providerModelRateCardStream(
+			binding.ProviderID, binding.ProviderAccountID, binding.ModelID,
+		)
+		if !containsStreamID(streamIDs, rateCardStream) {
+			streamIDs = append(streamIDs, rateCardStream)
+		}
+	}
+	return streamIDs
+}
+
+func (authority *Authority) expandAcceptanceRunStreams(
+	ctx context.Context,
+	streamIDs []string,
+	snapshot journal.StreamSetSnapshot,
+	runID string,
+) ([]string, journal.StreamSetSnapshot, error) {
+	binding, found, bindingErr := assignedExecutionBindingForRun(
+		snapshot.Events(), runID,
+	)
+	if bindingErr != nil || !found || binding.ProviderAccountID == "" {
+		return streamIDs, snapshot, nil
+	}
+	expanded := appendProviderAccountRunStreams(streamIDs, binding)
+	if len(expanded) == len(streamIDs) {
+		return streamIDs, snapshot, nil
+	}
+	refreshed, err := authority.store.ReadStreamSet(ctx, expanded)
+	if err != nil {
+		return streamIDs, snapshot, err
+	}
+	return expanded, refreshed, nil
+}
+
 func (authority *Authority) CommitVerifierEvidence(
 	ctx context.Context,
 	input VerifierEvidenceInput,
@@ -226,6 +279,12 @@ func (authority *Authority) CommitVerifierEvidence(
 		runtimeCapacityStream(input.RuntimeInstanceID),
 	}
 	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
+	if err != nil {
+		return err
+	}
+	streamIDs, snapshot, err = authority.expandAcceptanceRunStreams(
+		ctx, streamIDs, snapshot, input.RunID,
+	)
 	if err != nil {
 		return err
 	}
@@ -341,6 +400,21 @@ func (authority *Authority) CommitTeamNodeAcceptance(
 	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
 	if err != nil {
 		return TeamExecutionRecord{}, err
+	}
+	streamIDs, snapshot, err = authority.expandAcceptanceRunStreams(
+		ctx, streamIDs, snapshot, resultInput.RunID,
+	)
+	if err != nil {
+		return TeamExecutionRecord{}, err
+	}
+	if input.AcceptanceContract.IndependentVerifierRequired() {
+		binding := input.VerifierCandidate.Binding()
+		streamIDs, snapshot, err = authority.expandAcceptanceRunStreams(
+			ctx, streamIDs, snapshot, binding.RunID,
+		)
+		if err != nil {
+			return TeamExecutionRecord{}, err
+		}
 	}
 	team, err := replayTeamExecution(
 		input.TeamInstanceID,
@@ -716,17 +790,22 @@ func validateVerifierAcceptanceLineage(
 		binding.EvidenceID != expectedEvidenceID {
 		return ErrVerifierLineageMismatch
 	}
+	verifierStreams := []string{
+		workItemStream(binding.WorkItemID),
+		runStream(binding.RunID),
+		runtimeStatusStream(binding.RuntimeInstanceID),
+		runtimeCapacityStream(binding.RuntimeInstanceID),
+	}
+	if verifierBinding, found, bindingErr := assignedExecutionBindingForRun(
+		snapshot.Events(), binding.RunID,
+	); bindingErr == nil && found {
+		verifierStreams = appendProviderAccountRunStreams(
+			verifierStreams, verifierBinding,
+		)
+	}
 	state, err := replayAuthorityEventsSelective(
 		ctx,
-		filterAcceptanceEvents(
-			snapshot.Events(),
-			[]string{
-				workItemStream(binding.WorkItemID),
-				runStream(binding.RunID),
-				runtimeStatusStream(binding.RuntimeInstanceID),
-				runtimeCapacityStream(binding.RuntimeInstanceID),
-			},
-		),
+		filterAcceptanceEvents(snapshot.Events(), verifierStreams),
 	)
 	if err != nil {
 		return ErrVerifierLineageMismatch

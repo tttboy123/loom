@@ -134,7 +134,7 @@ executable_source="$bin_path/LoomLocalApp"
 }
 
 service_path=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
-for dependency in node codex
+for dependency in node codex opencode claude
 do
   dependency_path=$(command -v "$dependency" 2>/dev/null || true)
   if [ -n "$dependency_path" ]; then

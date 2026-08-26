@@ -76,6 +76,38 @@ func TestExecutorReadRejectsBinaryAndGrepRejectsInvalidPattern(t *testing.T) {
 	}
 }
 
+func TestExecutorGrepSearchesWorkspaceRootWithoutFollowingSymlinks(t *testing.T) {
+	root := execTempDir(t)
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "game.js"), []byte("const snake = true;\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSandboxExecutor().Grep(context.Background(), GrepRequest{
+		Worktree: root, RelativePath: ".", Pattern: "snake", OutputLimit: 128,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Close()
+	if string(result.Content) != "src/game.js:1:const snake = true;\n" {
+		t.Fatalf("root Grep() content=%q", result.Content)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("snake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSandboxExecutor().Grep(context.Background(), GrepRequest{
+		Worktree: root, RelativePath: ".", Pattern: "snake", OutputLimit: 128,
+	}); !errors.Is(err, ErrExecutionPathOutside) {
+		t.Fatalf("symlink root Grep() error=%v", err)
+	}
+}
+
 func execTempDir(t testing.TB) string {
 	t.Helper()
 	return t.TempDir()

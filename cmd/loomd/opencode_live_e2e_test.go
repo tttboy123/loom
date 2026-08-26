@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,21 +41,57 @@ func TestLiveOpenCodeConversationE2E(t *testing.T) {
 	defer cancel()
 
 	// 1. Vault status.
-	var raw json.RawMessage
-	if err := client.Call(ctx, "setup_snapshot", struct{}{}, &raw); err != nil {
+	raw, err := setupSnapshotEventually(t, ctx, client)
+	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	var snap struct {
 		CredentialVault *struct {
 			Status string `json:"status"`
 		} `json:"credential_vault"`
+		Providers []struct {
+			ProviderID string `json:"provider_id"`
+		} `json:"providers"`
+		Runtimes []struct {
+			RuntimeInstanceID string `json:"runtime_instance_id"`
+		} `json:"runtimes"`
+		ConversationProfiles []struct {
+			ProfileID string `json:"profile_id"`
+		} `json:"conversation_profiles"`
 	}
-	_ = json.Unmarshal(raw, &snap)
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("decode setup snapshot: %v", err)
+	}
 	vaultStatus := "?"
 	if snap.CredentialVault != nil {
 		vaultStatus = snap.CredentialVault.Status
 	}
 	t.Logf("vault status: %s", vaultStatus)
+	t.Logf("catalog: providers=%d runtimes=%d conversation_profiles=%d",
+		len(snap.Providers), len(snap.Runtimes), len(snap.ConversationProfiles))
+	if len(snap.Providers) < 25 || len(snap.Runtimes) < 4 ||
+		len(snap.ConversationProfiles) < 4 {
+		t.Fatalf("Provider/Runtime catalog collapsed: providers=%d runtimes=%d profiles=%d",
+			len(snap.Providers), len(snap.Runtimes), len(snap.ConversationProfiles))
+	}
+	openCodeRuntime := false
+	for _, runtime := range snap.Runtimes {
+		if strings.Contains(strings.ToLower(runtime.RuntimeInstanceID), "opencode") {
+			openCodeRuntime = true
+			break
+		}
+	}
+	openCodeProfile := false
+	for _, profile := range snap.ConversationProfiles {
+		if profile.ProfileID == "conversation-opencode-default-v1" {
+			openCodeProfile = true
+			break
+		}
+	}
+	if !openCodeRuntime || !openCodeProfile {
+		t.Fatalf("OpenCode catalog entry missing: runtime=%v profile=%v",
+			openCodeRuntime, openCodeProfile)
+	}
 
 	// 2. Unlock when the vault reports locked.
 	if vaultStatus == "locked" {

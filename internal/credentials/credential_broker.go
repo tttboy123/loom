@@ -259,6 +259,36 @@ type CredentialVerifier interface {
 	Verify(context.Context, string, []byte) (VerificationResult, error)
 }
 
+type CredentialVerificationBinding struct {
+	ProviderID          string
+	ProviderAccountID   string
+	CredentialReference string
+	CredentialRevision  int64
+}
+
+// AccountCredentialVerifier is the fail-closed multi-account extension. A
+// verifier that implements it receives the exact non-secret credential
+// binding; legacy fixed-endpoint verifiers retain the Provider-only contract.
+type AccountCredentialVerifier interface {
+	VerifyAccount(
+		context.Context,
+		CredentialVerificationBinding,
+		[]byte,
+	) (VerificationResult, error)
+}
+
+func VerifyCredentialBinding(
+	ctx context.Context,
+	verifier CredentialVerifier,
+	binding CredentialVerificationBinding,
+	secret []byte,
+) (VerificationResult, error) {
+	if accountVerifier, ok := verifier.(AccountCredentialVerifier); ok {
+		return accountVerifier.VerifyAccount(ctx, binding, secret)
+	}
+	return verifier.Verify(ctx, binding.ProviderID, secret)
+}
+
 type MetadataCommitter interface {
 	CommitCredentialMetadata(
 		context.Context,
@@ -369,10 +399,13 @@ func (broker *CredentialBroker) Verify(
 		)
 	}
 	defer clearBytes(secret)
-	verification, verifyErr := broker.verifier.Verify(
-		ctx,
-		command.ProviderID,
-		secret,
+	verification, verifyErr := VerifyCredentialBinding(
+		ctx, broker.verifier,
+		CredentialVerificationBinding{
+			ProviderID: command.ProviderID, ProviderAccountID: command.ProviderAccountID,
+			CredentialReference: command.CredentialReference,
+			CredentialRevision:  command.ExpectedRevision,
+		}, secret,
 	)
 	if verifyErr != nil {
 		return MetadataResult{}, closedVerificationError(verifyErr)

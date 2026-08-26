@@ -88,6 +88,82 @@ func TestLocalProductMissionFacadeUsesRealProjectionAndPreservesStaleView(
 	}
 }
 
+func TestLocalProductMissionBlockReasonSurfacesTerminalFailure(t *testing.T) {
+	execution := projection.TeamExecution{
+		TeamInstanceID: "team-blocked-1",
+		Status:         "running",
+		Nodes: []projection.TeamExecutionNode{
+			{LogicalNodeID: "main", Status: "pending"},
+			{
+				LogicalNodeID:  "subagent-1",
+				Status:         "blocked",
+				CurrentAttempt: 2,
+				Attempts: []projection.TeamExecutionAttempt{
+					{AttemptNumber: 1, TerminalReason: "provider_http"},
+					{AttemptNumber: 2, TerminalReason: "context_retrieval_denied"},
+				},
+			},
+		},
+	}
+	view := projection.GlobalReadView{}
+	mission := buildLocalProductMission(view, execution)
+	if mission.Status != "blocked" {
+		t.Fatalf("mission status = %q, want blocked", mission.Status)
+	}
+	if mission.BlockReason != "context_retrieval_denied" {
+		t.Fatalf("BlockReason = %q, want context_retrieval_denied", mission.BlockReason)
+	}
+
+	// Initial block reason wins over attempt terminal reasons.
+	execution.Nodes[1].InitialBlockReason = "runtime_offline"
+	execution.Nodes[1].InitialBlockCode = "runtime_offline"
+	mission = buildLocalProductMission(view, execution)
+	if mission.BlockReason != "runtime_offline" {
+		t.Fatalf("BlockReason = %q, want runtime_offline", mission.BlockReason)
+	}
+
+	// A node the projection still marks "running" but whose current attempt
+	// Run is terminal (the interrupted-daemon phantom case) surfaces the
+	// terminal reason and reconciles the displayed status.
+	execution.Nodes[1].Status = "running"
+	if reason := localProductMissionBlockReason(view, execution); reason != "context_retrieval_denied" {
+		t.Fatalf("BlockReason = %q, want context_retrieval_denied", reason)
+	}
+	if got := reconciledMissionStatus(view, execution); got != "context_retrieval_denied" &&
+		got != "failed" && got != "running" {
+		t.Fatalf("reconciled status = %q", got)
+	}
+
+	// awaiting_recovery nodes whose retry time passed without a new attempt
+	// (pre-fix recovery records) surface the terminal reason too.
+	execution.Nodes[1].Status = "awaiting_recovery"
+	execution.Nodes[1].Attempts[1].TerminalReason = "provider_http"
+	if reason := localProductMissionBlockReason(view, execution); reason != "provider_http" {
+		t.Fatalf("awaiting_recovery BlockReason = %q, want provider_http", reason)
+	}
+}
+
+func TestMissionStatusKeepsRecoveryVisibleInsteadOfFlashingFailed(t *testing.T) {
+	retryAt := time.Now().Add(time.Minute)
+	execution := projection.TeamExecution{
+		TeamInstanceID: "team-recovery-visible",
+		Status:         "failed",
+		Nodes: []projection.TeamExecutionNode{{
+			LogicalNodeID: "main", Status: "awaiting_recovery",
+			CurrentAttempt: 1, RetryAt: retryAt,
+		}},
+	}
+	if got := missionStatus(execution); got != "awaiting_recovery" {
+		t.Fatalf("mission status = %q, want awaiting_recovery", got)
+	}
+	if got := reconciledMissionStatus(projection.GlobalReadView{}, execution); got != "awaiting_recovery" {
+		t.Fatalf("reconciled mission status = %q, want awaiting_recovery", got)
+	}
+	if got := missionPulseState("awaiting_recovery"); got != "working" {
+		t.Fatalf("recovery pulse = %q, want working", got)
+	}
+}
+
 func TestMissionLifecycleNeverCreatesAttentionLanes(t *testing.T) {
 	for status, want := range map[string]MissionLane{
 		"planned":             MissionLaneProposed,

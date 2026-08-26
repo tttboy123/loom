@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"reflect"
 	"sort"
 	"strings"
@@ -38,6 +39,23 @@ var (
 
 const teamAttemptCommitTimeout = 15 * time.Second
 
+// verifierDispatchKind is the bridge dispatch kind the independent verifier
+// sends to the runtime adapter. It is a strict single-prompt envelope
+// (schema v1, kind pi_verifier_prompt) so the adapter can decode it into a
+// real model prompt; the verifier has no context capsule of its own.
+const verifierDispatchKind = "pi_verifier_prompt"
+
+// verifierSourceExcerptBytes bounds how much of the source attempt output is
+// embedded in the verifier prompt. Verifier prompts must stay far below the
+// adapter prompt limit while still giving the verifier enough output to judge.
+const verifierSourceExcerptBytes = 8 * 1024
+
+// verifierSourceReadBoundBytes bounds the artifact read when composing the
+// verifier prompt. The artifact carries the full bounded frame transcript of
+// the source attempt, which can exceed the excerpt; the read only needs to be
+// large enough to never reject a valid attempt artifact.
+const verifierSourceReadBoundBytes = 512 * 1024
+
 type ManagedNodeExecutor interface {
 	Execute(context.Context, supervisor.ExecuteInput) (supervisor.Outcome, error)
 }
@@ -60,19 +78,21 @@ type NodeOutputObserver interface {
 }
 
 type TeamNodeExecution struct {
-	LogicalNodeID        string
-	AttemptNumber        int
-	WorkflowPath         string
-	SourcePath           string
-	SourceSnapshotDigest string
-	Profile              loomruntime.RuntimeProfile
-	Instance             loomruntime.RuntimeInstance
-	Dispatch             bridgev1.Frame
-	Executor             ManagedNodeExecutor
-	ContextCapsule       contextcapsule.RoleContextCapsule
-	Aggregation          *TeamAggregationExecution
-	executionBinding     loomruntime.FrozenExecutionBinding
-	routeSegment         contextcapsule.RouteSegmentBinding
+	LogicalNodeID            string
+	AttemptNumber            int
+	WorkflowPath             string
+	SourcePath               string
+	SourceSnapshotDigest     string
+	Profile                  loomruntime.RuntimeProfile
+	Instance                 loomruntime.RuntimeInstance
+	Dispatch                 bridgev1.Frame
+	Executor                 ManagedNodeExecutor
+	ContextCapsule           contextcapsule.RoleContextCapsule
+	ContextCapacityAuthority contextcapsule.CapacityAuthority
+	ContextTokenCounter      contextcapsule.TokenCounter
+	Aggregation              *TeamAggregationExecution
+	executionBinding         loomruntime.FrozenExecutionBinding
+	routeSegment             contextcapsule.RouteSegmentBinding
 }
 
 type TeamContextCapsuleStore interface {
@@ -117,6 +137,41 @@ type TeamExecutionRequest struct {
 	OutputObserver       NodeOutputObserver
 	ContextCapsules      TeamContextCapsuleStore
 	AssetSourceStreamIDs []string
+	// Objective is the confirmed Mission objective carried into the verifier
+	// prompt so the independent verifier can judge criterion "result satisfies
+	// the confirmed Mission objective" against the actual objective text.
+	Objective string
+	// RestartTerminal is an explicit user-approved new Mission Attempt. It
+	// reopens only the Team execution stream; it never mutates the old terminal
+	// facts or silently changes a provider binding.
+	RestartTerminal bool
+	// ExecutionGenerationID remains stable across every dispatch wave of an
+	// explicitly reopened Mission, including daemon/App restarts.
+	ExecutionGenerationID string
+	WorkspacePublisher    TeamWorkspacePublisher
+}
+
+type TeamWorkspacePublication struct {
+	TeamInstanceID       string
+	PlanDigest           string
+	LogicalNodeID        string
+	AttemptNumber        int
+	SourcePath           string
+	ExpectedSourceDigest string
+	WorkspaceDigest      string
+	Changes              []TeamWorkspaceChange
+}
+
+type TeamWorkspaceChange struct {
+	Path    string
+	Kind    supervisor.WorkspaceChangeKind
+	Mode    fs.FileMode
+	Digest  string
+	Content []byte
+}
+
+type TeamWorkspacePublisher interface {
+	PublishAcceptedWorkspace(context.Context, TeamWorkspacePublication) error
 }
 
 type TeamAssetMaterializationRequest struct {
@@ -285,7 +340,9 @@ func (coordinator *TeamCoordinator) Run(
 		return TeamExecutionResult{}, err
 	}
 	executed := make([]string, 0, len(request.Nodes))
-	for wave := 0; wave < 9; wave++ {
+	workspaceCandidates := make(map[string]teamWorkspaceCandidate)
+	restartPending := request.RestartTerminal
+	for wave, limit := 0, teamCoordinatorWaveLimit(request.Plan); wave < limit; wave++ {
 		if err := coordinator.projection.Rebuild(ctx); err != nil {
 			return TeamExecutionResult{}, fmt.Errorf(
 				"Team projection rebuild: %w",
@@ -293,21 +350,35 @@ func (coordinator *TeamCoordinator) Run(
 			)
 		}
 		view := coordinator.projection.GlobalReadView()
+		restartFromTerminal := false
 		if projected, ok := view.TeamExecution(
 			request.Plan.TeamInstanceID(),
 		); ok {
-			if err := appValidateProjectedSemantics(
-				request,
-				projected,
-			); err != nil {
-				return TeamExecutionResult{}, err
+			restartFromTerminal = restartPending && restartTeamExecutionFromTerminal(
+				request, projected,
+			)
+			if !restartFromTerminal {
+				if err := appValidateProjectedSemantics(
+					request,
+					projected,
+				); err != nil {
+					return TeamExecutionResult{}, errors.Join(
+						err,
+						missionExecutionConflictStage{stage: "dispatch_projection_semantics"},
+					)
+				}
 			}
-			if appTerminalTeamStatus(projected.Status) {
+			if appTerminalTeamStatus(projected.Status) && !restartFromTerminal {
 				team, err := coordinator.workAuthority.TeamExecution(
 					ctx,
 					request.Plan.TeamInstanceID(),
 				)
 				if err != nil {
+					return TeamExecutionResult{}, err
+				}
+				if err := publishTerminalTeamWorkspace(
+					ctx, request, team.Status(), workspaceCandidates,
+				); err != nil {
 					return TeamExecutionResult{}, err
 				}
 				sort.Strings(executed)
@@ -317,14 +388,18 @@ func (coordinator *TeamCoordinator) Run(
 				}, nil
 			}
 		}
-		recoveryTasks, recoveryChanged, err := coordinator.recoverTeamAttempts(
-			ctx,
-			request,
-			executions,
-			view,
-		)
-		if err != nil {
-			return TeamExecutionResult{}, err
+		var recoveryTasks []teamExecutionTask
+		var recoveryChanged bool
+		if !restartFromTerminal {
+			recoveryTasks, recoveryChanged, err = coordinator.recoverTeamAttempts(
+				ctx,
+				request,
+				executions,
+				view,
+			)
+			if err != nil {
+				return TeamExecutionResult{}, err
+			}
 		}
 		if len(recoveryTasks) > 0 {
 			if err := coordinator.refreshTeamObservationView(ctx); err != nil {
@@ -341,15 +416,21 @@ func (coordinator *TeamCoordinator) Run(
 			); err != nil {
 				return TeamExecutionResult{}, err
 			}
+			rememberTeamWorkspaceCandidates(workspaceCandidates, outcomes)
 			continue
 		}
 		if recoveryChanged {
 			continue
 		}
 		states := appExecutionStates(request, view)
-		planningPlan, err := appPlanningPlan(request.Plan, view)
-		if err != nil {
-			return TeamExecutionResult{}, err
+		planningPlan := request.Plan
+		if !restartFromTerminal {
+			planningPlan, err = appPlanningPlan(request.Plan, view)
+			if err != nil {
+				return TeamExecutionResult{}, err
+			}
+		} else {
+			states = teams.InitialExecutionNodeStates(request.Plan, request.InitialBlocks)
 		}
 		capacities, err := appRuntimeCapacities(planningPlan, states, view)
 		if err != nil {
@@ -389,7 +470,6 @@ func (coordinator *TeamCoordinator) Run(
 				if err != nil {
 					return TeamExecutionResult{}, err
 				}
-				executions[appExecutionKey(node.LogicalNodeID(), attemptNumber)] = execution
 			} else if len(node.DependsOn()) > 0 {
 				execution, err = coordinator.prepareDependencyContextExecution(
 					ctx, request, view, node, execution,
@@ -397,7 +477,6 @@ func (coordinator *TeamCoordinator) Run(
 				if err != nil {
 					return TeamExecutionResult{}, err
 				}
-				executions[appExecutionKey(node.LogicalNodeID(), attemptNumber)] = execution
 			}
 			expectedWorkflowPath, err := appExpectedWorkflowPath(
 				request,
@@ -434,6 +513,7 @@ func (coordinator *TeamCoordinator) Run(
 			ready,
 			request.AssetSourceStreamIDs,
 			materializations,
+			appTeamAttemptIdentitySalt(request)...,
 		)
 		assetSourceHeads := appAssetSourceHeads(view, request.AssetSourceStreamIDs)
 		waveRequest := request
@@ -441,26 +521,58 @@ func (coordinator *TeamCoordinator) Run(
 		dispatched, err := coordinator.workAuthority.DispatchTeamReadySet(
 			ctx,
 			work.TeamDispatchInput{
-				Plan:                 request.Plan,
-				ReadyAttempts:        selections,
-				InitialBlocks:        appInitialDispatchBlocks(request, view),
-				RouteSummaries:       appInitialDispatchRoutes(request, view),
-				SemanticBindings:     appSemanticBindings(request),
-				Materializations:     materializations,
-				AssetSourceHeads:     assetSourceHeads,
-				ViewVersion:          view.Version(),
-				ExpectedHeads:        expectedHeads,
-				AuthoritativeTime:    waveRequest.AuthoritativeTime,
-				PrepareLeaseDuration: request.PrepareLeaseDuration,
-				CorrelationID:        request.CorrelationID,
+				Plan:                  request.Plan,
+				ReadyAttempts:         selections,
+				InitialBlocks:         appInitialDispatchBlocks(request, view),
+				RouteSummaries:        appInitialDispatchRoutes(request, view),
+				SemanticBindings:      appSemanticBindings(request),
+				Materializations:      materializations,
+				AssetSourceHeads:      assetSourceHeads,
+				ViewVersion:           view.Version(),
+				ExpectedHeads:         expectedHeads,
+				AuthoritativeTime:     waveRequest.AuthoritativeTime,
+				PrepareLeaseDuration:  request.PrepareLeaseDuration,
+				CorrelationID:         request.CorrelationID,
+				ExecutionGenerationID: request.ExecutionGenerationID,
+				RestartTerminal:       restartFromTerminal,
 			},
 		)
 		if err != nil {
 			coordinator.cleanupTeamAssetMaterializations(ctx, cleanupMaterializations)
+			if errors.Is(err, work.ErrStaleGlobalReadView) {
+				// Runtime observation can append a status/capacity fact between
+				// preflight and the CAS. Rebuild the read view and retry this wave
+				// with the same frozen execution bindings.
+				continue
+			}
+			if errors.Is(err, work.ErrTeamExecutionConflict) {
+				stage := "dispatch_team_authority"
+				if detail, ok := work.TeamExecutionConflictStage(err); ok {
+					stage = "dispatch_team_" + detail
+				}
+				return TeamExecutionResult{}, errors.Join(
+					ErrMissionExecutionConflict,
+					err,
+					missionExecutionConflictStage{stage: stage},
+				)
+			}
 			return TeamExecutionResult{}, fmt.Errorf(
 				"Team ready-set dispatch: %w",
 				err,
 			)
+		}
+		if restartFromTerminal {
+			restartPending = false
+		}
+		// Context extension is tentative until the ready set wins its
+		// authoritative CAS. A stale-view retry must start from the frozen base
+		// Capsule; otherwise the same dependency items are appended twice and
+		// the retry fails on duplicate item identities.
+		for _, execution := range selectedExecutions {
+			executions[appExecutionKey(
+				execution.LogicalNodeID,
+				execution.AttemptNumber,
+			)] = execution
 		}
 		if err := coordinator.refreshTeamObservationView(ctx); err != nil {
 			return TeamExecutionResult{}, err
@@ -493,6 +605,7 @@ func (coordinator *TeamCoordinator) Run(
 		); err != nil {
 			return TeamExecutionResult{}, err
 		}
+		rememberTeamWorkspaceCandidates(workspaceCandidates, outcomes)
 		for index := range cleanupMaterializations {
 			cleanupMaterializations[index].Authoritative = true
 		}
@@ -517,6 +630,11 @@ func (coordinator *TeamCoordinator) Run(
 	}
 	sort.Strings(executed)
 	if appTerminalTeamStatus(team.Status()) {
+		if err := publishTerminalTeamWorkspace(
+			ctx, request, team.Status(), workspaceCandidates,
+		); err != nil {
+			return TeamExecutionResult{}, err
+		}
 		return TeamExecutionResult{
 			team:            team,
 			executedNodeIDs: executed,
@@ -526,6 +644,144 @@ func (coordinator *TeamCoordinator) Run(
 		team:            team,
 		executedNodeIDs: executed,
 	}, ErrTeamExecutionIncomplete
+}
+
+func restartTeamExecutionFromTerminal(
+	request TeamExecutionRequest,
+	projected projection.TeamExecution,
+) bool {
+	if !request.RestartTerminal {
+		return false
+	}
+	if appTerminalTeamStatus(projected.Status) {
+		return true
+	}
+	if len(projected.Nodes) == 0 ||
+		(projected.Status != "running" && projected.Status != "awaiting_recovery") {
+		return false
+	}
+	for _, node := range projected.Nodes {
+		switch node.Status {
+		case "succeeded", "failed", "cancelled", "degraded", "blocked",
+			"human_required", "ready_for_review":
+			continue
+		case "running", "awaiting_recovery":
+			attemptIndex := -1
+			for index := range node.Attempts {
+				if node.Attempts[index].AttemptNumber == node.CurrentAttempt {
+					attemptIndex = index
+					break
+				}
+			}
+			if attemptIndex == -1 && len(node.Attempts) > 0 {
+				attemptIndex = len(node.Attempts) - 1
+			}
+			if attemptIndex == -1 ||
+				(node.Attempts[attemptIndex].Status != "failed" &&
+					node.Attempts[attemptIndex].Status != "cancelled") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func publishTerminalTeamWorkspace(
+	ctx context.Context,
+	request TeamExecutionRequest,
+	status string,
+	candidates map[string]teamWorkspaceCandidate,
+) error {
+	if status != "succeeded" || request.WorkspacePublisher == nil {
+		return nil
+	}
+	return publishAcceptedTeamWorkspace(ctx, request, candidates)
+}
+
+type teamWorkspaceCandidate struct {
+	execution       TeamNodeExecution
+	attemptNumber   int
+	workspaceDigest string
+	changes         []TeamWorkspaceChange
+}
+
+func rememberTeamWorkspaceCandidates(
+	candidates map[string]teamWorkspaceCandidate,
+	outcomes []teamTaskOutcome,
+) {
+	for _, outcome := range outcomes {
+		if outcome.outcome.Run().TerminalStatus() != "succeeded" {
+			continue
+		}
+		outcomeChanges := outcome.outcome.Changes()
+		changes := make([]TeamWorkspaceChange, len(outcomeChanges))
+		for index, change := range outcomeChanges {
+			changes[index] = TeamWorkspaceChange{
+				Path: change.Path(), Kind: change.Kind(), Mode: change.Mode(),
+				Digest: change.Digest(), Content: change.Content(),
+			}
+		}
+		candidates[outcome.task.logicalNodeID] = teamWorkspaceCandidate{
+			execution:       outcome.task.execution,
+			attemptNumber:   outcome.task.attemptNumber,
+			workspaceDigest: outcome.outcome.WorkspaceDigest(),
+			changes:         changes,
+		}
+	}
+}
+
+func publishAcceptedTeamWorkspace(
+	ctx context.Context,
+	request TeamExecutionRequest,
+	candidates map[string]teamWorkspaceCandidate,
+) error {
+	mainID := ""
+	for _, node := range request.Plan.Nodes() {
+		if node.Role() == teams.ExecutionRoleMain &&
+			node.Kind() != teams.ExecutionNodeRouteSibling {
+			if mainID != "" {
+				return ErrInvalidTeamCoordinator
+			}
+			mainID = node.LogicalNodeID()
+		}
+	}
+	if mainID == "" {
+		return teamWorkspacePublishError("main_node_missing")
+	}
+	candidate, ok := candidates[mainID]
+	if !ok {
+		return teamWorkspacePublishError("main_candidate_missing")
+	}
+	if len(candidate.changes) == 0 {
+		return teamWorkspacePublishError("main_changes_missing")
+	}
+	if candidate.workspaceDigest == "" {
+		return teamWorkspacePublishError("main_digest_missing")
+	}
+	return request.WorkspacePublisher.PublishAcceptedWorkspace(
+		ctx,
+		TeamWorkspacePublication{
+			TeamInstanceID: request.Plan.TeamInstanceID(), PlanDigest: request.Plan.Digest(),
+			LogicalNodeID: mainID, AttemptNumber: candidate.attemptNumber,
+			SourcePath:           candidate.execution.SourcePath,
+			ExpectedSourceDigest: candidate.execution.SourceSnapshotDigest,
+			WorkspaceDigest:      candidate.workspaceDigest,
+			Changes:              candidate.changes,
+		},
+	)
+}
+
+func teamCoordinatorWaveLimit(plan teams.ExecutionPlan) int {
+	// One attempt may require separate dispatch, verification, acceptance and
+	// recovery passes. Scale the finite guard with the frozen topology so a
+	// mixed Team cannot exhaust a single-role constant mid-transition.
+	limit := 1 + len(plan.Nodes())
+	for _, node := range plan.Nodes() {
+		limit += node.MaxAttempts() * 4
+	}
+	return limit
 }
 
 func appAssetSourceHeads(
@@ -680,9 +936,9 @@ func (coordinator *TeamCoordinator) commitTeamTaskOutcome(
 		context.WithoutCancel(ctx),
 		teamAttemptCommitTimeout,
 	)
-	defer cancelCommit()
 	terminalStatus := outcome.outcome.Run().TerminalStatus()
 	if terminalStatus == "" {
+		cancelCommit()
 		return errors.Join(ErrTeamExecutionIncomplete, outcome.err)
 	}
 	receipt, err := coordinator.evidenceStore.FinalizeAttemptCapture(
@@ -693,6 +949,7 @@ func (coordinator *TeamCoordinator) commitTeamTaskOutcome(
 			Reason: outcome.outcome.Run().TerminalReason(),
 		},
 	)
+	cancelCommit()
 	if err != nil {
 		return fmt.Errorf(
 			"Team attempt capture finalize %s/%d: %w",
@@ -702,7 +959,7 @@ func (coordinator *TeamCoordinator) commitTeamTaskOutcome(
 		)
 	}
 	if err := coordinator.commitTeamAttemptReceipt(
-		commitContext,
+		ctx,
 		request,
 		outcome.task.logicalNodeID,
 		outcome.task.attemptNumber,
@@ -752,8 +1009,12 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 	if err != nil {
 		return err
 	}
+	evidenceContext, cancelEvidence := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		teamAttemptCommitTimeout,
+	)
 	team, err := coordinator.workAuthority.CommitTeamAttemptEvidence(
-		ctx,
+		evidenceContext,
 		work.TeamAttemptEvidenceInput{
 			TeamInstanceID:    request.Plan.TeamInstanceID(),
 			PlanDigest:        request.Plan.Digest(),
@@ -770,6 +1031,7 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 			CorrelationID:     request.CorrelationID,
 		},
 	)
+	cancelEvidence()
 	if err != nil {
 		return err
 	}
@@ -815,6 +1077,9 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 		var verifierReceipt evidence.AttemptReceipt
 		if result.Kind() ==
 			verification.DeterministicNeedsIndependentVerifier {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			verifierCandidate, verifierReceipt, err =
 				coordinator.runIndependentVerifier(
 					ctx,
@@ -836,8 +1101,13 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 		if remainingCredits < 0 {
 			remainingCredits = 0
 		}
+		acceptanceContext, cancelAcceptance := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			teamAttemptCommitTimeout,
+		)
+		defer cancelAcceptance()
 		acceptedTeam, err := coordinator.workAuthority.CommitTeamNodeAcceptance(
-			ctx,
+			acceptanceContext,
 			work.TeamNodeAcceptanceInput{
 				TeamInstanceID:      request.Plan.TeamInstanceID(),
 				PlanDigest:          request.Plan.Digest(),
@@ -877,7 +1147,7 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 			return ErrTeamExecutionIncomplete
 		}
 		return coordinator.scheduleTeamRecoveryDecision(
-			ctx,
+			acceptanceContext,
 			request,
 			semantics,
 			acceptedTeam,
@@ -888,8 +1158,13 @@ func (coordinator *TeamCoordinator) commitTeamAttemptReceipt(
 			classification,
 		)
 	}
+	recoveryContext, cancelRecovery := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		teamAttemptCommitTimeout,
+	)
+	defer cancelRecovery()
 	return coordinator.scheduleTeamRecoveryDecision(
-		ctx,
+		recoveryContext,
 		request,
 		semantics,
 		team,
@@ -947,6 +1222,250 @@ func (coordinator *TeamCoordinator) scheduleTeamRecoveryDecision(
 		},
 	)
 	return err
+}
+
+// verifierSourceArtifact is the minimal read shape of a finalized attempt
+// artifact used to give the independent verifier a bounded view of the source
+// node output (digest-addressed, never a secret or credential).
+type verifierSourceArtifact struct {
+	EvidenceID       string   `json:"evidence_id"`
+	TeamInstanceID   string   `json:"team_instance_id"`
+	LogicalNodeID    string   `json:"logical_node_id"`
+	AttemptNumber    int      `json:"attempt_number"`
+	WorkItemID       string   `json:"work_item_id"`
+	RunID            string   `json:"run_id"`
+	AuthorizedFrames []string `json:"authorized_frames"`
+	Status           string   `json:"status"`
+	Reason           string   `json:"reason"`
+}
+
+// renderVerifierPrompt builds the single-prompt envelope for the independent
+// verifier. The verifier has no context capsule of its own, so the dispatch
+// must carry a self-contained prompt: the acceptance criteria, the source
+// provenance digests, and a bounded excerpt of the source output frames. Only
+// output content is included; credentials and prompts never leave the attempt.
+func renderVerifierPrompt(
+	ctx context.Context,
+	store *evidence.Store,
+	sourceReceipt evidence.AttemptReceipt,
+	contract verification.AcceptanceContract,
+	source verification.DeterministicVerificationInput,
+	objective string,
+	roleScope string,
+) (string, error) {
+	if store == nil || ctx == nil || sourceReceipt.Digest() == "" ||
+		strings.TrimSpace(roleScope) == "" {
+		return "", ErrInvalidTeamCoordinator
+	}
+	artifactBytes, err := store.ReadArtifact(
+		ctx,
+		sourceReceipt.Digest(),
+		verifierSourceReadBoundBytes,
+	)
+	if err != nil {
+		return "", err
+	}
+	var artifact verifierSourceArtifact
+	if err := json.Unmarshal(artifactBytes, &artifact); err != nil ||
+		artifact.EvidenceID == "" ||
+		artifact.EvidenceID != sourceReceipt.EvidenceID() {
+		return "", ErrInvalidTeamCoordinator
+	}
+	output := renderVerifierSourceOutput(artifact.AuthorizedFrames)
+	if len(output) > verifierSourceExcerptBytes {
+		output = output[:verifierSourceExcerptBytes]
+	}
+	var builder strings.Builder
+	builder.WriteString("You are the independent verifier for a governed Loom team attempt.\n")
+	builder.WriteString("Evaluate the authorized source result below against every criterion.\n")
+	builder.WriteString("Return exactly one allowed verifier reason code and no other text: criteria_satisfied, criteria_not_satisfied, or insufficient_evidence.\n")
+	builder.WriteString("Acceptance risk: ")
+	builder.WriteString(string(contract.Risk()))
+	if objective != "" {
+		builder.WriteString("\n\nConfirmed Mission objective:\n")
+		builder.WriteString(objective)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\n")
+	builder.WriteString(roleScope)
+	builder.WriteString("\n")
+	builder.WriteString("\nAcceptance criteria:\n")
+	for _, criterion := range contract.Criteria() {
+		builder.WriteString("- ")
+		builder.WriteString(criterion)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("\nSource provenance (digest-only refs):\n")
+	builder.WriteString("  source_work_item_id: ")
+	builder.WriteString(source.WorkItemID)
+	builder.WriteString("\n  source_run_id: ")
+	builder.WriteString(source.RunID)
+	builder.WriteString("\n  source_evidence_digest: ")
+	builder.WriteString(source.SourceEvidenceDigest)
+	builder.WriteString("\n  source_output_summary_digest: ")
+	builder.WriteString(source.OutputSummaryDigest)
+	builder.WriteString("\n  attempt_status: ")
+	builder.WriteString(artifact.Status)
+	if artifact.Reason != "" {
+		builder.WriteString("\n  attempt_reason: ")
+		builder.WriteString(artifact.Reason)
+	}
+	builder.WriteString("\n\nAuthorized source result:\n")
+	builder.WriteString(output)
+	builder.WriteString("\n\nReturn only the allowed verifier reason code. ")
+	builder.WriteString(verifierPrivacyInstruction(objective))
+	return builder.String(), nil
+}
+
+func verifierRoleScopeInstruction(
+	role teams.ExecutionRole,
+	assignment string,
+) (string, error) {
+	assignment = strings.TrimSpace(assignment)
+	if assignment == "" || len(assignment) > 4096 {
+		return "", ErrInvalidTeamCoordinator
+	}
+	var scope string
+	switch role {
+	case teams.ExecutionRoleMain:
+		scope = "The Main Agent owns the final deliverable. Require its assigned contribution to complete the Mission outcome."
+	case teams.ExecutionRoleSubAgent:
+		scope = "Evaluate only this SubAgent's assigned contribution. Do not require work explicitly assigned to another role."
+	default:
+		return "", ErrInvalidTeamCoordinator
+	}
+	return "Current node role: " + string(role) +
+		"\nCurrent node assignment: " + assignment +
+		"\nScope rule: " + scope, nil
+}
+
+func verifierPrivacyInstruction(objective string) string {
+	instruction := "Do not disclose API keys, Authorization headers, credentials, or other secrets."
+	if strings.TrimSpace(objective) != "" {
+		instruction += " Identifiers and non-secret acceptance markers explicitly present in the confirmed Mission objective may be evaluated; they are not credentials."
+	}
+	return instruction
+}
+
+func renderVerifierSourceOutput(frames []string) string {
+	if len(frames) == 0 {
+		return "(no output frames recorded)"
+	}
+	var builder strings.Builder
+	for _, line := range frames {
+		frame, err := bridgev1.DecodeLine([]byte(line))
+		if err != nil || frame.Type() != bridgev1.MessageEvent {
+			continue
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal(frame.Payload(), &payload) != nil {
+			continue
+		}
+		if payload.Delta == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(payload.Delta)
+	}
+	return builder.String()
+}
+
+type verifierOutputEnvelope struct {
+	SchemaVersion int               `json:"schema_version"`
+	Scope         string            `json:"scope"`
+	Events        []json.RawMessage `json:"events"`
+}
+
+func verifierCandidateFromReceipt(
+	ctx context.Context,
+	store *evidence.Store,
+	receipt evidence.AttemptReceipt,
+	input verification.VerifierTerminalInput,
+) (verification.VerifierCandidate, error) {
+	if input.TerminalStatus == "succeeded" {
+		reason, recognized, err := verifierOutputReason(
+			ctx,
+			store,
+			receipt,
+		)
+		if err != nil {
+			return verification.VerifierCandidate{}, err
+		}
+		if !recognized {
+			reason = verification.VerifierReasonInsufficientEvidence
+		}
+		input.OutputReasonCode = reason
+	}
+	return verification.VerifierCandidateFromTerminal(input)
+}
+
+// verifierOutputReason reads only the finalized verifier's authorized output
+// events. Model process success is not an acceptance decision: malformed,
+// additional, or unknown text is recognized as no verdict and therefore
+// rejected as insufficient evidence by verifierCandidateFromReceipt.
+func verifierOutputReason(
+	ctx context.Context,
+	store *evidence.Store,
+	receipt evidence.AttemptReceipt,
+) (verification.VerifierReasonCode, bool, error) {
+	if store == nil || ctx == nil {
+		return "", false, ErrInvalidTeamCoordinator
+	}
+	output, err := store.ReadAggregationOutput(
+		ctx,
+		receipt,
+		verifierSourceReadBoundBytes,
+	)
+	if err != nil {
+		return "", false, err
+	}
+	defer output.Close()
+	content := output.Content()
+	defer clearTeamExecutionBytes(content)
+
+	var envelope verifierOutputEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&envelope) != nil ||
+		decoder.Decode(&struct{}{}) != io.EOF ||
+		envelope.SchemaVersion != 1 ||
+		envelope.Scope != evidence.AggregationScopeAuthorizedOutputEvents ||
+		len(envelope.Events) == 0 {
+		return "", false, evidence.ErrAttemptCaptureConflict
+	}
+	var rendered strings.Builder
+	for _, event := range envelope.Events {
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal(event, &payload) != nil {
+			return "", false, evidence.ErrAttemptCaptureConflict
+		}
+		rendered.WriteString(payload.Delta)
+		if rendered.Len() > 256 {
+			return "", false, nil
+		}
+	}
+	switch reason := verification.VerifierReasonCode(
+		strings.TrimSpace(rendered.String()),
+	); reason {
+	case verification.VerifierReasonCriteriaSatisfied,
+		verification.VerifierReasonCriteriaNotSatisfied,
+		verification.VerifierReasonInsufficientEvidence:
+		return reason, true, nil
+	default:
+		return "", false, nil
+	}
+}
+
+func clearTeamExecutionBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
 }
 
 func (coordinator *TeamCoordinator) runIndependentVerifier(
@@ -1173,7 +1692,10 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 					evidence.AttemptReceipt{},
 					err
 			}
-			candidate, err := verification.VerifierCandidateFromTerminal(
+			candidate, err := verifierCandidateFromReceipt(
+				ctx,
+				coordinator.evidenceStore,
+				receipt,
 				verification.VerifierTerminalInput{
 					WorkItemID:          workItemID,
 					RunID:               runID,
@@ -1261,36 +1783,43 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			evidence.AttemptReceipt{},
 			err
 	}
-	payload, err := json.Marshal(struct {
-		TeamInstanceID            string   `json:"team_instance_id"`
-		PlanDigest                string   `json:"plan_digest"`
-		LogicalNodeID             string   `json:"logical_node_id"`
-		SourceAttemptNumber       int      `json:"source_attempt_number"`
-		SourceWorkItemID          string   `json:"source_work_item_id"`
-		SourceRunID               string   `json:"source_run_id"`
-		SourceEvidenceDigest      string   `json:"source_evidence_digest"`
-		SourceOutputSummaryDigest string   `json:"source_output_summary_digest"`
-		AcceptanceContractDigest  string   `json:"acceptance_contract_digest"`
-		Risk                      string   `json:"risk"`
-		Criteria                  []string `json:"criteria"`
-		AllowedReasonCodes        []string `json:"allowed_reason_codes"`
-	}{
-		source.TeamInstanceID,
-		source.PlanDigest,
+	sourceNode, found := missionContextPlanNode(
+		request.Plan,
 		source.LogicalNodeID,
-		source.AttemptNumber,
-		source.WorkItemID,
-		source.RunID,
-		sourceReceipt.Digest(),
-		sourceReceipt.OutputSummary().Digest(),
-		semantics.AcceptanceContract.Digest(),
-		string(semantics.AcceptanceContract.Risk()),
-		semantics.AcceptanceContract.Criteria(),
-		[]string{
-			string(verification.VerifierReasonCriteriaSatisfied),
-			string(verification.VerifierReasonCriteriaNotSatisfied),
-			string(verification.VerifierReasonInsufficientEvidence),
-		},
+	)
+	if !found {
+		return verification.VerifierCandidate{}, evidence.AttemptReceipt{},
+			ErrInvalidTeamCoordinator
+	}
+	roleScope, err := verifierRoleScopeInstruction(
+		sourceNode.Role(),
+		sourceNode.Title(),
+	)
+	if err != nil {
+		return verification.VerifierCandidate{}, evidence.AttemptReceipt{}, err
+	}
+	verifierPrompt, err := renderVerifierPrompt(
+		ctx,
+		coordinator.evidenceStore,
+		sourceReceipt,
+		semantics.AcceptanceContract,
+		source,
+		request.Objective,
+		roleScope,
+	)
+	if err != nil {
+		return verification.VerifierCandidate{},
+			evidence.AttemptReceipt{},
+			err
+	}
+	payload, err := json.Marshal(struct {
+		SchemaVersion int    `json:"schema_version"`
+		Kind          string `json:"kind"`
+		Prompt        string `json:"prompt"`
+	}{
+		SchemaVersion: 1,
+		Kind:          verifierDispatchKind,
+		Prompt:        verifierPrompt,
 	})
 	if err != nil {
 		return verification.VerifierCandidate{},
@@ -1357,8 +1886,13 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			errors.Join(work.ErrTeamAttemptRecoveryRequired, outcomes[0].err)
 	}
 	terminal := outcomes[0].outcome.Run()
+	commitContext, cancelCommit := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		teamAttemptCommitTimeout,
+	)
+	defer cancelCommit()
 	receipt, err := coordinator.evidenceStore.FinalizeAttemptCapture(
-		ctx,
+		commitContext,
 		evidenceID,
 		evidence.AttemptTerminal{
 			Status: terminal.TerminalStatus(),
@@ -1371,7 +1905,7 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			err
 	}
 	if err := coordinator.workAuthority.CommitVerifierEvidence(
-		ctx,
+		commitContext,
 		work.VerifierEvidenceInput{
 			WorkItemID:        workItemID,
 			RunID:             runID,
@@ -1387,7 +1921,10 @@ func (coordinator *TeamCoordinator) runIndependentVerifier(
 			evidence.AttemptReceipt{},
 			err
 	}
-	candidate, err := verification.VerifierCandidateFromTerminal(
+	candidate, err := verifierCandidateFromReceipt(
+		commitContext,
+		coordinator.evidenceStore,
+		receipt,
 		verification.VerifierTerminalInput{
 			WorkItemID:          workItemID,
 			RunID:               runID,
@@ -1480,6 +2017,7 @@ func (coordinator *TeamCoordinator) recoverTeamAttempts(
 			request.Plan,
 			node.LogicalNodeID,
 			attempt.AttemptNumber,
+			appTeamAttemptIdentitySalt(request)...,
 		)
 		binding := appAttemptCaptureBinding(
 			request.Plan,
@@ -1504,9 +2042,40 @@ func (coordinator *TeamCoordinator) recoverTeamAttempts(
 		switch run.Phase {
 		case "terminal":
 			if run.ClaimID != attempt.ClaimID ||
-				run.ClaimGeneration != attempt.ClaimGeneration ||
-				!captureFound ||
-				capture.Binding() != binding {
+				run.ClaimGeneration != attempt.ClaimGeneration {
+				return nil, changed, work.ErrTeamAttemptRecoveryRequired
+			}
+			if !captureFound {
+				_, grantFound := view.LatestAgentGrantForRun(run.ID)
+				if receiptFound || grantFound || run.TerminalStatus != "failed" ||
+					run.TerminalReason != "agent_attempt_recovery_required" {
+					return nil, changed, work.ErrTeamAttemptRecoveryRequired
+				}
+				// Startup reconciliation may close an expired claimed Run before
+				// the coordinator created its evidence capture. That exact empty
+				// window is auditable and retryable: create a zero-frame failure
+				// capture from the frozen Run/Attempt lineage. Any terminal with a
+				// grant, receipt, different reason, or mismatched authority remains
+				// fail-closed.
+				if err := coordinator.evidenceStore.BeginAttemptCapture(
+					ctx,
+					binding,
+				); err != nil {
+					return nil, changed, err
+				}
+				capture, captureFound, err = coordinator.evidenceStore.AttemptCapture(
+					ctx,
+					evidenceID,
+				)
+				if err != nil || !captureFound {
+					return nil, changed, errors.Join(
+						work.ErrTeamAttemptRecoveryRequired,
+						err,
+					)
+				}
+				changed = true
+			}
+			if capture.Binding() != binding {
 				return nil, changed, work.ErrTeamAttemptRecoveryRequired
 			}
 			if !receiptFound {
@@ -1757,6 +2326,7 @@ func (coordinator *TeamCoordinator) prepareTeamTasks(
 			request.Plan,
 			execution.LogicalNodeID,
 			execution.AttemptNumber,
+			appTeamAttemptIdentitySalt(request)...,
 		)
 		if err := coordinator.evidenceStore.BeginAttemptCapture(
 			ctx,
@@ -2044,11 +2614,15 @@ func (collector *teamFrameCollector) ObserveAuthorizedFrame(
 	if collector.observer == nil {
 		return nil
 	}
-	return collector.observer.ObserveNodeOutput(ctx, NodeOutput{
+	// The evidence capture above is authoritative and remains fail-closed. The
+	// Mission timeline is a tentative UX projection; losing it must not reject
+	// an otherwise authorized Agent result.
+	_ = collector.observer.ObserveNodeOutput(ctx, NodeOutput{
 		logicalNodeID:   collector.logicalNodeID,
 		attemptNumber:   collector.attemptNumber,
 		authorizedFrame: frame,
 	})
+	return nil
 }
 
 func validateTeamExecutionRequest(
@@ -2160,6 +2734,7 @@ func validateTeamExecutionRequest(
 		binding, bindingErr := loomruntime.FreezeExecutionBinding(profile, instance)
 		capsuleRecord := execution.ContextCapsule.AuthorityRecord()
 		_, capsuleErr := contextcapsule.ValidateAuthorityRecord(capsuleRecord)
+		capacityValid := validTeamContextCapacity(execution)
 		_, contextDispatchErr := contextcapsule.ValidateDispatchPayload(
 			execution.ContextCapsule,
 			execution.Dispatch.Payload(),
@@ -2177,7 +2752,7 @@ func validateTeamExecutionRequest(
 			},
 		)
 		if profileErr != nil || instanceErr != nil || bindingErr != nil ||
-			capsuleErr != nil || contextDispatchErr != nil || contextSourceErr != nil ||
+			capsuleErr != nil || !capacityValid || contextDispatchErr != nil || contextSourceErr != nil ||
 			routeSegmentErr != nil ||
 			!contextSourceMatches ||
 			capsuleRecord.TeamID != request.Plan.TeamInstanceID() ||
@@ -2245,6 +2820,42 @@ func validateTeamExecutionRequest(
 		return nil, err
 	}
 	return executions, nil
+}
+
+func validTeamContextCapacity(execution TeamNodeExecution) bool {
+	projection, ok := execution.ContextCapsule.CapacityProjection()
+	authority := execution.ContextCapacityAuthority
+	counter := execution.ContextTokenCounter
+	if !ok || nilAppInterface(counter) ||
+		projection.SchemaVersion != authority.SchemaVersion ||
+		projection.Status != authority.Status ||
+		projection.ContextWindowTokens != authority.ContextWindowTokens ||
+		projection.ReservedOutputTokens != authority.ReservedOutputTokens ||
+		projection.AdapterToolOverheadTokens != authority.AdapterToolOverheadTokens ||
+		projection.TokenCounterID != authority.TokenCounterID ||
+		projection.TokenCounterVersion != authority.TokenCounterVersion ||
+		counter.ID() != authority.TokenCounterID || counter.Version() != authority.TokenCounterVersion {
+		return false
+	}
+	if _, err := contextcapsule.ResolveAdmittedInputBudget(
+		execution.ContextCapsule.Target().TokenBudget, authority,
+	); err != nil {
+		return false
+	}
+	if execution.Aggregation == nil {
+		return true
+	}
+	aggregation := execution.Aggregation
+	if nilAppInterface(aggregation.TokenCounter) ||
+		aggregation.TokenCounter.ID() != aggregation.CapacityAuthority.TokenCounterID ||
+		aggregation.TokenCounter.Version() != aggregation.CapacityAuthority.TokenCounterVersion {
+		return false
+	}
+	_, err := contextcapsule.ResolveAdmittedInputBudget(
+		execution.ContextCapsule.Target().TokenBudget,
+		aggregation.CapacityAuthority,
+	)
+	return err == nil
 }
 
 func appValidateParallelRouteBindings(
@@ -2323,18 +2934,20 @@ func appRuntimeProfileFromFrozenBinding(
 	binding loomruntime.FrozenExecutionBinding,
 ) loomruntime.RuntimeProfile {
 	profile := loomruntime.RuntimeProfile{
-		ID:                   binding.ProfileID,
-		AdapterType:          binding.HarnessAdapter,
-		ProviderID:           binding.ProviderID,
-		ProviderAccountID:    binding.ProviderAccountID,
-		ModelID:              binding.ModelID,
-		AuthMode:             binding.AuthMode,
-		EndpointFingerprint:  binding.EndpointFingerprint,
-		CredentialReference:  binding.CredentialReference,
-		CredentialRevision:   binding.CredentialRevision,
-		ReasoningEffort:      binding.ReasoningEffort,
-		RequiredCapabilities: append([]string(nil), binding.Capabilities...),
-		Timeout:              binding.Timeout,
+		ID:                         binding.ProfileID,
+		AdapterType:                binding.HarnessAdapter,
+		ProviderID:                 binding.ProviderID,
+		ProviderAccountID:          binding.ProviderAccountID,
+		ModelID:                    binding.ModelID,
+		AuthMode:                   binding.AuthMode,
+		EndpointFingerprint:        binding.EndpointFingerprint,
+		CredentialReference:        binding.CredentialReference,
+		CredentialRevision:         binding.CredentialRevision,
+		ReasoningEffort:            binding.ReasoningEffort,
+		RequiredCapabilities:       append([]string(nil), binding.Capabilities...),
+		Timeout:                    binding.Timeout,
+		RemoteToolEnrollmentID:     binding.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: binding.RemoteToolEnrollmentDigest,
 	}
 	if binding.Budget != nil {
 		budget := *binding.Budget
@@ -2547,10 +3160,39 @@ func appInitialDispatchRoutes(
 	request TeamExecutionRequest,
 	view projection.GlobalReadView,
 ) []work.TeamNodeRouteSummary {
-	if _, exists := view.TeamExecution(request.Plan.TeamInstanceID()); exists {
-		return nil
+	if projected, exists := view.TeamExecution(request.Plan.TeamInstanceID()); exists {
+		if !request.RestartTerminal {
+			return nil
+		}
+		routes := make([]work.TeamNodeRouteSummary, 0, len(projected.Nodes))
+		for _, node := range projected.Nodes {
+			if !node.InitialRouteAvailable {
+				return nil
+			}
+			routes = append(routes, work.TeamNodeRouteSummary{
+				LogicalNodeID:      node.LogicalNodeID,
+				HarnessAdapter:     node.InitialHarnessAdapter,
+				ProviderID:         node.InitialProviderID,
+				ProviderAccountID:  node.InitialProviderAccountID,
+				ModelID:            node.InitialModelID,
+				ReasoningEffort:    node.InitialReasoningEffort,
+				TimeoutNanoseconds: node.InitialTimeoutNanoseconds,
+				Budget:             cloneAppBudget(node.InitialBudget),
+				Capabilities:       append([]string(nil), node.InitialCapabilities...),
+				CredentialRevision: node.InitialCredentialRevision,
+			})
+		}
+		return routes
 	}
 	return cloneAppRouteSummaries(request.RouteSummaries)
+}
+
+func cloneAppBudget(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func appValidateRouteSummaries(
@@ -2788,9 +3430,11 @@ func appDispatchHeads(
 	nodes []teams.ExecutionNode,
 	materializationSets ...[]work.TeamAttemptMaterialization,
 ) []journal.StreamHead {
-	return appDispatchHeadsWithSources(
-		view, plan, selections, nodes, nil, materializationSets...,
-	)
+	var materializations []work.TeamAttemptMaterialization
+	if len(materializationSets) == 1 {
+		materializations = materializationSets[0]
+	}
+	return appDispatchHeadsWithSources(view, plan, selections, nodes, nil, materializations)
 }
 
 func appDispatchHeadsWithSources(
@@ -2799,12 +3443,9 @@ func appDispatchHeadsWithSources(
 	selections []work.TeamAttemptSelection,
 	nodes []teams.ExecutionNode,
 	assetSourceStreamIDs []string,
-	materializationSets ...[]work.TeamAttemptMaterialization,
+	materializations []work.TeamAttemptMaterialization,
+	identitySalt ...string,
 ) []journal.StreamHead {
-	var materializations []work.TeamAttemptMaterialization
-	if len(materializationSets) == 1 {
-		materializations = materializationSets[0]
-	}
 	streams := map[string]struct{}{
 		"team-execution/" + plan.TeamInstanceID(): {},
 		"work-run-identity/v1":                    {},
@@ -2839,15 +3480,29 @@ func appDispatchHeadsWithSources(
 			}
 		}
 		workItemID := appTeamAttemptIdentity(
-			"work", plan, selection.LogicalNodeID, selection.AttemptNumber,
+			"work", plan, selection.LogicalNodeID, selection.AttemptNumber, identitySalt...,
 		)
 		runID := appTeamAttemptIdentity(
-			"run", plan, selection.LogicalNodeID, selection.AttemptNumber,
+			"run", plan, selection.LogicalNodeID, selection.AttemptNumber, identitySalt...,
 		)
 		streams["work-item/"+workItemID] = struct{}{}
 		streams["run/"+runID] = struct{}{}
 		streams["runtime_instance:"+runtimeInstanceID] = struct{}{}
 		streams["runtime_capacity:"+runtimeInstanceID] = struct{}{}
+	}
+	if len(identitySalt) > 0 {
+		if projected, ok := view.TeamExecution(plan.TeamInstanceID()); ok {
+			for _, node := range projected.Nodes {
+				for _, attempt := range node.Attempts {
+					if attempt.WorkItemID != "" {
+						streams["work-item/"+attempt.WorkItemID] = struct{}{}
+					}
+					if attempt.RunID != "" {
+						streams["run/"+attempt.RunID] = struct{}{}
+					}
+				}
+			}
+		}
 	}
 	for _, materialization := range materializations {
 		for _, head := range materialization.Prepared.Heads() {
@@ -2904,6 +3559,7 @@ func (coordinator *TeamCoordinator) prepareTeamAssetMaterializations(
 		}
 		runID := appTeamAttemptIdentity(
 			"run", request.Plan, selection.LogicalNodeID, selection.AttemptNumber,
+			appTeamAttemptIdentitySalt(request)...,
 		)
 		result, err := coordinator.assetMaterializer.PrepareTeamAttemptMaterialization(
 			ctx,
@@ -3040,15 +3696,28 @@ func appTeamAttemptIdentity(
 	plan teams.ExecutionPlan,
 	logicalNodeID string,
 	attemptNumber int,
+	identitySalt ...string,
 ) string {
-	digest := sha256.Sum256([]byte(strings.Join([]string{
+	fields := []string{
 		label,
 		plan.TeamInstanceID(),
 		plan.Digest(),
 		logicalNodeID,
 		fmt.Sprint(attemptNumber),
-	}, "\x00")))
+	}
+	fields = append(fields, identitySalt...)
+	digest := sha256.Sum256([]byte(strings.Join(fields, "\x00")))
 	return "team-" + label + "-" + hex.EncodeToString(digest[:16])
+}
+
+func appTeamAttemptIdentitySalt(request TeamExecutionRequest) []string {
+	if request.ExecutionGenerationID != "" {
+		return []string{request.ExecutionGenerationID}
+	}
+	if request.RestartTerminal {
+		return []string{request.CorrelationID}
+	}
+	return nil
 }
 
 func appVerifierIdentity(label string, fields ...string) string {

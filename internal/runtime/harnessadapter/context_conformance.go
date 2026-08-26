@@ -14,6 +14,7 @@ const (
 	claudeAgentInputExecutableVersion       = "sha256:6fc6e61ab7582c2bf241225ff90d9f79e91d69380cb9589fc9dedd3a30070f5a"
 	codexGovernedToolExecutableVersion      = "sha256:29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a"
 	claudeGovernedToolExecutableVersion     = "sha256:6fc6e61ab7582c2bf241225ff90d9f79e91d69380cb9589fc9dedd3a30070f5a"
+	opencodeGovernedToolExecutableVersion   = "sha256:43f7083d450567706a80b6441331a25b5ed6d6c9f742826790545b068229cbb2"
 )
 
 // HasContextRetrievalConformance reports only executable byte identities that
@@ -50,6 +51,8 @@ func HasGovernedToolMCPConformance(adapterType, executableVersion string) bool {
 		return executableVersion == codexGovernedToolExecutableVersion
 	case ClaudeCodeAdapterType:
 		return executableVersion == claudeGovernedToolExecutableVersion
+	case OpenCodeAdapterType:
+		return executableVersion == opencodeGovernedToolExecutableVersion
 	default:
 		return false
 	}

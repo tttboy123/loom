@@ -205,6 +205,7 @@ type retrievableItem struct {
 	TokenCount     int        `json:"token_count"`
 	Content        []byte     `json:"content"`
 	ContentDigest  string     `json:"content_digest"`
+	ReferenceID    string     `json:"reference_id,omitempty"`
 	SourceType     SourceType `json:"source_type"`
 	SourceRef      string     `json:"source_ref"`
 	AllowedAgentID string     `json:"allowed_agent_id,omitempty"`
@@ -213,24 +214,36 @@ type retrievableItem struct {
 }
 
 type AuthorityRecord struct {
-	SchemaVersion           int    `json:"schema_version"`
-	CapsuleDigest           string `json:"capsule_digest"`
-	DisclosureReceiptDigest string `json:"disclosure_receipt_digest"`
-	ConversationID          string `json:"conversation_id"`
-	TeamID                  string `json:"team_id"`
-	AgentID                 string `json:"agent_id"`
-	RoleID                  string `json:"role_id"`
-	ProviderID              string `json:"provider_id"`
-	ProviderAccountID       string `json:"provider_account_id"`
-	ModelID                 string `json:"model_id"`
-	AuthMode                string `json:"auth_mode"`
-	ContextAdapterID        string `json:"context_adapter_id"`
-	DisclosurePolicyID      string `json:"disclosure_policy_id"`
-	DisclosurePolicyVersion int    `json:"disclosure_policy_version"`
-	TokenBudget             int    `json:"token_budget"`
-	TokenCount              int    `json:"token_count"`
-	DisclosedCount          int    `json:"disclosed_count"`
-	OmittedCount            int    `json:"omitted_count"`
+	SchemaVersion                   int            `json:"schema_version"`
+	CapsuleDigest                   string         `json:"capsule_digest"`
+	DisclosureReceiptDigest         string         `json:"disclosure_receipt_digest"`
+	ConversationID                  string         `json:"conversation_id"`
+	TeamID                          string         `json:"team_id"`
+	AgentID                         string         `json:"agent_id"`
+	RoleID                          string         `json:"role_id"`
+	ProviderID                      string         `json:"provider_id"`
+	ProviderAccountID               string         `json:"provider_account_id"`
+	ModelID                         string         `json:"model_id"`
+	AuthMode                        string         `json:"auth_mode"`
+	ContextAdapterID                string         `json:"context_adapter_id"`
+	DisclosurePolicyID              string         `json:"disclosure_policy_id"`
+	DisclosurePolicyVersion         int            `json:"disclosure_policy_version"`
+	TokenBudget                     int            `json:"token_budget"`
+	TokenCount                      int            `json:"token_count"`
+	DisclosedCount                  int            `json:"disclosed_count"`
+	OmittedCount                    int            `json:"omitted_count"`
+	CapacityProjectionDigest        string         `json:"capacity_projection_digest,omitempty"`
+	CapacitySchemaVersion           int            `json:"capacity_schema_version,omitempty"`
+	CapacityStatus                  CapacityStatus `json:"capacity_status,omitempty"`
+	ContextWindowTokens             int            `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens            int            `json:"reserved_output_tokens,omitempty"`
+	AdapterToolOverheadTokens       int            `json:"adapter_tool_overhead_tokens,omitempty"`
+	PolicyInputBudgetTokens         int            `json:"policy_input_budget_tokens,omitempty"`
+	AdmittedInputBudgetTokens       int            `json:"admitted_input_budget_tokens,omitempty"`
+	TokenCounterID                  string         `json:"token_counter_id,omitempty"`
+	TokenCounterVersion             string         `json:"token_counter_version,omitempty"`
+	AdmittedContributionTokens      int            `json:"admitted_contribution_tokens,omitempty"`
+	BudgetOmittedContributionTokens int            `json:"budget_omitted_contribution_tokens,omitempty"`
 }
 
 type RoleContextCapsule struct {
@@ -241,9 +254,30 @@ type RoleContextCapsule struct {
 	disclosed               []DisclosedItem
 	omitted                 []OmittedItem
 	retrievable             map[string]retrievableItem
+	capacity                *CapacityProjection
 }
 
 func BuildRoleContextCapsule(target Target, inputs []ItemInput) (RoleContextCapsule, error) {
+	return buildRoleContextCapsule(target, inputs, target.TokenBudget)
+}
+
+func buildRoleContextCapsule(
+	target Target,
+	inputs []ItemInput,
+	admittedBudget int,
+) (RoleContextCapsule, error) {
+	target, items, artifacts, err := prepareRoleContextCapsuleInputs(target, inputs, admittedBudget)
+	if err != nil {
+		return RoleContextCapsule{}, err
+	}
+	return packRoleContextCapsule(target, items, artifacts, admittedBudget)
+}
+
+func prepareRoleContextCapsuleInputs(
+	target Target,
+	inputs []ItemInput,
+	admittedBudget int,
+) (Target, []ItemInput, map[string]struct{}, error) {
 	if !validIdentifier(target.ConversationID) || !validIdentifier(target.TeamID) ||
 		!validIdentifier(target.AgentID) || !validIdentifier(target.RoleID) ||
 		!validRouteTarget(target.ProviderID, target.ProviderAccountID, target.ModelID, target.AuthMode) ||
@@ -251,18 +285,19 @@ func BuildRoleContextCapsule(target Target, inputs []ItemInput) (RoleContextCaps
 		!validIdentifier(target.DisclosurePolicyID) ||
 		target.DisclosurePolicyVersion < 1 ||
 		target.TokenBudget < 1 || target.TokenBudget > maxTokenBudget ||
+		admittedBudget < 1 || admittedBudget > target.TokenBudget ||
 		len(inputs) == 0 || len(inputs) > maxCapsuleItems {
-		return RoleContextCapsule{}, ErrInvalidCapsule
+		return Target{}, nil, nil, ErrInvalidCapsule
 	}
 	target.ArtifactRefs = append([]string(nil), target.ArtifactRefs...)
 	sort.Strings(target.ArtifactRefs)
 	artifacts := make(map[string]struct{}, len(target.ArtifactRefs))
 	for _, reference := range target.ArtifactRefs {
 		if !validIdentifier(reference) {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return Target{}, nil, nil, ErrInvalidCapsule
 		}
 		if _, duplicate := artifacts[reference]; duplicate {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return Target{}, nil, nil, ErrInvalidCapsule
 		}
 		artifacts[reference] = struct{}{}
 	}
@@ -272,14 +307,14 @@ func BuildRoleContextCapsule(target Target, inputs []ItemInput) (RoleContextCaps
 	totalContentBytes := 0
 	for _, item := range items {
 		if !validItem(item) {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return Target{}, nil, nil, ErrInvalidCapsule
 		}
 		if _, duplicate := seen[item.ItemID]; duplicate {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return Target{}, nil, nil, ErrInvalidCapsule
 		}
 		seen[item.ItemID] = struct{}{}
 		if len(item.Content) > maxTotalContentBytes-totalContentBytes {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return Target{}, nil, nil, ErrInvalidCapsule
 		}
 		totalContentBytes += len(item.Content)
 	}
@@ -289,7 +324,15 @@ func BuildRoleContextCapsule(target Target, inputs []ItemInput) (RoleContextCaps
 		}
 		return items[i].ItemID < items[j].ItemID
 	})
+	return target, items, artifacts, nil
+}
 
+func packRoleContextCapsule(
+	target Target,
+	items []ItemInput,
+	artifacts map[string]struct{},
+	admittedBudget int,
+) (RoleContextCapsule, error) {
 	capsule := RoleContextCapsule{
 		target:      target,
 		disclosed:   make([]DisclosedItem, 0, len(items)),
@@ -316,7 +359,7 @@ func BuildRoleContextCapsule(target Target, inputs []ItemInput) (RoleContextCaps
 			))
 			continue
 		}
-		if capsule.tokenCount+item.TokenCount > target.TokenBudget {
+		if capsule.tokenCount > admittedBudget-item.TokenCount {
 			if item.Required {
 				return RoleContextCapsule{}, ErrRequiredContextOmitted
 			}
@@ -344,17 +387,9 @@ func BuildRoleContextCapsule(target Target, inputs []ItemInput) (RoleContextCaps
 		return RoleContextCapsule{}, ErrInvalidCapsule
 	}
 
-	body, err := capsule.canonicalBody()
-	if err != nil {
+	if err := capsule.seal(); err != nil {
 		return RoleContextCapsule{}, ErrInvalidCapsule
 	}
-	capsule.digest = digestBytes(body)
-	record := capsule.authorityRecord()
-	receiptBody, err := canonicalReceiptBody(record)
-	if err != nil {
-		return RoleContextCapsule{}, ErrInvalidCapsule
-	}
-	capsule.disclosureReceiptDigest = digestBytes(receiptBody)
 	return capsule, nil
 }
 
@@ -365,10 +400,25 @@ func ExtendRoleContextCapsule(
 	base RoleContextCapsule,
 	additions []ItemInput,
 ) (RoleContextCapsule, error) {
-	if !base.Valid() || len(additions) == 0 ||
+	if !base.Valid() || base.capacity != nil || len(additions) == 0 ||
 		len(base.disclosed)+len(base.omitted)+len(additions) > maxCapsuleItems {
 		return RoleContextCapsule{}, ErrInvalidCapsule
 	}
+	items, fixedOmissions, err := extensionInputs(base, additions)
+	if err != nil {
+		return RoleContextCapsule{}, err
+	}
+	rebuilt, err := BuildRoleContextCapsule(base.Target(), items)
+	if err != nil {
+		return RoleContextCapsule{}, err
+	}
+	return finalizeExtendedCapsule(rebuilt, fixedOmissions)
+}
+
+func extensionInputs(
+	base RoleContextCapsule,
+	additions []ItemInput,
+) ([]ItemInput, []OmittedItem, error) {
 	items := make([]ItemInput, 0, len(base.disclosed)+len(base.retrievable)+len(additions))
 	seen := make(map[string]struct{}, len(base.disclosed)+len(base.omitted)+len(additions))
 	for _, item := range base.disclosed {
@@ -378,7 +428,7 @@ func ExtendRoleContextCapsule(
 	fixedOmissions := make([]OmittedItem, 0, len(base.omitted))
 	for _, omission := range base.omitted {
 		if _, duplicate := seen[omission.ItemID]; duplicate {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return nil, nil, ErrInvalidCapsule
 		}
 		seen[omission.ItemID] = struct{}{}
 		if omission.Reason != OmissionBudgetExceeded {
@@ -387,21 +437,24 @@ func ExtendRoleContextCapsule(
 		}
 		retrievable, found := base.retrievable[omission.ItemID]
 		if !found || !retrievableMatchesOmission(retrievable, omission) {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return nil, nil, ErrInvalidCapsule
 		}
 		items = append(items, itemInputFromRetrievable(retrievable))
 	}
 	for _, addition := range additions {
 		if _, duplicate := seen[addition.ItemID]; duplicate {
-			return RoleContextCapsule{}, ErrInvalidCapsule
+			return nil, nil, ErrInvalidCapsule
 		}
 		seen[addition.ItemID] = struct{}{}
 		items = append(items, addition)
 	}
-	rebuilt, err := BuildRoleContextCapsule(base.Target(), items)
-	if err != nil {
-		return RoleContextCapsule{}, err
-	}
+	return items, fixedOmissions, nil
+}
+
+func finalizeExtendedCapsule(
+	rebuilt RoleContextCapsule,
+	fixedOmissions []OmittedItem,
+) (RoleContextCapsule, error) {
 	rebuilt.omitted = append(rebuilt.omitted, fixedOmissions...)
 	sort.Slice(rebuilt.omitted, func(i, j int) bool {
 		if rebuilt.omitted[i].Priority != rebuilt.omitted[j].Priority {
@@ -409,16 +462,9 @@ func ExtendRoleContextCapsule(
 		}
 		return rebuilt.omitted[i].ItemID < rebuilt.omitted[j].ItemID
 	})
-	body, err := rebuilt.canonicalBody()
-	if err != nil {
+	if err := rebuilt.seal(); err != nil {
 		return RoleContextCapsule{}, ErrInvalidCapsule
 	}
-	rebuilt.digest = digestBytes(body)
-	receiptBody, err := canonicalReceiptBody(rebuilt.authorityRecord())
-	if err != nil {
-		return RoleContextCapsule{}, ErrInvalidCapsule
-	}
-	rebuilt.disclosureReceiptDigest = digestBytes(receiptBody)
 	if !rebuilt.Valid() {
 		return RoleContextCapsule{}, ErrInvalidCapsule
 	}
@@ -440,8 +486,9 @@ func itemInputFromRetrievable(item retrievableItem) ItemInput {
 	return ItemInput{
 		ItemID: item.ItemID, Kind: item.Kind, Trust: item.Trust,
 		Scope: item.Scope, Priority: item.Priority, TokenCount: item.TokenCount,
-		Content: append([]byte(nil), item.Content...), SourceType: item.SourceType,
-		SourceRef: item.SourceRef, AllowedAgentID: item.AllowedAgentID,
+		Content: append([]byte(nil), item.Content...), ReferenceID: item.ReferenceID,
+		SourceType: item.SourceType,
+		SourceRef:  item.SourceRef, AllowedAgentID: item.AllowedAgentID,
 		AllowedRoleID: item.AllowedRoleID, ArtifactRef: item.ArtifactRef,
 	}
 }
@@ -451,7 +498,7 @@ func retrievableContextItem(item ItemInput, contentDigest string) retrievableIte
 		ItemID: item.ItemID, Kind: item.Kind, Trust: item.Trust,
 		Scope: item.Scope, Priority: item.Priority, TokenCount: item.TokenCount,
 		Content: append([]byte(nil), item.Content...), ContentDigest: contentDigest,
-		SourceType: item.SourceType, SourceRef: item.SourceRef,
+		ReferenceID: item.ReferenceID, SourceType: item.SourceType, SourceRef: item.SourceRef,
 		AllowedAgentID: item.AllowedAgentID, AllowedRoleID: item.AllowedRoleID,
 		ArtifactRef: item.ArtifactRef,
 	}
@@ -486,8 +533,18 @@ func (capsule RoleContextCapsule) Target() Target {
 	return target
 }
 
+func (capsule RoleContextCapsule) CapacityProjection() (CapacityProjection, bool) {
+	if !capsule.Valid() || capsule.capacity == nil {
+		return CapacityProjection{}, false
+	}
+	return *cloneCapacityProjection(capsule.capacity), true
+}
+
 func (capsule RoleContextCapsule) Valid() bool {
 	if capsule.digest == "" || capsule.disclosureReceiptDigest == "" {
+		return false
+	}
+	if capsule.capacity != nil && !validCapacityProjectionForCapsule(*capsule.capacity, capsule) {
 		return false
 	}
 	body, err := capsule.canonicalBody()
@@ -517,6 +574,22 @@ func (capsule RoleContextCapsule) Disclosed() []DisclosedItem {
 
 func (capsule RoleContextCapsule) Omitted() []OmittedItem {
 	return append([]OmittedItem(nil), capsule.omitted...)
+}
+
+func (capsule RoleContextCapsule) IsRetrievable(itemID string) bool {
+	if !capsule.Valid() || !validIdentifier(itemID) {
+		return false
+	}
+	omission, found := capsule.omittedItem(itemID)
+	if !found || omission.Reason != OmissionBudgetExceeded ||
+		omission.Scope == ScopeSecretReferenceOnly ||
+		omission.Kind == KindCredentialReference ||
+		omission.SourceType == SourceCredentialReference {
+		return false
+	}
+	item, found := capsule.retrievable[itemID]
+	return found && retrievableMatchesOmission(item, omission) &&
+		digestBytes(item.Content) == item.ContentDigest
 }
 
 func (capsule RoleContextCapsule) Retrieve(request RetrievalRequest) (RetrievedItem, error) {
@@ -639,7 +712,8 @@ func RestoreRetrievableContext(
 		retrievable[item.ItemID] = retrievableContextItem(ItemInput{
 			ItemID: item.ItemID, Kind: item.Kind, Trust: item.Trust,
 			Scope: item.Scope, Priority: item.Priority, TokenCount: item.TokenCount,
-			Content: item.Content, SourceType: item.SourceType, SourceRef: item.SourceRef,
+			Content: item.Content, ReferenceID: item.ReferenceID,
+			SourceType: item.SourceType, SourceRef: item.SourceRef,
 			AllowedAgentID: item.AllowedAgentID, AllowedRoleID: item.AllowedRoleID,
 			ArtifactRef: item.ArtifactRef,
 		}, item.ContentDigest)
@@ -660,13 +734,15 @@ func retrievableMatchesOmission(item retrievableItem, omission OmittedItem) bool
 	return validItem(ItemInput{
 		ItemID: item.ItemID, Kind: item.Kind, Trust: item.Trust,
 		Scope: item.Scope, Priority: item.Priority, TokenCount: item.TokenCount,
-		Content: item.Content, SourceType: item.SourceType, SourceRef: item.SourceRef,
+		Content: item.Content, ReferenceID: item.ReferenceID,
+		SourceType: item.SourceType, SourceRef: item.SourceRef,
 		AllowedAgentID: item.AllowedAgentID, AllowedRoleID: item.AllowedRoleID,
 		ArtifactRef: item.ArtifactRef,
 	}) && item.ItemID == omission.ItemID && item.Kind == omission.Kind &&
 		item.Trust == omission.Trust && item.Scope == omission.Scope &&
 		item.Priority == omission.Priority && item.TokenCount == omission.TokenCount &&
 		item.ContentDigest == omission.ContentDigest && digestBytes(item.Content) == item.ContentDigest &&
+		(item.SourceType != SourceCredentialReference || validIdentifier(item.ReferenceID)) &&
 		item.SourceType == omission.SourceType && item.SourceRef == omission.SourceRef &&
 		item.AllowedAgentID == omission.AllowedAgentID &&
 		item.AllowedRoleID == omission.AllowedRoleID && item.ArtifactRef == omission.ArtifactRef
@@ -697,10 +773,11 @@ func RestoreRoleContextCapsule(
 	decoder := json.NewDecoder(bytes.NewReader(canonicalBody))
 	decoder.DisallowUnknownFields()
 	var wire struct {
-		SchemaVersion int             `json:"schema_version"`
-		Target        Target          `json:"target"`
-		Disclosed     []DisclosedItem `json:"disclosed"`
-		Omitted       []OmittedItem   `json:"omitted"`
+		SchemaVersion int                 `json:"schema_version"`
+		Target        Target              `json:"target"`
+		Disclosed     []DisclosedItem     `json:"disclosed"`
+		Omitted       []OmittedItem       `json:"omitted"`
+		Capacity      *CapacityProjection `json:"capacity,omitempty"`
 	}
 	if decoder.Decode(&wire) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
 		wire.SchemaVersion != schemaVersion || len(wire.Disclosed) == 0 ||
@@ -747,6 +824,10 @@ func RestoreRoleContextCapsule(
 		tokenCount:              validatedAuthority.TokenCount,
 		digest:                  validatedAuthority.CapsuleDigest,
 		disclosureReceiptDigest: validatedAuthority.DisclosureReceiptDigest,
+		capacity:                cloneCapacityProjection(wire.Capacity),
+	}
+	if capacityProjectionDigest(restored.capacity) != validatedAuthority.CapacityProjectionDigest {
+		return RoleContextCapsule{}, ErrInvalidCapsule
 	}
 	if !restored.Valid() || restored.AuthorityRecord() != validatedAuthority {
 		return RoleContextCapsule{}, ErrInvalidCapsule
@@ -774,13 +855,18 @@ func validRestoredOmittedItem(item OmittedItem) bool {
 		item.Scope == ScopeAgentPrivate && !validIdentifier(item.AllowedAgentID) ||
 		item.Scope == ScopeRoleRestricted && !validIdentifier(item.AllowedRoleID) ||
 		item.Scope == ScopeArtifactScoped && !validIdentifier(item.ArtifactRef) ||
-		item.Scope == ScopeSecretReferenceOnly ||
-		item.Kind == KindCredentialReference ||
-		item.SourceType == SourceCredentialReference ||
 		(item.Reason != OmissionAccessDenied &&
 			item.Reason != OmissionBudgetExceeded &&
 			item.Reason != OmissionPolicyFiltered) {
 		return false
+	}
+	if item.Scope == ScopeSecretReferenceOnly || item.Kind == KindCredentialReference ||
+		item.SourceType == SourceCredentialReference {
+		return item.Scope == ScopeSecretReferenceOnly && item.Kind == KindCredentialReference &&
+			item.SourceType == SourceCredentialReference && item.Trust == TrustAuthoritative &&
+			item.ContentDigest == digestBytes(nil) && item.AllowedAgentID == "" &&
+			item.AllowedRoleID == "" && item.ArtifactRef == "" &&
+			(item.Reason == OmissionBudgetExceeded || item.Reason == OmissionPolicyFiltered)
 	}
 	if item.SourceType == SourceModelOutput || item.Kind == KindPriorModelOutput {
 		if item.SourceType != SourceModelOutput || item.Kind != KindPriorModelOutput ||
@@ -812,16 +898,31 @@ func restoredItemOrder(
 
 func (capsule RoleContextCapsule) canonicalBody() ([]byte, error) {
 	canonical := struct {
-		SchemaVersion int             `json:"schema_version"`
-		Target        Target          `json:"target"`
-		Disclosed     []DisclosedItem `json:"disclosed"`
-		Omitted       []OmittedItem   `json:"omitted"`
-	}{schemaVersion, capsule.target, capsule.disclosed, capsule.omitted}
+		SchemaVersion int                 `json:"schema_version"`
+		Target        Target              `json:"target"`
+		Disclosed     []DisclosedItem     `json:"disclosed"`
+		Omitted       []OmittedItem       `json:"omitted"`
+		Capacity      *CapacityProjection `json:"capacity,omitempty"`
+	}{schemaVersion, capsule.target, capsule.disclosed, capsule.omitted, capsule.capacity}
 	return json.Marshal(canonical)
 }
 
+func (capsule *RoleContextCapsule) seal() error {
+	body, err := capsule.canonicalBody()
+	if err != nil {
+		return err
+	}
+	capsule.digest = digestBytes(body)
+	receiptBody, err := canonicalReceiptBody(capsule.authorityRecord())
+	if err != nil {
+		return err
+	}
+	capsule.disclosureReceiptDigest = digestBytes(receiptBody)
+	return nil
+}
+
 func (capsule RoleContextCapsule) authorityRecord() AuthorityRecord {
-	return AuthorityRecord{
+	record := AuthorityRecord{
 		SchemaVersion: schemaVersion, CapsuleDigest: capsule.digest,
 		ConversationID: capsule.target.ConversationID, TeamID: capsule.target.TeamID,
 		AgentID: capsule.target.AgentID, RoleID: capsule.target.RoleID,
@@ -834,6 +935,21 @@ func (capsule RoleContextCapsule) authorityRecord() AuthorityRecord {
 		TokenBudget:             capsule.target.TokenBudget, TokenCount: capsule.tokenCount,
 		DisclosedCount: len(capsule.disclosed), OmittedCount: len(capsule.omitted),
 	}
+	if capsule.capacity != nil {
+		record.CapacityProjectionDigest = capacityProjectionDigest(capsule.capacity)
+		record.CapacitySchemaVersion = capsule.capacity.SchemaVersion
+		record.CapacityStatus = capsule.capacity.Status
+		record.ContextWindowTokens = capsule.capacity.ContextWindowTokens
+		record.ReservedOutputTokens = capsule.capacity.ReservedOutputTokens
+		record.AdapterToolOverheadTokens = capsule.capacity.AdapterToolOverheadTokens
+		record.PolicyInputBudgetTokens = capsule.capacity.PolicyInputBudgetTokens
+		record.AdmittedInputBudgetTokens = capsule.capacity.AdmittedInputBudgetTokens
+		record.TokenCounterID = capsule.capacity.TokenCounterID
+		record.TokenCounterVersion = capsule.capacity.TokenCounterVersion
+		record.AdmittedContributionTokens = capsule.capacity.AdmittedContributionTokens
+		record.BudgetOmittedContributionTokens = capsule.capacity.BudgetOmittedContributionTokens
+	}
+	return record
 }
 
 func ValidateAuthorityRecord(record AuthorityRecord) (AuthorityRecord, error) {
@@ -848,7 +964,8 @@ func ValidateAuthorityRecord(record AuthorityRecord) (AuthorityRecord, error) {
 		record.TokenCount < 1 ||
 		record.TokenCount > record.TokenBudget || record.DisclosedCount < 0 ||
 		record.OmittedCount < 0 || record.DisclosedCount < 1 ||
-		record.DisclosedCount+record.OmittedCount > maxCapsuleItems {
+		record.DisclosedCount+record.OmittedCount > maxCapsuleItems ||
+		!validAuthorityCapacity(record) {
 		return AuthorityRecord{}, ErrInvalidCapsule
 	}
 	body, err := canonicalReceiptBody(record)
@@ -856,6 +973,34 @@ func ValidateAuthorityRecord(record AuthorityRecord) (AuthorityRecord, error) {
 		return AuthorityRecord{}, ErrInvalidCapsule
 	}
 	return record, nil
+}
+
+func validAuthorityCapacity(record AuthorityRecord) bool {
+	if record.CapacitySchemaVersion == 0 {
+		return record.CapacityProjectionDigest == "" && record.CapacityStatus == "" &&
+			record.ContextWindowTokens == 0 && record.ReservedOutputTokens == 0 &&
+			record.AdapterToolOverheadTokens == 0 && record.PolicyInputBudgetTokens == 0 &&
+			record.AdmittedInputBudgetTokens == 0 && record.TokenCounterID == "" &&
+			record.TokenCounterVersion == "" && record.AdmittedContributionTokens == 0 &&
+			record.BudgetOmittedContributionTokens == 0
+	}
+	if !validDigest(record.CapacityProjectionDigest) ||
+		record.PolicyInputBudgetTokens != record.TokenBudget ||
+		record.AdmittedContributionTokens != record.TokenCount ||
+		record.BudgetOmittedContributionTokens < 0 ||
+		record.BudgetOmittedContributionTokens > MaxCapacityTokens {
+		return false
+	}
+	authority := CapacityAuthority{
+		SchemaVersion: record.CapacitySchemaVersion, Status: record.CapacityStatus,
+		ContextWindowTokens:       record.ContextWindowTokens,
+		ReservedOutputTokens:      record.ReservedOutputTokens,
+		AdapterToolOverheadTokens: record.AdapterToolOverheadTokens,
+		TokenCounterID:            record.TokenCounterID, TokenCounterVersion: record.TokenCounterVersion,
+	}
+	resolved, err := resolveAdmittedInputBudget(record.PolicyInputBudgetTokens, authority)
+	return err == nil && resolved == record.AdmittedInputBudgetTokens &&
+		record.TokenCount <= record.AdmittedInputBudgetTokens
 }
 
 func canonicalReceiptBody(record AuthorityRecord) ([]byte, error) {

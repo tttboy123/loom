@@ -23,6 +23,293 @@ import (
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
 
+func TestTeamRestartableAllowsFailedPartialExecutionButNotActiveWork(t *testing.T) {
+	base := TeamExecutionRecord{
+		teamInstanceID: "team-1",
+		nodes: []TeamNodeRecord{
+			{status: "failed"},
+			{status: "pending"},
+		},
+	}
+	if !teamRestartable(base) {
+		t.Fatal("failed partial Team should accept an explicit new Attempt")
+	}
+	active := base
+	active.nodes[1].status = "running"
+	if teamRestartable(active) {
+		t.Fatal("active Team work must not be reopened")
+	}
+	complete := base
+	complete.nodes[1].status = "succeeded"
+	if !teamRestartable(complete) {
+		t.Fatal("failed sibling with completed dependent should remain restartable")
+	}
+	review := TeamExecutionRecord{
+		teamInstanceID: "team-review",
+		nodes:          []TeamNodeRecord{{status: "ready_for_review"}, {status: "succeeded"}},
+	}
+	if !teamRestartable(review) {
+		t.Fatal("explicit new Attempt should reopen a Team awaiting review")
+	}
+	recovery := TeamExecutionRecord{
+		teamInstanceID: "team-recovery",
+		nodes: []TeamNodeRecord{
+			{
+				status: "awaiting_recovery", currentAttempt: 1,
+				attempts: []TeamAttemptRecord{{attemptNumber: 1, runID: "run-failed"}},
+			},
+			{status: "pending"},
+		},
+	}
+	failedState := authorityState{runs: map[string]RunRecord{
+		"run-failed": {id: "run-failed", terminalStatus: "failed"},
+	}}
+	if !teamRestartableWithState(recovery, failedState) {
+		t.Fatal("failed Run awaiting recovery should accept an explicit new Attempt")
+	}
+	activeState := authorityState{runs: map[string]RunRecord{
+		"run-failed": {id: "run-failed"},
+	}}
+	if teamRestartableWithState(recovery, activeState) {
+		t.Fatal("active Run awaiting recovery must not be reopened")
+	}
+	terminalRecovery := recovery
+	terminalRecovery.nodes[0].attempts[0].status = "failed"
+	if !teamRestartable(terminalRecovery) {
+		t.Fatal("failed Team Attempt awaiting recovery should be restartable from its Team stream")
+	}
+}
+
+func TestTeamRestartReplaysTerminalRunRecoveryProof(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x62)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-terminal-run-restart",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := dispatchTeamAttemptForTest(t, store, authority, plan, 1, testNow)
+	run := dispatched.Run()
+	generation := RunGenerationInput{
+		WorkItemID: run.WorkItemID(), RunID: run.ID(),
+		ClaimID: run.ClaimID(), ClaimGeneration: run.ClaimGeneration(),
+		RuntimeInstanceID: run.RuntimeInstanceID(),
+		AgentInstanceID:   run.AgentInstanceID(),
+		CorrelationID:     testCorrelation,
+	}
+	if _, _, err := authority.Start(context.Background(), generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := authority.CommitTerminal(
+		context.Background(),
+		RunTerminalInput{
+			RunGenerationInput: generation,
+			Status:             "failed",
+			Reason:             "bridge_protocol_failed",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	team, err := authority.TeamExecution(context.Background(), plan.TeamInstanceID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartCorrelation := "62626262-6262-4262-8262-626262626262"
+	selection := []TeamAttemptSelection{testTeamAttemptSelection(t, plan, "main", 1)}
+	snapshot, err := store.ReadStreamSet(
+		context.Background(),
+		teamDispatchStreamsWithSalt(
+			plan, plan.Nodes(), selection, team, nil, nil, restartCorrelation,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := authority.DispatchTeamReadySet(
+		context.Background(),
+		TeamDispatchInput{
+			Plan: plan, ReadyAttempts: selection,
+			SemanticBindings:     testTeamSemanticBindings(plan),
+			ViewVersion:          strings.Repeat("6", 64),
+			ExpectedHeads:        snapshot.Heads(),
+			AuthoritativeTime:    testNow.Add(time.Minute),
+			PrepareLeaseDuration: time.Minute,
+			CorrelationID:        restartCorrelation,
+			RestartTerminal:      true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restarted.Nodes()) != 1 || restarted.Nodes()[0].Attempt().RunID() == run.ID() {
+		t.Fatalf("restarted Team = %#v", restarted)
+	}
+	if _, err := authority.TeamExecution(
+		context.Background(), plan.TeamInstanceID(),
+	); err != nil {
+		t.Fatalf("replay after terminal Run restart = %v", err)
+	}
+}
+
+func TestSucceededTeamRequiresExplicitRestartAndCreatesExactNewAttemptLineage(t *testing.T) {
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 0x60)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-succeeded-restart",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Main",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-a",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := dispatchTeamAttemptForTest(t, store, authority, plan, 1, testNow)
+	succeeded := succeedTeamAttemptForRestartTest(
+		t, authority, plan, first, testNow,
+	)
+	if succeeded.Status() != "succeeded" ||
+		succeeded.Nodes()[0].Status() != "succeeded" {
+		t.Fatalf("succeeded Team = %#v", succeeded)
+	}
+	firstAttempt := first.Attempt()
+	before, err := store.ReadStream(
+		context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	selection := []TeamAttemptSelection{
+		testTeamAttemptSelection(t, plan, "main", 1),
+	}
+	ordinarySnapshot, err := store.ReadStreamSet(
+		context.Background(),
+		teamDispatchStreams(plan, plan.Nodes(), selection, succeeded, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinary := TeamDispatchInput{
+		Plan: plan, ReadyAttempts: selection,
+		SemanticBindings:     testTeamSemanticBindings(plan),
+		ViewVersion:          strings.Repeat("6", 64),
+		ExpectedHeads:        ordinarySnapshot.Heads(),
+		AuthoritativeTime:    testNow.Add(time.Minute),
+		PrepareLeaseDuration: time.Minute,
+		CorrelationID:        testCorrelation,
+	}
+	if _, err := authority.DispatchTeamReadySet(
+		context.Background(), ordinary,
+	); !errors.Is(err, ErrTeamExecutionAlreadyTerminal) {
+		t.Fatalf("ordinary succeeded-Team dispatch error = %v", err)
+	}
+	afterOrdinary, err := store.ReadStream(
+		context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterOrdinary, before) {
+		t.Fatal("ordinary dispatch changed terminal Team authority")
+	}
+
+	restartCorrelation := "60606060-6060-4060-8060-606060606060"
+	restartSnapshot, err := store.ReadStreamSet(
+		context.Background(),
+		teamDispatchStreamsWithSalt(
+			plan, plan.Nodes(), selection, succeeded, nil, nil,
+			restartCorrelation,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restart := ordinary
+	restart.ExpectedHeads = restartSnapshot.Heads()
+	restart.CorrelationID = restartCorrelation
+	restart.RestartTerminal = true
+	restarted, err := authority.DispatchTeamReadySet(context.Background(), restart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restarted.Nodes()) != 1 {
+		t.Fatalf("restarted nodes = %d", len(restarted.Nodes()))
+	}
+	newAttempt := restarted.Nodes()[0].Attempt()
+	wantWorkItemID := teamAttemptIdentity(
+		"work", plan, "main", 1, restartCorrelation,
+	)
+	wantRunID := teamAttemptIdentity(
+		"run", plan, "main", 1, restartCorrelation,
+	)
+	if newAttempt.AttemptNumber() != 1 ||
+		newAttempt.WorkItemID() != wantWorkItemID ||
+		newAttempt.RunID() != wantRunID ||
+		newAttempt.ClaimGeneration() != 1 ||
+		newAttempt.WorkItemID() == firstAttempt.WorkItemID() ||
+		newAttempt.RunID() == firstAttempt.RunID() {
+		t.Fatalf("new Attempt lineage = %#v", newAttempt)
+	}
+
+	afterRestart, err := store.ReadStream(
+		context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterRestart) != len(before)+4 ||
+		!reflect.DeepEqual(afterRestart[:len(before)], before) {
+		t.Fatalf("restart Team events = %#v", afterRestart)
+	}
+	wantTypes := []string{
+		"TeamExecutionReopened", "TeamExecutionPlanned",
+		"TeamNodeAttemptScheduled", "TeamReadySetDispatched",
+	}
+	for index, want := range wantTypes {
+		if got := afterRestart[len(before)+index].Type; got != want {
+			t.Fatalf("restart event %d type = %q, want %q", index, got, want)
+		}
+	}
+	replayed, err := authority.TeamExecution(
+		context.Background(), plan.TeamInstanceID(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAttempt := replayed.Nodes()[0].Attempts()[0]
+	if replayedAttempt.WorkItemID() != wantWorkItemID ||
+		replayedAttempt.RunID() != wantRunID {
+		t.Fatalf("replayed new Attempt lineage = %#v", replayedAttempt)
+	}
+
+	if _, err := authority.DispatchTeamReadySet(
+		context.Background(), restart,
+	); !errors.Is(err, ErrStaleGlobalReadView) {
+		t.Fatalf("exact restart replay error = %v", err)
+	}
+	afterReplay, err := store.ReadStream(
+		context.Background(), teamExecutionStream(plan.TeamInstanceID()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterReplay, afterRestart) {
+		t.Fatal("exact restart replay appended authority facts")
+	}
+}
+
 func TestP3ATeamDispatchAndSemanticBindingCarryExactAssetSet(t *testing.T) {
 	semantic := reflect.TypeOf(TeamNodeSemanticBinding{})
 	for _, field := range []string{"AssetRevisionBindings", "AssetRevisionSetDigest"} {
@@ -256,6 +543,68 @@ func testReasoningFrozenExecutionBinding(
 		t.Fatal(err)
 	}
 	return binding
+}
+
+func TestPhase2DTeamExecutionBindingPayloadRoundTripsRemoteToolEnrollment(t *testing.T) {
+	// The journal payload for a FrozenExecutionBinding must carry the
+	// remote-tool Enrollment fields: FreezeExecutionBinding digests an
+	// enrollment-bound binding in the v3 domain, and a payload that drops
+	// those fields makes frozenExecutionBindingFromPayload recompute a
+	// legacy digest and reject the event (bricking projection replay).
+	binding, err := loomruntime.FreezeExecutionBinding(
+		loomruntime.RuntimeProfile{
+			ID: "profile.web", AdapterType: "loom-native",
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+			ModelID: "deepseek-chat", AuthMode: loomruntime.AuthBrokered,
+			EndpointFingerprint: strings.Repeat("b", 64),
+			CredentialReference: "credential-ref-deepseek-primary",
+			CredentialRevision:  2,
+			RequiredCapabilities: []string{
+				loomruntime.CapabilityContextRetrieval,
+			},
+			Timeout:                    45 * time.Second,
+			RemoteToolEnrollmentID:     "enroll-web-live-001",
+			RemoteToolEnrollmentDigest: strings.Repeat("c", 64),
+		},
+		loomruntime.RuntimeInstance{
+			ID: "runtime-a", DeviceID: "device.local",
+			AdapterType: "loom-native", DisplayName: "Loom Native",
+			Status: loomruntime.RuntimeOnline,
+			ObservedCapabilities: []string{
+				loomruntime.CapabilityContextRetrieval,
+			},
+			Capacity: 2,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := teamExecutionBindingPayloadFrom(binding)
+	if payload == nil {
+		t.Fatal("payloadFrom returned nil")
+	}
+	if payload.RemoteToolEnrollmentID != binding.RemoteToolEnrollmentID ||
+		payload.RemoteToolEnrollmentDigest != binding.RemoteToolEnrollmentDigest {
+		t.Fatalf("payload dropped enrollment fields: %#v", payload)
+	}
+	restored, err := frozenExecutionBindingFromPayload(payload)
+	if err != nil {
+		t.Fatalf("round-trip restore error: %v", err)
+	}
+	if restored.BindingDigest != binding.BindingDigest ||
+		restored.RemoteToolEnrollmentID != binding.RemoteToolEnrollmentID ||
+		restored.RemoteToolEnrollmentDigest != binding.RemoteToolEnrollmentDigest {
+		t.Fatalf("round-trip binding = %#v want %#v", restored, binding)
+	}
+
+	dropped := *payload
+	dropped.RemoteToolEnrollmentID = ""
+	dropped.RemoteToolEnrollmentDigest = ""
+	if _, err := frozenExecutionBindingFromPayload(&dropped); !errors.Is(
+		err, loomruntime.ErrInvalidExecutionProfile,
+	) {
+		t.Fatalf("dropped-enrollment restore error = %v, want ErrInvalidExecutionProfile", err)
+	}
 }
 
 func TestPhase2DTeamDispatchRejectsTamperedExecutionBindingBeforeMutation(t *testing.T) {
@@ -1770,6 +2119,138 @@ func commitTeamAttemptTerminalForTest(
 	}
 	_ = digestByte
 	return team, classification
+}
+
+func succeedTeamAttemptForRestartTest(
+	t testing.TB,
+	authority *Authority,
+	plan teams.ExecutionPlan,
+	dispatched TeamDispatchedNode,
+	decidedAt time.Time,
+) TeamExecutionRecord {
+	t.Helper()
+	run := dispatched.Run()
+	generation := RunGenerationInput{
+		WorkItemID: run.WorkItemID(), RunID: run.ID(),
+		ClaimID: run.ClaimID(), ClaimGeneration: run.ClaimGeneration(),
+		RuntimeInstanceID: run.RuntimeInstanceID(),
+		AgentInstanceID:   run.AgentInstanceID(),
+		CorrelationID:     testCorrelation,
+	}
+	if _, _, err := authority.Start(context.Background(), generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := authority.CommitTerminal(
+		context.Background(),
+		RunTerminalInput{
+			RunGenerationInput: generation,
+			Status:             "succeeded",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	receipt, classification := testTeamAttemptReceiptAndClassification(
+		t, plan, "main", 1, generation, "succeeded",
+	)
+	if _, err := authority.CommitTeamAttemptEvidence(
+		context.Background(),
+		TeamAttemptEvidenceInput{
+			TeamInstanceID:    plan.TeamInstanceID(),
+			PlanDigest:        plan.Digest(),
+			LogicalNodeID:     "main",
+			AttemptNumber:     1,
+			WorkItemID:        generation.WorkItemID,
+			RunID:             generation.RunID,
+			ClaimID:           generation.ClaimID,
+			ClaimGeneration:   generation.ClaimGeneration,
+			RuntimeInstanceID: generation.RuntimeInstanceID,
+			AgentInstanceID:   generation.AgentInstanceID,
+			Receipt:           receipt,
+			Classification:    classification,
+			CorrelationID:     testCorrelation,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	acceptance, err := verification.NewAcceptanceContract(
+		1,
+		[]string{"controlled output is accepted"},
+		verification.AcceptanceRiskLow,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := verification.NewOutputContract(
+		1, verification.EmptyOutputInvalid,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := verification.VerifyDeterministic(
+		acceptance,
+		verification.DeterministicVerificationInput{
+			TeamInstanceID:             plan.TeamInstanceID(),
+			PlanDigest:                 plan.Digest(),
+			LogicalNodeID:              "main",
+			AttemptNumber:              1,
+			WorkItemID:                 generation.WorkItemID,
+			RunID:                      generation.RunID,
+			ClaimID:                    generation.ClaimID,
+			ClaimGeneration:            generation.ClaimGeneration,
+			SourceEvidenceID:           receipt.EvidenceID(),
+			SourceEvidenceDigest:       receipt.Digest(),
+			OutputSummaryDigest:        receipt.OutputSummary().Digest(),
+			OutputContractVersion:      output.Version(),
+			OutputContractDigest:       output.Digest(),
+			OutputClassification:       classification.Kind(),
+			OutputClassificationDigest: classification.Digest(),
+			AcceptanceContractDigest:   acceptance.Digest(),
+			TerminalStatus:             "succeeded",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := verification.DecideAcceptance(
+		verification.AcceptanceDecisionInput{
+			Contract: acceptance, DeterministicResult: result,
+			DecisionTime: decidedAt,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := rules.NewRecoveryPolicy(rules.RecoveryPolicyInput{
+		Version:          1,
+		RetryDelay:       time.Minute,
+		AttemptCredits:   0,
+		ExhaustionAction: rules.ExhaustionBlocked,
+		RetryInvalid:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := authority.CommitTeamNodeAcceptance(
+		context.Background(),
+		TeamNodeAcceptanceInput{
+			TeamInstanceID:      plan.TeamInstanceID(),
+			PlanDigest:          plan.Digest(),
+			LogicalNodeID:       "main",
+			AttemptNumber:       1,
+			SourceReceipt:       receipt,
+			AcceptanceContract:  acceptance,
+			DeterministicResult: result,
+			Decision:            decision,
+			RecoveryPolicy:      policy,
+			MaxAttempts:         1,
+			CreditsBefore:       0,
+			CorrelationID:       testCorrelation,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accepted
 }
 
 func TestTeamDispatchFreezesSemanticBindingsBeforeLaterWorkWrites(t *testing.T) {

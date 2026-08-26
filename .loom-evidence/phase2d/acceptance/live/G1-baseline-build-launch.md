@@ -1,7 +1,7 @@
 # Phase 2D gate evidence G1
 - incident_id: baseline-build-launch
 - exported_at: 2026-08-15T20:29:18Z
-- app: /Users/lune/Applications/Loom.app
+- installed_app: Loom.app
 - app_check: ok
 - gate: G1
 

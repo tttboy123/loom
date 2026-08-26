@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum LocalProductWireError: Error, Equatable {
@@ -136,39 +137,138 @@ public struct LocalProductRuntimeSummary: Codable, Equatable, Sendable, Identifi
     }
 }
 
-public struct LocalProductTeamSummary: Codable, Equatable, Sendable, Identifiable {
-    public var id: String { teamInstanceID }
-    public let teamInstanceID: String
-    public let displayName: String
-    public let sourceKind: String
-    public let state: String
-    public let confirmed: Bool
-    public let executable: Bool
-    public let readOnly: Bool
+public struct LocalProductTeamAgentSummary: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { "\(roleKind):\(agentDefinitionID)" }
+    public let roleKind: String
+    public let agentDefinitionID: String
+    public let runtimeProfileID: String
+    public let bindingStatus: String
+    public let harnessAdapter: String
+    public let providerID: String
+    public let providerAccountID: String
+    public let modelID: String
+    public let credentialRevision: Int64
 
     enum CodingKeys: String, CodingKey {
-        case teamInstanceID = "team_instance_id"
-        case displayName = "display_name"
-        case sourceKind = "source_kind"
-        case state, confirmed, executable
-        case readOnly = "read_only"
+        case roleKind = "role_kind"
+        case agentDefinitionID = "agent_definition_id"
+        case runtimeProfileID = "runtime_profile_id"
+        case bindingStatus = "binding_status"
+        case harnessAdapter = "harness_adapter"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case modelID = "model_id"
+        case credentialRevision = "credential_revision"
     }
 
     public init(from decoder: Decoder) throws {
         try rejectUnknownKeys(
             decoder,
             allowed: [
-                "team_instance_id", "display_name", "source_kind", "state",
-                "confirmed", "executable", "read_only",
+                "role_kind", "agent_definition_id", "runtime_profile_id",
+                "binding_status", "harness_adapter", "provider_id",
+                "provider_account_id", "model_id", "credential_revision",
+            ]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        roleKind = try values.decode(String.self, forKey: .roleKind)
+        agentDefinitionID = try values.decode(String.self, forKey: .agentDefinitionID)
+        runtimeProfileID = try values.decode(String.self, forKey: .runtimeProfileID)
+        bindingStatus = try values.decode(String.self, forKey: .bindingStatus)
+        harnessAdapter = try values.decode(String.self, forKey: .harnessAdapter)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        providerAccountID = try values.decode(String.self, forKey: .providerAccountID)
+        modelID = try values.decode(String.self, forKey: .modelID)
+        credentialRevision = try values.decode(Int64.self, forKey: .credentialRevision)
+        guard ["main", "subagent"].contains(roleKind),
+              ["configured", "unavailable"].contains(bindingStatus),
+              !agentDefinitionID.isEmpty, !runtimeProfileID.isEmpty,
+              credentialRevision >= 0 else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+}
+
+public struct LocalProductTeamSummary: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { teamInstanceID }
+    public let teamInstanceID: String
+    public let teamDefinitionID: String
+    public let teamDefinitionVersion: Int
+    public let displayName: String
+    public let sourceKind: String
+    public let state: String
+    public let confirmed: Bool
+    public let executable: Bool
+    public let readOnly: Bool
+    public let agents: [LocalProductTeamAgentSummary]
+
+    enum CodingKeys: String, CodingKey {
+        case teamInstanceID = "team_instance_id"
+        case teamDefinitionID = "team_definition_id"
+        case teamDefinitionVersion = "team_definition_version"
+        case displayName = "display_name"
+        case sourceKind = "source_kind"
+        case state, confirmed, executable
+        case readOnly = "read_only"
+        case agents
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: [
+                "team_instance_id", "team_definition_id",
+                "team_definition_version", "display_name", "source_kind", "state",
+                "confirmed", "executable", "read_only", "agents",
             ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         teamInstanceID = try values.decode(String.self, forKey: .teamInstanceID)
+        teamDefinitionID = try values.decodeIfPresent(
+            String.self,
+            forKey: .teamDefinitionID
+        ) ?? ""
+        teamDefinitionVersion = try values.decodeIfPresent(
+            Int.self,
+            forKey: .teamDefinitionVersion
+        ) ?? 0
         displayName = try values.decode(String.self, forKey: .displayName)
         sourceKind = try values.decode(String.self, forKey: .sourceKind)
         state = try values.decode(String.self, forKey: .state)
         confirmed = try values.decode(Bool.self, forKey: .confirmed)
         executable = try values.decode(Bool.self, forKey: .executable)
         readOnly = try values.decode(Bool.self, forKey: .readOnly)
+        agents = try values.decodeIfPresent(
+            [LocalProductTeamAgentSummary].self,
+            forKey: .agents
+        ) ?? []
+    }
+}
+
+/// The product snapshot is instance-oriented because every execution must
+/// retain its frozen identity. Team pickers are configuration-oriented: keep
+/// the newest same-source configuration for each visible name from the
+/// newest-first snapshot and leave older executions in Mission history.
+public func currentTeamConfigurations(
+    _ teams: [LocalProductTeamSummary]
+) -> [LocalProductTeamSummary] {
+    var seenConfigurations = Set<String>()
+    return teams.filter { team in
+        let displayName = team.displayName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).lowercased()
+        if !displayName.isEmpty {
+            return seenConfigurations.insert(
+                "named:\(team.sourceKind):\(displayName)"
+            ).inserted
+        }
+
+        let definitionID = team.teamDefinitionID.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !definitionID.isEmpty else { return true }
+        return seenConfigurations.insert(
+            "definition:\(definitionID)"
+        ).inserted
     }
 }
 
@@ -405,6 +505,7 @@ public struct LocalProductMissionSummary:
     public let attentionCount: Int
     public let currentNodeID: String
     public let lastMilestone: String
+    public let blockReason: String?
     public let teamPulse: [LocalProductMissionPulse]
     public let topology: [LocalProductMissionNode]
 
@@ -424,6 +525,7 @@ public struct LocalProductMissionSummary:
         case attentionCount = "attention_count"
         case currentNodeID = "current_node_id"
         case lastMilestone = "last_milestone"
+        case blockReason = "block_reason"
         case teamPulse = "team_pulse"
         case topology
     }
@@ -446,6 +548,7 @@ public struct LocalProductMissionSummary:
         attentionCount: Int,
         currentNodeID: String,
         lastMilestone: String,
+        blockReason: String? = nil,
         teamPulse: [LocalProductMissionPulse],
         topology: [LocalProductMissionNode]
     ) {
@@ -466,6 +569,7 @@ public struct LocalProductMissionSummary:
         self.attentionCount = attentionCount
         self.currentNodeID = currentNodeID
         self.lastMilestone = lastMilestone
+        self.blockReason = blockReason
         self.teamPulse = teamPulse
         self.topology = topology
     }
@@ -478,7 +582,8 @@ public struct LocalProductMissionSummary:
                 "source_kind", "lane", "status", "priority", "plan_digest",
                 "simple", "node_count", "completed_node_count",
                 "active_node_count", "review_node_count", "attention_count",
-                "current_node_id", "last_milestone", "team_pulse", "topology",
+                "current_node_id", "last_milestone", "block_reason",
+                "team_pulse", "topology",
             ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
@@ -507,6 +612,7 @@ public struct LocalProductMissionSummary:
         attentionCount = try values.decode(Int.self, forKey: .attentionCount)
         currentNodeID = try values.decode(String.self, forKey: .currentNodeID)
         lastMilestone = try values.decode(String.self, forKey: .lastMilestone)
+        blockReason = try values.decodeIfPresent(String.self, forKey: .blockReason)
         teamPulse = try values.decode(
             [LocalProductMissionPulse].self,
             forKey: .teamPulse
@@ -1064,7 +1170,7 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
             && capabilities == capabilities.sorted()
         let validBindingIdentity = LocalIPCClient.validIdentifier(harnessAdapter)
             && LocalIPCClient.validIdentifier(providerID)
-            && LocalIPCClient.validIdentifier(modelID)
+            && LocalIPCClient.validModelID(modelID)
             && (reasoningEffort.isEmpty || LocalIPCClient.validIdentifier(reasoningEffort))
             && timeoutNanoseconds > 0
             && (bindingBudgetCredits.map { $0 >= 0 } ?? true)
@@ -1878,7 +1984,7 @@ public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
     public let content: String
     public let tentative: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case messageID = "message_id"
         case segmentID = "segment_id"
         case role, content, tentative
@@ -1899,6 +2005,10 @@ public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue)).union(["created_at"])
+        )
         let values = try decoder.container(keyedBy: CodingKeys.self)
         messageID = try values.decode(String.self, forKey: .messageID)
         segmentID = try values.decodeIfPresent(
@@ -1938,26 +2048,131 @@ public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public enum LocalProductContextCapacityStatus: String, Codable, Sendable {
+    case exact
+    case estimated
+    case unavailable
+}
+
+public struct LocalProductContextCapacityContribution:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { "\(priority):\(sourceType)" }
+    public let priority: Int
+    public let sourceType: String
+    public let admittedItemCount: Int
+    public let admittedTokenCount: Int
+    public let budgetOmittedItemCount: Int
+    public let budgetOmittedTokenCount: Int
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case priority
+        case sourceType = "source_type"
+        case admittedItemCount = "admitted_item_count"
+        case admittedTokenCount = "admitted_token_count"
+        case budgetOmittedItemCount = "budget_omitted_item_count"
+        case budgetOmittedTokenCount = "budget_omitted_token_count"
+    }
+
+    public init(
+        priority: Int,
+        sourceType: String,
+        admittedItemCount: Int,
+        admittedTokenCount: Int,
+        budgetOmittedItemCount: Int,
+        budgetOmittedTokenCount: Int
+    ) {
+        self.priority = priority
+        self.sourceType = sourceType
+        self.admittedItemCount = admittedItemCount
+        self.admittedTokenCount = admittedTokenCount
+        self.budgetOmittedItemCount = budgetOmittedItemCount
+        self.budgetOmittedTokenCount = budgetOmittedTokenCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue))
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        priority = try values.decode(Int.self, forKey: .priority)
+        sourceType = try values.decode(String.self, forKey: .sourceType)
+        admittedItemCount = try values.decode(Int.self, forKey: .admittedItemCount)
+        admittedTokenCount = try values.decode(Int.self, forKey: .admittedTokenCount)
+        budgetOmittedItemCount = try values.decode(
+            Int.self, forKey: .budgetOmittedItemCount
+        )
+        budgetOmittedTokenCount = try values.decode(
+            Int.self, forKey: .budgetOmittedTokenCount
+        )
+        guard (0...4).contains(priority),
+              ["authority", "observation", "model_output", "credential_reference"]
+                .contains(sourceType),
+              (0...512).contains(admittedItemCount),
+              (0...512).contains(budgetOmittedItemCount),
+              admittedItemCount + budgetOmittedItemCount > 0,
+              admittedTokenCount >= admittedItemCount,
+              budgetOmittedTokenCount >= budgetOmittedItemCount,
+              admittedTokenCount <= 10_000_000,
+              budgetOmittedTokenCount <= 10_000_000,
+              (admittedItemCount > 0) == (admittedTokenCount > 0),
+              (budgetOmittedItemCount > 0) == (budgetOmittedTokenCount > 0) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
 public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
     public let segmentID: String
     public let profileID: String
+    public let modelID: String
+    public let reasoningEffort: String
     public let contextMode: LocalProductConversationContextMode
     public let contextCapsuleDigest: String
     public let disclosureReceiptDigest: String
     public let disclosedContextCount: Int
     public let omittedContextCount: Int
+    public let contextTokenBudget: Int
+    public let contextTokenCount: Int
+    public let contextCapacityStatus: LocalProductContextCapacityStatus?
+    public let contextWindowTokens: Int
+    public let reservedOutputTokens: Int
+    public let adapterToolOverheadTokens: Int
+    public let admittedInputBudgetTokens: Int
+    public let contextTokenCounterID: String
+    public let contextTokenCounterVersion: String
+    public let admittedContributionTokens: Int
+    public let budgetOmittedContributionTokens: Int
+    public let contextCapacityContributions: [LocalProductContextCapacityContribution]
     public let executionBinding: LocalProductConversationExecutionBinding?
+    public let routeTransitionReviewDigest: String
     public let bindingDigest: String
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case segmentID = "segment_id"
         case profileID = "profile_id"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
         case contextMode = "context_mode"
         case contextCapsuleDigest = "context_capsule_digest"
         case disclosureReceiptDigest = "disclosure_receipt_digest"
         case disclosedContextCount = "disclosed_context_count"
         case omittedContextCount = "omitted_context_count"
+        case contextTokenBudget = "context_token_budget"
+        case contextTokenCount = "context_token_count"
+        case contextCapacityStatus = "context_capacity_status"
+        case contextWindowTokens = "context_window_tokens"
+        case reservedOutputTokens = "reserved_output_tokens"
+        case adapterToolOverheadTokens = "adapter_tool_overhead_tokens"
+        case admittedInputBudgetTokens = "admitted_input_budget_tokens"
+        case contextTokenCounterID = "context_token_counter_id"
+        case contextTokenCounterVersion = "context_token_counter_version"
+        case admittedContributionTokens = "admitted_contribution_tokens"
+        case budgetOmittedContributionTokens = "budget_omitted_contribution_tokens"
+        case contextCapacityContributions = "context_capacity_contributions"
         case executionBinding = "execution_binding"
+        case routeTransitionReviewDigest = "route_transition_review_digest"
         case bindingDigest = "binding_digest"
     }
 
@@ -1969,24 +2184,63 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
         disclosureReceiptDigest: String = "",
         disclosedContextCount: Int = 0,
         omittedContextCount: Int = 0,
+        contextTokenBudget: Int = 0,
+        contextTokenCount: Int = 0,
+        contextCapacityStatus: LocalProductContextCapacityStatus? = nil,
+        contextWindowTokens: Int = 0,
+        reservedOutputTokens: Int = 0,
+        adapterToolOverheadTokens: Int = 0,
+        admittedInputBudgetTokens: Int = 0,
+        contextTokenCounterID: String = "",
+        contextTokenCounterVersion: String = "",
+        admittedContributionTokens: Int = 0,
+        budgetOmittedContributionTokens: Int = 0,
+        contextCapacityContributions: [LocalProductContextCapacityContribution] = [],
         executionBinding: LocalProductConversationExecutionBinding? = nil,
-        bindingDigest: String
+        routeTransitionReviewDigest: String = "",
+        bindingDigest: String,
+        modelID: String = "",
+        reasoningEffort: String = ""
     ) {
         self.segmentID = segmentID
         self.profileID = profileID
+        self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
         self.contextMode = contextMode
         self.contextCapsuleDigest = contextCapsuleDigest
         self.disclosureReceiptDigest = disclosureReceiptDigest
         self.disclosedContextCount = disclosedContextCount
         self.omittedContextCount = omittedContextCount
+        self.contextTokenBudget = contextTokenBudget
+        self.contextTokenCount = contextTokenCount
+        self.contextCapacityStatus = contextCapacityStatus
+        self.contextWindowTokens = contextWindowTokens
+        self.reservedOutputTokens = reservedOutputTokens
+        self.adapterToolOverheadTokens = adapterToolOverheadTokens
+        self.admittedInputBudgetTokens = admittedInputBudgetTokens
+        self.contextTokenCounterID = contextTokenCounterID
+        self.contextTokenCounterVersion = contextTokenCounterVersion
+        self.admittedContributionTokens = admittedContributionTokens
+        self.budgetOmittedContributionTokens = budgetOmittedContributionTokens
+        self.contextCapacityContributions = contextCapacityContributions
         self.executionBinding = executionBinding
+        self.routeTransitionReviewDigest = routeTransitionReviewDigest
         self.bindingDigest = bindingDigest
     }
 
     public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue)).union(["created_at"])
+        )
         let values = try decoder.container(keyedBy: CodingKeys.self)
         segmentID = try values.decode(String.self, forKey: .segmentID)
         profileID = try values.decode(String.self, forKey: .profileID)
+        modelID = try values.decodeIfPresent(String.self, forKey: .modelID) ?? ""
+        reasoningEffort = try values.decodeIfPresent(
+            String.self,
+            forKey: .reasoningEffort
+        ) ?? ""
         contextMode = try values.decode(
             LocalProductConversationContextMode.self,
             forKey: .contextMode
@@ -2007,27 +2261,108 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
             Int.self,
             forKey: .omittedContextCount
         ) ?? 0
+        contextTokenBudget = try values.decodeIfPresent(
+            Int.self,
+            forKey: .contextTokenBudget
+        ) ?? 0
+        contextTokenCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .contextTokenCount
+        ) ?? 0
+        contextCapacityStatus = values.contains(.contextCapacityStatus)
+            ? try values.decode(
+                LocalProductContextCapacityStatus.self,
+                forKey: .contextCapacityStatus
+            ) : nil
+        contextWindowTokens = values.contains(.contextWindowTokens)
+            ? try values.decode(Int.self, forKey: .contextWindowTokens) : 0
+        reservedOutputTokens = values.contains(.reservedOutputTokens)
+            ? try values.decode(Int.self, forKey: .reservedOutputTokens) : 0
+        adapterToolOverheadTokens = values.contains(.adapterToolOverheadTokens)
+            ? try values.decode(Int.self, forKey: .adapterToolOverheadTokens) : 0
+        admittedInputBudgetTokens = values.contains(.admittedInputBudgetTokens)
+            ? try values.decode(Int.self, forKey: .admittedInputBudgetTokens) : 0
+        contextTokenCounterID = values.contains(.contextTokenCounterID)
+            ? try values.decode(String.self, forKey: .contextTokenCounterID) : ""
+        contextTokenCounterVersion = values.contains(.contextTokenCounterVersion)
+            ? try values.decode(String.self, forKey: .contextTokenCounterVersion) : ""
+        admittedContributionTokens = values.contains(.admittedContributionTokens)
+            ? try values.decode(Int.self, forKey: .admittedContributionTokens) : 0
+        budgetOmittedContributionTokens = values.contains(.budgetOmittedContributionTokens)
+            ? try values.decode(Int.self, forKey: .budgetOmittedContributionTokens) : 0
+        contextCapacityContributions = values.contains(.contextCapacityContributions)
+            ? try values.decode(
+                [LocalProductContextCapacityContribution].self,
+                forKey: .contextCapacityContributions
+            ) : []
         executionBinding = try values.decodeIfPresent(
             LocalProductConversationExecutionBinding.self,
             forKey: .executionBinding
         )
+        routeTransitionReviewDigest = try values.decodeIfPresent(
+            String.self,
+            forKey: .routeTransitionReviewDigest
+        ) ?? ""
         bindingDigest = try values.decode(String.self, forKey: .bindingDigest)
         guard validConversationDisclosure(
             disclosureReceiptDigest,
             disclosed: disclosedContextCount,
-            omitted: omittedContextCount
+            omitted: omittedContextCount,
+            tokenBudget: contextTokenBudget,
+            tokenCount: contextTokenCount
+        ), validConversationContextCapacity(
+            status: contextCapacityStatus,
+            hasAnyField: Self.capacityFields.contains { values.contains($0) },
+            hasRequiredFields: contextCapacityStatus.map { status in
+                let required: [CodingKeys] = [
+                    .contextCapacityStatus, .admittedInputBudgetTokens,
+                    .contextTokenCounterID, .contextTokenCounterVersion,
+                    .admittedContributionTokens, .contextCapacityContributions,
+                ] + (status == .unavailable ? [] : [.contextWindowTokens])
+                return required.allSatisfy { values.contains($0) }
+            } ?? false,
+            windowFieldPresent: values.contains(.contextWindowTokens),
+            windowTokens: contextWindowTokens,
+            reservedOutputTokens: reservedOutputTokens,
+            adapterToolOverheadTokens: adapterToolOverheadTokens,
+            admittedInputBudgetTokens: admittedInputBudgetTokens,
+            tokenCounterID: contextTokenCounterID,
+            tokenCounterVersion: contextTokenCounterVersion,
+            admittedContributionTokens: admittedContributionTokens,
+            budgetOmittedContributionTokens: budgetOmittedContributionTokens,
+            contributions: contextCapacityContributions,
+            policyBudget: contextTokenBudget,
+            tokenCount: contextTokenCount,
+            disclosedCount: disclosedContextCount,
+            omittedCount: omittedContextCount
+        ), routeTransitionReviewDigest.isEmpty || (
+            routeTransitionReviewDigest.utf8.count == 64 &&
+            routeTransitionReviewDigest.utf8.allSatisfy {
+                ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+            }
         ) else {
             throw LocalProductClientError.invalidResponse
         }
     }
+
+    private static let capacityFields: [CodingKeys] = [
+        .contextCapacityStatus, .contextWindowTokens, .reservedOutputTokens,
+        .adapterToolOverheadTokens, .admittedInputBudgetTokens,
+        .contextTokenCounterID, .contextTokenCounterVersion,
+        .admittedContributionTokens, .budgetOmittedContributionTokens,
+        .contextCapacityContributions,
+    ]
 }
 
 public struct LocalProductConversationExecutionBinding:
     Codable, Equatable, Sendable
 {
     public let schemaVersion: Int
+    public let harnessAdapter: String
     public let providerID: String
     public let providerAccountID: String
+    public let credentialRevision: Int64
+    public let modelID: String
     public let providerAccountPolicyVersion: Int
     public let providerAccountPolicyRevision: Int64
     public let providerAccountPolicyDigest: String
@@ -2037,8 +2372,11 @@ public struct LocalProductConversationExecutionBinding:
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion = "schema_version"
+        case harnessAdapter = "harness_adapter"
         case providerID = "provider_id"
         case providerAccountID = "provider_account_id"
+        case credentialRevision = "credential_revision"
+        case modelID = "model_id"
         case providerAccountPolicyVersion = "provider_account_policy_version"
         case providerAccountPolicyRevision = "provider_account_policy_revision"
         case providerAccountPolicyDigest = "provider_account_policy_digest"
@@ -2049,8 +2387,11 @@ public struct LocalProductConversationExecutionBinding:
 
     public init(
         schemaVersion: Int = 3,
+        harnessAdapter: String = "",
         providerID: String,
         providerAccountID: String = "",
+        credentialRevision: Int64 = 0,
+        modelID: String = "",
         providerAccountPolicyVersion: Int = 0,
         providerAccountPolicyRevision: Int64 = 0,
         providerAccountPolicyDigest: String = "",
@@ -2059,8 +2400,11 @@ public struct LocalProductConversationExecutionBinding:
         dataRegion: String = ""
     ) {
         self.schemaVersion = schemaVersion
+        self.harnessAdapter = harnessAdapter
         self.providerID = providerID
         self.providerAccountID = providerAccountID
+        self.credentialRevision = credentialRevision
+        self.modelID = modelID
         self.providerAccountPolicyVersion = providerAccountPolicyVersion
         self.providerAccountPolicyRevision = providerAccountPolicyRevision
         self.providerAccountPolicyDigest = providerAccountPolicyDigest
@@ -2076,9 +2420,18 @@ public struct LocalProductConversationExecutionBinding:
         )
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        harnessAdapter = try values.decodeIfPresent(
+            String.self, forKey: .harnessAdapter
+        ) ?? ""
         providerID = try values.decode(String.self, forKey: .providerID)
         providerAccountID = try values.decodeIfPresent(
             String.self, forKey: .providerAccountID
+        ) ?? ""
+        credentialRevision = try values.decodeIfPresent(
+            Int64.self, forKey: .credentialRevision
+        ) ?? 0
+        modelID = try values.decodeIfPresent(
+            String.self, forKey: .modelID
         ) ?? ""
         providerAccountPolicyVersion = try values.decodeIfPresent(
             Int.self, forKey: .providerAccountPolicyVersion
@@ -2104,16 +2457,170 @@ public struct LocalProductConversationExecutionBinding:
     }
 }
 
+public struct LocalProductTrustBoundaryAcknowledgement: Encodable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let sourceSegmentID: String
+    public let sourceBindingDigest: String
+    public let targetProfileID: String
+    public let targetExecutionBinding: LocalProductConversationExecutionBinding
+    public let targetReasoningEffort: String
+    public let contextMode: LocalProductConversationContextMode
+    public let acknowledged: Bool
+    public let reviewDigest: String
+
+    public init(
+        schemaVersion: Int = 3,
+        sourceSegmentID: String,
+        sourceBindingDigest: String,
+        targetProfileID: String,
+        targetExecutionBinding: LocalProductConversationExecutionBinding,
+        targetReasoningEffort: String = "",
+        contextMode: LocalProductConversationContextMode,
+        acknowledged: Bool,
+        reviewDigest: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.sourceSegmentID = sourceSegmentID
+        self.sourceBindingDigest = sourceBindingDigest
+        self.targetProfileID = targetProfileID
+        self.targetExecutionBinding = targetExecutionBinding
+        self.targetReasoningEffort = targetReasoningEffort
+        self.contextMode = contextMode
+        self.acknowledged = acknowledged
+        self.reviewDigest = reviewDigest
+    }
+
+    public static func reviewed(
+        threadID: String,
+        sourceSegment: LocalProductConversationSegment,
+        targetProfileID: String,
+        targetExecutionBinding: LocalProductConversationExecutionBinding,
+        targetReasoningEffort: String,
+        contextMode: LocalProductConversationContextMode
+    ) -> Self? {
+        guard LocalIPCClient.validIdentifier(threadID),
+              LocalIPCClient.validIdentifier(sourceSegment.segmentID),
+              sourceSegment.bindingDigest.utf8.count == 64,
+              sourceSegment.bindingDigest.utf8.allSatisfy({
+                  ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+              }),
+              let source = sourceSegment.executionBinding,
+              validConversationExecutionBinding(source),
+              LocalIPCClient.validIdentifier(targetProfileID),
+              validConversationExecutionBinding(targetExecutionBinding)
+        else { return nil }
+        let changes = trustBoundaryChanges(
+            source: source,
+            target: targetExecutionBinding
+        )
+        var body = Data("loom/route-transition-review/v3\n".utf8)
+        var values = [
+            threadID,
+            sourceSegment.segmentID,
+            sourceSegment.bindingDigest,
+            targetProfileID,
+            String(targetExecutionBinding.schemaVersion),
+            targetExecutionBinding.harnessAdapter,
+            targetExecutionBinding.providerID,
+            targetExecutionBinding.providerAccountID,
+            String(targetExecutionBinding.credentialRevision),
+            targetExecutionBinding.modelID,
+            String(targetExecutionBinding.providerAccountPolicyVersion),
+            String(targetExecutionBinding.providerAccountPolicyRevision),
+            targetExecutionBinding.providerAccountPolicyDigest,
+            targetExecutionBinding.trustDomain,
+            targetExecutionBinding.retentionMode,
+            targetExecutionBinding.dataRegion,
+            targetReasoningEffort,
+            contextMode.rawValue,
+            String(changes.count),
+        ]
+        for change in changes {
+            values.append(contentsOf: change)
+        }
+        values.append("true")
+        for value in values {
+            body.append(Data("\(value.utf8.count):\(value)\n".utf8))
+        }
+        let reviewDigest = SHA256.hash(data: body)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return Self(
+            sourceSegmentID: sourceSegment.segmentID,
+            sourceBindingDigest: sourceSegment.bindingDigest,
+            targetProfileID: targetProfileID,
+            targetExecutionBinding: targetExecutionBinding,
+            targetReasoningEffort: targetReasoningEffort,
+            contextMode: contextMode,
+            acknowledged: true,
+            reviewDigest: reviewDigest
+        )
+    }
+
+    private static func trustBoundaryChanges(
+        source: LocalProductConversationExecutionBinding,
+        target: LocalProductConversationExecutionBinding
+    ) -> [[String]] {
+        let reviewsAllDimensions =
+            !conversationExecutionBindingHasCompletePolicyAuthority(source) ||
+            !conversationExecutionBindingHasCompletePolicyAuthority(target)
+        return [
+            [
+                "trust_domain",
+                normalizedConversationTrustAuthorityValue(source.trustDomain),
+                normalizedConversationTrustAuthorityValue(target.trustDomain),
+            ],
+            [
+                "retention_mode",
+                normalizedConversationTrustAuthorityValue(source.retentionMode),
+                normalizedConversationTrustAuthorityValue(target.retentionMode),
+            ],
+            [
+                "data_region",
+                normalizedConversationTrustAuthorityValue(source.dataRegion),
+                normalizedConversationTrustAuthorityValue(target.dataRegion),
+            ],
+        ].filter { reviewsAllDimensions || $0[1] != $0[2] }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case sourceSegmentID = "source_segment_id"
+        case sourceBindingDigest = "source_binding_digest"
+        case targetProfileID = "target_profile_id"
+        case targetExecutionBinding = "target_execution_binding"
+        case targetReasoningEffort = "target_reasoning_effort"
+        case contextMode = "context_mode"
+        case acknowledged
+        case reviewDigest = "review_digest"
+    }
+}
+
 public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
     public let attemptID: String
     public let segmentID: String
     public let profileID: String
+    public let modelID: String?
+    public let reasoningEffort: String?
     public let contextMode: LocalProductConversationContextMode
     public let contextCapsuleDigest: String
     public let disclosureReceiptDigest: String
     public let disclosedContextCount: Int
     public let omittedContextCount: Int
+    public let contextTokenBudget: Int
+    public let contextTokenCount: Int
+    public let contextCapacityStatus: LocalProductContextCapacityStatus?
+    public let contextWindowTokens: Int
+    public let reservedOutputTokens: Int
+    public let adapterToolOverheadTokens: Int
+    public let admittedInputBudgetTokens: Int
+    public let contextTokenCounterID: String
+    public let contextTokenCounterVersion: String
+    public let admittedContributionTokens: Int
+    public let budgetOmittedContributionTokens: Int
+    public let contextCapacityContributions: [LocalProductContextCapacityContribution]
     public let executionBinding: LocalProductConversationExecutionBinding?
+    public let routeTransitionReviewDigest: String
     public let bindingDigest: String
     public let incidentID: String
     public let status: String
@@ -2125,16 +2632,31 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
 	public let retryAfterSeconds: Int64
     public let retryable: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case attemptID = "attempt_id"
         case segmentID = "segment_id"
         case profileID = "profile_id"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
         case contextMode = "context_mode"
         case contextCapsuleDigest = "context_capsule_digest"
         case disclosureReceiptDigest = "disclosure_receipt_digest"
         case disclosedContextCount = "disclosed_context_count"
         case omittedContextCount = "omitted_context_count"
+        case contextTokenBudget = "context_token_budget"
+        case contextTokenCount = "context_token_count"
+        case contextCapacityStatus = "context_capacity_status"
+        case contextWindowTokens = "context_window_tokens"
+        case reservedOutputTokens = "reserved_output_tokens"
+        case adapterToolOverheadTokens = "adapter_tool_overhead_tokens"
+        case admittedInputBudgetTokens = "admitted_input_budget_tokens"
+        case contextTokenCounterID = "context_token_counter_id"
+        case contextTokenCounterVersion = "context_token_counter_version"
+        case admittedContributionTokens = "admitted_contribution_tokens"
+        case budgetOmittedContributionTokens = "budget_omitted_contribution_tokens"
+        case contextCapacityContributions = "context_capacity_contributions"
         case executionBinding = "execution_binding"
+        case routeTransitionReviewDigest = "route_transition_review_digest"
         case bindingDigest = "binding_digest"
         case incidentID = "incident_id"
         case status
@@ -2151,12 +2673,27 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         attemptID: String,
         segmentID: String,
         profileID: String,
+        modelID: String? = nil,
+        reasoningEffort: String? = nil,
         contextMode: LocalProductConversationContextMode,
         contextCapsuleDigest: String,
         disclosureReceiptDigest: String = "",
         disclosedContextCount: Int = 0,
         omittedContextCount: Int = 0,
+        contextTokenBudget: Int = 0,
+        contextTokenCount: Int = 0,
+        contextCapacityStatus: LocalProductContextCapacityStatus? = nil,
+        contextWindowTokens: Int = 0,
+        reservedOutputTokens: Int = 0,
+        adapterToolOverheadTokens: Int = 0,
+        admittedInputBudgetTokens: Int = 0,
+        contextTokenCounterID: String = "",
+        contextTokenCounterVersion: String = "",
+        admittedContributionTokens: Int = 0,
+        budgetOmittedContributionTokens: Int = 0,
+        contextCapacityContributions: [LocalProductContextCapacityContribution] = [],
         executionBinding: LocalProductConversationExecutionBinding? = nil,
+        routeTransitionReviewDigest: String = "",
         bindingDigest: String,
         incidentID: String = "",
         status: String,
@@ -2171,12 +2708,27 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         self.attemptID = attemptID
         self.segmentID = segmentID
         self.profileID = profileID
+        self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
         self.contextMode = contextMode
         self.contextCapsuleDigest = contextCapsuleDigest
         self.disclosureReceiptDigest = disclosureReceiptDigest
         self.disclosedContextCount = disclosedContextCount
         self.omittedContextCount = omittedContextCount
+        self.contextTokenBudget = contextTokenBudget
+        self.contextTokenCount = contextTokenCount
+        self.contextCapacityStatus = contextCapacityStatus
+        self.contextWindowTokens = contextWindowTokens
+        self.reservedOutputTokens = reservedOutputTokens
+        self.adapterToolOverheadTokens = adapterToolOverheadTokens
+        self.admittedInputBudgetTokens = admittedInputBudgetTokens
+        self.contextTokenCounterID = contextTokenCounterID
+        self.contextTokenCounterVersion = contextTokenCounterVersion
+        self.admittedContributionTokens = admittedContributionTokens
+        self.budgetOmittedContributionTokens = budgetOmittedContributionTokens
+        self.contextCapacityContributions = contextCapacityContributions
         self.executionBinding = executionBinding
+        self.routeTransitionReviewDigest = routeTransitionReviewDigest
         self.bindingDigest = bindingDigest
         self.incidentID = incidentID
         self.status = status
@@ -2190,10 +2742,18 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue)).union([
+                "started_at", "completed_at",
+            ])
+        )
         let values = try decoder.container(keyedBy: CodingKeys.self)
         attemptID = try values.decode(String.self, forKey: .attemptID)
         segmentID = try values.decode(String.self, forKey: .segmentID)
         profileID = try values.decode(String.self, forKey: .profileID)
+        modelID = try values.decodeIfPresent(String.self, forKey: .modelID)
+        reasoningEffort = try values.decodeIfPresent(String.self, forKey: .reasoningEffort)
         contextMode = try values.decode(
             LocalProductConversationContextMode.self,
             forKey: .contextMode
@@ -2214,10 +2774,48 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
             Int.self,
             forKey: .omittedContextCount
         ) ?? 0
+        contextTokenBudget = try values.decodeIfPresent(
+            Int.self,
+            forKey: .contextTokenBudget
+        ) ?? 0
+        contextTokenCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .contextTokenCount
+        ) ?? 0
+        contextCapacityStatus = values.contains(.contextCapacityStatus)
+            ? try values.decode(
+                LocalProductContextCapacityStatus.self,
+                forKey: .contextCapacityStatus
+            ) : nil
+        contextWindowTokens = values.contains(.contextWindowTokens)
+            ? try values.decode(Int.self, forKey: .contextWindowTokens) : 0
+        reservedOutputTokens = values.contains(.reservedOutputTokens)
+            ? try values.decode(Int.self, forKey: .reservedOutputTokens) : 0
+        adapterToolOverheadTokens = values.contains(.adapterToolOverheadTokens)
+            ? try values.decode(Int.self, forKey: .adapterToolOverheadTokens) : 0
+        admittedInputBudgetTokens = values.contains(.admittedInputBudgetTokens)
+            ? try values.decode(Int.self, forKey: .admittedInputBudgetTokens) : 0
+        contextTokenCounterID = values.contains(.contextTokenCounterID)
+            ? try values.decode(String.self, forKey: .contextTokenCounterID) : ""
+        contextTokenCounterVersion = values.contains(.contextTokenCounterVersion)
+            ? try values.decode(String.self, forKey: .contextTokenCounterVersion) : ""
+        admittedContributionTokens = values.contains(.admittedContributionTokens)
+            ? try values.decode(Int.self, forKey: .admittedContributionTokens) : 0
+        budgetOmittedContributionTokens = values.contains(.budgetOmittedContributionTokens)
+            ? try values.decode(Int.self, forKey: .budgetOmittedContributionTokens) : 0
+        contextCapacityContributions = values.contains(.contextCapacityContributions)
+            ? try values.decode(
+                [LocalProductContextCapacityContribution].self,
+                forKey: .contextCapacityContributions
+            ) : []
         executionBinding = try values.decodeIfPresent(
             LocalProductConversationExecutionBinding.self,
             forKey: .executionBinding
         )
+        routeTransitionReviewDigest = try values.decodeIfPresent(
+            String.self,
+            forKey: .routeTransitionReviewDigest
+        ) ?? ""
         bindingDigest = try values.decode(String.self, forKey: .bindingDigest)
         incidentID = try values.decodeIfPresent(
             String.self,
@@ -2243,10 +2841,43 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         guard validConversationDisclosure(
                 disclosureReceiptDigest,
                 disclosed: disclosedContextCount,
-                omitted: omittedContextCount
+                omitted: omittedContextCount,
+                tokenBudget: contextTokenBudget,
+                tokenCount: contextTokenCount
+              ), validConversationContextCapacity(
+                status: contextCapacityStatus,
+                hasAnyField: Self.capacityFields.contains { values.contains($0) },
+                hasRequiredFields: contextCapacityStatus.map { status in
+                    let required: [CodingKeys] = [
+                        .contextCapacityStatus, .admittedInputBudgetTokens,
+                        .contextTokenCounterID, .contextTokenCounterVersion,
+                        .admittedContributionTokens, .contextCapacityContributions,
+                    ] + (status == .unavailable ? [] : [.contextWindowTokens])
+                    return required.allSatisfy { values.contains($0) }
+                } ?? false,
+                windowFieldPresent: values.contains(.contextWindowTokens),
+                windowTokens: contextWindowTokens,
+                reservedOutputTokens: reservedOutputTokens,
+                adapterToolOverheadTokens: adapterToolOverheadTokens,
+                admittedInputBudgetTokens: admittedInputBudgetTokens,
+                tokenCounterID: contextTokenCounterID,
+                tokenCounterVersion: contextTokenCounterVersion,
+                admittedContributionTokens: admittedContributionTokens,
+                budgetOmittedContributionTokens: budgetOmittedContributionTokens,
+                contributions: contextCapacityContributions,
+                policyBudget: contextTokenBudget,
+                tokenCount: contextTokenCount,
+                disclosedCount: disclosedContextCount,
+                omittedCount: omittedContextCount
+              ),
+              routeTransitionReviewDigest.isEmpty || (
+                routeTransitionReviewDigest.utf8.count == 64 &&
+                routeTransitionReviewDigest.utf8.allSatisfy {
+                  ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+                }
               ),
               incidentID.isEmpty || LocalIPCWire.validRequestID(incidentID),
-              ["dispatching", "succeeded", "failed"].contains(status),
+              ["dispatching", "succeeded", "failed", "cancelled"].contains(status),
 			  Self.validFailure(
 				status: status,
 				code: failureCode,
@@ -2260,6 +2891,14 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
             throw LocalProductClientError.invalidResponse
         }
     }
+
+    private static let capacityFields: [CodingKeys] = [
+        .contextCapacityStatus, .contextWindowTokens, .reservedOutputTokens,
+        .adapterToolOverheadTokens, .admittedInputBudgetTokens,
+        .contextTokenCounterID, .contextTokenCounterVersion,
+        .admittedContributionTokens, .budgetOmittedContributionTokens,
+        .contextCapacityContributions,
+    ]
 
     private static func validFailure(
         status: String,
@@ -2322,32 +2961,136 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
 private func validConversationDisclosure(
     _ receiptDigest: String,
     disclosed: Int,
-    omitted: Int
+    omitted: Int,
+    tokenBudget: Int,
+    tokenCount: Int
 ) -> Bool {
     if receiptDigest.isEmpty {
-        return disclosed == 0 && omitted == 0
+        return disclosed == 0 && omitted == 0 &&
+            tokenBudget == 0 && tokenCount == 0
     }
     let digestIsValid = receiptDigest.utf8.count == 64 &&
         receiptDigest.utf8.allSatisfy { byte in
             (48...57).contains(byte) || (97...102).contains(byte)
         }
-    return digestIsValid && (1...256).contains(disclosed) &&
-        (0...256).contains(omitted)
+    let validTokenProjection = tokenBudget == 0 && tokenCount == 0 ||
+        tokenBudget > 0 && tokenCount > 0 && tokenCount <= tokenBudget
+    return digestIsValid && (1...512).contains(disclosed) &&
+        (0...512).contains(omitted) && disclosed + omitted <= 512 &&
+        validTokenProjection
+}
+
+private func validConversationContextCapacity(
+    status: LocalProductContextCapacityStatus?,
+    hasAnyField: Bool,
+    hasRequiredFields: Bool,
+    windowFieldPresent: Bool,
+    windowTokens: Int,
+    reservedOutputTokens: Int,
+    adapterToolOverheadTokens: Int,
+    admittedInputBudgetTokens: Int,
+    tokenCounterID: String,
+    tokenCounterVersion: String,
+    admittedContributionTokens: Int,
+    budgetOmittedContributionTokens: Int,
+    contributions: [LocalProductContextCapacityContribution],
+    policyBudget: Int,
+    tokenCount: Int,
+    disclosedCount: Int,
+    omittedCount: Int
+) -> Bool {
+    guard hasAnyField else {
+        return status == nil && windowTokens == 0 && reservedOutputTokens == 0 &&
+            adapterToolOverheadTokens == 0 && admittedInputBudgetTokens == 0 &&
+            tokenCounterID.isEmpty && tokenCounterVersion.isEmpty &&
+            admittedContributionTokens == 0 &&
+            budgetOmittedContributionTokens == 0 && contributions.isEmpty
+    }
+    guard let status, hasRequiredFields,
+          (1...10_000_000).contains(policyBudget),
+          (1...policyBudget).contains(admittedInputBudgetTokens),
+          tokenCount > 0 && tokenCount <= admittedInputBudgetTokens,
+          LocalIPCClient.validIdentifier(tokenCounterID),
+          LocalIPCClient.validIdentifier(tokenCounterVersion),
+          !contributions.isEmpty && contributions.count <= 512,
+          admittedContributionTokens == tokenCount,
+          (0...10_000_000).contains(budgetOmittedContributionTokens) else {
+        return false
+    }
+
+    switch status {
+    case .exact, .estimated:
+        guard windowFieldPresent,
+              (1...10_000_000).contains(windowTokens),
+              (0..<windowTokens).contains(reservedOutputTokens),
+              (0..<(windowTokens - reservedOutputTokens))
+                .contains(adapterToolOverheadTokens),
+              admittedInputBudgetTokens == min(
+                policyBudget,
+                windowTokens - reservedOutputTokens - adapterToolOverheadTokens
+              ) else {
+            return false
+        }
+    case .unavailable:
+        guard windowTokens == 0,
+              (0...10_000_000).contains(reservedOutputTokens),
+              (0...10_000_000).contains(adapterToolOverheadTokens),
+              admittedInputBudgetTokens == policyBudget else {
+            return false
+        }
+    }
+
+    var admittedItems = 0
+    var budgetOmittedItems = 0
+    var admittedTokens = 0
+    var budgetOmittedTokens = 0
+    var previousKey: (Int, String)?
+    for contribution in contributions {
+        let key = (contribution.priority, contribution.sourceType)
+        if let previousKey,
+           key.0 < previousKey.0 ||
+            key.0 == previousKey.0 && key.1 <= previousKey.1 {
+            return false
+        }
+        admittedItems += contribution.admittedItemCount
+        budgetOmittedItems += contribution.budgetOmittedItemCount
+        admittedTokens += contribution.admittedTokenCount
+        budgetOmittedTokens += contribution.budgetOmittedTokenCount
+        guard admittedItems + budgetOmittedItems <= 512,
+              admittedTokens <= 10_000_000,
+              budgetOmittedTokens <= 10_000_000 else {
+            return false
+        }
+        previousKey = key
+    }
+    return admittedItems == disclosedCount &&
+        budgetOmittedItems <= omittedCount &&
+        admittedTokens == admittedContributionTokens &&
+        budgetOmittedTokens == budgetOmittedContributionTokens
 }
 
 private func validConversationExecutionBinding(
     _ binding: LocalProductConversationExecutionBinding
 ) -> Bool {
-    guard binding.schemaVersion == 3,
+    guard [3, 4].contains(binding.schemaVersion),
           LocalIPCClient.validIdentifier(binding.providerID) else {
         return false
+    }
+    if binding.schemaVersion == 3 {
+        guard binding.harnessAdapter.isEmpty,
+              binding.credentialRevision == 0,
+              binding.modelID.isEmpty else { return false }
+    } else {
+        guard LocalIPCClient.validIdentifier(binding.harnessAdapter),
+              LocalIPCClient.validModelID(binding.modelID) else { return false }
     }
     let digestIsValid = binding.providerAccountPolicyDigest.utf8.count == 64 &&
         binding.providerAccountPolicyDigest.utf8.allSatisfy { byte in
             (48...57).contains(byte) || (97...102).contains(byte)
         }
     if binding.providerAccountID.isEmpty {
-        return binding.providerAccountPolicyVersion == 0 &&
+        return binding.credentialRevision == 0 &&
+            binding.providerAccountPolicyVersion == 0 &&
             binding.providerAccountPolicyRevision == 0 &&
             binding.providerAccountPolicyDigest.isEmpty &&
             binding.trustDomain.isEmpty && binding.retentionMode.isEmpty &&
@@ -2356,7 +3099,9 @@ private func validConversationExecutionBinding(
     guard LocalIPCClient.validProviderAccountID(
         binding.providerAccountID,
         providerID: binding.providerID
-    ) else { return false }
+    ), binding.schemaVersion != 4 || binding.credentialRevision > 0 else {
+        return false
+    }
     switch binding.providerAccountPolicyVersion {
     case 0:
         return binding.providerAccountPolicyRevision == 0 &&
@@ -2378,6 +3123,25 @@ private func validConversationExecutionBinding(
     default:
         return false
     }
+}
+
+func conversationExecutionBindingHasCompletePolicyAuthority(
+    _ binding: LocalProductConversationExecutionBinding
+) -> Bool {
+    let digestIsValid = binding.providerAccountPolicyDigest.utf8.count == 64 &&
+        binding.providerAccountPolicyDigest.utf8.allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
+    return binding.providerAccountPolicyVersion == 2 &&
+        binding.providerAccountPolicyRevision > 0 &&
+        digestIsValid &&
+        !binding.trustDomain.isEmpty &&
+        !binding.retentionMode.isEmpty &&
+        !binding.dataRegion.isEmpty
+}
+
+func normalizedConversationTrustAuthorityValue(_ value: String) -> String {
+    value.isEmpty ? "unavailable" : value
 }
 
 public struct LocalProductChatAvailabilityFailure: Codable, Equatable, Sendable {
@@ -2535,6 +3299,272 @@ public struct LocalProductChatThreadRequest: Encodable, Sendable {
     }
 }
 
+public struct LocalProductContextDisclosureItem:
+    Codable, Equatable, Sendable
+{
+    public let kind: String
+    public let trust: String
+    public let scope: String
+    public let tokenCount: Int
+    public let omissionReason: String
+    public let retrievable: Bool
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind, trust, scope
+        case tokenCount = "token_count"
+        case omissionReason = "omission_reason"
+        case retrievable
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue))
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(String.self, forKey: .kind)
+        trust = try values.decode(String.self, forKey: .trust)
+        scope = try values.decode(String.self, forKey: .scope)
+        tokenCount = try values.decode(Int.self, forKey: .tokenCount)
+        omissionReason = try values.decodeIfPresent(
+            String.self,
+            forKey: .omissionReason
+        ) ?? ""
+        retrievable = try values.decode(Bool.self, forKey: .retrievable)
+        let kinds: Set<String> = [
+            "conversation_goal", "current_task_state", "system_policy",
+            "accepted_decision", "artifact_reference",
+            "confirmed_user_constraint", "workspace_snapshot",
+            "team_governance_state", "recent_user_turn",
+            "unresolved_question", "untrusted_model_output",
+            "aggregation_source_authority", "dependency_source_authority",
+            "observed_execution_state", "credential_reference",
+        ]
+        guard kinds.contains(kind),
+              ["authoritative", "observed", "untrusted"].contains(trust),
+              [
+                "conversation_shared", "team_shared", "agent_private",
+                "role_restricted", "artifact_scoped", "secret_reference_only",
+              ].contains(scope),
+              (1...1_000_000).contains(tokenCount),
+              ["", "access_denied", "budget_exceeded", "policy_filtered"]
+                .contains(omissionReason),
+              omissionReason.isEmpty ? !retrievable
+                : retrievable == (omissionReason == "budget_exceeded")
+        else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public struct LocalProductContextDisclosure:
+    Codable, Equatable, Sendable
+{
+    public let schemaVersion: Int
+    public let threadID: String
+    public let segmentID: String
+    public let contextCapsuleDigest: String
+    public let disclosureReceiptDigest: String
+    public let contextCapacityStatus: LocalProductContextCapacityStatus?
+    public let contextWindowTokens: Int
+    public let reservedOutputTokens: Int
+    public let adapterToolOverheadTokens: Int
+    public let admittedInputBudgetTokens: Int
+    public let contextTokenCounterID: String
+    public let contextTokenCounterVersion: String
+    public let admittedContributionTokens: Int
+    public let budgetOmittedContributionTokens: Int
+    public let contextCapacityContributions: [LocalProductContextCapacityContribution]
+    public let disclosed: [LocalProductContextDisclosureItem]
+    public let omitted: [LocalProductContextDisclosureItem]
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case threadID = "thread_id"
+        case segmentID = "segment_id"
+        case contextCapsuleDigest = "context_capsule_digest"
+        case disclosureReceiptDigest = "disclosure_receipt_digest"
+        case contextCapacityStatus = "context_capacity_status"
+        case contextWindowTokens = "context_window_tokens"
+        case reservedOutputTokens = "reserved_output_tokens"
+        case adapterToolOverheadTokens = "adapter_tool_overhead_tokens"
+        case admittedInputBudgetTokens = "admitted_input_budget_tokens"
+        case contextTokenCounterID = "context_token_counter_id"
+        case contextTokenCounterVersion = "context_token_counter_version"
+        case admittedContributionTokens = "admitted_contribution_tokens"
+        case budgetOmittedContributionTokens = "budget_omitted_contribution_tokens"
+        case contextCapacityContributions = "context_capacity_contributions"
+        case disclosed, omitted
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue))
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        threadID = try values.decode(String.self, forKey: .threadID)
+        segmentID = try values.decode(String.self, forKey: .segmentID)
+        contextCapsuleDigest = try values.decode(
+            String.self,
+            forKey: .contextCapsuleDigest
+        )
+        disclosureReceiptDigest = try values.decode(
+            String.self,
+            forKey: .disclosureReceiptDigest
+        )
+        contextCapacityStatus = try values.decodeIfPresent(
+            LocalProductContextCapacityStatus.self,
+            forKey: .contextCapacityStatus
+        )
+        contextWindowTokens = try values.decodeIfPresent(
+            Int.self,
+            forKey: .contextWindowTokens
+        ) ?? 0
+        reservedOutputTokens = try values.decodeIfPresent(
+            Int.self,
+            forKey: .reservedOutputTokens
+        ) ?? 0
+        adapterToolOverheadTokens = try values.decodeIfPresent(
+            Int.self,
+            forKey: .adapterToolOverheadTokens
+        ) ?? 0
+        admittedInputBudgetTokens = try values.decodeIfPresent(
+            Int.self,
+            forKey: .admittedInputBudgetTokens
+        ) ?? 0
+        contextTokenCounterID = try values.decodeIfPresent(
+            String.self,
+            forKey: .contextTokenCounterID
+        ) ?? ""
+        contextTokenCounterVersion = try values.decodeIfPresent(
+            String.self,
+            forKey: .contextTokenCounterVersion
+        ) ?? ""
+        admittedContributionTokens = try values.decodeIfPresent(
+            Int.self,
+            forKey: .admittedContributionTokens
+        ) ?? 0
+        budgetOmittedContributionTokens = try values.decodeIfPresent(
+            Int.self,
+            forKey: .budgetOmittedContributionTokens
+        ) ?? 0
+        contextCapacityContributions = try values.decodeIfPresent(
+            [LocalProductContextCapacityContribution].self,
+            forKey: .contextCapacityContributions
+        ) ?? []
+        disclosed = try values.decode(
+            [LocalProductContextDisclosureItem].self,
+            forKey: .disclosed
+        )
+        omitted = try values.decode(
+            [LocalProductContextDisclosureItem].self,
+            forKey: .omitted
+        )
+        let validDigest: (String) -> Bool = { value in
+            value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+                (48...57).contains(byte) || (97...102).contains(byte)
+            }
+        }
+        guard schemaVersion == 1,
+              LocalIPCClient.validIdentifier(threadID),
+              LocalIPCClient.validIdentifier(segmentID),
+              validDigest(contextCapsuleDigest),
+              validDigest(disclosureReceiptDigest),
+              (1...256).contains(disclosed.count),
+              (0...256).contains(omitted.count),
+              disclosed.allSatisfy({ $0.omissionReason.isEmpty }),
+              omitted.allSatisfy({ !$0.omissionReason.isEmpty }),
+              validCapacityProjection(values: values)
+        else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+
+    private func validCapacityProjection(
+        values: KeyedDecodingContainer<CodingKeys>
+    ) -> Bool {
+        let capacityKeys: [CodingKeys] = [
+            .contextCapacityStatus, .contextWindowTokens, .reservedOutputTokens,
+            .adapterToolOverheadTokens, .admittedInputBudgetTokens,
+            .contextTokenCounterID, .contextTokenCounterVersion,
+            .admittedContributionTokens, .budgetOmittedContributionTokens,
+            .contextCapacityContributions,
+        ]
+        guard let status = contextCapacityStatus else {
+            return !capacityKeys.contains(where: { values.contains($0) })
+        }
+        let required: [CodingKeys] = [
+            .contextCapacityStatus, .admittedInputBudgetTokens,
+            .contextTokenCounterID, .contextTokenCounterVersion,
+            .admittedContributionTokens, .contextCapacityContributions,
+        ]
+        let disclosedTokens = disclosed.reduce(0) { $0 + $1.tokenCount }
+        let budgetOmitted = omitted.filter {
+            $0.omissionReason == "budget_exceeded"
+        }
+        let budgetOmittedTokens = budgetOmitted.reduce(0) {
+            $0 + $1.tokenCount
+        }
+        let contributionAdmittedItems = contextCapacityContributions.reduce(0) {
+            $0 + $1.admittedItemCount
+        }
+        let contributionAdmittedTokens = contextCapacityContributions.reduce(0) {
+            $0 + $1.admittedTokenCount
+        }
+        let contributionOmittedItems = contextCapacityContributions.reduce(0) {
+            $0 + $1.budgetOmittedItemCount
+        }
+        let contributionOmittedTokens = contextCapacityContributions.reduce(0) {
+            $0 + $1.budgetOmittedTokenCount
+        }
+        guard required.allSatisfy({ values.contains($0) }),
+              (1...10_000_000).contains(admittedInputBudgetTokens),
+              LocalIPCClient.validIdentifier(contextTokenCounterID),
+              LocalIPCClient.validIdentifier(contextTokenCounterVersion),
+              !contextCapacityContributions.isEmpty,
+              contextCapacityContributions.count <= 512,
+              admittedContributionTokens == disclosedTokens,
+              budgetOmittedContributionTokens == budgetOmittedTokens,
+              contributionAdmittedItems == disclosed.count,
+              contributionAdmittedTokens == admittedContributionTokens,
+              contributionOmittedItems == budgetOmitted.count,
+              contributionOmittedTokens == budgetOmittedContributionTokens
+        else {
+            return false
+        }
+        switch status {
+        case .exact, .estimated:
+            return values.contains(.contextWindowTokens) &&
+                (1...10_000_000).contains(contextWindowTokens) &&
+                reservedOutputTokens >= 0 && reservedOutputTokens < contextWindowTokens &&
+                adapterToolOverheadTokens >= 0 &&
+                adapterToolOverheadTokens < contextWindowTokens - reservedOutputTokens &&
+                admittedInputBudgetTokens <= contextWindowTokens -
+                    reservedOutputTokens - adapterToolOverheadTokens
+        case .unavailable:
+            return contextWindowTokens == 0 && reservedOutputTokens >= 0 &&
+                adapterToolOverheadTokens >= 0
+        }
+    }
+}
+
+public struct LocalProductContextDisclosureRequest: Encodable, Sendable {
+    public let threadID: String
+    public let segmentID: String
+
+    public init(threadID: String, segmentID: String) {
+        self.threadID = threadID
+        self.segmentID = segmentID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case segmentID = "segment_id"
+    }
+}
+
 public struct LocalProductChatMessageRequest: Encodable, Sendable {
     public let threadID: String
     public let content: String
@@ -2543,6 +3573,7 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
     public let reasoningEffort: String
     public let contextMode: LocalProductConversationContextMode?
     public let expectedExecutionBinding: LocalProductConversationExecutionBinding?
+    public let trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?
 
     public init(
         threadID: String,
@@ -2551,7 +3582,8 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
         modelID: String = "",
         reasoningEffort: String = "",
         contextMode: LocalProductConversationContextMode? = nil,
-        expectedExecutionBinding: LocalProductConversationExecutionBinding? = nil
+        expectedExecutionBinding: LocalProductConversationExecutionBinding? = nil,
+        trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement? = nil
     ) {
         self.threadID = threadID
         self.content = content
@@ -2560,6 +3592,7 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
         self.reasoningEffort = reasoningEffort
         self.contextMode = contextMode
         self.expectedExecutionBinding = expectedExecutionBinding
+        self.trustBoundaryAcknowledgement = trustBoundaryAcknowledgement
     }
 
     enum CodingKeys: String, CodingKey {
@@ -2570,6 +3603,7 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
         case reasoningEffort = "reasoning_effort"
         case contextMode = "context_mode"
         case expectedExecutionBinding = "expected_execution_binding"
+        case trustBoundaryAcknowledgement = "trust_boundary_acknowledgement"
     }
 }
 
@@ -2584,6 +3618,12 @@ public enum LocalProductWire {
 
     public static func decodeChatThread(_ data: Data) throws -> LocalProductChatThread {
         try decode(LocalProductChatThread.self, from: data)
+    }
+
+    public static func decodeContextDisclosure(
+        _ data: Data
+    ) throws -> LocalProductContextDisclosure {
+        try decode(LocalProductContextDisclosure.self, from: data)
     }
 
     private static func decode<T: Decodable>(
@@ -2755,9 +3795,9 @@ public func localProductConversationModels(
 ) -> [LocalProductConversationModelOption] {
     switch providerID {
     case "openai":
-        // Grounded in the installed Codex CLI 0.144.1 model catalog
-        // (~/.codex/models_cache.json): per-model reasoning levels plus the
-        // native cc-switch DeepSeek V4 models (none/high).
+        // Explicit models below passed the installed Codex Native live gate.
+        // Third-party runtime aliases stay hidden until current capability
+        // discovery proves that this Codex configuration can execute them.
         return [
             .init(modelID: "codex-default", displayName: "Codex default", reasoningEfforts: []),
             .init(
@@ -2800,16 +3840,6 @@ public func localProductConversationModels(
                 displayName: "Codex Auto Review",
                 reasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
             ),
-            .init(
-                modelID: "deepseek-v4-flash",
-                displayName: "DeepSeek V4 Flash",
-                reasoningEfforts: ["none", "high"]
-            ),
-            .init(
-                modelID: "deepseek-v4-pro",
-                displayName: "DeepSeek V4 Pro",
-                reasoningEfforts: ["none", "high"]
-            ),
         ]
     case "deepseek":
         return [
@@ -2825,12 +3855,12 @@ public func localProductConversationModels(
             ),
             .init(
                 modelID: "deepseek-chat",
-                displayName: "DeepSeek Chat (legacy alias)",
+                displayName: "DeepSeek Chat",
                 reasoningEfforts: []
             ),
             .init(
                 modelID: "deepseek-reasoner",
-                displayName: "DeepSeek Reasoner (legacy alias)",
+                displayName: "DeepSeek Reasoner",
                 reasoningEfforts: []
             ),
         ]
@@ -2873,12 +3903,12 @@ public func localProductConversationModels(
                 reasoningEfforts: ["high", "max"]
             ),
             .init(
-                modelID: "minimax/MiniMax-M2.7",
+                modelID: "minimax-cn/MiniMax-M2.7",
                 displayName: "MiniMax M2.7",
                 reasoningEfforts: []
             ),
             .init(
-                modelID: "minimax/MiniMax-M3",
+                modelID: "minimax-cn/MiniMax-M3",
                 displayName: "MiniMax M3",
                 reasoningEfforts: []
             ),
@@ -2893,9 +3923,9 @@ public func localProductConversationModels(
                 reasoningEfforts: ["high", "max"]
             ),
             .init(
-                modelID: "opencode/deepseek-v4-flash-free",
-                displayName: "DeepSeek V4 Flash (OpenCode)",
-                reasoningEfforts: ["low", "high", "max"]
+                modelID: "opencode/big-pickle",
+                displayName: "Big Pickle (OpenCode)",
+                reasoningEfforts: []
             ),
         ]
     default:

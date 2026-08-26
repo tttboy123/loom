@@ -181,6 +181,8 @@ type productCompatibilityConstruction struct {
 	readFactory             func(context.Context) (productReadRoutes, error)
 	localIPCSlot            *productLocalIPCHandlerSlot
 	localIPCFactory         func(context.Context) (localipc.Handler, error)
+	diagnostics             productOperationalDiagnosticSink
+	profileID               composition.ProfileID
 }
 
 func newProductAssetRouteFactory(

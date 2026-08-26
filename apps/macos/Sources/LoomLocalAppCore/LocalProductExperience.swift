@@ -144,7 +144,7 @@ public struct LocalProductExperience: Equatable, Sendable {
                 state = .offline
                 connection = .init(
                     title: "Local service unavailable",
-                    detail: "Start the Loom service, then try again.",
+                    detail: "Loom reconnects automatically. Try again if this continues.",
                     systemImage: "bolt.slash.fill",
                     offersRefresh: true
                 )

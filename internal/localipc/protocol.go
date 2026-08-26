@@ -292,9 +292,13 @@ func protocolErrorDefinition(code string) (string, bool, bool) {
 		"cursor_conflict":   {"cursor conflict", true},
 		"stream_gap":        {"stream gap", true},
 		"state_unavailable": {"state unavailable", true},
-		"timeout":           {"request timed out", true},
-		"busy":              {"daemon busy", true},
-		"internal":          {"internal error", true},
+		"workspace_publish_failed": {
+			"workspace publication failed",
+			true,
+		},
+		"timeout":  {"request timed out", true},
+		"busy":     {"daemon busy", true},
+		"internal": {"internal error", true},
 	}
 	definition, ok := definitions[code]
 	return definition.message, definition.recoverable, ok
@@ -325,6 +329,8 @@ func validMethod(method string) bool {
 		"agent_input",
 		"snapshot",
 		"timeline_page",
+		"chat_context_disclosure",
+		"chat_response_cancel",
 		"chat_thread",
 		"chat_thread_delete",
 		"chat_message",
@@ -345,6 +351,9 @@ func validMethod(method string) bool {
 		"team_archive",
 		"team_restore",
 		"credential_configure",
+		"credential_import",
+		"provider_endpoint_review_approve",
+		"provider_failure_lab_run",
 		"credential_verify",
 		"credential_replace",
 		"credential_revoke",
@@ -372,7 +381,18 @@ func validMethod(method string) bool {
 		"customer_rule_snapshot",
 		"customer_rule_command",
 		"standing_order_snapshot",
-		"standing_order_command":
+		"standing_order_command",
+		"roundtable_session_create",
+		"roundtable_add_seat",
+		"roundtable_retire_seat",
+		"roundtable_open_round",
+		"roundtable_propose_message",
+		"roundtable_relay_message",
+		"roundtable_ack_message",
+		"roundtable_insert_message",
+		"roundtable_drop_message",
+		"roundtable_conclude",
+		"roundtable_snapshot":
 		return true
 	default:
 		return false

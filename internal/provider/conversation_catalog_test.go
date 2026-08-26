@@ -40,10 +40,15 @@ func TestConversationModelCatalogLayers(t *testing.T) {
 	for _, want := range []string{
 		"codex-default", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 		"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
-		"codex-auto-review", "deepseek-v4-flash", "deepseek-v4-pro",
+		"codex-auto-review",
 	} {
 		if !openAIIndex[want] {
 			t.Fatalf("openai model %q missing: %#v", want, openAIModels)
+		}
+	}
+	for _, unsupported := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
+		if openAIIndex[unsupported] {
+			t.Fatalf("unproven Codex override %q must not be selectable", unsupported)
 		}
 	}
 	// Grounded in the installed Codex CLI 0.144.1 model catalog: each GPT
@@ -66,12 +71,15 @@ func TestConversationModelCatalogLayers(t *testing.T) {
 	}
 	for _, required := range []string{
 		"deepseek/deepseek-chat", "deepseek/deepseek-v4-flash",
-		"deepseek/deepseek-v4-pro", "minimax/MiniMax-M3", "zai/glm-4.5",
-		"opencode/deepseek-v4-flash-free",
+		"deepseek/deepseek-v4-pro", "minimax-cn/MiniMax-M3", "zai/glm-4.5",
+		"opencode/big-pickle",
 	} {
 		if !opencodeModels[required] {
 			t.Fatalf("opencode models missing %q: %#v", required, opencodeModels)
 		}
+	}
+	if opencodeModels["opencode/deepseek-v4-flash-free"] {
+		t.Fatal("retired OpenCode fallback must not remain in the static catalog")
 	}
 	// Reasoning efforts follow the OpenCode CLI 1.18.3 per-model capability:
 	// v4-flash -> low/high/max, v4-pro -> high/max, glm-5.2 -> high/max,

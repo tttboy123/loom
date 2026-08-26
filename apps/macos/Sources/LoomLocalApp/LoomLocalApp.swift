@@ -79,10 +79,22 @@ private struct LoomApplication: App {
                 return outcome
             }
             serviceLogger.notice("starting bundled service fallback")
-            return serviceProcessHost.start() ? .registered : .unavailable
+            guard await serviceProcessHost.start() else {
+                serviceLogger.error("bundled service fallback failed to start")
+                return .unavailable
+            }
+            // The daemon performs recovery (for example resuming interrupted
+            // Missions and their context capsules) before it serves; wait
+            // long enough for that before giving up on first launch.
+            if await serviceProcessHost.waitForDefaultSocket() {
+                serviceLogger.info("bundled service fallback socket available")
+                return .registered
+            }
+            serviceLogger.notice("bundled service fallback socket did not appear")
+            return .registered
         case .requiresApproval, .unavailable:
             serviceLogger.notice("starting foreground bundled service")
-            return serviceProcessHost.start() ? .registered : outcome
+            return await serviceProcessHost.start() ? .registered : outcome
         }
     }
 }

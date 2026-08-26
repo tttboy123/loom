@@ -116,6 +116,10 @@ func (client *AnthropicConversationClient) RespondConfigured(
 	if err != nil {
 		return "", ErrInvalidAnthropicConversation
 	}
+	systemPrompt, messages, err = conversationSystemContext(systemPrompt, messages)
+	if err != nil {
+		return "", ErrInvalidAnthropicConversation
+	}
 	wireMessages := make([]wireMessage, 0, len(messages))
 	totalBytes := 0
 	for _, message := range messages {

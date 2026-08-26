@@ -127,6 +127,7 @@ func TestHarnessProcessesFailClosedWhenSystemPromptCleanupFails(t *testing.T) {
 				ModelID: test.modelID, Prompt: []byte("bounded user request"),
 				SystemPrompt: "bounded private system instructions",
 				Timeout:      time.Minute, MaxOutputBytes: 4096,
+				RequiresCredential: true,
 			}, []byte("private-provider-key"))
 			if !errors.Is(err, ErrHarnessProtocol) {
 				t.Fatalf("RunHarness cleanup error=%v provider=%s", err, test.providerID)
@@ -196,13 +197,20 @@ wait "$child"
 					Prompt:       []byte("bounded user request"),
 					SystemPrompt: "bounded private system instructions",
 					Timeout:      time.Minute, MaxOutputBytes: 4096,
+					RequiresCredential: true,
 				}, []byte("private-provider-key"))
 				answer <- runErr
 			}()
 			pidPath := filepath.Join(tempPath, "harness-child.pid")
 			var pid int
-			deadline := time.Now().Add(3 * time.Second)
+			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
+				select {
+				case runErr := <-answer:
+					cancel()
+					t.Fatalf("Harness exited before child process started: %v", runErr)
+				default:
+				}
 				value, readErr := os.ReadFile(pidPath)
 				if readErr == nil {
 					pid, err = strconv.Atoi(strings.TrimSpace(string(value)))
@@ -271,15 +279,16 @@ func TestClaudeCodeProcessUsesAttemptGatewayWithoutExposingProviderSecret(t *tes
 		t.Fatal(err)
 	}
 	request := HarnessProcessRequest{
-		ExecutablePath: "/opt/loom/bin/claude",
-		WorkspacePath:  "/private/tmp/loom/workspace",
-		HomePath:       "/private/tmp/loom/home",
-		TempPath:       tempPath,
-		ModelID:        ClaudeCodeModelID,
-		Prompt:         []byte("Implement the bounded change"),
-		SystemPrompt:   "Claude-specific Loom system instructions",
-		Timeout:        2 * 60 * 1e9,
-		MaxOutputBytes: 64 << 10,
+		ExecutablePath:     "/opt/loom/bin/claude",
+		WorkspacePath:      "/private/tmp/loom/workspace",
+		HomePath:           "/private/tmp/loom/home",
+		TempPath:           tempPath,
+		ModelID:            ClaudeCodeModelID,
+		Prompt:             []byte("Implement the bounded change"),
+		SystemPrompt:       "Claude-specific Loom system instructions",
+		Timeout:            2 * 60 * 1e9,
+		MaxOutputBytes:     64 << 10,
+		RequiresCredential: true,
 	}
 	result, err := runner.RunHarness(
 		context.Background(),
@@ -361,6 +370,207 @@ func TestClaudeCodeProcessUsesAttemptGatewayWithoutExposingProviderSecret(t *tes
 	}
 }
 
+func TestClaudeCodeProcessUsesNativeAuthenticationWithoutGatewayOrSecret(t *testing.T) {
+	tempPath := t.TempDir()
+	commands := &commandRunnerFixture{result: HarnessCommandResult{
+		Stdout: []byte(`{"type":"result","subtype":"success","is_error":false,"result":"native reply","usage":{"input_tokens":2,"output_tokens":3}}`),
+	}}
+	runner, err := NewClaudeCodeProcessRunner(ClaudeCodeProcessRunnerConfig{
+		Commands: commands,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := HarnessProcessRequest{
+		ExecutablePath: "/opt/loom/bin/claude",
+		WorkspacePath:  "/private/tmp/loom/workspace",
+		HomePath:       "/private/tmp/loom/native-home",
+		TempPath:       tempPath,
+		ModelID:        ClaudeCodeModelID,
+		Prompt:         []byte("Use the signed-in Claude account"),
+		SystemPrompt:   "Claude-specific Loom system instructions",
+		Timeout:        time.Minute,
+		MaxOutputBytes: 4096,
+	}
+	result, err := runner.RunHarness(context.Background(), request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allHarnessBytesZero(request.Prompt) {
+		t.Fatal("Claude Code native Harness prompt remained after process completion")
+	}
+	if commands.runs != 1 || result.Content != "native reply" {
+		t.Fatalf("runs=%d result=%#v", commands.runs, result)
+	}
+	arguments := strings.Join(commands.request.Arguments, "\n")
+	for _, required := range []string{
+		"--permission-mode\ndontAsk",
+		"--disallowedTools\n" + claudeCodeDisallowedNativeTools,
+		"--strict-mcp-config",
+		"--mcp-config\n" + `{"mcpServers":{}}`,
+	} {
+		if !strings.Contains(arguments, required) {
+			t.Fatalf("native arguments missing %q: %s", required, arguments)
+		}
+	}
+	environment := strings.Join(commands.request.Environment, "\n")
+	if !strings.Contains(environment, "HOME=/private/tmp/loom/native-home") ||
+		strings.Contains(environment, "ANTHROPIC_BASE_URL") ||
+		strings.Contains(environment, "ANTHROPIC_API_KEY") ||
+		strings.Contains(environment, "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST") ||
+		strings.Contains(environment, "attempt-token") ||
+		strings.Contains(environment, "private-anthropic-key") {
+		t.Fatalf("unsafe native environment: %s", environment)
+	}
+}
+
+func TestClaudeCodeProcessFreezesNativeConversationSessionArguments(t *testing.T) {
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	for _, test := range []struct {
+		name       string
+		resume     bool
+		wantFlag   string
+		rejectFlag string
+	}{
+		{name: "create", wantFlag: "--session-id", rejectFlag: "--resume"},
+		{name: "resume", resume: true, wantFlag: "--resume", rejectFlag: "--session-id"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commands := &commandRunnerFixture{result: HarnessCommandResult{Stdout: []byte(
+				`{"type":"result","subtype":"success","is_error":false,` +
+					`"session_id":"` + sessionID + `","result":"native session reply",` +
+					`"usage":{"input_tokens":2,"output_tokens":3}}`,
+			)}}
+			runner, err := NewClaudeCodeProcessRunner(
+				ClaudeCodeProcessRunnerConfig{Commands: commands},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := runner.RunHarness(context.Background(), HarnessProcessRequest{
+				ExecutablePath:      "/opt/loom/bin/claude",
+				WorkspacePath:       "/private/tmp/loom/workspace",
+				HomePath:            "/private/tmp/loom/native-home",
+				TempPath:            t.TempDir(),
+				ModelID:             ClaudeCodeModelID,
+				Prompt:              []byte("Use the frozen native session"),
+				SystemPrompt:        "Claude-specific Loom system instructions",
+				Timeout:             time.Minute,
+				MaxOutputBytes:      4096,
+				NativeSessionID:     sessionID,
+				ResumeNativeSession: test.resume,
+			}, nil)
+			if err != nil || result.Content != "native session reply" {
+				t.Fatalf("result=%#v error=%v", result, err)
+			}
+			arguments := commands.request.Arguments
+			if !claudeCodeTestArgumentPair(arguments, test.wantFlag, sessionID) ||
+				claudeCodeTestHasArgument(arguments, test.rejectFlag) ||
+				claudeCodeTestHasArgument(arguments, "--no-session-persistence") {
+				t.Fatalf("session arguments = %#v", arguments)
+			}
+		})
+	}
+
+	commands := &commandRunnerFixture{result: HarnessCommandResult{Stdout: []byte(
+		`{"type":"result","subtype":"success","is_error":false,` +
+			`"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",` +
+			`"result":"wrong session","usage":{"input_tokens":1,"output_tokens":1}}`,
+	)}}
+	runner, err := NewClaudeCodeProcessRunner(
+		ClaudeCodeProcessRunnerConfig{Commands: commands},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.RunHarness(context.Background(), HarnessProcessRequest{
+		ExecutablePath: "/opt/loom/bin/claude", WorkspacePath: "/private/tmp/loom/workspace",
+		HomePath: "/private/tmp/loom/native-home", TempPath: t.TempDir(),
+		ModelID: ClaudeCodeModelID, Prompt: []byte("reject drift"),
+		SystemPrompt: "Claude-specific Loom system instructions",
+		Timeout:      time.Minute, MaxOutputBytes: 4096, NativeSessionID: sessionID,
+	}, nil)
+	if !errors.Is(err, ErrHarnessProtocol) {
+		t.Fatalf("session drift error = %v", err)
+	}
+}
+
+func claudeCodeTestHasArgument(arguments []string, want string) bool {
+	for _, argument := range arguments {
+		if argument == want {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeCodeTestArgumentPair(arguments []string, flag, value string) bool {
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == flag && arguments[index+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestClaudeCodeProcessRejectsCrossModeCredentialInputs(t *testing.T) {
+	validResult := HarnessCommandResult{Stdout: []byte(
+		`{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}`,
+	)}
+	tests := []struct {
+		name     string
+		gateway  AttemptCredentialGateway
+		requires bool
+		secret   []byte
+	}{
+		{
+			name: "native rejects secret", gateway: &attemptGatewayFixture{lease: AttemptGatewayLease{
+				BaseURL: "http://127.0.0.1:43123", Token: "attempt-token",
+			}}, secret: []byte("must-not-cross-modes"),
+		},
+		{
+			name: "brokered rejects empty secret", gateway: &attemptGatewayFixture{lease: AttemptGatewayLease{
+				BaseURL: "http://127.0.0.1:43123", Token: "attempt-token",
+			}}, requires: true,
+		},
+		{name: "brokered rejects missing gateway", requires: true, secret: []byte("provider-secret")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			commands := &commandRunnerFixture{result: validResult}
+			runner, err := NewClaudeCodeProcessRunner(ClaudeCodeProcessRunnerConfig{
+				Gateway: test.gateway, Commands: commands,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt := []byte("bounded")
+			_, err = runner.RunHarness(context.Background(), HarnessProcessRequest{
+				ExecutablePath: "/opt/loom/bin/claude", WorkspacePath: "/private/tmp/workspace",
+				HomePath: "/private/tmp/home", TempPath: t.TempDir(), ModelID: ClaudeCodeModelID,
+				Prompt: prompt, SystemPrompt: "bounded system", Timeout: time.Minute,
+				MaxOutputBytes: 4096, RequiresCredential: test.requires,
+			}, test.secret)
+			if !errors.Is(err, ErrInvalidClaudeCodeAdapter) {
+				t.Fatalf("RunHarness() error = %v", err)
+			}
+			if commands.runs != 0 {
+				t.Fatalf("command runs = %d", commands.runs)
+			}
+			if gateway, ok := test.gateway.(*attemptGatewayFixture); ok && gateway.runs != 0 {
+				t.Fatalf("gateway runs = %d", gateway.runs)
+			}
+			if !allHarnessBytesZero(prompt) {
+				t.Fatal("Claude Code rejected prompt was not zeroed")
+			}
+		})
+	}
+
+	if _, err := NewClaudeCodeProcessRunner(ClaudeCodeProcessRunnerConfig{}); !errors.Is(err, ErrInvalidClaudeCodeAdapter) {
+		t.Fatalf("constructor without Commands error = %v", err)
+	}
+}
+
 func TestClaudeCodeProcessInjectsOnlyAttemptContextMCPLease(t *testing.T) {
 	gateway := &attemptGatewayFixture{lease: AttemptGatewayLease{
 		BaseURL: "http://127.0.0.1:43123", Token: "provider-attempt-token",
@@ -379,6 +589,7 @@ func TestClaudeCodeProcessInjectsOnlyAttemptContextMCPLease(t *testing.T) {
 		MaxOutputBytes: 4096, ContextMCP: HarnessContextMCPLease{
 			URL: "http://127.0.0.1:43130/mcp", Token: strings.Repeat("b", 64),
 		},
+		RequiresCredential: true,
 	}
 	if _, err := runner.RunHarness(context.Background(), request, []byte("provider-secret")); err != nil {
 		t.Fatal(err)
@@ -418,6 +629,7 @@ func TestClaudeCodeProcessInjectsGovernedAttemptMCPTools(t *testing.T) {
 			URL: "http://127.0.0.1:43130/mcp", Token: strings.Repeat("d", 64),
 			ContextEnabled: true, ReadEnabled: true, GrepEnabled: true,
 		},
+		RequiresCredential: true,
 	}
 	if _, err := runner.RunHarness(context.Background(), request, []byte("provider-secret")); err != nil {
 		t.Fatal(err)
@@ -487,7 +699,7 @@ func TestClaudeCodeProcessClassifiesClosedFailures(t *testing.T) {
 				HomePath:       "/private/tmp/loom/home", TempPath: tempPath,
 				ModelID: ClaudeCodeModelID, Prompt: []byte("Fix it"),
 				SystemPrompt: "Claude-specific Loom system instructions", Timeout: 2 * 60 * 1e9,
-				MaxOutputBytes: 64 << 10,
+				MaxOutputBytes: 64 << 10, RequiresCredential: true,
 			}, []byte("private-anthropic-key"))
 			if !errors.Is(err, test.want) {
 				t.Fatalf("RunHarness() error = %v, want %v", err, test.want)

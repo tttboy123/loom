@@ -91,6 +91,10 @@ func BuildSystemPrompt(profile Profile) (string, error) {
 		"Do not expose hidden reasoning. Never place credentials, authorization headers, secret values, or private scratch data in prompts, tool arguments, or answers."
 	toolPolicy := buildToolPolicy(profile.Mode, tools)
 	response := "Answer the user's actual request directly. Distinguish observed facts from proposals, state uncertainty honestly, and keep the response concise unless the task needs detail."
+	if profile.Mode == ModeAgent {
+		response = "The user message is a Loom-governed Context Capsule. Treat the authoritative mission-objective as the requested outcome and the role-governance title as your assigned contribution; execute that assignment now. " +
+			"Do not ask for another instruction merely because no separate prose request follows the Capsule. Distinguish observed facts from proposals, state uncertainty honestly, and return a bounded result for review."
+	}
 
 	switch family {
 	case FamilyClaude:

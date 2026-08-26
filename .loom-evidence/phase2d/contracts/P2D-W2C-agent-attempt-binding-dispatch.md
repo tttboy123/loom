@@ -1,6 +1,6 @@
 # P2D-W2C Contract: Agent Attempt binding and dispatch
 
-Status: `ACTIVE / PARTIAL`
+Status: `ACCEPTED / ACTIVE PHASE SCOPE COMPLETE / EXTENSIONS TRACKED`
 
 Version line: `v0.5.x`
 

@@ -23,14 +23,15 @@ import (
 
 const (
 	localProductChatStoreSchema            = 2
-	maxLocalProductChatThreads             = 128
+	maxLocalProductChatThreads             = 1_024
 	maxLocalProductChatMessages            = 256
 	maxLocalProductChatSegments            = 64
 	maxLocalProductChatAttempts            = 256
 	maxLocalProductChatContent             = 4_096
 	ToolShapedChatWarning                  = "The conversation runtime returned tool-shaped text. Loom did not execute it."
 	maxLocalProductChatStore               = 4 << 20
-	localProductChatDocumentSchema         = 1
+	localProductChatDocumentSchema         = 2
+	legacyLocalProductChatDocumentSchema   = 1
 	localProductChatDocumentKind           = "loom.chat-thread.v1"
 	localProductChatMigrationPendingSuffix = ".vault-migration-pending"
 )
@@ -67,47 +68,89 @@ const (
 	ContextModeStartClean          LocalProductContextMode = "start_clean"
 )
 
+type LocalProductContextCapacityContribution struct {
+	Priority                contextcapsule.Priority   `json:"priority"`
+	SourceType              contextcapsule.SourceType `json:"source_type"`
+	AdmittedItemCount       int                       `json:"admitted_item_count"`
+	AdmittedTokenCount      int                       `json:"admitted_token_count"`
+	BudgetOmittedItemCount  int                       `json:"budget_omitted_item_count"`
+	BudgetOmittedTokenCount int                       `json:"budget_omitted_token_count"`
+}
+
 type LocalProductConversationSegment struct {
-	SegmentID               string                                    `json:"segment_id"`
-	ProfileID               string                                    `json:"profile_id"`
-	ContextMode             LocalProductContextMode                   `json:"context_mode"`
-	ContextCapsuleDigest    string                                    `json:"context_capsule_digest"`
-	DisclosureReceiptDigest string                                    `json:"disclosure_receipt_digest,omitempty"`
-	DisclosedContextCount   int                                       `json:"disclosed_context_count,omitempty"`
-	OmittedContextCount     int                                       `json:"omitted_context_count,omitempty"`
-	ExecutionBinding        *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
-	BindingDigest           string                                    `json:"binding_digest"`
-	CreatedAt               time.Time                                 `json:"created_at"`
+	SegmentID                       string                                    `json:"segment_id"`
+	ProfileID                       string                                    `json:"profile_id"`
+	ModelID                         string                                    `json:"model_id,omitempty"`
+	ReasoningEffort                 string                                    `json:"reasoning_effort,omitempty"`
+	ContextMode                     LocalProductContextMode                   `json:"context_mode"`
+	ContextCapsuleDigest            string                                    `json:"context_capsule_digest"`
+	DisclosureReceiptDigest         string                                    `json:"disclosure_receipt_digest,omitempty"`
+	DisclosedContextCount           int                                       `json:"disclosed_context_count,omitempty"`
+	OmittedContextCount             int                                       `json:"omitted_context_count,omitempty"`
+	ContextTokenBudget              int                                       `json:"context_token_budget,omitempty"`
+	ContextTokenCount               int                                       `json:"context_token_count,omitempty"`
+	ContextCapacityStatus           contextcapsule.CapacityStatus             `json:"context_capacity_status,omitempty"`
+	ContextWindowTokens             int                                       `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens            int                                       `json:"reserved_output_tokens,omitempty"`
+	AdapterToolOverheadTokens       int                                       `json:"adapter_tool_overhead_tokens,omitempty"`
+	AdmittedInputBudgetTokens       int                                       `json:"admitted_input_budget_tokens,omitempty"`
+	ContextTokenCounterID           string                                    `json:"context_token_counter_id,omitempty"`
+	ContextTokenCounterVersion      string                                    `json:"context_token_counter_version,omitempty"`
+	AdmittedContributionTokens      int                                       `json:"admitted_contribution_tokens,omitempty"`
+	BudgetOmittedContributionTokens int                                       `json:"budget_omitted_contribution_tokens,omitempty"`
+	ContextCapacityContributions    []LocalProductContextCapacityContribution `json:"context_capacity_contributions,omitempty"`
+	ExecutionBinding                *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
+	RouteTransitionReviewDigest     string                                    `json:"route_transition_review_digest,omitempty"`
+	BindingDigest                   string                                    `json:"binding_digest"`
+	CreatedAt                       time.Time                                 `json:"created_at"`
 }
 
 type LocalProductConversationAttempt struct {
-	AttemptID               string                                    `json:"attempt_id"`
-	SegmentID               string                                    `json:"segment_id"`
-	ProfileID               string                                    `json:"profile_id"`
-	ContextMode             LocalProductContextMode                   `json:"context_mode"`
-	ContextCapsuleDigest    string                                    `json:"context_capsule_digest"`
-	DisclosureReceiptDigest string                                    `json:"disclosure_receipt_digest,omitempty"`
-	DisclosedContextCount   int                                       `json:"disclosed_context_count,omitempty"`
-	OmittedContextCount     int                                       `json:"omitted_context_count,omitempty"`
-	ExecutionBinding        *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
-	BindingDigest           string                                    `json:"binding_digest"`
-	IncidentID              string                                    `json:"incident_id,omitempty"`
-	Status                  string                                    `json:"status"`
-	FailureCode             string                                    `json:"failure_code"`
-	FailureStage            string                                    `json:"failure_stage,omitempty"`
-	HTTPStatus              int                                       `json:"http_status,omitempty"`
-	ProviderCode            string                                    `json:"provider_code,omitempty"`
-	FailureMessage          string                                    `json:"failure_message,omitempty"`
-	RetryAfterSeconds       int64                                     `json:"retry_after_seconds,omitempty"`
-	Retryable               bool                                      `json:"retryable"`
-	StartedAt               time.Time                                 `json:"started_at"`
-	CompletedAt             time.Time                                 `json:"completed_at"`
+	AttemptID                       string                                    `json:"attempt_id"`
+	SegmentID                       string                                    `json:"segment_id"`
+	ProfileID                       string                                    `json:"profile_id"`
+	ModelID                         string                                    `json:"model_id,omitempty"`
+	ReasoningEffort                 string                                    `json:"reasoning_effort,omitempty"`
+	ContextMode                     LocalProductContextMode                   `json:"context_mode"`
+	ContextCapsuleDigest            string                                    `json:"context_capsule_digest"`
+	DisclosureReceiptDigest         string                                    `json:"disclosure_receipt_digest,omitempty"`
+	DisclosedContextCount           int                                       `json:"disclosed_context_count,omitempty"`
+	OmittedContextCount             int                                       `json:"omitted_context_count,omitempty"`
+	ContextTokenBudget              int                                       `json:"context_token_budget,omitempty"`
+	ContextTokenCount               int                                       `json:"context_token_count,omitempty"`
+	ContextCapacityStatus           contextcapsule.CapacityStatus             `json:"context_capacity_status,omitempty"`
+	ContextWindowTokens             int                                       `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens            int                                       `json:"reserved_output_tokens,omitempty"`
+	AdapterToolOverheadTokens       int                                       `json:"adapter_tool_overhead_tokens,omitempty"`
+	AdmittedInputBudgetTokens       int                                       `json:"admitted_input_budget_tokens,omitempty"`
+	ContextTokenCounterID           string                                    `json:"context_token_counter_id,omitempty"`
+	ContextTokenCounterVersion      string                                    `json:"context_token_counter_version,omitempty"`
+	AdmittedContributionTokens      int                                       `json:"admitted_contribution_tokens,omitempty"`
+	BudgetOmittedContributionTokens int                                       `json:"budget_omitted_contribution_tokens,omitempty"`
+	ContextCapacityContributions    []LocalProductContextCapacityContribution `json:"context_capacity_contributions,omitempty"`
+	ExecutionBinding                *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
+	RouteTransitionReviewDigest     string                                    `json:"route_transition_review_digest,omitempty"`
+	BindingDigest                   string                                    `json:"binding_digest"`
+	IncidentID                      string                                    `json:"incident_id,omitempty"`
+	Status                          string                                    `json:"status"`
+	FailureCode                     string                                    `json:"failure_code"`
+	FailureStage                    string                                    `json:"failure_stage,omitempty"`
+	HTTPStatus                      int                                       `json:"http_status,omitempty"`
+	ProviderCode                    string                                    `json:"provider_code,omitempty"`
+	FailureMessage                  string                                    `json:"failure_message,omitempty"`
+	RetryAfterSeconds               int64                                     `json:"retry_after_seconds,omitempty"`
+	Retryable                       bool                                      `json:"retryable"`
+	StartedAt                       time.Time                                 `json:"started_at"`
+	CompletedAt                     time.Time                                 `json:"completed_at"`
 }
 
 type LocalProductConversationExecutionBinding struct {
 	SchemaVersion                 int    `json:"schema_version"`
+	HarnessAdapter                string `json:"harness_adapter,omitempty"`
 	ProviderID                    string `json:"provider_id"`
 	ProviderAccountID             string `json:"provider_account_id,omitempty"`
+	CredentialRevision            int64  `json:"credential_revision,omitempty"`
+	ModelID                       string `json:"model_id,omitempty"`
 	ProviderAccountPolicyVersion  int    `json:"provider_account_policy_version,omitempty"`
 	ProviderAccountPolicyRevision int64  `json:"provider_account_policy_revision,omitempty"`
 	ProviderAccountPolicyDigest   string `json:"provider_account_policy_digest,omitempty"`
@@ -138,15 +181,270 @@ type LocalProductChatThreadRequest struct {
 	ThreadID string `json:"thread_id"`
 }
 
+type LocalProductChatResponseCancelRequest struct {
+	ThreadID   string `json:"thread_id"`
+	IncidentID string `json:"incident_id"`
+}
+
 type LocalProductChatMessageRequest struct {
-	ThreadID                 string                                    `json:"thread_id"`
-	Content                  string                                    `json:"content"`
-	ProfileID                string                                    `json:"profile_id"`
-	ModelID                  string                                    `json:"model_id,omitempty"`
-	ReasoningEffort          string                                    `json:"reasoning_effort,omitempty"`
-	ContextMode              LocalProductContextMode                   `json:"context_mode"`
-	ExpectedExecutionBinding *LocalProductConversationExecutionBinding `json:"expected_execution_binding,omitempty"`
-	IncidentID               string                                    `json:"-"`
+	ThreadID                     string                                    `json:"thread_id"`
+	Content                      string                                    `json:"content"`
+	ProfileID                    string                                    `json:"profile_id"`
+	ModelID                      string                                    `json:"model_id,omitempty"`
+	ReasoningEffort              string                                    `json:"reasoning_effort,omitempty"`
+	ContextMode                  LocalProductContextMode                   `json:"context_mode"`
+	ExpectedExecutionBinding     *LocalProductConversationExecutionBinding `json:"expected_execution_binding,omitempty"`
+	TrustBoundaryAcknowledgement *LocalProductTrustBoundaryAcknowledgement `json:"trust_boundary_acknowledgement,omitempty"`
+	IncidentID                   string                                    `json:"-"`
+}
+
+type LocalProductTrustBoundaryAcknowledgement struct {
+	SchemaVersion         int                                      `json:"schema_version"`
+	SourceSegmentID       string                                   `json:"source_segment_id"`
+	SourceBindingDigest   string                                   `json:"source_binding_digest"`
+	TargetProfileID       string                                   `json:"target_profile_id"`
+	TargetBinding         LocalProductConversationExecutionBinding `json:"target_execution_binding"`
+	TargetReasoningEffort string                                   `json:"target_reasoning_effort"`
+	ContextMode           LocalProductContextMode                  `json:"context_mode"`
+	Acknowledged          bool                                     `json:"acknowledged"`
+	ReviewDigest          string                                   `json:"review_digest"`
+}
+
+func NewLocalProductConversationTrustBoundaryAcknowledgement(
+	threadID string,
+	source LocalProductConversationSegment,
+	targetProfileID string,
+	target LocalProductConversationExecutionBinding,
+	targetReasoningEffort string,
+	mode LocalProductContextMode,
+) (LocalProductTrustBoundaryAcknowledgement, error) {
+	if !validLocalProductChatID(threadID) || !validLocalProductChatID(source.SegmentID) ||
+		!validLocalProductChatID(targetProfileID) ||
+		source.ExecutionBinding == nil || !validLocalProductDigest(source.BindingDigest) ||
+		!validLocalProductConversationExecutionBinding(target) ||
+		!validLocalProductRouteSelection(targetReasoningEffort, 64) ||
+		!validLocalProductContextMode(mode) {
+		return LocalProductTrustBoundaryAcknowledgement{}, ErrInvalidLocalProductChatRequest
+	}
+	review := LocalProductTrustBoundaryAcknowledgement{
+		SchemaVersion: 3, SourceSegmentID: source.SegmentID,
+		SourceBindingDigest: source.BindingDigest, TargetProfileID: targetProfileID,
+		TargetBinding:         target,
+		TargetReasoningEffort: targetReasoningEffort,
+		ContextMode:           mode, Acknowledged: true,
+	}
+	review.ReviewDigest = localProductTrustBoundaryReviewDigest(
+		threadID, source, targetProfileID, target, targetReasoningEffort, mode,
+	)
+	if !validLocalProductDigest(review.ReviewDigest) {
+		return LocalProductTrustBoundaryAcknowledgement{}, ErrInvalidLocalProductChatRequest
+	}
+	return review, nil
+}
+
+func localProductTrustBoundaryChanged(
+	source,
+	target *LocalProductConversationExecutionBinding,
+) bool {
+	if target == nil {
+		return false
+	}
+	return len(localProductTrustBoundaryChanges(source, target)) != 0
+}
+
+func localProductTrustBoundaryChanges(
+	source,
+	target *LocalProductConversationExecutionBinding,
+) [][3]string {
+	if target == nil {
+		return nil
+	}
+	incomplete := !localProductCompleteTrustPolicy(source) ||
+		!localProductCompleteTrustPolicy(target)
+	value := func(candidate *LocalProductConversationExecutionBinding, field string) string {
+		if candidate == nil {
+			return "unavailable"
+		}
+		var result string
+		switch field {
+		case "trust_domain":
+			result = candidate.TrustDomain
+		case "retention_mode":
+			result = candidate.RetentionMode
+		case "data_region":
+			result = candidate.DataRegion
+		}
+		if result == "" {
+			return "unavailable"
+		}
+		return result
+	}
+	changes := make([][3]string, 0, 3)
+	for _, field := range []string{"trust_domain", "retention_mode", "data_region"} {
+		from, to := value(source, field), value(target, field)
+		if incomplete || from != to {
+			changes = append(changes, [3]string{field, from, to})
+		}
+	}
+	return changes
+}
+
+func localProductCompleteTrustPolicy(binding *LocalProductConversationExecutionBinding) bool {
+	return binding != nil && binding.ProviderAccountPolicyVersion == 2 &&
+		binding.ProviderAccountPolicyRevision > 0 &&
+		validLocalProductDigest(binding.ProviderAccountPolicyDigest) &&
+		binding.TrustDomain != "" && binding.RetentionMode != "" && binding.DataRegion != ""
+}
+
+func localProductTrustBoundaryReviewDigest(
+	threadID string,
+	source LocalProductConversationSegment,
+	targetProfileID string,
+	target LocalProductConversationExecutionBinding,
+	targetReasoningEffort string,
+	mode LocalProductContextMode,
+) string {
+	if source.ExecutionBinding == nil {
+		return ""
+	}
+	var body bytes.Buffer
+	body.WriteString("loom/route-transition-review/v3\n")
+	values := []string{
+		threadID,
+		source.SegmentID,
+		source.BindingDigest,
+		targetProfileID,
+		strconv.Itoa(target.SchemaVersion),
+		target.HarnessAdapter,
+		target.ProviderID,
+		target.ProviderAccountID,
+		strconv.FormatInt(target.CredentialRevision, 10),
+		target.ModelID,
+		strconv.Itoa(target.ProviderAccountPolicyVersion),
+		strconv.FormatInt(target.ProviderAccountPolicyRevision, 10),
+		target.ProviderAccountPolicyDigest,
+		target.TrustDomain,
+		target.RetentionMode,
+		target.DataRegion,
+		targetReasoningEffort,
+		string(mode),
+	}
+	changed := localProductTrustBoundaryChanges(source.ExecutionBinding, &target)
+	values = append(values, strconv.Itoa(len(changed)))
+	for _, change := range changed {
+		values = append(values, change[0], change[1], change[2])
+	}
+	values = append(values, "true")
+	for _, value := range values {
+		body.WriteString(strconv.Itoa(len([]byte(value))))
+		body.WriteByte(':')
+		body.WriteString(value)
+		body.WriteByte('\n')
+	}
+	digest := sha256.Sum256(body.Bytes())
+	return fmt.Sprintf("%x", digest)
+}
+
+func legacyLocalProductTrustBoundaryReviewDigestV2(
+	threadID string,
+	source LocalProductConversationSegment,
+	target LocalProductConversationExecutionBinding,
+	targetReasoningEffort string,
+	mode LocalProductContextMode,
+) string {
+	if source.ExecutionBinding == nil {
+		return ""
+	}
+	var body bytes.Buffer
+	body.WriteString("loom/route-transition-review/v2\n")
+	values := []string{
+		threadID, source.SegmentID, source.BindingDigest,
+		strconv.Itoa(target.SchemaVersion), target.HarnessAdapter, target.ProviderID,
+		target.ProviderAccountID, strconv.FormatInt(target.CredentialRevision, 10),
+		target.ModelID, strconv.Itoa(target.ProviderAccountPolicyVersion),
+		strconv.FormatInt(target.ProviderAccountPolicyRevision, 10),
+		target.ProviderAccountPolicyDigest, target.TrustDomain, target.RetentionMode,
+		target.DataRegion, targetReasoningEffort, string(mode),
+	}
+	changes := [][3]string{
+		{"trust_domain", source.ExecutionBinding.TrustDomain, target.TrustDomain},
+		{"retention_mode", source.ExecutionBinding.RetentionMode, target.RetentionMode},
+		{"data_region", source.ExecutionBinding.DataRegion, target.DataRegion},
+	}
+	changed := make([][3]string, 0, len(changes))
+	for _, change := range changes {
+		if change[1] != change[2] {
+			changed = append(changed, change)
+		}
+	}
+	values = append(values, strconv.Itoa(len(changed)))
+	for _, change := range changed {
+		values = append(values, change[0], change[1], change[2])
+	}
+	values = append(values, "true")
+	for _, value := range values {
+		body.WriteString(strconv.Itoa(len([]byte(value))))
+		body.WriteByte(':')
+		body.WriteString(value)
+		body.WriteByte('\n')
+	}
+	digest := sha256.Sum256(body.Bytes())
+	return fmt.Sprintf("%x", digest)
+}
+
+func legacyLocalProductTrustBoundaryReviewDigestV1(
+	threadID string,
+	source LocalProductConversationSegment,
+	target LocalProductConversationExecutionBinding,
+	mode LocalProductContextMode,
+) string {
+	if source.ExecutionBinding == nil {
+		return ""
+	}
+	var body bytes.Buffer
+	body.WriteString("loom/route-transition-review/v1\n")
+	values := []string{
+		threadID,
+		source.SegmentID,
+		source.BindingDigest,
+		strconv.Itoa(target.SchemaVersion),
+		target.HarnessAdapter,
+		target.ProviderID,
+		target.ProviderAccountID,
+		strconv.FormatInt(target.CredentialRevision, 10),
+		target.ModelID,
+		strconv.Itoa(target.ProviderAccountPolicyVersion),
+		strconv.FormatInt(target.ProviderAccountPolicyRevision, 10),
+		target.ProviderAccountPolicyDigest,
+		target.TrustDomain,
+		target.RetentionMode,
+		target.DataRegion,
+		string(mode),
+	}
+	changes := [][3]string{
+		{"trust_domain", source.ExecutionBinding.TrustDomain, target.TrustDomain},
+		{"retention_mode", source.ExecutionBinding.RetentionMode, target.RetentionMode},
+		{"data_region", source.ExecutionBinding.DataRegion, target.DataRegion},
+	}
+	changed := make([][3]string, 0, len(changes))
+	for _, change := range changes {
+		if change[1] != change[2] {
+			changed = append(changed, change)
+		}
+	}
+	values = append(values, strconv.Itoa(len(changed)))
+	for _, change := range changed {
+		values = append(values, change[0], change[1], change[2])
+	}
+	values = append(values, "true")
+	for _, value := range values {
+		body.WriteString(strconv.Itoa(len([]byte(value))))
+		body.WriteByte(':')
+		body.WriteString(value)
+		body.WriteByte('\n')
+	}
+	digest := sha256.Sum256(body.Bytes())
+	return fmt.Sprintf("%x", digest)
 }
 
 type LocalProductConversationDispatchFailureInfo struct {
@@ -244,19 +542,40 @@ func LocalProductConversationDispatchFailureDetails(
 }
 
 type LocalProductConversationRequest struct {
-	ThreadID                string
-	ProfileID               string
-	ModelID                 string
-	ReasoningEffort         string
-	SegmentID               string
-	ContextMode             LocalProductContextMode
-	ContextCapsuleDigest    string
-	DisclosureReceiptDigest string
-	DisclosedContextCount   int
-	OmittedContextCount     int
-	ExecutionBinding        *LocalProductConversationExecutionBinding
-	BindingDigest           string
-	Messages                []LocalProductChatMessage
+	ThreadID                        string
+	AttemptID                       string
+	IncidentID                      string
+	ProfileID                       string
+	ModelID                         string
+	ReasoningEffort                 string
+	SegmentID                       string
+	ContextMode                     LocalProductContextMode
+	ContextCapsuleDigest            string
+	SegmentContextCapsuleDigest     string
+	DisclosureReceiptDigest         string
+	DisclosedContextCount           int
+	OmittedContextCount             int
+	ContextTokenBudget              int
+	ContextTokenCount               int
+	ContextCapacityStatus           contextcapsule.CapacityStatus
+	ContextWindowTokens             int
+	ReservedOutputTokens            int
+	AdapterToolOverheadTokens       int
+	AdmittedInputBudgetTokens       int
+	ContextTokenCounterID           string
+	ContextTokenCounterVersion      string
+	AdmittedContributionTokens      int
+	BudgetOmittedContributionTokens int
+	ContextCapacityContributions    []LocalProductContextCapacityContribution
+	ExecutionBinding                *LocalProductConversationExecutionBinding
+	RouteTransitionReviewDigest     string
+	SegmentBindingDigest            string
+	BindingDigest                   string
+	// ContextPrompt is the policy-bound Context Capsule projection for the
+	// target adapter. It is model-visible but is not a user message and is
+	// never persisted in the transcript or Journal.
+	ContextPrompt string
+	Messages      []LocalProductChatMessage
 }
 
 type LocalProductConversationResponse struct {
@@ -286,9 +605,14 @@ type LocalProductConversationResponder interface {
 	Respond(context.Context, LocalProductConversationRequest) (LocalProductConversationResponse, error)
 }
 
+type LocalProductConversationResponseCanceller interface {
+	CancelChatResponse(context.Context, LocalProductChatResponseCancelRequest) error
+}
+
 type LocalProductConversationBindingResolver interface {
 	ResolveConversationExecutionBinding(
 		context.Context,
+		string,
 		string,
 	) (LocalProductConversationExecutionBinding, error)
 }
@@ -299,7 +623,17 @@ type LocalProductConversationContextTargetResolver interface {
 		string,
 		string,
 		string,
+		string,
 	) (contextcapsule.Target, error)
+}
+
+// LocalProductConversationContextCapacityResolver supplies the frozen capacity
+// authority required by every production Conversation Context Capsule.
+type LocalProductConversationContextCapacityResolver interface {
+	ResolveConversationContextCapacity(
+		context.Context,
+		contextcapsule.Target,
+	) (contextcapsule.CapacityAuthority, contextcapsule.TokenCounter, error)
 }
 
 type LocalProductConversationContextCapsuleStore interface {
@@ -313,6 +647,58 @@ type LocalProductConversationContextCapsuleStore interface {
 		contextcapsule.AuthorityRecord,
 	) error
 	DeleteContextConversation(context.Context, string) error
+}
+
+type LocalProductConversationContextCapsuleInspectorStore interface {
+	ListRoleContextCapsuleAuthorities(
+		context.Context,
+		string,
+	) ([]contextcapsule.AuthorityRecord, error)
+	ReadRoleContextCapsule(
+		context.Context,
+		contextcapsule.AuthorityRecord,
+	) (contextcapsule.RoleContextCapsule, []byte, error)
+}
+
+type LocalProductChatContextDisclosureRequest struct {
+	ThreadID  string `json:"thread_id"`
+	SegmentID string `json:"segment_id"`
+}
+
+type LocalProductChatContextDisclosureItem struct {
+	Kind           string `json:"kind"`
+	Trust          string `json:"trust"`
+	Scope          string `json:"scope"`
+	TokenCount     int    `json:"token_count"`
+	OmissionReason string `json:"omission_reason"`
+	Retrievable    bool   `json:"retrievable"`
+}
+
+type LocalProductChatContextDisclosure struct {
+	SchemaVersion                   int                                       `json:"schema_version"`
+	ThreadID                        string                                    `json:"thread_id"`
+	SegmentID                       string                                    `json:"segment_id"`
+	ContextCapsuleDigest            string                                    `json:"context_capsule_digest"`
+	DisclosureReceiptDigest         string                                    `json:"disclosure_receipt_digest"`
+	ContextCapacityStatus           contextcapsule.CapacityStatus             `json:"context_capacity_status,omitempty"`
+	ContextWindowTokens             int                                       `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens            int                                       `json:"reserved_output_tokens,omitempty"`
+	AdapterToolOverheadTokens       int                                       `json:"adapter_tool_overhead_tokens,omitempty"`
+	AdmittedInputBudgetTokens       int                                       `json:"admitted_input_budget_tokens,omitempty"`
+	ContextTokenCounterID           string                                    `json:"context_token_counter_id,omitempty"`
+	ContextTokenCounterVersion      string                                    `json:"context_token_counter_version,omitempty"`
+	AdmittedContributionTokens      int                                       `json:"admitted_contribution_tokens,omitempty"`
+	BudgetOmittedContributionTokens int                                       `json:"budget_omitted_contribution_tokens,omitempty"`
+	ContextCapacityContributions    []LocalProductContextCapacityContribution `json:"context_capacity_contributions,omitempty"`
+	Disclosed                       []LocalProductChatContextDisclosureItem   `json:"disclosed"`
+	Omitted                         []LocalProductChatContextDisclosureItem   `json:"omitted"`
+}
+
+type LocalProductChatContextDisclosureInspector interface {
+	InspectChatContextDisclosure(
+		context.Context,
+		LocalProductChatContextDisclosureRequest,
+	) (LocalProductChatContextDisclosure, error)
 }
 
 type LocalProductConversationScopeRequest struct {
@@ -341,11 +727,13 @@ type LocalProductConversationScopeManager interface {
 
 type LocalProductChatAPI struct {
 	mu                   sync.Mutex
-	sendMu               sync.Mutex
+	threadLockMu         sync.Mutex
+	threadLocks          map[string]*localProductChatThreadLock
 	threads              map[string]*LocalProductChatThread
 	now                  func() time.Time
 	storePath            string
 	documents            LocalProductChatDocumentStore
+	documentRevisionGaps map[string]int64
 	responder            LocalProductConversationResponder
 	bindingResolver      LocalProductConversationBindingResolver
 	contextTarget        LocalProductConversationContextTargetResolver
@@ -357,11 +745,19 @@ type LocalProductChatAPI struct {
 	unavailable          bool
 }
 
+type localProductChatThreadLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 func (api *LocalProductChatAPI) SetConversationContextCapsuleRuntime(
 	resolver LocalProductConversationContextTargetResolver,
 	store LocalProductConversationContextCapsuleStore,
 ) error {
 	if api == nil || resolver == nil || store == nil {
+		return ErrInvalidLocalProductChatRequest
+	}
+	if _, ok := resolver.(LocalProductConversationContextCapacityResolver); !ok {
 		return ErrInvalidLocalProductChatRequest
 	}
 	api.mu.Lock()
@@ -411,6 +807,7 @@ type localProductChatStore struct {
 
 type localProductChatThreadDocument struct {
 	SchemaVersion int                    `json:"schema_version"`
+	Revision      int64                  `json:"revision,omitempty"`
 	Thread        LocalProductChatThread `json:"thread"`
 }
 
@@ -419,8 +816,34 @@ func NewLocalProductChatAPI(now func() time.Time) *LocalProductChatAPI {
 		now = time.Now
 	}
 	return &LocalProductChatAPI{
-		threads: make(map[string]*LocalProductChatThread),
-		now:     now,
+		threadLocks:          make(map[string]*localProductChatThreadLock),
+		threads:              make(map[string]*LocalProductChatThread),
+		documentRevisionGaps: make(map[string]int64),
+		now:                  now,
+	}
+}
+
+// lockThread serializes mutation of one visible Conversation without making
+// unrelated Conversations wait for its Provider response.
+func (api *LocalProductChatAPI) lockThread(threadID string) func() {
+	api.threadLockMu.Lock()
+	lock := api.threadLocks[threadID]
+	if lock == nil {
+		lock = &localProductChatThreadLock{}
+		api.threadLocks[threadID] = lock
+	}
+	lock.refs++
+	api.threadLockMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		api.threadLockMu.Lock()
+		lock.refs--
+		if lock.refs == 0 && api.threadLocks[threadID] == lock {
+			delete(api.threadLocks, threadID)
+		}
+		api.threadLockMu.Unlock()
 	}
 }
 
@@ -521,6 +944,149 @@ func (api *LocalProductChatAPI) ChatThread(
 	return *cloneChatThread(thread), nil
 }
 
+func (api *LocalProductChatAPI) InspectChatContextDisclosure(
+	ctx context.Context,
+	request LocalProductChatContextDisclosureRequest,
+) (LocalProductChatContextDisclosure, error) {
+	if api == nil || ctx == nil || ctx.Err() != nil ||
+		!validLocalProductChatID(request.ThreadID) ||
+		!validLocalProductChatID(request.SegmentID) {
+		return LocalProductChatContextDisclosure{}, ErrInvalidLocalProductChatRequest
+	}
+	thread, err := api.ChatThread(ctx, request.ThreadID)
+	if err != nil || validateStoredChatThread(thread) != nil {
+		return LocalProductChatContextDisclosure{}, errors.Join(
+			ErrLocalProductChatUnavailable, err,
+		)
+	}
+	var segment *LocalProductConversationSegment
+	for index := range thread.Segments {
+		if thread.Segments[index].SegmentID == request.SegmentID {
+			copy := thread.Segments[index]
+			segment = &copy
+			break
+		}
+	}
+	if segment == nil {
+		return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+	}
+
+	api.mu.Lock()
+	store, ok := api.contextCapsules.(LocalProductConversationContextCapsuleInspectorStore)
+	api.mu.Unlock()
+	if !ok || store == nil {
+		return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+	}
+	authorities, err := store.ListRoleContextCapsuleAuthorities(ctx, thread.ThreadID)
+	if err != nil {
+		return LocalProductChatContextDisclosure{}, errors.Join(
+			ErrLocalProductChatUnavailable, err,
+		)
+	}
+	var authority contextcapsule.AuthorityRecord
+	matches := 0
+	for _, candidate := range authorities {
+		validated, validateErr := contextcapsule.ValidateAuthorityRecord(candidate)
+		if validateErr != nil {
+			return LocalProductChatContextDisclosure{}, errors.Join(
+				ErrLocalProductChatUnavailable, validateErr,
+			)
+		}
+		if validated.ConversationID == thread.ThreadID &&
+			validated.RoleID == segment.SegmentID &&
+			validated.CapsuleDigest == segment.ContextCapsuleDigest &&
+			validated.DisclosureReceiptDigest == segment.DisclosureReceiptDigest {
+			authority = validated
+			matches++
+		}
+	}
+	if matches != 1 {
+		return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+	}
+	capsule, dispatchPayload, err := store.ReadRoleContextCapsule(ctx, authority)
+	defer clearLocalProductChatBytes(dispatchPayload)
+	if err != nil || !capsule.Valid() || capsule.AuthorityRecord() != authority ||
+		capsule.Digest() != segment.ContextCapsuleDigest ||
+		capsule.DisclosureReceiptDigest() != segment.DisclosureReceiptDigest {
+		return LocalProductChatContextDisclosure{}, errors.Join(
+			ErrLocalProductChatUnavailable, err,
+		)
+	}
+	disclosed := capsule.Disclosed()
+	defer clearLocalProductDisclosedItems(disclosed)
+	omitted := capsule.Omitted()
+	if len(disclosed) != segment.DisclosedContextCount ||
+		len(omitted) != segment.OmittedContextCount ||
+		capsule.TokenCount() != segment.ContextTokenCount ||
+		authority.TokenBudget != segment.ContextTokenBudget ||
+		!localProductContextCapacityMatchesCapsule(
+			conversationContextDisclosureFromSegment(*segment), capsule,
+		) {
+		return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+	}
+	result := LocalProductChatContextDisclosure{
+		SchemaVersion: 1, ThreadID: thread.ThreadID, SegmentID: segment.SegmentID,
+		ContextCapsuleDigest:            segment.ContextCapsuleDigest,
+		DisclosureReceiptDigest:         segment.DisclosureReceiptDigest,
+		ContextCapacityStatus:           segment.ContextCapacityStatus,
+		ContextWindowTokens:             segment.ContextWindowTokens,
+		ReservedOutputTokens:            segment.ReservedOutputTokens,
+		AdapterToolOverheadTokens:       segment.AdapterToolOverheadTokens,
+		AdmittedInputBudgetTokens:       segment.AdmittedInputBudgetTokens,
+		ContextTokenCounterID:           segment.ContextTokenCounterID,
+		ContextTokenCounterVersion:      segment.ContextTokenCounterVersion,
+		AdmittedContributionTokens:      segment.AdmittedContributionTokens,
+		BudgetOmittedContributionTokens: segment.BudgetOmittedContributionTokens,
+		ContextCapacityContributions: cloneLocalProductContextCapacityContributions(
+			segment.ContextCapacityContributions,
+		),
+		Disclosed: make([]LocalProductChatContextDisclosureItem, 0, len(disclosed)),
+		Omitted:   make([]LocalProductChatContextDisclosureItem, 0, len(omitted)),
+	}
+	for _, item := range disclosed {
+		result.Disclosed = append(
+			result.Disclosed,
+			localProductChatContextDisclosureItem(
+				item.Kind, item.Trust, item.Scope, item.TokenCount, "", false,
+			),
+		)
+	}
+	for _, item := range omitted {
+		retrievable := capsule.IsRetrievable(item.ItemID)
+		if retrievable != (item.Reason == contextcapsule.OmissionBudgetExceeded) {
+			return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+		}
+		result.Omitted = append(
+			result.Omitted,
+			localProductChatContextDisclosureItem(
+				item.Kind, item.Trust, item.Scope, item.TokenCount,
+				item.Reason, retrievable,
+			),
+		)
+	}
+	return result, nil
+}
+
+func localProductChatContextDisclosureItem(
+	kind contextcapsule.ItemKind,
+	trust contextcapsule.TrustClass,
+	scope contextcapsule.Scope,
+	tokenCount int,
+	reason contextcapsule.OmissionReason,
+	retrievable bool,
+) LocalProductChatContextDisclosureItem {
+	return LocalProductChatContextDisclosureItem{
+		Kind: string(kind), Trust: string(trust), Scope: string(scope),
+		TokenCount: tokenCount, OmissionReason: string(reason), Retrievable: retrievable,
+	}
+}
+
+func clearLocalProductDisclosedItems(items []contextcapsule.DisclosedItem) {
+	for index := range items {
+		clearLocalProductChatBytes(items[index].Content)
+	}
+}
+
 func (api *LocalProductChatAPI) SendMessage(
 	ctx context.Context,
 	req LocalProductChatMessageRequest,
@@ -546,8 +1112,8 @@ func (api *LocalProductChatAPI) SendMessage(
 		return LocalProductChatThread{}, ErrLocalProductChatUnavailable
 	}
 
-	api.sendMu.Lock()
-	defer api.sendMu.Unlock()
+	unlockThread := api.lockThread(req.ThreadID)
+	defer unlockThread()
 
 	api.mu.Lock()
 	thread, threadExisted := api.threads[req.ThreadID]
@@ -579,7 +1145,7 @@ func (api *LocalProductChatAPI) SendMessage(
 	var resolvedBinding *LocalProductConversationExecutionBinding
 	if api.bindingResolver != nil {
 		binding, resolveErr := api.bindingResolver.ResolveConversationExecutionBinding(
-			ctx, targetProfileID,
+			ctx, targetProfileID, strings.TrimSpace(req.ModelID),
 		)
 		if resolveErr != nil || !validLocalProductConversationExecutionBinding(binding) {
 			api.mu.Unlock()
@@ -607,12 +1173,23 @@ func (api *LocalProductChatAPI) SendMessage(
 			thread.Segments[len(thread.Segments)-1].ExecutionBinding,
 			resolvedBinding,
 		)
-	if api.bindingResolver != nil && (switchingProfile || bindingChanged) &&
+	modelID := strings.TrimSpace(req.ModelID)
+	if modelID == "" && resolvedBinding != nil {
+		modelID = resolvedBinding.ModelID
+	}
+	reasoningEffort := strings.TrimSpace(req.ReasoningEffort)
+	modelChanged := len(thread.Segments) > 0 &&
+		thread.Segments[len(thread.Segments)-1].ModelID != modelID
+	reasoningChanged := len(thread.Segments) > 0 &&
+		thread.Segments[len(thread.Segments)-1].ReasoningEffort != reasoningEffort
+	if api.bindingResolver != nil &&
+		(switchingProfile || bindingChanged || modelChanged || reasoningChanged) &&
 		req.ExpectedExecutionBinding == nil {
 		api.mu.Unlock()
 		return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
 	}
-	if (switchingProfile || bindingChanged) && req.ContextMode == "" {
+	if (switchingProfile || bindingChanged || modelChanged || reasoningChanged) &&
+		req.ContextMode == "" {
 		api.mu.Unlock()
 		return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
 	}
@@ -621,7 +1198,39 @@ func (api *LocalProductChatAPI) SendMessage(
 
 	segmentMode := ContextModeContinueWithContext
 	newSegment := len(thread.Segments) == 0 || switchingProfile ||
-		bindingUpgrade || bindingChanged
+		bindingUpgrade || bindingChanged || modelChanged || reasoningChanged
+	var routeTransitionReviewDigest string
+	if len(source.Segments) == 0 {
+		if req.TrustBoundaryAcknowledgement != nil {
+			api.mu.Unlock()
+			return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
+		}
+	} else {
+		sourceSegment := source.Segments[len(source.Segments)-1]
+		reviewRequired := newSegment && api.bindingResolver != nil
+		if reviewRequired {
+			if sourceSegment.ExecutionBinding == nil || resolvedBinding == nil {
+				api.mu.Unlock()
+				return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
+			}
+			if req.TrustBoundaryAcknowledgement == nil {
+				api.mu.Unlock()
+				return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
+			}
+			want, reviewErr := NewLocalProductConversationTrustBoundaryAcknowledgement(
+				req.ThreadID, sourceSegment, targetProfileID, *resolvedBinding,
+				reasoningEffort, req.ContextMode,
+			)
+			if reviewErr != nil || *req.TrustBoundaryAcknowledgement != want {
+				api.mu.Unlock()
+				return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
+			}
+			routeTransitionReviewDigest = want.ReviewDigest
+		} else if req.TrustBoundaryAcknowledgement != nil {
+			api.mu.Unlock()
+			return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
+		}
+	}
 	if newSegment {
 		segmentMode = req.ContextMode
 		if segmentMode == "" {
@@ -637,11 +1246,14 @@ func (api *LocalProductChatAPI) SendMessage(
 		}
 		thread.ProfileID = targetProfileID
 		thread.Segments = append(thread.Segments, LocalProductConversationSegment{
-			SegmentID:        fmt.Sprintf("segment-%d", len(thread.Segments)+1),
-			ProfileID:        targetProfileID,
-			ContextMode:      segmentMode,
-			ExecutionBinding: resolvedBinding,
-			CreatedAt:        api.now().UTC(),
+			SegmentID:                   fmt.Sprintf("segment-%d", len(thread.Segments)+1),
+			ProfileID:                   targetProfileID,
+			ModelID:                     modelID,
+			ReasoningEffort:             reasoningEffort,
+			ContextMode:                 segmentMode,
+			ExecutionBinding:            resolvedBinding,
+			RouteTransitionReviewDigest: routeTransitionReviewDigest,
+			CreatedAt:                   api.now().UTC(),
 		})
 	}
 	segment := &thread.Segments[len(thread.Segments)-1]
@@ -664,10 +1276,12 @@ func (api *LocalProductChatAPI) SendMessage(
 		source, dispatchMessages, segmentMode, segment.SegmentID, targetProfileID,
 	)
 	var storedCapsuleAuthority contextcapsule.AuthorityRecord
+	var contextPrompt string
 	if api.contextTarget != nil && api.contextCapsules != nil &&
 		!isExplicitAgentTrigger(content) {
-		capsule, payload, messages, capsuleErr := api.buildConversationContextCapsule(
+		capsule, payload, prompt, messages, capsuleErr := api.buildConversationContextCapsule(
 			ctx, source, userMessage, segmentMode, segment.SegmentID, targetProfileID,
+			segment.ModelID,
 		)
 		if capsuleErr != nil {
 			api.rollbackChatThread(req.ThreadID, source, threadExisted)
@@ -677,13 +1291,22 @@ func (api *LocalProductChatAPI) SendMessage(
 				errors.Join(ErrLocalProductChatUnavailable, capsuleErr),
 			)
 		}
+		contextPrompt = prompt
 		dispatchMessages = messages
 		record := capsule.AuthorityRecord()
 		disclosure = conversationContextDisclosureRecord{
-			CapsuleDigest:  capsule.Digest(),
-			ReceiptDigest:  capsule.DisclosureReceiptDigest(),
-			DisclosedCount: record.DisclosedCount,
-			OmittedCount:   record.OmittedCount,
+			CapsuleDigest:      capsule.Digest(),
+			ReceiptDigest:      capsule.DisclosureReceiptDigest(),
+			DisclosedCount:     record.DisclosedCount,
+			OmittedCount:       record.OmittedCount,
+			ContextTokenBudget: record.TokenBudget,
+			ContextTokenCount:  record.TokenCount,
+		}
+		if projection, ok := capsule.CapacityProjection(); ok {
+			applyConversationContextCapacityRecord(
+				&disclosure,
+				conversationContextCapacityRecord(projection),
+			)
 		}
 		if storeErr := api.contextCapsules.PutRoleContextCapsule(
 			ctx, capsule, payload,
@@ -697,18 +1320,24 @@ func (api *LocalProductChatAPI) SendMessage(
 		}
 		storedCapsuleAuthority = record
 	}
-	bindingDigest := conversationExecutionBindingDigest(
+	bindingDigest := conversationExecutionBindingDigestWithRouteReview(
 		segment.SegmentID,
 		targetProfileID,
+		segment.ModelID,
+		segment.ReasoningEffort,
 		segmentMode,
 		disclosure,
 		segment.ExecutionBinding,
+		segment.RouteTransitionReviewDigest,
 	)
 	if newSegment {
 		segment.ContextCapsuleDigest = disclosure.CapsuleDigest
 		segment.DisclosureReceiptDigest = disclosure.ReceiptDigest
 		segment.DisclosedContextCount = disclosure.DisclosedCount
 		segment.OmittedContextCount = disclosure.OmittedCount
+		segment.ContextTokenBudget = disclosure.ContextTokenBudget
+		segment.ContextTokenCount = disclosure.ContextTokenCount
+		applyConversationContextCapacityToSegment(segment, disclosure)
 		segment.BindingDigest = bindingDigest
 	}
 	segmentID := segment.SegmentID
@@ -738,19 +1367,36 @@ func (api *LocalProductChatAPI) SendMessage(
 			)
 		}
 		thread.Attempts = append(thread.Attempts, LocalProductConversationAttempt{
-			AttemptID:               fmt.Sprintf("attempt-%d", len(thread.Attempts)+1),
-			SegmentID:               segmentID,
-			ProfileID:               targetProfileID,
-			ContextMode:             segmentMode,
-			ContextCapsuleDigest:    disclosure.CapsuleDigest,
-			DisclosureReceiptDigest: disclosure.ReceiptDigest,
-			DisclosedContextCount:   disclosure.DisclosedCount,
-			OmittedContextCount:     disclosure.OmittedCount,
-			ExecutionBinding:        cloneLocalProductConversationExecutionBinding(segment.ExecutionBinding),
-			BindingDigest:           bindingDigest,
-			IncidentID:              req.IncidentID,
-			Status:                  "dispatching",
-			StartedAt:               api.now().UTC(),
+			AttemptID:                       fmt.Sprintf("attempt-%d", len(thread.Attempts)+1),
+			SegmentID:                       segmentID,
+			ProfileID:                       targetProfileID,
+			ModelID:                         modelID,
+			ReasoningEffort:                 reasoningEffort,
+			ContextMode:                     segmentMode,
+			ContextCapsuleDigest:            disclosure.CapsuleDigest,
+			DisclosureReceiptDigest:         disclosure.ReceiptDigest,
+			DisclosedContextCount:           disclosure.DisclosedCount,
+			OmittedContextCount:             disclosure.OmittedCount,
+			ContextTokenBudget:              disclosure.ContextTokenBudget,
+			ContextTokenCount:               disclosure.ContextTokenCount,
+			ContextCapacityStatus:           disclosure.ContextCapacityStatus,
+			ContextWindowTokens:             disclosure.ContextWindowTokens,
+			ReservedOutputTokens:            disclosure.ReservedOutputTokens,
+			AdapterToolOverheadTokens:       disclosure.AdapterToolOverheadTokens,
+			AdmittedInputBudgetTokens:       disclosure.AdmittedInputBudgetTokens,
+			ContextTokenCounterID:           disclosure.ContextTokenCounterID,
+			ContextTokenCounterVersion:      disclosure.ContextTokenCounterVersion,
+			AdmittedContributionTokens:      disclosure.AdmittedContributionTokens,
+			BudgetOmittedContributionTokens: disclosure.BudgetOmittedContributionTokens,
+			ContextCapacityContributions: cloneLocalProductContextCapacityContributions(
+				disclosure.ContextCapacityContributions,
+			),
+			ExecutionBinding:            cloneLocalProductConversationExecutionBinding(segment.ExecutionBinding),
+			RouteTransitionReviewDigest: segment.RouteTransitionReviewDigest,
+			BindingDigest:               bindingDigest,
+			IncidentID:                  req.IncidentID,
+			Status:                      "dispatching",
+			StartedAt:                   api.now().UTC(),
 		})
 		attemptID = thread.Attempts[len(thread.Attempts)-1].AttemptID
 	}
@@ -822,21 +1468,47 @@ func (api *LocalProductChatAPI) SendMessage(
 		tentative = true
 	} else if attemptID != "" {
 		response, err := api.responder.Respond(dispatchContext, LocalProductConversationRequest{
-			ThreadID:                req.ThreadID,
-			ProfileID:               targetProfileID,
-			ModelID:                 strings.TrimSpace(req.ModelID),
-			ReasoningEffort:         strings.TrimSpace(req.ReasoningEffort),
-			SegmentID:               segmentID,
-			ContextMode:             segmentMode,
-			ContextCapsuleDigest:    disclosure.CapsuleDigest,
-			DisclosureReceiptDigest: disclosure.ReceiptDigest,
-			DisclosedContextCount:   disclosure.DisclosedCount,
-			OmittedContextCount:     disclosure.OmittedCount,
-			ExecutionBinding:        cloneLocalProductConversationExecutionBinding(segment.ExecutionBinding),
-			BindingDigest:           bindingDigest,
-			Messages:                append([]LocalProductChatMessage(nil), dispatchMessages...),
+			ThreadID:                        req.ThreadID,
+			AttemptID:                       attemptID,
+			IncidentID:                      req.IncidentID,
+			ProfileID:                       targetProfileID,
+			ModelID:                         modelID,
+			ReasoningEffort:                 reasoningEffort,
+			SegmentID:                       segmentID,
+			ContextMode:                     segmentMode,
+			ContextCapsuleDigest:            disclosure.CapsuleDigest,
+			SegmentContextCapsuleDigest:     segment.ContextCapsuleDigest,
+			DisclosureReceiptDigest:         disclosure.ReceiptDigest,
+			DisclosedContextCount:           disclosure.DisclosedCount,
+			OmittedContextCount:             disclosure.OmittedCount,
+			ContextTokenBudget:              disclosure.ContextTokenBudget,
+			ContextTokenCount:               disclosure.ContextTokenCount,
+			ContextCapacityStatus:           disclosure.ContextCapacityStatus,
+			ContextWindowTokens:             disclosure.ContextWindowTokens,
+			ReservedOutputTokens:            disclosure.ReservedOutputTokens,
+			AdapterToolOverheadTokens:       disclosure.AdapterToolOverheadTokens,
+			AdmittedInputBudgetTokens:       disclosure.AdmittedInputBudgetTokens,
+			ContextTokenCounterID:           disclosure.ContextTokenCounterID,
+			ContextTokenCounterVersion:      disclosure.ContextTokenCounterVersion,
+			AdmittedContributionTokens:      disclosure.AdmittedContributionTokens,
+			BudgetOmittedContributionTokens: disclosure.BudgetOmittedContributionTokens,
+			ContextCapacityContributions: cloneLocalProductContextCapacityContributions(
+				disclosure.ContextCapacityContributions,
+			),
+			ExecutionBinding:            cloneLocalProductConversationExecutionBinding(segment.ExecutionBinding),
+			RouteTransitionReviewDigest: segment.RouteTransitionReviewDigest,
+			SegmentBindingDigest:        segment.BindingDigest,
+			BindingDigest:               bindingDigest,
+			ContextPrompt:               contextPrompt,
+			Messages:                    append([]LocalProductChatMessage(nil), dispatchMessages...),
 		})
-		if err != nil {
+		if errors.Is(err, context.Canceled) {
+			reply = "Response stopped."
+			attemptStatus = "cancelled"
+			attemptFailureCode = ""
+			attemptFailureStage = ""
+			attemptRetryable = false
+		} else if err != nil {
 			reply = "The conversation runtime is unavailable. Check Runtime & Providers, then try again."
 			attemptStatus = "failed"
 			attemptFailureCode = "conversation_unavailable"
@@ -905,9 +1577,28 @@ func (api *LocalProductChatAPI) SendMessage(
 	return *cloneChatThread(thread), nil
 }
 
-// DeleteThread removes a conversation thread from the in-memory store and the
-// encrypted document store, releasing its thread slot so new conversations can
-// start. Context capsules and their conversation key are removed with it.
+// CancelChatResponse requests cancellation of one exact in-flight response.
+// It deliberately does not acquire the per-thread mutation lock because the
+// synchronous SendMessage call holds that lock while dispatch is active.
+func (api *LocalProductChatAPI) CancelChatResponse(
+	ctx context.Context,
+	request LocalProductChatResponseCancelRequest,
+) error {
+	if api == nil || ctx == nil || ctx.Err() != nil || api.unavailable ||
+		!validLocalProductChatID(request.ThreadID) ||
+		!validLocalProductIncidentID(request.IncidentID) {
+		return ErrInvalidLocalProductChatRequest
+	}
+	canceller, ok := api.responder.(LocalProductConversationResponseCanceller)
+	if !ok || canceller == nil {
+		return ErrLocalProductChatUnavailable
+	}
+	return canceller.CancelChatResponse(ctx, request)
+}
+
+// DeleteThread removes a conversation thread from the in-memory and persistent
+// stores, releasing its thread slot so new conversations can start. Context
+// capsules and their conversation key are removed with it.
 func (api *LocalProductChatAPI) DeleteThread(
 	ctx context.Context,
 	threadID string,
@@ -919,6 +1610,9 @@ func (api *LocalProductChatAPI) DeleteThread(
 	if api.unavailable {
 		return ErrLocalProductChatUnavailable
 	}
+	unlockThread := api.lockThread(threadID)
+	defer unlockThread()
+
 	api.mu.Lock()
 	thread, found := api.threads[threadID]
 	if !found {
@@ -926,29 +1620,57 @@ func (api *LocalProductChatAPI) DeleteThread(
 		return nil
 	}
 	delete(api.threads, threadID)
+	plaintextDeleted := api.documents == nil && api.storePath != ""
+	if plaintextDeleted {
+		if err := api.persistLocked(); err != nil {
+			api.threads[threadID] = thread
+			rollbackErr := api.persistLocked()
+			api.mu.Unlock()
+			return errors.Join(err, rollbackErr)
+		}
+	}
 	api.mu.Unlock()
 
+	documentDeleted := false
+	if api.documents != nil {
+		if err := api.documents.DeleteConversationDocument(
+			ctx, threadID, localProductChatDocumentKind,
+		); err != nil {
+			if isConversationThreadDeleteNotFound(err) {
+				// The encrypted document was already absent.
+			} else {
+				api.mu.Lock()
+				api.threads[threadID] = thread
+				api.mu.Unlock()
+				return err
+			}
+		} else {
+			documentDeleted = true
+		}
+	}
 	if api.contextCapsules != nil {
 		if err := api.contextCapsules.DeleteContextConversation(
 			ctx, threadID,
 		); err != nil && !isConversationThreadDeleteNotFound(err) {
-			// Restore the thread so a failed delete leaves state intact.
+			var rollbackErr error
+			if documentDeleted {
+				rollbackErr = api.persistEncryptedThread(context.WithoutCancel(ctx), thread)
+			}
 			api.mu.Lock()
 			api.threads[threadID] = thread
+			if plaintextDeleted {
+				rollbackErr = errors.Join(rollbackErr, api.persistLocked())
+			}
 			api.mu.Unlock()
+			if rollbackErr != nil {
+				return errors.Join(err, rollbackErr)
+			}
 			return err
 		}
 	}
-	if api.documents != nil {
-		if err := api.documents.DeleteConversationDocument(
-			ctx, threadID, localProductChatDocumentKind,
-		); err != nil && !isConversationThreadDeleteNotFound(err) {
-			api.mu.Lock()
-			api.threads[threadID] = thread
-			api.mu.Unlock()
-			return err
-		}
-	}
+	api.mu.Lock()
+	delete(api.documentRevisionGaps, threadID)
+	api.mu.Unlock()
 	return nil
 }
 
@@ -1117,20 +1839,31 @@ func (api *LocalProductChatAPI) buildConversationContextCapsule(
 	mode LocalProductContextMode,
 	segmentID string,
 	profileID string,
-) (contextcapsule.RoleContextCapsule, []byte, []LocalProductChatMessage, error) {
+	modelID string,
+) (contextcapsule.RoleContextCapsule, []byte, string, []LocalProductChatMessage, error) {
 	if api == nil || api.contextTarget == nil || api.contextCapsules == nil ||
 		ctx == nil || ctx.Err() != nil {
-		return contextcapsule.RoleContextCapsule{}, nil, nil,
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil,
 			ErrInvalidLocalProductChatRequest
 	}
 	target, err := api.contextTarget.ResolveConversationContextTarget(
-		ctx, currentConversationID(source, current), segmentID, profileID,
+		ctx, currentConversationID(source, current), segmentID, profileID, modelID,
 	)
 	if err != nil {
-		return contextcapsule.RoleContextCapsule{}, nil, nil, err
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil, err
+	}
+	resolver, ok := api.contextTarget.(LocalProductConversationContextCapacityResolver)
+	if !ok {
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil,
+			ErrInvalidLocalProductChatRequest
+	}
+	capacityAuthority, tokenCounter, err :=
+		resolver.ResolveConversationContextCapacity(ctx, target)
+	if err != nil {
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil, err
 	}
 	items := make([]contextcapsule.ItemInput, 0, 17)
-	if mode != ContextModeStartClean && source != nil {
+	if source != nil {
 		start := len(source.Messages) - 16
 		if start < 0 {
 			start = 0
@@ -1141,35 +1874,40 @@ func (api *LocalProductChatAPI) buildConversationContextCapsule(
 			}
 			item, ok := conversationContextItem(message, mode)
 			if ok {
+				// Start clean excludes prior context from dispatch, but the
+				// disclosure receipt must still account for every omission.
+				item.PolicyFiltered = mode == ContextModeStartClean || item.PolicyFiltered
+				if !item.PolicyFiltered {
+					item.TokenCount = 0
+				}
 				items = append(items, item)
 			}
 		}
 	}
 	currentItem, ok := conversationContextItem(current, mode)
 	if !ok {
-		return contextcapsule.RoleContextCapsule{}, nil, nil,
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil,
 			ErrInvalidLocalProductChatRequest
 	}
 	currentItem.Required = true
 	currentItem.Priority = contextcapsule.PriorityConfirmed
+	currentItem.TokenCount = 0
 	items = append(items, currentItem)
-	capsule, err := contextcapsule.BuildRoleContextCapsule(target, items)
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
+		target, items, capacityAuthority, tokenCounter,
+	)
 	if err != nil {
-		return contextcapsule.RoleContextCapsule{}, nil, nil, err
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil, err
 	}
 	payload, err := contextcapsule.RenderDispatchPayload(capsule)
 	if err != nil {
-		return contextcapsule.RoleContextCapsule{}, nil, nil, err
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil, err
 	}
 	dispatch, err := contextcapsule.DecodeDispatchPayload(payload)
 	if err != nil {
-		return contextcapsule.RoleContextCapsule{}, nil, nil, err
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil, err
 	}
-	return capsule, payload, []LocalProductChatMessage{{
-		MessageID: "capsule-route", SegmentID: segmentID,
-		Role: string(ChatRoleUser), Content: dispatch.Prompt,
-		CreatedAt: current.CreatedAt,
-	}}, nil
+	return capsule, payload, dispatch.Prompt, []LocalProductChatMessage{current}, nil
 }
 
 func currentConversationID(
@@ -1190,11 +1928,12 @@ func conversationContextItem(
 	if len(content) == 0 {
 		return contextcapsule.ItemInput{}, false
 	}
+	tokenCount := conversationContextTokenCount(content)
 	item := contextcapsule.ItemInput{
 		ItemID:     "message-" + message.MessageID,
 		Scope:      contextcapsule.ScopeConversationShared,
 		Priority:   contextcapsule.PriorityWorkspace,
-		TokenCount: conversationContextTokenCount(content), Content: content,
+		TokenCount: tokenCount, Content: content,
 		SourceRef: "conversation-message:" + message.MessageID,
 	}
 	if message.Role == string(ChatRoleUser) {
@@ -1230,10 +1969,117 @@ func localProductChatMessageDisclosableToProvider(
 }
 
 type conversationContextDisclosureRecord struct {
-	CapsuleDigest  string
-	ReceiptDigest  string
-	DisclosedCount int
-	OmittedCount   int
+	CapsuleDigest                   string
+	ReceiptDigest                   string
+	DisclosedCount                  int
+	OmittedCount                    int
+	ContextTokenBudget              int
+	ContextTokenCount               int
+	ContextCapacityStatus           contextcapsule.CapacityStatus
+	ContextWindowTokens             int
+	ReservedOutputTokens            int
+	AdapterToolOverheadTokens       int
+	AdmittedInputBudgetTokens       int
+	ContextTokenCounterID           string
+	ContextTokenCounterVersion      string
+	AdmittedContributionTokens      int
+	BudgetOmittedContributionTokens int
+	ContextCapacityContributions    []LocalProductContextCapacityContribution
+}
+
+func conversationContextCapacityRecord(
+	projection contextcapsule.CapacityProjection,
+) conversationContextDisclosureRecord {
+	contributions := make(
+		[]LocalProductContextCapacityContribution,
+		len(projection.Contributions),
+	)
+	for index, contribution := range projection.Contributions {
+		contributions[index] = LocalProductContextCapacityContribution{
+			Priority: contribution.Priority, SourceType: contribution.SourceType,
+			AdmittedItemCount:       contribution.AdmittedItemCount,
+			AdmittedTokenCount:      contribution.AdmittedTokenCount,
+			BudgetOmittedItemCount:  contribution.BudgetOmittedItemCount,
+			BudgetOmittedTokenCount: contribution.BudgetOmittedTokenCount,
+		}
+	}
+	return conversationContextDisclosureRecord{
+		ContextCapacityStatus:           projection.Status,
+		ContextWindowTokens:             projection.ContextWindowTokens,
+		ReservedOutputTokens:            projection.ReservedOutputTokens,
+		AdapterToolOverheadTokens:       projection.AdapterToolOverheadTokens,
+		AdmittedInputBudgetTokens:       projection.AdmittedInputBudgetTokens,
+		ContextTokenCounterID:           projection.TokenCounterID,
+		ContextTokenCounterVersion:      projection.TokenCounterVersion,
+		AdmittedContributionTokens:      projection.AdmittedContributionTokens,
+		BudgetOmittedContributionTokens: projection.BudgetOmittedContributionTokens,
+		ContextCapacityContributions:    contributions,
+	}
+}
+
+func localProductContextCapacityPresent(
+	disclosure conversationContextDisclosureRecord,
+) bool {
+	return disclosure.ContextCapacityStatus != "" ||
+		disclosure.ContextWindowTokens != 0 ||
+		disclosure.ReservedOutputTokens != 0 ||
+		disclosure.AdapterToolOverheadTokens != 0 ||
+		disclosure.AdmittedInputBudgetTokens != 0 ||
+		disclosure.ContextTokenCounterID != "" ||
+		disclosure.ContextTokenCounterVersion != "" ||
+		disclosure.AdmittedContributionTokens != 0 ||
+		disclosure.BudgetOmittedContributionTokens != 0 ||
+		len(disclosure.ContextCapacityContributions) != 0
+}
+
+func cloneLocalProductContextCapacityContributions(
+	contributions []LocalProductContextCapacityContribution,
+) []LocalProductContextCapacityContribution {
+	return append([]LocalProductContextCapacityContribution(nil), contributions...)
+}
+
+func applyConversationContextCapacityRecord(
+	target *conversationContextDisclosureRecord,
+	capacity conversationContextDisclosureRecord,
+) {
+	if target == nil {
+		return
+	}
+	target.ContextCapacityStatus = capacity.ContextCapacityStatus
+	target.ContextWindowTokens = capacity.ContextWindowTokens
+	target.ReservedOutputTokens = capacity.ReservedOutputTokens
+	target.AdapterToolOverheadTokens = capacity.AdapterToolOverheadTokens
+	target.AdmittedInputBudgetTokens = capacity.AdmittedInputBudgetTokens
+	target.ContextTokenCounterID = capacity.ContextTokenCounterID
+	target.ContextTokenCounterVersion = capacity.ContextTokenCounterVersion
+	target.AdmittedContributionTokens = capacity.AdmittedContributionTokens
+	target.BudgetOmittedContributionTokens = capacity.BudgetOmittedContributionTokens
+	target.ContextCapacityContributions =
+		cloneLocalProductContextCapacityContributions(
+			capacity.ContextCapacityContributions,
+		)
+}
+
+func applyConversationContextCapacityToSegment(
+	segment *LocalProductConversationSegment,
+	disclosure conversationContextDisclosureRecord,
+) {
+	if segment == nil {
+		return
+	}
+	segment.ContextCapacityStatus = disclosure.ContextCapacityStatus
+	segment.ContextWindowTokens = disclosure.ContextWindowTokens
+	segment.ReservedOutputTokens = disclosure.ReservedOutputTokens
+	segment.AdapterToolOverheadTokens = disclosure.AdapterToolOverheadTokens
+	segment.AdmittedInputBudgetTokens = disclosure.AdmittedInputBudgetTokens
+	segment.ContextTokenCounterID = disclosure.ContextTokenCounterID
+	segment.ContextTokenCounterVersion = disclosure.ContextTokenCounterVersion
+	segment.AdmittedContributionTokens = disclosure.AdmittedContributionTokens
+	segment.BudgetOmittedContributionTokens = disclosure.BudgetOmittedContributionTokens
+	segment.ContextCapacityContributions =
+		cloneLocalProductContextCapacityContributions(
+			disclosure.ContextCapacityContributions,
+		)
 }
 
 func conversationContextDisclosure(
@@ -1345,6 +2191,188 @@ func localProductChatMessageTrust(message LocalProductChatMessage) string {
 func conversationExecutionBindingDigest(
 	segmentID string,
 	profileID string,
+	modelID string,
+	reasoningEffort string,
+	mode LocalProductContextMode,
+	disclosure conversationContextDisclosureRecord,
+	executionBinding *LocalProductConversationExecutionBinding,
+) string {
+	if localProductContextCapacityPresent(disclosure) {
+		return conversationExecutionBindingDigestV6(
+			segmentID, profileID, modelID, reasoningEffort, mode,
+			disclosure, executionBinding,
+		)
+	}
+	if disclosure.ContextTokenBudget == 0 && disclosure.ContextTokenCount == 0 &&
+		modelID == "" && reasoningEffort == "" {
+		return conversationExecutionBindingDigestV3(
+			segmentID, profileID, mode, disclosure, executionBinding,
+		)
+	}
+	if disclosure.ContextTokenBudget == 0 && disclosure.ContextTokenCount == 0 {
+		return conversationExecutionBindingDigestV4(
+			segmentID, profileID, modelID, reasoningEffort, mode,
+			disclosure, executionBinding,
+		)
+	}
+	body, _ := json.Marshal(struct {
+		SchemaVersion      int                                       `json:"schema_version"`
+		SegmentID          string                                    `json:"segment_id"`
+		ProfileID          string                                    `json:"profile_id"`
+		ModelID            string                                    `json:"model_id"`
+		ReasoningEffort    string                                    `json:"reasoning_effort,omitempty"`
+		ContextMode        string                                    `json:"context_mode"`
+		CapsuleDigest      string                                    `json:"capsule_digest"`
+		ReceiptDigest      string                                    `json:"disclosure_receipt_digest"`
+		DisclosedCount     int                                       `json:"disclosed_context_count"`
+		OmittedCount       int                                       `json:"omitted_context_count"`
+		ContextTokenBudget int                                       `json:"context_token_budget"`
+		ContextTokenCount  int                                       `json:"context_token_count"`
+		ExecutionBinding   *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
+	}{
+		SchemaVersion: 5,
+		SegmentID:     segmentID, ProfileID: profileID,
+		ModelID: modelID, ReasoningEffort: reasoningEffort,
+		ContextMode:        string(mode),
+		CapsuleDigest:      disclosure.CapsuleDigest,
+		ReceiptDigest:      disclosure.ReceiptDigest,
+		DisclosedCount:     disclosure.DisclosedCount,
+		OmittedCount:       disclosure.OmittedCount,
+		ContextTokenBudget: disclosure.ContextTokenBudget,
+		ContextTokenCount:  disclosure.ContextTokenCount,
+		ExecutionBinding:   executionBinding,
+	})
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest)
+}
+
+func conversationExecutionBindingDigestWithRouteReview(
+	segmentID string,
+	profileID string,
+	modelID string,
+	reasoningEffort string,
+	mode LocalProductContextMode,
+	disclosure conversationContextDisclosureRecord,
+	executionBinding *LocalProductConversationExecutionBinding,
+	routeTransitionReviewDigest string,
+) string {
+	base := conversationExecutionBindingDigest(
+		segmentID, profileID, modelID, reasoningEffort, mode, disclosure,
+		executionBinding,
+	)
+	if routeTransitionReviewDigest == "" {
+		return base
+	}
+	body, _ := json.Marshal(struct {
+		SchemaVersion               int    `json:"schema_version"`
+		BaseBindingDigest           string `json:"base_binding_digest"`
+		RouteTransitionReviewDigest string `json:"route_transition_review_digest"`
+	}{
+		SchemaVersion: 7, BaseBindingDigest: base,
+		RouteTransitionReviewDigest: routeTransitionReviewDigest,
+	})
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest)
+}
+
+func conversationExecutionBindingDigestV6(
+	segmentID string,
+	profileID string,
+	modelID string,
+	reasoningEffort string,
+	mode LocalProductContextMode,
+	disclosure conversationContextDisclosureRecord,
+	executionBinding *LocalProductConversationExecutionBinding,
+) string {
+	body, _ := json.Marshal(struct {
+		SchemaVersion                   int                                       `json:"schema_version"`
+		SegmentID                       string                                    `json:"segment_id"`
+		ProfileID                       string                                    `json:"profile_id"`
+		ModelID                         string                                    `json:"model_id"`
+		ReasoningEffort                 string                                    `json:"reasoning_effort,omitempty"`
+		ContextMode                     string                                    `json:"context_mode"`
+		CapsuleDigest                   string                                    `json:"capsule_digest"`
+		ReceiptDigest                   string                                    `json:"disclosure_receipt_digest"`
+		DisclosedCount                  int                                       `json:"disclosed_context_count"`
+		OmittedCount                    int                                       `json:"omitted_context_count"`
+		ContextTokenBudget              int                                       `json:"context_token_budget"`
+		ContextTokenCount               int                                       `json:"context_token_count"`
+		ContextCapacityStatus           contextcapsule.CapacityStatus             `json:"context_capacity_status"`
+		ContextWindowTokens             int                                       `json:"context_window_tokens"`
+		ReservedOutputTokens            int                                       `json:"reserved_output_tokens"`
+		AdapterToolOverheadTokens       int                                       `json:"adapter_tool_overhead_tokens"`
+		AdmittedInputBudgetTokens       int                                       `json:"admitted_input_budget_tokens"`
+		ContextTokenCounterID           string                                    `json:"context_token_counter_id"`
+		ContextTokenCounterVersion      string                                    `json:"context_token_counter_version"`
+		AdmittedContributionTokens      int                                       `json:"admitted_contribution_tokens"`
+		BudgetOmittedContributionTokens int                                       `json:"budget_omitted_contribution_tokens"`
+		ContextCapacityContributions    []LocalProductContextCapacityContribution `json:"context_capacity_contributions"`
+		ExecutionBinding                *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
+	}{
+		SchemaVersion: 6,
+		SegmentID:     segmentID, ProfileID: profileID, ModelID: modelID,
+		ReasoningEffort: reasoningEffort, ContextMode: string(mode),
+		CapsuleDigest:                   disclosure.CapsuleDigest,
+		ReceiptDigest:                   disclosure.ReceiptDigest,
+		DisclosedCount:                  disclosure.DisclosedCount,
+		OmittedCount:                    disclosure.OmittedCount,
+		ContextTokenBudget:              disclosure.ContextTokenBudget,
+		ContextTokenCount:               disclosure.ContextTokenCount,
+		ContextCapacityStatus:           disclosure.ContextCapacityStatus,
+		ContextWindowTokens:             disclosure.ContextWindowTokens,
+		ReservedOutputTokens:            disclosure.ReservedOutputTokens,
+		AdapterToolOverheadTokens:       disclosure.AdapterToolOverheadTokens,
+		AdmittedInputBudgetTokens:       disclosure.AdmittedInputBudgetTokens,
+		ContextTokenCounterID:           disclosure.ContextTokenCounterID,
+		ContextTokenCounterVersion:      disclosure.ContextTokenCounterVersion,
+		AdmittedContributionTokens:      disclosure.AdmittedContributionTokens,
+		BudgetOmittedContributionTokens: disclosure.BudgetOmittedContributionTokens,
+		ContextCapacityContributions:    disclosure.ContextCapacityContributions,
+		ExecutionBinding:                executionBinding,
+	})
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest)
+}
+
+func conversationExecutionBindingDigestV4(
+	segmentID string,
+	profileID string,
+	modelID string,
+	reasoningEffort string,
+	mode LocalProductContextMode,
+	disclosure conversationContextDisclosureRecord,
+	executionBinding *LocalProductConversationExecutionBinding,
+) string {
+	body, _ := json.Marshal(struct {
+		SchemaVersion    int                                       `json:"schema_version"`
+		SegmentID        string                                    `json:"segment_id"`
+		ProfileID        string                                    `json:"profile_id"`
+		ModelID          string                                    `json:"model_id"`
+		ReasoningEffort  string                                    `json:"reasoning_effort,omitempty"`
+		ContextMode      string                                    `json:"context_mode"`
+		CapsuleDigest    string                                    `json:"capsule_digest"`
+		ReceiptDigest    string                                    `json:"disclosure_receipt_digest"`
+		DisclosedCount   int                                       `json:"disclosed_context_count"`
+		OmittedCount     int                                       `json:"omitted_context_count"`
+		ExecutionBinding *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
+	}{
+		SchemaVersion: 4,
+		SegmentID:     segmentID, ProfileID: profileID,
+		ModelID: modelID, ReasoningEffort: reasoningEffort,
+		ContextMode:      string(mode),
+		CapsuleDigest:    disclosure.CapsuleDigest,
+		ReceiptDigest:    disclosure.ReceiptDigest,
+		DisclosedCount:   disclosure.DisclosedCount,
+		OmittedCount:     disclosure.OmittedCount,
+		ExecutionBinding: executionBinding,
+	})
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest)
+}
+
+func conversationExecutionBindingDigestV3(
+	segmentID string,
+	profileID string,
 	mode LocalProductContextMode,
 	disclosure conversationContextDisclosureRecord,
 	executionBinding *LocalProductConversationExecutionBinding,
@@ -1442,10 +2470,23 @@ func (api *LocalProductChatAPI) load() error {
 		len(stored.Threads) > maxLocalProductChatThreads {
 		return ErrInvalidLocalProductChatRequest
 	}
+	reconciledDispatch := false
+	var reconciledAt time.Time
 	for index := range stored.Threads {
 		thread := stored.Threads[index]
 		if stored.SchemaVersion == 1 {
 			migrateLocalProductChatThread(&thread)
+		}
+		if err := validateStoredChatThread(thread); err != nil {
+			return err
+		}
+		if hasPersistedDispatchingAttempt(thread) {
+			if reconciledAt.IsZero() {
+				reconciledAt = api.now().UTC()
+			}
+			reconciledDispatch = reconcilePersistedDispatchingAttempts(
+				&thread, reconciledAt,
+			) || reconciledDispatch
 		}
 		if err := validateStoredChatThread(thread); err != nil {
 			return err
@@ -1461,10 +2502,39 @@ func (api *LocalProductChatAPI) load() error {
 		}
 		api.threads[thread.ThreadID] = cloneChatThread(&thread)
 	}
-	if stored.SchemaVersion == 1 {
+	if stored.SchemaVersion == 1 || reconciledDispatch {
 		return api.persistLocked()
 	}
 	return nil
+}
+
+func hasPersistedDispatchingAttempt(thread LocalProductChatThread) bool {
+	for _, attempt := range thread.Attempts {
+		if attempt.Status == "dispatching" {
+			return true
+		}
+	}
+	return false
+}
+
+func reconcilePersistedDispatchingAttempts(
+	thread *LocalProductChatThread,
+	completedAt time.Time,
+) bool {
+	if thread == nil {
+		return false
+	}
+	reconciled := false
+	for index := range thread.Attempts {
+		attempt := &thread.Attempts[index]
+		if attempt.Status != "dispatching" {
+			continue
+		}
+		attempt.Status = "cancelled"
+		attempt.CompletedAt = completedAt
+		reconciled = true
+	}
+	return reconciled
 }
 
 func (api *LocalProductChatAPI) persistLocked() error {
@@ -1527,12 +2597,17 @@ func (api *LocalProductChatAPI) persistEncryptedThread(
 		thread == nil || validateStoredChatThread(*thread) != nil {
 		return ErrLocalProductChatUnavailable
 	}
-	revision := localProductChatThreadRevision(*thread)
-	if revision <= 0 {
+	messageRevision := localProductChatThreadRevision(*thread)
+	revisionGap := api.documentRevisionGaps[thread.ThreadID]
+	if messageRevision <= 0 || revisionGap < 0 ||
+		revisionGap > int64(len(thread.Attempts)) ||
+		messageRevision > int64(^uint64(0)>>1)-revisionGap {
 		return ErrLocalProductChatUnavailable
 	}
+	revision := messageRevision + revisionGap
 	payload, err := json.Marshal(localProductChatThreadDocument{
 		SchemaVersion: localProductChatDocumentSchema,
+		Revision:      revision,
 		Thread:        *cloneChatThread(thread),
 	})
 	if err != nil || len(payload) == 0 || len(payload) > maxLocalProductChatStore {
@@ -1566,6 +2641,8 @@ func (api *LocalProductChatAPI) loadEncryptedDocuments(ctx context.Context) erro
 	if len(documents) > maxLocalProductChatThreads {
 		return ErrInvalidLocalProductChatRequest
 	}
+	reconciledAt := time.Time{}
+	reconciledThreadIDs := make([]string, 0)
 	for _, document := range documents {
 		if document.Kind != localProductChatDocumentKind ||
 			!validLocalProductChatID(document.ConversationID) ||
@@ -1573,15 +2650,41 @@ func (api *LocalProductChatAPI) loadEncryptedDocuments(ctx context.Context) erro
 			len(document.Payload) > maxLocalProductChatStore {
 			return ErrInvalidLocalProductChatRequest
 		}
-		stored, decodeErr := decodeLocalProductChatThreadDocument(document.Payload)
+		decoded, decodeErr := decodeLocalProductChatThreadDocument(document.Payload)
+		stored := decoded.Thread
+		messageRevision := localProductChatThreadRevision(stored)
 		if decodeErr != nil || stored.ThreadID != document.ConversationID ||
-			localProductChatThreadRevision(stored) != document.Revision {
+			messageRevision <= 0 || decoded.SchemaVersion == legacyLocalProductChatDocumentSchema &&
+			document.Revision != messageRevision ||
+			decoded.SchemaVersion == localProductChatDocumentSchema &&
+				(decoded.Revision != document.Revision || document.Revision < messageRevision) {
+			return ErrInvalidLocalProductChatRequest
+		}
+		revisionGap := document.Revision - messageRevision
+		if revisionGap < 0 || revisionGap > int64(len(stored.Attempts)) {
 			return ErrInvalidLocalProductChatRequest
 		}
 		if _, duplicate := api.threads[stored.ThreadID]; duplicate {
 			return ErrInvalidLocalProductChatRequest
 		}
+		if hasPersistedDispatchingAttempt(stored) {
+			if reconciledAt.IsZero() {
+				reconciledAt = api.now().UTC()
+			}
+			if !reconcilePersistedDispatchingAttempts(&stored, reconciledAt) ||
+				revisionGap == int64(^uint64(0)>>1) {
+				return ErrInvalidLocalProductChatRequest
+			}
+			revisionGap++
+			reconciledThreadIDs = append(reconciledThreadIDs, stored.ThreadID)
+		}
+		api.documentRevisionGaps[stored.ThreadID] = revisionGap
 		api.adoptStoredChatThread(stored)
+	}
+	for _, threadID := range reconciledThreadIDs {
+		if err := api.persistEncryptedThread(ctx, api.threads[threadID]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1711,20 +2814,25 @@ func localProductChatMigrationFailure(err error) (string, bool) {
 
 func decodeLocalProductChatThreadDocument(
 	payload []byte,
-) (LocalProductChatThread, error) {
+) (localProductChatThreadDocument, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var document localProductChatThreadDocument
 	if decoder.Decode(&document) != nil || requireLocalProductChatEOF(decoder) != nil ||
-		document.SchemaVersion != localProductChatDocumentSchema ||
+		(document.SchemaVersion != legacyLocalProductChatDocumentSchema &&
+			document.SchemaVersion != localProductChatDocumentSchema) ||
+		document.SchemaVersion == legacyLocalProductChatDocumentSchema &&
+			document.Revision != 0 ||
+		document.SchemaVersion == localProductChatDocumentSchema &&
+			document.Revision <= 0 ||
 		validateStoredChatThread(document.Thread) != nil {
-		return LocalProductChatThread{}, ErrInvalidLocalProductChatRequest
+		return localProductChatThreadDocument{}, ErrInvalidLocalProductChatRequest
 	}
 	canonical, err := json.Marshal(document)
 	if err != nil || !bytes.Equal(canonical, payload) {
-		return LocalProductChatThread{}, ErrInvalidLocalProductChatRequest
+		return localProductChatThreadDocument{}, ErrInvalidLocalProductChatRequest
 	}
-	return document.Thread, nil
+	return document, nil
 }
 
 func (api *LocalProductChatAPI) adoptStoredChatThread(thread LocalProductChatThread) {
@@ -1959,6 +3067,166 @@ func writeLocalProductChatStore(path string, data []byte) error {
 	return directoryHandle.Sync()
 }
 
+func conversationContextDisclosureFromSegment(
+	segment LocalProductConversationSegment,
+) conversationContextDisclosureRecord {
+	return conversationContextDisclosureRecord{
+		CapsuleDigest:                   segment.ContextCapsuleDigest,
+		ReceiptDigest:                   segment.DisclosureReceiptDigest,
+		DisclosedCount:                  segment.DisclosedContextCount,
+		OmittedCount:                    segment.OmittedContextCount,
+		ContextTokenBudget:              segment.ContextTokenBudget,
+		ContextTokenCount:               segment.ContextTokenCount,
+		ContextCapacityStatus:           segment.ContextCapacityStatus,
+		ContextWindowTokens:             segment.ContextWindowTokens,
+		ReservedOutputTokens:            segment.ReservedOutputTokens,
+		AdapterToolOverheadTokens:       segment.AdapterToolOverheadTokens,
+		AdmittedInputBudgetTokens:       segment.AdmittedInputBudgetTokens,
+		ContextTokenCounterID:           segment.ContextTokenCounterID,
+		ContextTokenCounterVersion:      segment.ContextTokenCounterVersion,
+		AdmittedContributionTokens:      segment.AdmittedContributionTokens,
+		BudgetOmittedContributionTokens: segment.BudgetOmittedContributionTokens,
+		ContextCapacityContributions: cloneLocalProductContextCapacityContributions(
+			segment.ContextCapacityContributions,
+		),
+	}
+}
+
+func conversationContextDisclosureFromAttempt(
+	attempt LocalProductConversationAttempt,
+) conversationContextDisclosureRecord {
+	return conversationContextDisclosureRecord{
+		CapsuleDigest:                   attempt.ContextCapsuleDigest,
+		ReceiptDigest:                   attempt.DisclosureReceiptDigest,
+		DisclosedCount:                  attempt.DisclosedContextCount,
+		OmittedCount:                    attempt.OmittedContextCount,
+		ContextTokenBudget:              attempt.ContextTokenBudget,
+		ContextTokenCount:               attempt.ContextTokenCount,
+		ContextCapacityStatus:           attempt.ContextCapacityStatus,
+		ContextWindowTokens:             attempt.ContextWindowTokens,
+		ReservedOutputTokens:            attempt.ReservedOutputTokens,
+		AdapterToolOverheadTokens:       attempt.AdapterToolOverheadTokens,
+		AdmittedInputBudgetTokens:       attempt.AdmittedInputBudgetTokens,
+		ContextTokenCounterID:           attempt.ContextTokenCounterID,
+		ContextTokenCounterVersion:      attempt.ContextTokenCounterVersion,
+		AdmittedContributionTokens:      attempt.AdmittedContributionTokens,
+		BudgetOmittedContributionTokens: attempt.BudgetOmittedContributionTokens,
+		ContextCapacityContributions: cloneLocalProductContextCapacityContributions(
+			attempt.ContextCapacityContributions,
+		),
+	}
+}
+
+func localProductContextCapacityProjection(
+	disclosure conversationContextDisclosureRecord,
+) (contextcapsule.CapacityProjection, bool) {
+	if !localProductContextCapacityPresent(disclosure) {
+		return contextcapsule.CapacityProjection{}, true
+	}
+	contributions := make(
+		[]contextcapsule.CapacityContribution,
+		len(disclosure.ContextCapacityContributions),
+	)
+	for index, contribution := range disclosure.ContextCapacityContributions {
+		contributions[index] = contextcapsule.CapacityContribution{
+			Priority: contribution.Priority, SourceType: contribution.SourceType,
+			AdmittedItemCount:       contribution.AdmittedItemCount,
+			AdmittedTokenCount:      contribution.AdmittedTokenCount,
+			BudgetOmittedItemCount:  contribution.BudgetOmittedItemCount,
+			BudgetOmittedTokenCount: contribution.BudgetOmittedTokenCount,
+		}
+	}
+	projection := contextcapsule.CapacityProjection{
+		SchemaVersion:                   contextcapsule.CapacitySchemaVersion,
+		Status:                          disclosure.ContextCapacityStatus,
+		ContextWindowTokens:             disclosure.ContextWindowTokens,
+		ReservedOutputTokens:            disclosure.ReservedOutputTokens,
+		AdapterToolOverheadTokens:       disclosure.AdapterToolOverheadTokens,
+		PolicyInputBudgetTokens:         disclosure.ContextTokenBudget,
+		AdmittedInputBudgetTokens:       disclosure.AdmittedInputBudgetTokens,
+		TokenCounterID:                  disclosure.ContextTokenCounterID,
+		TokenCounterVersion:             disclosure.ContextTokenCounterVersion,
+		AdmittedContributionTokens:      disclosure.AdmittedContributionTokens,
+		BudgetOmittedContributionTokens: disclosure.BudgetOmittedContributionTokens,
+		Contributions:                   contributions,
+	}
+	if disclosure.AdmittedContributionTokens != disclosure.ContextTokenCount {
+		return contextcapsule.CapacityProjection{}, false
+	}
+	if _, err := contextcapsule.MarshalCanonicalCapacityProjection(projection); err != nil {
+		return contextcapsule.CapacityProjection{}, false
+	}
+	return projection, true
+}
+
+func localProductContextCapacityMatchesCapsule(
+	disclosure conversationContextDisclosureRecord,
+	capsule contextcapsule.RoleContextCapsule,
+) bool {
+	want, capsuleHasCapacity := capsule.CapacityProjection()
+	disclosureHasCapacity := localProductContextCapacityPresent(disclosure)
+	if disclosureHasCapacity != capsuleHasCapacity {
+		return false
+	}
+	if !disclosureHasCapacity {
+		return true
+	}
+	got, valid := localProductContextCapacityProjection(disclosure)
+	if !valid {
+		return false
+	}
+	gotBody, gotErr := contextcapsule.MarshalCanonicalCapacityProjection(got)
+	wantBody, wantErr := contextcapsule.MarshalCanonicalCapacityProjection(want)
+	return gotErr == nil && wantErr == nil && bytes.Equal(gotBody, wantBody)
+}
+
+func sameLocalProductCapacityAuthority(
+	left conversationContextDisclosureRecord,
+	right conversationContextDisclosureRecord,
+) bool {
+	leftHasCapacity := localProductContextCapacityPresent(left)
+	rightHasCapacity := localProductContextCapacityPresent(right)
+	if leftHasCapacity != rightHasCapacity {
+		return false
+	}
+	if !leftHasCapacity {
+		return true
+	}
+	leftProjection, leftValid := localProductContextCapacityProjection(left)
+	rightProjection, rightValid := localProductContextCapacityProjection(right)
+	if !leftValid || !rightValid {
+		return false
+	}
+	leftBody, leftErr := contextcapsule.MarshalCanonicalCapacityProjection(leftProjection)
+	rightBody, rightErr := contextcapsule.MarshalCanonicalCapacityProjection(rightProjection)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftBody, rightBody)
+}
+
+func sameLocalProductCapacityConfiguration(
+	left conversationContextDisclosureRecord,
+	right conversationContextDisclosureRecord,
+) bool {
+	leftHasCapacity := localProductContextCapacityPresent(left)
+	rightHasCapacity := localProductContextCapacityPresent(right)
+	if leftHasCapacity != rightHasCapacity {
+		return false
+	}
+	if !leftHasCapacity {
+		return true
+	}
+	leftProjection, leftValid := localProductContextCapacityProjection(left)
+	rightProjection, rightValid := localProductContextCapacityProjection(right)
+	return leftValid && rightValid &&
+		leftProjection.Status == rightProjection.Status &&
+		leftProjection.ContextWindowTokens == rightProjection.ContextWindowTokens &&
+		leftProjection.ReservedOutputTokens == rightProjection.ReservedOutputTokens &&
+		leftProjection.AdapterToolOverheadTokens == rightProjection.AdapterToolOverheadTokens &&
+		leftProjection.PolicyInputBudgetTokens == rightProjection.PolicyInputBudgetTokens &&
+		leftProjection.AdmittedInputBudgetTokens == rightProjection.AdmittedInputBudgetTokens &&
+		leftProjection.TokenCounterID == rightProjection.TokenCounterID &&
+		leftProjection.TokenCounterVersion == rightProjection.TokenCounterVersion
+}
+
 func validateStoredChatThread(thread LocalProductChatThread) error {
 	if !validLocalProductChatID(thread.ThreadID) ||
 		thread.ProfileID != "" && !validLocalProductChatID(thread.ProfileID) ||
@@ -1969,28 +3237,60 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 		return ErrInvalidLocalProductChatRequest
 	}
 	segments := make(map[string]LocalProductConversationSegment, len(thread.Segments))
-	for _, segment := range thread.Segments {
+	for index, segment := range thread.Segments {
+		disclosure := conversationContextDisclosureFromSegment(segment)
+		_, validCapacity := localProductContextCapacityProjection(disclosure)
 		if !validLocalProductChatID(segment.SegmentID) ||
 			segment.ProfileID != "" && !validLocalProductChatID(segment.ProfileID) ||
+			!validLocalProductRouteSelection(segment.ModelID, 256) ||
+			!validLocalProductRouteSelection(segment.ReasoningEffort, 64) ||
 			!validLocalProductContextMode(segment.ContextMode) ||
 			!validLocalProductDigest(segment.ContextCapsuleDigest) ||
 			!validLocalProductContextDisclosure(
 				segment.DisclosureReceiptDigest,
 				segment.DisclosedContextCount,
 				segment.OmittedContextCount,
-			) ||
+				segment.ContextTokenBudget,
+				segment.ContextTokenCount,
+			) || !validCapacity ||
 			!validLocalProductDisclosureBinding(
 				segment.SegmentID,
 				segment.ProfileID,
+				segment.ModelID,
+				segment.ReasoningEffort,
 				segment.ContextMode,
-				segment.ContextCapsuleDigest,
-				segment.DisclosureReceiptDigest,
-				segment.DisclosedContextCount,
-				segment.OmittedContextCount,
+				disclosure,
 				segment.ExecutionBinding,
+				segment.RouteTransitionReviewDigest,
 				segment.BindingDigest,
 			) || segment.CreatedAt.IsZero() {
 			return ErrInvalidLocalProductChatRequest
+		}
+		if index == 0 && segment.RouteTransitionReviewDigest != "" {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if segment.RouteTransitionReviewDigest != "" {
+			previous := thread.Segments[index-1]
+			if segment.ExecutionBinding == nil {
+				return ErrInvalidLocalProductChatRequest
+			}
+			review, err := NewLocalProductConversationTrustBoundaryAcknowledgement(
+				thread.ThreadID, previous, segment.ProfileID, *segment.ExecutionBinding,
+				segment.ReasoningEffort, segment.ContextMode,
+			)
+			legacyDigestV2 := legacyLocalProductTrustBoundaryReviewDigestV2(
+				thread.ThreadID, previous, *segment.ExecutionBinding,
+				segment.ReasoningEffort, segment.ContextMode,
+			)
+			legacyDigest := legacyLocalProductTrustBoundaryReviewDigestV1(
+				thread.ThreadID, previous, *segment.ExecutionBinding,
+				segment.ContextMode,
+			)
+			if err != nil || review.ReviewDigest != segment.RouteTransitionReviewDigest &&
+				legacyDigestV2 != segment.RouteTransitionReviewDigest &&
+				legacyDigest != segment.RouteTransitionReviewDigest {
+				return ErrInvalidLocalProductChatRequest
+			}
 		}
 		if _, duplicate := segments[segment.SegmentID]; duplicate {
 			return ErrInvalidLocalProductChatRequest
@@ -2002,10 +3302,24 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 		return ErrInvalidLocalProductChatRequest
 	}
 	attempts := make(map[string]struct{}, len(thread.Attempts))
+	openingAttempts := make(map[string]struct{}, len(thread.Segments))
 	for _, attempt := range thread.Attempts {
 		segment, ok := segments[attempt.SegmentID]
+		disclosure := conversationContextDisclosureFromAttempt(attempt)
+		segmentDisclosure := conversationContextDisclosureFromSegment(segment)
+		_, validCapacity := localProductContextCapacityProjection(disclosure)
+		digestModelID := attempt.ModelID
+		digestReasoningEffort := attempt.ReasoningEffort
+		if segment.ModelID == "" && segment.ReasoningEffort == "" {
+			digestModelID = ""
+			digestReasoningEffort = ""
+		}
+		_, hasOpeningAttempt := openingAttempts[attempt.SegmentID]
 		if !ok || !validLocalProductChatID(attempt.AttemptID) ||
 			attempt.ProfileID != segment.ProfileID ||
+			segment.ModelID != "" && attempt.ModelID != segment.ModelID ||
+			segment.ReasoningEffort != "" &&
+				attempt.ReasoningEffort != segment.ReasoningEffort ||
 			attempt.ContextMode != segment.ContextMode &&
 				attempt.ContextMode != ContextModeContinueWithContext ||
 			!validLocalProductDigest(attempt.ContextCapsuleDigest) ||
@@ -2013,20 +3327,27 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 				attempt.DisclosureReceiptDigest,
 				attempt.DisclosedContextCount,
 				attempt.OmittedContextCount,
-			) ||
+				attempt.ContextTokenBudget,
+				attempt.ContextTokenCount,
+			) || !validCapacity ||
 			!validLocalProductDisclosureBinding(
 				attempt.SegmentID,
 				attempt.ProfileID,
+				digestModelID,
+				digestReasoningEffort,
 				attempt.ContextMode,
-				attempt.ContextCapsuleDigest,
-				attempt.DisclosureReceiptDigest,
-				attempt.DisclosedContextCount,
-				attempt.OmittedContextCount,
+				disclosure,
 				attempt.ExecutionBinding,
+				attempt.RouteTransitionReviewDigest,
 				attempt.BindingDigest,
-			) || !sameLocalProductConversationExecutionBinding(
-			attempt.ExecutionBinding, segment.ExecutionBinding,
-		) ||
+			) || !sameLocalProductCapacityConfiguration(
+			disclosure, segmentDisclosure,
+		) || !hasOpeningAttempt &&
+			(attempt.ContextCapsuleDigest != segment.ContextCapsuleDigest ||
+				!sameLocalProductCapacityAuthority(disclosure, segmentDisclosure)) ||
+			!sameLocalProductConversationExecutionBinding(
+				attempt.ExecutionBinding, segment.ExecutionBinding,
+			) || attempt.RouteTransitionReviewDigest != segment.RouteTransitionReviewDigest ||
 			attempt.StartedAt.IsZero() || !validLocalProductAttemptStatus(attempt) {
 			return ErrInvalidLocalProductChatRequest
 		}
@@ -2034,6 +3355,7 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 			return ErrInvalidLocalProductChatRequest
 		}
 		attempts[attempt.AttemptID] = struct{}{}
+		openingAttempts[attempt.SegmentID] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(thread.Messages))
 	for _, message := range thread.Messages {
@@ -2074,7 +3396,8 @@ func migrateLocalProductChatThread(thread *LocalProductChatThread) {
 		DisclosedContextCount:   disclosure.DisclosedCount,
 		OmittedContextCount:     disclosure.OmittedCount,
 		BindingDigest: conversationExecutionBindingDigest(
-			segmentID, thread.ProfileID, ContextModeStartClean, disclosure, nil,
+			segmentID, thread.ProfileID, "", "",
+			ContextModeStartClean, disclosure, nil,
 		),
 		CreatedAt: firstLocalProductChatMessageTime(thread.Messages),
 	}}
@@ -2097,28 +3420,41 @@ func validLocalProductContextMode(mode LocalProductContextMode) bool {
 	}
 }
 
+func validLocalProductRouteSelection(value string, maximum int) bool {
+	return len(value) <= maximum && utf8.ValidString(value) &&
+		strings.TrimSpace(value) == value && strings.IndexByte(value, 0) < 0
+}
+
 func validLocalProductContextDisclosure(
 	receiptDigest string,
 	disclosedCount int,
 	omittedCount int,
+	contextTokenBudget int,
+	contextTokenCount int,
 ) bool {
 	if receiptDigest == "" {
-		return disclosedCount == 0 && omittedCount == 0
+		return disclosedCount == 0 && omittedCount == 0 &&
+			contextTokenBudget == 0 && contextTokenCount == 0
 	}
 	return validLocalProductDigest(receiptDigest) &&
 		disclosedCount > 0 && disclosedCount <= maxLocalProductChatMessages &&
-		omittedCount >= 0 && omittedCount <= maxLocalProductChatMessages
+		omittedCount >= 0 && omittedCount <= maxLocalProductChatMessages &&
+		validLocalProductContextTokens(contextTokenBudget, contextTokenCount)
+}
+
+func validLocalProductContextTokens(budget int, count int) bool {
+	return budget == 0 && count == 0 || budget > 0 && count > 0 && count <= budget
 }
 
 func validLocalProductDisclosureBinding(
 	segmentID string,
 	profileID string,
+	modelID string,
+	reasoningEffort string,
 	mode LocalProductContextMode,
-	capsuleDigest string,
-	receiptDigest string,
-	disclosedCount int,
-	omittedCount int,
+	disclosure conversationContextDisclosureRecord,
 	executionBinding *LocalProductConversationExecutionBinding,
+	routeTransitionReviewDigest string,
 	bindingDigest string,
 ) bool {
 	if !validLocalProductDigest(bindingDigest) {
@@ -2128,20 +3464,24 @@ func validLocalProductDisclosureBinding(
 		!validLocalProductConversationExecutionBinding(*executionBinding) {
 		return false
 	}
-	if receiptDigest == "" {
-		return disclosedCount == 0 && omittedCount == 0
+	if disclosure.ReceiptDigest == "" {
+		return disclosure.DisclosedCount == 0 && disclosure.OmittedCount == 0 &&
+			disclosure.ContextTokenBudget == 0 &&
+			disclosure.ContextTokenCount == 0 &&
+			!localProductContextCapacityPresent(disclosure)
 	}
-	want := conversationExecutionBindingDigest(
+	if routeTransitionReviewDigest != "" && !validLocalProductDigest(routeTransitionReviewDigest) {
+		return false
+	}
+	want := conversationExecutionBindingDigestWithRouteReview(
 		segmentID,
 		profileID,
+		modelID,
+		reasoningEffort,
 		mode,
-		conversationContextDisclosureRecord{
-			CapsuleDigest:  capsuleDigest,
-			ReceiptDigest:  receiptDigest,
-			DisclosedCount: disclosedCount,
-			OmittedCount:   omittedCount,
-		},
+		disclosure,
 		executionBinding,
+		routeTransitionReviewDigest,
 	)
 	return bindingDigest == want
 }
@@ -2149,18 +3489,31 @@ func validLocalProductDisclosureBinding(
 func validLocalProductConversationExecutionBinding(
 	binding LocalProductConversationExecutionBinding,
 ) bool {
-	if binding.SchemaVersion != 3 ||
+	if binding.SchemaVersion != 3 && binding.SchemaVersion != 4 ||
 		!validLocalProductChatID(binding.ProviderID) {
 		return false
 	}
+	if binding.SchemaVersion == 3 {
+		if binding.HarnessAdapter != "" || binding.CredentialRevision != 0 ||
+			binding.ModelID != "" {
+			return false
+		}
+	} else if !validLocalProductChatID(binding.HarnessAdapter) ||
+		!validLocalProductChatID(binding.ModelID) {
+		return false
+	}
 	if binding.ProviderAccountID == "" {
-		return binding.ProviderAccountPolicyVersion == 0 &&
+		return binding.CredentialRevision == 0 &&
+			binding.ProviderAccountPolicyVersion == 0 &&
 			binding.ProviderAccountPolicyRevision == 0 &&
 			binding.ProviderAccountPolicyDigest == "" &&
 			binding.TrustDomain == "" && binding.RetentionMode == "" &&
 			binding.DataRegion == ""
 	}
 	if !validLocalProductChatID(binding.ProviderAccountID) {
+		return false
+	}
+	if binding.SchemaVersion == 4 && binding.CredentialRevision <= 0 {
 		return false
 	}
 	switch binding.ProviderAccountPolicyVersion {
@@ -2255,6 +3608,11 @@ func validLocalProductAttemptStatus(attempt LocalProductConversationAttempt) boo
 			attempt.FailureMessage == "" && attempt.RetryAfterSeconds == 0 &&
 			!attempt.Retryable && attempt.CompletedAt.IsZero()
 	case "succeeded":
+		return attempt.FailureCode == "" && attempt.FailureStage == "" &&
+			attempt.HTTPStatus == 0 && attempt.ProviderCode == "" &&
+			attempt.FailureMessage == "" && attempt.RetryAfterSeconds == 0 &&
+			!attempt.Retryable && !attempt.CompletedAt.IsZero()
+	case "cancelled":
 		return attempt.FailureCode == "" && attempt.FailureStage == "" &&
 			attempt.HTTPStatus == 0 && attempt.ProviderCode == "" &&
 			attempt.FailureMessage == "" && attempt.RetryAfterSeconds == 0 &&
@@ -2484,11 +3842,19 @@ func cloneChatThread(thread *LocalProductChatThread) *LocalProductChatThread {
 			cloneLocalProductConversationExecutionBinding(
 				thread.Segments[index].ExecutionBinding,
 			)
+		copied.Segments[index].ContextCapacityContributions =
+			cloneLocalProductContextCapacityContributions(
+				thread.Segments[index].ContextCapacityContributions,
+			)
 	}
 	for index := range copied.Attempts {
 		copied.Attempts[index].ExecutionBinding =
 			cloneLocalProductConversationExecutionBinding(
 				thread.Attempts[index].ExecutionBinding,
+			)
+		copied.Attempts[index].ContextCapacityContributions =
+			cloneLocalProductContextCapacityContributions(
+				thread.Attempts[index].ContextCapacityContributions,
 			)
 	}
 	copied.Messages = append([]LocalProductChatMessage(nil), thread.Messages...)

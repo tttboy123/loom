@@ -33,6 +33,8 @@ func OpenCodeCredentialEnv(providerID string) (string, bool) {
 		return "MOONSHOT_API_KEY", true
 	case "minimax":
 		return "MINIMAX_API_KEY", true
+	case "minimax-cn":
+		return "MINIMAX_API_KEY", true
 	case "xai":
 		return "XAI_API_KEY", true
 	case "zhipu", "zai":
@@ -40,7 +42,10 @@ func OpenCodeCredentialEnv(providerID string) (string, bool) {
 		// reads the Zhipu key from ZHIPU_API_KEY.
 		return "ZHIPU_API_KEY", true
 	case "opencode":
-		return "OPENCODE_API_KEY", true
+		// The OpenCode provider identity is the harness itself; its hosted
+		// free-tier models run under OpenCode's own native auth and Loom
+		// manages no "opencode" account, so there is no key to inject.
+		return "", false
 	case "stepfun":
 		return "STEPFUN_API_KEY", true
 	case "openrouter":
@@ -55,6 +60,43 @@ func OpenCodeCredentialEnv(providerID string) (string, bool) {
 		return "LMSTUDIO_API_KEY", true
 	default:
 		return "", false
+	}
+}
+
+// OpenCodeRuntimeProviderID maps a Loom-owned Provider identity to the
+// provider prefix implemented by OpenCode. Loom's MiniMax account is verified
+// against the minimaxi.com region, whose OpenCode identity is `minimax-cn`.
+// Credential ownership remains with the Loom Provider returned by
+// OpenCodeLoomProviderID.
+func OpenCodeRuntimeProviderID(providerID string) (string, bool) {
+	providerID = strings.TrimSpace(providerID)
+	if !validOpenCodeProviderPart(providerID) {
+		return "", false
+	}
+	switch providerID {
+	case "minimax":
+		return "minimax-cn", true
+	case "zhipu":
+		return "zai", true
+	default:
+		return providerID, true
+	}
+}
+
+// OpenCodeLoomProviderID resolves an OpenCode provider prefix back to the
+// Loom Provider Account namespace used by the Credential Vault.
+func OpenCodeLoomProviderID(runtimeProviderID string) (string, bool) {
+	runtimeProviderID = strings.TrimSpace(runtimeProviderID)
+	if !validOpenCodeProviderPart(runtimeProviderID) {
+		return "", false
+	}
+	switch runtimeProviderID {
+	case "minimax-cn":
+		return "minimax", true
+	case "zai":
+		return "zhipu", true
+	default:
+		return runtimeProviderID, true
 	}
 }
 
@@ -74,25 +116,29 @@ func OpenCodeModelIdentity(providerID string, modelID string) (string, error) {
 		!validOpenCodeProviderPart(providerID) {
 		return "", ErrOpenCodeModelAdaptation
 	}
+	runtimeProviderID, ok := OpenCodeRuntimeProviderID(providerID)
+	if !ok {
+		return "", ErrOpenCodeModelAdaptation
+	}
 	if strings.Contains(modelID, "/") {
 		// Gateway Providers (for example openrouter) accept a qualified model
 		// naming the upstream Provider: openrouter + deepseek/deepseek-chat ->
 		// openrouter/deepseek/deepseek-chat. Non-gateway Providers must not be
 		// silently pointed at another Provider's model.
-		if providerID == "openrouter" {
-			identity := providerID + "/" + modelID
+		if runtimeProviderID == "openrouter" {
+			identity := runtimeProviderID + "/" + modelID
 			if !validOpenCodeModelID(identity) {
 				return "", ErrOpenCodeModelAdaptation
 			}
 			return identity, nil
 		}
 		parts := strings.SplitN(modelID, "/", 2)
-		if len(parts) != 2 || parts[0] != providerID ||
+		if len(parts) != 2 || parts[0] != runtimeProviderID ||
 			!validOpenCodeProviderPart(parts[0]) ||
 			!validOpenCodeModelPart(parts[1]) {
 			return "", ErrOpenCodeModelAdaptation
 		}
-		identity := providerID + "/" + parts[1]
+		identity := runtimeProviderID + "/" + parts[1]
 		if !validOpenCodeModelID(identity) {
 			return "", ErrOpenCodeModelAdaptation
 		}
@@ -101,7 +147,7 @@ func OpenCodeModelIdentity(providerID string, modelID string) (string, error) {
 	if !validOpenCodeModelPart(modelID) {
 		return "", ErrOpenCodeModelAdaptation
 	}
-	identity := providerID + "/" + modelID
+	identity := runtimeProviderID + "/" + modelID
 	if !validOpenCodeModelID(identity) {
 		return "", ErrOpenCodeModelAdaptation
 	}

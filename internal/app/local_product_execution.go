@@ -36,10 +36,14 @@ const MissionContextVersion = 1
 
 const (
 	maxMissionExecutionTextBytes          = 4096
+	maxMissionExecutionNodeTitleBytes     = 512
 	maxMissionExecutionListItems          = 64
 	maxMissionExecutionNodeCount          = 16
 	maxAuthoritativeMissionFlights        = 64
 	missionExecutionPreflightTTL          = 5 * time.Minute
+	missionExecutionGrantCommitGrace      = time.Minute
+	missionExecutionMinimumGrantLifetime  = 2 * time.Minute
+	missionExecutionMaximumGrantLifetime  = time.Hour
 	missionExecutionPreflight             = "preflight"
 	missionExecutionStart                 = "start"
 	missionExecutionControl               = "control"
@@ -54,6 +58,22 @@ var ErrMissionExecutionConflict = errors.New("mission execution conflict")
 
 var ErrMissionExecutionBusy = errors.New("mission execution busy")
 
+type missionExecutionConflictStage struct{ stage string }
+
+func (err missionExecutionConflictStage) Error() string { return err.stage }
+
+func MissionExecutionConflictStage(err error) (string, bool) {
+	var detail missionExecutionConflictStage
+	if !errors.As(err, &detail) || detail.stage == "" {
+		return "", false
+	}
+	return detail.stage, true
+}
+
+func missionExecutionConflictAt(stage string) error {
+	return errors.Join(ErrMissionExecutionConflict, missionExecutionConflictStage{stage: stage})
+}
+
 type MissionExecutionCommand struct {
 	SchemaVersion        int      `json:"schema_version"`
 	Operation            string   `json:"operation"`
@@ -62,6 +82,7 @@ type MissionExecutionCommand struct {
 	WorkPackageID        string   `json:"work_package_id,omitempty"`
 	WorkPackageDigest    string   `json:"work_package_digest,omitempty"`
 	Objective            string   `json:"objective,omitempty"`
+	WorkspacePath        string   `json:"workspace_path,omitempty"`
 	ContextVersion       int      `json:"context_version,omitempty"`
 	ConfirmedConstraints []string `json:"confirmed_constraints,omitempty"`
 	AcceptedDecisions    []string `json:"accepted_decisions,omitempty"`
@@ -72,6 +93,7 @@ type MissionExecutionCommand struct {
 	LogicalNodeID        string   `json:"logical_node_id,omitempty"`
 	AttemptNumber        int      `json:"attempt_number,omitempty"`
 	ClaimGeneration      int64    `json:"claim_generation,omitempty"`
+	NewAttempt           bool     `json:"new_attempt,omitempty"`
 	CorrelationID        string   `json:"correlation_id"`
 }
 
@@ -136,6 +158,7 @@ type MissionExecutionPreflight struct {
 	SideEffects       []string                      `json:"side_effects"`
 	PermissionScopes  []string                      `json:"permission_scopes"`
 	ApprovalPoints    []string                      `json:"approval_points"`
+	NewAttempt        bool                          `json:"new_attempt,omitempty"`
 	Nodes             []MissionExecutionNodePreview `json:"nodes"`
 }
 
@@ -175,6 +198,10 @@ type MissionExecutionCompiler interface {
 		context.Context,
 		MissionExecutionCommand,
 	) (MissionExecutionCompilation, error)
+}
+
+type missionExecutionObserverBinder interface {
+	BindMissionExecutionObserver(context.Context, string, *TeamExecutionRequest) error
 }
 
 type MissionExecutionReconstructor interface {
@@ -1199,6 +1226,14 @@ type MissionExecutionObserverFactory interface {
 	) (NodeOutputObserver, error)
 }
 
+type missionExecutionGenerationCompiler interface {
+	compileMissionExecutionGeneration(
+		context.Context,
+		MissionExecutionCommand,
+		projection.TeamExecution,
+	) (MissionExecutionCompilation, error)
+}
+
 type BuiltInMissionExecutionCompiler struct {
 	bindings          MissionExecutionBindingSource
 	fallbackApprovals MissionFallbackApprovalSource
@@ -1274,15 +1309,114 @@ func (compiler *BuiltInMissionExecutionCompiler) CompileMissionExecution(
 	)
 }
 
+func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecutionGeneration(
+	ctx context.Context,
+	command MissionExecutionCommand,
+	projected projection.TeamExecution,
+) (MissionExecutionCompilation, error) {
+	if compiler == nil || ctx == nil ||
+		projected.TeamInstanceID != command.TeamInstanceID ||
+		!validSHA256(projected.PlanDigest) ||
+		!validMissionExecutionUUID(projected.ExecutionGenerationID) ||
+		(command.Operation != missionExecutionPreflight &&
+			command.Operation != missionExecutionStart) ||
+		!validMissionExecutionCommand(command, command.Operation) {
+		return MissionExecutionCompilation{}, ErrInvalidMissionExecution
+	}
+	if err := ctx.Err(); err != nil {
+		return MissionExecutionCompilation{}, err
+	}
+	binding, err := compiler.bindings.ResolveMissionExecutionBinding(
+		ctx,
+		command.TeamInstanceID,
+	)
+	if err != nil {
+		return MissionExecutionCompilation{}, err
+	}
+	compilation, err := compiler.compileMissionExecutionWithGeneration(
+		ctx,
+		command,
+		binding,
+		false,
+		projected.ExecutionGenerationID,
+	)
+	if err != nil {
+		return MissionExecutionCompilation{}, err
+	}
+	semanticErr := appValidateProjectedSemantics(compilation.Request, projected)
+	if compilation.Plan.Digest() != projected.PlanDigest || semanticErr != nil {
+		return MissionExecutionCompilation{}, errors.Join(
+			ErrMissionExecutionConflict,
+			semanticErr,
+		)
+	}
+	if err := compiler.restoreProjectedContextCapsules(
+		ctx,
+		&compilation.Request,
+		projected,
+	); err != nil {
+		return MissionExecutionCompilation{}, errors.Join(
+			ErrMissionExecutionConflict,
+			err,
+		)
+	}
+	if _, err := validateTeamExecutionRequest(ctx, compilation.Request); err != nil {
+		return MissionExecutionCompilation{}, errors.Join(
+			ErrMissionExecutionConflict,
+			err,
+		)
+	}
+	return compilation, nil
+}
+
+func (compiler *BuiltInMissionExecutionCompiler) BindMissionExecutionObserver(
+	ctx context.Context,
+	teamInstanceID string,
+	request *TeamExecutionRequest,
+) error {
+	if compiler == nil || ctx == nil || request == nil ||
+		!validMissionExecutionText(teamInstanceID, 128) {
+		return ErrInvalidMissionExecution
+	}
+	if request.OutputObserver != nil || compiler.observerFactory == nil {
+		return nil
+	}
+	observer, err := compiler.observerFactory.MissionExecutionObserver(ctx, teamInstanceID)
+	if err != nil || nilMissionExecutionInterface(observer) {
+		return errors.Join(ErrInvalidMissionExecution, err)
+	}
+	request.OutputObserver = observer
+	return nil
+}
+
 func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 	ctx context.Context,
 	command MissionExecutionCommand,
 	binding MissionExecutionBinding,
 	persistContextCapsules bool,
 ) (MissionExecutionCompilation, error) {
+	return compiler.compileMissionExecutionWithGeneration(
+		ctx, command, binding, persistContextCapsules, "",
+	)
+}
+
+func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecutionWithGeneration(
+	ctx context.Context,
+	command MissionExecutionCommand,
+	binding MissionExecutionBinding,
+	persistContextCapsules bool,
+	executionGenerationID string,
+) (MissionExecutionCompilation, error) {
 	if binding.ViewVersion != command.ExpectedViewVersion ||
 		binding.TeamInstanceID != command.TeamInstanceID {
 		return MissionExecutionCompilation{}, ErrMissionExecutionConflict
+	}
+	sourcePath := compiler.sourcePath
+	if command.WorkspacePath != "" {
+		if !validMissionExecutionSourcePath(command.WorkspacePath) {
+			return MissionExecutionCompilation{}, ErrInvalidMissionExecution
+		}
+		sourcePath = command.WorkspacePath
 	}
 	legacySingleRole := len(binding.Roles) == 0
 	roles := missionExecutionRoleBindings(binding, command.Objective)
@@ -1489,7 +1623,7 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		1,
 		[]string{
 			"authorized output is non-empty",
-			"result satisfies the confirmed Mission objective",
+			"result satisfies this node's assigned contribution to the confirmed Mission objective",
 		},
 		verification.AcceptanceRiskMedium,
 	)
@@ -1501,7 +1635,7 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		return MissionExecutionCompilation{}, ErrInvalidMissionExecution
 	}
 	executor := compileOnlyMissionExecutor{}
-	workspaceSnapshot, err := supervisor.ObserveSourceSnapshot(compiler.sourcePath)
+	workspaceSnapshot, err := supervisor.ObserveSourceSnapshot(sourcePath)
 	if err != nil {
 		return MissionExecutionCompilation{}, errors.Join(
 			ErrInvalidMissionExecution,
@@ -1516,6 +1650,11 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		0,
 		len(roles),
 	)
+	attemptIdentitySalt := appTeamAttemptIdentitySalt(TeamExecutionRequest{
+		CorrelationID:         command.CorrelationID,
+		RestartTerminal:       command.NewAttempt,
+		ExecutionGenerationID: executionGenerationID,
+	})
 	for roleIndex := range roles {
 		role := &roles[roleIndex]
 		attemptTwoProfile := role.Profile
@@ -1646,9 +1785,11 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 			}
 			workItemID := appTeamAttemptIdentity(
 				"work", plan, role.LogicalNodeID, attemptNumber,
+				attemptIdentitySalt...,
 			)
 			runID := appTeamAttemptIdentity(
 				"run", plan, role.LogicalNodeID, attemptNumber,
+				attemptIdentitySalt...,
 			)
 			dispatch, frameErr := bridgev1.NewFrame(bridgev1.FrameInput{
 				MessageID: appVerifierUUID(
@@ -1671,15 +1812,19 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 			executions = append(executions, TeamNodeExecution{
 				LogicalNodeID: role.LogicalNodeID, AttemptNumber: attemptNumber,
 				WorkflowPath:         workflowPath,
-				SourcePath:           compiler.sourcePath,
+				SourcePath:           sourcePath,
 				SourceSnapshotDigest: workspaceSnapshot.TreeDigest(),
 				Profile:              executionProfile,
 				Instance:             executionInstance, Dispatch: dispatch, Executor: executor,
-				ContextCapsule: capsule,
+				ContextCapsule:           capsule,
+				ContextCapacityAuthority: missionContextCapacityAuthority(),
+				ContextTokenCounter:      missionContextCounter,
 			})
 			if role.Aggregation {
 				executions[len(executions)-1].Aggregation = &TeamAggregationExecution{
 					MaxSourceArtifactBytes: maxTeamAggregationSourceBytes,
+					CapacityAuthority:      missionContextCapacityAuthority(),
+					TokenCounter:           missionContextCounter,
 				}
 			}
 		}
@@ -1690,6 +1835,14 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		verifierAgentID := appVerifierIdentity(
 			"mission-verifier-agent", verifierIdentityFields...,
 		)
+		verifierProfile, verifierProfileErr :=
+			missionVerifierRuntimeProfile(role.Profile)
+		if verifierProfileErr != nil {
+			return MissionExecutionCompilation{}, errors.Join(
+				ErrInvalidMissionExecution,
+				verifierProfileErr,
+			)
+		}
 		semantics = append(semantics, TeamNodeSemantics{
 			LogicalNodeID:  role.LogicalNodeID,
 			OutputContract: outputContract, RecoveryPolicy: roleRecoveryPolicy,
@@ -1700,9 +1853,9 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 			VerifierRuntimeInstanceID: role.Instance.ID,
 			VerifierWorkflowPath:      "builtin/mission-verifier-v1",
 			VerifierExecution: &TeamVerifierExecution{
-				SourcePath:           compiler.sourcePath,
+				SourcePath:           sourcePath,
 				SourceSnapshotDigest: workspaceSnapshot.TreeDigest(),
-				Profile:              role.Profile,
+				Profile:              verifierProfile,
 				Instance:             role.Instance, Executor: executor,
 			},
 		})
@@ -1795,11 +1948,11 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		SideEffects:       sideEffects,
 		PermissionScopes:  permissionScopes,
 		ApprovalPoints:    approvalPoints,
+		NewAttempt:        command.NewAttempt,
 		Nodes:             preflightNodes,
 	}
 	outputObserver := compiler.outputObserver
-	if command.Operation == missionExecutionStart &&
-		compiler.observerFactory != nil {
+	if command.Operation == missionExecutionStart && compiler.observerFactory != nil {
 		outputObserver, err = compiler.observerFactory.MissionExecutionObserver(
 			ctx,
 			command.TeamInstanceID,
@@ -1811,6 +1964,10 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 			)
 		}
 	}
+	grantLifetime, err := missionExecutionGrantLifetime(roles)
+	if err != nil {
+		return MissionExecutionCompilation{}, err
+	}
 	request := TeamExecutionRequest{
 		Plan: plan, Nodes: executions,
 		Semantics:            semantics,
@@ -1818,16 +1975,80 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecution(
 		RouteSummaries:       routeSummaries,
 		AuthoritativeTime:    now,
 		PrepareLeaseDuration: time.Minute,
-		GrantLifetime:        2 * time.Minute,
+		GrantLifetime:        grantLifetime,
 		CorrelationID:        command.CorrelationID,
 		OutputObserver:       outputObserver,
 		ContextCapsules:      compiler.contextCapsules,
 		AssetSourceStreamIDs: assetSourceStreams,
+		Objective:            command.Objective,
+		RestartTerminal:      command.NewAttempt,
+	}
+	if command.NewAttempt {
+		request.ExecutionGenerationID = command.CorrelationID
+	} else if executionGenerationID != "" {
+		request.ExecutionGenerationID = executionGenerationID
+	}
+	if command.WorkspacePath != "" {
+		request.WorkspacePublisher = NewAtomicTeamWorkspacePublisher()
 	}
 	return MissionExecutionCompilation{
 		Plan: plan, Preflight: preflight, Request: request,
 		FallbackDecisions: fallbackDecisions,
 	}, nil
+}
+
+func missionExecutionGrantLifetime(
+	roles []MissionExecutionRoleBinding,
+) (time.Duration, error) {
+	maxRuntime := time.Duration(0)
+	include := func(timeout time.Duration) {
+		if timeout > maxRuntime {
+			maxRuntime = timeout
+		}
+	}
+	for _, role := range roles {
+		include(role.Profile.Timeout)
+		if role.FallbackConfigured {
+			include(role.FallbackProfile.Timeout)
+		}
+	}
+
+	lifetime := maxRuntime + missionExecutionGrantCommitGrace
+	if lifetime < missionExecutionMinimumGrantLifetime {
+		lifetime = missionExecutionMinimumGrantLifetime
+	}
+	if maxRuntime <= 0 || lifetime > missionExecutionMaximumGrantLifetime {
+		return 0, ErrInvalidMissionExecution
+	}
+	return lifetime, nil
+}
+
+func missionVerifierRuntimeProfile(
+	input loomruntime.RuntimeProfile,
+) (loomruntime.RuntimeProfile, error) {
+	profile := input
+	profile.ID = input.ID + ":independent-verifier:v1"
+	profile.RequiredCapabilities = nil
+	if containsMissionExecutionCapability(
+		input.RequiredCapabilities,
+		loomruntime.CapabilityReasoningEffort,
+	) {
+		profile.RequiredCapabilities = []string{
+			loomruntime.CapabilityReasoningEffort,
+		}
+	}
+	if containsMissionExecutionCapability(
+		input.RequiredCapabilities,
+		"workspace_edit",
+	) {
+		profile.RequiredCapabilities = append(
+			profile.RequiredCapabilities,
+			"workspace_edit",
+		)
+	}
+	profile.RemoteToolEnrollmentID = ""
+	profile.RemoteToolEnrollmentDigest = ""
+	return loomruntime.NewRuntimeProfile(profile)
 }
 
 func missionTeamRouteSummary(role MissionExecutionRoleBinding) work.TeamNodeRouteSummary {
@@ -1847,7 +2068,7 @@ func missionExecutionRoleBindings(
 ) []MissionExecutionRoleBinding {
 	if len(binding.Roles) == 0 {
 		return []MissionExecutionRoleBinding{{
-			LogicalNodeID: "main", Title: objective, Role: teams.ExecutionRoleMain,
+			LogicalNodeID: "main", Title: missionExecutionObjectiveTitle(objective), Role: teams.ExecutionRoleMain,
 			DependsOn: []string{}, AgentInstanceID: binding.AgentInstanceID,
 			Profile: binding.Profile, Instance: binding.Instance,
 			CapacityAvailable: binding.CapacityAvailable,
@@ -1892,13 +2113,25 @@ func missionExecutionRoleBindings(
 			roles[index].Status = "ready"
 		}
 		if roles[index].Role == teams.ExecutionRoleMain {
-			roles[index].Title = objective
+			roles[index].Title = missionExecutionObjectiveTitle(objective)
 		}
 	}
 	sort.Slice(roles, func(i, j int) bool {
 		return roles[i].LogicalNodeID < roles[j].LogicalNodeID
 	})
 	return roles
+}
+
+func missionExecutionObjectiveTitle(objective string) string {
+	title := strings.Join(strings.Fields(objective), " ")
+	if len(title) <= maxMissionExecutionNodeTitleBytes {
+		return title
+	}
+	end := maxMissionExecutionNodeTitleBytes
+	for end > 0 && !utf8.ValidString(title[:end]) {
+		end--
+	}
+	return strings.TrimSpace(title[:end])
 }
 
 func (compiler *BuiltInMissionExecutionCompiler) ReconstructMissionExecution(
@@ -1958,7 +2191,9 @@ func (compiler *BuiltInMissionExecutionCompiler) ReconstructMissionExecution(
 	if !validMissionExecutionCommand(command, missionExecutionStart) {
 		return TeamExecutionRequest{}, ErrMissionExecutionConflict
 	}
-	compilation, err := compiler.compileMissionExecution(ctx, command, binding, false)
+	compilation, err := compiler.compileMissionExecutionWithGeneration(
+		ctx, command, binding, false, projected.ExecutionGenerationID,
+	)
 	if err != nil {
 		return TeamExecutionRequest{}, errors.Join(
 			ErrMissionExecutionConflict,
@@ -1997,11 +2232,22 @@ func (compiler *BuiltInMissionExecutionCompiler) restoreProjectedContextCapsules
 	projected projection.TeamExecution,
 ) error {
 	projectedAuthorities := make(map[string]contextcapsule.AuthorityRecord)
+	projectedCurrentAuthorities := make(map[string]contextcapsule.AuthorityRecord)
+	projectedCurrentAttempts := make(map[string]int, len(projected.Nodes))
 	conversationID := ""
 	for _, node := range projected.Nodes {
+		projectedCurrentAttempts[node.LogicalNodeID] = node.CurrentAttempt
+		if node.CurrentAttempt == 0 {
+			continue
+		}
+		currentFound := false
 		for _, attempt := range node.Attempts {
-			if !attempt.ContextCapsuleAvailable {
+			if attempt.AttemptNumber != node.CurrentAttempt {
 				continue
+			}
+			currentFound = true
+			if !attempt.ContextCapsuleAvailable {
+				return ErrMissionExecutionConflict
 			}
 			if _, err := contextcapsule.ValidateAuthorityRecord(
 				attempt.ContextCapsule,
@@ -2013,6 +2259,10 @@ func (compiler *BuiltInMissionExecutionCompiler) restoreProjectedContextCapsules
 			projectedAuthorities[appExecutionKey(
 				node.LogicalNodeID, attempt.AttemptNumber,
 			)] = attempt.ContextCapsule
+			projectedCurrentAuthorities[node.LogicalNodeID] = attempt.ContextCapsule
+		}
+		if !currentFound {
+			return ErrMissionExecutionConflict
 		}
 	}
 	if len(projectedAuthorities) == 0 {
@@ -2027,6 +2277,17 @@ func (compiler *BuiltInMissionExecutionCompiler) restoreProjectedContextCapsules
 	if err != nil || len(manifest) == 0 {
 		return errors.Join(ErrMissionExecutionConflict, err)
 	}
+	manifestByDigest := make(map[string]contextcapsule.AuthorityRecord, len(manifest))
+	for _, authority := range manifest {
+		if _, err := contextcapsule.ValidateAuthorityRecord(authority); err != nil {
+			return errors.Join(ErrMissionExecutionConflict, err)
+		}
+		if existing, found := manifestByDigest[authority.CapsuleDigest]; found &&
+			existing != authority {
+			return ErrMissionExecutionConflict
+		}
+		manifestByDigest[authority.CapsuleDigest] = authority
+	}
 	for index := range request.Nodes {
 		execution := request.Nodes[index]
 		key := appExecutionKey(execution.LogicalNodeID, execution.AttemptNumber)
@@ -2038,18 +2299,25 @@ func (compiler *BuiltInMissionExecutionCompiler) restoreProjectedContextCapsules
 				return err
 			}
 		} else {
-			matches := make([]contextcapsule.AuthorityRecord, 0, 1)
-			for _, candidate := range manifest {
-				if missionCapsuleAuthorityMatchesExecution(
-					candidate, projected.TeamInstanceID, execution,
-				) {
-					matches = append(matches, candidate)
-				}
+			currentAttempt := projectedCurrentAttempts[execution.LogicalNodeID]
+			if currentAttempt == 0 {
+				// This Agent has not started in the current Mission generation. Its
+				// freshly compiled Capsule is authoritative; historical target-matched
+				// records must never be guessed here.
+				continue
 			}
-			if len(matches) != 1 {
-				return ErrMissionExecutionConflict
+			authority = projectedCurrentAuthorities[execution.LogicalNodeID]
+			currentExecution := execution
+			currentExecution.AttemptNumber = currentAttempt
+			if err := missionProjectedAttemptBindingMatches(
+				projected, currentExecution,
+			); err != nil {
+				return err
 			}
-			authority = matches[0]
+		}
+		manifestAuthority, found := manifestByDigest[authority.CapsuleDigest]
+		if !found || manifestAuthority != authority {
+			return ErrMissionExecutionConflict
 		}
 		if !missionCapsuleAuthorityMatchesExecution(
 			authority, projected.TeamInstanceID, execution,
@@ -2149,8 +2417,25 @@ func validMissionExecutionSourcePath(path string) bool {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return false
 	}
-	info, err := os.Lstat(path)
-	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
+	before, err := os.Lstat(path)
+	if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 ||
+		before.Mode().Perm()&0o700 != 0o700 {
+		return false
+	}
+	handle, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer handle.Close()
+	opened, err := handle.Stat()
+	if err != nil || !opened.IsDir() || !os.SameFile(before, opened) {
+		return false
+	}
+	after, err := os.Lstat(path)
+	return err == nil && after.IsDir() &&
+		after.Mode()&os.ModeSymlink == 0 &&
+		after.Mode().Perm()&0o700 == 0o700 &&
+		os.SameFile(opened, after)
 }
 
 type MissionExecutionState interface {
@@ -2509,6 +2794,8 @@ type missionExecutionPreflightLease struct {
 	missionID      string
 	teamInstanceID string
 	viewVersion    string
+	preflight      MissionExecutionPreflight
+	compilation    MissionExecutionCompilation
 	expiresAt      time.Time
 }
 
@@ -2602,70 +2889,90 @@ func (backend *AuthoritativeMissionExecutionBackend) ResumeProjectedMissions(
 	if err := backend.state.Refresh(ctx); err != nil {
 		return err
 	}
-	executions, hasMore := recoveryState.TeamExecutions(
-		"",
-		maxAuthoritativeMissionFlights,
-	)
-	if hasMore {
-		return ErrMissionExecutionBusy
-	}
-	for _, projected := range executions {
-		if appTerminalTeamStatus(projected.Status) {
-			continue
+	afterTeamID := ""
+	for {
+		executions, hasMore := recoveryState.TeamExecutions(
+			afterTeamID,
+			maxAuthoritativeMissionFlights,
+		)
+		if len(executions) == 0 {
+			if hasMore {
+				return ErrMissionExecutionConflict
+			}
+			return nil
 		}
-		if missionExecutionAwaitingHumanReview(projected) {
-			continue
-		}
-		if backend.parentGate != nil {
-			generation := int64(0)
-			for _, node := range projected.Nodes {
-				for _, attempt := range node.Attempts {
-					if attempt.ClaimGeneration > generation {
-						generation = attempt.ClaimGeneration
+		for _, projected := range executions {
+			if appTerminalTeamStatus(projected.Status) {
+				continue
+			}
+			if missionExecutionAwaitingHumanReview(projected) {
+				continue
+			}
+			if backend.parentGate != nil {
+				generation := int64(0)
+				for _, node := range projected.Nodes {
+					for _, attempt := range node.Attempts {
+						if attempt.ClaimGeneration > generation {
+							generation = attempt.ClaimGeneration
+						}
 					}
 				}
-			}
-			if err := backend.parentGate.AllowParentContinuation(ctx, projected.TeamInstanceID, generation); err != nil {
-				if errors.Is(err, ErrSideTaskProductConflict) {
-					continue
+				if err := backend.parentGate.AllowParentContinuation(ctx, projected.TeamInstanceID, generation); err != nil {
+					if errors.Is(err, ErrSideTaskProductConflict) {
+						continue
+					}
+					return err
 				}
+			}
+			if projected.Status != "running" &&
+				projected.Status != "awaiting_recovery" {
+				// A projected Mission in an unrecognized non-terminal state must
+				// not brick daemon startup. Leave it untouched (it stays visible
+				// on the Mission Board) instead of failing the whole service.
+				continue
+			}
+			request, err := reconstructor.ReconstructMissionExecution(ctx, projected)
+			if err != nil || request.Plan.Digest() != projected.PlanDigest {
+				// An unresumable projected Mission (for example its execution
+				// binding drifted after the App was killed) must not prevent the
+				// daemon from serving. Skip it so the rest of the product starts;
+				// the Mission remains visible for governance attention.
+				continue
+			}
+			delay, err := missionExecutionRecoveryDelay(
+				recoveryState,
+				projected,
+				backend.now(),
+			)
+			if err != nil {
 				return err
 			}
+			executionDigest := missionExecutionDigest(
+				projected.TeamInstanceID,
+				projected.PlanDigest,
+				"restart",
+			)
+			flight, launch, err := backend.flight(
+				projected.TeamInstanceID,
+				projected.PlanDigest,
+				executionDigest,
+			)
+			if err != nil {
+				return err
+			}
+			if launch {
+				backend.launchRecovered(flight, request, delay)
+			}
 		}
-		if projected.Status != "running" &&
-			projected.Status != "awaiting_recovery" {
+		if !hasMore {
+			return nil
+		}
+		nextAfterTeamID := executions[len(executions)-1].TeamInstanceID
+		if nextAfterTeamID <= afterTeamID {
 			return ErrMissionExecutionConflict
 		}
-		request, err := reconstructor.ReconstructMissionExecution(ctx, projected)
-		if err != nil || request.Plan.Digest() != projected.PlanDigest {
-			return errors.Join(ErrMissionExecutionConflict, err)
-		}
-		delay, err := missionExecutionRecoveryDelay(
-			recoveryState,
-			projected,
-			backend.now(),
-		)
-		if err != nil {
-			return err
-		}
-		executionDigest := missionExecutionDigest(
-			projected.TeamInstanceID,
-			projected.PlanDigest,
-			"restart",
-		)
-		flight, launch, err := backend.flight(
-			projected.TeamInstanceID,
-			projected.PlanDigest,
-			executionDigest,
-		)
-		if err != nil {
-			return err
-		}
-		if launch {
-			backend.launchRecovered(flight, request, delay)
-		}
+		afterTeamID = nextAfterTeamID
 	}
-	return nil
 }
 
 func missionExecutionAwaitingHumanReview(
@@ -2752,7 +3059,7 @@ func (backend *AuthoritativeMissionExecutionBackend) PreflightMission(
 		return MissionExecutionPreflight{}, err
 	}
 	preflight := cloneMissionExecutionPreflight(compilation.Preflight)
-	if backend.fallbackDecisions != nil {
+	if backend.fallbackDecisions != nil && len(compilation.FallbackDecisions) > 0 {
 		if err := backend.fallbackDecisions.PrepareMissionFallbackDecisions(
 			ctx,
 			command.TeamInstanceID,
@@ -2760,6 +3067,21 @@ func (backend *AuthoritativeMissionExecutionBackend) PreflightMission(
 			compilation.FallbackDecisions,
 		); err != nil {
 			return MissionExecutionPreflight{}, err
+		}
+		// Preparing fallback decisions may append authoritative governance facts
+		// and advance the read-model version. Recompile against that new version
+		// before freezing the preflight lease; otherwise a valid start is rejected
+		// as stale immediately after its own preflight side effect.
+		if err := backend.state.Refresh(ctx); err != nil {
+			return MissionExecutionPreflight{}, err
+		}
+		if currentView := backend.state.Version(); currentView != preflight.ViewVersion {
+			command.ExpectedViewVersion = currentView
+			compilation, err = backend.compileCurrent(ctx, command)
+			if err != nil {
+				return MissionExecutionPreflight{}, err
+			}
+			preflight = cloneMissionExecutionPreflight(compilation.Preflight)
 		}
 	}
 	expiresAt := backend.now().Add(missionExecutionPreflightTTL)
@@ -2777,6 +3099,8 @@ func (backend *AuthoritativeMissionExecutionBackend) PreflightMission(
 	if err := backend.rememberPreflight(
 		preflight.PreflightDigest,
 		command,
+		preflight,
+		compilation,
 		expiresAt,
 	); err != nil {
 		return MissionExecutionPreflight{}, err
@@ -2790,37 +3114,71 @@ func (backend *AuthoritativeMissionExecutionBackend) StartMission(
 ) (MissionExecutionResult, error) {
 	if backend.parentGate != nil {
 		if err := backend.parentGate.AllowParentContinuation(ctx, command.TeamInstanceID, 0); err != nil {
-			return MissionExecutionResult{}, err
+			return MissionExecutionResult{}, errors.Join(
+				ErrMissionExecutionConflict,
+				err,
+				missionExecutionConflictStage{stage: "parent_continuation"},
+			)
 		}
 	}
-	compilation, err := backend.compileCurrent(ctx, command)
-	if err != nil {
-		return MissionExecutionResult{}, err
-	}
-	preflight := cloneMissionExecutionPreflight(compilation.Preflight)
 	lease, ok := backend.currentPreflight(command, backend.now())
 	if !ok {
-		return MissionExecutionResult{}, ErrMissionExecutionConflict
+		return MissionExecutionResult{}, missionExecutionConflictAt("preflight_lease")
 	}
-	preflight.ExpiresAt = lease.expiresAt.Format(time.RFC3339Nano)
-	preflight.PreflightDigest, err = missionExecutionPreflightDigest(
+	if err := backend.state.Refresh(ctx); err != nil ||
+		backend.state.Version() != lease.viewVersion {
+		return MissionExecutionResult{}, missionExecutionConflictAt("view_drift")
+	}
+	compilation := lease.compilation
+	frozenDigest, digestErr := missionExecutionPreflightDigest(
 		command,
-		preflight,
+		lease.preflight,
 	)
-	if err != nil || preflight.PreflightDigest != command.PreflightDigest {
-		return MissionExecutionResult{}, ErrMissionExecutionConflict
+	if compilation.Plan.Digest() != lease.preflight.PlanDigest ||
+		digestErr != nil || frozenDigest != command.PreflightDigest {
+		return MissionExecutionResult{}, missionExecutionConflictAt("preflight_digest")
 	}
+	// The lease is the immutable preflight boundary. Start consumes the frozen
+	// compilation rather than reinterpreting dynamic status fields.
+	preflight := cloneMissionExecutionPreflight(lease.preflight)
+	preflight.ExpiresAt = lease.expiresAt.Format(time.RFC3339Nano)
 	executionDigest := missionExecutionDigest(
 		command.TeamInstanceID,
 		compilation.Plan.Digest(),
 		preflight.PreflightDigest,
 	)
-	if projected, ok := backend.state.TeamExecution(command.TeamInstanceID); ok {
-		result, projectedErr := backend.projectedResult(
-			command, compilation.Plan, executionDigest, projected,
-		)
-		if !errors.Is(projectedErr, ErrTeamExecutionIncomplete) {
-			return result, projectedErr
+	if projected, ok := backend.state.TeamExecution(command.TeamInstanceID); ok && !command.NewAttempt {
+		if missionExecutionNeedsCoordinatorContinuation(projected) {
+			backend.retireCompletedFlightForContinuation(
+				command.TeamInstanceID,
+				executionDigest,
+			)
+		} else {
+			// A completed flight error is authoritative only once the projected
+			// Team is terminal. Active callers can race a runner that returns the
+			// coordinator's incomplete sentinel after making dispatch visible;
+			// they must join that visible execution instead of inheriting the
+			// sentinel as a user-facing failure.
+			if appTerminalTeamStatus(projected.Status) {
+				if err := backend.completedFlightError(
+					command.TeamInstanceID,
+					compilation.Plan.Digest(),
+				); err != nil {
+					return MissionExecutionResult{}, err
+				}
+			}
+			result, projectedErr := backend.projectedResult(
+				command, compilation.Plan, executionDigest, projected,
+			)
+			if !errors.Is(projectedErr, ErrTeamExecutionIncomplete) {
+				if errors.Is(projectedErr, ErrMissionExecutionConflict) {
+					projectedErr = errors.Join(
+						projectedErr,
+						missionExecutionConflictStage{stage: "dispatch_admission"},
+					)
+				}
+				return result, projectedErr
+			}
 		}
 	}
 	flight, launch, err := backend.flight(
@@ -2829,12 +3187,75 @@ func (backend *AuthoritativeMissionExecutionBackend) StartMission(
 		executionDigest,
 	)
 	if err != nil {
+		if errors.Is(err, ErrMissionExecutionConflict) {
+			return MissionExecutionResult{}, errors.Join(
+				ErrMissionExecutionConflict, err,
+				missionExecutionConflictStage{stage: "flight_conflict"},
+			)
+		}
 		return MissionExecutionResult{}, err
+	}
+	if launch {
+		if binder, ok := backend.compiler.(missionExecutionObserverBinder); ok {
+			if err := binder.BindMissionExecutionObserver(
+				ctx, command.TeamInstanceID, &compilation.Request,
+			); err != nil {
+				return MissionExecutionResult{}, err
+			}
+		}
 	}
 	if launch {
 		backend.launch(flight, compilation.Request)
 	}
-	return backend.waitForProjectedDispatch(ctx, command, compilation.Plan, flight)
+	result, err := backend.waitForProjectedDispatch(ctx, command, compilation.Plan, flight)
+	if err != nil && (errors.Is(err, ErrMissionExecutionConflict) ||
+		errors.Is(err, work.ErrTeamExecutionAlreadyTerminal) ||
+		errors.Is(err, work.ErrTeamExecutionConflict) ||
+		errors.Is(err, work.ErrRuntimeCapacityExhausted) ||
+		errors.Is(err, work.ErrInvalidTeamAttempt)) {
+		stage := "dispatch_admission"
+		if errors.Is(err, work.ErrRuntimeCapacityExhausted) {
+			stage = "dispatch_capacity"
+		} else if errors.Is(err, work.ErrInvalidTeamAttempt) {
+			stage = "dispatch_attempt_validation"
+		} else if errors.Is(err, work.ErrStaleGlobalReadView) {
+			stage = "dispatch_view_conflict"
+		} else if errors.Is(err, work.ErrRunIdentityIndexRequired) {
+			stage = "dispatch_identity_unavailable"
+		} else if errors.Is(err, work.ErrTeamAttemptRecoveryRequired) {
+			stage = "dispatch_recovery_required"
+		} else if errors.Is(err, work.ErrInvalidTeamExecution) {
+			stage = "dispatch_validation"
+		} else if errors.Is(err, ErrInvalidTeamCoordinator) {
+			stage = "dispatch_context_validation"
+		}
+		return result, errors.Join(
+			ErrMissionExecutionConflict,
+			err,
+			missionExecutionConflictStage{stage: stage},
+		)
+	}
+	return result, err
+}
+
+func (backend *AuthoritativeMissionExecutionBackend) completedFlightError(
+	teamID string,
+	planDigest string,
+) error {
+	backend.mu.Lock()
+	flight := backend.flights[teamID]
+	backend.mu.Unlock()
+	if flight == nil || flight.planDigest != planDigest {
+		return nil
+	}
+	select {
+	case <-flight.done:
+		flight.errMu.Lock()
+		defer flight.errMu.Unlock()
+		return flight.err
+	default:
+		return nil
+	}
 }
 
 func (backend *AuthoritativeMissionExecutionBackend) ControlMission(
@@ -2990,9 +3411,40 @@ func (backend *AuthoritativeMissionExecutionBackend) compileCurrent(
 	if backend.state.Version() != command.ExpectedViewVersion {
 		return MissionExecutionCompilation{}, ErrMissionExecutionConflict
 	}
-	compilation, err := backend.compiler.CompileMissionExecution(ctx, command)
+	projected, continuing := backend.state.TeamExecution(command.TeamInstanceID)
+	continuing = continuing && !command.NewAttempt &&
+		!appTerminalTeamStatus(projected.Status)
+	var compilation MissionExecutionCompilation
+	var err error
+	if continuing && projected.ExecutionGenerationID != "" {
+		generationCompiler, ok := backend.compiler.(missionExecutionGenerationCompiler)
+		if !ok || nilMissionExecutionInterface(generationCompiler) {
+			return MissionExecutionCompilation{}, missionExecutionConflictAt(
+				"execution_generation",
+			)
+		}
+		compilation, err = generationCompiler.compileMissionExecutionGeneration(
+			ctx,
+			command,
+			projected,
+		)
+	} else {
+		compilation, err = backend.compiler.CompileMissionExecution(ctx, command)
+	}
 	if err != nil {
 		return MissionExecutionCompilation{}, err
+	}
+	if continuing {
+		if projected.PlanDigest != compilation.Plan.Digest() {
+			return MissionExecutionCompilation{}, missionExecutionConflictAt(
+				"execution_generation",
+			)
+		}
+		if compilation.Request.ExecutionGenerationID != projected.ExecutionGenerationID {
+			return MissionExecutionCompilation{}, missionExecutionConflictAt(
+				"execution_generation",
+			)
+		}
 	}
 	if compilation.Plan.TeamInstanceID() != command.TeamInstanceID ||
 		compilation.Plan.Digest() == "" ||
@@ -3014,6 +3466,19 @@ func (backend *AuthoritativeMissionExecutionBackend) flight(
 	}
 	backend.reapTerminalFlightsLocked()
 	if current := backend.flights[teamID]; current != nil {
+		select {
+		case <-current.done:
+			// A completed flight is a reusable idempotency record for the
+			// same execution digest. A later, explicitly different attempt
+			// may replace it, but concurrent callers must still join it.
+			if current.planDigest != planDigest || current.executionDigest != executionDigest {
+				delete(backend.flights, teamID)
+				break
+			}
+		default:
+		}
+	}
+	if current := backend.flights[teamID]; current != nil {
 		if current.planDigest != planDigest ||
 			current.executionDigest != executionDigest {
 			return nil, false, ErrMissionExecutionConflict
@@ -3030,6 +3495,56 @@ func (backend *AuthoritativeMissionExecutionBackend) flight(
 	}
 	backend.flights[teamID] = flight
 	return flight, true, nil
+}
+
+func missionExecutionNeedsCoordinatorContinuation(
+	projected projection.TeamExecution,
+) bool {
+	if projected.Status != "running" && projected.Status != "awaiting_recovery" ||
+		missionExecutionAwaitingHumanReview(projected) {
+		return false
+	}
+	for _, node := range projected.Nodes {
+		for _, attempt := range node.Attempts {
+			if attempt.Status == "dispatched" {
+				return false
+			}
+		}
+	}
+	// Awaiting recovery is not a user-visible terminal result. Once the active
+	// attempt is durable and no longer dispatched, the coordinator must run
+	// again to record its recovery decision and either schedule the next
+	// attempt or close the Team. Returning the projection directly here leaves
+	// the Mission permanently stranded between those two authority steps.
+	if projected.Status == "awaiting_recovery" {
+		return true
+	}
+	for _, node := range projected.Nodes {
+		switch node.Status {
+		case "succeeded", "failed", "cancelled", "ready_for_review":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func (backend *AuthoritativeMissionExecutionBackend) retireCompletedFlightForContinuation(
+	teamID string,
+	executionDigest string,
+) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	current := backend.flights[teamID]
+	if current == nil || current.executionDigest != executionDigest {
+		return
+	}
+	select {
+	case <-current.done:
+		delete(backend.flights, teamID)
+	default:
+	}
 }
 
 func (backend *AuthoritativeMissionExecutionBackend) reapTerminalFlightsLocked() {
@@ -3051,11 +3566,54 @@ func (backend *AuthoritativeMissionExecutionBackend) launch(
 ) {
 	go func() {
 		_, err := backend.runner.Run(flight.ctx, request)
+		if err != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"mission_execution_background_error team_id=%s plan_digest=%s error_types=%s\n",
+				request.Plan.TeamInstanceID(), request.Plan.Digest(),
+				missionExecutionErrorTypes(err),
+			)
+		}
 		flight.errMu.Lock()
 		flight.err = err
 		flight.errMu.Unlock()
 		close(flight.done)
 	}()
+}
+
+func missionExecutionErrorTypes(err error) string {
+	if err == nil {
+		return ""
+	}
+	seen := make(map[error]struct{})
+	types := make(map[string]struct{})
+	var visit func(error)
+	visit = func(current error) {
+		if current == nil {
+			return
+		}
+		if reflect.TypeOf(current).Comparable() {
+			if _, exists := seen[current]; exists {
+				return
+			}
+			seen[current] = struct{}{}
+		}
+		types[reflect.TypeOf(current).String()] = struct{}{}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				visit(child)
+			}
+			return
+		}
+		visit(errors.Unwrap(current))
+	}
+	visit(err)
+	values := make([]string, 0, len(types))
+	for value := range types {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
 }
 
 func (backend *AuthoritativeMissionExecutionBackend) waitForProjectedDispatch(
@@ -3076,11 +3634,30 @@ func (backend *AuthoritativeMissionExecutionBackend) waitForProjectedDispatch(
 			)
 		}
 		if projected, ok := backend.state.TeamExecution(command.TeamInstanceID); ok {
-			result, projectedErr := backend.projectedResult(
-				command, plan, flight.executionDigest, projected,
-			)
-			if !errors.Is(projectedErr, ErrTeamExecutionIncomplete) {
-				return result, projectedErr
+			// A new Attempt must not reuse the terminal projection from the
+			// previous run. Once its own dispatched Work/Run/Grant lineage is
+			// visible, however, return the live projection just like a normal
+			// start so the caller receives running/blocked/etc. rather than a
+			// misleading state_unavailable after the visibility timeout.
+			newAttemptVisible := !command.NewAttempt ||
+				backend.newAttemptDispatchLineageVisible(projected)
+			if newAttemptVisible {
+				if command.NewAttempt {
+					return MissionExecutionResult{
+						SchemaVersion:   MissionExecutionSchemaVersion,
+						MissionID:       command.MissionID,
+						TeamInstanceID:  command.TeamInstanceID,
+						Status:          "running",
+						ViewVersion:     backend.state.Version(),
+						ExecutionDigest: flight.executionDigest,
+					}, nil
+				}
+				result, projectedErr := backend.projectedResult(
+					command, plan, flight.executionDigest, projected,
+				)
+				if !errors.Is(projectedErr, ErrTeamExecutionIncomplete) {
+					return result, projectedErr
+				}
 			}
 		}
 		select {
@@ -3163,6 +3740,49 @@ func (backend *AuthoritativeMissionExecutionBackend) projectedResult(
 	}, nil
 }
 
+// newAttemptDispatchLineageVisible is deliberately weaker than the normal
+// start visibility check. A governed New Attempt may return as soon as the
+// authority has committed the new Work/Run/claim lineage; the worker can then
+// advance claimed Runs to running in the background. Requiring a Grant or a
+// provider call here turns a successful dispatch into a false state-unavailable
+// error when a provider or runtime is slow to admit the attempt.
+func (backend *AuthoritativeMissionExecutionBackend) newAttemptDispatchLineageVisible(
+	projected projection.TeamExecution,
+) bool {
+	state, ok := backend.state.(missionExecutionStartLineageState)
+	if !ok || len(projected.Nodes) == 0 {
+		return false
+	}
+	visible := 0
+	for _, node := range projected.Nodes {
+		if node.CurrentAttempt <= 0 {
+			continue
+		}
+		var current *projection.TeamExecutionAttempt
+		for index := range node.Attempts {
+			if node.Attempts[index].AttemptNumber == node.CurrentAttempt {
+				current = &node.Attempts[index]
+				break
+			}
+		}
+		if current == nil || current.Status != "dispatched" ||
+			current.WorkItemID == "" || current.RunID == "" ||
+			current.ClaimID == "" || current.ClaimGeneration <= 0 {
+			return false
+		}
+		run, exists := state.Run(current.RunID)
+		if !exists || run.ID != current.RunID ||
+			run.WorkItemID != current.WorkItemID ||
+			run.ClaimID != current.ClaimID ||
+			run.ClaimGeneration != current.ClaimGeneration ||
+			(run.Phase != "claimed" && run.Phase != "running") {
+			return false
+		}
+		visible++
+	}
+	return visible > 0
+}
+
 func (backend *AuthoritativeMissionExecutionBackend) completeProjectedStartLineage(
 	projected projection.TeamExecution,
 ) bool {
@@ -3226,10 +3846,13 @@ func missionExecutionProjectedStatus(status string) (string, bool) {
 func (backend *AuthoritativeMissionExecutionBackend) rememberPreflight(
 	digest string,
 	command MissionExecutionCommand,
+	preflight MissionExecutionPreflight,
+	compilation MissionExecutionCompilation,
 	expiresAt time.Time,
 ) error {
 	if !validSHA256(digest) || expiresAt.IsZero() ||
-		expiresAt.Location() != time.UTC {
+		expiresAt.Location() != time.UTC ||
+		preflight.PreflightDigest != digest {
 		return ErrInvalidMissionExecution
 	}
 	backend.mu.Lock()
@@ -3243,7 +3866,9 @@ func (backend *AuthoritativeMissionExecutionBackend) rememberPreflight(
 	}
 	backend.preflights[digest] = missionExecutionPreflightLease{
 		missionID: command.MissionID, teamInstanceID: command.TeamInstanceID,
-		viewVersion: command.ExpectedViewVersion, expiresAt: expiresAt,
+		viewVersion: command.ExpectedViewVersion,
+		preflight:   cloneMissionExecutionPreflight(preflight), compilation: compilation,
+		expiresAt: expiresAt,
 	}
 	return nil
 }
@@ -3421,6 +4046,7 @@ func validMissionExecutionCommand(
 	case missionExecutionControl:
 		return command.WorkPackageID == "" &&
 			command.WorkPackageDigest == "" && command.Objective == "" &&
+			command.WorkspacePath == "" &&
 			command.ContextVersion == 0 && command.ConfirmedConstraints == nil &&
 			command.AcceptedDecisions == nil &&
 			command.PreflightDigest == "" &&
@@ -3433,7 +4059,9 @@ func validMissionExecutionCommand(
 func validMissionExecutionPreStart(command MissionExecutionCommand) bool {
 	workPackage, err := missionExecutionWorkPackage(command.WorkPackageID)
 	return err == nil && command.WorkPackageDigest == workPackage.Digest() &&
-		validMissionExecutionText(command.Objective, maxMissionExecutionTextBytes) &&
+		validMissionExecutionContent(command.Objective, maxMissionExecutionTextBytes) &&
+		(command.WorkspacePath == "" ||
+			validMissionExecutionSourcePath(command.WorkspacePath)) &&
 		validMissionContext(command)
 }
 
@@ -3789,6 +4417,12 @@ func validMissionExecutionText(value string, maximum int) bool {
 	return value != "" && value == strings.TrimSpace(value) &&
 		utf8.ValidString(value) && len(value) <= maximum &&
 		!strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validMissionExecutionContent(value string, maximum int) bool {
+	return value != "" && value == strings.TrimSpace(value) &&
+		utf8.ValidString(value) && len(value) <= maximum &&
+		!strings.ContainsAny(value, "\x00\r")
 }
 
 func validSHA256(value string) bool {

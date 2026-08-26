@@ -365,6 +365,84 @@ func TestGlobalReadViewReturnsBoundedStableProductPages(t *testing.T) {
 	}
 }
 
+func TestGlobalReadViewTeamsPreferRecentlyCreatedInstances(t *testing.T) {
+	snapshot := Snapshot{
+		Teams: map[string]TeamInstance{
+			"team-old": {ID: "team-old", CreatedAt: 100},
+			"team-new": {ID: "team-new", CreatedAt: 200},
+		},
+	}
+	view := mustBuildGlobalReadView(t, snapshot, nil, nil)
+
+	teams, more := view.Teams("", 1)
+	if len(teams) != 1 || teams[0].ID != "team-new" || !more {
+		t.Fatalf("Teams() = %#v, %v; want newest first with continuation", teams, more)
+	}
+	teams, more = view.Teams("team-new", 1)
+	if len(teams) != 1 || teams[0].ID != "team-old" || more {
+		t.Fatalf("Teams(after newest) = %#v, %v; want remaining historical Team", teams, more)
+	}
+}
+
+func TestGlobalReadViewTeamRowsPageSavedAndExecutionOnlyTeamsWithoutLoss(t *testing.T) {
+	snapshot := emptySnapshot()
+	snapshot.Teams["saved-old"] = TeamInstance{ID: "saved-old", CreatedAt: 100}
+	snapshot.Teams["saved-new"] = TeamInstance{ID: "saved-new", CreatedAt: 200}
+	executions := map[string]TeamExecution{
+		"saved-old":   {TeamInstanceID: "saved-old", Status: "succeeded"},
+		"execution-a": {TeamInstanceID: "execution-a", Status: "failed"},
+		"execution-b": {TeamInstanceID: "execution-b", Status: "succeeded"},
+	}
+	view := mustBuildGlobalReadView(t, snapshot, nil, executions)
+
+	first, more, ok := view.TeamRows("", 2)
+	if !ok || !more || len(first) != 2 ||
+		first[0].Team.ID != "saved-new" || first[0].ExecutionAvailable ||
+		first[1].Team.ID != "saved-old" ||
+		!first[1].ExecutionAvailable ||
+		first[1].Execution.TeamInstanceID != "saved-old" {
+		t.Fatalf("first TeamRows page = %#v, more=%v ok=%v", first, more, ok)
+	}
+	second, more, ok := view.TeamRows(first[len(first)-1].TeamInstanceID, 2)
+	if !ok || more || len(second) != 2 ||
+		second[0].TeamInstanceID != "execution-a" || second[0].TeamAvailable ||
+		second[1].TeamInstanceID != "execution-b" || second[1].TeamAvailable {
+		t.Fatalf("second TeamRows page = %#v, more=%v ok=%v", second, more, ok)
+	}
+
+	invalid, more, ok := view.TeamRows("missing-team", 2)
+	if ok || more || len(invalid) != 0 {
+		t.Fatalf("invalid TeamRows cursor = %#v, more=%v ok=%v", invalid, more, ok)
+	}
+}
+
+func TestGlobalReadViewArchivedTeamDefinitionIsNotExecutable(t *testing.T) {
+	snapshot := emptySnapshot()
+	snapshot.TeamDefinitions = make(map[string]TeamDefinitionRecord)
+	snapshot.TeamDefinitions["team-def-active"] = TeamDefinitionRecord{
+		ID: "team-def-active", Status: "active",
+	}
+	snapshot.TeamDefinitions["team-def-archived"] = TeamDefinitionRecord{
+		ID: "team-def-archived", Status: "archived",
+	}
+	snapshot.Teams["team-active"] = TeamInstance{
+		ID: "team-active", TeamDefinitionID: "team-def-active",
+	}
+	snapshot.Teams["team-archived"] = TeamInstance{
+		ID: "team-archived", TeamDefinitionID: "team-def-archived",
+	}
+	view := mustBuildGlobalReadView(t, snapshot, nil, nil)
+
+	active, ok := view.TeamTimelineAnchor("team-active")
+	if !ok || !active.Confirmed || !active.Executable || active.ReadOnly {
+		t.Fatalf("active anchor = %#v, %v", active, ok)
+	}
+	archived, ok := view.TeamTimelineAnchor("team-archived")
+	if !ok || !archived.Confirmed || archived.Executable || archived.ReadOnly {
+		t.Fatalf("archived anchor must stay visible but be non-executable: %#v, %v", archived, ok)
+	}
+}
+
 func TestGlobalReadViewTeamTimelineAnchorIsExactReadOnlyAndTerminal(t *testing.T) {
 	snapshot := emptySnapshot()
 	snapshot.Teams["team-saved"] = TeamInstance{ID: "team-saved"}

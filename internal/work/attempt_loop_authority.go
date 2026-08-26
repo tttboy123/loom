@@ -701,6 +701,12 @@ func (authority *AttemptLoopAuthority) EndStep(
 	}
 	for _, call := range step.ToolCalls {
 		if !call.Dispatched {
+			// A failed step may carry an admitted but undispatched tool call
+			// (for example the provider round failed before dispatch); that
+			// must not prevent the step from terminating as failed.
+			if input.Outcome == AttemptStepFailed {
+				continue
+			}
 			return AttemptLoopSnapshot{}, ErrAttemptLoopConflict
 		}
 		facts, lookupErr := authority.payloads.readFacts(
@@ -711,6 +717,13 @@ func (authority *AttemptLoopAuthority) EndStep(
 		}
 		if !facts.found || facts.status != attemptpayload.FactDelivered ||
 			facts.acceptedCausationID != call.DispatchEventID {
+			// A dispatched Context call whose result was never delivered (for
+			// example the provider round after a bounded denial failed) must
+			// still allow the step to finalize as failed; otherwise the
+			// Attempt loop stays open forever and the Mission appears running.
+			if input.Outcome == AttemptStepFailed {
+				continue
+			}
 			return AttemptLoopSnapshot{}, ErrAttemptLoopConflict
 		}
 	}

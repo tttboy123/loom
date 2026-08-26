@@ -17,9 +17,11 @@ import (
 
 	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/endpointapproval"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
+	"loom-pi-rebuild/internal/providerendpoint"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/state"
 	"loom-pi-rebuild/internal/teams"
@@ -36,6 +38,7 @@ var (
 	ErrRemoteToolEnrollmentSelectionRejected = errors.New("remote tool enrollment selection rejected")
 	ErrBuilderConfirmationRequired           = errors.New("builder confirmation required")
 	ErrCredentialSetupUnavailable            = errors.New("credential setup unavailable")
+	ErrCredentialImportUnavailable           = errors.New("credential import unavailable")
 	ErrNativeAuthConnectUnavailable          = errors.New("native auth connection unavailable")
 	ErrNativeAuthConnectBusy                 = errors.New("native auth connection busy")
 )
@@ -72,6 +75,26 @@ type CredentialStatusSource interface {
 		context.Context,
 		string,
 	) (credentials.MetadataResult, error)
+}
+
+// CredentialDirectoryStatusSource lets setup build the Provider directory
+// from one authoritative projection read. Implementations that do not expose
+// the batch contract retain the per-Provider compatibility path.
+type CredentialDirectoryStatusSource interface {
+	CredentialStatuses(
+		context.Context,
+	) (map[string]credentials.MetadataResult, error)
+}
+
+type CredentialStatusDirectorySnapshot struct {
+	Providers map[string]credentials.MetadataResult
+	Accounts  map[string]map[string]credentials.MetadataResult
+}
+
+type CredentialStatusDirectorySnapshotSource interface {
+	CredentialStatusDirectorySnapshot(
+		context.Context,
+	) (CredentialStatusDirectorySnapshot, error)
 }
 
 type CredentialAccountStatusSource interface {
@@ -180,6 +203,8 @@ type LocalProductSetupConfig struct {
 	Credentials                  CredentialStatusSource
 	CredentialMutator            CredentialMutator
 	CredentialVault              CredentialVaultStatusSource
+	CredentialImports            credentials.ImportSource
+	EndpointResolver             providerendpoint.Resolver
 	ProviderAccountPolicies      ProviderAccountPolicyAuthority
 	ProviderModelRateCards       ProviderModelRateCardAuthority
 	RemoteToolBackendEnrollments RemoteToolBackendEnrollmentAuthority
@@ -351,6 +376,8 @@ type SetupSnapshot struct {
 	Providers            []ProviderDirectoryEntry        `json:"providers"`
 	ProviderAccounts     []ProviderAccountDirectoryEntry `json:"provider_accounts"`
 	CredentialVault      *CredentialVaultStatus          `json:"credential_vault,omitempty"`
+	CredentialImports    []credentials.ImportCandidate   `json:"credential_import_candidates"`
+	EndpointReviews      []EndpointReviewResult          `json:"endpoint_reviews"`
 	ConversationProfiles []ConversationProviderProfile   `json:"conversation_profiles"`
 	Runtimes             []SetupRuntimePreview           `json:"runtimes"`
 	SavedTeams           []SetupSavedTeamPreview         `json:"saved_teams"`
@@ -536,6 +563,18 @@ type CredentialSetupResult struct {
 	Reason     string `json:"reason"`
 }
 
+type CredentialImportCommand struct {
+	CandidateID         string `json:"candidate_id"`
+	CandidateDigest     string `json:"candidate_digest,omitempty"`
+	ProviderID          string `json:"provider_id"`
+	ProviderAccountID   string `json:"provider_account_id,omitempty"`
+	EndpointFingerprint string `json:"endpoint_fingerprint,omitempty"`
+	ReviewPolicyVersion uint64 `json:"review_policy_version,omitempty"`
+	ReviewPolicyDigest  string `json:"review_policy_digest,omitempty"`
+	ApprovalDigest      string `json:"approval_digest,omitempty"`
+	Confirm             bool   `json:"confirm"`
+}
+
 type ProviderConnectResult struct {
 	ProviderID string `json:"provider_id"`
 	AuthMode   string `json:"auth_mode"`
@@ -580,6 +619,8 @@ type LocalProductSetupService struct {
 	credentials                  CredentialStatusSource
 	credentialMutator            CredentialMutator
 	credentialVault              CredentialVaultStatusSource
+	credentialImports            credentials.ImportSource
+	endpointResolver             providerendpoint.Resolver
 	providerAccountPolicies      ProviderAccountPolicyAuthority
 	providerModelRateCards       ProviderModelRateCardAuthority
 	remoteToolBackendEnrollments RemoteToolBackendEnrollmentAuthority
@@ -622,6 +663,8 @@ func NewLocalProductSetupService(
 		credentials:                  config.Credentials,
 		credentialMutator:            config.CredentialMutator,
 		credentialVault:              config.CredentialVault,
+		credentialImports:            config.CredentialImports,
+		endpointResolver:             config.EndpointResolver,
 		providerAccountPolicies:      config.ProviderAccountPolicies,
 		providerModelRateCards:       config.ProviderModelRateCards,
 		remoteToolBackendEnrollments: config.RemoteToolBackendEnrollments,
@@ -743,15 +786,33 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			Reason:   "unknown_output",
 		}
 	}
+	var credentialDirectory *CredentialStatusDirectorySnapshot
+	if source, ok := service.credentials.(CredentialStatusDirectorySnapshotSource); ok {
+		directory, directoryErr := source.CredentialStatusDirectorySnapshot(ctx)
+		if directoryErr != nil {
+			directory = CredentialStatusDirectorySnapshot{
+				Providers: map[string]credentials.MetadataResult{},
+				Accounts:  map[string]map[string]credentials.MetadataResult{},
+			}
+		}
+		credentialDirectory = &directory
+	}
 	miniMax := ProviderSetupStatus{
 		ProviderID: "minimax",
 		AuthMode:   "brokered",
 		Status:     "unconfigured",
 	}
-	if status, statusErr := service.credentials.CredentialStatus(
-		ctx,
-		"minimax",
-	); statusErr == nil &&
+	miniMaxStatus := credentials.MetadataResult{}
+	miniMaxStatusAvailable := false
+	if credentialDirectory != nil {
+		miniMaxStatus, miniMaxStatusAvailable = credentialDirectory.Providers["minimax"]
+	} else if status, statusErr := service.credentials.CredentialStatus(
+		ctx, "minimax",
+	); statusErr == nil {
+		miniMaxStatus = status
+		miniMaxStatusAvailable = true
+	}
+	if status := miniMaxStatus; miniMaxStatusAvailable &&
 		status.ProviderID == "minimax" &&
 		closedCredentialStatus(string(status.Status), string(status.Reason)) {
 		miniMax.Status = string(status.Status)
@@ -775,9 +836,10 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			StreamHead:       streamHead.Sequence,
 		})
 	}
-	providers := service.providerDirectory(ctx, auth)
+	runtimes := setupRuntimePreviews(catalog)
+	providers := service.providerDirectory(ctx, auth, runtimes, credentialDirectory)
 	providerAccounts := setupProviderAccountDirectory(
-		ctx, view, service.credentials,
+		ctx, view, service.credentials, credentialDirectory,
 	)
 	var credentialVault *CredentialVaultStatus
 	if service.credentialVault != nil {
@@ -792,6 +854,18 @@ func (service *LocalProductSetupService) SetupSnapshot(
 		vaultStatus = setupCredentialVaultStatus(vaultStatus, providerAccounts)
 		credentialVault = &vaultStatus
 	}
+	credentialImports := []credentials.ImportCandidate{}
+	if service.credentialImports != nil {
+		if discovered, importErr := service.credentialImports.Discover(ctx); importErr == nil {
+			for _, candidate := range discovered {
+				bound, bindErr := credentials.BindImportCandidate(candidate)
+				if bindErr == nil {
+					credentialImports = append(credentialImports, bound)
+				}
+			}
+		}
+	}
+	endpointReviews := service.activeEndpointReviews(ctx, credentialImports)
 	return cloneSetupSnapshot(SetupSnapshot{
 		SchemaVersion: localProductSetupSchemaVersion,
 		ViewVersion:   view.Version(),
@@ -801,18 +875,22 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			Status:     auth.Status,
 			Reason:     auth.Reason,
 		},
-		MiniMax:              miniMax,
-		Providers:            providers,
-		ProviderAccounts:     providerAccounts,
-		CredentialVault:      credentialVault,
-		ConversationProfiles: setupConversationProfiles(auth, providers, providerAccounts),
-		Runtimes:             setupRuntimePreviews(catalog),
-		SavedTeams:           saved,
-		Templates:            append([]SetupTeamTemplate{}, catalog.Templates...),
-		RoleOptions:          setupRoleOptionPreviews(catalog),
-		Skills:               append([]SetupSkillRevision{}, catalog.SkillRevisions...),
-		Permissions:          append([]string{}, catalog.Permissions...),
-		Resources:            append([]SetupResourcePointer{}, catalog.Resources...),
+		MiniMax:           miniMax,
+		Providers:         providers,
+		ProviderAccounts:  providerAccounts,
+		CredentialVault:   credentialVault,
+		CredentialImports: credentialImports,
+		EndpointReviews:   endpointReviews,
+		ConversationProfiles: setupConversationProfiles(
+			auth, providers, providerAccounts, runtimes,
+		),
+		Runtimes:    runtimes,
+		SavedTeams:  saved,
+		Templates:   append([]SetupTeamTemplate{}, catalog.Templates...),
+		RoleOptions: setupRoleOptionPreviews(catalog),
+		Skills:      append([]SetupSkillRevision{}, catalog.SkillRevisions...),
+		Permissions: append([]string{}, catalog.Permissions...),
+		Resources:   append([]SetupResourcePointer{}, catalog.Resources...),
 	}), nil
 }
 
@@ -868,12 +946,23 @@ func setupProviderAccountDirectory(
 	ctx context.Context,
 	view projection.GlobalReadView,
 	statusSource CredentialStatusSource,
+	directory *CredentialStatusDirectorySnapshot,
 ) []ProviderAccountDirectoryEntry {
 	result := make([]ProviderAccountDirectoryEntry, 0)
 	accountStatus, hasAccountStatus := statusSource.(CredentialAccountStatusSource)
 	for _, descriptor := range provider.Catalog() {
 		for _, record := range view.ProviderAccountCredentials(descriptor.ID) {
-			if hasAccountStatus {
+			if directory != nil {
+				status, ok := directory.Accounts[record.ProviderID][record.ProviderAccountID]
+				if ok && status.CredentialReference == record.CredentialReference &&
+					status.Revision == record.Revision &&
+					closedCredentialStatus(
+						string(status.Status), string(status.Reason),
+					) {
+					record.Status = string(status.Status)
+					record.Reason = string(status.Reason)
+				}
+			} else if hasAccountStatus {
 				status, err := accountStatus.CredentialAccountStatus(
 					ctx, record.ProviderID, record.ProviderAccountID,
 				)
@@ -938,23 +1027,13 @@ func setupProviderAccountDirectory(
 	return result
 }
 
-// openCodeConversationDefaultModel returns the first OpenCode model whose
-// Provider has a verified Loom account (for example deepseek/deepseek-chat when
-// only DeepSeek is verified), falling back to the catalog default. This keeps
-// the App's out-of-the-box conversation usable instead of defaulting to a model
-// whose Provider credential is not configured.
-func openCodeConversationDefaultModel(
-	accounts map[string]ProviderAccountDirectoryEntry,
-) string {
-	for _, model := range provider.ProviderConversationModels("opencode") {
-		providerID, _, ok := strings.Cut(model.ID, "/")
-		if !ok {
-			continue
-		}
-		if _, exists := accounts[providerID+".primary"]; exists {
-			return model.ID
-		}
-	}
+// openCodeConversationDefaultModel returns the OpenCode profile's default
+// model: OpenCode's own hosted free-tier model. The OpenCode profile must not
+// silently default to a DeepSeek/MiniMax model; those Providers have their own
+// conversation profiles, and the client's Model layer gates cross-Provider
+// OpenCode models by verified accounts so they are only used when the user
+// explicitly selects them.
+func openCodeConversationDefaultModel() string {
 	return provider.OpenCodeConversationDefaultModel
 }
 
@@ -962,7 +1041,11 @@ func setupConversationProfiles(
 	auth NativeAuthObservation,
 	providers []ProviderDirectoryEntry,
 	providerAccounts []ProviderAccountDirectoryEntry,
+	runtimeCatalogs ...[]SetupRuntimePreview,
 ) []ConversationProviderProfile {
+	openCodeModels := setupOpenCodeRuntimeModels(runtimeCatalogs...)
+	openCodeAvailable := setupRuntimeAvailable("opencode", runtimeCatalogs...)
+	claudeCodeAvailable := setupRuntimeAvailable("claude-code", runtimeCatalogs...)
 	accounts := make(map[string]ProviderAccountDirectoryEntry, len(providerAccounts))
 	for _, entry := range providerAccounts {
 		if entry.Status != "verified" || entry.Reason != "" || entry.Revision <= 0 ||
@@ -988,20 +1071,12 @@ func setupConversationProfiles(
 		}
 	}
 	profiles := make([]ConversationProviderProfile, 0, 1+len(providerAccounts))
-	if auth.Status == "available" && auth.AuthMode == "native_auth" {
-		profiles = append(profiles, ConversationProviderProfile{
-			ProfileID:      provider.CodexConversationProfileID,
-			HarnessAdapter: "codex", ProviderID: "openai", DisplayName: "Codex",
-			Protocol: "openai_responses", ModelID: "codex-default",
-			AuthMode: "native_auth",
-		})
-		profiles = append(profiles, ConversationProviderProfile{
-			ProfileID:      provider.OpenCodeConversationProfileID,
-			HarnessAdapter: "opencode", ProviderID: "opencode", DisplayName: "OpenCode",
-			Protocol: "opencode_agent", ModelID: openCodeConversationDefaultModel(accounts),
-			AuthMode: "native_auth",
-		})
-	}
+	// User-configured verified brokered accounts come first: they carry an
+	// explicit API key the user added and verified, so they are the most likely
+	// to work out of the box (the default conversation profile is the first
+	// entry). Native auth profiles go last, with OpenCode before Codex, because
+	// the Codex official CLI account is frequently quota-limited while OpenCode
+	// runs against the user's own configured providers.
 	ordered := make([]ProviderAccountDirectoryEntry, 0, len(accounts))
 	for _, entry := range accounts {
 		ordered = append(ordered, entry)
@@ -1074,7 +1149,163 @@ func setupConversationProfiles(
 			RetentionMode: profile.RetentionMode, DataRegion: profile.DataRegion,
 		})
 	}
+	if openCodeAvailable {
+		for _, entry := range ordered {
+			models := openCodeModels[entry.ProviderID]
+			if len(models) == 0 {
+				continue
+			}
+			profileID := provider.OpenCodeConversationAccountProfileID(
+				entry.ProviderID, entry.ProviderAccountID, entry.Revision,
+			)
+			if profileID == "" {
+				continue
+			}
+			profiles = append(profiles, ConversationProviderProfile{
+				ProfileID: profileID, HarnessAdapter: "opencode",
+				ProviderID: entry.ProviderID, ProviderAccountID: entry.ProviderAccountID,
+				DisplayName: setupProviderDisplayName(entry.ProviderID),
+				Protocol:    "opencode_agent", ModelID: models[0], AuthMode: "brokered",
+				CredentialRevision: entry.Revision,
+				PolicyVersion:      entry.PolicyVersion, PolicyRevision: entry.PolicyRevision,
+				PolicyDigest: entry.PolicyDigest, TrustDomain: entry.TrustDomain,
+				RetentionMode: entry.RetentionMode, DataRegion: entry.DataRegion,
+			})
+		}
+	}
+	if openCodeAvailable {
+		modelID := openCodeConversationDefaultModel()
+		if len(runtimeCatalogs) == 1 {
+			modelID = ""
+			for _, runtime := range runtimeCatalogs[0] {
+				if runtime.AdapterType != "opencode" || runtime.Status != "online" {
+					continue
+				}
+				if selected, available := provider.SelectOpenCodeNativeModel(
+					runtime.ModelIDs,
+				); available {
+					modelID = selected
+					break
+				}
+			}
+		}
+		if modelID != "" {
+			profiles = append(profiles, ConversationProviderProfile{
+				ProfileID:      provider.OpenCodeConversationProfileID,
+				HarnessAdapter: "opencode", ProviderID: "opencode", DisplayName: "OpenCode",
+				Protocol: "opencode_agent", ModelID: modelID,
+				AuthMode: "native_auth",
+			})
+		}
+	}
+	if claudeCodeAvailable {
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.ClaudeCodeConversationProfileID,
+			HarnessAdapter: "claude-code", ProviderID: "anthropic",
+			DisplayName: "Anthropic", Protocol: "claude_code_agent",
+			ModelID:  provider.AnthropicConversationModelID,
+			AuthMode: "native_auth",
+		})
+	}
+	if auth.Status == "available" && auth.AuthMode == "native_auth" {
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.CodexConversationProfileID,
+			HarnessAdapter: "codex", ProviderID: "openai", DisplayName: "OpenAI",
+			Protocol: "openai_responses", ModelID: "codex-default",
+			AuthMode: "native_auth",
+		})
+	}
+	return normalizeConversationProfileNames(profiles)
+}
+
+// Conversation Profiles are executable Routes, not Provider directory rows.
+// Their display name remains Provider-only so a Harness+Provider combination
+// can never be mistaken for a newly configured Provider.
+func normalizeConversationProfileNames(
+	profiles []ConversationProviderProfile,
+) []ConversationProviderProfile {
+	for index := range profiles {
+		profiles[index].DisplayName = setupProviderDisplayName(
+			profiles[index].ProviderID,
+		)
+	}
 	return profiles
+}
+
+func setupRuntimeAvailable(
+	adapterType string,
+	runtimeCatalogs ...[]SetupRuntimePreview,
+) bool {
+	for _, runtimes := range runtimeCatalogs {
+		for _, runtime := range runtimes {
+			if runtime.AdapterType == adapterType && runtime.Status == "online" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func setupOpenCodeRuntimeModels(
+	runtimeCatalogs ...[]SetupRuntimePreview,
+) map[string][]string {
+	result := make(map[string][]string)
+	if len(runtimeCatalogs) != 1 {
+		return result
+	}
+	seen := make(map[string]map[string]struct{})
+	for _, runtime := range runtimeCatalogs[0] {
+		if runtime.AdapterType != "opencode" || runtime.Status != "online" {
+			continue
+		}
+		for _, modelID := range runtime.ModelIDs {
+			separator := strings.IndexByte(modelID, '/')
+			if separator <= 0 || separator >= len(modelID)-1 {
+				continue
+			}
+			runtimeProviderID := modelID[:separator]
+			loomProviderID, mapped := provider.OpenCodeLoomProviderID(runtimeProviderID)
+			if !mapped {
+				loomProviderID = runtimeProviderID
+			}
+			if _, known := provider.OpenCodeCredentialEnv(runtimeProviderID); !known {
+				continue
+			}
+			if seen[loomProviderID] == nil {
+				seen[loomProviderID] = make(map[string]struct{})
+			}
+			if _, duplicate := seen[loomProviderID][modelID]; duplicate {
+				continue
+			}
+			seen[loomProviderID][modelID] = struct{}{}
+			result[loomProviderID] = append(result[loomProviderID], modelID)
+		}
+	}
+	for providerID := range result {
+		sort.Strings(result[providerID])
+	}
+	return result
+}
+
+func setupProviderDisplayName(providerID string) string {
+	for _, descriptor := range provider.Catalog() {
+		if descriptor.ID == providerID {
+			return descriptor.DisplayName
+		}
+	}
+	return providerID
+}
+
+func providerDirectoryAvailable(
+	providers []ProviderDirectoryEntry,
+	providerID string,
+) bool {
+	for _, entry := range providers {
+		if entry.ProviderID == providerID {
+			return entry.Status == "available" && entry.Reason == ""
+		}
+	}
+	return false
 }
 
 func setupRoleOptionPreviews(
@@ -1125,9 +1356,24 @@ func setupRoleOptionPreviews(
 func (service *LocalProductSetupService) providerDirectory(
 	ctx context.Context,
 	auth NativeAuthObservation,
+	runtimes []SetupRuntimePreview,
+	directorySnapshot *CredentialStatusDirectorySnapshot,
 ) []ProviderDirectoryEntry {
-	catalog := provider.Catalog()
+	catalog := provider.ModelCatalog()
 	entries := make([]ProviderDirectoryEntry, 0, len(catalog))
+	statuses := map[string]credentials.MetadataResult{}
+	hasDirectory := directorySnapshot != nil
+	if directorySnapshot != nil {
+		statuses = directorySnapshot.Providers
+	} else {
+		directory, supportsDirectory := service.credentials.(CredentialDirectoryStatusSource)
+		hasDirectory = supportsDirectory
+		if supportsDirectory {
+			if observed, err := directory.CredentialStatuses(ctx); err == nil {
+				statuses = observed
+			}
+		}
+	}
 	for _, descriptor := range catalog {
 		entry := ProviderDirectoryEntry{
 			ProviderID:             descriptor.ID,
@@ -1141,8 +1387,20 @@ func (service *LocalProductSetupService) providerDirectory(
 		}
 		switch descriptor.ConnectionKind {
 		case "native_runtime":
-			entry.Status = auth.Status
-			entry.Reason = auth.Reason
+			if descriptor.ID == "opencode" {
+				entry.Status = "not_detected"
+				entry.Reason = "runtime_unavailable"
+				for _, runtime := range runtimes {
+					if runtime.AdapterType == "opencode" && runtime.Status == "online" {
+						entry.Status = "available"
+						entry.Reason = ""
+						break
+					}
+				}
+			} else {
+				entry.Status = auth.Status
+				entry.Reason = auth.Reason
+			}
 		case "managed_cloud":
 			entry.Status = "external_setup_required"
 		case "local_runtime":
@@ -1150,8 +1408,13 @@ func (service *LocalProductSetupService) providerDirectory(
 		case "custom_endpoint":
 			entry.Status = "endpoint_required"
 		default:
-			status, err := service.credentials.CredentialStatus(ctx, descriptor.ID)
-			if err == nil && status.ProviderID == descriptor.ID &&
+			status, ok := statuses[descriptor.ID]
+			var err error
+			if !hasDirectory {
+				status, err = service.credentials.CredentialStatus(ctx, descriptor.ID)
+				ok = err == nil
+			}
+			if ok && err == nil && status.ProviderID == descriptor.ID &&
 				closedCredentialStatus(string(status.Status), string(status.Reason)) {
 				entry.CredentialReference = status.CredentialReference
 				entry.Revision = status.Revision
@@ -2415,6 +2678,127 @@ func (service *LocalProductSetupService) ConfigureCredential(
 		},
 	)
 	return setupCredentialResult(result, err)
+}
+
+func (service *LocalProductSetupService) ImportCredentialCandidate(
+	ctx context.Context,
+	command CredentialImportCommand,
+) (CredentialSetupResult, error) {
+	providerAccountID := setupProviderAccountID(
+		command.ProviderID, command.ProviderAccountID,
+	)
+	if service == nil || ctx == nil || !command.Confirm ||
+		!validSetupDigest(command.CandidateID) ||
+		(!provider.SupportsBrokeredCredential(command.ProviderID) &&
+			command.ProviderID != "custom-openai") ||
+		!credentials.ValidProviderAccountIdentifier(
+			command.ProviderID, providerAccountID,
+		) || service.credentialImports == nil || service.credentialMutator == nil {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	selected, err := service.boundImportCandidate(ctx, command.CandidateID)
+	if err != nil || !selected.CredentialAvailable ||
+		selected.TargetProviderID != command.ProviderID ||
+		selected.Protocol != credentials.ImportProtocolOpenAIResponses {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	if selected.ImportMode == credentials.ImportModeCustomEndpointReview {
+		modelDigest, digestErr := credentials.ImportCandidateModelDigest(selected)
+		authorityCandidate, authorityErr := endpointapproval.NewReviewCandidate(
+			endpointapproval.ReviewCandidateInput{
+				EndpointFingerprint: selected.EndpointFingerprint,
+				ProviderID:          selected.TargetProviderID, AccountID: providerAccountID,
+				Protocol: selected.Protocol, ModelDigest: modelDigest,
+				ReviewPolicyVersion: selected.ReviewPolicyVersion,
+				ReviewPolicyDigest:  selected.ReviewPolicyDigest,
+			},
+		)
+		approved, found := service.readApprovedEndpointReview(
+			ctx, endpointReviewStreamID(selected.CandidateDigest, providerAccountID),
+		)
+		if digestErr != nil || authorityErr != nil || !found || !endpointReviewMatches(
+			approved, selected, providerAccountID, authorityCandidate.Digest(),
+		) || command.CandidateDigest != selected.CandidateDigest ||
+			command.EndpointFingerprint != selected.EndpointFingerprint ||
+			command.ReviewPolicyVersion != selected.ReviewPolicyVersion ||
+			command.ReviewPolicyDigest != selected.ReviewPolicyDigest ||
+			command.ApprovalDigest != approved.ApprovalDigest ||
+			!service.now().UTC().Before(parseEndpointReviewTime(approved.ExpiresAt)) {
+			return CredentialSetupResult{}, ErrCredentialImportUnavailable
+		}
+	} else if selected.ImportMode != credentials.ImportModeExactProvider {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	reference, err := service.identity.NextSetupID("credential-ref")
+	if err != nil || !validSetupCredentialReference(reference) {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	configureID, err := service.identity.NextSetupID("import-credential")
+	if err != nil {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	verifyID, err := service.identity.NextSetupID("verify-imported-credential")
+	if err != nil {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	var verified credentials.MetadataResult
+	err = service.credentialImports.UseAPIKey(
+		ctx,
+		command.CandidateID,
+		func(ctx context.Context, secret []byte) error {
+			defer clearSetupBytes(secret)
+			if len(secret) == 0 || len(secret) > 8192 {
+				return ErrCredentialImportUnavailable
+			}
+			configured, configureErr := service.credentialMutator.Configure(
+				ctx,
+				credentials.CredentialCommand{
+					CommandID: configureID, ProviderID: command.ProviderID,
+					ProviderAccountID:   providerAccountID,
+					CredentialReference: reference, ExpectedRevision: 0,
+					OccurredAt: service.now().UTC(), Secret: secret,
+				},
+			)
+			if configureErr != nil {
+				return configureErr
+			}
+			if configured.ProviderID != command.ProviderID ||
+				configured.ProviderAccountID != providerAccountID ||
+				configured.CredentialReference != reference ||
+				configured.Revision <= 0 ||
+				configured.Status != credentials.CredentialConfigured {
+				return ErrCredentialImportUnavailable
+			}
+			verified, configureErr = service.credentialMutator.Verify(
+				ctx,
+				credentials.CredentialCommand{
+					CommandID: verifyID, ProviderID: command.ProviderID,
+					ProviderAccountID:   providerAccountID,
+					CredentialReference: reference,
+					ExpectedRevision:    configured.Revision,
+					OccurredAt:          service.now().UTC(),
+				},
+			)
+			return configureErr
+		},
+	)
+	if err != nil {
+		if credentials.CredentialFailureStage(err) != "" ||
+			errors.Is(err, credentials.ErrCredentialStoreDenied) ||
+			errors.Is(err, credentials.ErrCredentialStoreUnavailable) ||
+			errors.Is(err, credentials.ErrCredentialMetadataConflict) ||
+			errors.Is(err, credentials.ErrCredentialRollbackFailed) ||
+			errors.Is(err, credentials.ErrCredentialRejected) {
+			return setupCredentialResult(credentials.MetadataResult{}, err)
+		}
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	if verified.ProviderID != command.ProviderID ||
+		verified.ProviderAccountID != providerAccountID ||
+		verified.CredentialReference != reference || verified.Revision <= 0 {
+		return CredentialSetupResult{}, ErrCredentialImportUnavailable
+	}
+	return setupCredentialResult(verified, nil)
 }
 
 func (service *LocalProductSetupService) VerifyCredential(
@@ -4305,6 +4689,15 @@ func cloneSetupSnapshot(input SetupSnapshot) SetupSnapshot {
 	input.ProviderAccounts = append(
 		[]ProviderAccountDirectoryEntry{}, input.ProviderAccounts...,
 	)
+	input.CredentialImports = append(
+		[]credentials.ImportCandidate{}, input.CredentialImports...,
+	)
+	input.EndpointReviews = append([]EndpointReviewResult{}, input.EndpointReviews...)
+	for index := range input.CredentialImports {
+		input.CredentialImports[index].ModelIDs = append(
+			[]string{}, input.CredentialImports[index].ModelIDs...,
+		)
+	}
 	for index := range input.ProviderAccounts {
 		input.ProviderAccounts[index].RateCards = append(
 			[]ProviderModelRateCardDirectoryEntry{},

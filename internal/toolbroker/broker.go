@@ -271,9 +271,25 @@ func (broker *Broker) webSearch(ctx context.Context, call Call) (Result, error) 
 	}
 	results, err := broker.search.Search(ctx, query, limit)
 	if err != nil {
-		return Result{}, errors.Join(ErrToolFailed, err)
+		if !errors.Is(err, ErrToolFailed) ||
+			errors.Is(err, ErrToolDenied) ||
+			errors.Is(err, ErrResultTooLarge) ||
+			errors.Is(err, ErrInvalidCall) ||
+			errors.Is(err, ErrInvalidConfig) {
+			return Result{}, err
+		}
+		// ErrToolFailed identifies a transient backend failure that the model
+		// may recover from with a different query or a known URL.
+		return Result{Content: `{"error":"search_unavailable","message":"The web search backend returned no results for this query. Try a different query or use web_fetch on a known URL."}`}, nil
 	}
-	if len(results) == 0 || len(results) > limit {
+	if len(results) == 0 {
+		// The search backend can be intermittently rate-limited or return no
+		// hits (e.g. DuckDuckGo 202 from some IPs). Return a bounded,
+		// non-empty result so the model receives a clear message and the
+		// attempt can complete instead of failing on an empty payload.
+		return Result{Content: `{"error":"search_unavailable","message":"The web search backend returned no results for this query. Try a different query or use web_fetch on a known URL."}`}, nil
+	}
+	if len(results) > limit {
 		return Result{}, ErrToolFailed
 	}
 	var content strings.Builder
@@ -306,27 +322,31 @@ func (broker *Broker) webFetch(ctx context.Context, call Call) (Result, error) {
 	request.Header.Set("User-Agent", "Loom-ToolBroker/1")
 	response, err := broker.http.Do(request)
 	if err != nil {
-		return Result{}, errors.Join(ErrToolFailed, err)
+		// A transient fetch failure is a bounded tool result, not a terminal
+		// attempt failure: the model may recover with web_search or a
+		// different URL, and the attempt loop stays closable. Never leak the
+		// underlying transport reason.
+		return Result{Content: `{"error":"fetch_unavailable","message":"The web fetch could not be completed for this URL. Use web_search or a different URL."}`}, nil
 	}
 	if response == nil || response.Body == nil {
-		return Result{}, ErrToolFailed
+		return Result{Content: `{"error":"fetch_unavailable","message":"The web fetch returned no response body. Use web_search or a different URL."}`}, nil
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 ||
 		response.Request == nil || !validPublicHTTPS(response.Request.URL.String()) ||
 		!allowedContentType(response.Header.Get("Content-Type")) {
-		return Result{}, ErrToolFailed
+		return Result{Content: `{"error":"fetch_failed","message":"The target returned an unusable response for this attempt. Use web_search or a different URL."}`}, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(broker.maxResultBytes+1)))
 	if err != nil {
-		return Result{}, errors.Join(ErrToolFailed, err)
+		return Result{Content: `{"error":"fetch_unavailable","message":"The web fetch could not be read for this attempt. Use web_search or a different URL."}`}, nil
 	}
 	if len(body) > broker.maxResultBytes {
-		return Result{}, ErrResultTooLarge
+		return Result{Content: `{"error":"fetch_too_large","message":"The web fetch result was too large for this attempt. Use web_search or a narrower URL."}`}, nil
 	}
 	content := strings.TrimSpace(string(body))
 	if content == "" || !safeText(content) {
-		return Result{}, ErrToolFailed
+		return Result{Content: `{"error":"fetch_empty","message":"The web fetch returned no usable content. Use web_search or a different URL."}`}, nil
 	}
 	return Result{Content: content, Sources: []string{response.Request.URL.String()}}, nil
 }

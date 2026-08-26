@@ -15,8 +15,12 @@ const (
 	connectionDeadline       = 5 * time.Second
 	extendedRequestDeadline  = 10 * time.Second
 	extendedResponseDeadline = extendedRequestDeadline + 2*time.Second
-	chatRequestDeadline      = 50 * time.Second
+	missionRequestDeadline   = 180 * time.Second
+	missionResponseDeadline  = missionRequestDeadline + 2*time.Second
+	chatRequestDeadline      = 1805 * time.Second
 	chatResponseDeadline     = chatRequestDeadline + 2*time.Second
+	agentRecoveryDeadline    = 50 * time.Second
+	agentRecoveryResponse    = agentRecoveryDeadline + 2*time.Second
 	maxConnections           = 16
 )
 
@@ -309,8 +313,14 @@ func (server *Server) handle(
 }
 
 func requestDeadline(method string) time.Duration {
-	if method == "chat_message" || method == "agent_attempt_recovery" {
+	if method == "chat_message" {
 		return chatRequestDeadline
+	}
+	if method == "agent_attempt_recovery" {
+		return agentRecoveryDeadline
+	}
+	if method == "mission_execution" {
+		return missionRequestDeadline
 	}
 	if usesExtendedRequestDeadline(method) {
 		return extendedRequestDeadline
@@ -319,8 +329,14 @@ func requestDeadline(method string) time.Duration {
 }
 
 func responseDeadline(method string) time.Duration {
-	if method == "chat_message" || method == "agent_attempt_recovery" {
+	if method == "chat_message" {
 		return chatResponseDeadline
+	}
+	if method == "agent_attempt_recovery" {
+		return agentRecoveryResponse
+	}
+	if method == "mission_execution" {
+		return missionResponseDeadline
 	}
 	if usesExtendedRequestDeadline(method) {
 		return extendedResponseDeadline
@@ -330,9 +346,9 @@ func responseDeadline(method string) time.Duration {
 
 func usesExtendedRequestDeadline(method string) bool {
 	switch method {
-	case "credential_verify", "credential_vault_rotate", "credential_vault_lock",
+	case "credential_import", "credential_verify", "credential_vault_rotate", "credential_vault_lock",
 		"credential_vault_unlock", "credential_vault_reset", "mission_execution", "chat_message",
-		"agent_attempt_recovery", "tool_recovery":
+		"agent_attempt_recovery", "tool_recovery", "setup_snapshot":
 		return true
 	case "credential_vault_export":
 		return true

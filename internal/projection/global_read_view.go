@@ -20,6 +20,7 @@ import (
 type TeamExecution struct {
 	TeamInstanceID          string
 	PlanDigest              string
+	ExecutionGenerationID   string
 	Status                  string
 	Nodes                   []TeamExecutionNode
 	AssetLineageAvailable   bool
@@ -148,6 +149,14 @@ type TeamTimelineAnchor struct {
 	Confirmed      bool
 	Executable     bool
 	ReadOnly       bool
+}
+
+type TeamRow struct {
+	TeamInstanceID     string
+	TeamAvailable      bool
+	Team               TeamInstance
+	ExecutionAvailable bool
+	Execution          TeamExecution
 }
 
 type GlobalReadView struct {
@@ -484,7 +493,11 @@ func (view GlobalReadView) Teams(
 	afterID string,
 	limit int,
 ) ([]TeamInstance, bool) {
-	ids, ok := globalReadPageIDs(view.teams, afterID, limit)
+	ids, ok, hasMore := globalReadPageFromOrderedIDs(
+		orderedTeamInstanceIDs(view.teams),
+		afterID,
+		limit,
+	)
 	if !ok {
 		return []TeamInstance{}, false
 	}
@@ -492,7 +505,38 @@ func (view GlobalReadView) Teams(
 	for index, id := range ids {
 		records[index] = cloneProjectedTeamInstance(view.teams[id])
 	}
-	return records, globalReadPageHasMore(view.teams, ids, afterID)
+	return records, hasMore
+}
+
+// TeamRows is the single cursor domain for the product Team collection. Saved
+// Teams and execution-only history are merged before pagination so a cursor
+// can never be interpreted independently by two differently ordered sources.
+func (view GlobalReadView) TeamRows(
+	afterID string,
+	limit int,
+) ([]TeamRow, bool, bool) {
+	ids, ok, hasMore := globalReadPageFromOrderedIDs(
+		orderedTeamRowIDs(view.teams, view.teamExecutions),
+		afterID,
+		limit,
+	)
+	if !ok {
+		return []TeamRow{}, false, false
+	}
+	rows := make([]TeamRow, len(ids))
+	for index, id := range ids {
+		row := TeamRow{TeamInstanceID: id}
+		if team, exists := view.teams[id]; exists {
+			row.TeamAvailable = true
+			row.Team = cloneProjectedTeamInstance(team)
+		}
+		if execution, exists := view.teamExecutions[id]; exists {
+			row.ExecutionAvailable = true
+			row.Execution = cloneGlobalTeamExecution(execution)
+		}
+		rows[index] = row
+	}
+	return rows, hasMore, true
 }
 
 func (view GlobalReadView) Runs(afterID string, limit int) ([]Run, bool) {
@@ -541,7 +585,11 @@ func (view GlobalReadView) TeamExecutions(
 	afterID string,
 	limit int,
 ) ([]TeamExecution, bool) {
-	ids, ok := globalReadPageIDs(view.teamExecutions, afterID, limit)
+	ids, ok, hasMore := globalReadPageFromOrderedIDs(
+		orderedTeamExecutionIDs(view.teamExecutions, view.teams),
+		afterID,
+		limit,
+	)
 	if !ok {
 		return []TeamExecution{}, false
 	}
@@ -549,7 +597,7 @@ func (view GlobalReadView) TeamExecutions(
 	for index, id := range ids {
 		records[index] = cloneGlobalTeamExecution(view.teamExecutions[id])
 	}
-	return records, globalReadPageHasMore(view.teamExecutions, ids, afterID)
+	return records, hasMore
 }
 
 func (view GlobalReadView) TeamTimelineAnchor(
@@ -560,11 +608,20 @@ func (view GlobalReadView) TeamTimelineAnchor(
 	}
 	if team, ok := view.Team(teamInstanceID); ok &&
 		team.ID == teamInstanceID {
+		executable := true
+		if definition, defOK := view.TeamDefinition(
+			team.TeamDefinitionID,
+		); defOK {
+			// Archiving a Team definition must make its instances
+			// non-executable: the saved team stays visible (and its history
+			// readable) but can no longer launch Missions.
+			executable = definition.Status != "archived"
+		}
 		return TeamTimelineAnchor{
 			TeamInstanceID: teamInstanceID,
 			Kind:           "saved_team",
 			Confirmed:      true,
-			Executable:     true,
+			Executable:     executable,
 		}, true
 	}
 	execution, ok := view.TeamExecution(teamInstanceID)
@@ -721,6 +778,104 @@ func globalReadPageIDs[T any](
 		ids = ids[:limit]
 	}
 	return ids, true
+}
+
+// globalReadPageFromOrderedIDs keeps cursor pagination generic while allowing
+// user-facing collections to choose a meaningful order. Team IDs are random
+// opaque values, so alphabetical order makes a newly created Team disappear
+// behind a large historical backlog. The ordered list is authoritative for
+// this read view; a cursor is always the ID of an item in that same list.
+func globalReadPageFromOrderedIDs(
+	orderedIDs []string,
+	afterID string,
+	limit int,
+) ([]string, bool, bool) {
+	if limit < 1 || limit > 64 ||
+		afterID != "" && !validGlobalReadPageID(afterID) {
+		return []string{}, false, false
+	}
+	start := 0
+	if afterID != "" {
+		found := false
+		for index, id := range orderedIDs {
+			if id == afterID {
+				start = index + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return []string{}, false, false
+		}
+	}
+	if start >= len(orderedIDs) {
+		return []string{}, true, false
+	}
+	end := start + limit
+	if end > len(orderedIDs) {
+		end = len(orderedIDs)
+	}
+	return orderedIDs[start:end], true, end < len(orderedIDs)
+}
+
+func orderedTeamInstanceIDs(records map[string]TeamInstance) []string {
+	ids := make([]string, 0, len(records))
+	for id := range records {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := records[ids[i]], records[ids[j]]
+		if left.CreatedAt != right.CreatedAt {
+			return left.CreatedAt > right.CreatedAt
+		}
+		return ids[i] < ids[j]
+	})
+	return ids
+}
+
+func orderedTeamExecutionIDs(
+	records map[string]TeamExecution,
+	teams map[string]TeamInstance,
+) []string {
+	ids := make([]string, 0, len(records))
+	for id := range records {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, leftOK := teams[ids[i]]
+		right, rightOK := teams[ids[j]]
+		leftCreatedAt, rightCreatedAt := int64(0), int64(0)
+		if leftOK {
+			leftCreatedAt = left.CreatedAt
+		}
+		if rightOK {
+			rightCreatedAt = right.CreatedAt
+		}
+		if leftCreatedAt != rightCreatedAt {
+			return leftCreatedAt > rightCreatedAt
+		}
+		return ids[i] < ids[j]
+	})
+	return ids
+}
+
+func orderedTeamRowIDs(
+	teams map[string]TeamInstance,
+	executions map[string]TeamExecution,
+) []string {
+	ids := orderedTeamInstanceIDs(teams)
+	seen := make(map[string]struct{}, len(teams)+len(executions))
+	for _, id := range ids {
+		seen[id] = struct{}{}
+	}
+	for _, id := range orderedTeamExecutionIDs(executions, teams) {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func globalReadPageHasMore[T any](

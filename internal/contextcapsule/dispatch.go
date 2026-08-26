@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"unicode"
@@ -76,11 +77,11 @@ type rolePromptWire struct {
 
 func RenderDispatchPayload(capsule RoleContextCapsule) ([]byte, error) {
 	if !capsule.Valid() {
-		return nil, ErrInvalidContextDispatch
+		return nil, fmt.Errorf("%w: capsule_integrity", ErrInvalidContextDispatch)
 	}
 	maxPromptBytes, ok := contextAdapterPromptLimit(capsule.target.ContextAdapterID)
 	if !ok {
-		return nil, ErrInvalidContextDispatch
+		return nil, fmt.Errorf("%w: unsupported_adapter", ErrInvalidContextDispatch)
 	}
 	items := make([]rolePromptItem, 0, len(capsule.disclosed))
 	for _, item := range capsule.disclosed {
@@ -88,7 +89,7 @@ func RenderDispatchPayload(capsule RoleContextCapsule) ([]byte, error) {
 			item.Scope == ScopeSecretReferenceOnly ||
 			item.SourceType == SourceCredentialReference ||
 			item.ReferenceID != "" || !validDispatchText(item.Content) {
-			return nil, ErrInvalidContextDispatch
+			return nil, fmt.Errorf("%w: disallowed_item_%s", ErrInvalidContextDispatch, item.ItemID)
 		}
 		items = append(items, rolePromptItem{
 			ItemID: item.ItemID, Kind: item.Kind, Trust: item.Trust,
@@ -117,7 +118,7 @@ func RenderDispatchPayload(capsule RoleContextCapsule) ([]byte, error) {
 		Items: items, Omissions: omissions,
 	})
 	if err != nil || len(prompt) == 0 || len(prompt) > maxPromptBytes {
-		return nil, ErrInvalidContextDispatch
+		return nil, fmt.Errorf("%w: prompt_limit", ErrInvalidContextDispatch)
 	}
 	payload, err := json.Marshal(dispatchWire{
 		SchemaVersion: dispatchSchemaVersion, Kind: dispatchKind,
@@ -173,7 +174,7 @@ func contextAdapterPromptLimit(adapterID string) (int, bool) {
 		return 32 << 10, true
 	case "context:pi:v1", "context:pi-cli:v1":
 		return 6 << 10, true
-	case "context:codex:v1", "context:claude-code:v1":
+	case "context:codex:v1", "context:claude-code:v1", "context:opencode:v1":
 		return 64 << 10, true
 	default:
 		return 0, false
@@ -199,4 +200,48 @@ func validDispatchText(content []byte) bool {
 		}
 	}
 	return true
+}
+
+// ValidDispatchText lets context builders apply the same non-secret wire
+// policy before adding untrusted model output to a capsule.
+func ValidDispatchText(content []byte) bool { return validDispatchText(content) }
+
+// RebuildDispatchSafe preserves a capsule's target and omission authority while
+// policy-filtering only untrusted model output that cannot safely cross the
+// dispatch wire. Authority and observed state remain fail-closed.
+func RebuildDispatchSafe(
+	capsule RoleContextCapsule,
+	counter TokenCounter,
+) (RoleContextCapsule, error) {
+	if !capsule.Valid() {
+		return RoleContextCapsule{}, ErrInvalidContextDispatch
+	}
+	items, fixedOmissions, err := extensionInputs(capsule, nil)
+	if err != nil {
+		return RoleContextCapsule{}, ErrInvalidContextDispatch
+	}
+	for index, item := range items {
+		if !validDispatchText(item.Content) {
+			if item.Kind != KindPriorModelOutput || item.Trust != TrustUntrusted ||
+				item.SourceType != SourceModelOutput || item.Required {
+				return RoleContextCapsule{}, ErrInvalidContextDispatch
+			}
+			items[index].PolicyFiltered = true
+		}
+	}
+	var rebuilt RoleContextCapsule
+	if projection, capacityBound := capsule.CapacityProjection(); capacityBound {
+		if err := validateExtensionDeclaredCapacityTokenCounts(items, fixedOmissions); err != nil {
+			return RoleContextCapsule{}, err
+		}
+		rebuilt, err = BuildRoleContextCapsuleWithCapacity(
+			capsule.target, items, capacityAuthorityFromProjection(projection), counter,
+		)
+	} else {
+		rebuilt, err = BuildRoleContextCapsule(capsule.target, items)
+	}
+	if err != nil {
+		return RoleContextCapsule{}, err
+	}
+	return finalizeExtendedCapsule(rebuilt, fixedOmissions)
 }

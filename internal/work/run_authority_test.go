@@ -308,6 +308,43 @@ func assertZeroRun(t testing.TB, record RunRecord) {
 	}
 }
 
+func TestCreateAndAssignAcceptsLongMissionObjectiveTitle(t *testing.T) {
+	t.Parallel()
+	store := openAuthorityStore(t)
+	clock := &mutableClock{now: testNow}
+	authority := newAuthority(t, store, clock, 1)
+	ctx := context.Background()
+	longTitle := "Use the web_search tool to look up the GitHub repository multica-ai/multica and report its one-line description plus the source URL. " + strings.Repeat("x", 200)
+	if len(longTitle) <= maxAuthorityIDBytes {
+		t.Fatalf("fixture title must exceed the authority ID bound: %d", len(longTitle))
+	}
+	input := assignment("work-long-title", "run-long-title")
+	input.Title = longTitle
+	if _, _, err := authority.CreateAndAssign(ctx, input); err != nil {
+		t.Fatalf("CreateAndAssign() long title error = %v", err)
+	}
+	if _, err := authority.Snapshot(ctx); err != nil {
+		t.Fatalf("Snapshot() after long title = %v", err)
+	}
+	// Replay the work-item stream exactly as the run authority does.
+	events, err := store.ReadStream(ctx, "work-item/work-long-title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := authorityState{
+		workItems: make(map[string]WorkItemRecord), runs: make(map[string]RunRecord),
+		runtimes: make(map[string]authorityRuntime), heads: make(map[string]int64),
+		runIdentities:           make(map[string]runIdentityReservation),
+		providerAccountPolicies: make(map[string][]providerAccountPolicyState),
+		providerAccountCapacity: make(map[string]providerAccountCapacity),
+		providerModelRateCards:  make(map[string][]providerModelRateCardState),
+	}
+	outcomes := map[string]journal.Event{}
+	if err := replayWorkItemStream(&state, "work-item/work-long-title", events, outcomes); err != nil {
+		t.Fatalf("replayWorkItemStream() long title = %v", err)
+	}
+}
+
 func TestCreateAndAssignExactRetryConflict(t *testing.T) { // s3_w2_create_assign_exact_retry_conflict
 	t.Parallel()
 	store := openAuthorityStore(t)

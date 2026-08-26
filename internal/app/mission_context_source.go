@@ -17,6 +17,34 @@ import (
 
 const missionRoleContextTokenBudget = 2048
 
+const (
+	missionContextTokenCounterID      = "loom-unicode-rune-quarter-estimate"
+	missionContextTokenCounterVersion = "v1"
+)
+
+type missionContextCapacityTokenCounter struct{}
+
+func (missionContextCapacityTokenCounter) ID() string { return missionContextTokenCounterID }
+
+func (missionContextCapacityTokenCounter) Version() string {
+	return missionContextTokenCounterVersion
+}
+
+func (missionContextCapacityTokenCounter) CountTokens(content []byte) (int, error) {
+	return missionContextTokenCount(content), nil
+}
+
+var missionContextCounter contextcapsule.TokenCounter = missionContextCapacityTokenCounter{}
+
+func missionContextCapacityAuthority() contextcapsule.CapacityAuthority {
+	return contextcapsule.CapacityAuthority{
+		SchemaVersion:       contextcapsule.CapacitySchemaVersion,
+		Status:              contextcapsule.CapacityUnavailable,
+		TokenCounterID:      missionContextCounter.ID(),
+		TokenCounterVersion: missionContextCounter.Version(),
+	}
+}
+
 type missionWorkPackagePolicyContext struct {
 	SchemaVersion                  int                    `json:"schema_version"`
 	WorkPackageID                  string                 `json:"work_package_id"`
@@ -137,10 +165,12 @@ func buildMissionRoleContextCapsule(
 		fmt.Sprintf("work-package:%s:%d:%s", workPackage.ID(), workPackage.Version(), workPackage.Digest()),
 	))
 
+	// Preflight freezes the exact Capsule later dispatched by Start. Describe
+	// the Agent's executable task, not the client's preflight control request.
 	currentTask, err := missionContextJSON(missionCurrentTaskContext{
 		SchemaVersion: 1, MissionID: command.MissionID, TeamInstanceID: plan.TeamInstanceID(),
 		PlanDigest: plan.Digest(), WorkPackageID: workPackage.ID(),
-		WorkPackageDigest: workPackage.Digest(), Operation: command.Operation,
+		WorkPackageDigest: workPackage.Digest(), Operation: missionExecutionStart,
 		LogicalNodeID: node.LogicalNodeID(),
 	})
 	if err != nil {
@@ -223,7 +253,7 @@ func buildMissionRoleContextCapsule(
 		items[len(items)-1].AllowedRoleID = role.LogicalNodeID
 	}
 
-	return contextcapsule.BuildRoleContextCapsule(
+	return contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "mission:" + command.MissionID,
 			TeamID:         plan.TeamInstanceID(), AgentID: role.AgentInstanceID,
@@ -234,6 +264,8 @@ func buildMissionRoleContextCapsule(
 			ArtifactRefs: artifactRefs, TokenBudget: missionRoleContextTokenBudget,
 		},
 		items,
+		missionContextCapacityAuthority(),
+		missionContextCounter,
 	)
 }
 

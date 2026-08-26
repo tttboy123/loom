@@ -4,6 +4,44 @@ import XCTest
 @testable import LoomLocalAppCore
 
 final class LocalOperationalDiagnosticsTests: XCTestCase {
+    func testMissionExecutionRecordPersistsStageWithoutMissionContent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-mission-diagnostics-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try LocalOperationalDiagnostics(
+            directory: root,
+            maximumBytes: 2_048,
+            now: { Date(timeIntervalSince1970: 1_786_276_800) }
+        )
+
+        try store.recordMissionExecution(
+            incidentID: "loom-mission-11111111-1111-4111-8111-111111111111",
+            executionOperation: "start",
+            stage: .dispatchAdmission,
+            result: "failed",
+            errorCode: .conflict,
+            retryable: true,
+            elapsedMilliseconds: 17
+        )
+
+        let data = try Data(
+            contentsOf: root.appendingPathComponent("app-operational.jsonl")
+        )
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(text.contains("\"operation\":\"mission_execution\""))
+        XCTAssertTrue(text.contains("\"execution_operation\":\"start\""))
+        XCTAssertTrue(text.contains("\"stage\":\"dispatch_admission\""))
+        XCTAssertFalse(text.contains("objective"))
+        XCTAssertFalse(text.contains("workspace"))
+        XCTAssertFalse(text.contains("mission_id"))
+        XCTAssertFalse(text.contains("team_instance_id"))
+    }
+
     func testProviderAccountPolicyInputAdmissionPersistsSafeCorrelation() async throws {
         let root = URL(fileURLWithPath: "/private/tmp")
             .appendingPathComponent("loom-policy-diag-\(UUID().uuidString.prefix(8))")

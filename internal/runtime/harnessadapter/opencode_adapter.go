@@ -150,31 +150,56 @@ func (adapter *openCodeAdapter) Execute(
 		return supervisor.AdapterResult{}, errors.Join(ErrHarnessProtocol, adaptErr)
 	}
 	var processResult HarnessProcessResult
-	credentialErr := adapter.credentialAccess.UseCredential(
-		ctx,
-		request.ExecutionBinding,
-		func(leaseContext context.Context, secret []byte) error {
-			processRequest := HarnessProcessRequest{
-				ExecutablePath: adapter.executablePath,
-				WorkspacePath:  request.WorkspacePath,
-				HomePath:       request.HomePath,
-				TempPath:       request.TempPath,
-				ModelID:        modelIdentity,
-				Prompt:         prompt,
-				SystemPrompt:   systemPrompt,
-				Timeout:        request.ExecutionBinding.Timeout,
-				MaxOutputBytes: adapter.maxOutputBytes,
-				ContextMCP:     harnessContextMCPLease(contextService),
-			}
-			candidate, runErr := adapter.runner.RunHarness(
-				leaseContext, processRequest, secret,
-			)
-			if runErr == nil {
-				processResult = candidate
-			}
-			return runErr
-		},
-	)
+	requiresCredential := request.ExecutionBinding.AuthMode == loomruntime.AuthBrokered
+	var credentialErr error
+	if requiresCredential {
+		credentialErr = adapter.credentialAccess.UseCredential(
+			ctx,
+			request.ExecutionBinding,
+			func(leaseContext context.Context, secret []byte) error {
+				processRequest := HarnessProcessRequest{
+					ExecutablePath:     adapter.executablePath,
+					WorkspacePath:      request.WorkspacePath,
+					HomePath:           request.HomePath,
+					TempPath:           request.TempPath,
+					ModelID:            modelIdentity,
+					ReasoningEffort:    request.ExecutionBinding.ReasoningEffort,
+					Prompt:             prompt,
+					SystemPrompt:       systemPrompt,
+					Timeout:            request.ExecutionBinding.Timeout,
+					MaxOutputBytes:     adapter.maxOutputBytes,
+					ContextMCP:         harnessContextMCPLease(contextService),
+					RequiresCredential: true,
+				}
+				candidate, runErr := adapter.runner.RunHarness(
+					leaseContext, processRequest, secret,
+				)
+				if runErr == nil {
+					processResult = candidate
+				}
+				return runErr
+			},
+		)
+	} else {
+		// Native auth: OpenCode uses its own auth store through HOME; no Loom
+		// credential is leased or injected.
+		processRequest := HarnessProcessRequest{
+			ExecutablePath:  adapter.executablePath,
+			WorkspacePath:   request.WorkspacePath,
+			HomePath:        request.HomePath,
+			TempPath:        request.TempPath,
+			ModelID:         modelIdentity,
+			ReasoningEffort: request.ExecutionBinding.ReasoningEffort,
+			Prompt:          prompt,
+			SystemPrompt:    systemPrompt,
+			Timeout:         request.ExecutionBinding.Timeout,
+			MaxOutputBytes:  adapter.maxOutputBytes,
+			ContextMCP:      harnessContextMCPLease(contextService),
+		}
+		processResult, credentialErr = adapter.runner.RunHarness(
+			ctx, processRequest, nil,
+		)
+	}
 	if credentialErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			_ = adapter.recordDiagnostic(
@@ -183,15 +208,42 @@ func (adapter *openCodeAdapter) Execute(
 			)
 			return supervisor.AdapterResult{}, ctxErr
 		}
+		// A coding Harness may lose its final prose/cleanup request after Loom has
+		// already authorized, executed, validated, and durably staged workspace
+		// edits. Preserve those edits as a candidate so the independent verifier
+		// and dependent Agent can inspect them. Classified Provider failures and
+		// attempts without governed tool activity remain fail-closed.
+		if recoverOpenCodeGovernedToolCandidate(credentialErr, contextService) {
+			if err := acknowledgeHarnessContextMCP(ctx, contextService); err != nil {
+				return supervisor.AdapterResult{}, err
+			}
+			if err := adapter.recordDiagnostic(
+				ctx, request, started, "agent_attempt_dispatch", "succeeded", "", false,
+			); err != nil {
+				return supervisor.AdapterResult{}, err
+			}
+			return adapter.publishAttempt(
+				ctx, request, started, "", "succeeded", "", nil, nil,
+			)
+		}
 		reason, stage, retryable := harnessFailure(credentialErr)
 		if err := adapter.recordDiagnostic(
 			ctx, request, started, stage, "failed", reason, retryable,
 		); err != nil {
 			return supervisor.AdapterResult{}, err
 		}
-		return adapter.publish(ctx, request, "", "failed", reason, nil, nil)
+		return adapter.publishAttempt(
+			ctx, request, started, "", "failed", reason, nil, nil,
+		)
 	}
-	if err := validateHarnessProcessResult(processResult, adapter.maxOutputBytes); err != nil {
+	processResult, err = normalizeOpenCodeHarnessProcessResult(
+		processResult, adapter.maxOutputBytes, contextService,
+	)
+	if err != nil {
+		_ = adapter.recordDiagnostic(
+			ctx, request, started, "agent_attempt_response", "failed",
+			"invalid_response", false,
+		)
 		return supervisor.AdapterResult{}, err
 	}
 	if err := acknowledgeHarnessContextMCP(ctx, contextService); err != nil {
@@ -208,10 +260,67 @@ func (adapter *openCodeAdapter) Execute(
 	); err != nil {
 		return supervisor.AdapterResult{}, err
 	}
-	return adapter.publish(
-		ctx, request, processResult.Content, "succeeded", "",
+	return adapter.publishAttempt(
+		ctx, request, started, processResult.Content, "succeeded", "",
 		processResult.Stderr, processResult.Accounting,
 	)
+}
+
+func (adapter *openCodeAdapter) publishAttempt(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	started time.Time,
+	content, status, reason string,
+	stderr []byte,
+	accounting *work.RunAccounting,
+) (supervisor.AdapterResult, error) {
+	result, err := adapter.publish(
+		ctx, request, content, status, reason, stderr, accounting,
+	)
+	if err == nil {
+		return result, nil
+	}
+	_ = adapter.recordDiagnostic(
+		context.WithoutCancel(ctx), request, started,
+		"agent_attempt_response", "failed", "bridge_protocol_failed", true,
+	)
+	return result, err
+}
+
+func recoverOpenCodeGovernedToolCandidate(
+	err error,
+	contextService *harnessContextMCP,
+) bool {
+	if classifiedOpenCodeProcessFailure(err) {
+		return false
+	}
+	opaqueFailure := errors.Is(err, ErrHarnessProcessUnavailable) ||
+		errors.Is(err, provider.ErrOpenCodeConversationUnavailable)
+	return opaqueFailure &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		harnessContextMCPHasToolActivity(contextService)
+}
+
+func normalizeOpenCodeHarnessProcessResult(
+	result HarnessProcessResult,
+	maximum int,
+	contextService *harnessContextMCP,
+) (HarnessProcessResult, error) {
+	if validateHarnessProcessResult(result, maximum) == nil {
+		return result, nil
+	}
+	if !harnessContextMCPHasToolActivity(contextService) ||
+		len(result.Stderr) > maximum ||
+		result.Accounting != nil && work.ValidateRunAccounting(*result.Accounting) != nil {
+		return HarnessProcessResult{}, ErrHarnessProtocol
+	}
+	// The governed workspace is the candidate authority. OpenCode may emit an
+	// empty, oversized, or otherwise unusable final prose response after all
+	// authorized tool results have committed. Drop that prose and let the
+	// independent verifier judge the staged workspace instead of discarding it.
+	result.Content = ""
+	return result, nil
 }
 
 func (adapter *openCodeAdapter) validateRequest(request supervisor.AdapterRequest) error {
@@ -219,14 +328,19 @@ func (adapter *openCodeAdapter) validateRequest(request supervisor.AdapterReques
 	if err != nil || binding.HarnessAdapter != OpenCodeAdapterType ||
 		binding.RuntimeInstanceID != adapter.runtimeInstanceID ||
 		binding.RuntimeInstanceID != request.Binding.RuntimeInstanceID ||
-		binding.AuthMode != loomruntime.AuthBrokered ||
-		binding.CredentialReference == "" || binding.CredentialRevision <= 0 ||
+		(binding.AuthMode != loomruntime.AuthBrokered &&
+			binding.AuthMode != loomruntime.AuthNative) ||
+		binding.AuthMode == loomruntime.AuthBrokered &&
+			(binding.CredentialReference == "" || binding.CredentialRevision <= 0) ||
 		!containsHarnessCapability(binding.Capabilities, "workspace_edit") {
 		return ErrHarnessExecutionBindingChanged
 	}
-	if _, adaptErr := provider.OpenCodeModelIdentity(
+	modelIdentity, adaptErr := provider.OpenCodeModelIdentity(
 		binding.ProviderID, binding.ModelID,
-	); adaptErr != nil {
+	)
+	if adaptErr != nil || !validOpenCodeReasoningEffort(
+		modelIdentity, binding.ReasoningEffort,
+	) {
 		return ErrHarnessExecutionBindingChanged
 	}
 	if request.Dispatch.Type() != bridgev1.MessageDispatch ||
@@ -286,7 +400,7 @@ func (adapter *openCodeAdapter) publish(
 			MessageID string `json:"message_id"`
 		}{MessageID: request.Dispatch.MessageID()}},
 	}
-	if status == "succeeded" {
+	if status == "succeeded" && content != "" {
 		records = append(records, struct {
 			kind bridgev1.MessageType
 			body any

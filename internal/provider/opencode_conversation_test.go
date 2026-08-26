@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,18 @@ func TestOpenCodeConversationClientFailsClosed(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+	t.Run("deadline remains classifiable", func(t *testing.T) {
+		client, err := NewOpenCodeConversationClient(openCodeConversationConfig(
+			t, &openCodeConversationRunnerFixture{err: context.DeadlineExceeded},
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Respond(context.Background(), "hello")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("deadline classification lost: %v", err)
+		}
+	})
 }
 
 func TestDecodeOpenCodeConversationEventStream(t *testing.T) {
@@ -144,15 +157,20 @@ func TestDecodeOpenCodeConversationEventStream(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
-	t.Run("tool parts ignored", func(t *testing.T) {
+	t.Run("tool parts fail closed", func(t *testing.T) {
 		withTool := strings.Join([]string{
 			event(`{"id":"p0","messageID":"m1","sessionID":"s1","type":"tool","tool":"x"}`),
 			event(`{"id":"p1","messageID":"m1","sessionID":"s1","type":"text","text":"final"}`),
 			`{"type":"session.idle","schema":{"sessionID":"s1"}}`,
 		}, "\n")
-		decoded, err := decodeOpenCodeConversation([]byte(withTool), 32*1024)
+		if _, err := decodeOpenCodeConversation(
+			[]byte(withTool), 32*1024,
+		); !errors.Is(err, ErrOpenCodeConversationUnavailable) {
+			t.Fatalf("error=%v", err)
+		}
+		decoded, err := DecodeOpenCodeText([]byte(withTool), 32*1024)
 		if err != nil || string(decoded) != "final" {
-			t.Fatalf("decoded=%q error=%v", decoded, err)
+			t.Fatalf("agent decoded=%q error=%v", decoded, err)
 		}
 	})
 	t.Run("malformed line fails", func(t *testing.T) {
@@ -160,6 +178,31 @@ func TestDecodeOpenCodeConversationEventStream(t *testing.T) {
 			[]byte(`not-json`+"\n"+`{"type":"session.idle","schema":{}}`), 32*1024,
 		); !errors.Is(err, ErrOpenCodeConversationUnavailable) {
 			t.Fatalf("error = %v", err)
+		}
+	})
+	t.Run("structured provider errors retain safe classification", func(t *testing.T) {
+		tests := []struct {
+			status int
+			want   error
+		}{
+			{status: 401, want: ErrOpenCodeConversationAuth},
+			{status: 402, want: ErrOpenCodeConversationInsufficientBalance},
+			{status: 404, want: ErrOpenCodeConversationModelUnavailable},
+			{status: 429, want: ErrOpenCodeConversationRateLimit},
+		}
+		for _, test := range tests {
+			payload := []byte(`{"type":"error","error":{"name":"APIError","statusCode":` +
+				strconv.Itoa(test.status) + `,"message":"must not escape"}}`)
+			_, err := decodeOpenCodeConversation(payload, 32*1024)
+			if !errors.Is(err, test.want) || strings.Contains(err.Error(), "must not escape") {
+				t.Fatalf("status=%d error=%v want=%v", test.status, err, test.want)
+			}
+		}
+		payload := []byte(`{"type":"error","error":{"name":"APIError","data":{"statusCode":400,"message":"Error from provider: Model is unavailable."}}}`)
+		_, err := decodeOpenCodeConversation(payload, 32*1024)
+		if !errors.Is(err, ErrOpenCodeConversationModelUnavailable) ||
+			strings.Contains(err.Error(), "Error from provider") {
+			t.Fatalf("retired model error = %v", err)
 		}
 	})
 }
@@ -187,5 +230,74 @@ func TestResolveOpenCodeNativeExecutableFollowsSymlink(t *testing.T) {
 		filepath.Join(root, "missing"),
 	); err == nil {
 		t.Fatal("missing executable accepted")
+	}
+}
+
+func TestSystemOpenCodeConversationRunnerUsesOnlyExactLeaseEnvironment(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencode")
+	writeExecutableFixture(t, executable, `#!/bin/sh
+if [ "${MINIMAX_API_KEY:-}" != "vault-exact" ]; then
+  exit 31
+fi
+if [ -n "${LOOM_UNRELATED_SECRET:-}" ]; then
+  exit 32
+fi
+if [ "${OPENCODE_CONFIG_CONTENT:-}" != '{"permission":"deny","share":"disabled"}' ]; then
+  exit 33
+fi
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"MM-ENV-OK"}}'
+printf '%s\n' '{"type":"session.idle"}'
+`)
+	t.Setenv("MINIMAX_API_KEY", "stale-parent-value")
+	t.Setenv("LOOM_UNRELATED_SECRET", "must-not-enter-child")
+	privateRoot := filepath.Join(root, "private")
+	if err := os.Mkdir(privateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("vault-exact")
+	output, err := NewSystemOpenCodeConversationRunner().RunOpenCodeConversation(
+		context.Background(),
+		OpenCodeConversationProcessRequest{
+			ExecutablePath:    executable,
+			HomePath:          root,
+			PrivateRoot:       privateRoot,
+			ModelID:           "minimax-cn/MiniMax-M3",
+			CredentialEnvName: "MINIMAX_API_KEY",
+			Secret:            secret,
+			Prompt:            "reply",
+			MaxOutputBytes:    4096,
+		},
+	)
+	if err != nil || string(output) != "MM-ENV-OK" {
+		t.Fatalf("output=%q error=%v", output, err)
+	}
+}
+
+func TestSystemOpenCodeConversationRunnerClassifiesEventBeforeExitCode(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencode")
+	writeExecutableFixture(t, executable, `#!/bin/sh
+printf '%s\n' '{"type":"error","error":{"name":"APIError","statusCode":402,"message":"must not escape"}}'
+exit 1
+`)
+	privateRoot := filepath.Join(root, "private")
+	if err := os.Mkdir(privateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewSystemOpenCodeConversationRunner().RunOpenCodeConversation(
+		context.Background(),
+		OpenCodeConversationProcessRequest{
+			ExecutablePath: executable,
+			HomePath:       root,
+			PrivateRoot:    privateRoot,
+			ModelID:        "minimax-cn/MiniMax-M3",
+			Prompt:         "reply",
+			MaxOutputBytes: 4096,
+		},
+	)
+	if !errors.Is(err, ErrOpenCodeConversationInsufficientBalance) ||
+		strings.Contains(err.Error(), "must not escape") {
+		t.Fatalf("error=%v", err)
 	}
 }

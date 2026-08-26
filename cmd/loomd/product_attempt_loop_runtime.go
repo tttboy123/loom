@@ -27,11 +27,12 @@ import (
 )
 
 const (
-	productAttemptLoopPermissionProfileID = "system.context-retrieval.v1"
-	productAttemptLoopMaxResultBytes      = int64(16 * 1024 * 1024)
-	productAttemptLoopMaxToolCalls        = 4
-	productAttemptLoopMaxInputTurns       = 8
-	productAttemptLoopMaxInputSteps       = 16
+	productAttemptLoopPermissionProfileID  = "system.context-retrieval.v1"
+	productAttemptLoopMaxResultBytes       = int64(16 * 1024 * 1024)
+	productAttemptLoopMaxToolCalls         = 4
+	productAttemptLoopOpenCodeMaxToolCalls = 24
+	productAttemptLoopMaxInputTurns        = 8
+	productAttemptLoopMaxInputSteps        = 16
 )
 
 type productAttemptLoopRuntimeAdapter struct {
@@ -56,9 +57,11 @@ type productAttemptLoopInvocation struct {
 	Binding          work.AttemptLoopBinding
 	Budget           work.AttemptLoopBudget
 	ExecutionBinding work.FrozenExecutionBinding
+	WorkspacePath    string
 	SegmentID        string
 	TurnID           string
 	StepID           string
+	cancelAttempt    context.CancelCauseFunc
 }
 
 type productAttemptLoopInvocationContextKey struct{}
@@ -316,40 +319,45 @@ func (adapter *productAttemptLoopRuntimeAdapter) Execute(
 		!nilProductAgentInterface(request.ContextDelivery) {
 		return supervisor.AdapterResult{}, app.ErrInvalidMissionExecution
 	}
-	ctx = context.WithValue(
-		ctx,
+	authorityContext := ctx
+	delegateContext, cancelAttempt := context.WithCancelCause(authorityContext)
+	defer cancelAttempt(nil)
+	delegateContext = context.WithValue(
+		delegateContext,
 		productAttemptLoopInvocationContextKey{},
 		productAttemptLoopInvocation{
 			Binding: binding, Budget: budget, ExecutionBinding: request.ExecutionBinding,
-			SegmentID: segmentID, TurnID: turnID, StepID: stepID,
+			WorkspacePath: request.WorkspacePath,
+			SegmentID:     segmentID, TurnID: turnID, StepID: stepID,
+			cancelAttempt: cancelAttempt,
 		},
 	)
-	result, executeErr := adapter.delegate.Execute(ctx, request)
+	result, executeErr := adapter.delegate.Execute(delegateContext, request)
 	currentTurnID, _, currentStepID, _ := cursor.Current()
 	if executeErr != nil {
 		return result, errors.Join(
-			executeErr, adapter.endFailed(ctx, binding, currentTurnID, currentStepID),
+			executeErr, adapter.endFailed(authorityContext, binding, currentTurnID, currentStepID),
 		)
 	}
 	if result.ExitCode() != 0 || !result.DispatchAcknowledged() ||
 		!result.ResultAcknowledged() {
 		return result, errors.Join(
 			app.ErrMissionExecutionConflict,
-			adapter.endFailed(ctx, binding, currentTurnID, currentStepID),
+			adapter.endFailed(authorityContext, binding, currentTurnID, currentStepID),
 		)
 	}
 	if status, available := productAttemptLoopTerminalStatus(result); available &&
 		status != "succeeded" {
-		return result, adapter.endFailed(ctx, binding, currentTurnID, currentStepID)
+		return result, adapter.endFailed(authorityContext, binding, currentTurnID, currentStepID)
 	}
 	outputDigest := productAttemptLoopResultDigest(result)
-	if _, err := adapter.loops.EndStep(ctx, binding, work.AttemptLoopStepEndInput{
+	if _, err := adapter.loops.EndStep(authorityContext, binding, work.AttemptLoopStepEndInput{
 		TurnID: currentTurnID, StepID: currentStepID, Outcome: work.AttemptStepFinal,
 		OutputDigest: outputDigest,
 	}); err != nil {
 		return result, err
 	}
-	if _, err := adapter.loops.EndTurn(ctx, binding, work.AttemptLoopTurnEndInput{
+	if _, err := adapter.loops.EndTurn(authorityContext, binding, work.AttemptLoopTurnEndInput{
 		TurnID: currentTurnID, Outcome: work.AttemptTurnSucceeded,
 	}); err != nil {
 		return result, err
@@ -496,8 +504,12 @@ func productAttemptLoopBinding(
 	maxParallel, _ := productAttemptLoopContextToolPolicy(
 		request.ExecutionBinding.HarnessAdapter,
 	)
+	maxToolCalls := productAttemptLoopMaxToolCalls
+	if request.ExecutionBinding.HarnessAdapter == harnessadapter.OpenCodeAdapterType {
+		maxToolCalls = productAttemptLoopOpenCodeMaxToolCalls
+	}
 	budget := work.AttemptLoopBudget{
-		MaxTurns: 1, MaxStepsPerTurn: 1, MaxToolCalls: productAttemptLoopMaxToolCalls,
+		MaxTurns: 1, MaxStepsPerTurn: 1, MaxToolCalls: maxToolCalls,
 		MaxParallelToolCalls: maxParallel, MaxResultBytes: productAttemptLoopMaxResultBytes,
 		ToolTimeoutMillis: timeout.Milliseconds(),
 	}

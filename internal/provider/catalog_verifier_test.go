@@ -20,29 +20,37 @@ func (doer *catalogVerifierDoer) Do(request *http.Request) (*http.Response, erro
 }
 
 func TestCatalogCredentialVerifierUsesRegisteredEndpointAndHeader(t *testing.T) {
-	doer := &catalogVerifierDoer{response: &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(bytes.NewBufferString(`{"data":[]}`)),
-		Header:     make(http.Header),
-	}}
-	verifier, err := NewCatalogCredentialVerifier(CatalogVerifierConfig{
-		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := verifier.Verify(
-		context.Background(),
-		"deepseek",
-		[]byte("secret"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != MiniMaxCredentialValid ||
-		doer.request.URL.String() != "https://api.deepseek.com/models" ||
-		doer.request.Header.Get("Authorization") != "Bearer secret" {
-		t.Fatalf("result=%#v request=%#v", result, doer.request)
+	for _, test := range []struct {
+		providerID string
+		url        string
+	}{
+		{providerID: "openai", url: "https://api.openai.com/v1/models"},
+		{providerID: "deepseek", url: "https://api.deepseek.com/models"},
+	} {
+		t.Run(test.providerID, func(t *testing.T) {
+			doer := &catalogVerifierDoer{response: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"data":[]}`)),
+				Header:     make(http.Header),
+			}}
+			verifier, err := NewCatalogCredentialVerifier(CatalogVerifierConfig{
+				Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := verifier.Verify(
+				context.Background(), test.providerID, []byte("secret"),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != MiniMaxCredentialValid ||
+				doer.request.URL.String() != test.url ||
+				doer.request.Header.Get("Authorization") != "Bearer secret" {
+				t.Fatalf("result=%#v request=%#v", result, doer.request)
+			}
+		})
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -639,6 +640,415 @@ type swiftFixtureHandler struct {
 	credentialConfigureDigests   [][sha256.Size]byte
 	timelinePages                map[string]json.RawMessage
 	timelineCursors              []string
+	roundtable                   *swiftRoundtableState
+	roundtableCalls              []string
+}
+
+type swiftRoundtableState struct {
+	Session    swiftRoundtableSession            `json:"session"`
+	Seats      map[string]swiftRoundtableSeat    `json:"seats"`
+	Rounds     map[string]swiftRoundtableRound   `json:"rounds"`
+	Messages   map[string]swiftRoundtableMessage `json:"messages"`
+	RoundOrder []string
+	Digest     string `json:"digest"`
+}
+
+type swiftRoundtableSession struct {
+	ID            string `json:"id"`
+	ModeratorSeat string `json:"moderator_seat"`
+	Title         string `json:"title"`
+	CreatedAt     string `json:"created_at"`
+	Concluded     bool   `json:"concluded"`
+}
+
+type swiftRoundtableSeat struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Available   bool   `json:"available"`
+}
+
+type swiftRoundtableRound struct {
+	ID           string                   `json:"id"`
+	Sequence     int                      `json:"sequence"`
+	MessageCount int                      `json:"message_count"`
+	Messages     []swiftRoundtableMessage `json:"messages"`
+}
+
+type swiftRoundtableMessage struct {
+	ID             string   `json:"id"`
+	RoundID        string   `json:"round_id"`
+	WriterSeat     string   `json:"writer_seat"`
+	TargetSeat     string   `json:"target_seat"`
+	Body           string   `json:"body"`
+	ArtifactRefs   []string `json:"artifact_refs"`
+	BodyDigest     string   `json:"body_digest"`
+	Status         string   `json:"status"`
+	ProposedAt     string   `json:"proposed_at"`
+	RelayedAt      string   `json:"relayed_at"`
+	AcknowledgedAt string   `json:"acknowledged_at"`
+}
+
+func (handler *swiftFixtureHandler) resetRoundtable() {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	handler.roundtable = nil
+	handler.roundtableCalls = nil
+}
+
+func normalizedFixtureArtifactRefs(refs []string) []string {
+	if refs == nil {
+		return []string{}
+	}
+	return append([]string{}, refs...)
+}
+
+func (handler *swiftFixtureHandler) roundtableView() ([]byte, bool) {
+	// The caller holds handler.mu; this helper marshals without re-locking.
+	if handler.roundtable == nil {
+		return nil, false
+	}
+	state := handler.roundtable
+	rounds := make([]swiftRoundtableRound, 0, len(state.RoundOrder))
+	for _, roundID := range state.RoundOrder {
+		round := state.Rounds[roundID]
+		round.Messages = append([]swiftRoundtableMessage{}, round.Messages...)
+		rounds = append(rounds, round)
+	}
+	view := struct {
+		Session  swiftRoundtableSession            `json:"session"`
+		Seats    map[string]swiftRoundtableSeat    `json:"seats"`
+		Rounds   []swiftRoundtableRound            `json:"rounds"`
+		Messages map[string]swiftRoundtableMessage `json:"messages"`
+		Digest   string                            `json:"digest"`
+	}{
+		Session: state.Session, Seats: state.Seats,
+		Rounds: rounds, Messages: state.Messages, Digest: state.Digest,
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+func (handler *swiftFixtureHandler) roundtableHandle(
+	method string,
+	params []byte,
+) Response {
+	handler.mu.Lock()
+	if handler.roundtable == nil {
+		handler.roundtable = &swiftRoundtableState{
+			Seats:    make(map[string]swiftRoundtableSeat),
+			Rounds:   make(map[string]swiftRoundtableRound),
+			Messages: make(map[string]swiftRoundtableMessage),
+		}
+	}
+	handler.roundtableCalls = append(handler.roundtableCalls, method)
+	handler.mu.Unlock()
+
+	reject := func(code string) Response {
+		return Response{Error: safeProtocolError(code, errors.New("roundtable fixture"))}
+	}
+	refresh := func() Response {
+		view, ok := handler.roundtableView()
+		if !ok {
+			return reject("state_unavailable")
+		}
+		return Response{OK: true, Result: view}
+	}
+	digest := func(parts ...string) string {
+		sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+		return hex.EncodeToString(sum[:])
+	}
+
+	switch method {
+	case "roundtable_session_create":
+		var input struct {
+			SessionID     string `json:"session_id"`
+			ModeratorSeat string `json:"moderator_seat"`
+			Title         string `json:"title"`
+			CorrelationID string `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.ModeratorSeat == "" ||
+			input.Title == "" || len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		if handler.roundtable.Session.ID != "" {
+			return reject("conflict")
+		}
+		handler.roundtable.Session = swiftRoundtableSession{
+			ID: input.SessionID, ModeratorSeat: input.ModeratorSeat,
+			Title: input.Title, CreatedAt: "2026-08-16T12:00:00Z",
+		}
+		handler.roundtable.Seats[input.ModeratorSeat] = swiftRoundtableSeat{
+			ID: input.ModeratorSeat, DisplayName: "Moderator", Available: true,
+		}
+		handler.roundtable.Digest = digest(
+			"session", input.SessionID, input.ModeratorSeat, input.Title,
+		)
+		return refresh()
+	case "roundtable_add_seat":
+		var input struct {
+			SessionID     string `json:"session_id"`
+			SeatID        string `json:"seat_id"`
+			DisplayName   string `json:"display_name"`
+			CorrelationID string `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.SeatID == "" ||
+			input.DisplayName == "" || len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		if handler.roundtable.Session.ID != input.SessionID ||
+			handler.roundtable.Session.Concluded {
+			return reject("not_found")
+		}
+		if _, exists := handler.roundtable.Seats[input.SeatID]; exists {
+			return reject("conflict")
+		}
+		if len(handler.roundtable.Seats) >= 16 {
+			return reject("too_many_seats")
+		}
+		handler.roundtable.Seats[input.SeatID] = swiftRoundtableSeat{
+			ID: input.SeatID, DisplayName: input.DisplayName, Available: true,
+		}
+		return refresh()
+	case "roundtable_retire_seat":
+		var input struct {
+			SessionID     string `json:"session_id"`
+			SeatID        string `json:"seat_id"`
+			ModeratorSeat string `json:"moderator_seat"`
+			CorrelationID string `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.SeatID == "" ||
+			input.ModeratorSeat == "" || len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		state := handler.roundtable
+		if state.Session.ID != input.SessionID || state.Session.Concluded {
+			return reject("not_found")
+		}
+		if state.Session.ModeratorSeat != input.ModeratorSeat ||
+			!state.Seats[input.ModeratorSeat].Available {
+			return reject("not_moderator")
+		}
+		seat, ok := state.Seats[input.SeatID]
+		if !ok {
+			return reject("not_found")
+		}
+		if !seat.Available {
+			return reject("conflict")
+		}
+		seat.Available = false
+		state.Seats[input.SeatID] = seat
+		return refresh()
+	case "roundtable_open_round":
+		var input struct {
+			SessionID     string `json:"session_id"`
+			RoundID       string `json:"round_id"`
+			ModeratorSeat string `json:"moderator_seat"`
+			CorrelationID string `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.RoundID == "" ||
+			input.ModeratorSeat == "" || len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		state := handler.roundtable
+		if state.Session.ID != input.SessionID || state.Session.Concluded {
+			return reject("not_found")
+		}
+		if state.Session.ModeratorSeat != input.ModeratorSeat ||
+			!state.Seats[input.ModeratorSeat].Available {
+			return reject("not_moderator")
+		}
+		if _, exists := state.Rounds[input.RoundID]; exists {
+			return reject("conflict")
+		}
+		state.Rounds[input.RoundID] = swiftRoundtableRound{
+			ID: input.RoundID, Sequence: len(state.RoundOrder) + 1,
+		}
+		state.RoundOrder = append(state.RoundOrder, input.RoundID)
+		return refresh()
+	case "roundtable_propose_message":
+		var input struct {
+			SessionID     string   `json:"session_id"`
+			RoundID       string   `json:"round_id"`
+			MessageID     string   `json:"message_id"`
+			WriterSeat    string   `json:"writer_seat"`
+			TargetSeat    string   `json:"target_seat"`
+			Body          string   `json:"body"`
+			ArtifactRefs  []string `json:"artifact_refs"`
+			CorrelationID string   `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.RoundID == "" ||
+			input.MessageID == "" || input.WriterSeat == "" ||
+			input.TargetSeat == "" || len(input.Body) == 0 ||
+			len(input.Body) > 8<<10 || len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		state := handler.roundtable
+		if state.Session.ID != input.SessionID || state.Session.Concluded {
+			return reject("not_found")
+		}
+		if !state.Seats[input.WriterSeat].Available ||
+			!state.Seats[input.TargetSeat].Available {
+			return reject("seat_unavailable")
+		}
+		if _, exists := state.Messages[input.MessageID]; exists {
+			return reject("conflict")
+		}
+		round, ok := state.Rounds[input.RoundID]
+		if !ok {
+			return reject("not_found")
+		}
+		bodyDigest := digest(input.SessionID, input.MessageID, input.Body)
+		message := swiftRoundtableMessage{
+			ID: input.MessageID, RoundID: input.RoundID,
+			WriterSeat: input.WriterSeat, TargetSeat: input.TargetSeat,
+			Body:         input.Body,
+			ArtifactRefs: normalizedFixtureArtifactRefs(input.ArtifactRefs),
+			BodyDigest:   bodyDigest, Status: "pending",
+			ProposedAt: "2026-08-16T12:00:04Z",
+		}
+		state.Messages[input.MessageID] = message
+		round.Messages = append(round.Messages, message)
+		round.MessageCount = len(round.Messages)
+		state.Rounds[input.RoundID] = round
+		state.Digest = digest(
+			"message", input.MessageID, bodyDigest,
+		)
+		return refresh()
+	case "roundtable_relay_message", "roundtable_ack_message",
+		"roundtable_insert_message", "roundtable_drop_message":
+		var input struct {
+			SessionID     string `json:"session_id"`
+			MessageID     string `json:"message_id"`
+			ModeratorSeat string `json:"moderator_seat"`
+			SeatID        string `json:"seat_id"`
+			CorrelationID string `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.MessageID == "" ||
+			len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		state := handler.roundtable
+		if state.Session.ID != input.SessionID || state.Session.Concluded {
+			return reject("not_found")
+		}
+		message, ok := state.Messages[input.MessageID]
+		if !ok {
+			return reject("not_found")
+		}
+		switch method {
+		case "roundtable_relay_message":
+			if state.Session.ModeratorSeat != input.ModeratorSeat ||
+				!state.Seats[input.ModeratorSeat].Available {
+				return reject("not_moderator")
+			}
+			if message.Status != "pending" {
+				return reject("conflict")
+			}
+			message.Status = "relayed"
+			message.RelayedAt = "2026-08-16T12:00:06Z"
+		case "roundtable_ack_message":
+			if !state.Seats[input.SeatID].Available {
+				return reject("seat_unavailable")
+			}
+			if input.SeatID != message.TargetSeat {
+				return reject("not_found")
+			}
+			if message.Status != "relayed" {
+				return reject("conflict")
+			}
+			message.Status = "acknowledged"
+			message.AcknowledgedAt = "2026-08-16T12:00:08Z"
+		case "roundtable_insert_message":
+			if state.Session.ModeratorSeat != input.ModeratorSeat ||
+				!state.Seats[input.ModeratorSeat].Available {
+				return reject("not_moderator")
+			}
+			if message.Status != "acknowledged" {
+				return reject("conflict")
+			}
+			message.Status = "inserted"
+		case "roundtable_drop_message":
+			if state.Session.ModeratorSeat != input.ModeratorSeat ||
+				!state.Seats[input.ModeratorSeat].Available {
+				return reject("not_moderator")
+			}
+			if message.Status == "inserted" || message.Status == "dropped" {
+				return reject("conflict")
+			}
+			message.Status = "dropped"
+		}
+		state.Messages[input.MessageID] = message
+		for index, roundID := range state.RoundOrder {
+			round := state.Rounds[roundID]
+			for messageIndex := range round.Messages {
+				if round.Messages[messageIndex].ID == message.ID {
+					round.Messages[messageIndex] = message
+				}
+			}
+			state.Rounds[roundID] = round
+			_ = index
+		}
+		return refresh()
+	case "roundtable_conclude":
+		var input struct {
+			SessionID     string `json:"session_id"`
+			ModeratorSeat string `json:"moderator_seat"`
+			CorrelationID string `json:"correlation_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil ||
+			input.SessionID == "" || input.ModeratorSeat == "" ||
+			len(input.CorrelationID) != 36 {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		state := handler.roundtable
+		if state.Session.ID != input.SessionID || state.Session.Concluded {
+			return reject("not_found")
+		}
+		if state.Session.ModeratorSeat != input.ModeratorSeat ||
+			!state.Seats[input.ModeratorSeat].Available {
+			return reject("not_moderator")
+		}
+		state.Session.Concluded = true
+		return refresh()
+	case "roundtable_snapshot":
+		var input struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
+			return reject("invalid_request")
+		}
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		if handler.roundtable.Session.ID != input.SessionID {
+			return reject("not_found")
+		}
+		return refresh()
+	default:
+		return Response{Error: safeProtocolError("unknown_method", errors.New("roundtable fixture"))}
+	}
 }
 
 func (handler *swiftFixtureHandler) setTimelinePages(
@@ -795,6 +1205,11 @@ func (handler *swiftFixtureHandler) Handle(
 			return Response{OK: true, Result: json.RawMessage(swiftExecutionStartFixture)}
 		}
 		return Response{Error: safeProtocolError("invalid_request", errors.New("operation"))}
+	case "roundtable_session_create", "roundtable_add_seat", "roundtable_retire_seat",
+		"roundtable_open_round", "roundtable_propose_message", "roundtable_relay_message",
+		"roundtable_ack_message", "roundtable_insert_message", "roundtable_drop_message",
+		"roundtable_conclude", "roundtable_snapshot":
+		return handler.roundtableHandle(request.Method, request.Params)
 	default:
 		return Response{}
 	}
@@ -1151,7 +1566,7 @@ func TestStrictSwiftExecutionProbeRejectsMalformedPreflightWire(t *testing.T) {
 				probe, "--socket", socketPath, "--execution",
 			).CombinedOutput()
 			if err == nil ||
-				strings.TrimSpace(string(output)) != "error:invalid_response" {
+				strings.TrimSpace(string(output)) != "error:invalid_response:true" {
 				t.Fatalf("malformed execution result = %v, %q", err, output)
 			}
 			<-done
@@ -1316,6 +1731,7 @@ func TestSwiftClientInteroperatesWithRealGoServer(t *testing.T) {
 		"cursor_conflict",
 		"stream_gap",
 		"state_unavailable",
+		"workspace_publish_failed",
 		"timeout",
 		"busy",
 		"internal",
@@ -1342,6 +1758,98 @@ func TestSwiftClientInteroperatesWithRealGoServer(t *testing.T) {
 				output,
 				expected,
 			)
+		}
+	}
+}
+
+func TestStrictSwiftClientRunsRoundtableJourneyOverRealGoServer(
+	t *testing.T,
+) {
+	probe := buildSwiftSetupContractProbe(t)
+	root, socketPath := swiftPrivateSocketRoot(t)
+	defer os.RemoveAll(root)
+	handler := &swiftFixtureHandler{}
+	server, err := NewServer(ServerConfig{
+		SocketPath:   socketPath,
+		EffectiveUID: os.Geteuid(),
+		BuildID:      "swift-roundtable-contract-fixture",
+		Handler:      handler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(ctx) }()
+	select {
+	case <-server.Ready():
+	case err := <-serveDone:
+		t.Fatalf("server failed before ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not become ready")
+	}
+	output, runErr := exec.Command(
+		probe,
+		"--socket",
+		socketPath,
+		"--roundtable",
+	).CombinedOutput()
+	cancel()
+	if closeErr := server.Close(); closeErr != nil {
+		t.Errorf("Close() error = %v", closeErr)
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Errorf("Serve() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("server did not close")
+	}
+	if runErr != nil {
+		t.Fatalf("Swift roundtable probe error = %v, output = %q", runErr, output)
+	}
+	var actual struct {
+		SessionID    string `json:"session_id"`
+		Seats        int    `json:"seats"`
+		Rounds       int    `json:"rounds"`
+		Status       string `json:"status"`
+		Concluded    bool   `json:"concluded"`
+		DigestLength int    `json:"digest_length"`
+	}
+	jsonStart := bytes.Index(output, []byte("{"))
+	if jsonStart < 0 {
+		t.Fatalf("Swift roundtable output has no JSON: %q", output)
+	}
+	if err := json.Unmarshal(output[jsonStart:], &actual); err != nil {
+		t.Fatalf("Swift roundtable output invalid: %v, output = %q", err, output)
+	}
+	if actual.SessionID != "rt-contract" || actual.Seats != 3 ||
+		actual.Rounds != 1 || actual.Status != "inserted" ||
+		!actual.Concluded || actual.DigestLength != 64 {
+		t.Fatalf("roundtable journey result = %#v", actual)
+	}
+	handler.mu.Lock()
+	calls := append([]string(nil), handler.roundtableCalls...)
+	handler.mu.Unlock()
+	wantCalls := []string{
+		"roundtable_session_create",
+		"roundtable_add_seat",
+		"roundtable_add_seat",
+		"roundtable_open_round",
+		"roundtable_propose_message",
+		"roundtable_relay_message",
+		"roundtable_ack_message",
+		"roundtable_insert_message",
+		"roundtable_conclude",
+		"roundtable_snapshot",
+	}
+	if len(calls) != len(wantCalls) {
+		t.Fatalf("roundtable calls = %v, want %v", calls, wantCalls)
+	}
+	for index := range wantCalls {
+		if calls[index] != wantCalls[index] {
+			t.Fatalf("roundtable calls = %v, want %v", calls, wantCalls)
 		}
 	}
 }
@@ -2045,6 +2553,107 @@ struct SetupContractProbe {
                 FileHandle.standardOutput.write(encoded)
                 return
             }
+            if arguments.count == 4, arguments[1] == "--socket",
+                arguments[3] == "--roundtable"
+            {
+                let client = try LocalIPCClient(socketPath: arguments[2])
+                let correlation = "11111111-1111-4111-8111-111111111111"
+                try FileHandle.standardError.write(contentsOf: Data("step:create\n".utf8))
+                let created = try await client.roundtableCreateSession(
+                    LocalRoundtableSessionCreateRequest(
+                        schemaVersion: 1, sessionID: "rt-contract",
+                        moderatorSeat: "seat-moderator", title: "Contract journey",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:add-writer\n".utf8))
+                try FileHandle.standardError.write(contentsOf: Data("step:add-target\n".utf8))
+                var view = try await client.roundtableAddSeat(
+                    LocalRoundtableAddSeatRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        seatID: "seat-writer", displayName: "Writer Seat",
+                        correlationID: correlation
+                    )
+                )
+                view = try await client.roundtableAddSeat(
+                    LocalRoundtableAddSeatRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        seatID: "seat-target", displayName: "Target Seat",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:open-round\n".utf8))
+                _ = try await client.roundtableOpenRound(
+                    LocalRoundtableOpenRoundRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        roundID: "round-1", moderatorSeat: "seat-moderator",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:propose\n".utf8))
+                view = try await client.roundtableProposeMessage(
+                    LocalRoundtableProposeMessageRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        roundID: "round-1", messageID: "msg-1",
+                        writerSeat: "seat-writer", targetSeat: "seat-target",
+                        body: "Diagnosis: bounded contract journey.",
+                        artifactRefs: [],
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:relay\n".utf8))
+                view = try await client.roundtableRelayMessage(
+                    LocalRoundtableRelayMessageRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        messageID: "msg-1", moderatorSeat: "seat-moderator",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:ack\n".utf8))
+                view = try await client.roundtableAckMessage(
+                    LocalRoundtableAckMessageRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        messageID: "msg-1", seatID: "seat-target",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:insert\n".utf8))
+                view = try await client.roundtableInsertMessage(
+                    LocalRoundtableInsertMessageRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        messageID: "msg-1", moderatorSeat: "seat-moderator",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:conclude\n".utf8))
+                view = try await client.roundtableConclude(
+                    LocalRoundtableConcludeRequest(
+                        schemaVersion: 1, sessionID: created.session.id,
+                        moderatorSeat: "seat-moderator",
+                        correlationID: correlation
+                    )
+                )
+                try FileHandle.standardError.write(contentsOf: Data("step:snapshot\n".utf8))
+                let snapshot = try await client.roundtableSnapshot(
+                    LocalRoundtableSnapshotRequest(
+                        schemaVersion: 1, sessionID: created.session.id
+                    )
+                )
+                let result: [String: Any] = [
+                    "session_id": snapshot.session.id,
+                    "seats": snapshot.seats.count,
+                    "rounds": snapshot.rounds.count,
+                    "status": snapshot.messages["msg-1"]?.status ?? "",
+                    "concluded": snapshot.session.concluded,
+                    "digest_length": snapshot.digest.count,
+                ]
+                let encoded = try JSONSerialization.data(
+                    withJSONObject: result,
+                    options: [.sortedKeys]
+                )
+                FileHandle.standardOutput.write(encoded)
+                return
+            }
             guard arguments.count == 3, arguments[1] == "--socket" else {
                 throw LocalProductClientError.invalidRequest
             }
@@ -2077,7 +2686,8 @@ struct SetupContractProbe {
             )
             FileHandle.standardOutput.write(encoded)
         } catch {
-            FileHandle.standardError.write(Data("error:setup_probe\n".utf8))
+            let detail = "error:setup_probe " + String(describing: error) + "\n"
+            FileHandle.standardError.write(Data(detail.utf8))
             exit(1)
         }
     }
@@ -2093,6 +2703,7 @@ struct SetupContractProbe {
 		"-parse-as-library",
 		filepath.Join(sourceRoot, "LocalProductModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductHandoffModels.swift"),
+		filepath.Join(sourceRoot, "LocalRoundtableModels.swift"),
 		filepath.Join(sourceRoot, "MissionOrchestration.swift"),
 		filepath.Join(sourceRoot, "LocalProductDecisionModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductSetupModels.swift"),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"loom-pi-rebuild/internal/contextcapsule"
+	"loom-pi-rebuild/internal/permissions"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/nativeadapter"
 	"loom-pi-rebuild/internal/supervisor"
@@ -289,7 +290,7 @@ func prepareHarnessAttemptMCP(
 		dispatch.DisclosureReceiptDigest != authority.DisclosureReceiptDigest {
 		return nil, errors.Join(ErrHarnessProtocol, ErrHarnessContextMCP, err)
 	}
-	config := harnessAttemptMCPConfig{}
+	config := harnessAttemptMCPConfig{WorkspacePath: request.WorkspacePath}
 	if contextCapable {
 		config.Delivery = request.ContextDelivery
 	}
@@ -306,6 +307,9 @@ func prepareHarnessAttemptMCP(
 			)
 		}
 		config.ToolGateway = toolGateway
+		config.AllowedTools = allowedHarnessAttemptTools(
+			toolGateway, request.ExecutionBinding,
+		)
 		config.ToolBinding = loomruntime.ToolCallBinding{
 			ConversationID: authority.ConversationID,
 			WorkItemID:     request.Binding.WorkItemID, RunID: request.Binding.RunID,
@@ -322,6 +326,24 @@ func prepareHarnessAttemptMCP(
 		return nil, errors.Join(ErrHarnessProtocol, err)
 	}
 	return service, nil
+}
+
+type harnessScopedToolCapabilityProvider interface {
+	AllowedToolCallsForBinding(loomruntime.FrozenExecutionBinding) []permissions.ToolKind
+}
+
+func allowedHarnessAttemptTools(
+	gateway loomruntime.AttemptToolGateway,
+	binding loomruntime.FrozenExecutionBinding,
+) []permissions.ToolKind {
+	if scoped, ok := gateway.(harnessScopedToolCapabilityProvider); ok {
+		return append([]permissions.ToolKind(nil), scoped.AllowedToolCallsForBinding(binding)...)
+	}
+	provider, ok := gateway.(loomruntime.ToolCallCapabilityProvider)
+	if !ok {
+		return nil
+	}
+	return append([]permissions.ToolKind(nil), provider.AllowedToolCalls()...)
 }
 
 func harnessContextMCPLease(service *harnessContextMCP) HarnessContextMCPLease {

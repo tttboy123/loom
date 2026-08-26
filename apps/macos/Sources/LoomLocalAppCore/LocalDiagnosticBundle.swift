@@ -187,6 +187,26 @@ public struct LocalDiagnosticEvent: Codable, Equatable, Sendable {
     public let modelID: String
     public let threadID: String
     public let profileID: String
+    public let gatewayEventSchemaVersion: Int?
+    public let gatewayInstanceID: String
+    public let gatewayConfiguredHarnessVersion: Int?
+    public let gatewayBackendVersion: Int?
+    public let gatewayEventSequence: UInt64?
+    public let gatewayEventType: String
+    public let sessionID: String
+    public let harnessID: String
+    public let backendID: String
+    public let segmentID: String
+    public let workspaceID: String
+    public let workspaceDigest: String
+    public let executionBindingDigest: String
+    public let credentialRevision: Int64?
+    public let reasoningEffort: String
+    public let segmentContextCapsuleDigest: String
+    public let contextCapsuleDigest: String
+    public let governancePolicyDigest: String
+    public let routeTransitionReviewDigest: String?
+    public let responseID: String
     public let stage: String
     public let elapsedMilliseconds: Int64
     public let result: String
@@ -205,6 +225,26 @@ public struct LocalDiagnosticEvent: Codable, Equatable, Sendable {
         case modelID = "model_id"
         case threadID = "thread_id"
         case profileID = "profile_id"
+        case gatewayEventSchemaVersion = "gateway_event_schema_version"
+        case gatewayInstanceID = "gateway_instance_id"
+        case gatewayConfiguredHarnessVersion = "gateway_configured_harness_version"
+        case gatewayBackendVersion = "gateway_backend_version"
+        case gatewayEventSequence = "gateway_event_sequence"
+        case gatewayEventType = "gateway_event_type"
+        case sessionID = "session_id"
+        case harnessID = "harness_id"
+        case backendID = "backend_id"
+        case segmentID = "segment_id"
+        case workspaceID = "workspace_id"
+        case workspaceDigest = "workspace_digest"
+        case executionBindingDigest = "execution_binding_digest"
+        case credentialRevision = "credential_revision"
+        case reasoningEffort = "reasoning_effort"
+        case segmentContextCapsuleDigest = "segment_context_capsule_digest"
+        case contextCapsuleDigest = "context_capsule_digest"
+        case governancePolicyDigest = "governance_policy_digest"
+        case routeTransitionReviewDigest = "route_transition_review_digest"
+        case responseID = "response_id"
         case stage
         case elapsedMilliseconds = "elapsed_ms"
         case result
@@ -242,6 +282,8 @@ public struct LocalDiagnosticBundlePreview:
 }
 
 public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
+    private static let maximumExportedEvents = 512
+
     private struct StoredEvent: Decodable {
         let schemaVersion: Int
         let occurredAt: String
@@ -254,6 +296,26 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
         let modelID: String?
         let threadID: String?
         let profileID: String?
+        let gatewayEventSchemaVersion: Int?
+        let gatewayInstanceID: String?
+        let gatewayConfiguredHarnessVersion: Int?
+        let gatewayBackendVersion: Int?
+        let gatewayEventSequence: UInt64?
+        let gatewayEventType: String?
+        let sessionID: String?
+        let harnessID: String?
+        let backendID: String?
+        let segmentID: String?
+        let workspaceID: String?
+        let workspaceDigest: String?
+        let executionBindingDigest: String?
+        let credentialRevision: Int64?
+        let reasoningEffort: String?
+        let segmentContextCapsuleDigest: String?
+        let contextCapsuleDigest: String?
+        let governancePolicyDigest: String?
+        let routeTransitionReviewDigest: String?
+        let responseID: String?
         let stage: String
         let elapsedMilliseconds: Int64
         let result: String
@@ -272,6 +334,26 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
             case modelID = "model_id"
             case threadID = "thread_id"
             case profileID = "profile_id"
+            case gatewayEventSchemaVersion = "gateway_event_schema_version"
+            case gatewayInstanceID = "gateway_instance_id"
+            case gatewayConfiguredHarnessVersion = "gateway_configured_harness_version"
+            case gatewayBackendVersion = "gateway_backend_version"
+            case gatewayEventSequence = "gateway_event_sequence"
+            case gatewayEventType = "gateway_event_type"
+            case sessionID = "session_id"
+            case harnessID = "harness_id"
+            case backendID = "backend_id"
+            case segmentID = "segment_id"
+            case workspaceID = "workspace_id"
+            case workspaceDigest = "workspace_digest"
+            case executionBindingDigest = "execution_binding_digest"
+            case credentialRevision = "credential_revision"
+            case reasoningEffort = "reasoning_effort"
+            case segmentContextCapsuleDigest = "segment_context_capsule_digest"
+            case contextCapsuleDigest = "context_capsule_digest"
+            case governancePolicyDigest = "governance_policy_digest"
+            case routeTransitionReviewDigest = "route_transition_review_digest"
+            case responseID = "response_id"
             case stage
             case elapsedMilliseconds = "elapsed_ms"
             case result
@@ -279,6 +361,26 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
             case retryable
         }
     }
+
+    private static let gatewayV3EventKeys: Set<String> = [
+        "schema_version", "occurred_at", "incident_id", "operation",
+        "credential_runtime", "credential_helper_spawn_attempts",
+        "provider_id", "provider_account_id", "credential_revision", "model_id",
+        "reasoning_effort", "thread_id", "gateway_event_schema_version",
+        "gateway_instance_id", "gateway_configured_harness_version",
+        "gateway_backend_version", "gateway_event_sequence", "gateway_event_type",
+        "session_id", "harness_id", "backend_id", "segment_id", "workspace_id",
+        "workspace_digest", "execution_binding_digest",
+        "segment_context_capsule_digest", "context_capsule_digest",
+        "governance_policy_digest", "route_transition_review_digest", "response_id",
+        "stage", "elapsed_ms", "result", "error_code", "retryable",
+    ]
+
+    private static let forbiddenEventFieldKeys: Set<String> = [
+        "authorization", "authorization_header", "content", "credential_ref",
+        "credential_reference", "path", "prompt", "provider_body",
+        "provider_response_body", "secret", "workspace_path",
+    ]
 
     private let diagnosticsDirectory: URL
     private let appExecutable: URL
@@ -449,6 +551,7 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
             }
             for line in data.split(separator: 0x0A) where !line.isEmpty {
                 guard line.count <= 4_096,
+                      Self.validRawEvent(Data(line)),
                       let stored = try? JSONDecoder().decode(StoredEvent.self, from: line),
                       let event = Self.safeEvent(stored, source: source) else {
                     skipped += 1
@@ -461,7 +564,7 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
             ($0.occurredAt, $0.incidentID, $0.source) <
                 ($1.occurredAt, $1.incidentID, $1.source)
         }
-        return (Array(events.suffix(100)), skipped)
+        return (Array(events.suffix(Self.maximumExportedEvents)), skipped)
     }
 
     private func consoleSummary() -> LocalDiagnosticConsoleSummary {
@@ -487,6 +590,20 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
         let modelID = stored.modelID ?? ""
         let threadID = stored.threadID ?? ""
         let profileID = stored.profileID ?? ""
+        let gatewayInstanceID = stored.gatewayInstanceID ?? ""
+        let gatewayEventType = stored.gatewayEventType ?? ""
+        let sessionID = stored.sessionID ?? ""
+        let harnessID = stored.harnessID ?? ""
+        let backendID = stored.backendID ?? ""
+        let segmentID = stored.segmentID ?? ""
+        let workspaceID = stored.workspaceID ?? ""
+        let workspaceDigest = stored.workspaceDigest ?? ""
+        let executionBindingDigest = stored.executionBindingDigest ?? ""
+        let reasoningEffort = stored.reasoningEffort ?? ""
+        let segmentContextCapsuleDigest = stored.segmentContextCapsuleDigest ?? ""
+        let contextCapsuleDigest = stored.contextCapsuleDigest ?? ""
+        let governancePolicyDigest = stored.governancePolicyDigest ?? ""
+        let responseID = stored.responseID ?? ""
         guard stored.schemaVersion == 1,
               ["app", "daemon"].contains(source),
               safeTimestamp(stored.occurredAt),
@@ -508,6 +625,23 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
                 stored.result == "failed" && stored.errorCode != nil) else {
             return nil
         }
+        if let gatewayVersion = stored.gatewayEventSchemaVersion {
+            guard validGatewayEvent(stored, version: gatewayVersion) else { return nil }
+        } else {
+            guard gatewayEventType.isEmpty, sessionID.isEmpty, harnessID.isEmpty,
+                  backendID.isEmpty, segmentID.isEmpty, workspaceID.isEmpty,
+                  workspaceDigest.isEmpty, executionBindingDigest.isEmpty,
+                  reasoningEffort.isEmpty, segmentContextCapsuleDigest.isEmpty,
+                  contextCapsuleDigest.isEmpty, governancePolicyDigest.isEmpty,
+                  stored.routeTransitionReviewDigest == nil,
+                  responseID.isEmpty,
+                  gatewayInstanceID.isEmpty,
+                  stored.gatewayConfiguredHarnessVersion == nil,
+                  stored.gatewayBackendVersion == nil,
+                  stored.gatewayEventSequence == nil else {
+                return nil
+            }
+        }
         return LocalDiagnosticEvent(
             source: source,
             occurredAt: stored.occurredAt,
@@ -520,12 +654,262 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
             modelID: modelID,
             threadID: threadID,
             profileID: profileID,
+            gatewayEventSchemaVersion: stored.gatewayEventSchemaVersion,
+            gatewayInstanceID: gatewayInstanceID,
+            gatewayConfiguredHarnessVersion: stored.gatewayConfiguredHarnessVersion,
+            gatewayBackendVersion: stored.gatewayBackendVersion,
+            gatewayEventSequence: stored.gatewayEventSequence,
+            gatewayEventType: gatewayEventType,
+            sessionID: sessionID,
+            harnessID: harnessID,
+            backendID: backendID,
+            segmentID: segmentID,
+            workspaceID: workspaceID,
+            workspaceDigest: workspaceDigest,
+            executionBindingDigest: executionBindingDigest,
+            credentialRevision: stored.credentialRevision,
+            reasoningEffort: reasoningEffort,
+            segmentContextCapsuleDigest: segmentContextCapsuleDigest,
+            contextCapsuleDigest: contextCapsuleDigest,
+            governancePolicyDigest: governancePolicyDigest,
+            routeTransitionReviewDigest: stored.gatewayEventSchemaVersion == 3
+                ? stored.routeTransitionReviewDigest
+                : nil,
+            responseID: responseID,
             stage: stored.stage,
             elapsedMilliseconds: stored.elapsedMilliseconds,
             result: stored.result,
             errorCode: stored.errorCode,
             retryable: stored.retryable
         )
+    }
+
+    private static func validGatewayEvent(_ stored: StoredEvent, version: Int) -> Bool {
+        guard version == 1 || version == 2 || version == 3,
+              stored.operation == "chat_message",
+              stored.stage == "conversation_dispatch",
+              (stored.profileID ?? "").isEmpty,
+              let harnessVersion = stored.gatewayConfiguredHarnessVersion,
+              harnessVersion > 0,
+              let backendVersion = stored.gatewayBackendVersion,
+              backendVersion > 0,
+              let sequence = stored.gatewayEventSequence,
+              sequence > 0,
+              let eventType = stored.gatewayEventType,
+              let sessionID = stored.sessionID,
+              safeGatewayIdentifier(sessionID, maximum: 255),
+              let harnessID = stored.harnessID,
+              safeGatewayIdentifier(harnessID, maximum: 255),
+              let backendID = stored.backendID,
+              safeGatewayIdentifier(backendID, maximum: 255),
+              let threadID = stored.threadID,
+              safeGatewayIdentifier(threadID, maximum: 255),
+              let segmentID = stored.segmentID,
+              safeGatewayIdentifier(segmentID, maximum: 255),
+              let workspaceID = stored.workspaceID,
+              safeGatewayIdentifier(workspaceID, maximum: 255),
+              validGatewayTimestamp(stored.occurredAt),
+              validGatewayOutcome(
+                eventType: eventType,
+                result: stored.result,
+                errorCode: stored.errorCode,
+                retryable: stored.retryable
+              ),
+              validGatewayResponseIdentity(
+                eventType: eventType,
+                sessionID: sessionID,
+                incidentID: stored.incidentID,
+                responseID: stored.responseID ?? "",
+                contextCapsuleDigest: stored.contextCapsuleDigest ?? "",
+                requiresContextCapsule: version >= 2
+              ),
+              version != 3 || stored.routeTransitionReviewDigest == nil ||
+                validDigest(stored.routeTransitionReviewDigest!) else {
+            return false
+        }
+        if version == 1 {
+            return (stored.providerID ?? "").isEmpty &&
+                (stored.gatewayInstanceID ?? "").isEmpty &&
+                (stored.providerAccountID ?? "").isEmpty &&
+                stored.credentialRevision == nil &&
+                (stored.modelID ?? "").isEmpty &&
+                (stored.reasoningEffort ?? "").isEmpty &&
+                (stored.workspaceDigest ?? "").isEmpty &&
+                (stored.executionBindingDigest ?? "").isEmpty &&
+                (stored.segmentContextCapsuleDigest ?? "").isEmpty &&
+                (stored.contextCapsuleDigest ?? "").isEmpty &&
+                (stored.governancePolicyDigest ?? "").isEmpty
+        }
+        if version == 2 {
+            guard (stored.gatewayInstanceID ?? "").isEmpty else { return false }
+        } else {
+            guard let gatewayInstanceID = stored.gatewayInstanceID,
+                  safeGatewayIdentifier(gatewayInstanceID, maximum: 255) else {
+                return false
+            }
+        }
+        guard let providerID = stored.providerID,
+              safeProviderID(providerID),
+              let modelID = stored.modelID,
+              safeGatewayIdentifier(modelID, maximum: 256),
+              (stored.reasoningEffort ?? "").isEmpty ||
+                safeGatewayIdentifier(stored.reasoningEffort!, maximum: 128),
+              validDigest(stored.workspaceDigest ?? ""),
+              validDigest(stored.executionBindingDigest ?? ""),
+              validDigest(stored.segmentContextCapsuleDigest ?? ""),
+              validGatewayAuthority(stored, version: version, providerID: providerID) else {
+            return false
+        }
+        return true
+    }
+
+    private static func validGatewayAuthority(
+        _ stored: StoredEvent,
+        version: Int,
+        providerID: String
+    ) -> Bool {
+        guard let providerAccountID = stored.providerAccountID,
+              let credentialRevision = stored.credentialRevision,
+              let governancePolicyDigest = stored.governancePolicyDigest else {
+            return false
+        }
+        if version == 3, builtInNativeRoute(stored) {
+            return providerAccountID.isEmpty && credentialRevision == 0 &&
+                governancePolicyDigest.isEmpty
+        }
+        return validProviderAccountID(providerAccountID, providerID: providerID) &&
+            credentialRevision > 0 &&
+            (governancePolicyDigest.isEmpty || validDigest(governancePolicyDigest))
+    }
+
+    private static func builtInNativeRoute(_ stored: StoredEvent) -> Bool {
+        switch (stored.harnessID, stored.backendID, stored.providerID) {
+        case ("codex", "backend.codex.app-server", "openai"),
+             ("claude-code", "backend.segment.claude-code", "anthropic"),
+             ("opencode", "backend.segment.opencode", "opencode"),
+             ("pi", "backend.segment.pi", "loom-local"):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func validGatewayOutcome(
+        eventType: String,
+        result: String,
+        errorCode: String?,
+        retryable: Bool
+    ) -> Bool {
+        switch eventType {
+        case "response_failed":
+            return result == "failed" && errorCode == "provider_unavailable" && retryable
+        case "response_cancelled":
+            return result == "failed" && errorCode == "cancelled" && !retryable
+        case "session_failed":
+            return result == "failed" && errorCode == "conversation_unavailable" && retryable
+        case "session_opening", "session_ready", "session_closing", "session_closed",
+             "response_started", "response_completed":
+            return result == "succeeded" && errorCode == nil && !retryable
+        default:
+            return false
+        }
+    }
+
+    private static func validGatewayResponseIdentity(
+        eventType: String,
+        sessionID: String,
+        incidentID: String,
+        responseID: String,
+        contextCapsuleDigest: String,
+        requiresContextCapsule: Bool
+    ) -> Bool {
+        switch eventType {
+        case "session_opening", "session_ready", "session_closing", "session_closed",
+             "session_failed":
+            return responseID.isEmpty && contextCapsuleDigest.isEmpty &&
+                incidentID == "loom-session-" + sha256(sessionID).prefix(48)
+        case "response_started", "response_completed", "response_cancelled", "response_failed":
+            return safeGatewayIdentifier(responseID, maximum: 255) &&
+                validIncidentID(incidentID) &&
+                (!requiresContextCapsule || validDigest(contextCapsuleDigest))
+        default:
+            return false
+        }
+    }
+
+    private static func validRawEvent(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let values = object as? [String: Any] else {
+            return false
+        }
+        guard !containsForbiddenEventField(in: values) else { return false }
+        if values["gateway_event_schema_version"] as? Int == 3 {
+            return Set(values.keys).isSubset(of: gatewayV3EventKeys)
+        }
+        return true
+    }
+
+    private static func containsForbiddenEventField(in value: Any) -> Bool {
+        if let values = value as? [String: Any] {
+            return values.contains { key, nestedValue in
+                forbiddenEventFieldKeys.contains(key.lowercased()) ||
+                    containsForbiddenEventField(in: nestedValue)
+            }
+        }
+        if let values = value as? [Any] {
+            return values.contains { containsForbiddenEventField(in: $0) }
+        }
+        return false
+    }
+
+    private static func safeProviderID(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 64 && value.allSatisfy {
+            $0.isASCII && ($0.isLowercase || $0.isNumber || "-_.".contains($0))
+        }
+    }
+
+    private static func validProviderAccountID(_ value: String, providerID: String) -> Bool {
+        guard value.utf8.count <= 128, value.hasPrefix(providerID + ".") else { return false }
+        let suffix = value.dropFirst(providerID.count + 1)
+        guard let first = suffix.first, let last = suffix.last,
+              first != ".", first != "-", last != ".", last != "-" else {
+            return false
+        }
+        var previousSeparator = false
+        for character in suffix {
+            if character.isASCII && (character.isLowercase || character.isNumber) {
+                previousSeparator = false
+            } else if (character == "." || character == "-") && !previousSeparator {
+                previousSeparator = true
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func safeGatewayIdentifier(_ value: String, maximum: Int) -> Bool {
+        !value.isEmpty && value.utf8.count <= maximum && value.allSatisfy {
+            $0.isASCII && ($0.isLetter || $0.isNumber || "-_.:/".contains($0))
+        }
+    }
+
+    private static func validDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.allSatisfy {
+            $0.isASCII && ($0.isNumber || ("a"..."f").contains($0))
+        }
+    }
+
+    private static func validGatewayTimestamp(_ value: String) -> Bool {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if formatter.date(from: value) != nil { return true }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value) != nil
+    }
+
+    private static func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func validProvider(_ state: LocalDiagnosticProviderState) -> Bool {
@@ -565,6 +949,12 @@ public final class LocalDiagnosticBundleExporter: @unchecked Sendable {
             "provider_dns", "provider_tls", "provider_connect", "provider_http",
             "provider_auth", "provider_rate_limit", "profile_publish",
             "conversation_dispatch", "agent_attempt_dispatch",
+            "preflight_lease", "view_drift", "preflight_digest",
+            "parent_continuation", "flight_conflict", "dispatch_admission",
+            "dispatch_capacity", "dispatch_attempt_validation",
+            "dispatch_view_conflict", "dispatch_identity_unavailable",
+            "dispatch_recovery_required", "dispatch_validation",
+            "dispatch_context_validation", "dispatch_incomplete",
         ].contains(value)
     }
 

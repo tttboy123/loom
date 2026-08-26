@@ -178,4 +178,13 @@ final class MissionOrchestrationTests: XCTestCase {
       "evidence_page":{"next_cursor":"","has_more":false}
     }
     """
+    func testMissionWorkspaceBoardHideCompletedTogglesLane() {
+        var workspace = MissionWorkspaceState()
+        XCTAssertFalse(workspace.boardHideCompleted)
+        workspace.updateBoardHideCompleted(true)
+        XCTAssertTrue(workspace.boardHideCompleted)
+        workspace.updateBoardHideCompleted(false)
+        XCTAssertFalse(workspace.boardHideCompleted)
+    }
+
 }

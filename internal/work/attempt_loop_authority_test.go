@@ -13,6 +13,101 @@ import (
 	"loom-pi-rebuild/internal/verification"
 )
 
+func TestAttemptLoopAuthorityAllowsFailedStepWithUndeliveredToolCall(t *testing.T) {
+	ctx := context.Background()
+	store := openAuthorityStore(t)
+	seedRuntime(t, store, "runtime-a", "online", 1)
+	runs := newAuthority(t, store, &mutableClock{now: testNow}, 0xd3)
+	assignmentInput := assignment("work-loop-fail", "run-loop-fail")
+	assignmentInput.ExecutionBinding = testFrozenExecutionBinding(
+		t, "profile.loop", "deepseek", "deepseek.primary", "deepseek-chat",
+		"credential-ref-deepseek-primary", 7,
+	)
+	if _, _, err := runs.CreateAndAssign(ctx, assignmentInput); err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := runs.Claim(ctx, claim("work-loop-fail", "run-loop-fail", "runtime-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err = runs.Start(ctx, generationInput(run))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloads, err := NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := attemptLoopBindingFixture(run, assignmentInput.ExecutionBinding)
+	budget := AttemptLoopBudget{
+		MaxTurns: 2, MaxStepsPerTurn: 3, MaxToolCalls: 4,
+		MaxParallelToolCalls: 1, MaxResultBytes: 32_768,
+		ToolTimeoutMillis: 15_000,
+	}
+	if _, err := loops.StartTurn(ctx, binding, budget, AttemptLoopTurnInput{
+		TurnID: "turn-1", Sequence: 1, InputDigest: strings.Repeat("1", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loops.StartStep(ctx, binding, AttemptLoopStepInput{
+		TurnID: "turn-1", StepID: "step-1", Sequence: 1,
+		ModelInputDigest: strings.Repeat("2", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loops.AdmitModelRequest(ctx, binding, AttemptLoopModelRequestInput{
+		TurnID: "turn-1", StepID: "step-1", RequestID: "request-1",
+		RequestDigest: strings.Repeat("3", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	call := AttemptLoopToolCallInput{
+		TurnID: "turn-1", StepID: "step-1", CallID: "call-context",
+		Sequence: 1, Tool: permissions.ToolMCPTool, TargetID: "context.retrieval",
+		ProposalDigest:      strings.Repeat("4", 64),
+		ArgumentsDigest:     strings.Repeat("5", 64),
+		ToolSchemaDigest:    strings.Repeat("6", 64),
+		ExecutionMode:       ToolExecutionExclusive,
+		ConflictScopeDigest: strings.Repeat("7", 64),
+	}
+	if _, err := loops.AdmitToolCall(ctx, binding, call); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loops.CommitToolDispatch(ctx, binding, AttemptLoopToolDispatchInput{
+		TurnID: "turn-1", StepID: "step-1", CallID: "call-context",
+		AuthorizationDigest: strings.Repeat("8", 64),
+		DispatchDigest:      strings.Repeat("9", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The tool was dispatched but its result was never delivered (for example
+	// the provider call after the dispatch failed). A step that ends in
+	// FAILURE must still finalize so the attempt can terminate instead of
+	// remaining stuck on an open, undeliverable tool call.
+	if _, err := loops.EndStep(ctx, binding, AttemptLoopStepEndInput{
+		TurnID: "turn-1", StepID: "step-1", Outcome: AttemptStepFailed,
+		OutputDigest: strings.Repeat("a", 64), ErrorCode: "runtime_adapter_failed",
+	}); err != nil {
+		t.Fatalf("failed step with undelivered tool call must finalize: %v", err)
+	}
+	if _, err := loops.EndTurn(ctx, binding, AttemptLoopTurnEndInput{
+		TurnID: "turn-1", Outcome: AttemptTurnFailed,
+	}); err != nil {
+		t.Fatalf("failed turn must finalize: %v", err)
+	}
+	snapshot, err := loops.Snapshot(ctx, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].Status != AttemptTurnFailed {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
 func TestAttemptLoopAuthorityReplaysParallelToolLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store := openAuthorityStore(t)

@@ -131,6 +131,7 @@ func TestDeterministicAndIndependentAcceptance(t *testing.T) {
 		OutputSummaryDigest: digestOf("verifier-summary"),
 		TerminalStatus:      "succeeded",
 		TerminalReason:      "",
+		OutputReasonCode:    VerifierReasonCriteriaSatisfied,
 	})
 	if err != nil ||
 		candidate.Kind() != VerifierAccepted ||
@@ -172,6 +173,77 @@ func TestDeterministicAndIndependentAcceptance(t *testing.T) {
 	})
 	if err != nil || rejected.Kind() != AcceptanceRejected {
 		t.Fatalf("verified rejected = %#v, %v", rejected, err)
+	}
+}
+
+func TestVerifierCandidateUsesSuccessfulOutputVerdict(t *testing.T) {
+	input := VerifierTerminalInput{
+		WorkItemID:          "verify-work-1",
+		RunID:               "verify-run-1",
+		ClaimID:             "00000000-0000-4000-8000-000000000041",
+		ClaimGeneration:     1,
+		RuntimeInstanceID:   "runtime-verify",
+		AgentInstanceID:     "agent-verify",
+		GrantID:             "00000000-0000-4000-8000-000000000042",
+		EvidenceID:          "verify-evidence-1",
+		EvidenceDigest:      digestOf("verifier-evidence"),
+		OutputSummaryDigest: digestOf("verifier-summary"),
+		TerminalStatus:      "succeeded",
+		OutputReasonCode:    VerifierReasonCriteriaNotSatisfied,
+	}
+	candidate, err := VerifierCandidateFromTerminal(input)
+	if err != nil || candidate.Kind() != VerifierRejected ||
+		candidate.ReasonCode() != VerifierReasonCriteriaNotSatisfied ||
+		candidate.Binding().TerminalStatus != "succeeded" ||
+		candidate.Binding().TerminalReason != "" {
+		t.Fatalf("successful negative verdict = %#v, %v", candidate, err)
+	}
+
+	input.OutputReasonCode = ""
+	if _, err := VerifierCandidateFromTerminal(input); !errors.Is(
+		err, ErrInvalidVerifierCandidate,
+	) {
+		t.Fatalf("missing output verdict error = %v", err)
+	}
+}
+
+func TestVerifierCandidateMapsOperationalFailureToInsufficientEvidence(t *testing.T) {
+	input := VerifierTerminalInput{
+		WorkItemID:          "verify-work-1",
+		RunID:               "verify-run-1",
+		ClaimID:             "00000000-0000-4000-8000-000000000041",
+		ClaimGeneration:     1,
+		RuntimeInstanceID:   "runtime-verify",
+		AgentInstanceID:     "agent-verify",
+		GrantID:             "00000000-0000-4000-8000-000000000042",
+		EvidenceID:          "verify-evidence-1",
+		EvidenceDigest:      digestOf("verifier-evidence"),
+		OutputSummaryDigest: digestOf("verifier-summary"),
+		TerminalStatus:      "failed",
+		TerminalReason:      "runtime_process_failed",
+	}
+	candidate, err := VerifierCandidateFromTerminal(input)
+	if err != nil || candidate.Kind() != VerifierRejected ||
+		candidate.ReasonCode() != VerifierReasonInsufficientEvidence ||
+		candidate.Binding().TerminalStatus != "failed" ||
+		candidate.Binding().TerminalReason != "runtime_process_failed" ||
+		!candidate.Valid() {
+		t.Fatalf("operational failure candidate = %#v, %v", candidate, err)
+	}
+	firstDigest := candidate.Digest()
+	input.TerminalReason = "runtime_timeout"
+	timedOut, err := VerifierCandidateFromTerminal(input)
+	if err != nil || timedOut.ReasonCode() != VerifierReasonInsufficientEvidence ||
+		timedOut.Digest() == firstDigest {
+		t.Fatalf("timeout candidate = %#v, %v", timedOut, err)
+	}
+
+	input.TerminalStatus = "cancelled"
+	input.TerminalReason = "operator_cancelled"
+	cancelled, err := VerifierCandidateFromTerminal(input)
+	if err != nil || cancelled.ReasonCode() != VerifierReasonInsufficientEvidence ||
+		cancelled.Binding().TerminalReason != "operator_cancelled" {
+		t.Fatalf("cancelled candidate = %#v, %v", cancelled, err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package toolbroker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 type searchFixture struct {
 	query string
 	limit int
+	err   error
+	empty bool
 }
 
 func (fixture *searchFixture) Search(
@@ -24,6 +27,12 @@ func (fixture *searchFixture) Search(
 	limit int,
 ) ([]SearchResult, error) {
 	fixture.query, fixture.limit = query, limit
+	if fixture.err != nil {
+		return nil, fixture.err
+	}
+	if fixture.empty {
+		return []SearchResult{}, nil
+	}
 	return []SearchResult{{
 		Title: "Loom docs", URL: "https://example.com/loom", Snippet: "Current Loom documentation.",
 	}}, nil
@@ -56,6 +65,55 @@ func (fixture *mcpFixture) CallTool(
 	fixture.server, fixture.tool = server, tool
 	fixture.args = append([]byte(nil), arguments...)
 	return "bounded MCP result", nil
+}
+
+type failingHTTPFixture struct {
+	request *http.Request
+	err     error
+	status  int
+}
+
+func (fixture *failingHTTPFixture) Do(request *http.Request) (*http.Response, error) {
+	fixture.request = request
+	if fixture.err != nil {
+		return nil, fixture.err
+	}
+	return &http.Response{
+		StatusCode: fixture.status,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    request,
+	}, nil
+}
+
+func TestBrokerWebFetchFailuresAreBoundedToolResults(t *testing.T) {
+	for name, fixture := range map[string]*failingHTTPFixture{
+		"transport":  {err: errors.New("connection refused")},
+		"bad status": {status: http.StatusForbidden},
+		"empty body": {status: http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			broker, err := New(Config{
+				Search: &searchFixture{}, HTTP: fixture,
+				Timeout: 10 * time.Second, MaxResultBytes: 4096,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := broker.Execute(context.Background(), Call{
+				Tool: permissions.ToolWebFetch, URL: "https://example.com/unavailable",
+			})
+			if err != nil {
+				t.Fatalf("fetch failure must be bounded, got error: %v", err)
+			}
+			if result.Content == "" || !strings.Contains(result.Content, "error") {
+				t.Fatalf("bounded failure content missing: %q", result.Content)
+			}
+			if result.Sources != nil && len(result.Sources) != 0 {
+				t.Fatalf("bounded failure must not carry sources: %#v", result.Sources)
+			}
+		})
+	}
 }
 
 func TestBrokerExecutesBoundedWebSearchFetchAndMCP(t *testing.T) {
@@ -96,6 +154,77 @@ func TestBrokerExecutesBoundedWebSearchFetchAndMCP(t *testing.T) {
 	if err != nil || mcpResult.Content != "bounded MCP result" ||
 		mcp.server != "github" || mcp.tool != "get_issue" || len(mcp.args) == 0 {
 		t.Fatalf("mcp=%#v fixture=%#v error=%v", mcpResult, mcp, err)
+	}
+}
+
+func TestBrokerReturnsBoundedMessageWhenSearchBackendEmptyOrBlocked(t *testing.T) {
+	// When the search backend is rate-limited (e.g. DuckDuckGo 202 from some
+	// IPs) or returns no hits, webSearch must return a bounded non-empty
+	// result instead of an error, so the attempt can complete and the model
+	// receives a clear message rather than an empty payload rejection.
+	blocked := &searchFixture{}
+	blocked.err = ErrToolFailed
+	broker, err := New(Config{
+		Search: blocked, Timeout: 10 * time.Second, MaxResultBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := broker.ExecuteProposalContent(
+		context.Background(),
+		permissions.ProposedCall{Tool: permissions.ToolWebSearch, Path: "multica github"},
+	)
+	if err != nil || len(content) == 0 || !bytes.Contains(content, []byte("search_unavailable")) {
+		t.Fatalf("blocked search content=%q error=%v", content, err)
+	}
+	empty := &searchFixture{empty: true}
+	broker, err = New(Config{
+		Search: empty, Timeout: 10 * time.Second, MaxResultBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err = broker.ExecuteProposalContent(
+		context.Background(),
+		permissions.ProposedCall{Tool: permissions.ToolWebSearch, Path: "no such thing"},
+	)
+	if err != nil || len(content) == 0 || !bytes.Contains(content, []byte("search_unavailable")) {
+		t.Fatalf("empty search content=%q error=%v", content, err)
+	}
+}
+
+func TestBrokerWebSearchPropagatesFailClosedBackendErrors(t *testing.T) {
+	unknown := errors.New("unknown search backend failure")
+	tests := map[string]error{
+		"tool denied":      ErrToolDenied,
+		"result too large": ErrResultTooLarge,
+		"invalid call":     ErrInvalidCall,
+		"invalid config":   ErrInvalidConfig,
+		"unknown":          unknown,
+		"denied joined with transient": errors.Join(
+			ErrToolFailed,
+			ErrToolDenied,
+		),
+	}
+	for name, backendErr := range tests {
+		t.Run(name, func(t *testing.T) {
+			broker, err := New(Config{
+				Search:  &searchFixture{err: backendErr},
+				Timeout: 10 * time.Second, MaxResultBytes: 4096,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := broker.Execute(context.Background(), Call{
+				Tool: permissions.ToolWebSearch, Query: "fail closed", MaxResults: 3,
+			})
+			if !errors.Is(err, backendErr) {
+				t.Fatalf("search error=%v, want %v", err, backendErr)
+			}
+			if result.Content != "" || len(result.Sources) != 0 {
+				t.Fatalf("fail-closed search returned result: %#v", result)
+			}
+		})
 	}
 }
 

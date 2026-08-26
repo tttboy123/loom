@@ -61,6 +61,13 @@ type Store interface {
 	MarkAttemptPayloadDelivered(context.Context, Binding) error
 }
 
+// RollbackStore is the narrow optional capability required when authorization
+// must be revalidated after an encrypted Put and before the acceptance fact.
+// Implementations delete only the exact fully-bound payload identity.
+type RollbackStore interface {
+	DeleteAttemptPayload(context.Context, Binding) error
+}
+
 type Authority struct {
 	Scope
 	ClaimID         string
@@ -80,6 +87,7 @@ type DeliveryProof string
 const (
 	ProofProviderContinuation DeliveryProof = "provider_continuation"
 	ProofHarnessFinalOutput   DeliveryProof = "harness_final_output"
+	ProofHarnessToolResponse  DeliveryProof = "harness_tool_response"
 	ProofRunStreamToolResult  DeliveryProof = "run_stream_tool_result"
 )
 

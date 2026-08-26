@@ -21,6 +21,7 @@ import (
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/harnessadapter"
 	"loom-pi-rebuild/internal/runtime/nativeadapter"
@@ -815,7 +816,7 @@ func TestEnsureProductClaudeCodeAgentRuntimeIsExecutableBoundAndIdempotent(t *te
 	)
 	if !ok || instance.AdapterType != harnessadapter.ClaudeCodeAdapterType ||
 		instance.DisplayName != "Claude Code" ||
-		instance.Status != string(loomruntime.RuntimeOnline) || instance.Capacity != 2 ||
+		instance.Status != string(loomruntime.RuntimeOnline) || instance.Capacity != 3 ||
 		!strings.HasPrefix(instance.ExecutableVersion, "sha256:") ||
 		!reflect.DeepEqual(instance.ObservedCapabilities, []string{"workspace_edit"}) ||
 		!reflect.DeepEqual(instance.ModelIDs, []string{harnessadapter.ClaudeCodeModelID}) {
@@ -865,13 +866,21 @@ func TestHarnessRuntimeProbesPublishContextRetrievalOnlyForAttestedExecutable(t 
 			},
 			capabilities: []string{"reasoning_effort", "workspace_edit"},
 		},
+		{
+			name: "OpenCode",
+			probe: productOpenCodeAgentRuntimeProbe{
+				executableVersion: "sha256:opencode",
+				modelIDs:          []string{"opencode/big-pickle"},
+			},
+			capabilities: []string{"workspace_edit"},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			observations, err := test.probe.ObserveRuntime(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(observations) != 1 || !reflect.DeepEqual(
+			if len(observations) != 1 || observations[0].Instance.Capacity != 3 || !reflect.DeepEqual(
 				observations[0].Instance.ObservedCapabilities, test.capabilities,
 			) {
 				t.Fatalf("observations = %#v", observations)
@@ -911,6 +920,31 @@ func TestHistoricalHarnessRuntimeUpgradeRequiresExactPriorCapabilities(t *testin
 	if validHistoricalProductCodexAgentRuntime(codex, codexVersion) {
 		t.Fatal("identity-drifted Codex runtime was eligible")
 	}
+	opencodeVersion := "sha256:43f7083d450567706a80b6441331a25b5ed6d6c9f742826790545b068229cbb2"
+	opencode := projection.RuntimeInstance{
+		ID: productOpenCodeRuntimeInstanceID, DeviceID: "device.local",
+		AdapterType: harnessadapter.OpenCodeAdapterType, DisplayName: "OpenCode",
+		ExecutableVersion: opencodeVersion, Status: string(loomruntime.RuntimeOnline),
+		ObservedCapabilities: []string{"workspace_edit"}, Capacity: 1,
+		ModelIDs: []string{"opencode/big-pickle"},
+	}
+	if !validHistoricalProductOpenCodeAgentRuntime(opencode, opencodeVersion) {
+		t.Fatal("legacy OpenCode capacity was not eligible for migration")
+	}
+	opencode.Capacity = productDesktopHarnessRuntimeCapacity
+	if !validHistoricalProductOpenCodeAgentRuntime(opencode, opencodeVersion) {
+		t.Fatal("legacy OpenCode capability set was not eligible for migration")
+	}
+	opencode.ObservedCapabilities = []string{"unknown", "workspace_edit"}
+	if validHistoricalProductOpenCodeAgentRuntime(opencode, opencodeVersion) {
+		t.Fatal("unknown OpenCode capability set was eligible")
+	}
+	opencode.ObservedCapabilities = productOpenCodeCapabilities(opencodeVersion)
+	if !validProductOpenCodeAgentRuntime(
+		opencode, opencodeVersion, []string{"opencode/big-pickle"},
+	) {
+		t.Fatal("three-task OpenCode runtime was not current")
+	}
 }
 
 func TestHarnessProfileCapabilitiesFollowObservedConformance(t *testing.T) {
@@ -944,6 +978,20 @@ func TestHarnessProfileCapabilitiesFollowObservedConformance(t *testing.T) {
 	}
 }
 
+func TestOpenCodeCapabilitiesPublishGovernedToolsOnlyForLiveAttestedBinary(t *testing.T) {
+	attested := "sha256:43f7083d450567706a80b6441331a25b5ed6d6c9f742826790545b068229cbb2"
+	if got := productOpenCodeCapabilities(attested); !reflect.DeepEqual(got, []string{
+		loomruntime.CapabilityGovernedToolLoop, "workspace_edit",
+	}) {
+		t.Fatalf("attested OpenCode capabilities = %#v", got)
+	}
+	if got := productOpenCodeCapabilities("sha256:opencode"); !reflect.DeepEqual(
+		got, []string{"workspace_edit"},
+	) {
+		t.Fatalf("unattested OpenCode capabilities = %#v", got)
+	}
+}
+
 func TestEnsureProductCodexAgentRuntimeIsExecutableBoundAndIdempotent(t *testing.T) {
 	_, statePath := productDaemonFailureState(t)
 	database, err := sql.Open("sqlite", statePath)
@@ -954,7 +1002,9 @@ func TestEnsureProductCodexAgentRuntimeIsExecutableBoundAndIdempotent(t *testing
 	store := journal.NewStore(database)
 	readModel := projection.New(database)
 	executable := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(executable, []byte(
+		"#!/bin/sh\nif [ \"$1\" = models ]; then printf 'deepseek/deepseek-chat\\nopencode/big-pickle\\nopencode/mimo-v2.5-free\\n'; fi\nexit 0\n",
+	), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 10, 16, 0, 0, 0, time.UTC)
@@ -979,7 +1029,7 @@ func TestEnsureProductCodexAgentRuntimeIsExecutableBoundAndIdempotent(t *testing
 	)
 	if !ok || instance.AdapterType != harnessadapter.CodexAdapterType ||
 		instance.DisplayName != "Codex" ||
-		instance.Status != string(loomruntime.RuntimeOnline) || instance.Capacity != 2 ||
+		instance.Status != string(loomruntime.RuntimeOnline) || instance.Capacity != 3 ||
 		!strings.HasPrefix(instance.ExecutableVersion, "sha256:") ||
 		!reflect.DeepEqual(
 			instance.ObservedCapabilities,
@@ -999,7 +1049,9 @@ func TestProductSetupCatalogPublishesVerifiedCodexOpenAIProfile(t *testing.T) {
 	store := journal.NewStore(database)
 	readModel := projection.New(database)
 	executable := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(executable, []byte(
+		"#!/bin/sh\nif [ \"$1\" = models ]; then printf 'deepseek/deepseek-chat\\nopencode/big-pickle\\nopencode/mimo-v2.5-free\\n'; fi\nexit 0\n",
+	), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 10, 16, 30, 0, 0, time.UTC)
@@ -1013,6 +1065,15 @@ func TestProductSetupCatalogPublishesVerifiedCodexOpenAIProfile(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	codexRuntimeVisible := false
+	for _, observation := range unconfigured.RuntimeDiscovery.Observations() {
+		if observation.Instance.ID == productCodexRuntimeInstanceID {
+			codexRuntimeVisible = true
+		}
+	}
+	if !codexRuntimeVisible {
+		t.Fatal("verified Codex executable disappeared while OpenAI account was unconfigured")
 	}
 	for _, profile := range unconfigured.RuntimeProfiles {
 		if profile.ProviderID == harnessadapter.CodexProviderID {
@@ -1096,6 +1157,57 @@ func TestProductSetupCatalogPublishesVerifiedCodexOpenAIProfile(t *testing.T) {
 	assertProductSetupCatalogRoleOptionsFreezable(t, catalog)
 }
 
+func TestProductSetupCatalogKeepsNativeRuntimesVisibleWithoutProviderAccounts(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	readModel := projection.New(database)
+	now := time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC)
+	if err := ensureProductVerifiedNativeAgentRuntimes(
+		context.Background(), store, readModel, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := productSetupCatalogForView(
+		context.Background(), readModel.GlobalReadView(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		productNativeAgentRuntimeInstanceID:  false,
+		productKimiAgentRuntimeInstanceID:    false,
+		productMiniMaxAgentRuntimeInstanceID: false,
+	}
+	for _, observation := range catalog.RuntimeDiscovery.Observations() {
+		if _, ok := want[observation.Instance.ID]; ok {
+			want[observation.Instance.ID] = true
+		}
+	}
+	for runtimeID, visible := range want {
+		if !visible {
+			t.Errorf("unconfigured Provider hid Runtime %q", runtimeID)
+		}
+	}
+	for _, profile := range catalog.RuntimeProfiles {
+		if _, native := productNativeAgentRuntimeDefinitionForInstance(
+			profile.ID,
+		); native {
+			t.Fatalf("unconfigured Provider published Profile %#v", profile)
+		}
+		if profile.AdapterType == nativeadapter.LoomNativeAgentAdapterType &&
+			profile.AuthMode == loomruntime.AuthBrokered {
+			t.Fatalf("unconfigured Provider published brokered Profile %#v", profile)
+		}
+	}
+}
+
 func TestProductSetupCatalogPublishesVerifiedClaudeCodeAnthropicProfile(t *testing.T) {
 	_, statePath := productDaemonFailureState(t)
 	database, err := sql.Open("sqlite", statePath)
@@ -1114,6 +1226,26 @@ func TestProductSetupCatalogPublishesVerifiedClaudeCodeAnthropicProfile(t *testi
 		context.Background(), store, readModel, now, executable,
 	); err != nil {
 		t.Fatal(err)
+	}
+	unconfigured, err := productSetupCatalogForView(
+		context.Background(), readModel.GlobalReadView(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeRuntimeVisible := false
+	for _, observation := range unconfigured.RuntimeDiscovery.Observations() {
+		if observation.Instance.ID == productClaudeCodeRuntimeInstanceID {
+			claudeRuntimeVisible = true
+		}
+	}
+	if !claudeRuntimeVisible {
+		t.Fatal("verified Claude Code executable disappeared while Anthropic account was unconfigured")
+	}
+	for _, profile := range unconfigured.RuntimeProfiles {
+		if profile.ProviderID == harnessadapter.ClaudeCodeProviderID {
+			t.Fatalf("unconfigured Anthropic account published Claude Code profile = %#v", profile)
+		}
 	}
 	writer, err := state.NewLocalProductSetupWriter(store)
 	if err != nil {
@@ -1746,4 +1878,249 @@ func TestProductMissionExecutorConstructsBrokeredOnlyWithoutLocalModel(t *testin
 	}); !errors.Is(err, app.ErrInvalidMissionExecution) {
 		t.Fatalf("legacy pi-cli binding without model = %v, want invalid execution", err)
 	}
+}
+
+func TestProductSetupCatalogPublishesOpenCodeNativeTeamProfilesWithoutVaultAccount(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	readModel := projection.New(database)
+	executable := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(executable, []byte(
+		"#!/bin/sh\nif [ \"$1\" = models ]; then printf 'deepseek/deepseek-chat\\nopencode/big-pickle\\nopencode/mimo-v2.5-free\\n'; fi\nexit 0\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProductOpenCodeAgentRuntime(
+		context.Background(), store, readModel,
+		time.Date(2026, 8, 22, 4, 0, 0, 0, time.UTC), executable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := productSetupCatalogForView(
+		context.Background(), readModel.GlobalReadView(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := 0
+	options := 0
+	for _, profile := range catalog.RuntimeProfiles {
+		if profile.AdapterType != harnessadapter.OpenCodeAdapterType ||
+			profile.AuthMode != loomruntime.AuthNative {
+			continue
+		}
+		profiles++
+		if profile.ProviderID != "opencode" ||
+			profile.ProviderAccountID != "" ||
+			profile.ModelID != provider.OpenCodeConversationDefaultModel ||
+			profile.CredentialReference != "" || profile.CredentialRevision != 0 {
+			t.Fatalf("native OpenCode profile = %#v", profile)
+		}
+	}
+	for _, option := range catalog.RoleOptions {
+		if option.RuntimeInstanceID == productOpenCodeRuntimeInstanceID &&
+			strings.Contains(option.RuntimeProfileID, "opencode-native") {
+			options++
+		}
+	}
+	if profiles != 2 || options != 5 {
+		t.Fatalf("native OpenCode profiles=%d options=%d catalog=%#v", profiles, options, catalog)
+	}
+	assertProductSetupCatalogRoleOptionsFreezable(t, catalog)
+}
+
+func TestOpenCodeRuntimeRefreshesDynamicModelsWithoutHidingHarnessOnCatalogFailure(
+	t *testing.T,
+) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	readModel := projection.New(database)
+	root := t.TempDir()
+	modelsPath := filepath.Join(root, "models.txt")
+	executable := filepath.Join(root, "opencode")
+	if err := os.WriteFile(modelsPath, []byte(
+		"opencode/big-pickle\nopencode/mimo-v2.5-free\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte(
+		"#!/bin/sh\nif [ \"$1\" = models ]; then /bin/cat '"+modelsPath+"'; fi\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 22, 4, 20, 0, 0, time.UTC)
+	if err := ensureProductOpenCodeAgentRuntime(
+		context.Background(), store, readModel, now, executable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	current, found := readModel.GlobalReadView().RuntimeInstance(
+		productOpenCodeRuntimeInstanceID,
+	)
+	if !found || !reflect.DeepEqual(current.ModelIDs, []string{
+		"opencode/big-pickle", "opencode/mimo-v2.5-free",
+	}) {
+		t.Fatalf("initial runtime = %#v, %t", current, found)
+	}
+	initialSequence := current.DiscoverySequence
+	if err := os.WriteFile(modelsPath, []byte("diagnostic output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProductOpenCodeAgentRuntime(
+		context.Background(), store, readModel, now.Add(time.Second), executable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = readModel.GlobalReadView().RuntimeInstance(productOpenCodeRuntimeInstanceID)
+	if current.DiscoverySequence != initialSequence || !reflect.DeepEqual(
+		current.ModelIDs,
+		[]string{"opencode/big-pickle", "opencode/mimo-v2.5-free"},
+	) {
+		t.Fatalf("transient failure changed runtime = %#v", current)
+	}
+	if err := os.WriteFile(modelsPath, []byte(
+		"opencode/big-pickle\nopencode/hy3-free\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProductOpenCodeAgentRuntime(
+		context.Background(), store, readModel, now.Add(2*time.Second), executable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = readModel.GlobalReadView().RuntimeInstance(productOpenCodeRuntimeInstanceID)
+	if current.DiscoverySequence <= initialSequence || !reflect.DeepEqual(
+		current.ModelIDs, []string{"opencode/big-pickle", "opencode/hy3-free"},
+	) {
+		t.Fatalf("refreshed runtime = %#v", current)
+	}
+}
+
+func TestProductSetupCatalogSeparatesOpenCodeHarnessFromBrokeredProvider(t *testing.T) {
+	_, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	readModel := projection.New(database)
+	executable := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(executable, []byte(
+		"#!/bin/sh\nif [ \"$1\" = models ]; then printf 'opencode/big-pickle\\nopencode/mimo-v2.5-free\\n'; fi\nexit 0\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 10, 16, 30, 0, 0, time.UTC)
+	// Loom-native runtime first so agent definitions and the brokered
+	// DeepSeek options exist, mirroring the installed environment.
+	if err := ensureProductNativeAgentRuntime(
+		context.Background(), store, readModel, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureProductOpenCodeAgentRuntime(
+		context.Background(), store, readModel, now, executable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "configure-deepseek-opencode-catalog", ProviderID: "deepseek",
+			CredentialReference: "credential-ref-deepseek-opencode-catalog",
+			ExpectedRevision:    0, OccurredAt: now.Add(time.Second),
+			Status: credentials.CredentialConfigured,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "verify-deepseek-opencode-catalog", ProviderID: "deepseek",
+			CredentialReference: configured.CredentialReference,
+			ExpectedRevision:    configured.Revision,
+			OccurredAt:          now.Add(2 * time.Second),
+			Status:              credentials.CredentialVerified,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := productSetupCatalogForView(
+		context.Background(), readModel.GlobalReadView(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opencodeProfiles := 0
+	nativeProfiles := 0
+	brokeredProfiles := 0
+	for _, profile := range catalog.RuntimeProfiles {
+		if profile.AdapterType != harnessadapter.OpenCodeAdapterType {
+			continue
+		}
+		opencodeProfiles++
+		if profile.AuthMode == loomruntime.AuthNative {
+			nativeProfiles++
+			if profile.ProviderID != "opencode" ||
+				profile.ModelID != provider.OpenCodeConversationDefaultModel ||
+				profile.ProviderAccountID != "" ||
+				profile.CredentialReference != "" || profile.CredentialRevision != 0 {
+				t.Fatalf("native OpenCode profile = %#v", profile)
+			}
+			continue
+		}
+		brokeredProfiles++
+		if profile.ProviderID != "deepseek" ||
+			profile.ProviderAccountID != "deepseek.primary" ||
+			profile.AuthMode != loomruntime.AuthBrokered ||
+			profile.ModelID != "deepseek/"+nativeadapter.DeepSeekAgentModelID ||
+			profile.CredentialReference != verified.CredentialReference ||
+			profile.CredentialRevision != verified.Revision {
+			t.Fatalf("OpenCode profile = %#v", profile)
+		}
+	}
+	opencodeOptions := 0
+	for _, option := range catalog.RoleOptions {
+		if option.RuntimeInstanceID != productOpenCodeRuntimeInstanceID {
+			continue
+		}
+		opencodeOptions++
+		if option.RuntimeProfileID == "" ||
+			option.AgentDefinitionID == "" ||
+			!strings.Contains(option.ID, "opencode-deepseek") &&
+				!strings.Contains(option.ID, "opencode-native") {
+			t.Fatalf("OpenCode option = %#v", option)
+		}
+	}
+	if opencodeProfiles != 4 || nativeProfiles != 2 || brokeredProfiles != 2 ||
+		opencodeOptions != 10 {
+		t.Fatalf(
+			"OpenCode profiles=%d native=%d brokered=%d options=%d catalog=%#v",
+			opencodeProfiles, nativeProfiles, brokeredProfiles, opencodeOptions, catalog,
+		)
+	}
+	assertProductSetupCatalogRoleOptionsFreezable(t, catalog)
 }

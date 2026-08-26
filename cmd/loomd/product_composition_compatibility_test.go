@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,8 +17,94 @@ import (
 
 	"loom-pi-rebuild/internal/app"
 	"loom-pi-rebuild/internal/composition"
+	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 )
+
+func TestCOMP1EffectRollbackDoesNotRevertCommittedJournalFacts(t *testing.T) {
+	ctx := context.Background()
+	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := journal.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	store := journal.NewStore(database)
+	committed, err := store.Append(ctx, journal.Event{
+		ID:             "event-comp1-compatibility-metadata",
+		StreamID:       "composition/compatibility-metadata",
+		Seq:            1,
+		IdempotencyKey: "event-comp1-compatibility-metadata",
+		Type:           "CompatibilityMetadataCommitted",
+		SchemaVersion:  1,
+		EmittedAt:      time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC),
+		CorrelationID:  "incident-comp1-journal-rollback",
+		PayloadJSON:    []byte(`{"privacy_class":"metadata_only","status":"committed"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := localipc.HandlerFunc(func(context.Context, localipc.Request) localipc.Response {
+		return localipc.Response{OK: true}
+	})
+	bundles := productCompatibilityBundles(handler)
+	activationFailure := errors.New("controlled compatibility activation failure")
+	rollbackCount := 0
+	factPresentDuringRollback := false
+	var rollbackReadErr error
+	for _, candidate := range bundles {
+		bundle := candidate.(*productCompatibilityBundle)
+		switch bundle.descriptor.ID {
+		case "loom-core":
+			bundle.start = func(context.Context, *composition.BundleContext) (composition.Effect, error) {
+				return composition.NewEffect(func(rollbackContext context.Context) error {
+					rollbackCount++
+					events, readErr := store.ReadAll(rollbackContext)
+					rollbackReadErr = readErr
+					factPresentDuringRollback = readErr == nil &&
+						len(events) == 1 && reflect.DeepEqual(events[0], committed)
+					return nil
+				}), nil
+			}
+		case "loom-local-ipc":
+			bundle.ready = func(context.Context, *composition.BundleContext) error {
+				return activationFailure
+			}
+		}
+	}
+	profile, err := composition.BuiltInLaunchProfile(composition.ProfileTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.RequiredRoutes = productRouteMethods(productRouteManifest())
+	plan, err := composition.Compile(composition.CompileInput{
+		Profile: profile,
+		Bundles: bundles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activation, err := plan.Activate(ctx, "incident-comp1-journal-rollback", nil)
+	if activation != nil || !errors.Is(err, activationFailure) {
+		t.Fatalf("activation=%#v err=%v", activation, err)
+	}
+	if rollbackCount != 1 || rollbackReadErr != nil || !factPresentDuringRollback {
+		t.Fatalf(
+			"rollback count=%d read_err=%v committed_fact_present=%t",
+			rollbackCount, rollbackReadErr, factPresentDuringRollback,
+		)
+	}
+	events, err := store.ReadAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || !reflect.DeepEqual(events[0], committed) {
+		t.Fatalf("journal facts after rollback=%#v want=%#v", events, []journal.Event{committed})
+	}
+}
 
 func TestCOMP2DProductionConstructsLocalIPCHandlerInsideBundle(t *testing.T) {
 	parsed, err := parser.ParseFile(token.NewFileSet(), "product_daemon.go", nil, 0)
@@ -56,6 +144,54 @@ func TestCOMP2DProductionConstructsLocalIPCHandlerInsideBundle(t *testing.T) {
 	}
 	if !foundSlot || !foundFactory {
 		t.Fatalf("production local IPC Bundle construction slot=%t factory=%t", foundSlot, foundFactory)
+	}
+}
+
+func TestCOMP2EProductionActivationEntryIsClosed(t *testing.T) {
+	parsed, err := parser.ParseFile(
+		token.NewFileSet(), "product_composition_compatibility.go", nil, 0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "activateProductComposition" {
+			continue
+		}
+		found = true
+		if function.Type.Params == nil || function.Type.Params.NumFields() != 5 {
+			t.Fatalf("production activation params=%#v", function.Type.Params)
+		}
+		constructionParameters := 0
+		for _, field := range function.Type.Params.List {
+			if _, variadic := field.Type.(*ast.Ellipsis); variadic {
+				t.Fatal("production activation accepts variadic arguments")
+			}
+			for _, name := range field.Names {
+				if name.Name == "handler" {
+					t.Fatal("production activation accepts a direct handler")
+				}
+			}
+			if identifier, ok := field.Type.(*ast.Ident); ok &&
+				identifier.Name == "productCompatibilityConstruction" {
+				constructionParameters++
+			}
+			ast.Inspect(field.Type, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if ok && selector.Sel.Name == "Handler" {
+					t.Fatal("production activation exposes a handler parameter")
+				}
+				return true
+			})
+		}
+		if constructionParameters != 1 {
+			t.Fatalf("production activation construction params=%d", constructionParameters)
+		}
+	}
+	if !found {
+		t.Fatal("closed production activation entry is missing")
 	}
 }
 
@@ -163,6 +299,60 @@ func TestCOMP2ACompatibilityFacadeRejectsInvalidAdmission(t *testing.T) {
 		"incident-comp2a-invalid", nil,
 	); err == nil {
 		t.Fatal("nil legacy handler was admitted")
+	}
+}
+
+func TestCOMP2EProductionActivationRequiresConstructionAndPreservesParity(t *testing.T) {
+	if _, err := activateProductComposition(
+		context.Background(), composition.ProfileTest,
+		"incident-comp2e-missing-construction", nil,
+		productCompatibilityConstruction{},
+	); !errors.Is(err, composition.ErrInvalidComposition) {
+		t.Fatalf("missing construction err=%v", err)
+	}
+
+	want := localipc.Response{
+		Version: 1, RequestID: "request-comp2e", JourneyID: "journey-comp2e",
+		OK: true, Result: []byte(`{"status":"same"}`),
+	}
+	handler := localipc.HandlerFunc(func(context.Context, localipc.Request) localipc.Response {
+		return want
+	})
+	production, err := activateProductComposition(
+		context.Background(), composition.ProfileTest,
+		"incident-comp2e-production", nil,
+		productCompatibilityConstruction{
+			localIPCSlot: &productLocalIPCHandlerSlot{},
+			localIPCFactory: func(context.Context) (localipc.Handler, error) {
+				return handler, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = production.Close() }()
+	legacy, err := activateProductCompatibilityComposition(
+		context.Background(), composition.ProfileTest, handler,
+		"incident-comp2e-legacy", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = legacy.Close() }()
+	request := localipc.Request{
+		Version: 1, RequestID: "request-comp2e", JourneyID: "journey-comp2e",
+		Method: "setup_snapshot", Params: []byte(`{}`),
+	}
+	productionResponse := production.Handler().Handle(context.Background(), request)
+	legacyResponse := legacy.Handler().Handle(context.Background(), request)
+	if !reflect.DeepEqual(production.Snapshot(), legacy.Snapshot()) ||
+		!reflect.DeepEqual(productionResponse, legacyResponse) ||
+		!reflect.DeepEqual(productionResponse, want) {
+		t.Fatalf(
+			"production snapshot=%#v response=%#v legacy snapshot=%#v response=%#v",
+			production.Snapshot(), productionResponse, legacy.Snapshot(), legacyResponse,
+		)
 	}
 }
 

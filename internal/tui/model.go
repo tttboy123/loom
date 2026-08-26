@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,6 +25,7 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/production"
+	"loom-pi-rebuild/internal/roundtable"
 	"loom-pi-rebuild/internal/work"
 )
 
@@ -45,6 +47,7 @@ const (
 	ScreenAssets        Screen = "Evolution Assets"
 	ScreenQueue         Screen = "Queue"
 	ScreenWorkers       Screen = "Workers"
+	ScreenRoundtable    Screen = "Roundtable"
 	ScreenIntegration   Screen = "Integration"
 	ScreenPermissions   Screen = "Permissions"
 	ScreenExecution     Screen = "Execution"
@@ -69,6 +72,7 @@ var screens = []Screen{
 	ScreenAssets,
 	ScreenQueue,
 	ScreenWorkers,
+	ScreenRoundtable,
 	ScreenIntegration,
 	ScreenPermissions,
 	ScreenExecution,
@@ -476,6 +480,11 @@ type integrationFailedMsg struct{ err error }
 type queueCommandDoneMsg struct{ err error }
 type workersCommandDoneMsg struct{ err error }
 type integrationCommandDoneMsg struct{ err error }
+type roundtableLoadedMsg struct {
+	view roundtable.View
+	err  error
+}
+type roundtableCommandDoneMsg struct{ err error }
 
 type builderStartedMsg struct {
 	session app.BuilderSessionView
@@ -561,6 +570,7 @@ const (
 	entryPermissionProfile  = "permission_profile"
 	entryPermissionCall     = "permission_call"
 	entryCustomerRuleImport = "customer_rule_import"
+	entryRoundtableSession  = "roundtable_session"
 )
 
 type Model struct {
@@ -571,6 +581,7 @@ type Model struct {
 	assetClient            EvolutionAssetClient
 	queueClient            QueueClient
 	workersClient          WorkersClient
+	roundtableClient       RoundtableClient
 	integrationClient      IntegrationClient
 	permissionClient       PermissionClient
 	productionClient       ProductionClient
@@ -632,6 +643,10 @@ type Model struct {
 	evolutionAssets        api.EvolutionAssetSnapshot
 	queueSnapshot          api.QueueSnapshot
 	workersSnapshot        app.WorkersSnapshot
+	roundtableView         roundtable.View
+	roundtableSessionID    string
+	roundtableError        string
+	roundtableLoading      bool
 	integrationSnapshot    app.IntegrationSnapshot
 	permissionSnapshot     app.PermissionSnapshot
 	permissionAttention    app.PermissionAttention
@@ -698,6 +713,7 @@ func newModelWithContext(
 		assetClient:            assetClient,
 		queueClient:            queueClientFrom(client),
 		workersClient:          workersClientFrom(client),
+		roundtableClient:       roundtableClientFrom(client),
 		integrationClient:      integrationClientFrom(client),
 		permissionClient:       permissionClientFrom(client),
 		boundedExecutionClient: boundedExecutionClientFrom(client),
@@ -1042,6 +1058,26 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.lastError = ""
 		return model, model.loadIntegration()
+	case roundtableLoadedMsg:
+		if message.err != nil {
+			model.roundtableError = message.err.Error()
+			model.roundtableLoading = false
+			return model, nil
+		}
+		model.roundtableView = message.view
+		model.roundtableError = ""
+		model.roundtableLoading = false
+		return model, nil
+	case roundtableCommandDoneMsg:
+		model.roundtableLoading = false
+		if message.err != nil {
+			model.roundtableError = message.err.Error()
+			// Reload the authoritative Journal view so the next step re-derives
+			// from real state (e.g. a conflict means the hop already happened).
+			return model, model.loadRoundtable()
+		}
+		model.roundtableError = ""
+		return model, model.loadRoundtable()
 	case permissionsLoadedMsg:
 		model.loading = false
 		model.offline = false
@@ -1219,6 +1255,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.loading = true
 				return model, model.loadWorkers()
 			}
+			if model.Screen() == ScreenRoundtable {
+				model.roundtableLoading = true
+				return model, model.loadRoundtable()
+			}
 			if model.Screen() == ScreenIntegration {
 				model.loading = true
 				return model, model.loadIntegration()
@@ -1311,6 +1351,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return model, nil
 		case "r":
+			if model.Screen() == ScreenRoundtable && model.roundtableClient != nil &&
+				model.roundtableSessionID != "" {
+				model.roundtableLoading = true
+				return model, model.loadRoundtable()
+			}
 			model.loading = true
 			if model.Screen() == ScreenAssets {
 				return model, model.loadEvolutionAssets("")
@@ -1475,6 +1520,18 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.entry = []byte{}
 				return model, nil
 			}
+			if model.Screen() == ScreenRoundtable && model.roundtableClient != nil {
+				if model.roundtableLoading {
+					return model, nil
+				}
+				if model.roundtableSessionID == "" {
+					model.entryMode = entryRoundtableSession
+					model.entry = []byte(roundtableDefaultSession)
+					return model, nil
+				}
+				model.roundtableLoading = true
+				return model, model.roundtableAdvanceStep()
+			}
 			if model.Screen() == ScreenAssets && model.assetClient != nil {
 				model.evolutionCreateMode = "create_skill"
 				model.entryMode = entryEvolutionAsset
@@ -1592,6 +1649,11 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return model, model.standingOrderRevoke(orderID)
 			}
 		case "e":
+			if model.Screen() == ScreenRoundtable && model.roundtableClient != nil {
+				model.entryMode = entryRoundtableSession
+				model.entry = []byte(model.roundtableSessionID)
+				return model, nil
+			}
 			if model.Screen() == ScreenCustomerRules && model.customerRuleClient != nil {
 				model.loading = true
 				return model, model.customerRuleEvaluate()
@@ -1980,7 +2042,14 @@ func (model Model) renderGovernanceSummary() string {
 		lines = append(
 			lines,
 			fmt.Sprintf("Active missions · %d", active),
-			fmt.Sprintf("Needs you · %d", len(model.snapshot.Attention)),
+			fmt.Sprintf(
+				"Needs you · %d",
+				countActionableAttention(
+					model.snapshot.Teams,
+					model.snapshot.Missions,
+					model.snapshot.Attention,
+				),
+			),
 			fmt.Sprintf("Teams · %d", len(model.snapshot.Teams)),
 			fmt.Sprintf("Runtimes · %d", len(model.snapshot.Runtimes)),
 		)
@@ -2037,7 +2106,7 @@ func (model Model) renderGovernanceSummary() string {
 		}
 	case "Attention":
 		for _, item := range model.snapshot.Attention[:min(8, len(model.snapshot.Attention))] {
-			lines = append(lines, "· "+sanitizeCell(item.ActionRequired, 30))
+			lines = append(lines, "· "+attentionActionTitle(item.ActionRequired, item.Kind))
 		}
 		if len(model.snapshot.Attention) == 0 {
 			lines = append(lines, "Nothing needs you")
@@ -2140,11 +2209,12 @@ func (model Model) screenBody() string {
 				marker = styleSelectedMarker("›")
 			}
 			row := fmt.Sprintf(
-				"%s %s · %s · %s",
+				"%s %s · %s",
 				marker,
 				model.missionDisplayTitle(mission),
-				sanitizeCell(string(mission.Lane), 18),
-				styleStatus(humanizeStatus(mission.Status)),
+				styleStatus(
+					missionBoardRowStatus(string(mission.Lane), mission.Status),
+				),
 			)
 			if index+1 == model.selected {
 				row = styleSelected(row)
@@ -2512,10 +2582,36 @@ func (model Model) screenBody() string {
 			}
 			lines[0] += " · v view"
 		}
-		for _, item := range model.snapshot.Attention {
+		actionable := actionableAttentionItems(
+			model.snapshot.Teams,
+			model.snapshot.Missions,
+			model.snapshot.Attention,
+		)
+		historical := historicalAttentionItems(
+			model.snapshot.Teams,
+			model.snapshot.Missions,
+			model.snapshot.Attention,
+		)
+		if len(actionable) == 0 && len(historical) > 0 {
+			lines = append(lines, styleSection(
+				"Nothing needs you · history ("+strconv.Itoa(len(historical))+")",
+			))
+		}
+		for _, item := range actionable {
 			lines = append(lines, fmt.Sprintf(
 				"• %s",
-				sanitizeCell(item.ActionRequired, 64),
+				attentionActionTitle(item.ActionRequired, item.Kind),
+			))
+		}
+		if len(actionable) > 0 && len(historical) > 0 {
+			lines = append(lines, styleSection(
+				"History ("+strconv.Itoa(len(historical))+") · archived teams or completed Missions",
+			))
+		}
+		for _, item := range historical {
+			lines = append(lines, fmt.Sprintf(
+				"• %s",
+				attentionActionTitle(item.ActionRequired, item.Kind),
 			))
 		}
 		for _, decision := range model.permissionAttention.Decisions {
@@ -2603,6 +2699,8 @@ func (model Model) screenBody() string {
 		return model.renderQueueView()
 	case ScreenWorkers:
 		return model.renderWorkersView()
+	case ScreenRoundtable:
+		return model.renderRoundtableView()
 	case ScreenIntegration:
 		return model.renderIntegrationView()
 	default:
@@ -2776,6 +2874,8 @@ func (model Model) renderTeamBuilder() string {
 			prompt = "Task filter"
 		case entryEvolutionSearch:
 			prompt = "Asset search"
+		case entryRoundtableSession:
+			prompt = "Roundtable session id"
 		}
 		lines = append(
 			lines,
@@ -4175,6 +4275,24 @@ func (model Model) updateEntry(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.loading = true
 			return model, model.createQueueJob(path)
 		}
+		if model.entryMode == entryRoundtableSession {
+			sessionID := strings.TrimSpace(sanitizeCell(string(model.entry), 128))
+			clearTUIBytes(model.entry)
+			model.entry = nil
+			model.entryMode = ""
+			if sessionID == "" {
+				return model, nil
+			}
+			if sessionID != model.roundtableSessionID {
+				// Session switch: never let the previous session's cached view
+				// drive step derivation for the new session.
+				model.roundtableView = roundtable.View{}
+				model.roundtableError = ""
+			}
+			model.roundtableSessionID = sessionID
+			model.roundtableLoading = true
+			return model, model.roundtableAdvanceStep()
+		}
 		if model.entryMode == entryPermissionProfile {
 			profileID := strings.TrimSpace(sanitizeCell(string(model.entry), 128))
 			clearTUIBytes(model.entry)
@@ -4633,6 +4751,99 @@ func humanizeStatus(value string) string {
 		return "Ready"
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+// actionableAttentionItems mirrors the macOS App's actionableAttention:
+// attention on an executable Team whose Mission is still active (non-Complete).
+func actionableAttentionItems(
+	teams []api.LocalProductTeamSummary,
+	missions []api.LocalProductMissionSummary,
+	attention []api.AttentionItem,
+) []api.AttentionItem {
+	executableTeams := make(map[string]bool)
+	for _, team := range teams {
+		if team.Executable {
+			executableTeams[team.TeamInstanceID] = true
+		}
+	}
+	activeMissionTeams := make(map[string]bool)
+	for _, mission := range missions {
+		if mission.Lane != "Complete" {
+			activeMissionTeams[mission.TeamInstanceID] = true
+		}
+	}
+	result := make([]api.AttentionItem, 0, len(attention))
+	for _, item := range attention {
+		if executableTeams[item.TeamInstanceID] &&
+			activeMissionTeams[item.TeamInstanceID] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// historicalAttentionItems is the complement of actionableAttentionItems:
+// items on archived Teams or on Teams whose Missions are already Complete.
+func historicalAttentionItems(
+	teams []api.LocalProductTeamSummary,
+	missions []api.LocalProductMissionSummary,
+	attention []api.AttentionItem,
+) []api.AttentionItem {
+	actionable := make(map[string]bool)
+	for _, item := range actionableAttentionItems(teams, missions, attention) {
+		actionable[item.AttentionID] = true
+	}
+	result := make([]api.AttentionItem, 0, len(attention))
+	for _, item := range attention {
+		if !actionable[item.AttentionID] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// countActionableAttention mirrors the macOS App's countActiveAttention.
+func countActionableAttention(
+	teams []api.LocalProductTeamSummary,
+	missions []api.LocalProductMissionSummary,
+	attention []api.AttentionItem,
+) int {
+	return len(actionableAttentionItems(teams, missions, attention))
+}
+
+// attentionActionTitle mirrors the macOS App's attentionActionTitle:
+// prefer the raw action_required code humanized, fall back to kind, then to a
+// generic prompt.
+func attentionActionTitle(actionRequired, kind string) string {
+	value := strings.TrimSpace(strings.ReplaceAll(actionRequired, "_", " "))
+	if value == "" {
+		value = strings.TrimSpace(strings.ReplaceAll(kind, "_", " "))
+	}
+	if value == "" {
+		return "Needs your attention"
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+// missionBoardRowStatus mirrors the macOS App's missionBoardDetailText: a
+// Mission that reached the Complete lane already tells the user it finished,
+// so "Complete · Failed" reads contradictory — lead with the humanized
+// terminal outcome instead. Active lanes keep both lane and state.
+func missionBoardRowStatus(lane, status string) string {
+	humanized := humanizeStatus(status)
+	if lane == "Complete" {
+		if humanized == "Ready" {
+			return "Complete"
+		}
+		return humanized
+	}
+	if lane == "" {
+		return humanized
+	}
+	if humanized == "Ready" {
+		return lane
+	}
+	return lane + " · " + humanized
 }
 
 func (model Model) missionDisplayTitle(

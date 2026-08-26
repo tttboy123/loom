@@ -122,6 +122,10 @@ final class LocalProductExperienceTests: XCTestCase {
 
         XCTAssertEqual(loading.title, "Starting local service")
         XCTAssertEqual(offline.title, "Local service unavailable")
+        XCTAssertEqual(
+            offline.detail,
+            "Loom reconnects automatically. Try again if this continues."
+        )
         XCTAssertEqual(preserved.title, "Showing last loaded state")
         XCTAssertEqual(fatal.title, "Local service rejected the connection")
 
@@ -178,7 +182,28 @@ enum ExperienceFixtures {
               "state":"ready",
               "confirmed":true,
               "executable":true,
-              "read_only":false
+              "read_only":false,
+              "agents":[{
+                "role_kind":"main",
+                "agent_definition_id":"agent-main",
+                "runtime_profile_id":"profile-main",
+                "binding_status":"configured",
+                "harness_adapter":"opencode",
+                "provider_id":"deepseek",
+                "provider_account_id":"deepseek.primary",
+                "model_id":"deepseek/deepseek-chat",
+                "credential_revision":3
+              },{
+                "role_kind":"subagent",
+                "agent_definition_id":"agent-reviewer",
+                "runtime_profile_id":"profile-reviewer",
+                "binding_status":"configured",
+                "harness_adapter":"loom-native",
+                "provider_id":"minimax",
+                "provider_account_id":"minimax.primary",
+                "model_id":"MiniMax-M3",
+                "credential_revision":2
+              }]
             }]
             """
         )

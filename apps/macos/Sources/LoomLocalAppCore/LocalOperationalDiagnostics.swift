@@ -64,6 +64,32 @@ final class LocalOperationalDiagnostics: @unchecked Sendable {
         }
     }
 
+    private struct MissionExecutionRecord: Encodable {
+        let schemaVersion = 1
+        let occurredAt: String
+        let incidentID: String
+        let operation = "mission_execution"
+        let executionOperation: String
+        let stage: String
+        let elapsedMilliseconds: Int64
+        let result: String
+        let errorCode: String?
+        let retryable: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case occurredAt = "occurred_at"
+            case incidentID = "incident_id"
+            case operation
+            case executionOperation = "execution_operation"
+            case stage
+            case elapsedMilliseconds = "elapsed_ms"
+            case result
+            case errorCode = "error_code"
+            case retryable
+        }
+    }
+
     private struct AgentInputRecord: Encodable {
         let schemaVersion = 1
         let occurredAt: String
@@ -270,6 +296,36 @@ final class LocalOperationalDiagnostics: @unchecked Sendable {
 			httpStatus: httpStatus == 0 ? nil : httpStatus,
 			providerErrorCode: providerErrorCode.isEmpty ? nil : providerErrorCode,
 			retryAfterSeconds: retryAfterSeconds == 0 ? nil : retryAfterSeconds,
+            retryable: retryable
+        ))
+    }
+
+    func recordMissionExecution(
+        incidentID: String,
+        executionOperation: String,
+        stage: LocalIPCRemoteError.Stage,
+        result: String,
+        errorCode: LocalIPCRemoteError.Code?,
+        retryable: Bool,
+        elapsedMilliseconds: Int64
+    ) throws {
+        guard LocalIPCWire.validRequestID(incidentID),
+              ["preflight", "start", "control"].contains(executionOperation),
+              elapsedMilliseconds >= 0,
+              (result == "succeeded" && errorCode == nil && !retryable
+                || result == "failed" && errorCode != nil) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try append(MissionExecutionRecord(
+            occurredAt: formatter.string(from: now()),
+            incidentID: incidentID,
+            executionOperation: executionOperation,
+            stage: stage.rawValue,
+            elapsedMilliseconds: elapsedMilliseconds,
+            result: result,
+            errorCode: errorCode?.rawValue,
             retryable: retryable
         ))
     }

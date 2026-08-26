@@ -106,8 +106,14 @@ func (coordinator *CredentialVaultCoordinator) Verify(
 		secret []byte,
 	) error {
 		var callErr error
-		verification, callErr = coordinator.verifier.Verify(
-			leaseContext, command.ProviderID, secret,
+		verification, callErr = credentials.VerifyCredentialBinding(
+			leaseContext, coordinator.verifier,
+			credentials.CredentialVerificationBinding{
+				ProviderID:          command.ProviderID,
+				ProviderAccountID:   command.ProviderAccountID,
+				CredentialReference: command.CredentialReference,
+				CredentialRevision:  command.ExpectedRevision,
+			}, secret,
 		)
 		return callErr
 	})

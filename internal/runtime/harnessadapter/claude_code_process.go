@@ -73,7 +73,7 @@ type claudeCodeProcessRunner struct {
 func NewClaudeCodeProcessRunner(
 	config ClaudeCodeProcessRunnerConfig,
 ) (HarnessProcessRunner, error) {
-	if nilHarnessInterface(config.Gateway) || nilHarnessInterface(config.Commands) {
+	if nilHarnessInterface(config.Commands) {
 		return nil, ErrInvalidClaudeCodeAdapter
 	}
 	return &claudeCodeProcessRunner{
@@ -82,7 +82,8 @@ func NewClaudeCodeProcessRunner(
 }
 
 func (runner *claudeCodeProcessRunner) SupportsAgentInputs() bool {
-	return runner != nil && !nilHarnessInterface(runner.sessions)
+	return runner != nil && !nilHarnessInterface(runner.gateway) &&
+		!nilHarnessInterface(runner.sessions)
 }
 
 func (runner *claudeCodeProcessRunner) RunHarness(
@@ -91,8 +92,19 @@ func (runner *claudeCodeProcessRunner) RunHarness(
 	secret []byte,
 ) (HarnessProcessResult, error) {
 	defer zeroHarnessBytes(request.Prompt)
-	if runner == nil || ctx == nil || !validHarnessProcessRequest(request) ||
-		len(secret) == 0 || len(secret) > 8192 {
+	if runner == nil || ctx == nil || nilHarnessInterface(runner.commands) ||
+		!validHarnessProcessRequest(request) {
+		return HarnessProcessResult{}, ErrInvalidClaudeCodeAdapter
+	}
+	if !request.RequiresCredential {
+		if len(secret) != 0 {
+			return HarnessProcessResult{}, ErrInvalidClaudeCodeAdapter
+		}
+		return runner.runClaudeCodeCommand(
+			ctx, request, claudeCodeNativeEnvironment(request),
+		)
+	}
+	if nilHarnessInterface(runner.gateway) || len(secret) == 0 || len(secret) > 8192 {
 		return HarnessProcessResult{}, ErrInvalidClaudeCodeAdapter
 	}
 	var result HarnessProcessResult
@@ -106,57 +118,76 @@ func (runner *claudeCodeProcessRunner) RunHarness(
 			if !validAttemptGatewayLease(lease) {
 				return ErrHarnessProcessUnavailable
 			}
-			systemPromptPath, cleanupPrompt, promptErr := materializeHarnessSystemPrompt(
-				request.TempPath,
-				request.SystemPrompt,
+			var runErr error
+			result, runErr = runner.runClaudeCodeCommand(
+				ctx, request, claudeCodeEnvironment(request, lease),
 			)
-			if promptErr != nil {
-				return promptErr
-			}
-			defer func() {
-				resultErr = errors.Join(resultErr, cleanupPrompt())
-			}()
-			commandResult, commandErr := runner.commands.RunCommand(
-				ctx,
-				HarnessCommandRequest{
-					ExecutablePath: request.ExecutablePath,
-					Arguments:      claudeCodeArguments(request, systemPromptPath),
-					Environment:    claudeCodeEnvironment(request, lease),
-					Directory:      request.TempPath,
-					Stdin:          request.Prompt,
-					MaxOutputBytes: request.MaxOutputBytes,
-					Timeout:        request.Timeout,
-				},
-			)
-			if commandErr != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return ctxErr
-				}
-				return ErrHarnessProcessUnavailable
-			}
-			if commandResult.ExitCode != 0 ||
-				len(commandResult.Stdout) > request.MaxOutputBytes ||
-				len(commandResult.Stderr) > request.MaxOutputBytes {
-				return ErrHarnessProcessUnavailable
-			}
-			parsed, parseErr := decodeClaudeCodeResult(
-				commandResult.Stdout,
-				request.MaxOutputBytes,
-			)
-			if parseErr != nil {
-				return parseErr
-			}
-			// Raw CLI stderr can contain Provider or workspace content. The closed
-			// operational diagnostic is emitted by the adapter instead.
-			parsed.Stderr = []byte{}
-			result = parsed
-			return nil
+			return runErr
 		},
 	)
 	if err != nil {
 		return HarnessProcessResult{}, err
 	}
 	return result, nil
+}
+
+func (runner *claudeCodeProcessRunner) runClaudeCodeCommand(
+	ctx context.Context,
+	request HarnessProcessRequest,
+	environment []string,
+) (result HarnessProcessResult, resultErr error) {
+	systemPromptPath, cleanupPrompt, promptErr := materializeHarnessSystemPrompt(
+		request.TempPath,
+		request.SystemPrompt,
+	)
+	if promptErr != nil {
+		return HarnessProcessResult{}, promptErr
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, cleanupPrompt())
+	}()
+	commandResult, commandErr := runner.commands.RunCommand(
+		ctx,
+		HarnessCommandRequest{
+			ExecutablePath: request.ExecutablePath,
+			Arguments:      claudeCodeArguments(request, systemPromptPath),
+			Environment:    environment,
+			Directory:      request.TempPath,
+			Stdin:          request.Prompt,
+			MaxOutputBytes: request.MaxOutputBytes,
+			Timeout:        request.Timeout,
+		},
+	)
+	if commandErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return HarnessProcessResult{}, ctxErr
+		}
+		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
+	}
+	if commandResult.ExitCode != 0 ||
+		len(commandResult.Stdout) > request.MaxOutputBytes ||
+		len(commandResult.Stderr) > request.MaxOutputBytes {
+		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
+	}
+	parsed, parseErr := decodeClaudeCodeResult(
+		commandResult.Stdout,
+		request.MaxOutputBytes,
+	)
+	if parseErr != nil {
+		return HarnessProcessResult{}, parseErr
+	}
+	if request.NativeSessionID != "" {
+		resultSessionID, sessionErr := decodeClaudeCodeResultSessionID(
+			commandResult.Stdout,
+		)
+		if sessionErr != nil || resultSessionID != request.NativeSessionID {
+			return HarnessProcessResult{}, ErrHarnessProtocol
+		}
+	}
+	// Raw CLI stderr can contain Provider or workspace content. The closed
+	// operational diagnostic is emitted by the adapter instead.
+	parsed.Stderr = []byte{}
+	return parsed, nil
 }
 
 func attemptProviderToolPolicy(lease HarnessContextMCPLease) AttemptProviderToolPolicy {
@@ -175,7 +206,35 @@ func validHarnessProcessRequest(request HarnessProcessRequest) bool {
 		utf8.ValidString(request.SystemPrompt) &&
 		strings.IndexByte(request.SystemPrompt, 0) < 0 && request.Timeout > 0 &&
 		request.Timeout <= 15*time.Minute && request.MaxOutputBytes >= 256 &&
-		request.MaxOutputBytes <= 1<<20 && validHarnessContextMCPLease(request.ContextMCP)
+		request.MaxOutputBytes <= 1<<20 && validHarnessContextMCPLease(request.ContextMCP) &&
+		validClaudeCodeNativeSessionRequest(request)
+}
+
+func validClaudeCodeNativeSessionRequest(request HarnessProcessRequest) bool {
+	if request.NativeSessionID == "" {
+		return !request.ResumeNativeSession
+	}
+	return !request.RequiresCredential &&
+		validClaudeCodeNativeSessionID(request.NativeSessionID)
+}
+
+func validClaudeCodeNativeSessionID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' ||
+		value[18] != '-' || value[23] != '-' || value[14] != '4' ||
+		!strings.ContainsRune("89ab", rune(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func cleanHarnessAbsolutePath(path string) bool {
@@ -192,11 +251,19 @@ func claudeCodeArguments(request HarnessProcessRequest, systemPromptPath string)
 	arguments := []string{
 		"--print",
 		"--bare",
-		"--no-session-persistence",
+	}
+	if request.NativeSessionID == "" {
+		arguments = append(arguments, "--no-session-persistence")
+	} else if request.ResumeNativeSession {
+		arguments = append(arguments, "--resume", request.NativeSessionID)
+	} else {
+		arguments = append(arguments, "--session-id", request.NativeSessionID)
+	}
+	arguments = append(arguments,
 		"--output-format", "json",
 		"--model", request.ModelID,
 		"--system-prompt-file", systemPromptPath,
-	}
+	)
 	if request.ReasoningEffort != "" {
 		arguments = append(arguments, "--effort", request.ReasoningEffort)
 	}
@@ -235,23 +302,42 @@ func claudeCodeEnvironment(
 	request HarnessProcessRequest,
 	lease AttemptGatewayLease,
 ) []string {
-	environment := []string{
+	environment := claudeCodeBaseEnvironment(request)
+	environment = append(environment,
+		"ANTHROPIC_BASE_URL="+lease.BaseURL,
+		"ANTHROPIC_API_KEY="+lease.Token,
+		"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1",
+	)
+	return appendClaudeCodeContextEnvironment(environment, request.ContextMCP)
+}
+
+func claudeCodeNativeEnvironment(request HarnessProcessRequest) []string {
+	return appendClaudeCodeContextEnvironment(
+		claudeCodeBaseEnvironment(request), request.ContextMCP,
+	)
+}
+
+func claudeCodeBaseEnvironment(request HarnessProcessRequest) []string {
+	return []string{
 		"HOME=" + request.HomePath,
 		"TMPDIR=" + request.TempPath,
 		"PATH=" + filepath.Dir(request.ExecutablePath) + ":/usr/bin:/bin",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 		"NO_COLOR=1",
-		"ANTHROPIC_BASE_URL=" + lease.BaseURL,
-		"ANTHROPIC_API_KEY=" + lease.Token,
-		"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1",
 		"CLAUDE_CODE_SIMPLE=1",
 		"DISABLE_TELEMETRY=1",
 		"DISABLE_ERROR_REPORTING=1",
 		"DISABLE_AUTOUPDATER=1",
 	}
-	if request.ContextMCP.Token != "" {
-		environment = append(environment, harnessContextMCPTokenEnv+"="+request.ContextMCP.Token)
+}
+
+func appendClaudeCodeContextEnvironment(
+	environment []string,
+	lease HarnessContextMCPLease,
+) []string {
+	if lease.Token != "" {
+		environment = append(environment, harnessContextMCPTokenEnv+"="+lease.Token)
 	}
 	return environment
 }
@@ -270,18 +356,35 @@ func harnessMCPToolNames(lease HarnessContextMCPLease) []string {
 	if lease.URL == "" {
 		return nil
 	}
-	if !lease.ContextEnabled && !lease.ReadEnabled && !lease.GrepEnabled {
+	if !lease.ContextEnabled && !lease.ReadEnabled && !lease.GrepEnabled &&
+		!lease.EditEnabled && !lease.BashEnabled &&
+		!lease.WebSearchEnabled && !lease.WebFetchEnabled && !lease.MCPToolEnabled {
 		return []string{"loom_read_context"}
 	}
-	names := make([]string, 0, 3)
+	names := make([]string, 0, 8)
+	if lease.EditEnabled {
+		names = append(names, "loom_edit_file")
+	}
 	if lease.GrepEnabled {
 		names = append(names, "loom_grep_files")
+	}
+	if lease.MCPToolEnabled {
+		names = append(names, "loom_mcp_call")
 	}
 	if lease.ContextEnabled {
 		names = append(names, "loom_read_context")
 	}
 	if lease.ReadEnabled {
 		names = append(names, "loom_read_file")
+	}
+	if lease.BashEnabled {
+		names = append(names, "loom_run_command")
+	}
+	if lease.WebSearchEnabled {
+		names = append(names, "loom_web_search")
+	}
+	if lease.WebFetchEnabled {
+		names = append(names, "loom_web_fetch")
 	}
 	return names
 }
@@ -343,6 +446,18 @@ func decodeClaudeCodeResult(
 		return HarnessProcessResult{}, ErrHarnessProtocol
 	}
 	return HarnessProcessResult{Content: content, Accounting: &accounting}, nil
+}
+
+func decodeClaudeCodeResultSessionID(payload []byte) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	var decoded struct {
+		SessionID string `json:"session_id"`
+	}
+	if decoder.Decode(&decoded) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		!validClaudeCodeNativeSessionID(decoded.SessionID) {
+		return "", ErrHarnessProtocol
+	}
+	return decoded.SessionID, nil
 }
 
 func decimalUSDMicrounits(value string) (int64, error) {

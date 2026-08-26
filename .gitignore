@@ -52,6 +52,8 @@ loom-data/
 logs/
 
 # Loom daemon build artifact
+.loom-build/
+/.build-artifacts/
 /loomd
 
 # SwiftPM build directory

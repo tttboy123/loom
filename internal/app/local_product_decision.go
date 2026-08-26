@@ -996,7 +996,7 @@ func dispatchControlledMission(
 	if err != nil {
 		return controlledMissionScenario{}, err
 	}
-	contextCapsule, err := contextcapsule.BuildRoleContextCapsule(
+	contextCapsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "mission:" + teamID, TeamID: teamID,
 			AgentID: "agent-" + teamID, RoleID: "main",
@@ -1010,10 +1010,12 @@ func dispatchControlledMission(
 		[]contextcapsule.ItemInput{{
 			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
 			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
-			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Priority: contextcapsule.PrioritySystem, Required: true,
 			Content:    []byte("Execute the controlled mission fixture."),
 			SourceType: contextcapsule.SourceAuthority, SourceRef: "team-plan:" + plan.Digest(),
 		}},
+		missionContextCapacityAuthority(),
+		missionContextCounter,
 	)
 	if err != nil {
 		return controlledMissionScenario{}, err

@@ -16,6 +16,7 @@ import (
 
 	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/nativeadapter"
 	"loom-pi-rebuild/internal/supervisor"
@@ -58,6 +59,16 @@ type HarnessProcessRequest struct {
 	Timeout         time.Duration
 	MaxOutputBytes  int
 	ContextMCP      HarnessContextMCPLease
+	// NativeSessionID is a non-secret, frozen Harness-native conversation ID.
+	// ResumeNativeSession selects an existing ID; an ID without resume creates
+	// the first turn. Empty preserves the one-shot, non-persistent contract.
+	NativeSessionID     string
+	ResumeNativeSession bool
+	// RequiresCredential is true when the execution binding is brokered and a
+	// non-empty credential secret must be injected. Native-auth harnesses
+	// (for example OpenCode using its own auth store) run with an empty
+	// secret.
+	RequiresCredential bool
 }
 
 type HarnessProcessResult struct {
@@ -235,17 +246,18 @@ func (adapter *claudeCodeAdapter) Execute(
 				return nativeadapter.ErrAgentCredentialUnavailable
 			}
 			processRequest := HarnessProcessRequest{
-				ExecutablePath:  adapter.executablePath,
-				WorkspacePath:   request.WorkspacePath,
-				HomePath:        request.HomePath,
-				TempPath:        request.TempPath,
-				ModelID:         request.ExecutionBinding.ModelID,
-				ReasoningEffort: request.ExecutionBinding.ReasoningEffort,
-				Prompt:          prompt,
-				SystemPrompt:    systemPrompt,
-				Timeout:         request.ExecutionBinding.Timeout,
-				MaxOutputBytes:  adapter.maxOutputBytes,
-				ContextMCP:      harnessContextMCPLease(contextService),
+				ExecutablePath:     adapter.executablePath,
+				WorkspacePath:      request.WorkspacePath,
+				HomePath:           request.HomePath,
+				TempPath:           request.TempPath,
+				ModelID:            request.ExecutionBinding.ModelID,
+				ReasoningEffort:    request.ExecutionBinding.ReasoningEffort,
+				Prompt:             prompt,
+				SystemPrompt:       systemPrompt,
+				Timeout:            request.ExecutionBinding.Timeout,
+				MaxOutputBytes:     adapter.maxOutputBytes,
+				ContextMCP:         harnessContextMCPLease(contextService),
+				RequiresCredential: true,
 			}
 			var candidate HarnessProcessResult
 			var runErr error
@@ -384,6 +396,14 @@ func harnessFailure(err error) (reason, stage string, retryable bool) {
 		return "credential_unavailable", stage, credentials.CredentialFailureRetryable(stage)
 	case errors.Is(err, ErrHarnessProviderAuth):
 		return "provider_auth", "provider_auth", false
+	case errors.Is(err, provider.ErrOpenCodeConversationAuth):
+		return "provider_auth", "provider_auth", false
+	case errors.Is(err, provider.ErrOpenCodeConversationInsufficientBalance):
+		return "provider_insufficient_balance", "provider_http", false
+	case errors.Is(err, provider.ErrOpenCodeConversationModelUnavailable):
+		return "provider_model_unavailable", "provider_http", false
+	case errors.Is(err, provider.ErrOpenCodeConversationRateLimit):
+		return "provider_rate_limit", "provider_rate_limit", true
 	case errors.Is(err, ErrHarnessProviderRateLimit):
 		return "provider_rate_limit", "provider_rate_limit", true
 	case errors.Is(err, ErrHarnessProviderRejected):

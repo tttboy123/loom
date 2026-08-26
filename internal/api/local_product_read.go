@@ -168,6 +168,20 @@ func (service *LocalProductReadService) ReadChatThread(ctx context.Context, thre
 	return service.chat.ChatThread(ctx, threadID)
 }
 
+func (service *LocalProductReadService) ReadChatContextDisclosure(
+	ctx context.Context,
+	request LocalProductChatContextDisclosureRequest,
+) (LocalProductChatContextDisclosure, error) {
+	if service == nil || service.chat == nil {
+		return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+	}
+	inspector, ok := service.chat.(LocalProductChatContextDisclosureInspector)
+	if !ok || inspector == nil {
+		return LocalProductChatContextDisclosure{}, ErrLocalProductChatUnavailable
+	}
+	return inspector.InspectChatContextDisclosure(ctx, request)
+}
+
 func (service *LocalProductReadService) DeleteChatThread(
 	ctx context.Context, threadID string,
 ) error {
@@ -204,13 +218,28 @@ type LocalProductRuntimeSummary struct {
 }
 
 type LocalProductTeamSummary struct {
-	TeamInstanceID string `json:"team_instance_id"`
-	DisplayName    string `json:"display_name"`
-	SourceKind     string `json:"source_kind"`
-	State          string `json:"state"`
-	Confirmed      bool   `json:"confirmed"`
-	Executable     bool   `json:"executable"`
-	ReadOnly       bool   `json:"read_only"`
+	TeamInstanceID        string                         `json:"team_instance_id"`
+	TeamDefinitionID      string                         `json:"team_definition_id"`
+	TeamDefinitionVersion int                            `json:"team_definition_version"`
+	DisplayName           string                         `json:"display_name"`
+	SourceKind            string                         `json:"source_kind"`
+	State                 string                         `json:"state"`
+	Confirmed             bool                           `json:"confirmed"`
+	Executable            bool                           `json:"executable"`
+	ReadOnly              bool                           `json:"read_only"`
+	Agents                []LocalProductTeamAgentSummary `json:"agents"`
+}
+
+type LocalProductTeamAgentSummary struct {
+	RoleKind           string `json:"role_kind"`
+	AgentDefinitionID  string `json:"agent_definition_id"`
+	RuntimeProfileID   string `json:"runtime_profile_id"`
+	BindingStatus      string `json:"binding_status"`
+	HarnessAdapter     string `json:"harness_adapter"`
+	ProviderID         string `json:"provider_id"`
+	ProviderAccountID  string `json:"provider_account_id"`
+	ModelID            string `json:"model_id"`
+	CredentialRevision int64  `json:"credential_revision"`
 }
 
 type LocalProductRunSummary struct {
@@ -318,7 +347,10 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 		if service.lastView == nil {
 			return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
 		}
-		stale := buildLocalProductSnapshot(*service.lastView, request)
+		stale, buildErr := buildLocalProductSnapshot(*service.lastView, request)
+		if buildErr != nil {
+			return LocalProductSnapshot{}, buildErr
+		}
 		if stale, err = service.applyRuntimeObservationHealth(stale); err != nil {
 			return LocalProductSnapshot{}, err
 		}
@@ -345,7 +377,10 @@ func (service *LocalProductReadService) ReadLocalProductSnapshot(
 		return cloneLocalProductSnapshot(stale), nil
 	}
 	view := service.projection.GlobalReadView()
-	snapshot := buildLocalProductSnapshot(view, request)
+	snapshot, err := buildLocalProductSnapshot(view, request)
+	if err != nil {
+		return LocalProductSnapshot{}, err
+	}
 	sideTasks, sideTaskMore, err := service.readSideTasks(ctx, view)
 	if err != nil {
 		return LocalProductSnapshot{}, ErrLocalProductStateUnavailable
@@ -453,19 +488,21 @@ func equalMissionDecisionCommands(
 func buildLocalProductSnapshot(
 	view projection.GlobalReadView,
 	request LocalProductSnapshotRequest,
-) LocalProductSnapshot {
+) (LocalProductSnapshot, error) {
 	runtimes, runtimeMore := view.RuntimeInstances(
 		request.AfterRuntimeID,
 		request.Limit,
 	)
-	teams, savedTeamMore := view.Teams(request.AfterTeamID, request.Limit)
+	teamRows, teamMore, validTeamCursor := view.TeamRows(
+		request.AfterTeamID,
+		request.Limit,
+	)
+	if !validTeamCursor {
+		return LocalProductSnapshot{}, ErrInvalidLocalProductRequest
+	}
 	runs, runMore := view.Runs(request.AfterRunID, request.Limit)
 	evidence, evidenceMore := view.EvidenceRecords(
 		request.AfterEvidenceID,
-		request.Limit,
-	)
-	executions, executionTeamMore := view.TeamExecutions(
-		request.AfterTeamID,
 		request.Limit,
 	)
 	projectedSideTasks, sideTaskExecutionMore := view.SideTaskHandoffs("", 64)
@@ -474,27 +511,32 @@ func buildLocalProductSnapshot(
 		sideExecutionIDs[sideTask.SideExecutionTeamInstanceID] = struct{}{}
 		sideExecutionIDs[sideTask.ContinuationExecutionTeamInstanceID] = struct{}{}
 	}
-	filteredExecutions := executions[:0]
-	for _, execution := range executions {
-		if _, isSideTask := sideExecutionIDs[execution.TeamInstanceID]; !isSideTask {
-			filteredExecutions = append(filteredExecutions, execution)
+	teams := make([]projection.TeamInstance, 0, len(teamRows))
+	executions := make([]projection.TeamExecution, 0, len(teamRows))
+	for index := range teamRows {
+		row := &teamRows[index]
+		if row.TeamAvailable {
+			teams = append(teams, row.Team)
 		}
+		if !row.ExecutionAvailable {
+			continue
+		}
+		if _, isSideTask := sideExecutionIDs[row.Execution.TeamInstanceID]; isSideTask {
+			row.ExecutionAvailable = false
+			row.Execution = projection.TeamExecution{}
+			continue
+		}
+		executions = append(executions, row.Execution)
 	}
-	executions = filteredExecutions
-	executionTeamMore = executionTeamMore || sideTaskExecutionMore
-
 	teamSummaries, teamPage := buildLocalProductTeamPage(
 		view,
-		teams,
-		executions,
-		request.Limit,
-		savedTeamMore || executionTeamMore,
+		teamRows,
+		teamMore,
 	)
 	missionSummaries, missionPage := buildLocalProductMissionPage(
 		view,
-		executions,
-		request.Limit,
-		executionTeamMore,
+		teamRows,
+		teamMore,
 	)
 
 	runtimeSummaries := make([]LocalProductRuntimeSummary, len(runtimes))
@@ -576,7 +618,7 @@ func buildLocalProductSnapshot(
 			Projection: "current",
 		},
 		Partial: runtimeMore || teamPage.HasMore || missionPage.HasMore || runMore ||
-			evidenceMore || len(seenAttention) > len(attention),
+			evidenceMore || sideTaskExecutionMore || len(seenAttention) > len(attention),
 		Runtimes:  runtimeSummaries,
 		Teams:     teamSummaries,
 		Missions:  missionSummaries,
@@ -605,65 +647,46 @@ func buildLocalProductSnapshot(
 				return record.EvidenceID
 			},
 		),
-	}
+	}, nil
 }
 
 func buildLocalProductTeamPage(
 	view projection.GlobalReadView,
-	teams []projection.TeamInstance,
-	executions []projection.TeamExecution,
-	limit int,
+	rows []projection.TeamRow,
 	sourceHasMore bool,
 ) ([]LocalProductTeamSummary, LocalProductPageCursor) {
-	teamByID := make(map[string]projection.TeamInstance, len(teams))
-	executionByID := make(
-		map[string]projection.TeamExecution,
-		len(executions),
-	)
-	candidateIDs := make(map[string]struct{}, len(teams)+len(executions))
-	for _, team := range teams {
-		teamByID[team.ID] = team
-		candidateIDs[team.ID] = struct{}{}
-	}
-	for _, execution := range executions {
-		executionByID[execution.TeamInstanceID] = execution
-		candidateIDs[execution.TeamInstanceID] = struct{}{}
-	}
-	orderedIDs := make([]string, 0, len(candidateIDs))
-	for id := range candidateIDs {
-		orderedIDs = append(orderedIDs, id)
-	}
-	sort.Strings(orderedIDs)
-	page := LocalProductPageCursor{
-		HasMore: sourceHasMore || len(orderedIDs) > limit,
-	}
-	if len(orderedIDs) > limit {
-		orderedIDs = orderedIDs[:limit]
-	}
-	if len(orderedIDs) > 0 {
-		page.NextCursor = orderedIDs[len(orderedIDs)-1]
+	page := LocalProductPageCursor{HasMore: sourceHasMore}
+	if len(rows) > 0 {
+		page.NextCursor = rows[len(rows)-1].TeamInstanceID
 	}
 	summaries := make(
 		[]LocalProductTeamSummary,
 		0,
-		len(orderedIDs),
+		len(rows),
 	)
-	for _, id := range orderedIDs {
-		if team, ok := teamByID[id]; ok {
+	for _, row := range rows {
+		if row.TeamAvailable {
+			team := row.Team
 			anchor, _ := view.TeamTimelineAnchor(team.ID)
 			displayName := localProductSavedTeamDisplayName(view, team)
 			summaries = append(summaries, LocalProductTeamSummary{
-				TeamInstanceID: team.ID,
-				DisplayName:    displayName,
-				SourceKind:     team.SourceKind,
-				State:          team.State,
-				Confirmed:      anchor.Confirmed,
-				Executable:     anchor.Executable,
-				ReadOnly:       anchor.ReadOnly,
+				TeamInstanceID:        team.ID,
+				TeamDefinitionID:      team.TeamDefinitionID,
+				TeamDefinitionVersion: team.TeamDefinitionVersion,
+				DisplayName:           displayName,
+				SourceKind:            team.SourceKind,
+				State:                 team.State,
+				Confirmed:             anchor.Confirmed,
+				Executable:            anchor.Executable,
+				ReadOnly:              anchor.ReadOnly,
+				Agents:                localProductSavedTeamAgents(view, team),
 			})
 			continue
 		}
-		execution := executionByID[id]
+		if !row.ExecutionAvailable {
+			continue
+		}
+		execution := row.Execution
 		anchor, ok := view.TeamTimelineAnchor(execution.TeamInstanceID)
 		if !ok || anchor.Kind != "historical_execution_only" {
 			continue
@@ -674,6 +697,7 @@ func buildLocalProductTeamPage(
 			SourceKind:     anchor.Kind,
 			State:          execution.Status,
 			ReadOnly:       true,
+			Agents:         []LocalProductTeamAgentSummary{},
 		})
 	}
 	return summaries, page
@@ -684,13 +708,56 @@ func localProductSavedTeamDisplayName(
 	team projection.TeamInstance,
 ) string {
 	const fallback = "Saved team"
+	definition, ok := localProductSavedTeamDefinition(view, team)
+	if !ok || definition.Name == "" {
+		return fallback
+	}
+	return definition.Name
+}
+
+func localProductSavedTeamAgents(
+	view projection.GlobalReadView,
+	team projection.TeamInstance,
+) []LocalProductTeamAgentSummary {
+	definition, ok := localProductSavedTeamDefinition(view, team)
+	if !ok {
+		return []LocalProductTeamAgentSummary{}
+	}
+	agents := make(
+		[]LocalProductTeamAgentSummary,
+		len(definition.Configuration.RoleBindings),
+	)
+	for index, binding := range definition.Configuration.RoleBindings {
+		agent := LocalProductTeamAgentSummary{
+			RoleKind:          binding.Kind,
+			AgentDefinitionID: binding.AgentDefinitionID,
+			RuntimeProfileID:  binding.RuntimeProfileID,
+			BindingStatus:     "unavailable",
+			ModelID:           binding.ModelID,
+		}
+		if binding.ExecutionProfileAvailable {
+			agent.BindingStatus = "configured"
+			agent.HarnessAdapter = binding.ExecutionProfile.HarnessAdapter
+			agent.ProviderID = binding.ExecutionProfile.ProviderID
+			agent.ProviderAccountID = binding.ExecutionProfile.ProviderAccountID
+			agent.ModelID = binding.ExecutionProfile.ModelID
+			agent.CredentialRevision = binding.ExecutionProfile.CredentialRevision
+		}
+		agents[index] = agent
+	}
+	return agents
+}
+
+func localProductSavedTeamDefinition(
+	view projection.GlobalReadView,
+	team projection.TeamInstance,
+) (projection.TeamDefinitionRecord, bool) {
 	definition, ok := view.TeamDefinition(team.TeamDefinitionID)
 	if !ok || definition.ID != team.TeamDefinitionID ||
 		definition.Version != team.TeamDefinitionVersion ||
 		definition.Scope != team.TeamDefinitionScope ||
-		definition.DefinitionDigest != team.TeamDefinitionDigest ||
-		definition.Name == "" {
-		return fallback
+		definition.DefinitionDigest != team.TeamDefinitionDigest {
+		return projection.TeamDefinitionRecord{}, false
 	}
 	switch definition.Scope {
 	case "project":
@@ -698,17 +765,17 @@ func localProductSavedTeamDisplayName(
 			definition.ScopeIdentity.ProjectID != team.ScopeIdentity.ProjectID ||
 			definition.ScopeIdentity.GenerationID == "" ||
 			team.ScopeIdentity.GenerationID != "" {
-			return fallback
+			return projection.TeamDefinitionRecord{}, false
 		}
 	case "reusable":
 		if definition.ScopeIdentity != (projection.ScopeIdentity{}) ||
 			team.ScopeIdentity != (projection.ScopeIdentity{}) {
-			return fallback
+			return projection.TeamDefinitionRecord{}, false
 		}
 	default:
-		return fallback
+		return projection.TeamDefinitionRecord{}, false
 	}
-	return definition.Name
+	return definition, true
 }
 
 func localProductPageCursor[T any](

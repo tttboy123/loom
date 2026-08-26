@@ -105,6 +105,12 @@ func (view apiTestTimelineLineageView) Run(
 	return record, ok
 }
 
+func (view apiTestTimelineLineageView) ProviderAccountPolicy(
+	_, _ string,
+) (work.ProviderAccountPolicy, bool) {
+	return work.ProviderAccountPolicy{}, false
+}
+
 func (view apiTestTimelineLineageView) Evidence(
 	id string,
 ) (projection.Evidence, bool) {
@@ -752,6 +758,85 @@ func TestPhase2DProviderAccountAccountingNeverUsesProviderGlobalBucket(t *testin
 	}
 }
 
+func TestPhase2DTerminalRunReconcilesStaleDispatchedAttemptForBoardAndAccounting(t *testing.T) {
+	const (
+		teamID    = "team-terminal-reconcile"
+		nodeID    = "main"
+		workID    = "work-terminal-reconcile"
+		runID     = "run-terminal-reconcile"
+		claimID   = "11111111-1111-4111-8111-111111111111"
+		runtimeID = "runtime-terminal-reconcile"
+		agentID   = "agent-terminal-reconcile"
+	)
+	budget := int64(1_000)
+	attempt := projection.TeamExecutionAttempt{
+		AttemptNumber:             1,
+		IncidentID:                "incident-terminal-reconcile",
+		WorkItemID:                workID,
+		RunID:                     runID,
+		ClaimID:                   claimID,
+		ClaimGeneration:           1,
+		RuntimeInstanceID:         runtimeID,
+		AgentInstanceID:           agentID,
+		Status:                    "dispatched",
+		ExecutionBindingAvailable: true,
+		ExecutionBinding: loomruntime.FrozenExecutionBinding{
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+			Budget: &budget,
+		},
+		ProviderAccountPolicyAvailable:     true,
+		ProviderAccountAssignedBudgetUnits: budget,
+	}
+	node := projection.TeamExecutionNode{
+		LogicalNodeID:  nodeID,
+		Status:         "running",
+		CurrentAttempt: 1,
+		RetryAt:        time.Date(2026, 7, 26, 15, 0, 1, 0, time.UTC),
+		Attempts:       []projection.TeamExecutionAttempt{attempt},
+	}
+	execution := projection.TeamExecution{
+		TeamInstanceID: teamID,
+		Status:         "running",
+		Nodes:          []projection.TeamExecutionNode{node},
+	}
+	view := apiTestTimelineLineageView{
+		execution: execution,
+		runs: map[string]projection.Run{runID: {
+			ID: runID, WorkItemID: workID, Phase: "terminal",
+			ClaimID: claimID, ClaimGeneration: 1,
+			RuntimeInstanceID: runtimeID, AgentInstanceID: agentID,
+			TerminalStatus: "failed", TerminalReason: "provider_rejected",
+		}},
+	}
+	row := NodeBoardRow{
+		LogicalNodeID: nodeID, Status: node.Status, CurrentAttempt: 1,
+		WorkItemID: workID, RunID: runID,
+		RuntimeInstanceID: runtimeID, AgentInstanceID: agentID,
+	}
+	applyAttemptBindingToBoardRow(&row, attempt)
+	reconcileTerminalNodeBoardRow(
+		view, execution, node, &row,
+		time.Date(2026, 7, 26, 15, 0, 0, 0, time.UTC),
+	)
+	if row.Status != "running" || row.TerminalReason != "" {
+		t.Fatalf("future retry reconciled node row = %#v", row)
+	}
+	reconcileTerminalNodeBoardRow(view, execution, node, &row, node.RetryAt)
+
+	if row.Status != "failed" || row.TerminalReason != "provider_rejected" ||
+		row.AccountingAvailable || row.IncidentID != "incident-terminal-reconcile" ||
+		row.FailureDiagnosticAvailable || row.FailureStage != "" || row.FailureCode != "" {
+		t.Fatalf("reconciled node row = %#v", row)
+	}
+	accounts := aggregateProviderAccountBoardRows(view, execution)
+	if len(accounts) != 1 || accounts[0].ActiveAttempts != 0 ||
+		accounts[0].ActiveAssignedBudgetUnits != 0 || accounts[0].FailedAttempts != 1 ||
+		accounts[0].AttemptCount != 1 || accounts[0].AccountingAttemptCount != 0 ||
+		accounts[0].UsageAttemptCount != 0 || accounts[0].CostAttemptCount != 0 {
+		t.Fatalf("reconciled Provider Account row = %#v", accounts)
+	}
+}
+
 func TestPhase2DProviderAccountCostsRemainSeparatedBySource(t *testing.T) {
 	execution := projection.TeamExecution{Nodes: []projection.TeamExecutionNode{{
 		LogicalNodeID: "main",
@@ -1137,6 +1222,54 @@ func TestReadPageReturnsJournalAuthoritativeTimelineAndReconnectsWithoutDuplicat
 		if len(seen) != 1 {
 			t.Fatalf("walk %d delivery count = %d, want 1", iteration, len(seen))
 		}
+	}
+}
+
+func TestTimelineHasMoreIncludesStreamsDiscoveredAfterPrimaryRead(t *testing.T) {
+	ctx := context.Background()
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		if _, err := store.Append(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 8, 22, 7, 30, 0, 0, time.UTC)
+	appendEvent(journal.Event{
+		ID: "event-team", StreamID: "team-execution/team-expanded", Seq: 1,
+		IdempotencyKey: "key-team", Type: "TeamExecutionPlanned", SchemaVersion: 1,
+		EmittedAt: base, PayloadJSON: []byte(`{}`),
+	})
+	appendEvent(journal.Event{
+		ID: "event-work", StreamID: "work-item/work-expanded", Seq: 1,
+		IdempotencyKey: "key-work", Type: "WorkItemReadyForReview", SchemaVersion: 1,
+		EmittedAt: base.Add(time.Second), PayloadJSON: []byte(`{}`),
+	})
+
+	primary, err := store.ReadPageAfterHeads(ctx, []journal.StreamHead{{
+		StreamID: "team-execution/team-expanded",
+	}}, 1)
+	if err != nil || primary.HasMore() {
+		t.Fatalf("primary page = %#v, %v", primary, err)
+	}
+	expandedHeads := append(primary.Heads(), journal.StreamHead{
+		StreamID: "work-item/work-expanded",
+	})
+	hasMore, err := timelineHasMore(
+		ctx, store, primary.HasMore(), expandedHeads,
+	)
+	if err != nil || !hasMore {
+		t.Fatalf("expanded continuation = %v, %v", hasMore, err)
+	}
+
+	expanded, err := store.ReadPageAfterHeads(ctx, expandedHeads, 1)
+	if err != nil || len(expanded.Events()) != 1 {
+		t.Fatalf("expanded page = %#v, %v", expanded, err)
+	}
+	hasMore, err = timelineHasMore(ctx, store, expanded.HasMore(), expanded.Heads())
+	if err != nil || hasMore {
+		t.Fatalf("exhausted continuation = %v, %v", hasMore, err)
 	}
 }
 
@@ -1691,6 +1824,7 @@ func TestAuthoritativeMappingAcceptsAttemptOnlyRejectionAndRejectsMalformedPrese
 
 func TestAuthoritativeKindVocabularyIsExact(t *testing.T) {
 	want := map[string]string{
+		"TeamExecutionReopened":         "team_reopened",
 		"TeamExecutionPlanned":          "team_planned",
 		"TeamNodeInitiallyBlocked":      "node_initially_blocked",
 		"TeamNodeAttemptScheduled":      "node_scheduled",

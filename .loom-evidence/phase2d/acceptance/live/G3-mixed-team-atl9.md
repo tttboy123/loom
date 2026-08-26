@@ -1,14 +1,18 @@
 # G3 — Mixed Provider Team (ATL9) installed-live
 
-Status: `PASS` (installed-live, real paid calls)
+Status: `PARTIAL LIVE / FOUR-DISTINCT-PROVIDER MATRIX DEFERRED`
 
 Date: 2026-08-16
+
+The evidence below remains valid Phase 2D history. The installed Codex/OpenAI +
+Claude/Anthropic + Loom/Kimi + Loom/MiniMax completion matrix moved to a later
+Phase on 2026-08-24; no future Phase is active yet.
 
 ## What was executed
 
 1. Built and installed the App (`scripts/build-loom-local-app.sh`,
    `scripts/install-loom-local-app.sh`), started it, daemon online at
-   `/Users/lune/Library/Application Support/Loom/run/loomd.sock` with the Pi
+   the private Loom daemon Socket with the Pi
    runtime and **no local GGUF model** (`--local-model-*` absent).
 2. Credential Vault unlocked; DeepSeek + MiniMax broker accounts verified from
    the installed Credential Vault.
@@ -25,7 +29,7 @@ Date: 2026-08-16
      calls; per-Agent Vault lease + frozen execution binding.
    - `setup_snapshot` accounting rows verified (deepseek/minimax/zhipu).
 
-## Result
+## Observed result
 
 ```
 confirmed: team=team-live-mixed-20260816T125750Z status=active
@@ -37,6 +41,11 @@ account deepseek status=verified revision=2
 account minimax status=verified revision=2
 --- PASS: TestLiveMixedProviderTeamE2E (3.22s)
 ```
+
+The test process passed its bounded two-Provider assertions, but the Mission
+was observed only at `running`; this is not evidence that the Phase 2D G3
+completion criterion passed. A completed Build-specific four-Provider Team
+remains required by the live acceptance ledger.
 
 ## Fixes that unblocked this gate (V33)
 

@@ -3,6 +3,7 @@ package api
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"loom-pi-rebuild/internal/projection"
 )
@@ -57,42 +58,35 @@ type LocalProductMissionSummary struct {
 	AttentionCount     int                        `json:"attention_count"`
 	CurrentNodeID      string                     `json:"current_node_id"`
 	LastMilestone      string                     `json:"last_milestone"`
+	BlockReason        string                     `json:"block_reason,omitempty"`
 	TeamPulse          []LocalProductMissionPulse `json:"team_pulse"`
 	Topology           []LocalProductMissionNode  `json:"topology"`
 }
 
 func buildLocalProductMissionPage(
 	view projection.GlobalReadView,
-	executions []projection.TeamExecution,
-	limit int,
+	rows []projection.TeamRow,
 	sourceHasMore bool,
 ) ([]LocalProductMissionSummary, LocalProductPageCursor) {
-	ordered := append([]projection.TeamExecution(nil), executions...)
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].TeamInstanceID < ordered[j].TeamInstanceID
-	})
-	hasMore := sourceHasMore || len(ordered) > limit
-	if len(ordered) > limit {
-		ordered = ordered[:limit]
+	page := LocalProductPageCursor{HasMore: sourceHasMore}
+	if len(rows) > 0 {
+		page.NextCursor = rows[len(rows)-1].TeamInstanceID
 	}
-	missions := make([]LocalProductMissionSummary, 0, len(ordered))
-	for _, execution := range ordered {
-		missions = append(missions, buildLocalProductMission(view, execution))
+	missions := make([]LocalProductMissionSummary, 0, len(rows))
+	for _, row := range rows {
+		if !row.ExecutionAvailable {
+			continue
+		}
+		missions = append(missions, buildLocalProductMission(view, row.Execution))
 	}
-	return missions, localProductPageCursor(
-		missions,
-		hasMore,
-		func(record LocalProductMissionSummary) string {
-			return record.MissionID
-		},
-	)
+	return missions, page
 }
 
 func buildLocalProductMission(
 	view projection.GlobalReadView,
 	execution projection.TeamExecution,
 ) LocalProductMissionSummary {
-	status := missionStatus(execution)
+	status := reconciledMissionStatus(view, execution)
 	lane := missionLaneForStatus(status, execution.Status != "")
 	title := "Historical mission"
 	sourceKind := "historical_execution_only"
@@ -117,6 +111,7 @@ func buildLocalProductMission(
 		TeamPulse:      make([]LocalProductMissionPulse, 0, len(execution.Nodes)),
 		Topology:       make([]LocalProductMissionNode, 0, len(execution.Nodes)),
 		LastMilestone:  humanMissionMilestone(status),
+		BlockReason:    localProductMissionBlockReason(view, execution),
 	}
 	for _, node := range execution.Nodes {
 		state := missionPulseState(node.Status)
@@ -170,6 +165,127 @@ func buildLocalProductMission(
 	return mission
 }
 
+// localProductMissionBlockReason surfaces why a Mission is blocked so the
+// board card can tell the user the concrete reason (for example
+// context_retrieval_denied) instead of only "Blocked". It prefers the
+// blocked node's initial block reason, then the current attempt's terminal
+// reason, then any terminal attempt reason, then the terminal Run reason
+// recorded in the projection (read-model fallback for a node the coordinator
+// never marked terminal).
+func localProductMissionBlockReason(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+) string {
+	for _, node := range execution.Nodes {
+		if node.Status != "blocked" {
+			continue
+		}
+		if node.InitialBlockReason != "" {
+			return node.InitialBlockReason
+		}
+		if reason := projectedNodeTerminalReason(view, execution, node); reason != "" {
+			return reason
+		}
+	}
+	// A node the projection still marks "running" or "awaiting_recovery" whose
+	// current attempt Run is already terminal (reconciled as failed/cancelled)
+	// also surfaces its terminal reason so the board card can tell the user
+	// what happened.
+	for _, node := range execution.Nodes {
+		if node.Status != "running" && node.Status != "awaiting_recovery" {
+			continue
+		}
+		if reason := projectedNodeTerminalReason(view, execution, node); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+func projectedNodeTerminalReason(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+	node projection.TeamExecutionNode,
+) string {
+	if attempt, ok := findProjectedAttempt(
+		execution, node.LogicalNodeID, node.CurrentAttempt,
+	); ok {
+		if attempt.TerminalReason != "" {
+			return attempt.TerminalReason
+		}
+		if run, runOK := view.Run(attempt.RunID); runOK &&
+			run.TerminalReason != "" {
+			return run.TerminalReason
+		}
+	}
+	for _, attempt := range node.Attempts {
+		if attempt.TerminalReason != "" {
+			return attempt.TerminalReason
+		}
+		if run, runOK := view.Run(attempt.RunID); runOK &&
+			run.TerminalReason != "" {
+			return run.TerminalReason
+		}
+	}
+	return ""
+}
+
+// reconciledMissionStatus is a read-model-only correction for a Mission the
+// projection still marks "running" even though every running node's current
+// attempt Run is already terminal (failed/cancelled) and no retry is
+// scheduled. This can happen when the daemon is interrupted between committing
+// a Run terminal and the coordinator recording TeamNodeAttemptTerminal. It
+// never writes the journal; it reflects terminal Run facts already in the
+// projection. A terminal SUCCEEDED run without the coordinator record is kept
+// "running" because the verification/acceptance chain has not completed.
+func reconciledMissionStatus(
+	view projection.GlobalReadView,
+	execution projection.TeamExecution,
+) string {
+	status := missionStatus(execution)
+	if status != "running" && status != "awaiting_recovery" {
+		return status
+	}
+	terminal := ""
+	for _, node := range execution.Nodes {
+		// A node the projection still marks "running" or "awaiting_recovery"
+		// whose current attempt Run is terminal, with no future retry
+		// scheduled (and no retry that is still due), reflects the terminal
+		// Run outcome. This covers interrupted daemons (Run terminal before
+		// TeamNodeAttemptTerminal) and pre-fix recovery records whose retry
+		// time passed without a new attempt.
+		if node.Status != "running" && node.Status != "awaiting_recovery" {
+			continue
+		}
+		if node.CurrentAttempt <= 0 {
+			return status
+		}
+		if !node.RetryAt.IsZero() && node.RetryAt.After(time.Now()) {
+			return status
+		}
+		attempt, ok := findProjectedAttempt(
+			execution, node.LogicalNodeID, node.CurrentAttempt,
+		)
+		if !ok {
+			return status
+		}
+		run, runOK := view.Run(attempt.RunID)
+		if !runOK || run.TerminalStatus == "" {
+			return status
+		}
+		if run.TerminalStatus == "succeeded" {
+			return status
+		}
+		if terminal == "" {
+			terminal = run.TerminalStatus
+		}
+	}
+	if terminal != "" {
+		return terminal
+	}
+	return status
+}
+
 func missionStatus(execution projection.TeamExecution) string {
 	if execution.Status == "pending" {
 		return "planned"
@@ -177,6 +293,7 @@ func missionStatus(execution projection.TeamExecution) string {
 	for _, preferred := range []string{
 		"human_required",
 		"blocked",
+		"awaiting_recovery",
 		"ready_for_review",
 		"retry_scheduled",
 		"fallback_scheduled",
@@ -230,7 +347,7 @@ func missionPulseState(status string) string {
 	switch status {
 	case "pending":
 		return "ready"
-	case "running", "retry_scheduled", "fallback_scheduled":
+	case "running", "retry_scheduled", "fallback_scheduled", "awaiting_recovery":
 		return "working"
 	case "ready_for_review":
 		return "review"

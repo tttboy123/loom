@@ -111,13 +111,22 @@ func (systemHarnessSessionRunner) StartSession(
 }
 
 func validHarnessSessionRequest(request HarnessSessionRequest) bool {
+	if request.Timeout <= 0 || request.Timeout > 24*time.Hour {
+		return false
+	}
+	validationTimeout := request.Timeout
+	if validationTimeout > 15*time.Minute {
+		// Command requests are deliberately short-lived. A persistent Segment
+		// process has a separate, bounded lifetime and may remain open longer.
+		validationTimeout = 15 * time.Minute
+	}
 	return validHarnessCommandRequest(HarnessCommandRequest{
 		ExecutablePath: request.ExecutablePath,
 		Arguments:      request.Arguments,
 		Environment:    request.Environment,
 		Directory:      request.Directory,
 		MaxOutputBytes: request.MaxOutputBytes,
-		Timeout:        request.Timeout,
+		Timeout:        validationTimeout,
 	})
 }
 
@@ -275,11 +284,9 @@ func (session *systemHarnessStreamSession) readStdout(
 	defer stdout.Close()
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 4096), maximum+1)
-	total := 0
 	for scanner.Scan() {
 		line := bytes.Clone(scanner.Bytes())
-		total += len(line) + 1
-		if len(line) == 0 || len(line) > maximum || total > maximum ||
+		if len(line) == 0 || len(line) > maximum ||
 			!utf8.Valid(line) || bytes.IndexByte(line, 0) >= 0 {
 			zeroHarnessBytes(line)
 			session.setStreamError(ErrHarnessProcessUnavailable)

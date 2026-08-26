@@ -1992,7 +1992,9 @@ func TestModelRendersEveryBoundedScreenAndTeamTimelineInteraction(
 		{ScreenBoard, "Delivery Team"},
 		{ScreenTeamBuilder, "What would you like"},
 		{ScreenRuns, "Work 1"},
-		{ScreenAttention, "review"},
+		// The fixture's attention item sits on a non-executable Team whose
+		// Mission is Complete, so it renders in the history section.
+		{ScreenAttention, "history"},
 		{ScreenTimeline, "Choose a task"},
 	} {
 		model.screenIndex = indexOfScreen(test.screen)
@@ -2334,6 +2336,7 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 		ScreenAssets,
 		ScreenQueue,
 		ScreenWorkers,
+		ScreenRoundtable,
 		ScreenIntegration,
 		ScreenPermissions,
 		ScreenExecution,
@@ -2345,13 +2348,15 @@ func TestModelNavigatesAllReadScreensAndNeverCreatesMutationCommand(t *testing.T
 	for _, want := range wantScreens {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 		if cmd != nil && want != ScreenAssets && want != ScreenQueue &&
-			want != ScreenWorkers && want != ScreenIntegration &&
+			want != ScreenWorkers && want != ScreenRoundtable &&
+			want != ScreenIntegration &&
 			want != ScreenExecution && want != ScreenProduction &&
 			want != ScreenAttention {
 			t.Fatalf("screen navigation produced command for %s", want)
 		}
 		if cmd == nil && (want == ScreenAssets || want == ScreenQueue ||
-			want == ScreenWorkers || want == ScreenIntegration ||
+			want == ScreenWorkers || want == ScreenRoundtable ||
+			want == ScreenIntegration ||
 			want == ScreenExecution || want == ScreenProduction ||
 			want == ScreenAttention) {
 			t.Fatalf("%s navigation omitted read IPC refresh", want)
@@ -3243,5 +3248,68 @@ func TestModelTeamBuilderAnswersAndMasksCredentialEntry(t *testing.T) {
 	model = updated.(Model)
 	if client.credentials != 1 {
 		t.Fatalf("credential calls = %d", client.credentials)
+	}
+}
+
+func TestMissionBoardRowStatusLeadsWithHumanizedOutcome(t *testing.T) {
+	// A finished Mission sits in the Complete lane with a terminal outcome;
+	// "Complete · Failed" reads contradictory, so the row should lead with
+	// the humanized outcome, mirroring the macOS App.
+	if got := missionBoardRowStatus("Complete", "failed"); got != "Failed" {
+		t.Fatalf("Complete/failed = %q, want %q", got, "Failed")
+	}
+	if got := missionBoardRowStatus("Complete", "blocked"); got != "Blocked" {
+		t.Fatalf("Complete/blocked = %q, want %q", got, "Blocked")
+	}
+	if got := missionBoardRowStatus("Complete", "succeeded"); got != "Succeeded" {
+		t.Fatalf("Complete/succeeded = %q, want %q", got, "Succeeded")
+	}
+	// Active lanes keep both lane and state.
+	if got := missionBoardRowStatus("Orchestrating", "running"); got != "Orchestrating · Running" {
+		t.Fatalf("Orchestrating/running = %q", got)
+	}
+	if got := missionBoardRowStatus("Review", "blocked"); got != "Review · Blocked" {
+		t.Fatalf("Review/blocked = %q", got)
+	}
+	if got := missionBoardRowStatus("Proposed", ""); got != "Proposed" {
+		t.Fatalf("Proposed/empty = %q", got)
+	}
+	if got := missionBoardRowStatus("", "failed"); got != "Failed" {
+		t.Fatalf("empty/failed = %q", got)
+	}
+}
+
+func TestAttentionActionTitleHumanizesRawCodes(t *testing.T) {
+	// Mirror the macOS App's attentionActionTitle: prefer action_required,
+	// fall back to kind, then to a generic prompt.
+	if got := attentionActionTitle("inspect_failure", "verification_failed"); got != "Inspect failure" {
+		t.Fatalf("action_required = %q, want %q", got, "Inspect failure")
+	}
+	if got := attentionActionTitle("", "blocked"); got != "Blocked" {
+		t.Fatalf("kind fallback = %q, want %q", got, "Blocked")
+	}
+	if got := attentionActionTitle("", ""); got != "Needs your attention" {
+		t.Fatalf("empty = %q, want %q", got, "Needs your attention")
+	}
+}
+
+func TestCountActionableAttentionMatchesAppSemantics(t *testing.T) {
+	teams := []api.LocalProductTeamSummary{
+		{TeamInstanceID: "team-exec", Executable: true},
+		{TeamInstanceID: "team-historical", Executable: true},
+		{TeamInstanceID: "team-archived", Executable: false},
+	}
+	missions := []api.LocalProductMissionSummary{
+		{TeamInstanceID: "team-exec", Lane: "Orchestrating"},
+		{TeamInstanceID: "team-historical", Lane: "Complete"},
+		{TeamInstanceID: "team-archived", Lane: "Orchestrating"},
+	}
+	attention := []api.AttentionItem{
+		{AttentionID: "a1", TeamInstanceID: "team-exec"},
+		{AttentionID: "a2", TeamInstanceID: "team-historical"},
+		{AttentionID: "a3", TeamInstanceID: "team-archived"},
+	}
+	if got := countActionableAttention(teams, missions, attention); got != 1 {
+		t.Fatalf("countActionableAttention = %d, want 1", got)
 	}
 }

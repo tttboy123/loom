@@ -1,0 +1,6 @@
+composer frame: (259,805 810x16)
+set value err=0
+composer value now: '是否已显示回复确认：2+2等于几？'
+send button frame: (1091,791 40x40) enabled=true title='' desc='Send message'
+clicked send button
+composer value after send: ''

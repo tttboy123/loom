@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"loom-pi-rebuild/internal/api"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/projection"
@@ -173,6 +174,53 @@ func TestConversationProfileRouterUsesExactVerifiedDeepSeekRevision(t *testing.T
 	}
 }
 
+func TestConversationProfileRouterUsesExactSameProviderAccountRevision(t *testing.T) {
+	leasing := &profileConversationLeaseRecorder{}
+	records := []projection.ProviderCredentialRecord{
+		{
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+			CredentialReference: "credential-ref-deepseek-primary",
+			Revision:            7, Status: "verified", AuthMode: "brokered",
+		},
+		{
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.secondary",
+			CredentialReference: "credential-ref-deepseek-secondary",
+			Revision:            7, Status: "verified", AuthMode: "brokered",
+		},
+	}
+	router, err := newProductConversationProfileRouter(
+		nil,
+		func(providerID string) []projection.ProviderCredentialRecord {
+			if providerID != "deepseek" {
+				return nil
+			}
+			return records
+		},
+		leasing,
+		&profileDeepSeekClient{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := provider.DeepSeekConversationAccountProfileID("deepseek.secondary", 7)
+	response, err := router.Respond(
+		context.Background(), api.LocalProductConversationRequest{
+			ThreadID: "thread-secondary", ProfileID: profileID,
+			Messages: []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+		},
+	)
+	if err != nil || response.Content != "DeepSeek reply" || leasing.calls != 1 ||
+		leasing.identity.ProviderID != "deepseek" ||
+		leasing.identity.ProviderAccountID != "deepseek.secondary" ||
+		leasing.identity.CredentialReference != "credential-ref-deepseek-secondary" ||
+		leasing.identity.CredentialRevision != 7 {
+		t.Fatalf(
+			"response=%#v error=%v lease=%#v calls=%d",
+			response, err, leasing.identity, leasing.calls,
+		)
+	}
+}
+
 func TestConversationContextTargetFreezesExactDeepSeekAccountModelAndPolicy(t *testing.T) {
 	policy, err := work.NewProviderAccountPolicy(work.ProviderAccountPolicyInput{
 		Version: 2, ProviderID: "deepseek", ProviderAccountID: "deepseek.work",
@@ -196,7 +244,7 @@ func TestConversationContextTargetFreezesExactDeepSeekAccountModelAndPolicy(t *t
 		func(providerID, accountID string) (work.ProviderAccountPolicy, bool) {
 			return policy, providerID == "deepseek" && accountID == "deepseek.work"
 		},
-		&profileConversationLeaseRecorder{}, &profileDeepSeekClient{}, true, nil,
+		&profileConversationLeaseRecorder{}, &profileDeepSeekClient{}, true, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +252,7 @@ func TestConversationContextTargetFreezesExactDeepSeekAccountModelAndPolicy(t *t
 	target, err := router.ResolveConversationContextTarget(
 		context.Background(), "conversation-one", "segment-2",
 		provider.DeepSeekConversationAccountProfileID("deepseek.work", 7),
+		provider.DeepSeekConversationModelID,
 	)
 	if err != nil || target.ConversationID != "conversation-one" ||
 		target.RoleID != "segment-2" || target.ProviderID != "deepseek" ||
@@ -218,6 +267,7 @@ func TestConversationContextTargetFreezesExactDeepSeekAccountModelAndPolicy(t *t
 	if _, err := router.ResolveConversationContextTarget(
 		context.Background(), "conversation-one", "segment-2",
 		provider.DeepSeekConversationAccountProfileID("deepseek.primary", 7),
+		provider.DeepSeekConversationModelID,
 	); !errors.Is(err, api.ErrLocalProductChatUnavailable) {
 		t.Fatalf("wrong account profile error = %v", err)
 	}
@@ -362,13 +412,13 @@ func TestConversationProfileRouterFreezesAndRevalidatesExactAccountPolicy(t *tes
 			return current, current.ProviderID() == providerID &&
 				current.ProviderAccountID() == accountID
 		},
-		leasing, client, true, nil,
+		leasing, client, true, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding, err := router.ResolveConversationExecutionBinding(
-		context.Background(), profileID,
+		context.Background(), profileID, provider.DeepSeekConversationModelID,
 	)
 	if err != nil || binding.ProviderAccountPolicyVersion != 2 ||
 		binding.ProviderAccountPolicyRevision != 4 ||
@@ -662,7 +712,7 @@ func TestConversationProfileRouterUsesExactKimiAndMiniMaxRevision(t *testing.T) 
 	}
 }
 
-func TestConversationProfileRouterKeepsLegacyCodexFallbackExplicit(t *testing.T) {
+func TestConversationProfileRouterRequiresExplicitCodexProfile(t *testing.T) {
 	calls := 0
 	defaultResponder := profileConversationResponderFunc(func(
 		context.Context,
@@ -682,17 +732,44 @@ func TestConversationProfileRouterKeepsLegacyCodexFallbackExplicit(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, profileID := range []string{"", provider.CodexConversationProfileID} {
-		response, err := router.Respond(context.Background(), api.LocalProductConversationRequest{
-			ThreadID: "thread-codex", ProfileID: profileID,
-			Messages: []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
-		})
-		if err != nil || response.Content != "Codex reply" {
-			t.Fatalf("profile=%q response=%#v error=%v", profileID, response, err)
-		}
+	if _, err := router.Respond(context.Background(), api.LocalProductConversationRequest{
+		ThreadID: "thread-codex", ProfileID: "",
+		Messages: []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+	}); !errors.Is(err, api.ErrLocalProductChatUnavailable) {
+		t.Fatalf("blank profile error = %v", err)
 	}
-	if calls != 2 {
+	if _, err := router.ResolveConversationExecutionBinding(
+		context.Background(), "", "",
+	); !errors.Is(err, api.ErrLocalProductChatUnavailable) {
+		t.Fatalf("blank binding error = %v", err)
+	}
+	response, err := router.Respond(context.Background(), api.LocalProductConversationRequest{
+		ThreadID: "thread-codex", ProfileID: provider.CodexConversationProfileID,
+		Messages: []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil || response.Content != "Codex reply" {
+		t.Fatalf("explicit Codex response=%#v error=%v", response, err)
+	}
+	if calls != 1 {
 		t.Fatalf("default calls = %d", calls)
+	}
+}
+
+func TestConversationProfileRouterRequiresExplicitPiProfile(t *testing.T) {
+	router := &productConversationProfileRouter{
+		defaultResponder: &productPiConversationResponder{},
+	}
+	binding, err := router.ResolveConversationExecutionBinding(
+		context.Background(), provider.PiConversationProfileID, "",
+	)
+	if err != nil || binding.ProviderID != "loom-local" ||
+		binding.SchemaVersion != 4 || binding.HarnessAdapter != "pi" {
+		t.Fatalf("Pi binding = %#v, %v", binding, err)
+	}
+	if _, err := router.ResolveConversationExecutionBinding(
+		context.Background(), "", "",
+	); !errors.Is(err, api.ErrLocalProductChatUnavailable) {
+		t.Fatalf("blank Pi binding error = %v", err)
 	}
 }
 
@@ -710,24 +787,35 @@ func profileConversationLeasing(
 	return leasing
 }
 
-func TestConversationProfileRouterRoutesOpenCodeProfileToDefaultResponder(t *testing.T) {
-	calls := 0
+func TestConversationProfileRouterRoutesOpenCodeProfileToDedicatedResponder(t *testing.T) {
+	defaultCalls := 0
+	openCodeCalls := 0
 	var gotModelID string
 	defaultResponder := profileConversationResponderFunc(func(
+		context.Context,
+		api.LocalProductConversationRequest,
+	) (api.LocalProductConversationResponse, error) {
+		defaultCalls++
+		return api.LocalProductConversationResponse{}, errors.New("default responder must not serve OpenCode")
+	})
+	openCodeResponder := profileConversationResponderFunc(func(
 		_ context.Context,
 		request api.LocalProductConversationRequest,
 	) (api.LocalProductConversationResponse, error) {
-		calls++
+		openCodeCalls++
 		gotModelID = request.ModelID
 		return api.LocalProductConversationResponse{Content: "OpenCode reply", Tentative: true}, nil
 	})
-	router, err := newProductConversationProfileRouter(
+	router, err := newProductConversationProfileRouterWithPolicy(
 		defaultResponder,
 		func(string) []projection.ProviderCredentialRecord {
 			return nil
 		},
+		func(string, string) (work.ProviderAccountPolicy, bool) {
+			return work.ProviderAccountPolicy{}, false
+		},
 		profileConversationLeasing(t, &profileConversationStore{secret: []byte("unused")}),
-		&profileDeepSeekClient{},
+		&profileDeepSeekClient{}, false, openCodeResponder, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -735,12 +823,16 @@ func TestConversationProfileRouterRoutesOpenCodeProfileToDefaultResponder(t *tes
 	response, err := router.Respond(context.Background(), api.LocalProductConversationRequest{
 		ThreadID:  "thread-opencode",
 		ProfileID: provider.OpenCodeConversationProfileID,
-		ModelID:   "deepseek/deepseek-chat",
+		ModelID:   provider.OpenCodeConversationDefaultModel,
 		Messages:  []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
 	})
 	if err != nil || response.Content != "OpenCode reply" || !response.Tentative ||
-		calls != 1 || gotModelID != "deepseek/deepseek-chat" {
-		t.Fatalf("response=%#v error=%v calls=%d model=%q", response, err, calls, gotModelID)
+		defaultCalls != 0 || openCodeCalls != 1 ||
+		gotModelID != provider.OpenCodeConversationDefaultModel {
+		t.Fatalf(
+			"response=%#v error=%v default_calls=%d opencode_calls=%d model=%q",
+			response, err, defaultCalls, openCodeCalls, gotModelID,
+		)
 	}
 }
 
@@ -763,13 +855,17 @@ func TestConversationProfileRouterResolvesOpenCodeBinding(t *testing.T) {
 	}
 	binding, err := router.ResolveConversationExecutionBinding(
 		context.Background(), provider.OpenCodeConversationProfileID,
+		provider.OpenCodeConversationDefaultModel,
 	)
-	if err != nil || binding.SchemaVersion != 3 || binding.ProviderID != "opencode" {
+	if err != nil || binding.SchemaVersion != 4 || binding.ProviderID != "opencode" ||
+		binding.HarnessAdapter != "opencode" ||
+		binding.ModelID != provider.OpenCodeConversationDefaultModel {
 		t.Fatalf("binding=%#v error=%v", binding, err)
 	}
 	target, err := router.ResolveConversationContextTarget(
 		context.Background(), "conversation-opencode", "segment-1",
 		provider.OpenCodeConversationProfileID,
+		provider.OpenCodeConversationDefaultModel,
 	)
 	if err != nil || target.ConversationID != "conversation-opencode" ||
 		target.ProviderID != "opencode" || target.AuthMode != "native_auth" ||
@@ -779,28 +875,106 @@ func TestConversationProfileRouterResolvesOpenCodeBinding(t *testing.T) {
 	}
 }
 
+func TestConversationProfileRouterRoutesNativeClaudeCodeWithoutCredentialLease(
+	t *testing.T,
+) {
+	lease := &profileConversationLeaseRecorder{}
+	claudeCalls := 0
+	var got api.LocalProductConversationRequest
+	router, err := newProductConversationProfileRouterWithPolicy(
+		profileConversationResponderFunc(func(
+			context.Context,
+			api.LocalProductConversationRequest,
+		) (api.LocalProductConversationResponse, error) {
+			return api.LocalProductConversationResponse{}, errors.New("unexpected default responder")
+		}),
+		func(string) []projection.ProviderCredentialRecord { return nil },
+		func(string, string) (work.ProviderAccountPolicy, bool) {
+			return work.ProviderAccountPolicy{}, false
+		},
+		lease, &profileDeepSeekClient{}, true, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.claudeCodeResponder = profileConversationResponderFunc(func(
+		_ context.Context,
+		request api.LocalProductConversationRequest,
+	) (api.LocalProductConversationResponse, error) {
+		claudeCalls++
+		got = request
+		return api.LocalProductConversationResponse{
+			Content: "Claude Code reply", Tentative: true,
+		}, nil
+	})
+	binding, err := router.ResolveConversationExecutionBinding(
+		context.Background(), provider.ClaudeCodeConversationProfileID,
+		provider.AnthropicConversationModelID,
+	)
+	if err != nil || binding.SchemaVersion != 4 ||
+		binding.HarnessAdapter != "claude-code" || binding.ProviderID != "anthropic" ||
+		binding.ProviderAccountID != "" || binding.CredentialRevision != 0 ||
+		binding.ModelID != provider.AnthropicConversationModelID {
+		t.Fatalf("Claude Code binding=%#v error=%v", binding, err)
+	}
+	target, err := router.ResolveConversationContextTarget(
+		context.Background(), "conversation-claude", "segment-1",
+		provider.ClaudeCodeConversationProfileID,
+		provider.AnthropicConversationModelID,
+	)
+	if err != nil || target.ProviderID != "anthropic" ||
+		target.ProviderAccountID != "" || target.AuthMode != "native_auth" ||
+		target.ContextAdapterID != "context:claude-code:v1" {
+		t.Fatalf("Claude Code target=%#v error=%v", target, err)
+	}
+	response, err := router.Respond(
+		context.Background(), api.LocalProductConversationRequest{
+			ThreadID: "thread-claude", ProfileID: provider.ClaudeCodeConversationProfileID,
+			ModelID:          provider.AnthropicConversationModelID,
+			ExecutionBinding: &binding,
+			Messages:         []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+		},
+	)
+	if err != nil || response.Content != "Claude Code reply" || !response.Tentative ||
+		claudeCalls != 1 || got.ExecutionBinding == nil ||
+		*got.ExecutionBinding != binding || lease.calls != 0 {
+		t.Fatalf(
+			"response=%#v error=%v calls=%d request=%#v lease_calls=%d",
+			response, err, claudeCalls, got, lease.calls,
+		)
+	}
+}
+
 func TestConversationProfileRouterPreservesSpecificResponderFailure(t *testing.T) {
-	defaultResponder := profileConversationResponderFunc(func(
+	openCodeResponder := profileConversationResponderFunc(func(
 		context.Context,
 		api.LocalProductConversationRequest,
 	) (api.LocalProductConversationResponse, error) {
 		return api.LocalProductConversationResponse{},
 			api.NewLocalProductConversationDispatchErrorWithDetails(
 				api.LocalProductConversationDispatchFailureInfo{
-					Code: "provider_auth", Stage: "provider_connect",
+					Code: "provider_auth", Stage: "provider_auth",
 					UserMessage: "The selected model requires a verified openai Provider credential.",
 					Retryable:   false,
 				},
 				errors.New("no credential"),
 			)
 	})
-	router, err := newProductConversationProfileRouter(
-		defaultResponder,
+	router, err := newProductConversationProfileRouterWithPolicy(
+		profileConversationResponderFunc(func(
+			context.Context,
+			api.LocalProductConversationRequest,
+		) (api.LocalProductConversationResponse, error) {
+			return api.LocalProductConversationResponse{}, errors.New("unexpected default responder")
+		}),
 		func(string) []projection.ProviderCredentialRecord {
 			return nil
 		},
+		func(string, string) (work.ProviderAccountPolicy, bool) {
+			return work.ProviderAccountPolicy{}, false
+		},
 		profileConversationLeasing(t, &profileConversationStore{secret: []byte("unused")}),
-		&profileDeepSeekClient{},
+		&profileDeepSeekClient{}, false, openCodeResponder, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -808,12 +982,85 @@ func TestConversationProfileRouterPreservesSpecificResponderFailure(t *testing.T
 	_, err = router.Respond(context.Background(), api.LocalProductConversationRequest{
 		ThreadID:  "thread-opencode-preserve",
 		ProfileID: provider.OpenCodeConversationProfileID,
-		ModelID:   "openai/gpt-5.5",
+		ModelID:   provider.OpenCodeConversationDefaultModel,
 		Messages:  []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
 	})
 	code, stage, retryable, ok := api.LocalProductConversationDispatchFailure(err)
-	if !ok || code != "provider_auth" || stage != "provider_connect" || retryable {
+	if !ok || code != "provider_auth" || stage != "provider_auth" || retryable {
 		t.Fatalf("error code=%s stage=%s retryable=%v ok=%v", code, stage, retryable, ok)
+	}
+}
+
+func TestConversationProfileRouterFreezesExactOpenCodeProviderAccount(t *testing.T) {
+	client := &openCodeResponderClientFixture{content: "OPENAI-ACCOUNT-OK"}
+	lease := &openCodeResponderLeaseFixture{}
+	records := []projection.ProviderCredentialRecord{
+		{
+			ProviderID: "openai", ProviderAccountID: "openai.primary",
+			CredentialReference: "credential-ref-openai-primary", Revision: 7,
+			Status: string(credentials.CredentialVerified), AuthMode: "brokered",
+		},
+		{
+			ProviderID: "openai", ProviderAccountID: "openai.team",
+			CredentialReference: "credential-ref-openai-team", Revision: 9,
+			Status: string(credentials.CredentialVerified), AuthMode: "brokered",
+		},
+	}
+	responder := &productOpenCodeConversationResponder{client: client, leases: lease}
+	defaultCalls := 0
+	router, err := newProductConversationProfileRouterWithPolicy(
+		profileConversationResponderFunc(func(
+			context.Context,
+			api.LocalProductConversationRequest,
+		) (api.LocalProductConversationResponse, error) {
+			defaultCalls++
+			return api.LocalProductConversationResponse{}, errors.New("default responder must not serve brokered OpenCode")
+		}),
+		func(providerID string) []projection.ProviderCredentialRecord {
+			if providerID != "openai" {
+				return nil
+			}
+			return records
+		},
+		func(string, string) (work.ProviderAccountPolicy, bool) {
+			return work.ProviderAccountPolicy{}, false
+		},
+		lease, &profileDeepSeekClient{}, true, responder, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := provider.OpenCodeConversationAccountProfileID(
+		"openai", "openai.team", 9,
+	)
+	binding, err := router.ResolveConversationExecutionBinding(
+		context.Background(), profileID, "openai/gpt-5.5",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := router.Respond(
+		context.Background(),
+		api.LocalProductConversationRequest{
+			ThreadID: "thread-opencode-openai-team", ProfileID: profileID,
+			ModelID: "openai/gpt-5.5", ExecutionBinding: &binding,
+			Messages: []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+		},
+	)
+	if err != nil || response.Content != "OPENAI-ACCOUNT-OK" || defaultCalls != 0 {
+		t.Fatalf("response=%#v error=%v default_calls=%d", response, err, defaultCalls)
+	}
+	if lease.identity.ProviderID != "openai" ||
+		lease.identity.ProviderAccountID != "openai.team" ||
+		lease.identity.CredentialReference != "credential-ref-openai-team" ||
+		lease.identity.CredentialRevision != 9 ||
+		client.envName != "OPENAI_API_KEY" {
+		t.Fatalf("identity=%#v env=%q", lease.identity, client.envName)
+	}
+	if binding.HarnessAdapter != "opencode" || binding.ProviderID != "openai" ||
+		binding.ProviderAccountID != "openai.team" ||
+		binding.CredentialRevision != 9 || binding.ModelID != "openai/gpt-5.5" {
+		t.Fatalf("binding=%#v", binding)
 	}
 }
 
@@ -838,7 +1085,7 @@ func TestConversationProfileRouterRoutesCodexToCodexResponder(t *testing.T) {
 		return api.LocalProductConversationResponse{Content: "Codex reply", Tentative: true}, nil
 	})
 	router, err := newProductConversationProfileRouterWithPolicy(
-		opencodeResponder,
+		nil,
 		func(string) []projection.ProviderCredentialRecord {
 			return nil
 		},
@@ -846,13 +1093,14 @@ func TestConversationProfileRouterRoutesCodexToCodexResponder(t *testing.T) {
 			return work.ProviderAccountPolicy{}, false
 		},
 		profileConversationLeasing(t, &profileConversationStore{secret: []byte("unused")}),
-		&profileDeepSeekClient{}, true, codexResponder,
+		&profileDeepSeekClient{}, true, opencodeResponder, codexResponder,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding := api.LocalProductConversationExecutionBinding{
-		SchemaVersion: 3, ProviderID: "openai",
+		SchemaVersion: 4, HarnessAdapter: "codex", ProviderID: "openai",
+		ModelID: "codex-default",
 	}
 	response, err := router.Respond(context.Background(), api.LocalProductConversationRequest{
 		ThreadID:         "thread-codex-router",
@@ -865,5 +1113,115 @@ func TestConversationProfileRouterRoutesCodexToCodexResponder(t *testing.T) {
 		opencodeCalls != 0 {
 		t.Fatalf("response=%#v err=%v codexCalls=%d opencodeCalls=%d",
 			response, err, codexCalls, opencodeCalls)
+	}
+}
+
+func TestConversationProfileRouterFreezesExplicitCodexModels(t *testing.T) {
+	router := &productConversationProfileRouter{}
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.5", "gpt-5.4-mini"} {
+		t.Run(modelID, func(t *testing.T) {
+			binding, err := router.ResolveConversationExecutionBinding(
+				context.Background(), provider.CodexConversationProfileID, modelID,
+			)
+			if err != nil || binding.HarnessAdapter != "codex" ||
+				binding.ProviderID != "openai" || binding.ModelID != modelID {
+				t.Fatalf("binding=%#v error=%v", binding, err)
+			}
+			target, err := router.ResolveConversationContextTarget(
+				context.Background(), "thread-codex-model", "segment-1",
+				provider.CodexConversationProfileID, modelID,
+			)
+			if err != nil || target.ProviderID != "openai" || target.ModelID != modelID {
+				t.Fatalf("target=%#v error=%v", target, err)
+			}
+		})
+	}
+	for _, invalid := range []string{"deepseek-v4-flash", "deepseek/deepseek-v4-flash", "unknown-model"} {
+		if _, err := router.ResolveConversationExecutionBinding(
+			context.Background(), provider.CodexConversationProfileID, invalid,
+		); !errors.Is(err, api.ErrLocalProductChatUnavailable) {
+			t.Fatalf("invalid model %q error = %v", invalid, err)
+		}
+	}
+}
+
+func TestProductConversationCapacityUsesExactProviderAndModelCatalogKeys(t *testing.T) {
+	router := &productConversationProfileRouter{}
+	for _, test := range []struct {
+		name       string
+		providerID string
+		modelID    string
+		status     contextcapsule.CapacityStatus
+		window     int
+		reserved   int
+		overhead   int
+	}{
+		{name: "deepseek v4 flash", providerID: "deepseek", modelID: "deepseek-v4-flash", status: contextcapsule.CapacityEstimated, window: 1_000_000, reserved: 384_000, overhead: 1_024},
+		{name: "deepseek v4 pro", providerID: "deepseek", modelID: "deepseek-v4-pro", status: contextcapsule.CapacityEstimated, window: 1_000_000, reserved: 384_000, overhead: 1_024},
+		{name: "anthropic sonnet 5", providerID: "anthropic", modelID: "claude-sonnet-5", status: contextcapsule.CapacityEstimated, window: 1_000_000, reserved: 128_000, overhead: 1_024},
+		{name: "openai sol", providerID: "openai", modelID: "gpt-5.6-sol", status: contextcapsule.CapacityEstimated, window: 1_050_000, reserved: 128_000, overhead: 1_024},
+		{name: "openai mini", providerID: "openai", modelID: "gpt-5.4-mini", status: contextcapsule.CapacityEstimated, window: 400_000, reserved: 128_000, overhead: 1_024},
+		{name: "uncertain deepseek alias", providerID: "deepseek", modelID: "deepseek-chat", status: contextcapsule.CapacityUnavailable},
+		{name: "missing minimax output ceiling", providerID: "minimax", modelID: "MiniMax-M3", status: contextcapsule.CapacityUnavailable},
+		{name: "missing kimi output ceiling", providerID: "kimi", modelID: "kimi-k2.6", status: contextcapsule.CapacityUnavailable},
+		{name: "provider model substitution", providerID: "deepseek", modelID: "gpt-5.6-sol", status: contextcapsule.CapacityUnavailable},
+		{name: "harness model alias is not provider capacity", providerID: "opencode", modelID: "deepseek/deepseek-v4-flash", status: contextcapsule.CapacityUnavailable},
+		{name: "unknown model", providerID: "anthropic", modelID: "claude-future", status: contextcapsule.CapacityUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := contextcapsule.Target{
+				ProviderID: test.providerID, ModelID: test.modelID,
+				AuthMode: "native_auth", TokenBudget: 8_192,
+			}
+			authority, counter, err := router.ResolveConversationContextCapacity(
+				context.Background(), target,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authority.Status != test.status ||
+				authority.ContextWindowTokens != test.window ||
+				authority.ReservedOutputTokens != test.reserved ||
+				authority.AdapterToolOverheadTokens != test.overhead ||
+				counter == nil || authority.TokenCounterID != counter.ID() ||
+				authority.TokenCounterVersion != counter.Version() {
+				t.Fatalf("authority=%#v counter=%#v", authority, counter)
+			}
+		})
+	}
+}
+
+func TestProductConversationCapacityCounterIsExplicitlyHeuristic(t *testing.T) {
+	router := &productConversationProfileRouter{}
+	authority, counter, err := router.ResolveConversationContextCapacity(
+		context.Background(),
+		contextcapsule.Target{
+			ProviderID: "deepseek", ModelID: "deepseek-v4-flash",
+			AuthMode: "native_auth", TokenBudget: 8_192,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.Status != contextcapsule.CapacityEstimated ||
+		counter.ID() != "loom-unicode-rune-quarter-estimate" ||
+		counter.Version() != "v1" ||
+		authority.TokenCounterID != counter.ID() ||
+		authority.TokenCounterVersion != counter.Version() {
+		t.Fatalf("authority=%#v counter=%#v", authority, counter)
+	}
+	for _, test := range []struct {
+		content string
+		want    int
+	}{
+		{content: "", want: 1},
+		{content: "abcd", want: 1},
+		{content: "abcde", want: 2},
+		{content: "你好世界", want: 1},
+	} {
+		got, countErr := counter.CountTokens([]byte(test.content))
+		if countErr != nil || got != test.want {
+			t.Fatalf("CountTokens(%q)=%d, %v want %d", test.content, got, countErr, test.want)
+		}
 	}
 }

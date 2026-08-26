@@ -10,7 +10,7 @@ func buildHarnessSystemPrompt(
 ) (string, error) {
 	tools := make([]prompting.ToolCapability, 0, 1)
 	switch binding.HarnessAdapter {
-	case ClaudeCodeAdapterType, CodexAdapterType:
+	case ClaudeCodeAdapterType, CodexAdapterType, OpenCodeAdapterType:
 		if containsHarnessCapability(binding.Capabilities, "workspace_edit") ||
 			containsHarnessCapability(
 				binding.Capabilities,

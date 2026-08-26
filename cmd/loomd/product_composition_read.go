@@ -19,6 +19,7 @@ type productReadRoute interface {
 	ReadLocalProductSnapshot(context.Context, api.LocalProductSnapshotRequest) (api.LocalProductSnapshot, error)
 	ReadLocalProductTimeline(context.Context, api.LocalProductTimelineRequest) (api.LocalProductTimelinePage, error)
 	ReadChatThread(context.Context, string) (api.LocalProductChatThread, error)
+	ReadChatContextDisclosure(context.Context, api.LocalProductChatContextDisclosureRequest) (api.LocalProductChatContextDisclosure, error)
 	DeleteChatThread(context.Context, string) error
 	SendChatMessage(context.Context, api.LocalProductChatMessageRequest) (api.LocalProductChatThread, error)
 	SetAgentAttemptDiagnosticSource(api.AgentAttemptDiagnosticSource) error
@@ -175,6 +176,21 @@ func (slot *productReadRouteSlot) ReadChatThread(
 		return api.LocalProductChatThread{}, api.ErrLocalProductChatUnavailable
 	}
 	return slot.routes.route.ReadChatThread(ctx, threadID)
+}
+
+func (slot *productReadRouteSlot) ReadChatContextDisclosure(
+	ctx context.Context,
+	request api.LocalProductChatContextDisclosureRequest,
+) (api.LocalProductChatContextDisclosure, error) {
+	if slot == nil {
+		return api.LocalProductChatContextDisclosure{}, api.ErrLocalProductChatUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return api.LocalProductChatContextDisclosure{}, api.ErrLocalProductChatUnavailable
+	}
+	return slot.routes.route.ReadChatContextDisclosure(ctx, request)
 }
 
 func (slot *productReadRouteSlot) DeleteChatThread(

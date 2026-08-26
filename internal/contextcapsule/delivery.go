@@ -89,6 +89,17 @@ func (coordinator *DeliveryCoordinator) Prepare(
 		ctx, coordinator.authority, callID, request.Sequence,
 	)
 	if err != nil {
+		// The Context call may already be dispatched in the Attempt-loop step
+		// while its fact lookup races (for example on a retried attempt reusing
+		// a deterministic Context call id). A dispatched Context call still
+		// needs a delivered fact for the step to finalize, so surface a bounded
+		// denied payload instead of failing the delivery (which previously
+		// stalled the attempt on an Attempt-loop conflict).
+		if denied, deniedErr := coordinator.writeBoundedDeniedPayload(
+			ctx, callID, request,
+		); deniedErr == nil {
+			return denied, nil
+		}
 		return attemptpayload.Payload{}, errors.Join(ErrInvalidContextDelivery, err)
 	}
 	pending, err := coordinator.store.ListPendingAttemptPayloads(
@@ -135,6 +146,18 @@ func (coordinator *DeliveryCoordinator) Prepare(
 	item, err := coordinator.retriever.Retrieve(ctx, proposal)
 	if err != nil {
 		item.Close()
+		// A bounded retrieval denial is a content-free tool result that the
+		// Attempt-loop still needs as a delivered payload fact; otherwise the
+		// step ends with an undispatched Context call and finalization fails
+		// with an Attempt-loop conflict (stalling the whole attempt).
+		if errors.Is(err, ErrContextRetrievalDenied) ||
+			errors.Is(err, ErrContextItemNotRetrievable) {
+			if denied, deniedErr := coordinator.writeBoundedDeniedPayload(
+				ctx, callID, request,
+			); deniedErr == nil {
+				return denied, nil
+			}
+		}
 		return attemptpayload.Payload{}, err
 	}
 	content, encodeErr := encode(proposal, item)
@@ -163,6 +186,34 @@ func (coordinator *DeliveryCoordinator) Prepare(
 		return attemptpayload.Payload{}, errors.Join(ErrInvalidContextDelivery, err)
 	}
 	return payload, nil
+}
+
+func (coordinator *DeliveryCoordinator) writeBoundedDeniedPayload(
+	ctx context.Context,
+	callID string,
+	request DeliveryRequest,
+) (attemptpayload.Payload, error) {
+	content := []byte(`{"error":"context_item_unavailable","message":"The requested context item is not available to this attempt. Answer directly using the objective and instructions already provided in this conversation."}`)
+	deniedDigest := sha256.Sum256(content)
+	deniedBinding := attemptpayload.Binding{
+		PayloadID: deterministicDeliveryPayloadID(coordinator.authority.Scope, callID, request),
+		Scope:     coordinator.authority.Scope,
+		CallID:    callID, Sequence: request.Sequence,
+		ContentType:   request.ContentType,
+		ContentDigest: hex.EncodeToString(deniedDigest[:]),
+	}
+	denied := attemptpayload.Payload{
+		Binding: deniedBinding, Status: attemptpayload.StatusPending, Content: content,
+	}
+	if putErr := coordinator.store.PutAttemptPayload(ctx, denied); putErr != nil {
+		denied.Close()
+		return attemptpayload.Payload{}, errors.Join(ErrInvalidContextDelivery, putErr)
+	}
+	if acceptErr := coordinator.facts.Accept(ctx, coordinator.authority, deniedBinding); acceptErr != nil {
+		denied.Close()
+		return attemptpayload.Payload{}, errors.Join(ErrInvalidContextDelivery, acceptErr)
+	}
+	return denied, nil
 }
 
 func (coordinator *DeliveryCoordinator) Acknowledge(

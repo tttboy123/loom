@@ -59,7 +59,42 @@ func (a *Adapter) RemoteToolKinds() []permissions.ToolKind {
 	if a == nil || a.remote == nil {
 		return nil
 	}
-	allowed := a.remote.AllowedRemoteTools()
+	return validRemoteToolKinds(a.remote.AllowedRemoteTools())
+}
+
+// RemoteToolKindsForScope projects only the tools available through the exact
+// Enrollment frozen by an Agent Attempt. A non-scoped executor cannot satisfy
+// a scoped request.
+func (a *Adapter) RemoteToolKindsForScope(scope RemoteToolScope) []permissions.ToolKind {
+	if a == nil || a.remote == nil || !validRemoteToolScope(scope) {
+		return nil
+	}
+	remote, ok := a.remote.(ScopedRemoteToolExecutor)
+	if !ok {
+		return nil
+	}
+	return validRemoteToolKinds(remote.AllowedRemoteToolsForScope(scope))
+}
+
+// RevalidateRemoteToolScope checks the exact frozen Enrollment immediately at
+// a result-commit boundary. It returns only controlled binding errors from the
+// scoped executor; remote result content is not part of this call.
+func (a *Adapter) RevalidateRemoteToolScope(
+	ctx context.Context,
+	scope RemoteToolScope,
+	proposal permissions.ProposedCall,
+) error {
+	if a == nil || a.remote == nil || ctx == nil || !validRemoteToolScope(scope) {
+		return ErrUnsupportedTool
+	}
+	remote, ok := a.remote.(ScopedRemoteToolExecutor)
+	if !ok {
+		return ErrUnsupportedTool
+	}
+	return remote.ValidateProposalForScope(ctx, scope, proposal)
+}
+
+func validRemoteToolKinds(allowed []permissions.ToolKind) []permissions.ToolKind {
 	result := make([]permissions.ToolKind, 0, len(allowed))
 	seen := make(map[permissions.ToolKind]bool, len(allowed))
 	for _, tool := range allowed {
@@ -75,13 +110,62 @@ func (a *Adapter) RemoteToolKinds() []permissions.ToolKind {
 	return result
 }
 
-func (a *Adapter) remoteToolEnabled(wanted permissions.ToolKind) bool {
-	for _, tool := range a.RemoteToolKinds() {
+func (a *Adapter) remoteToolKinds(ctx context.Context) []permissions.ToolKind {
+	if scope, scoped := remoteToolScopeFromContext(ctx); scoped {
+		return a.RemoteToolKindsForScope(scope)
+	}
+	return a.RemoteToolKinds()
+}
+
+func (a *Adapter) remoteToolEnabled(ctx context.Context, wanted permissions.ToolKind) bool {
+	for _, tool := range a.remoteToolKinds(ctx) {
 		if tool == wanted {
 			return true
 		}
 	}
 	return false
+}
+
+func (a *Adapter) validateRemoteProposal(
+	ctx context.Context,
+	proposal permissions.ProposedCall,
+) error {
+	if a == nil || a.remote == nil {
+		return ErrUnsupportedTool
+	}
+	if scope, scoped := remoteToolScopeFromContext(ctx); scoped {
+		remote, ok := a.remote.(ScopedRemoteToolExecutor)
+		if !ok {
+			return ErrUnsupportedTool
+		}
+		return remote.ValidateProposalForScope(ctx, scope, proposal)
+	}
+	return a.remote.ValidateProposal(proposal)
+}
+
+func (a *Adapter) revalidateScopedRemoteProposal(
+	ctx context.Context,
+	proposal permissions.ProposedCall,
+) error {
+	scope, scoped := remoteToolScopeFromContext(ctx)
+	if !scoped {
+		return nil
+	}
+	return a.RevalidateRemoteToolScope(ctx, scope, proposal)
+}
+
+func (a *Adapter) executeRemoteProposal(
+	ctx context.Context,
+	proposal permissions.ProposedCall,
+) ([]byte, error) {
+	if scope, scoped := remoteToolScopeFromContext(ctx); scoped {
+		remote, ok := a.remote.(ScopedRemoteToolExecutor)
+		if !ok {
+			return nil, ErrUnsupportedTool
+		}
+		return remote.ExecuteProposalContentForScope(ctx, scope, proposal)
+	}
+	return a.remote.ExecuteProposalContent(ctx, proposal)
 }
 
 // WithSandboxGate wires the Phase 3B sandbox policy gate. A nil gate (default)
@@ -521,13 +605,26 @@ func (a *Adapter) executeApproved(
 		sandboxStarted, ToolDiagnosticSucceeded, "", false,
 	)
 	bindingStarted := a.now().UTC()
-	worktree, err := a.resolver.Resolve(ctx, proposal.JobID)
-	if err != nil {
-		a.recordToolDiagnostic(
-			ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
-			bindingStarted, ToolDiagnosticFailed, "worktree_unavailable", true,
-		)
-		return a.fail(ctx, proposal, executionID, callDigest, generation, events, "worktree resolution failed", "worktree_unavailable")
+	// Remote (web/MCP) tool calls are brokered by the remote executor and do
+	// not touch the local worktree; only workspace-bound tools need it.
+	needsWorktree := proposal.Call.Tool != permissions.ToolWebSearch &&
+		proposal.Call.Tool != permissions.ToolWebFetch &&
+		proposal.Call.Tool != permissions.ToolMCPTool
+	var worktree string
+	if needsWorktree {
+		if bound, ok := attemptWorktreeFromContext(ctx, proposal.JobID); ok {
+			worktree = bound
+		} else {
+			resolved, resolveErr := a.resolver.Resolve(ctx, proposal.JobID)
+			if resolveErr != nil {
+				a.recordToolDiagnostic(
+					ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+					bindingStarted, ToolDiagnosticFailed, "worktree_unavailable", true,
+				)
+				return a.fail(ctx, proposal, executionID, callDigest, generation, events, "worktree resolution failed", "worktree_unavailable")
+			}
+			worktree = resolved
+		}
 	}
 	var editContent []byte
 	switch proposal.Call.Tool {
@@ -552,7 +649,13 @@ func (a *Adapter) executeApproved(
 		}
 		editContent = content
 	case permissions.ToolRead, permissions.ToolGrep:
-		if _, pathErr := secureRelativePath(proposal.Call.Path); pathErr != nil {
+		var pathErr error
+		if proposal.Call.Tool == permissions.ToolGrep {
+			_, pathErr = secureGrepRelativePath(proposal.Call.Path)
+		} else {
+			_, pathErr = secureRelativePath(proposal.Call.Path)
+		}
+		if pathErr != nil {
 			a.recordToolDiagnostic(
 				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
 				bindingStarted, ToolDiagnosticFailed, "path_outside_workspace", false,
@@ -575,7 +678,19 @@ func (a *Adapter) executeApproved(
 			}
 		}
 	case permissions.ToolWebSearch, permissions.ToolWebFetch, permissions.ToolMCPTool:
-		if !a.remoteToolEnabled(proposal.Call.Tool) || proposal.ResultCommitGate == nil {
+		validateErr := a.validateRemoteProposal(ctx, proposal.Call)
+		if errorCode := remoteToolFailureCode(validateErr); validateErr != nil &&
+			errorCode != "remote_tool_failed" {
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
+				bindingStarted, ToolDiagnosticFailed, errorCode, false,
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"remote tool binding unavailable", errorCode,
+			)
+		}
+		if !a.remoteToolEnabled(ctx, proposal.Call.Tool) || proposal.ResultCommitGate == nil {
 			a.recordToolDiagnostic(
 				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
 				bindingStarted, ToolDiagnosticFailed, "remote_tool_unavailable", false,
@@ -585,7 +700,7 @@ func (a *Adapter) executeApproved(
 				"remote tool unavailable", "remote_tool_unavailable",
 			)
 		}
-		if validateErr := a.remote.ValidateProposal(proposal.Call); validateErr != nil {
+		if validateErr != nil {
 			a.recordToolDiagnostic(
 				ctx, proposal, executionID, callDigest, ToolStageBindingValidation,
 				bindingStarted, ToolDiagnosticFailed, "invalid_remote_tool_call", false,
@@ -739,16 +854,17 @@ func (a *Adapter) executeApproved(
 			Content: grepResult.Content,
 		}
 	case permissions.ToolWebSearch, permissions.ToolWebFetch, permissions.ToolMCPTool:
-		content, remoteErr := a.remote.ExecuteProposalContent(ctx, proposal.Call)
+		content, remoteErr := a.executeRemoteProposal(ctx, proposal.Call)
 		if remoteErr != nil {
 			zeroExecutionBytes(content)
+			errorCode := remoteToolFailureCode(remoteErr)
 			a.recordToolDiagnostic(
 				ctx, proposal, executionID, callDigest, ToolStageResultValidation,
-				started, ToolDiagnosticFailed, "remote_tool_failed", true,
+				started, ToolDiagnosticFailed, errorCode, errorCode == "remote_tool_failed",
 			)
 			return a.fail(
 				ctx, proposal, executionID, callDigest, generation, events,
-				"remote tool failed", "remote_tool_failed",
+				"remote tool failed", errorCode,
 			)
 		}
 		if len(content) == 0 || len(content) > piCompatibleRemoteResultLimit ||
@@ -761,6 +877,18 @@ func (a *Adapter) executeApproved(
 			return a.fail(
 				ctx, proposal, executionID, callDigest, generation, events,
 				"remote result invalid", "remote_result_invalid",
+			)
+		}
+		if revalidateErr := a.revalidateScopedRemoteProposal(ctx, proposal.Call); revalidateErr != nil {
+			zeroExecutionBytes(content)
+			errorCode := remoteToolFailureCode(revalidateErr)
+			a.recordToolDiagnostic(
+				ctx, proposal, executionID, callDigest, ToolStageResultValidation,
+				started, ToolDiagnosticFailed, errorCode, errorCode == "remote_tool_failed",
+			)
+			return a.fail(
+				ctx, proposal, executionID, callDigest, generation, events,
+				"remote tool binding unavailable", errorCode,
 			)
 		}
 		result = ExecutionResult{
@@ -789,13 +917,23 @@ func (a *Adapter) executeApproved(
 				Content: result.Content,
 			},
 		); commitErr != nil {
+			errorCode := remoteToolFailureCode(commitErr)
+			reason := "remote result persistence failed"
+			switch errorCode {
+			case "remote_tool_failed":
+				errorCode = "result_persistence_failed"
+			case "remote_tool_result_rollback_failed":
+				reason = "remote result rollback failed"
+			default:
+				reason = "remote tool binding unavailable"
+			}
 			a.recordToolDiagnostic(
 				ctx, proposal, executionID, callDigest, ToolStagePayloadCommit,
-				commitStarted, ToolDiagnosticFailed, "result_persistence_failed", false,
+				commitStarted, ToolDiagnosticFailed, errorCode, false,
 			)
 			return a.fail(
 				ctx, proposal, executionID, callDigest, generation, events,
-				"remote result persistence failed", "result_persistence_failed",
+				reason, errorCode,
 			)
 		}
 		a.recordToolDiagnostic(
@@ -863,6 +1001,19 @@ func (a *Adapter) executeApproved(
 	a.remember(executionID, result)
 	retainResultContent = true
 	return result, nil
+}
+
+func remoteToolFailureCode(err error) string {
+	switch {
+	case errors.Is(err, ErrRemoteToolResultRollback):
+		return "remote_tool_result_rollback_failed"
+	case errors.Is(err, ErrRemoteToolBindingRevoked):
+		return "remote_tool_binding_revoked"
+	case errors.Is(err, ErrRemoteToolBindingPolicyDrift):
+		return "remote_tool_binding_policy_drift"
+	default:
+		return "remote_tool_failed"
+	}
 }
 
 func (a *Adapter) fail(

@@ -178,8 +178,14 @@ func (client *Client) call(
 }
 
 func (client *Client) timeoutForMethod(method string) time.Duration {
-	if method == "chat_message" || method == "agent_attempt_recovery" {
+	if method == "mission_execution" {
+		return missionResponseDeadline + 3*time.Second
+	}
+	if method == "chat_message" {
 		return chatResponseDeadline + 3*time.Second
+	}
+	if method == "agent_attempt_recovery" {
+		return agentRecoveryResponse + 3*time.Second
 	}
 	if usesExtendedRequestDeadline(method) {
 		return client.extendedTimeout

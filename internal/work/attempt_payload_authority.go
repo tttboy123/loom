@@ -771,5 +771,6 @@ func validAttemptPayloadBinding(value attemptpayload.Binding) bool {
 func validAttemptPayloadDeliveryProof(value attemptpayload.DeliveryProof) bool {
 	return value == attemptpayload.ProofProviderContinuation ||
 		value == attemptpayload.ProofHarnessFinalOutput ||
+		value == attemptpayload.ProofHarnessToolResponse ||
 		value == attemptpayload.ProofRunStreamToolResult
 }

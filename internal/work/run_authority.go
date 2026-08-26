@@ -1538,7 +1538,7 @@ func replayWorkItemStream(
 			}
 			if err := decodeExactPayload(event.PayloadJSON, &payload); err != nil ||
 				payload.WorkItemID == nil || payload.Title == nil || payload.Status == nil ||
-				*payload.WorkItemID != workItemID || !validOpaqueID(*payload.Title) ||
+				*payload.WorkItemID != workItemID || !validWorkItemTitle(*payload.Title) ||
 				*payload.Status != "ready" || record.id != "" {
 				return ErrRunAuthorityConflict
 			}
@@ -2461,7 +2461,7 @@ func generationEventPayload(
 
 func validateContextAndAssignment(ctx context.Context, input WorkItemAssignmentInput) error {
 	if ctx == nil || !validOpaqueID(input.WorkItemID) ||
-		!validOpaqueID(input.Title) || !validOpaqueID(input.RunID) ||
+		!validWorkItemTitle(input.Title) || !validOpaqueID(input.RunID) ||
 		!validOpaqueID(input.AgentInstanceID) ||
 		!validCanonicalUUID(input.CorrelationID) {
 		return ErrInvalidRunAuthorityInput
@@ -3046,6 +3046,26 @@ func parseUTC(value string) (time.Time, error) {
 
 func validOpaqueID(value string) bool {
 	if value == "" || len(value) > maxAuthorityIDBytes ||
+		!utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+// maxWorkItemTitleBytes bounds WorkItem titles. Mission node titles carry the
+// confirmed Mission objective (bounded by the product objective limit), which
+// routinely exceeds the authority ID bound; the writer and the replay reader
+// must agree on the same bound so a long objective never makes the run
+// authority journal unreplayable.
+const maxWorkItemTitleBytes = 4096
+
+func validWorkItemTitle(value string) bool {
+	if value == "" || len(value) > maxWorkItemTitleBytes ||
 		!utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return false
 	}

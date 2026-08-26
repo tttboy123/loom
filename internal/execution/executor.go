@@ -232,6 +232,17 @@ func secureRelativePath(path string) (string, error) {
 	return clean, nil
 }
 
+func secureGrepRelativePath(path string) (string, error) {
+	if path == "" || filepath.IsAbs(path) {
+		return "", ErrExecutionPathOutside
+	}
+	clean := filepath.Clean(path)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", ErrExecutionPathOutside
+	}
+	return clean, nil
+}
+
 func pathWithin(root, target string) bool {
 	relative, err := filepath.Rel(root, target)
 	if err != nil {

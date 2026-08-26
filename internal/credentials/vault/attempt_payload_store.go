@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -663,18 +662,12 @@ func validAttemptPayloadStatus(status AttemptPayloadStatus) bool {
 }
 
 func validAttemptPayloadContentType(value string) bool {
-	if value == "" || value != strings.TrimSpace(value) || len(value) > 128 {
-		return false
-	}
-	for _, character := range value {
-		if character >= 'a' && character <= 'z' ||
-			character >= '0' && character <= '9' ||
-			character == '/' || character == '+' || character == '.' || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	// Accept the two canonical Attempt payload content types. The legacy
+	// charset whitelist wrongly rejected the standard
+	// "text/plain; charset=utf-8" MIME form used by governed remote-tool
+	// results, which bricked web tool result persistence in Missions.
+	return value == attemptpayload.ContentTypeJSON ||
+		value == attemptpayload.ContentTypeTextUTF8
 }
 
 func attemptPayloadDigest(content []byte) string {

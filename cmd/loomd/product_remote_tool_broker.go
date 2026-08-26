@@ -19,6 +19,27 @@ type productRemoteToolBrokerConfig struct {
 	MCPAllowlist   map[string][]string
 	Timeout        time.Duration
 	MaxResultBytes int
+	// EnrollmentOnly keeps the transport available for persisted, governed
+	// Enrollment materialization without exposing an unenrolled global tool.
+	EnrollmentOnly bool
+}
+
+// newProductDefaultRemoteToolBrokerConfig returns an explicitly-opted
+// remote-tool configuration: a real governed web-search backend
+// (DuckDuckGo Lite over the SSRF-safe transport) plus bounded WebFetch.
+// Production composition stays fail-closed (nil) unless a caller opts in;
+// web_search enrollments only materialize when a trusted Search backend is
+// injected.
+func newProductDefaultRemoteToolBrokerConfig() (*productRemoteToolBrokerConfig, error) {
+	search, err := toolbroker.NewDDGSearchClient(20*time.Second, 5, 48<<10)
+	if err != nil {
+		return nil, err
+	}
+	return &productRemoteToolBrokerConfig{
+		Search: search, WebFetch: true,
+		Timeout:        20 * time.Second,
+		MaxResultBytes: 32 << 10,
+	}, nil
 }
 
 type productRemoteToolExecutor struct {
@@ -37,7 +58,7 @@ func newProductRemoteToolBroker(
 	if ctx == nil {
 		return nil, nil, toolbroker.ErrInvalidConfig
 	}
-	if config == nil {
+	if config == nil || config.EnrollmentOnly {
 		return nil, nil, nil
 	}
 	if len(config.MCPClients) != len(config.MCPAllowlist) {

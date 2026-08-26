@@ -779,6 +779,11 @@ func (stream *TeamExecutionStream) ReadPage(
 	viewA := stream.projection.GlobalReadView()
 	scopeA, err := deriveRelatedScope(viewA, stream.teamInstanceID)
 	if err != nil {
+		if errors.Is(err, ErrInvalidDeliveryRecord) {
+			return stream.gapFromView(
+				ctx, cursor, "delivery_record_invalid", ErrInvalidDeliveryRecord, viewA,
+			)
+		}
 		return TimelinePage{}, err
 	}
 	heads, err := unionCursorHeads(decoded.Heads, scopeA)
@@ -820,6 +825,11 @@ func (stream *TeamExecutionStream) ReadPage(
 	viewB := stream.projection.GlobalReadView()
 	scopeB, err := deriveRelatedScope(viewB, stream.teamInstanceID)
 	if err != nil {
+		if errors.Is(err, ErrInvalidDeliveryRecord) {
+			return stream.gapFromView(
+				ctx, cursor, "delivery_record_invalid", ErrInvalidDeliveryRecord, viewB,
+			)
+		}
 		return TimelinePage{}, err
 	}
 	nextHeads, err := unionCursorHeads(journalPage.Heads(), scopeB)
@@ -844,6 +854,15 @@ func (stream *TeamExecutionStream) ReadPage(
 		journalPage.Events(),
 	)
 	if err != nil {
+		if errors.Is(err, ErrInvalidDeliveryRecord) {
+			return stream.gapFromView(
+				ctx,
+				cursor,
+				"delivery_record_invalid",
+				ErrInvalidDeliveryRecord,
+				viewB,
+			)
+		}
 		return TimelinePage{}, err
 	}
 	board, attention := deriveBoardAndAttentionWithSources(
@@ -852,16 +871,42 @@ func (stream *TeamExecutionStream) ReadPage(
 		stream.teamInstanceID,
 		stream.diagnostics,
 		stream.testReports,
+		stream.now(),
 	)
+	hasMore, err := timelineHasMore(
+		ctx,
+		stream.journal,
+		journalPage.HasMore(),
+		nextHeads,
+	)
+	if err != nil {
+		return TimelinePage{}, err
+	}
 	return TimelinePage{
 		teamInstanceID: stream.teamInstanceID,
 		viewVersion:    viewB.Version(),
 		nextCursor:     nextCursor,
-		hasMore:        journalPage.HasMore(),
+		hasMore:        hasMore,
 		records:        records,
 		board:          board,
 		attention:      attention,
 	}, nil
+}
+
+func timelineHasMore(
+	ctx context.Context,
+	store *journal.Store,
+	primaryHasMore bool,
+	nextHeads []journal.StreamHead,
+) (bool, error) {
+	if primaryHasMore {
+		return true, nil
+	}
+	probe, err := store.ReadPageAfterHeads(ctx, nextHeads, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(probe.Events()) > 0 || probe.HasMore(), nil
 }
 
 func (stream *TeamExecutionStream) requestGap(
@@ -908,6 +953,7 @@ func (stream *TeamExecutionStream) gapFromView(
 			stream.teamInstanceID,
 			stream.diagnostics,
 			stream.testReports,
+			now,
 		)
 	}
 	page.attention = append(page.attention, attentionFromGap(gap))
@@ -1410,6 +1456,7 @@ func unionCursorHeads(
 }
 
 var authoritativeKinds = map[string]string{
+	"TeamExecutionReopened":         "team_reopened",
 	"TeamExecutionPlanned":          "team_planned",
 	"TeamNodeInitiallyBlocked":      "node_initially_blocked",
 	"TeamNodeAttemptScheduled":      "node_scheduled",
@@ -1536,6 +1583,15 @@ type timelineLineageView interface {
 	ApprovalRequest(string) (projection.ProjectedApprovalRequest, bool)
 }
 
+type terminalRunView interface {
+	Run(string) (projection.Run, bool)
+}
+
+type providerAccountBoardView interface {
+	terminalRunView
+	ProviderAccountPolicy(string, string) (work.ProviderAccountPolicy, bool)
+}
+
 func deriveBoardAndAttention(
 	view projection.GlobalReadView,
 	teamInstanceID string,
@@ -1552,7 +1608,7 @@ func deriveBoardAndAttentionWithDiagnostics(
 	diagnostics AgentAttemptDiagnosticSource,
 ) (TeamBoard, []AttentionItem) {
 	return deriveBoardAndAttentionWithSources(
-		ctx, view, teamInstanceID, diagnostics, nil,
+		ctx, view, teamInstanceID, diagnostics, nil, time.Now(),
 	)
 }
 
@@ -1562,13 +1618,14 @@ func deriveBoardAndAttentionWithSources(
 	teamInstanceID string,
 	diagnostics AgentAttemptDiagnosticSource,
 	testReports GovernedTestReportSource,
+	now time.Time,
 ) (TeamBoard, []AttentionItem) {
 	execution, _ := view.TeamExecution(teamInstanceID)
 	board := TeamBoard{
 		schemaVersion:  timelineSchemaVersion,
 		teamInstanceID: teamInstanceID,
 		planDigest:     execution.PlanDigest,
-		status:         execution.Status,
+		status:         reconciledMissionStatus(view, execution),
 		viewVersion:    view.Version(),
 		nodes:          make([]NodeBoardRow, 0, len(execution.Nodes)),
 	}
@@ -1625,6 +1682,12 @@ func deriveBoardAndAttentionWithSources(
 				))
 			}
 		}
+		// Read-model-only reconciliation: a node the projection still marks
+		// "running" whose current attempt Run is already terminal and which has
+		// no scheduled retry reflects the terminal Run outcome (for example the
+		// daemon was interrupted between the Run terminal and the coordinator's
+		// TeamNodeAttemptTerminal record). Never writes the journal.
+		reconcileTerminalNodeBoardRow(view, execution, node, &row, now)
 		board.nodes = append(board.nodes, row)
 		if node.Status == "blocked" || node.Status == "human_required" {
 			action := "inspect_failure"
@@ -1695,6 +1758,56 @@ func deriveBoardAndAttentionWithSources(
 	}
 	sortAttention(attention)
 	return board, attention
+}
+
+func reconcileTerminalNodeBoardRow(
+	view terminalRunView,
+	execution projection.TeamExecution,
+	node projection.TeamExecutionNode,
+	row *NodeBoardRow,
+	now time.Time,
+) {
+	if row == nil ||
+		(row.Status != "running" && row.Status != "awaiting_recovery") ||
+		row.CurrentAttempt <= 0 ||
+		(!node.RetryAt.IsZero() && node.RetryAt.After(now)) {
+		return
+	}
+	attempt, ok := findProjectedAttempt(
+		execution, node.LogicalNodeID, node.CurrentAttempt,
+	)
+	if !ok {
+		return
+	}
+	status, reason, ok := reconciledTerminalAttempt(view, attempt)
+	if !ok {
+		return
+	}
+	row.Status = status
+	if row.TerminalReason == "" {
+		row.TerminalReason = reason
+	}
+}
+
+func reconciledTerminalAttempt(
+	view terminalRunView,
+	attempt projection.TeamExecutionAttempt,
+) (string, string, bool) {
+	if view == nil || attempt.RunID == "" || attempt.WorkItemID == "" ||
+		attempt.ClaimID == "" || attempt.ClaimGeneration <= 0 ||
+		attempt.RuntimeInstanceID == "" || attempt.AgentInstanceID == "" {
+		return "", "", false
+	}
+	run, ok := view.Run(attempt.RunID)
+	if !ok || run.ID != attempt.RunID || run.WorkItemID != attempt.WorkItemID ||
+		run.Phase != "terminal" || run.ClaimID != attempt.ClaimID ||
+		run.ClaimGeneration != attempt.ClaimGeneration ||
+		run.RuntimeInstanceID != attempt.RuntimeInstanceID ||
+		run.AgentInstanceID != attempt.AgentInstanceID ||
+		(run.TerminalStatus != "failed" && run.TerminalStatus != "cancelled") {
+		return "", "", false
+	}
+	return run.TerminalStatus, run.TerminalReason, true
 }
 
 func enrichBoardGovernedTestReports(
@@ -2042,7 +2155,7 @@ type providerAccountAccumulator struct {
 }
 
 func aggregateProviderAccountBoardRows(
-	view projection.GlobalReadView,
+	view providerAccountBoardView,
 	execution projection.TeamExecution,
 ) []ProviderAccountBoardRow {
 	byAccount := make(map[string]*providerAccountAccumulator)
@@ -2082,8 +2195,20 @@ func aggregateProviderAccountBoardRows(
 				}
 				byAccount[key] = account
 			}
+			attemptStatus := attempt.Status
+			terminalReason := attempt.TerminalReason
+			if activeProviderAccountAttempt(attemptStatus) {
+				if status, reason, reconciled := reconciledTerminalAttempt(
+					view, attempt,
+				); reconciled {
+					attemptStatus = status
+					if terminalReason == "" {
+						terminalReason = reason
+					}
+				}
+			}
 			account.row.AttemptCount++
-			if activeProviderAccountAttempt(attempt.Status) {
+			if activeProviderAccountAttempt(attemptStatus) {
 				account.row.ActiveAttempts++
 				if attempt.ProviderAccountPolicyAvailable &&
 					!addProviderAccountValue(
@@ -2093,11 +2218,11 @@ func aggregateProviderAccountBoardRows(
 					account.row.AggregationOverflow = true
 				}
 			}
-			if attempt.Status == "failed" || attempt.Status == "cancelled" {
+			if attemptStatus == "failed" || attemptStatus == "cancelled" {
 				account.row.FailedAttempts++
 			}
-			if attempt.TerminalReason == "rate_limited" ||
-				attempt.TerminalReason == "provider_rate_limited" {
+			if terminalReason == "rate_limited" ||
+				terminalReason == "provider_rate_limited" {
 				account.row.RateLimitedAttempts++
 			}
 			if binding.Budget != nil {
@@ -2665,7 +2790,7 @@ func validDigest(value string) bool {
 func validGapReason(reason string) bool {
 	switch reason {
 	case "invalid_cursor", "cursor_conflict", "scope_overflow",
-		"page_overflow", "tentative_overflow":
+		"page_overflow", "tentative_overflow", "delivery_record_invalid":
 		return true
 	default:
 		return false

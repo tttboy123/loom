@@ -1,6 +1,9 @@
 package provider
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestProviderCatalogCoversSupportedProtocolFamilies(t *testing.T) {
 	catalog := Catalog()
@@ -32,6 +35,10 @@ func TestProviderCatalogCoversSupportedProtocolFamilies(t *testing.T) {
 			t.Errorf("provider %q missing from catalog", id)
 		}
 	}
+	openAI := byID["openai"]
+	if openAI.AuthMode != "brokered" || openAI.ConnectionKind != "api_key" {
+		t.Fatalf("OpenAI Provider Account boundary = %#v", openAI)
+	}
 }
 
 func TestProviderCatalogReturnsAnIndependentCopy(t *testing.T) {
@@ -43,7 +50,26 @@ func TestProviderCatalogReturnsAnIndependentCopy(t *testing.T) {
 	}
 }
 
+func TestModelProviderCatalogExcludesHarnessRuntimes(t *testing.T) {
+	catalog := ModelCatalog()
+	if len(catalog) == 0 {
+		t.Fatal("model Provider catalog is empty")
+	}
+	for _, descriptor := range catalog {
+		if descriptor.ConnectionKind == "native_runtime" {
+			t.Fatalf("Harness runtime leaked into Provider catalog: %#v", descriptor)
+		}
+		if descriptor.ID == "opencode" {
+			t.Fatalf("OpenCode Harness leaked into Provider catalog: %#v", descriptor)
+		}
+	}
+}
+
 func TestConversationProfileIDsFreezeExactProviderAccount(t *testing.T) {
+	if ClaudeCodeConversationProfileID !=
+		"conversation-anthropic-claude-code-default-v1" {
+		t.Fatalf("Claude Code native profile = %q", ClaudeCodeConversationProfileID)
+	}
 	if got := AnthropicConversationAccountProfileID("anthropic.primary", 5); got !=
 		AnthropicConversationProfileID(5) {
 		t.Fatalf("Anthropic primary profile = %q", got)
@@ -76,5 +102,19 @@ func TestConversationProfileIDsFreezeExactProviderAccount(t *testing.T) {
 		if invalid != "" {
 			t.Fatalf("invalid account profile ID = %q", invalid)
 		}
+	}
+}
+
+func TestOpenCodeConversationAccountProfileIDFreezesHarnessProviderAccountAndRevision(t *testing.T) {
+	primary := OpenCodeConversationAccountProfileID("openai", "openai.primary", 7)
+	secondary := OpenCodeConversationAccountProfileID("openai", "openai.team-a", 7)
+	otherRevision := OpenCodeConversationAccountProfileID("openai", "openai.primary", 8)
+	if primary == "" || secondary == "" || otherRevision == "" ||
+		primary == secondary || primary == otherRevision ||
+		!strings.HasPrefix(primary, "conversation-opencode-openai-") {
+		t.Fatalf("profile ids primary=%q secondary=%q revision=%q", primary, secondary, otherRevision)
+	}
+	if got := OpenCodeConversationAccountProfileID("openai", "deepseek.primary", 7); got != "" {
+		t.Fatalf("cross-provider profile id = %q", got)
 	}
 }

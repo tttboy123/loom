@@ -270,6 +270,32 @@ func TestRenderRoleContextDispatchRejectsSecretReferenceAndTampering(t *testing.
 	}
 }
 
+func TestRebuildDispatchSafeFiltersUntrustedWireUnsafeOutput(t *testing.T) {
+	target := testRoleTarget("agent-coder", "coder", 64)
+	target.ContextAdapterID = "context:loom-native:v1"
+	capsule, err := contextcapsule.BuildRoleContextCapsule(target, []contextcapsule.ItemInput{
+		{ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal, Trust: contextcapsule.TrustAuthoritative,
+			Scope: contextcapsule.ScopeTeamShared, Priority: contextcapsule.PrioritySystem, TokenCount: 4,
+			Required: true, Content: []byte("Continue the admitted task."), SourceType: contextcapsule.SourceAuthority,
+			SourceRef: "goal:phase-2d"},
+		{ItemID: "old-output", Kind: contextcapsule.KindPriorModelOutput, Trust: contextcapsule.TrustUntrusted,
+			Scope: contextcapsule.ScopeConversationShared, Priority: contextcapsule.PriorityHistory, TokenCount: 4,
+			Content: []byte("API_KEY=unsafe-model-output"), SourceType: contextcapsule.SourceModelOutput,
+			SourceRef: "attempt:old-1"},
+	})
+	if err != nil {
+		t.Fatalf("build capsule: %v", err)
+	}
+	safe, err := contextcapsule.RebuildDispatchSafe(capsule, nil)
+	if err != nil {
+		t.Fatalf("rebuild dispatch-safe capsule: %v", err)
+	}
+	payload, err := contextcapsule.RenderDispatchPayload(safe)
+	if err != nil || bytes.Contains(payload, []byte("API_KEY=unsafe-model-output")) {
+		t.Fatalf("unsafe output crossed dispatch: err=%v", err)
+	}
+}
+
 func TestRenderRoleContextDispatchKeepsLoomNativePayloadBounded(t *testing.T) {
 	t.Parallel()
 

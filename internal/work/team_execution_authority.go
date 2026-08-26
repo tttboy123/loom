@@ -49,6 +49,22 @@ var (
 	ErrInvalidTeamFallbackApproval  = errors.New("invalid Team fallback approval")
 )
 
+type teamExecutionConflictStage struct{ stage string }
+
+func (err teamExecutionConflictStage) Error() string { return err.stage }
+
+func teamExecutionConflictAt(stage string) error {
+	return errors.Join(ErrTeamExecutionConflict, teamExecutionConflictStage{stage: stage})
+}
+
+func TeamExecutionConflictStage(err error) (string, bool) {
+	var detail teamExecutionConflictStage
+	if !errors.As(err, &detail) || detail.stage == "" {
+		return "", false
+	}
+	return detail.stage, true
+}
+
 type TeamFallbackApprovalInput struct {
 	Version             int
 	ApprovalID          string
@@ -159,6 +175,12 @@ type TeamDispatchInput struct {
 	AuthoritativeTime    time.Time
 	PrepareLeaseDuration time.Duration
 	CorrelationID        string
+	// ExecutionGenerationID salts every Attempt identity in one explicitly
+	// reopened Team generation and remains stable across dependency waves.
+	ExecutionGenerationID string
+	// RestartTerminal is only set by an explicit new Mission Attempt command.
+	// It preserves the prior terminal facts and appends a new plan lineage.
+	RestartTerminal bool
 }
 
 type TeamNodeRouteSummary struct {
@@ -383,6 +405,7 @@ type TeamNodeRecord struct {
 type TeamExecutionRecord struct {
 	teamInstanceID          string
 	planDigest              string
+	executionGenerationID   string
 	status                  string
 	nodes                   []TeamNodeRecord
 	streamSequence          int64
@@ -518,6 +541,10 @@ func (authority *Authority) DispatchTeamReadySet(
 	if err != nil {
 		return TeamDispatchResult{}, err
 	}
+	executionGenerationID := input.ExecutionGenerationID
+	if input.RestartTerminal && executionGenerationID == "" {
+		executionGenerationID = input.CorrelationID
+	}
 	candidateEvents, err := authority.store.ReadStream(
 		ctx,
 		teamExecutionStream(input.Plan.TeamInstanceID()),
@@ -530,30 +557,37 @@ func (authority *Authority) DispatchTeamReadySet(
 		candidateEvents,
 	)
 	if err != nil {
+		if errors.Is(err, ErrTeamExecutionConflict) {
+			return TeamDispatchResult{}, teamExecutionConflictAt("team_replay")
+		}
 		return TeamDispatchResult{}, err
 	}
-	streamIDs := teamDispatchStreams(
+	streamIDs := teamDispatchStreamsWithSalt(
 		input.Plan,
 		nodes,
 		selections,
 		candidateTeam,
 		input.Materializations,
 		input.AssetSourceHeads,
+		func() []string {
+			if executionGenerationID != "" {
+				return []string{executionGenerationID}
+			}
+			return nil
+		}()...,
 	)
 	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
 	if err != nil {
 		return TeamDispatchResult{}, err
 	}
 	if !exactTeamHeads(input.ExpectedHeads, snapshot.Heads()) {
-		return TeamDispatchResult{}, fmt.Errorf(
-			"%w: expected streams=%v actual streams=%v",
-			ErrStaleGlobalReadView,
-			teamHeadStreamIDs(input.ExpectedHeads),
-			teamHeadStreamIDs(snapshot.Heads()),
-		)
+		return TeamDispatchResult{}, ErrStaleGlobalReadView
 	}
 	state, err := replayTeamDispatchState(ctx, snapshot.Events())
 	if err != nil {
+		if errors.Is(err, ErrTeamExecutionConflict) {
+			return TeamDispatchResult{}, teamExecutionConflictAt("state_replay")
+		}
 		return TeamDispatchResult{}, err
 	}
 	if !state.runIdentityInitialized {
@@ -563,7 +597,7 @@ func (authority *Authority) DispatchTeamReadySet(
 		if !preparedMaterializationHeadsMatch(
 			materialization.Prepared.Heads(), snapshot.Heads(),
 		) {
-			return TeamDispatchResult{}, ErrTeamExecutionConflict
+			return TeamDispatchResult{}, teamExecutionConflictAt("materialization")
 		}
 	}
 	teamStreamID := teamExecutionStream(input.Plan.TeamInstanceID())
@@ -572,6 +606,9 @@ func (authority *Authority) DispatchTeamReadySet(
 		filterTeamEvents(snapshot.Events(), teamStreamID),
 	)
 	if err != nil {
+		if errors.Is(err, ErrTeamExecutionConflict) {
+			return TeamDispatchResult{}, teamExecutionConflictAt("team_state_replay")
+		}
 		return TeamDispatchResult{}, err
 	}
 	if team.status != "" {
@@ -581,11 +618,18 @@ func (authority *Authority) DispatchTeamReadySet(
 		if team.legacyAcceptanceUnbound {
 			return TeamDispatchResult{}, ErrLegacyAcceptanceUnbound
 		}
-		if !exactTeamSemanticBindings(team, input.SemanticBindings) {
-			return TeamDispatchResult{}, ErrTeamExecutionConflict
+		// An explicit new Attempt freezes the current semantic bindings as a
+		// new immutable execution. The prior terminal Attempt remains intact;
+		// comparing its bindings here would prevent governed retries after a
+		// user-approved model/provider or capability change.
+		if !input.RestartTerminal && !exactTeamSemanticBindings(team, input.SemanticBindings) {
+			return TeamDispatchResult{}, teamExecutionConflictAt("semantics")
+		}
+		if !input.RestartTerminal && team.executionGenerationID != executionGenerationID {
+			return TeamDispatchResult{}, teamExecutionConflictAt("generation")
 		}
 	}
-	if team.status != "" && isTerminalTeamStatus(team.status) {
+	if teamRestartableWithState(team, state) && !input.RestartTerminal {
 		return TeamDispatchResult{}, ErrTeamExecutionAlreadyTerminal
 	}
 	now := input.AuthoritativeTime
@@ -619,8 +663,36 @@ func (authority *Authority) DispatchTeamReadySet(
 		runtimeActive[runtimeInstanceID] = len(runtime.active)
 	}
 	events := make([]journal.Event, 0, 24)
+	scheduleSalt := []string(nil)
+	if executionGenerationID != "" {
+		scheduleSalt = []string{executionGenerationID}
+	}
 	for _, materialization := range input.Materializations {
 		events = append(events, materialization.Prepared.Event())
+	}
+	if input.RestartTerminal && teamRestartableWithState(team, state) {
+		recoveryRuns := teamRestartRecoveryRunProofs(team, state)
+		teamSequence++
+		reopenID := deterministicEventID(
+			"TeamExecutionReopened", input.Plan.TeamInstanceID(),
+			input.Plan.Digest(), fmt.Sprint(teamSequence), input.CorrelationID,
+		)
+		events = append(events, newEvent(
+			reopenID, teamStreamID, teamSequence, "TeamExecutionReopened",
+			now, input.CorrelationID, team.lastEventID,
+			teamExecutionReopenedPayload{
+				TeamInstanceID:     input.Plan.TeamInstanceID(),
+				PreviousPlanDigest: team.planDigest,
+				NextPlanDigest:     input.Plan.Digest(),
+				RecoveryRuns:       recoveryRuns,
+			},
+		))
+		team = TeamExecutionRecord{
+			teamInstanceID:        input.Plan.TeamInstanceID(),
+			executionGenerationID: executionGenerationID,
+			streamSequence:        teamSequence,
+			lastEventID:           reopenID,
+		}
 	}
 	if team.status == "" {
 		teamSequence++
@@ -629,6 +701,7 @@ func (authority *Authority) DispatchTeamReadySet(
 			input.Plan.TeamInstanceID(),
 			input.Plan.Digest(),
 			canonicalTeamSemanticDigest(input.SemanticBindings),
+			input.CorrelationID,
 		)
 		events = append(events, newEvent(
 			plannedID,
@@ -650,14 +723,17 @@ func (authority *Authority) DispatchTeamReadySet(
 			input.SemanticBindings,
 			teamSequence,
 			plannedID,
+			executionGenerationID,
 		)
 		for _, block := range input.InitialBlocks {
 			teamSequence++
-			blockedID := deterministicEventID(
+			blockedFields := []string{
 				"TeamNodeInitiallyBlocked", input.Plan.TeamInstanceID(),
 				input.Plan.Digest(), block.LogicalNodeID, block.Code,
 				block.Stage, block.SourceLogicalNodeID,
-			)
+			}
+			blockedFields = append(blockedFields, scheduleSalt...)
+			blockedID := deterministicEventID(blockedFields...)
 			events = append(events, newEvent(
 				blockedID, teamStreamID, teamSequence,
 				"TeamNodeInitiallyBlocked", now, input.CorrelationID,
@@ -681,14 +757,14 @@ func (authority *Authority) DispatchTeamReadySet(
 				node,
 				1,
 				binding.PrimaryWorkflowPath,
+				scheduleSalt...,
 			)
-			scheduledID := deterministicEventID(
-				"TeamNodeAttemptScheduled",
-				input.Plan.TeamInstanceID(),
-				input.Plan.Digest(),
-				node.LogicalNodeID(),
-				"1",
-			)
+			scheduledFields := []string{
+				"TeamNodeAttemptScheduled", input.Plan.TeamInstanceID(),
+				input.Plan.Digest(), node.LogicalNodeID(), "1",
+			}
+			scheduledFields = append(scheduledFields, scheduleSalt...)
+			scheduledID := deterministicEventID(scheduledFields...)
 			events = append(events, newEvent(
 				scheduledID,
 				teamStreamID,
@@ -702,7 +778,7 @@ func (authority *Authority) DispatchTeamReadySet(
 			applyScheduledAttempt(&team, node.LogicalNodeID(), scheduled, time.Time{})
 		}
 	} else if team.planDigest != input.Plan.Digest() || len(input.InitialBlocks) != 0 {
-		return TeamDispatchResult{}, ErrTeamExecutionConflict
+		return TeamDispatchResult{}, teamExecutionConflictAt("plan")
 	}
 	if team.status != "" {
 		for _, selection := range selections {
@@ -720,14 +796,17 @@ func (authority *Authority) DispatchTeamReadySet(
 					node,
 					1,
 					nodeRecord.semanticBinding.PrimaryWorkflowPath,
+					scheduleSalt...,
 				)
-				scheduledID := deterministicEventID(
+				scheduledFields := []string{
 					"TeamNodeAttemptScheduled",
 					input.Plan.TeamInstanceID(),
 					input.Plan.Digest(),
 					node.LogicalNodeID(),
 					"1",
-				)
+				}
+				scheduledFields = append(scheduledFields, scheduleSalt...)
+				scheduledID := deterministicEventID(scheduledFields...)
 				events = append(events, newEvent(
 					scheduledID,
 					teamStreamID,
@@ -813,12 +892,12 @@ func (authority *Authority) DispatchTeamReadySet(
 			return TeamDispatchResult{}, ErrRuntimeCapacityExhausted
 		}
 		if !runtime.currentStatusHead(state.heads) {
-			return TeamDispatchResult{}, ErrTeamExecutionConflict
+			return TeamDispatchResult{}, teamExecutionConflictAt("runtime_status")
 		}
 		if state.workItems[attemptRecord.workItemID].id != "" ||
 			state.runs[attemptRecord.runID].id != "" ||
 			state.runIdentities[attemptRecord.runID].runID != "" {
-			return TeamDispatchResult{}, ErrTeamExecutionConflict
+			return TeamDispatchResult{}, teamExecutionConflictAt("run_identity")
 		}
 		claimID, claimErr := authority.newClaimID()
 		if claimErr != nil {
@@ -1123,7 +1202,10 @@ func (authority *Authority) DispatchTeamReadySet(
 			errors.Is(err, journal.ErrIdempotencyConflict) ||
 			errors.Is(err, journal.ErrSequenceConflict) ||
 			errors.Is(err, journal.ErrPartialEventBatchConflict) {
-			return TeamDispatchResult{}, fmt.Errorf("%w: append dispatch transaction: %v", ErrTeamExecutionConflict, err)
+			return TeamDispatchResult{}, errors.Join(
+				teamExecutionConflictAt("commit"),
+				fmt.Errorf("append dispatch transaction: %w", err),
+			)
 		}
 		return TeamDispatchResult{}, mapJournalWriteError(err)
 	}
@@ -1370,6 +1452,38 @@ func (authority *Authority) CommitTeamAttemptEvidence(
 	snapshot, err := authority.store.ReadStreamSet(ctx, streamIDs)
 	if err != nil {
 		return TeamExecutionRecord{}, err
+	}
+	// Account-managed runs carry ProviderAccountPolicyConfigured /
+	// ProviderModelRateCardConfigured / ProviderAccountCapacityReserved facts
+	// in their own streams; the run-authority replay validates the claim's
+	// policy, rate card and capacity references, so the snapshot must include
+	// those streams for the run's binding account (otherwise the replay
+	// reports a conflict and evidence commit fails for account-managed
+	// Missions).
+	if binding, found, bindingErr := assignedExecutionBindingForRun(
+		snapshot.Events(), input.RunID,
+	); bindingErr == nil && found && binding.ProviderAccountID != "" {
+		for _, accountStream := range []string{
+			providerAccountCapacityStream(binding.ProviderAccountID),
+			providerAccountPolicyStream(binding.ProviderAccountID),
+		} {
+			if !containsStreamID(streamIDs, accountStream) {
+				streamIDs = append(streamIDs, accountStream)
+			}
+		}
+		if binding.ModelID != "" {
+			rateCardStream := providerModelRateCardStream(
+				binding.ProviderID, binding.ProviderAccountID, binding.ModelID,
+			)
+			if !containsStreamID(streamIDs, rateCardStream) {
+				streamIDs = append(streamIDs, rateCardStream)
+			}
+		}
+		if refreshed, refreshErr := authority.store.ReadStreamSet(
+			ctx, streamIDs,
+		); refreshErr == nil {
+			snapshot = refreshed
+		}
 	}
 	team, err := replayTeamExecution(
 		input.TeamInstanceID,
@@ -2013,21 +2127,23 @@ func teamContextSelectionDigest(selections []TeamAttemptSelection) string {
 }
 
 type teamExecutionBindingPayload struct {
-	ProfileID           string   `json:"profile_id"`
-	HarnessAdapter      string   `json:"harness_adapter"`
-	RuntimeInstanceID   string   `json:"runtime_instance_id"`
-	ProviderID          string   `json:"provider_id"`
-	ProviderAccountID   string   `json:"provider_account_id"`
-	ModelID             string   `json:"model_id"`
-	AuthMode            string   `json:"auth_mode"`
-	EndpointFingerprint string   `json:"endpoint_fingerprint"`
-	CredentialReference string   `json:"credential_reference"`
-	CredentialRevision  int64    `json:"credential_revision"`
-	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
-	TimeoutNanoseconds  int64    `json:"timeout_nanoseconds"`
-	Budget              *int64   `json:"budget"`
-	Capabilities        []string `json:"capabilities"`
-	BindingDigest       string   `json:"binding_digest"`
+	ProfileID                  string   `json:"profile_id"`
+	HarnessAdapter             string   `json:"harness_adapter"`
+	RuntimeInstanceID          string   `json:"runtime_instance_id"`
+	ProviderID                 string   `json:"provider_id"`
+	ProviderAccountID          string   `json:"provider_account_id"`
+	ModelID                    string   `json:"model_id"`
+	AuthMode                   string   `json:"auth_mode"`
+	EndpointFingerprint        string   `json:"endpoint_fingerprint"`
+	CredentialReference        string   `json:"credential_reference"`
+	CredentialRevision         int64    `json:"credential_revision"`
+	ReasoningEffort            string   `json:"reasoning_effort,omitempty"`
+	TimeoutNanoseconds         int64    `json:"timeout_nanoseconds"`
+	Budget                     *int64   `json:"budget"`
+	Capabilities               []string `json:"capabilities"`
+	BindingDigest              string   `json:"binding_digest"`
+	RemoteToolEnrollmentID     string   `json:"remote_tool_enrollment_id,omitempty"`
+	RemoteToolEnrollmentDigest string   `json:"remote_tool_enrollment_digest,omitempty"`
 }
 
 type teamAttemptTerminalPayload struct {
@@ -2117,7 +2233,9 @@ func validateTeamDispatchInput(
 		input.AuthoritativeTime.Location() != time.UTC ||
 		input.PrepareLeaseDuration <= 0 ||
 		input.PrepareLeaseDuration > maxPrepareLease ||
-		!validCanonicalUUID(input.CorrelationID) {
+		!validCanonicalUUID(input.CorrelationID) ||
+		input.ExecutionGenerationID != "" &&
+			!validCanonicalUUID(input.ExecutionGenerationID) {
 		return nil, nil, ErrInvalidTeamExecution
 	}
 	blocks, blockErr := teams.ValidateInitialExecutionBlocks(input.Plan, input.InitialBlocks)
@@ -2499,11 +2617,16 @@ func teamAttemptIdentity(
 	plan teams.ExecutionPlan,
 	logicalNodeID string,
 	attemptNumber int,
+	salt ...string,
 ) string {
-	return teamAttemptIdentityFromValues(
-		label, plan.TeamInstanceID(), plan.Digest(),
-		logicalNodeID, attemptNumber,
-	)
+	values := []string{
+		label, plan.TeamInstanceID(), plan.Digest(), logicalNodeID,
+		fmt.Sprint(attemptNumber),
+	}
+	values = append(values, salt...)
+	digest := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	prefix := "team-" + label + "-"
+	return prefix + hex.EncodeToString(digest[:16])
 }
 
 func teamAttemptIdentityFromValues(
@@ -2526,11 +2649,12 @@ func scheduledTeamAttempt(
 	node teams.ExecutionNode,
 	attemptNumber int,
 	workflowPath string,
+	salt ...string,
 ) TeamAttemptRecord {
 	return TeamAttemptRecord{
 		attemptNumber:          attemptNumber,
-		workItemID:             teamAttemptIdentity("work", plan, node.LogicalNodeID(), attemptNumber),
-		runID:                  teamAttemptIdentity("run", plan, node.LogicalNodeID(), attemptNumber),
+		workItemID:             teamAttemptIdentity("work", plan, node.LogicalNodeID(), attemptNumber, salt...),
+		runID:                  teamAttemptIdentity("run", plan, node.LogicalNodeID(), attemptNumber, salt...),
 		runtimeInstanceID:      node.RuntimeInstanceID(),
 		agentInstanceID:        node.AgentInstanceID(),
 		workflowPath:           workflowPath,
@@ -2761,6 +2885,15 @@ func teamAttemptScheduledPayload(
 	}
 }
 
+func containsStreamID(streams []string, wanted string) bool {
+	for _, stream := range streams {
+		if stream == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func teamExecutionBindingPayloadFrom(
 	input loomruntime.FrozenExecutionBinding,
 ) *teamExecutionBindingPayload {
@@ -2769,20 +2902,22 @@ func teamExecutionBindingPayloadFrom(
 		return nil
 	}
 	payload := &teamExecutionBindingPayload{
-		ProfileID:           validated.ProfileID,
-		HarnessAdapter:      validated.HarnessAdapter,
-		RuntimeInstanceID:   validated.RuntimeInstanceID,
-		ProviderID:          validated.ProviderID,
-		ProviderAccountID:   validated.ProviderAccountID,
-		ModelID:             validated.ModelID,
-		AuthMode:            string(validated.AuthMode),
-		EndpointFingerprint: validated.EndpointFingerprint,
-		CredentialReference: validated.CredentialReference,
-		CredentialRevision:  validated.CredentialRevision,
-		ReasoningEffort:     validated.ReasoningEffort,
-		TimeoutNanoseconds:  int64(validated.Timeout),
-		Capabilities:        append([]string(nil), validated.Capabilities...),
-		BindingDigest:       validated.BindingDigest,
+		ProfileID:                  validated.ProfileID,
+		HarnessAdapter:             validated.HarnessAdapter,
+		RuntimeInstanceID:          validated.RuntimeInstanceID,
+		ProviderID:                 validated.ProviderID,
+		ProviderAccountID:          validated.ProviderAccountID,
+		ModelID:                    validated.ModelID,
+		AuthMode:                   string(validated.AuthMode),
+		EndpointFingerprint:        validated.EndpointFingerprint,
+		CredentialReference:        validated.CredentialReference,
+		CredentialRevision:         validated.CredentialRevision,
+		ReasoningEffort:            validated.ReasoningEffort,
+		TimeoutNanoseconds:         int64(validated.Timeout),
+		Capabilities:               append([]string(nil), validated.Capabilities...),
+		BindingDigest:              validated.BindingDigest,
+		RemoteToolEnrollmentID:     validated.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: validated.RemoteToolEnrollmentDigest,
 	}
 	if validated.Budget != nil {
 		budget := *validated.Budget
@@ -2798,20 +2933,22 @@ func frozenExecutionBindingFromPayload(
 		return loomruntime.FrozenExecutionBinding{}, nil
 	}
 	binding := loomruntime.FrozenExecutionBinding{
-		ProfileID:           input.ProfileID,
-		HarnessAdapter:      input.HarnessAdapter,
-		RuntimeInstanceID:   input.RuntimeInstanceID,
-		ProviderID:          input.ProviderID,
-		ProviderAccountID:   input.ProviderAccountID,
-		ModelID:             input.ModelID,
-		AuthMode:            loomruntime.AuthMode(input.AuthMode),
-		EndpointFingerprint: input.EndpointFingerprint,
-		CredentialReference: input.CredentialReference,
-		CredentialRevision:  input.CredentialRevision,
-		ReasoningEffort:     input.ReasoningEffort,
-		Timeout:             time.Duration(input.TimeoutNanoseconds),
-		Capabilities:        append([]string(nil), input.Capabilities...),
-		BindingDigest:       input.BindingDigest,
+		ProfileID:                  input.ProfileID,
+		HarnessAdapter:             input.HarnessAdapter,
+		RuntimeInstanceID:          input.RuntimeInstanceID,
+		ProviderID:                 input.ProviderID,
+		ProviderAccountID:          input.ProviderAccountID,
+		ModelID:                    input.ModelID,
+		AuthMode:                   loomruntime.AuthMode(input.AuthMode),
+		EndpointFingerprint:        input.EndpointFingerprint,
+		CredentialReference:        input.CredentialReference,
+		CredentialRevision:         input.CredentialRevision,
+		ReasoningEffort:            input.ReasoningEffort,
+		Timeout:                    time.Duration(input.TimeoutNanoseconds),
+		Capabilities:               append([]string(nil), input.Capabilities...),
+		BindingDigest:              input.BindingDigest,
+		RemoteToolEnrollmentID:     input.RemoteToolEnrollmentID,
+		RemoteToolEnrollmentDigest: input.RemoteToolEnrollmentDigest,
 	}
 	if input.Budget != nil {
 		budget := *input.Budget
@@ -2835,14 +2972,30 @@ func teamDispatchStreams(
 	materializations []TeamAttemptMaterialization,
 	assetSourceHeadSets ...[]journal.StreamHead,
 ) []string {
+	var assetSourceHeads []journal.StreamHead
+	if len(assetSourceHeadSets) == 1 {
+		assetSourceHeads = assetSourceHeadSets[0]
+	}
+	return teamDispatchStreamsWithSalt(
+		plan, nodes, selections, team, materializations, assetSourceHeads,
+	)
+}
+
+func teamDispatchStreamsWithSalt(
+	plan teams.ExecutionPlan,
+	nodes []teams.ExecutionNode,
+	selections []TeamAttemptSelection,
+	team TeamExecutionRecord,
+	materializations []TeamAttemptMaterialization,
+	assetSourceHeads []journal.StreamHead,
+	identitySalt ...string,
+) []string {
 	streams := map[string]struct{}{
 		teamExecutionStream(plan.TeamInstanceID()): {},
 		runIdentityStreamID:                        {},
 	}
-	if len(assetSourceHeadSets) == 1 {
-		for _, head := range assetSourceHeadSets[0] {
-			streams[head.StreamID] = struct{}{}
-		}
+	for _, head := range assetSourceHeads {
+		streams[head.StreamID] = struct{}{}
 	}
 	for _, materialization := range materializations {
 		event := materialization.Prepared.Event()
@@ -2877,15 +3030,26 @@ func teamDispatchStreams(
 			}
 		}
 		workItemID := teamAttemptIdentity(
-			"work", plan, selection.LogicalNodeID, selection.AttemptNumber,
+			"work", plan, selection.LogicalNodeID, selection.AttemptNumber, identitySalt...,
 		)
 		runID := teamAttemptIdentity(
-			"run", plan, selection.LogicalNodeID, selection.AttemptNumber,
+			"run", plan, selection.LogicalNodeID, selection.AttemptNumber, identitySalt...,
 		)
 		streams[workItemStream(workItemID)] = struct{}{}
 		streams[runStream(runID)] = struct{}{}
 		streams[runtimeStatusStream(runtimeInstanceID)] = struct{}{}
 		streams[runtimeCapacityStream(runtimeInstanceID)] = struct{}{}
+	}
+	if len(identitySalt) > 0 {
+		// A partial failed Team may retain a stale running node projection even
+		// though its prior Run is terminal. Include prior Attempt streams so the
+		// dispatch state can prove that no active work is being reopened.
+		for _, node := range team.nodes {
+			for _, attempt := range node.attempts {
+				streams[workItemStream(attempt.workItemID)] = struct{}{}
+				streams[runStream(attempt.runID)] = struct{}{}
+			}
+		}
 	}
 	output := make([]string, 0, len(streams))
 	for streamID := range streams {
@@ -2972,6 +3136,7 @@ func plannedTeamRecord(
 	bindings []TeamNodeSemanticBinding,
 	sequence int64,
 	eventID string,
+	executionGenerationID string,
 ) TeamExecutionRecord {
 	nodes := plan.Nodes()
 	records := make([]TeamNodeRecord, len(nodes))
@@ -2989,7 +3154,8 @@ func plannedTeamRecord(
 	}
 	return TeamExecutionRecord{
 		teamInstanceID: plan.TeamInstanceID(), planDigest: plan.Digest(),
-		status: "pending", nodes: records,
+		executionGenerationID: executionGenerationID,
+		status:                "pending", nodes: records,
 		streamSequence: sequence, lastEventID: eventID,
 	}
 }
@@ -3241,6 +3407,14 @@ func replayTeamDispatchState(
 	if err := replayProviderModelRateCardStreams(&state, byStream); err != nil {
 		return authorityState{}, err
 	}
+	outcomes := make(map[string]journal.Event)
+	for streamID, streamEvents := range byStream {
+		if strings.HasPrefix(streamID, "work-item/") {
+			if err := replayWorkItemStream(&state, streamID, streamEvents, outcomes); err != nil {
+				return authorityState{}, err
+			}
+		}
+	}
 	for streamID, streamEvents := range byStream {
 		if strings.HasPrefix(streamID, "runtime_instance:") {
 			if err := replayRuntimeIdentityStream(
@@ -3248,6 +3422,15 @@ func replayTeamDispatchState(
 				streamID,
 				streamEvents,
 			); err != nil {
+				return authorityState{}, err
+			}
+		}
+	}
+	claims := make(map[string]*claimReplay)
+	terminals := make(map[string]*terminalReplay)
+	for streamID, streamEvents := range byStream {
+		if strings.HasPrefix(streamID, "run/") {
+			if err := replayRunStream(&state, streamID, streamEvents, claims, terminals); err != nil {
 				return authorityState{}, err
 			}
 		}
@@ -3326,6 +3509,7 @@ func replayTeamExecution(
 ) (TeamExecutionRecord, error) {
 	var team TeamExecutionRecord
 	var sequence int64
+	var executionGenerationID string
 	for _, event := range events {
 		if event.StreamID != teamExecutionStream(teamInstanceID) ||
 			event.Seq != sequence+1 ||
@@ -3334,6 +3518,25 @@ func replayTeamExecution(
 		}
 		sequence = event.Seq
 		switch event.Type {
+		case "TeamExecutionReopened":
+			var payload teamExecutionReopenedPayload
+			if decodeExactPayload(event.PayloadJSON, &payload) != nil ||
+				team.teamInstanceID != teamInstanceID ||
+				!validSHA256Hex(payload.PreviousPlanDigest) ||
+				!validSHA256Hex(payload.NextPlanDigest) ||
+				payload.PreviousPlanDigest != team.planDigest ||
+				(!teamRestartable(team) &&
+					!teamRestartableWithRecoveryRunProofs(team, payload.RecoveryRuns)) ||
+				event.CausationID != team.lastEventID {
+				return TeamExecutionRecord{}, ErrTeamExecutionConflict
+			}
+			executionGenerationID = event.CorrelationID
+			team = TeamExecutionRecord{
+				teamInstanceID:        teamInstanceID,
+				executionGenerationID: executionGenerationID,
+				streamSequence:        event.Seq,
+				lastEventID:           event.ID,
+			}
 		case "TeamExecutionPlanned":
 			var payload struct {
 				TeamInstanceID   string                         `json:"team_instance_id"`
@@ -3374,6 +3577,7 @@ func replayTeamExecution(
 			team = TeamExecutionRecord{
 				teamInstanceID:        teamInstanceID,
 				planDigest:            payload.PlanDigest,
+				executionGenerationID: executionGenerationID,
 				status:                "pending",
 				nodes:                 make([]TeamNodeRecord, len(payload.Nodes)),
 				legacySemanticUnbound: payload.SemanticBindings == nil,
@@ -4030,6 +4234,20 @@ func replayTeamExecution(
 	return team, nil
 }
 
+type teamExecutionReopenedPayload struct {
+	TeamInstanceID     string                               `json:"team_instance_id"`
+	PreviousPlanDigest string                               `json:"previous_plan_digest"`
+	NextPlanDigest     string                               `json:"next_plan_digest"`
+	RecoveryRuns       []teamRestartRecoveryRunProofPayload `json:"recovery_runs,omitempty"`
+}
+
+type teamRestartRecoveryRunProofPayload struct {
+	RunID          string `json:"run_id"`
+	TerminalStatus string `json:"terminal_status"`
+	RunEventID     string `json:"run_event_id"`
+	RunSequence    int64  `json:"run_sequence"`
+}
+
 func exactRecoveryFallbackApproval(
 	payload teamRecoveryPayload,
 	node *TeamNodeRecord,
@@ -4205,6 +4423,161 @@ func teamIsTerminal(team TeamExecutionRecord) bool {
 		}
 	}
 	return len(team.nodes) > 0
+}
+
+// teamRestartable covers fully terminal Teams and failed partial executions
+// whose dependent nodes never ran. A governed new Attempt must be able to
+// reopen that Team while still refusing to reuse active work in flight.
+func teamRestartable(team TeamExecutionRecord) bool {
+	return teamRestartableWithState(team, authorityState{})
+}
+
+func teamRestartableWithState(team TeamExecutionRecord, state authorityState) bool {
+	if len(team.nodes) == 0 {
+		return false
+	}
+	if teamIsTerminal(team) {
+		return true
+	}
+	hasTerminalFailure := false
+	for _, node := range team.nodes {
+		switch node.status {
+		case "failed", "blocked", "human_required", "cancelled":
+			hasTerminalFailure = true
+		case "ready_for_review":
+			// An explicit, governed New Attempt is also valid after a
+			// completed node has been handed to review. Ordinary starts still
+			// refuse this state; RestartTerminal is the user authorization to
+			// create a fresh Attempt and preserve the prior review lineage.
+			hasTerminalFailure = true
+		case "running":
+			attempt := teamAttemptByNumber(&node, node.currentAttempt)
+			if attempt == nil && len(node.attempts) > 0 {
+				attempt = &node.attempts[len(node.attempts)-1]
+			}
+			if attempt != nil && (attempt.status == "failed" || attempt.status == "cancelled") {
+				hasTerminalFailure = true
+				continue
+			}
+			run := authorityRunForAttempt(state, attempt)
+			if run == nil || run.terminalStatus != "failed" && run.terminalStatus != "cancelled" {
+				return false
+			}
+			hasTerminalFailure = true
+		case "awaiting_recovery":
+			attempt := teamAttemptByNumber(&node, node.currentAttempt)
+			if attempt == nil && len(node.attempts) > 0 {
+				attempt = &node.attempts[len(node.attempts)-1]
+			}
+			if attempt != nil && (attempt.status == "failed" || attempt.status == "cancelled") {
+				hasTerminalFailure = true
+				continue
+			}
+			run := authorityRunForAttempt(state, attempt)
+			if run == nil || run.terminalStatus != "failed" && run.terminalStatus != "cancelled" {
+				return false
+			}
+			hasTerminalFailure = true
+		case "ready", "scheduled":
+			return false
+		}
+	}
+	return hasTerminalFailure
+}
+
+func teamRestartRecoveryRunProofs(
+	team TeamExecutionRecord,
+	state authorityState,
+) []teamRestartRecoveryRunProofPayload {
+	proofs := make([]teamRestartRecoveryRunProofPayload, 0)
+	for index := range team.nodes {
+		node := &team.nodes[index]
+		if node.status != "running" && node.status != "awaiting_recovery" {
+			continue
+		}
+		attempt := teamAttemptByNumber(node, node.currentAttempt)
+		if attempt == nil && len(node.attempts) > 0 {
+			attempt = &node.attempts[len(node.attempts)-1]
+		}
+		if attempt != nil && (attempt.status == "failed" || attempt.status == "cancelled") {
+			continue
+		}
+		run := authorityRunForAttempt(state, attempt)
+		if run == nil || run.terminalStatus != "failed" && run.terminalStatus != "cancelled" {
+			continue
+		}
+		proofs = append(proofs, teamRestartRecoveryRunProofPayload{
+			RunID:          run.id,
+			TerminalStatus: run.terminalStatus,
+			RunEventID:     run.lastEventID,
+			RunSequence:    run.streamSequence,
+		})
+	}
+	sort.Slice(proofs, func(left, right int) bool {
+		return proofs[left].RunID < proofs[right].RunID
+	})
+	return proofs
+}
+
+func teamRestartableWithRecoveryRunProofs(
+	team TeamExecutionRecord,
+	proofs []teamRestartRecoveryRunProofPayload,
+) bool {
+	if len(team.nodes) == 0 || len(proofs) == 0 {
+		return false
+	}
+	proofByRunID := make(map[string]teamRestartRecoveryRunProofPayload, len(proofs))
+	for _, proof := range proofs {
+		if !validOpaqueID(proof.RunID) || !validOpaqueID(proof.RunEventID) ||
+			(proof.TerminalStatus != "failed" && proof.TerminalStatus != "cancelled") ||
+			proof.RunSequence <= 0 {
+			return false
+		}
+		if _, duplicate := proofByRunID[proof.RunID]; duplicate {
+			return false
+		}
+		proofByRunID[proof.RunID] = proof
+	}
+	hasTerminalFailure := false
+	usedProofs := 0
+	for index := range team.nodes {
+		node := &team.nodes[index]
+		switch node.status {
+		case "failed", "blocked", "human_required", "cancelled", "ready_for_review":
+			hasTerminalFailure = true
+		case "running", "awaiting_recovery":
+			attempt := teamAttemptByNumber(node, node.currentAttempt)
+			if attempt == nil && len(node.attempts) > 0 {
+				attempt = &node.attempts[len(node.attempts)-1]
+			}
+			if attempt != nil && (attempt.status == "failed" || attempt.status == "cancelled") {
+				hasTerminalFailure = true
+				continue
+			}
+			if attempt == nil || attempt.runID == "" {
+				return false
+			}
+			if _, ok := proofByRunID[attempt.runID]; !ok {
+				return false
+			}
+			usedProofs++
+			hasTerminalFailure = true
+		case "ready", "scheduled":
+			return false
+		}
+	}
+	return hasTerminalFailure && usedProofs == len(proofByRunID)
+}
+
+func authorityRunForAttempt(state authorityState, attempt *TeamAttemptRecord) *RunRecord {
+	if attempt == nil || attempt.runID == "" {
+		return nil
+	}
+	run, ok := state.runs[attempt.runID]
+	if !ok {
+		return nil
+	}
+	return &run
 }
 
 func aggregateTeamTerminal(team TeamExecutionRecord) (string, string) {

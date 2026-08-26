@@ -1,6 +1,6 @@
 # P2D-W2D Contract: Observability, Failure Isolation, Governance, Fallback, Accounting and UI
 
-Status: `ACTIVE / PARTIAL`
+Status: `ACCEPTED / ACTIVE PHASE SCOPE COMPLETE`
 
 Parent Goal: `Phase 2D - Multi-Provider, Multi-Model Agent Team Orchestration`
 
@@ -2059,3 +2059,242 @@ capability. Evidence:
 
 P2D-W2D remains `ACTIVE / PARTIAL`; installed Web/MCP diagnostics, per-Agent
 failure isolation, accounting and ATL9 acceptance are still mandatory.
+
+## V50 Mission, Team and RoundTable UX source verification (2026-08-20)
+
+The native macOS workbench now keeps the governance path task-first:
+
+- Confirmed executable Teams expose a direct `Start Mission` action in the Team
+  list. Read-only or preserved Teams show their state without an inert action.
+- RoundTable creation no longer adds generic Writer/Target seats behind the
+  user's back. After the moderator session exists, the UI projects configured
+  Agent candidates from the authoritative setup role catalog.
+- A candidate carries only non-secret display data for Harness, Provider,
+  Provider Account, and Model. The candidate can be dragged into a native
+  SwiftUI drop destination or added with the equivalent button. The button is
+  the keyboard and assistive-technology alternative to drag.
+- The first accepted candidate is the Writer and the second is the Target. The
+  existing daemon `roundtable_add_seat` route remains the authority; the UI does
+  not invent a new execution binding or move credentials into RoundTable data.
+- Existing legacy sessions with `seat-writer` and `seat-target` remain
+  inspectable and runnable through a compatibility display fallback.
+
+OpenCode is already a supported harness/provider path in source: its catalog,
+native profile, model identity adaptation, Agent runtime profile and live
+conversation tests predate V50. V50 only makes that route legible in the
+RoundTable Agent palette; it does not claim a new installed OpenCode or mixed
+Team gate.
+
+Verification: 282 macOS XCTest passed with the existing 1 visual-export skip;
+15 Swift Testing tests passed; Go packages `internal/roundtable`,
+`internal/localipc`, `internal/app`, `internal/projection`, `internal/work`,
+and `internal/runtime` passed; `git diff --check` passed. No credentials,
+network call, App reinstall, or installed live acceptance was performed for
+this source/UI slice. Phase 2D remains `ACTIVE / PARTIAL`.
+
+## V50.1 Mission, Team and RoundTable UX follow-up (2026-08-20)
+
+The V50 source slice received a small discoverability and accessibility follow-up:
+
+- Team Agent choice labels and Provider Account route labels now include the
+  selected Harness, Provider Account and Model in one non-secret line.
+- `opencode` is rendered as `OpenCode` in those menus, matching the existing
+  runtime/provider catalog and avoiding the impression that OpenCode is absent.
+- The RoundTable checklist now says `Add two Agents`, matching the drag/add
+  interaction rather than implying hardcoded Writer/Target seats.
+- Team list cards keep `Start Mission` as a separate contained accessibility
+  action, so VoiceOver and keyboard navigation do not lose the button inside the
+  card's summary.
+
+Swift build and all 282 XCTest plus 15 Swift Testing tests passed after this
+follow-up. No credential, network, App reinstall or installed live gate was
+performed. Phase 2D remains `ACTIVE / PARTIAL`; CV6, ATL9, failure isolation,
+accounting and COMP2-E remain open.
+
+## Explicit Mission Attempt restart amendment (2026-08-21)
+
+Mission retry is now an explicit, auditable operation rather than a repeated
+Start against the same terminal projection. The Swift command and preflight
+carry non-secret `new_attempt`; `loomd` maps it to `RestartTerminal` on the
+authoritative Team request. The authority appends `TeamExecutionReopened` with
+the previous and next plan digests, then emits a new `TeamExecutionPlanned`
+lineage. Projection replay preserves the old terminal Journal facts and
+represents the next Attempt as a fresh pending shell. Restarted Work/Run
+identity derivation receives the request correlation salt to prevent collisions.
+
+The Teams UI exposes `Open Mission` for inspection and `New Attempt` only for
+terminal existing Missions. The new sheet states that the prior Mission is
+preserved and still requires objective/context confirmation and preflight.
+Ordinary Start remains fail-closed and no Provider, Account, Model, credential
+revision, fallback or policy binding is silently changed.
+
+Status: `SOURCE VERIFIED / INSTALLED PARTIAL`. Core Go suites, projection
+replay coverage, full Swift tests, release bundle install, daemon auto-start,
+and installed DeepSeek conversation readiness passed. The provider-backed
+new-Attempt live gate remains open until the installed flow observes objective
+entry, preflight, reopen/plan projection and a real reply. Phase 2D remains
+`ACTIVE / PARTIAL`.
+
+## Installed terminal explicit fallback checkpoint (2026-08-23)
+
+Status: `INSTALLED LIVE VERIFIED / BROADER FAILURE MATRIX PARTIAL`.
+
+Build 117 completed the exact governed fallback lifecycle against the installed
+App-owned daemon. A pre-dispatch observer waited until the private MCP helper
+was executing the OpenCode subagent's exact scoped ToolCall, then revoked only
+that Enrollment revision through authenticated private UDS. Attempt 1
+terminalized as `runtime_process_failed`; no peer Agent was cancelled.
+
+Fallback approval version 1 selected a newly frozen Loom Native + DeepSeek
+Attempt 2. It passed independent verification, recorded 2,792 total tokens and
+an account-level `rate_card_estimate` row. The healthy Loom Native main recorded
+3,359 tokens independently and the Team terminalized `succeeded`. The source
+OpenCode WorkItem retained exactly one scoped `JobPermissionBound` fact. No
+global capability, silent Provider/account/model substitution, secret-bearing
+diagnostic or content-bearing Journal event was introduced.
+
+The installed harness now recognizes structured recoverable snapshot gaps and
+reports separate non-secret fallback, accounting, peer and terminal predicates.
+The Pi cancellation fixture also removes only its fixed test-owned fallback
+socket root before and after execution, preventing a deliberately interrupted
+test from poisoning later fail-closed extension creation.
+
+Verification: the installed fallback gate passed in 25.41 seconds; the focused
+Pi cancellation test passed five consecutive runs; `go test -p 4 ./...
+-count=1`, `go vet ./...`, the Phase 2D acceptance harness and `git diff
+--check` passed. Evidence:
+`../P2D-W2D-installed-explicit-fallback-build117.md`.
+
+W2D remains `ACTIVE / PARTIAL` for installed corrupt-record,
+revision-conflict, Provider-injected auth/rate-limit/timeout, custom endpoint
+approval and the four-distinct-Provider Team matrix.
+
+## Build 121 governed endpoint and Failure Lab checkpoint (2026-08-23)
+
+Status: `SOURCE + INSTALLED CONTROLLED-LIVE VERIFIED / W2D PARTIAL`.
+
+The installed App now exposes a credential-free Failure Lab backed by bounded
+loopback transport and separate temporary Provider Accounts. Its private-UDS
+route and strict Swift models cover auth, rate limit, timeout, insufficient
+balance, corrupt Vault record and credential-revision conflict. Each run emits a
+safe Incident, stage, code and retryability for only the target Agent and proves
+that its distinct healthy peer succeeded. The native governance surface offers
+Retry, diagnostics and Incident copy; it never stores Prompt, Provider response
+or secret content.
+
+The endpoint review path now also contributes the exact candidate digest,
+endpoint fingerprint, policy version/digest and a 15-minute versioned Journal
+approval. Review and approval remain secretless; Vault import and Provider
+verification are separate operations. The installed setup contract preserves
+25 Providers, 7 Runtimes, 4 Conversation Profiles and 5 safe import candidates.
+
+This closes the previously open controlled failure cells. It does not close the
+real custom-endpoint credential/frozen-binding gate or the four-distinct-
+Provider Team matrix, so W2D and Phase 2D remain `ACTIVE / PARTIAL`. Evidence:
+`../P2D-W1E-W1G-W2D-endpoint-failure-lab-build121.md`.
+
+## Build 122 review remediation checkpoint (2026-08-23)
+
+Status: `SOURCE + INSTALLED CONTROLLED-LIVE VERIFIED / W2D PARTIAL`.
+
+The Setup boundary now explicitly proves that an invalid CC Switch import
+candidate is dropped without hiding the Provider or Runtime catalogs. Every
+candidate admitted to the strict Swift contract carries the complete endpoint
+review binding. App Socket health is non-blocking and bounded, and the App
+restarts an unexpectedly terminated owned daemon without accepting a stale or
+foreign Socket.
+
+Endpoint approval now has immutable renewal generations, account-scoped client
+state and explicit supersession of a previous candidate for the same Provider
+Account. The verifier fails closed on ambiguous authority. The native review
+sheet exposes the exact selectable endpoint before approval.
+
+Failure Lab now executes both target and peer on a bounded credential-free
+loopback path, uses daemon-owned temporary account identities and enforces exact
+scenario diagnostics in Swift. Installed governance actions include case-
+specific recovery guidance, retry only when permitted, diagnostic inspection
+and Incident copy. These remain controlled injections and do not replace real
+Provider/Vault live acceptance.
+
+Build 122 preserves the installed 25-Provider/7-Runtime/4-Profile/5-candidate
+projection across daemon restart. Full bounded repository, race, vet, Swift,
+build, signing and installed private-UDS gates pass. Evidence:
+`../P2D-W1E-W1G-W2D-review-remediation-build122.md`.
+
+## Build 124 full-review remediation checkpoint (2026-08-24)
+
+Status: `SOURCE + INSTALLED CORE PATH VERIFIED / W2D PARTIAL`.
+
+Build 124 closes the reviewed App lifecycle, Socket trust, Setup projection,
+OpenCode account binding, Conversation deletion, Mission identity/pagination,
+tool-error and private registry boundaries. Installed Setup, real
+OpenCode/DeepSeek reply, daemon restart continuity and owner-only Vault storage
+pass. Bundle-bound gate evidence now requires an exact gate/build/App hash/
+daemon hash identity and uses no-overwrite private export.
+
+The real custom-endpoint import, four-distinct-Provider Team and real
+single-account failure-isolation completion gates remain open. Evidence:
+`../P2D-W2A-W2D-full-review-remediation-build124.md`.
+
+## External live-gate scope deferral (2026-08-24)
+
+Status: `ACCEPTED / DEFERRED / NO FUTURE PHASE ACTIVATED`.
+
+The user moved three external live scenarios out of Phase 2D completion scope:
+
+- an installed four-distinct-Provider Team using Codex/OpenAI,
+  Claude/Anthropic, Loom/Kimi and Loom/MiniMax;
+- real Provider Account revoke or rate-limit isolation while peers continue;
+- approved custom-endpoint import, verification, exact frozen binding and real
+  Conversation.
+
+The controlled Failure Lab, installed credential/Enrollment isolation, Vault,
+diagnostics, accounting, fallback and per-Agent fail-closed contracts remain
+Phase 2D work and evidence. Deferral does not weaken credential identity,
+failure isolation or observability requirements. A later Phase must explicitly
+reactivate the live scenarios; none is an active new Goal today.
+
+## Build 127 governance closure (2026-08-24)
+
+Status: `ACCEPTED / ACTIVE PHASE SCOPE COMPLETE`.
+
+Build 127 closes the remaining active cross-cutting governance cells without
+weakening deferred external acceptance:
+
+- trust-boundary changes are named per dimension and cannot be confirmed until
+  independently acknowledged;
+- capacity and omission metadata is digest-bound, privacy-safe and honest about
+  unavailable authority;
+- Route Transition failures preserve Incident correlation and cause no Segment,
+  Attempt, responder or disclosure mutation;
+- installed App/daemon lifecycle, signed bundle identity and automatic restart
+  recovery are verified.
+
+The four-distinct-Provider installed Team, real-account revoke/rate-limit matrix
+and custom-endpoint live Conversation remain deferred. No credential or real
+Provider request was used for this Build 127 acceptance.
+
+Evidence: `../P2D-W2A-W2D-trust-capacity-route-build127.md`.
+
+## Post-Build-127 all-transition governance closure (2026-08-25)
+
+Status: `SOURCE VERIFIED / INSTALL PENDING`.
+
+Route governance is no longer conditional on crossing a named trust dimension.
+Every existing-thread Segment change with frozen binding authority carries one
+canonical review digest, including model, reasoning, Provider Account and
+credential revision transitions. Segment and Attempt freeze the same digest;
+missing or drifted authority fails before operational or conversation mutation.
+The App confirmation generation is consumed once and the daemon independently
+revalidates the exact source Segment, target Profile, binding and context mode.
+
+Capacity governance also closes the rebuild and admission boundary. A
+dispatch-safe rebuild preserves the frozen projection, production Conversation
+and Team composition require a capacity resolver/counter, and privacy-safe
+inspection exposes only status, admitted budget, counter identity and aggregate
+priority/source contribution counts. Controlled acceptance confirms an unknown
+Harness reaches no executor and two accounts under one Provider acquire only
+the exact account/reference/revision lease.
+
+This is source evidence only. No credential, Provider request, package or
+installed-App action was used, and Build 127 remains the installed predecessor.
