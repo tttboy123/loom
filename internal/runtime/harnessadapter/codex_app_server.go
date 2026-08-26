@@ -9,13 +9,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/work"
 )
 
-const codexAppServerClientVersion = "phase2d-v11"
+const (
+	codexAppServerClientVersion    = "phase2d-v11"
+	codexAppServerInterruptTimeout = 5 * time.Second
+	codexDefaultModelAlias         = "codex-default"
+)
+
+var errCodexAppServerTurnInterrupted = errors.New("codex app-server turn interrupted")
 
 func (runner *codexProcessRunner) RunHarnessWithAgentInputs(
 	ctx context.Context,
@@ -56,7 +63,7 @@ func (runner *codexProcessRunner) RunHarnessWithAgentInputs(
 						request, lease, systemPromptPath,
 					),
 					Environment:    codexEnvironment(request, lease),
-					Directory:      request.TempPath,
+					Directory:      request.WorkspacePath,
 					MaxOutputBytes: request.MaxOutputBytes,
 					Timeout:        request.Timeout,
 				},
@@ -155,10 +162,11 @@ func runCodexAppServer(
 	if err := codexAppServerInitialize(ctx, session); err != nil {
 		return HarnessProcessResult{}, err
 	}
-	threadID, err := codexAppServerStartThread(ctx, session, request)
+	threadID, resolvedModelID, err := codexAppServerStartThread(ctx, session, request)
 	if err != nil {
 		return HarnessProcessResult{}, err
 	}
+	request.ModelID = resolvedModelID
 	prompt := request.Prompt
 	var accounting *work.RunAccounting
 	for sequence := 1; sequence <= 65; sequence++ {
@@ -247,35 +255,37 @@ func codexAppServerStartThread(
 	ctx context.Context,
 	session HarnessStreamSession,
 	request HarnessProcessRequest,
-) (string, error) {
+) (string, string, error) {
 	payload := struct {
 		ID     string `json:"id"`
 		Method string `json:"method"`
 		Params struct {
-			Model          string `json:"model"`
+			Model          string `json:"model,omitempty"`
 			CWD            string `json:"cwd"`
 			ApprovalPolicy string `json:"approvalPolicy"`
 			Ephemeral      bool   `json:"ephemeral"`
-			Sandbox        struct {
-				Type          string   `json:"type"`
-				WritableRoots []string `json:"writableRoots"`
-				NetworkAccess bool     `json:"networkAccess"`
-			} `json:"sandbox"`
+			Sandbox        string `json:"sandbox"`
 		} `json:"params"`
 	}{ID: "loom-thread-start-v1", Method: "thread/start"}
-	payload.Params.Model = request.ModelID
-	payload.Params.CWD = request.TempPath
+	if request.ModelID != codexDefaultModelAlias {
+		payload.Params.Model = request.ModelID
+	}
+	payload.Params.CWD = request.WorkspacePath
 	payload.Params.ApprovalPolicy = "never"
 	payload.Params.Ephemeral = true
-	payload.Params.Sandbox.Type = "readOnly"
-	payload.Params.Sandbox.WritableRoots = nil
+	payload.Params.Sandbox = "read-only"
 	if err := writeHarnessJSONLine(ctx, session, payload); err != nil {
-		return "", err
+		return "", "", err
 	}
 	preStartedThreadID := ""
 	response, err := readCodexAppServerResponse(
 		ctx, session, payload.ID,
 		func(method string, params json.RawMessage) error {
+			if handled, lifecycleErr := acceptCodexAppServerLifecycleNotification(
+				method, params, "",
+			); handled {
+				return lifecycleErr
+			}
 			if method != "thread/started" {
 				return ErrHarnessProtocol
 			}
@@ -294,18 +304,21 @@ func codexAppServerStartThread(
 		},
 	)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var result struct {
+		Model  string `json:"model"`
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
 	if json.Unmarshal(response, &result) != nil || !validHarnessProtocolID(result.Thread.ID) ||
+		!validHarnessProtocolID(result.Model) ||
+		request.ModelID != codexDefaultModelAlias && result.Model != request.ModelID ||
 		preStartedThreadID != "" && preStartedThreadID != result.Thread.ID {
-		return "", ErrHarnessProtocol
+		return "", "", ErrHarnessProtocol
 	}
-	return result.Thread.ID, nil
+	return result.Thread.ID, result.Model, nil
 }
 
 func codexAppServerTurn(
@@ -329,45 +342,110 @@ func codexAppServerTurn(
 	}
 	zeroHarnessBytes(payload)
 	preStartedTurnID := ""
+	acceptStartNotification := func(method string, params json.RawMessage) error {
+		if handled, lifecycleErr := acceptCodexAppServerLifecycleNotification(
+			method, params, threadID,
+		); handled {
+			return lifecycleErr
+		}
+		return acceptCodexTurnStartNotification(
+			method, params, threadID, &preStartedTurnID,
+		)
+	}
 	response, err := readCodexAppServerResponse(
-		ctx, session, requestID,
-		func(method string, params json.RawMessage) error {
-			switch method {
-			case "thread/started":
-				var notification struct {
-					Thread struct {
-						ID string `json:"id"`
-					} `json:"thread"`
-				}
-				if json.Unmarshal(params, &notification) != nil ||
-					notification.Thread.ID != threadID {
-					return ErrHarnessProtocol
-				}
-				return nil
-			case "turn/started":
-				var notification struct {
-					ThreadID string `json:"threadId"`
-					Turn     struct {
-						ID     string `json:"id"`
-						Status string `json:"status"`
-					} `json:"turn"`
-				}
-				if json.Unmarshal(params, &notification) != nil ||
-					notification.ThreadID != threadID ||
-					!validHarnessProtocolID(notification.Turn.ID) ||
-					notification.Turn.Status != "inProgress" || preStartedTurnID != "" {
-					return ErrHarnessProtocol
-				}
-				preStartedTurnID = notification.Turn.ID
-				return nil
-			default:
-				return ErrHarnessProtocol
-			}
-		},
+		ctx, session, requestID, acceptStartNotification,
 	)
+	if err != nil {
+		if ctx.Err() == nil || errors.Is(err, ErrHarnessProtocol) {
+			return "", nil, err
+		}
+		cleanupCtx, cancelCleanup := context.WithTimeout(
+			context.Background(), codexAppServerInterruptTimeout,
+		)
+		defer cancelCleanup()
+		response, err = readCodexAppServerResponse(
+			cleanupCtx, session, requestID, acceptStartNotification,
+		)
+		if err != nil {
+			return "", nil, errors.Join(ctx.Err(), err)
+		}
+		turnID, decodeErr := decodeCodexStartedTurn(response, preStartedTurnID)
+		zeroHarnessBytes(response)
+		if decodeErr != nil {
+			return "", nil, errors.Join(ctx.Err(), decodeErr)
+		}
+		if interruptErr := interruptCodexAppServerTurnWithContext(
+			cleanupCtx, session, threadID, turnID, sequence,
+		); interruptErr != nil {
+			return "", nil, errors.Join(ctx.Err(), interruptErr)
+		}
+		return "", nil, errors.Join(errCodexAppServerTurnInterrupted, ctx.Err())
+	}
+	turnID, err := decodeCodexStartedTurn(response, preStartedTurnID)
+	zeroHarnessBytes(response)
 	if err != nil {
 		return "", nil, err
 	}
+	content, accounting, readErr := readCodexAppServerTurn(
+		ctx, session, threadID, turnID, request.MaxOutputBytes,
+	)
+	if readErr == nil {
+		return content, accounting, nil
+	}
+	if ctx.Err() == nil || errors.Is(readErr, ErrHarnessProtocol) {
+		return "", nil, readErr
+	}
+	if interruptErr := interruptCodexAppServerTurn(
+		session, threadID, turnID, sequence,
+	); interruptErr != nil {
+		return "", nil, errors.Join(ctx.Err(), interruptErr)
+	}
+	return "", nil, errors.Join(errCodexAppServerTurnInterrupted, ctx.Err())
+}
+
+func acceptCodexTurnStartNotification(
+	method string,
+	params json.RawMessage,
+	threadID string,
+	preStartedTurnID *string,
+) error {
+	if preStartedTurnID == nil {
+		return ErrHarnessProtocol
+	}
+	switch method {
+	case "thread/started":
+		var notification struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+		}
+		if json.Unmarshal(params, &notification) != nil ||
+			notification.Thread.ID != threadID {
+			return ErrHarnessProtocol
+		}
+		return nil
+	case "turn/started":
+		var notification struct {
+			ThreadID string `json:"threadId"`
+			Turn     struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"turn"`
+		}
+		if json.Unmarshal(params, &notification) != nil ||
+			notification.ThreadID != threadID ||
+			!validHarnessProtocolID(notification.Turn.ID) ||
+			notification.Turn.Status != "inProgress" || *preStartedTurnID != "" {
+			return ErrHarnessProtocol
+		}
+		*preStartedTurnID = notification.Turn.ID
+		return nil
+	default:
+		return ErrHarnessProtocol
+	}
+}
+
+func decodeCodexStartedTurn(response json.RawMessage, preStartedTurnID string) (string, error) {
 	var started struct {
 		Turn struct {
 			ID     string `json:"id"`
@@ -377,11 +455,9 @@ func codexAppServerTurn(
 	if json.Unmarshal(response, &started) != nil ||
 		!validHarnessProtocolID(started.Turn.ID) || started.Turn.Status != "inProgress" ||
 		preStartedTurnID != "" && preStartedTurnID != started.Turn.ID {
-		return "", nil, ErrHarnessProtocol
+		return "", ErrHarnessProtocol
 	}
-	return readCodexAppServerTurn(
-		ctx, session, threadID, started.Turn.ID, request.MaxOutputBytes,
-	)
+	return started.Turn.ID, nil
 }
 
 func marshalCodexTurnStart(
@@ -389,7 +465,8 @@ func marshalCodexTurnStart(
 	prompt []byte,
 ) ([]byte, error) {
 	if !validHarnessProtocolID(requestID) || !validHarnessProtocolID(threadID) ||
-		modelID != CodexModelID || len(prompt) == 0 || len(prompt) > maxHarnessPromptBytes ||
+		!validHarnessProtocolID(modelID) || len(prompt) == 0 ||
+		len(prompt) > maxHarnessPromptBytes ||
 		!utf8.Valid(prompt) || bytes.IndexByte(prompt, 0) >= 0 {
 		return nil, ErrHarnessProtocol
 	}
@@ -413,6 +490,167 @@ func marshalCodexTurnStart(
 	}
 	payload = append(payload, "}}"...)
 	return payload, nil
+}
+
+func interruptCodexAppServerTurn(
+	session HarnessStreamSession,
+	threadID, turnID string,
+	sequence int,
+) error {
+	if nilHarnessInterface(session) || !validHarnessProtocolID(threadID) ||
+		!validHarnessProtocolID(turnID) || sequence < 1 {
+		return ErrHarnessProtocol
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(), codexAppServerInterruptTimeout,
+	)
+	defer cancel()
+	return interruptCodexAppServerTurnWithContext(
+		ctx, session, threadID, turnID, sequence,
+	)
+}
+
+func interruptCodexAppServerTurnWithContext(
+	ctx context.Context,
+	session HarnessStreamSession,
+	threadID, turnID string,
+	sequence int,
+) error {
+	if ctx == nil || nilHarnessInterface(session) || !validHarnessProtocolID(threadID) ||
+		!validHarnessProtocolID(turnID) || sequence < 1 {
+		return ErrHarnessProtocol
+	}
+	request := struct {
+		ID     string `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+		} `json:"params"`
+	}{
+		ID:     fmt.Sprintf("loom-turn-interrupt-%d", sequence),
+		Method: "turn/interrupt",
+	}
+	request.Params.ThreadID = threadID
+	request.Params.TurnID = turnID
+	if err := writeHarnessJSONLine(ctx, session, request); err != nil {
+		return err
+	}
+	completed := false
+	result, err := readCodexAppServerResponse(
+		ctx, session, request.ID,
+		func(method string, params json.RawMessage) error {
+			return acceptCodexInterruptNotification(
+				method, params, threadID, turnID, &completed,
+			)
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer zeroHarnessBytes(result)
+	var resultObject map[string]json.RawMessage
+	if json.Unmarshal(result, &resultObject) != nil || resultObject == nil {
+		return ErrHarnessProtocol
+	}
+	if completed {
+		return nil
+	}
+	return readCodexInterruptedCompletion(ctx, session, threadID, turnID)
+}
+
+func readCodexInterruptedCompletion(
+	ctx context.Context,
+	session HarnessStreamSession,
+	threadID, turnID string,
+) error {
+	completed := false
+	for count := 0; count < 4096; count++ {
+		line, err := session.ReadLine(ctx)
+		if err != nil {
+			zeroHarnessBytes(line)
+			return errors.Join(ErrHarnessProcessUnavailable, err)
+		}
+		var notification struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		decodeErr := json.Unmarshal(line, &notification)
+		if decodeErr != nil || len(notification.ID) != 0 ||
+			notification.Method == "" || len(notification.Params) == 0 {
+			zeroHarnessBytes(line)
+			return ErrHarnessProtocol
+		}
+		acceptErr := acceptCodexInterruptNotification(
+			notification.Method, notification.Params, threadID, turnID, &completed,
+		)
+		zeroHarnessBytes(line)
+		if acceptErr != nil {
+			return ErrHarnessProtocol
+		}
+		if completed {
+			return nil
+		}
+	}
+	return ErrHarnessProtocol
+}
+
+func acceptCodexInterruptNotification(
+	method string,
+	params json.RawMessage,
+	threadID, turnID string,
+	completed *bool,
+) error {
+	if completed == nil {
+		return ErrHarnessProtocol
+	}
+	if *completed {
+		return ErrHarnessProtocol
+	}
+	if handled, lifecycleErr := acceptCodexAppServerLifecycleNotification(
+		method, params, threadID,
+	); handled {
+		return lifecycleErr
+	}
+	var notification struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		Turn     struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(params, &notification) != nil ||
+		notification.ThreadID != threadID {
+		return ErrHarnessProtocol
+	}
+	switch method {
+	case "turn/completed":
+		if notification.Turn.ID != turnID ||
+			notification.Turn.Status != "interrupted" {
+			return ErrHarnessProtocol
+		}
+		*completed = true
+		return nil
+	case "turn/started":
+		if notification.Turn.ID != turnID ||
+			notification.Turn.Status != "inProgress" {
+			return ErrHarnessProtocol
+		}
+		return nil
+	case "item/started", "item/completed", "turn/diff/updated",
+		"item/agentMessage/delta", "item/plan/delta",
+		"item/reasoning/summaryPartAdded", "item/reasoning/summaryTextDelta",
+		"item/reasoning/textDelta", "turn/plan/updated",
+		"turn/moderationMetadata", "thread/tokenUsage/updated":
+		if notification.TurnID != turnID {
+			return ErrHarnessProtocol
+		}
+		return nil
+	default:
+		return ErrHarnessProtocol
+	}
 }
 
 func appendHarnessJSONString(destination, content []byte) []byte {
@@ -452,7 +690,7 @@ func readCodexAppServerResponse(
 	requestID string,
 	acceptNotification func(string, json.RawMessage) error,
 ) (json.RawMessage, error) {
-	for count := 0; count < 64; count++ {
+	for count := 0; count < 4096; count++ {
 		line, err := session.ReadLine(ctx)
 		if err != nil {
 			zeroHarnessBytes(line)
@@ -487,6 +725,136 @@ func readCodexAppServerResponse(
 		return append(json.RawMessage(nil), envelope.Result...), nil
 	}
 	return nil, ErrHarnessProtocol
+}
+
+func acceptCodexAppServerLifecycleNotification(
+	method string,
+	params json.RawMessage,
+	threadID string,
+) (bool, error) {
+	switch method {
+	case "configWarning":
+		var notification struct {
+			Summary string          `json:"summary"`
+			Details json.RawMessage `json:"details"`
+		}
+		if json.Unmarshal(params, &notification) != nil || notification.Summary == "" ||
+			len(notification.Summary) > 16*1024 || !utf8.ValidString(notification.Summary) ||
+			strings.IndexByte(notification.Summary, 0) >= 0 || len(notification.Details) == 0 {
+			return true, ErrHarnessProtocol
+		}
+		return true, nil
+	case "thread/status/changed":
+		if threadID == "" {
+			return true, ErrHarnessProtocol
+		}
+		var notification struct {
+			ThreadID string `json:"threadId"`
+			Status   struct {
+				Type        string    `json:"type"`
+				ActiveFlags *[]string `json:"activeFlags"`
+			} `json:"status"`
+		}
+		if json.Unmarshal(params, &notification) != nil ||
+			notification.ThreadID != threadID {
+			return true, ErrHarnessProtocol
+		}
+		switch notification.Status.Type {
+		case "active":
+			if notification.Status.ActiveFlags == nil ||
+				len(*notification.Status.ActiveFlags) > 2 {
+				return true, ErrHarnessProtocol
+			}
+			seen := map[string]bool{}
+			for _, flag := range *notification.Status.ActiveFlags {
+				if flag != "waitingOnApproval" && flag != "waitingOnUserInput" || seen[flag] {
+					return true, ErrHarnessProtocol
+				}
+				seen[flag] = true
+			}
+		case "idle", "notLoaded", "systemError":
+			if notification.Status.ActiveFlags != nil {
+				return true, ErrHarnessProtocol
+			}
+		default:
+			return true, ErrHarnessProtocol
+		}
+		return true, nil
+	case "warning":
+		var notification struct {
+			ThreadID *string `json:"threadId"`
+			Message  string  `json:"message"`
+		}
+		if json.Unmarshal(params, &notification) != nil || notification.Message == "" ||
+			len(notification.Message) > 16*1024 || !utf8.ValidString(notification.Message) ||
+			strings.IndexByte(notification.Message, 0) >= 0 ||
+			notification.ThreadID != nil &&
+				(threadID == "" || *notification.ThreadID != threadID) {
+			return true, ErrHarnessProtocol
+		}
+		return true, nil
+	case "account/rateLimits/updated":
+		var notification struct {
+			RateLimits json.RawMessage `json:"rateLimits"`
+		}
+		if len(params) > 64*1024 || json.Unmarshal(params, &notification) != nil {
+			return true, ErrHarnessProtocol
+		}
+		rateLimits := bytes.TrimSpace(notification.RateLimits)
+		if len(rateLimits) < 2 || rateLimits[0] != '{' || rateLimits[len(rateLimits)-1] != '}' {
+			return true, ErrHarnessProtocol
+		}
+		return true, nil
+	case "remoteControl/status/changed":
+		var notification struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(params, &notification) != nil ||
+			!validHarnessProtocolID(notification.Status) {
+			return true, ErrHarnessProtocol
+		}
+		return true, nil
+	case "mcpServer/startupStatus/updated":
+		var notification struct {
+			Name          string  `json:"name"`
+			Status        string  `json:"status"`
+			ThreadID      *string `json:"threadId"`
+			Error         *string `json:"error"`
+			FailureReason *string `json:"failureReason"`
+		}
+		if len(params) > 64*1024 || json.Unmarshal(params, &notification) != nil ||
+			!validHarnessProtocolID(notification.Name) ||
+			notification.ThreadID != nil &&
+				(threadID == "" || *notification.ThreadID != threadID) ||
+			notification.Error != nil &&
+				(len(*notification.Error) > 16*1024 || !utf8.ValidString(*notification.Error) ||
+					strings.IndexByte(*notification.Error, 0) >= 0) ||
+			notification.FailureReason != nil &&
+				*notification.FailureReason != "reauthenticationRequired" {
+			return true, ErrHarnessProtocol
+		}
+		switch notification.Status {
+		case "starting", "ready", "failed", "cancelled":
+			return true, nil
+		default:
+			return true, ErrHarnessProtocol
+		}
+	case "thread/started":
+		if threadID == "" {
+			return false, nil
+		}
+		var notification struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+		}
+		if json.Unmarshal(params, &notification) != nil || notification.Thread.ID != threadID {
+			return true, ErrHarnessProtocol
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func readCodexAppServerTurn(
@@ -530,6 +898,15 @@ func readCodexAppServerTurn(
 			zeroHarnessBytes(rawEnvelope.Params)
 			return "", nil, ErrHarnessProtocol
 		}
+		if handled, lifecycleErr := acceptCodexAppServerLifecycleNotification(
+			notification.Method, rawEnvelope.Params, threadID,
+		); handled {
+			zeroHarnessBytes(rawEnvelope.Params)
+			if lifecycleErr != nil {
+				return "", nil, lifecycleErr
+			}
+			continue
+		}
 		if notification.Method != "thread/tokenUsage/updated" {
 			zeroHarnessBytes(rawEnvelope.Params)
 		}
@@ -555,14 +932,18 @@ func readCodexAppServerTurn(
 				return "", nil, ErrHarnessProtocol
 			}
 			return content, accounting, nil
-		case "turn/started", "item/started", "turn/diff/updated",
-			"item/agentMessage/delta":
-			if notification.Params.ThreadID != threadID {
+		case "turn/started":
+			if notification.Params.ThreadID != threadID ||
+				notification.Params.Turn.ID != turnID ||
+				notification.Params.Turn.Status != "inProgress" {
 				return "", nil, ErrHarnessProtocol
 			}
-			if notification.Method == "turn/started" &&
-				(notification.Params.Turn.ID != turnID ||
-					notification.Params.Turn.Status != "inProgress") {
+		case "item/started", "turn/diff/updated", "item/agentMessage/delta",
+			"item/plan/delta", "item/reasoning/summaryPartAdded",
+			"item/reasoning/summaryTextDelta", "item/reasoning/textDelta",
+			"turn/plan/updated", "turn/moderationMetadata":
+			if notification.Params.ThreadID != threadID ||
+				notification.Params.TurnID != turnID {
 				return "", nil, ErrHarnessProtocol
 			}
 		case "thread/tokenUsage/updated":

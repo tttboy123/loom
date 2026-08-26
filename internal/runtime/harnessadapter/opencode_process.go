@@ -2,6 +2,8 @@ package harnessadapter
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"time"
@@ -47,23 +49,27 @@ func (runner *openCodeProcessRunner) RunHarness(
 		request.RequiresCredential && (len(secret) == 0 || len(secret) > 8192) {
 		return HarnessProcessResult{}, ErrInvalidOpenCodeAdapter
 	}
-	// The Loom system prompt is prepended to the model-visible message because
-	// OpenCode has no separate system-prompt file flag.
-	message := request.SystemPrompt
-	if message != "" {
-		message += "\n\n"
+	// OpenCode reads a non-interactive message from stdin when no positional
+	// message is present. Keep the governed context out of process argv, where
+	// other same-user processes could observe it.
+	message := make([]byte, 0, len(request.SystemPrompt)+2+len(request.Prompt))
+	if request.SystemPrompt != "" {
+		message = append(message, request.SystemPrompt...)
+		message = append(message, '\n', '\n')
 	}
-	message += string(request.Prompt)
-	if len(message) > maxHarnessPromptBytes || !utf8.ValidString(message) {
+	message = append(message, request.Prompt...)
+	defer zeroHarnessBytes(message)
+	if len(message) > maxHarnessPromptBytes || !utf8.Valid(message) {
 		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
 	}
 	commandResult, commandErr := runner.commands.RunCommand(
 		ctx,
 		HarnessCommandRequest{
 			ExecutablePath: request.ExecutablePath,
-			Arguments:      openCodeArguments(request, message),
+			Arguments:      openCodeArguments(request),
 			Environment:    openCodeEnvironment(request, secret),
-			Directory:      request.TempPath,
+			Directory:      request.WorkspacePath,
+			Stdin:          message,
 			MaxOutputBytes: request.MaxOutputBytes,
 			Timeout:        request.Timeout,
 		},
@@ -74,11 +80,30 @@ func (runner *openCodeProcessRunner) RunHarness(
 		}
 		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
 	}
-	if commandResult.ExitCode != 0 || len(commandResult.Stdout) > request.MaxOutputBytes ||
+	if commandResult.ExitCode != 0 {
+		decoded, decodeErr := provider.DecodeOpenCodeHarnessText(
+			commandResult.Stdout, request.MaxOutputBytes,
+		)
+		// The OpenCode launcher can report a cleanup failure after its structured
+		// stream has already reached session.idle. Preserve that completed
+		// candidate; the adapter still requires authenticated governed tool
+		// activity before accepting an empty, tool-only result.
+		if decodeErr == nil {
+			return HarnessProcessResult{
+				Content: strings.TrimSpace(string(decoded)),
+				Stderr:  []byte{},
+			}, nil
+		}
+		if classifiedOpenCodeProcessFailure(decodeErr) {
+			return HarnessProcessResult{}, decodeErr
+		}
+		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
+	}
+	if len(commandResult.Stdout) > request.MaxOutputBytes ||
 		len(commandResult.Stderr) > request.MaxOutputBytes {
 		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
 	}
-	decoded, decodeErr := provider.DecodeOpenCodeText(
+	decoded, decodeErr := provider.DecodeOpenCodeHarnessText(
 		commandResult.Stdout, request.MaxOutputBytes,
 	)
 	if decodeErr != nil {
@@ -90,6 +115,13 @@ func (runner *openCodeProcessRunner) RunHarness(
 	}, nil
 }
 
+func classifiedOpenCodeProcessFailure(err error) bool {
+	return errors.Is(err, provider.ErrOpenCodeConversationAuth) ||
+		errors.Is(err, provider.ErrOpenCodeConversationInsufficientBalance) ||
+		errors.Is(err, provider.ErrOpenCodeConversationModelUnavailable) ||
+		errors.Is(err, provider.ErrOpenCodeConversationRateLimit)
+}
+
 func validOpenCodeProcessRequest(request HarnessProcessRequest) bool {
 	return cleanHarnessAbsolutePath(request.ExecutablePath) &&
 		cleanHarnessAbsolutePath(request.WorkspacePath) &&
@@ -97,7 +129,9 @@ func validOpenCodeProcessRequest(request HarnessProcessRequest) bool {
 		len(request.Prompt) > 0 && len(request.Prompt) <= maxHarnessPromptBytes &&
 		utf8.Valid(request.Prompt) &&
 		validOpenCodeModelIdentityString(request.ModelID) &&
+		validOpenCodeReasoningEffort(request.ModelID, request.ReasoningEffort) &&
 		request.Timeout > 0 && request.Timeout <= time.Hour &&
+		validHarnessContextMCPLease(request.ContextMCP) &&
 		request.MaxOutputBytes >= 256 && request.MaxOutputBytes <= 1<<20
 }
 
@@ -108,17 +142,31 @@ func validOpenCodeModelIdentityString(identity string) bool {
 	return provider.ValidOpenCodeModelIdentity(identity)
 }
 
+func validOpenCodeReasoningEffort(modelID, reasoningEffort string) bool {
+	if reasoningEffort != strings.TrimSpace(reasoningEffort) {
+		return false
+	}
+	model, err := provider.ValidateConversationModel("opencode", modelID)
+	if err != nil {
+		return false
+	}
+	return provider.ValidateConversationReasoningEffort(model, reasoningEffort) == nil
+}
+
 // openCodeArguments builds the OpenCode CLI arguments. The model identity is
 // already adapted to "provider/model" by the adapter.
-func openCodeArguments(request HarnessProcessRequest, message string) []string {
-	return []string{
+func openCodeArguments(request HarnessProcessRequest) []string {
+	arguments := []string{
 		"run",
 		"--format", "json",
 		"--pure",
 		"--model", request.ModelID,
-		"--dir", request.TempPath,
-		message,
+		"--dir", request.WorkspacePath,
 	}
+	if request.ReasoningEffort != "" {
+		arguments = append(arguments, "--variant", request.ReasoningEffort)
+	}
+	return arguments
 }
 
 // openCodeEnvironment injects the provider's well-known OpenCode credential
@@ -133,6 +181,31 @@ func openCodeEnvironment(
 		"TMPDIR=" + request.TempPath,
 		"PATH=" + filepath.Dir(request.ExecutablePath) + ":/usr/bin:/bin",
 		"LANG=C.UTF-8", "LC_ALL=C.UTF-8", "NO_COLOR=1",
+	}
+	permission := map[string]string{"*": "deny"}
+	config := map[string]any{
+		"permission": permission,
+		"share":      "disabled",
+	}
+	if request.ContextMCP.URL != "" {
+		permission["loom_context_*"] = "allow"
+		config["mcp"] = map[string]any{
+			"loom_context": map[string]any{
+				"type": "remote", "url": request.ContextMCP.URL,
+				"enabled": true, "timeout": 15000,
+				"headers": map[string]string{
+					"Authorization": "Bearer {env:" + harnessContextMCPTokenEnv + "}",
+				},
+			},
+		}
+		if request.ContextMCP.Token != "" {
+			environment = append(environment, harnessContextMCPTokenEnv+"="+request.ContextMCP.Token)
+		}
+	}
+	if encodedConfig, err := json.Marshal(config); err == nil {
+		environment = append(
+			environment, "OPENCODE_CONFIG_CONTENT="+string(encodedConfig),
+		)
 	}
 	if providerID, ok := openCodeProviderPart(request.ModelID); ok {
 		if envName, known := provider.OpenCodeCredentialEnv(providerID); known {

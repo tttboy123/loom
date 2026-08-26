@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -37,6 +39,18 @@ func (probe setupFixtureProbe) ObserveRuntime(
 
 type setupFixtureIdentity struct {
 	next int
+}
+
+type setupEndpointResolver struct {
+	addresses []netip.Addr
+}
+
+func (resolver setupEndpointResolver) LookupNetIP(
+	context.Context,
+	string,
+	string,
+) ([]netip.Addr, error) {
+	return append([]netip.Addr(nil), resolver.addresses...), nil
 }
 
 func (source *setupFixtureIdentity) NextSetupID(kind string) (string, error) {
@@ -77,6 +91,70 @@ type setupFixtureBroker struct {
 	statuses map[string]credentials.MetadataResult
 }
 
+type setupCountingCredentialDirectory struct {
+	directoryCalls int
+	statusCalls    int
+}
+
+type setupFixtureCredentialImportSource struct {
+	candidates []credentials.ImportCandidate
+	err        error
+	secret     []byte
+	usedID     string
+	zeroized   bool
+}
+
+func (source *setupFixtureCredentialImportSource) Discover(
+	context.Context,
+) ([]credentials.ImportCandidate, error) {
+	return source.candidates, source.err
+}
+
+func (source *setupFixtureCredentialImportSource) UseAPIKey(
+	ctx context.Context,
+	candidateID string,
+	use func(context.Context, []byte) error,
+) error {
+	if len(source.secret) == 0 {
+		return errors.New("credential import mutation is outside setup projection")
+	}
+	source.usedID = candidateID
+	secret := append([]byte(nil), source.secret...)
+	err := use(ctx, secret)
+	source.zeroized = true
+	for _, value := range secret {
+		if value != 0 {
+			source.zeroized = false
+		}
+	}
+	return err
+}
+
+func (source *setupCountingCredentialDirectory) CredentialStatuses(
+	context.Context,
+) (map[string]credentials.MetadataResult, error) {
+	source.directoryCalls++
+	return map[string]credentials.MetadataResult{}, nil
+}
+
+func (source *setupCountingCredentialDirectory) CredentialStatusDirectorySnapshot(
+	context.Context,
+) (CredentialStatusDirectorySnapshot, error) {
+	source.directoryCalls++
+	return CredentialStatusDirectorySnapshot{
+		Providers: map[string]credentials.MetadataResult{},
+		Accounts:  map[string]map[string]credentials.MetadataResult{},
+	}, nil
+}
+
+func (source *setupCountingCredentialDirectory) CredentialStatus(
+	context.Context,
+	string,
+) (credentials.MetadataResult, error) {
+	source.statusCalls++
+	return credentials.MetadataResult{}, credentials.ErrCredentialNotFound
+}
+
 func (broker setupFixtureBroker) CredentialStatus(
 	_ context.Context,
 	providerID string,
@@ -95,8 +173,9 @@ type setupFixtureMutator struct {
 }
 
 type setupCapturingCredentialMutator struct {
-	command credentials.CredentialCommand
-	err     error
+	command  credentials.CredentialCommand
+	commands []credentials.CredentialCommand
+	err      error
 }
 
 func (mutator *setupCapturingCredentialMutator) Configure(
@@ -104,6 +183,7 @@ func (mutator *setupCapturingCredentialMutator) Configure(
 	command credentials.CredentialCommand,
 ) (credentials.MetadataResult, error) {
 	mutator.command = command
+	mutator.commands = append(mutator.commands, command)
 	if mutator.err != nil {
 		return credentials.MetadataResult{}, mutator.err
 	}
@@ -119,6 +199,7 @@ func (mutator *setupCapturingCredentialMutator) Verify(
 	command credentials.CredentialCommand,
 ) (credentials.MetadataResult, error) {
 	mutator.command = command
+	mutator.commands = append(mutator.commands, command)
 	return credentials.MetadataResult{
 		ProviderID: command.ProviderID, ProviderAccountID: command.ProviderAccountID,
 		CredentialReference: command.CredentialReference,
@@ -681,8 +762,6 @@ func TestLocalProductSetupSnapshotReportsTruthfulProviderAndRuntimeModes(
 		snapshot.MiniMax.CredentialReference != "credential-ref-1" ||
 		snapshot.MiniMax.Revision != 1 ||
 		len(snapshot.Runtimes) != 1 ||
-		snapshot.Runtimes[0].ExecutableVersion != "0.82.1" ||
-		len(snapshot.Runtimes[0].ModelIDs) != 1 ||
 		len(snapshot.RoleOptions) != 3 ||
 		snapshot.RoleOptions[0].ProviderID != "openai" ||
 		snapshot.RoleOptions[0].ProviderAccountID != "openai.primary" ||
@@ -693,6 +772,10 @@ func TestLocalProductSetupSnapshotReportsTruthfulProviderAndRuntimeModes(
 		snapshot.RoleOptions[1].ReasoningEffort != "low" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
+	if snapshot.Runtimes[0].ExecutableVersion != "0.82.1" ||
+		len(snapshot.Runtimes[0].ModelIDs) != 1 {
+		t.Fatalf("runtime directory = %#v", snapshot.Runtimes)
+	}
 	if len(snapshot.Providers) < 20 {
 		t.Fatalf("provider directory entries = %d", len(snapshot.Providers))
 	}
@@ -702,10 +785,581 @@ func TestLocalProductSetupSnapshotReportsTruthfulProviderAndRuntimeModes(
 	}
 	if providers["minimax"].Status != "configured" ||
 		providers["minimax"].CredentialReference != "credential-ref-1" ||
-		providers["openai"].Status != "available" ||
-		providers["openai"].AuthMode != "native_auth" ||
+		providers["openai"].Status != "unconfigured" ||
+		providers["openai"].AuthMode != "brokered" ||
+		providers["openai"].ConnectionKind != "api_key" ||
 		providers["deepseek"].Status != "unconfigured" {
 		t.Fatalf("provider directory = %#v", providers)
+	}
+}
+
+func TestProviderDirectorySeparatesOpenCodeRuntimeFromModelProviders(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	runtimes := []SetupRuntimePreview{{
+		AdapterType: "opencode", Status: "online",
+		ModelIDs: []string{provider.OpenCodeConversationDefaultModel},
+	}}
+	providers := service.providerDirectory(
+		context.Background(),
+		NativeAuthObservation{
+			Status: "unavailable", AuthMode: "native_auth", Reason: "not_authenticated",
+		},
+		runtimes,
+		nil,
+	)
+	profiles := setupConversationProfiles(
+		NativeAuthObservation{
+			Status: "unavailable", AuthMode: "native_auth", Reason: "not_authenticated",
+		},
+		providers,
+		nil,
+		runtimes,
+	)
+	for _, entry := range providers {
+		if entry.ProviderID == "opencode" || entry.ConnectionKind == "native_runtime" {
+			t.Fatalf("Harness runtime leaked into Provider directory: %#v", entry)
+		}
+	}
+	if providerDirectoryAvailable(providers, "openai") {
+		t.Fatalf("OpenAI should follow Codex auth, providers = %#v", providers)
+	}
+	if len(profiles) != 1 || profiles[0].ProviderID != "opencode" {
+		t.Fatalf("profiles = %#v", profiles)
+	}
+}
+
+func TestSetupSnapshotLoadsProviderCredentialDirectoryOnce(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	credentials := &setupCountingCredentialDirectory{}
+	service.credentials = credentials
+	if _, err := service.SetupSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if credentials.directoryCalls != 1 || credentials.statusCalls != 0 {
+		t.Fatalf(
+			"credential reads directory=%d individual=%d",
+			credentials.directoryCalls,
+			credentials.statusCalls,
+		)
+	}
+}
+
+func TestSetupSnapshotProjectsNonSecretCredentialImportCandidates(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	source := &setupFixtureCredentialImportSource{
+		candidates: []credentials.ImportCandidate{{
+			CandidateID:         setupDigest("candidate"),
+			SourceApplication:   "cc-switch",
+			DisplayName:         "DeepSeek",
+			TargetProviderID:    "deepseek",
+			Protocol:            credentials.ImportProtocolOpenAIResponses,
+			Endpoint:            "https://api.deepseek.com",
+			ModelIDs:            []string{"deepseek-chat"},
+			ImportMode:          credentials.ImportModeExactProvider,
+			Current:             true,
+			CredentialAvailable: true,
+		}},
+	}
+	service.credentialImports = source
+
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.CredentialImports) != 1 ||
+		snapshot.CredentialImports[0].TargetProviderID != "deepseek" ||
+		snapshot.CredentialImports[0].CandidateDigest == "" ||
+		snapshot.CredentialImports[0].EndpointFingerprint == "" ||
+		snapshot.CredentialImports[0].ReviewPolicyVersion != 1 ||
+		snapshot.CredentialImports[0].ReviewPolicyDigest == "" ||
+		!reflect.DeepEqual(
+			snapshot.CredentialImports[0].ModelIDs,
+			[]string{"deepseek-chat"},
+		) {
+		t.Fatalf("credential imports = %#v", snapshot.CredentialImports)
+	}
+
+	snapshot.CredentialImports[0].ModelIDs[0] = "mutated"
+	if source.candidates[0].ModelIDs[0] != "deepseek-chat" {
+		t.Fatal("setup snapshot shared import candidate model storage")
+	}
+}
+
+func TestSetupSnapshotKeepsCatalogWhenCredentialImportDiscoveryFails(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	service.credentialImports = &setupFixtureCredentialImportSource{
+		err: errors.New("fixture source unavailable"),
+	}
+
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.CredentialImports == nil || len(snapshot.CredentialImports) != 0 {
+		t.Fatalf("credential imports = %#v", snapshot.CredentialImports)
+	}
+	if len(snapshot.Providers) < 20 || len(snapshot.Runtimes) == 0 {
+		t.Fatalf(
+			"catalog disappeared after optional import failure: providers=%d runtimes=%d",
+			len(snapshot.Providers),
+			len(snapshot.Runtimes),
+		)
+	}
+}
+
+func TestSetupSnapshotDropsInvalidCredentialImportWithoutHidingCatalog(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	service.credentialImports = &setupFixtureCredentialImportSource{
+		candidates: []credentials.ImportCandidate{{
+			CandidateID:         setupDigest("invalid-candidate"),
+			SourceApplication:   "CC Switch",
+			DisplayName:         "Invalid custom endpoint",
+			TargetProviderID:    "custom-openai",
+			Protocol:            credentials.ImportProtocolOpenAIResponses,
+			Endpoint:            "http://127.0.0.1:9000/v1",
+			ModelIDs:            []string{"model-a"},
+			ImportMode:          credentials.ImportModeCustomEndpointReview,
+			Current:             true,
+			CredentialAvailable: true,
+		}},
+	}
+
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.CredentialImports) != 0 {
+		t.Fatalf("credential imports = %#v", snapshot.CredentialImports)
+	}
+	if len(snapshot.Providers) < 20 || len(snapshot.Runtimes) == 0 {
+		t.Fatalf(
+			"catalog disappeared after invalid optional import: providers=%d runtimes=%d",
+			len(snapshot.Providers), len(snapshot.Runtimes),
+		)
+	}
+}
+
+func TestLocalProductSetupImportsExactCredentialCandidateIntoVault(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	candidateID := setupDigest("cc-switch-deepseek")
+	source := &setupFixtureCredentialImportSource{
+		candidates: []credentials.ImportCandidate{{
+			CandidateID: candidateID, SourceApplication: "CC Switch",
+			DisplayName: "DeepSeek", TargetProviderID: "deepseek",
+			Protocol: credentials.ImportProtocolOpenAIResponses,
+			Endpoint: "https://api.deepseek.com", ModelIDs: []string{"deepseek-chat"},
+			ImportMode:          credentials.ImportModeExactProvider,
+			CredentialAvailable: true,
+		}},
+		secret: []byte("sk-fixture-import-only"),
+	}
+	mutator := &setupCapturingCredentialMutator{}
+	service.credentialImports = source
+	service.credentialMutator = mutator
+
+	result, err := service.ImportCredentialCandidate(
+		context.Background(),
+		CredentialImportCommand{
+			CandidateID: candidateID, ProviderID: "deepseek",
+			ProviderAccountID: "deepseek.primary", Confirm: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderID != "deepseek" || result.Status != "verified" ||
+		result.Revision != 2 || source.usedID != candidateID || !source.zeroized {
+		t.Fatalf("result=%#v source=%#v", result, source)
+	}
+	if len(mutator.commands) != 2 ||
+		mutator.commands[0].ProviderAccountID != "deepseek.primary" ||
+		mutator.commands[0].ExpectedRevision != 0 ||
+		mutator.commands[1].CredentialReference == "" ||
+		mutator.commands[1].ExpectedRevision != 1 {
+		t.Fatalf("credential commands = %#v", mutator.commands)
+	}
+}
+
+func TestLocalProductSetupRejectsUnconfirmedOrCustomCredentialImport(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	candidateID := setupDigest("cc-switch-custom")
+	service.credentialImports = &setupFixtureCredentialImportSource{
+		candidates: []credentials.ImportCandidate{{
+			CandidateID: candidateID, SourceApplication: "CC Switch",
+			DisplayName: "Kimi Coding", TargetProviderID: "custom-openai",
+			Protocol: credentials.ImportProtocolOpenAIResponses,
+			Endpoint: "https://api.kimi.com/coding/v1", ModelIDs: []string{"kimi"},
+			ImportMode:          credentials.ImportModeCustomEndpointReview,
+			CredentialAvailable: true,
+		}},
+		secret: []byte("sk-fixture-must-not-be-read"),
+	}
+	service.credentialMutator = &setupCapturingCredentialMutator{}
+
+	for _, command := range []CredentialImportCommand{
+		{CandidateID: candidateID, ProviderID: "custom-openai", Confirm: false},
+		{CandidateID: candidateID, ProviderID: "custom-openai", Confirm: true},
+	} {
+		if _, err := service.ImportCredentialCandidate(
+			context.Background(), command,
+		); !errors.Is(err, ErrCredentialImportUnavailable) {
+			t.Fatalf("ImportCredentialCandidate(%#v) error = %v", command, err)
+		}
+	}
+	if source := service.credentialImports.(*setupFixtureCredentialImportSource); source.usedID != "" {
+		t.Fatalf("custom import read secret for candidate %q", source.usedID)
+	}
+}
+
+func TestLocalProductSetupApprovesCustomEndpointWithJournalCASBeforeSecretRead(
+	t *testing.T,
+) {
+	service, _, store, _ := newSetupFixtureService(t)
+	candidateID := setupDigest("cc-switch-reviewed-custom")
+	source := &setupFixtureCredentialImportSource{
+		candidates: []credentials.ImportCandidate{{
+			CandidateID: candidateID, SourceApplication: "CC Switch",
+			DisplayName: "Reviewed gateway", TargetProviderID: "custom-openai",
+			Protocol: credentials.ImportProtocolOpenAIResponses,
+			Endpoint: "https://gateway.example.com/v1", ModelIDs: []string{"model-a"},
+			ImportMode:          credentials.ImportModeCustomEndpointReview,
+			CredentialAvailable: true,
+		}},
+		secret: []byte("sk-fixture-must-remain-unread"),
+	}
+	service.credentialImports = source
+	service.endpointResolver = setupEndpointResolver{addresses: []netip.Addr{
+		netip.MustParseAddr("93.184.216.34"),
+	}}
+	bound, err := credentials.BindImportCandidate(source.candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := EndpointReviewCommand{
+		CandidateID: bound.CandidateID, CandidateDigest: bound.CandidateDigest,
+		ProviderID: bound.TargetProviderID, ProviderAccountID: "custom-openai.primary",
+		EndpointFingerprint: bound.EndpointFingerprint,
+		ReviewPolicyVersion: bound.ReviewPolicyVersion,
+		ReviewPolicyDigest:  bound.ReviewPolicyDigest, Confirm: true,
+	}
+	result, err := service.ApproveEndpointCandidate(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "approved" || result.Revision != 2 ||
+		result.ApprovalDigest == "" || result.Endpoint != bound.Endpoint ||
+		result.ProviderAccountID != "custom-openai.primary" || source.usedID != "" {
+		t.Fatalf("result=%#v source=%#v", result, source)
+	}
+	events, err := store.ReadStream(
+		context.Background(),
+		endpointReviewStreamID(bound.CandidateDigest, "custom-openai.primary"),
+	)
+	if err != nil || len(events) != 2 ||
+		events[0].Type != "ProviderEndpointReviewRequested" ||
+		events[1].Type != "ProviderEndpointReviewApproved" {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	for _, event := range events {
+		if strings.Contains(string(event.PayloadJSON), "sk-fixture") {
+			t.Fatal("endpoint approval Journal contained a secret")
+		}
+	}
+	second, err := service.ApproveEndpointCandidate(context.Background(), command)
+	if err != nil || second != result {
+		t.Fatalf("idempotent approval=%#v err=%v", second, err)
+	}
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil || len(snapshot.EndpointReviews) != 1 ||
+		snapshot.EndpointReviews[0].ApprovalDigest != result.ApprovalDigest {
+		t.Fatalf("endpoint reviews=%#v err=%v", snapshot.EndpointReviews, err)
+	}
+}
+
+func TestLocalProductSetupRenewsExpiredEndpointApprovalAsNewGenerationAfterRestart(
+	t *testing.T,
+) {
+	service, _, store, _ := newSetupFixtureService(t)
+	now := time.Unix(3000, 0).UTC()
+	service.now = func() time.Time { return now }
+	candidateID := setupDigest("cc-switch-renewed-custom")
+	source := &setupFixtureCredentialImportSource{
+		candidates: []credentials.ImportCandidate{{
+			CandidateID: candidateID, SourceApplication: "CC Switch",
+			DisplayName: "Renewed gateway", TargetProviderID: "custom-openai",
+			Protocol: credentials.ImportProtocolOpenAIResponses,
+			Endpoint: "https://gateway.example.com/v1", ModelIDs: []string{"model-a"},
+			ImportMode:          credentials.ImportModeCustomEndpointReview,
+			CredentialAvailable: true,
+		}},
+	}
+	service.credentialImports = source
+	service.endpointResolver = setupEndpointResolver{addresses: []netip.Addr{
+		netip.MustParseAddr("93.184.216.34"),
+	}}
+	bound, err := credentials.BindImportCandidate(source.candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := EndpointReviewCommand{
+		CandidateID: bound.CandidateID, CandidateDigest: bound.CandidateDigest,
+		ProviderID: bound.TargetProviderID, ProviderAccountID: "custom-openai.primary",
+		EndpointFingerprint: bound.EndpointFingerprint,
+		ReviewPolicyVersion: bound.ReviewPolicyVersion,
+		ReviewPolicyDigest:  bound.ReviewPolicyDigest, Confirm: true,
+	}
+
+	first, err := service.ApproveEndpointCandidate(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = parseEndpointReviewTime(first.ExpiresAt).Add(time.Nanosecond)
+	restarted := &LocalProductSetupService{
+		journal: service.journal, identity: &setupFixtureIdentity{}, now: service.now,
+		credentialImports: service.credentialImports, endpointResolver: service.endpointResolver,
+	}
+	second, err := restarted.ApproveEndpointCandidate(context.Background(), command)
+	if err != nil {
+		t.Fatalf("renew expired approval: %v", err)
+	}
+	if second.Revision != 2 || second.CandidateDigest != first.CandidateDigest ||
+		second.ProviderAccountID != first.ProviderAccountID ||
+		second.ApprovalDigest == first.ApprovalDigest ||
+		!parseEndpointReviewTime(second.ExpiresAt).After(parseEndpointReviewTime(first.ExpiresAt)) {
+		t.Fatalf("first=%#v second=%#v", first, second)
+	}
+	for generation := uint64(1); generation <= 2; generation++ {
+		events, readErr := store.ReadStream(
+			context.Background(),
+			endpointReviewGenerationStreamID(
+				bound.CandidateDigest, "custom-openai.primary", generation,
+			),
+		)
+		if readErr != nil || len(events) != 2 {
+			t.Fatalf("generation %d events=%#v err=%v", generation, events, readErr)
+		}
+	}
+	replayed, err := restarted.ApproveEndpointCandidate(context.Background(), command)
+	if err != nil || replayed != second {
+		t.Fatalf("renewal replay=%#v err=%v", replayed, err)
+	}
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil || len(snapshot.EndpointReviews) != 1 ||
+		snapshot.EndpointReviews[0].ApprovalDigest != second.ApprovalDigest {
+		t.Fatalf("endpoint reviews=%#v err=%v", snapshot.EndpointReviews, err)
+	}
+}
+
+func TestLocalProductSetupSeparatesAccountsAndSupersedesPriorAccountCandidate(
+	t *testing.T,
+) {
+	service, _, store, _ := newSetupFixtureService(t)
+	source := &setupFixtureCredentialImportSource{candidates: []credentials.ImportCandidate{
+		{
+			CandidateID: setupDigest("endpoint-candidate-a"), SourceApplication: "CC Switch",
+			DisplayName: "Gateway A", TargetProviderID: "custom-openai",
+			Protocol: credentials.ImportProtocolOpenAIResponses,
+			Endpoint: "https://gateway-a.example.com/v1", ModelIDs: []string{"model-a"},
+			ImportMode:          credentials.ImportModeCustomEndpointReview,
+			CredentialAvailable: true,
+		},
+		{
+			CandidateID: setupDigest("endpoint-candidate-bb"), SourceApplication: "CC Switch",
+			DisplayName: "Gateway B", TargetProviderID: "custom-openai",
+			Protocol: credentials.ImportProtocolOpenAIResponses,
+			Endpoint: "https://gateway-b.example.com/v1", ModelIDs: []string{"model-b"},
+			ImportMode:          credentials.ImportModeCustomEndpointReview,
+			CredentialAvailable: true,
+		},
+	}}
+	service.credentialImports = source
+	service.endpointResolver = setupEndpointResolver{addresses: []netip.Addr{
+		netip.MustParseAddr("93.184.216.34"),
+	}}
+	boundA, err := credentials.BindImportCandidate(source.candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundB, err := credentials.BindImportCandidate(source.candidates[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	approve := func(candidate credentials.ImportCandidate, accountID string) EndpointReviewResult {
+		t.Helper()
+		result, approveErr := service.ApproveEndpointCandidate(
+			context.Background(), EndpointReviewCommand{
+				CandidateID: candidate.CandidateID, CandidateDigest: candidate.CandidateDigest,
+				ProviderID: candidate.TargetProviderID, ProviderAccountID: accountID,
+				EndpointFingerprint: candidate.EndpointFingerprint,
+				ReviewPolicyVersion: candidate.ReviewPolicyVersion,
+				ReviewPolicyDigest:  candidate.ReviewPolicyDigest, Confirm: true,
+			},
+		)
+		if approveErr != nil {
+			t.Fatal(approveErr)
+		}
+		return result
+	}
+
+	firstAccountA := approve(boundA, "custom-openai.primary")
+	secondAccountA := approve(boundA, "custom-openai.secondary")
+	firstAccountB := approve(boundB, "custom-openai.primary")
+	if firstAccountA.ApprovalDigest == secondAccountA.ApprovalDigest ||
+		firstAccountA.ApprovalDigest == firstAccountB.ApprovalDigest ||
+		secondAccountA.ApprovalDigest == firstAccountB.ApprovalDigest {
+		t.Fatalf(
+			"approval digests collided: a-primary=%q a-secondary=%q b-primary=%q",
+			firstAccountA.ApprovalDigest,
+			secondAccountA.ApprovalDigest,
+			firstAccountB.ApprovalDigest,
+		)
+	}
+	events, err := store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var superseded []EndpointReviewResult
+	for _, event := range events {
+		if event.Type != "ProviderEndpointReviewSuperseded" {
+			continue
+		}
+		var result EndpointReviewResult
+		if json.Unmarshal(event.PayloadJSON, &result) != nil {
+			t.Fatal("invalid supersession payload")
+		}
+		superseded = append(superseded, result)
+	}
+	if len(superseded) != 1 || superseded[0] != firstAccountA {
+		t.Fatalf("superseded=%#v", superseded)
+	}
+	for _, stream := range []struct {
+		id   string
+		want int
+	}{
+		{endpointReviewStreamID(boundA.CandidateDigest, "custom-openai.primary"), 3},
+		{endpointReviewStreamID(boundA.CandidateDigest, "custom-openai.secondary"), 2},
+		{endpointReviewStreamID(boundB.CandidateDigest, "custom-openai.primary"), 2},
+	} {
+		streamEvents, readErr := store.ReadStream(context.Background(), stream.id)
+		if readErr != nil || len(streamEvents) != stream.want {
+			t.Fatalf("stream %q events=%#v err=%v", stream.id, streamEvents, readErr)
+		}
+	}
+	if _, found := service.readApprovedEndpointReview(
+		context.Background(),
+		endpointReviewStreamID(boundA.CandidateDigest, "custom-openai.primary"),
+	); found {
+		t.Fatal("superseded candidate remained import authority")
+	}
+	if current, found := service.readApprovedEndpointReview(
+		context.Background(),
+		endpointReviewStreamID(boundB.CandidateDigest, "custom-openai.primary"),
+	); !found || current.ApprovalDigest != firstAccountB.ApprovalDigest {
+		t.Fatalf("current approval=%#v found=%t", current, found)
+	}
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil || len(snapshot.EndpointReviews) != 2 {
+		t.Fatalf("endpoint reviews=%#v err=%v", snapshot.EndpointReviews, err)
+	}
+	active := make(map[string]string, len(snapshot.EndpointReviews))
+	for _, review := range snapshot.EndpointReviews {
+		active[review.ProviderAccountID] = review.CandidateDigest
+	}
+	if active["custom-openai.primary"] != boundB.CandidateDigest ||
+		active["custom-openai.secondary"] != boundA.CandidateDigest {
+		t.Fatalf("active reviews=%#v", active)
+	}
+}
+
+func TestLocalProductSetupRejectsCustomEndpointReviewOnUnsafeDNSBeforeSecretRead(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	candidateID := setupDigest("cc-switch-unsafe-dns")
+	source := &setupFixtureCredentialImportSource{candidates: []credentials.ImportCandidate{{
+		CandidateID: candidateID, SourceApplication: "CC Switch",
+		DisplayName: "Rebinding gateway", TargetProviderID: "custom-openai",
+		Protocol: credentials.ImportProtocolOpenAIResponses,
+		Endpoint: "https://gateway.example.com/v1", ModelIDs: []string{"model-a"},
+		ImportMode:          credentials.ImportModeCustomEndpointReview,
+		CredentialAvailable: true,
+	}}, secret: []byte("sk-fixture-must-remain-unread")}
+	service.credentialImports = source
+	service.endpointResolver = setupEndpointResolver{addresses: []netip.Addr{
+		netip.MustParseAddr("127.0.0.1"),
+	}}
+	bound, err := credentials.BindImportCandidate(source.candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.ApproveEndpointCandidate(context.Background(), EndpointReviewCommand{
+		CandidateID: bound.CandidateID, CandidateDigest: bound.CandidateDigest,
+		ProviderID: bound.TargetProviderID, ProviderAccountID: "custom-openai.primary",
+		EndpointFingerprint: bound.EndpointFingerprint,
+		ReviewPolicyVersion: bound.ReviewPolicyVersion,
+		ReviewPolicyDigest:  bound.ReviewPolicyDigest, Confirm: true,
+	})
+	if !errors.Is(err, ErrEndpointReviewUnavailable) || source.usedID != "" {
+		t.Fatalf("error=%v source=%#v", err, source)
+	}
+}
+
+func TestLocalProductSetupImportsReviewedCustomEndpointIntoVault(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	candidateID := setupDigest("cc-switch-reviewed-import")
+	source := &setupFixtureCredentialImportSource{candidates: []credentials.ImportCandidate{{
+		CandidateID: candidateID, SourceApplication: "CC Switch",
+		DisplayName: "Reviewed gateway", TargetProviderID: "custom-openai",
+		Protocol: credentials.ImportProtocolOpenAIResponses,
+		Endpoint: "https://gateway.example.com/v1", ModelIDs: []string{"model-a"},
+		ImportMode:          credentials.ImportModeCustomEndpointReview,
+		CredentialAvailable: true,
+	}}, secret: []byte("sk-fixture-reviewed-import")}
+	mutator := &setupCapturingCredentialMutator{}
+	service.credentialImports = source
+	service.credentialMutator = mutator
+	service.endpointResolver = setupEndpointResolver{addresses: []netip.Addr{
+		netip.MustParseAddr("93.184.216.34"),
+	}}
+	bound, err := credentials.BindImportCandidate(source.candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := service.ApproveEndpointCandidate(context.Background(), EndpointReviewCommand{
+		CandidateID: bound.CandidateID, CandidateDigest: bound.CandidateDigest,
+		ProviderID: bound.TargetProviderID, ProviderAccountID: "custom-openai.primary",
+		EndpointFingerprint: bound.EndpointFingerprint,
+		ReviewPolicyVersion: bound.ReviewPolicyVersion,
+		ReviewPolicyDigest:  bound.ReviewPolicyDigest, Confirm: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ImportCredentialCandidate(
+		context.Background(), CredentialImportCommand{
+			CandidateID: bound.CandidateID, CandidateDigest: bound.CandidateDigest,
+			ProviderID: bound.TargetProviderID, ProviderAccountID: "custom-openai.primary",
+			EndpointFingerprint: bound.EndpointFingerprint,
+			ReviewPolicyVersion: bound.ReviewPolicyVersion,
+			ReviewPolicyDigest:  bound.ReviewPolicyDigest,
+			ApprovalDigest:      review.ApprovalDigest, Confirm: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderID != "custom-openai" || result.Status != "verified" ||
+		result.Revision != 2 || source.usedID != bound.CandidateID || !source.zeroized ||
+		len(mutator.commands) != 2 ||
+		mutator.commands[0].ProviderAccountID != "custom-openai.primary" ||
+		mutator.commands[1].ProviderID != "custom-openai" {
+		t.Fatalf("result=%#v source=%#v commands=%#v", result, source, mutator.commands)
 	}
 }
 
@@ -1791,6 +2445,25 @@ func TestLocalProductSetupConfiguresIndependentProviderAccount(t *testing.T) {
 
 func TestLocalProductSetupPublishesReadyConversationProfiles(t *testing.T) {
 	service, _, _, _ := newSetupFixtureService(t)
+	observations := service.catalog.RuntimeDiscovery.Observations()
+	discovery, err := loomruntime.DiscoverRuntime(
+		context.Background(),
+		[]loomruntime.RuntimeProbe{setupFixtureProbe{
+			observations: append(observations, loomruntime.RuntimeObservation{
+				Instance: loomruntime.RuntimeInstance{
+					ID: "runtime-opencode", DeviceID: "device-local",
+					AdapterType: "opencode", DisplayName: "OpenCode",
+					ExecutableVersion: "1.0.0", Status: loomruntime.RuntimeOnline,
+					ObservedCapabilities: []string{"agent", "native_auth"}, Capacity: 1,
+				},
+				ModelIDs: []string{provider.OpenCodeConversationDefaultModel},
+			}),
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.catalog.RuntimeDiscovery = discovery
 	service.credentials = setupFixtureBroker{statuses: map[string]credentials.MetadataResult{
 		"deepseek": {
 			ProviderID: "deepseek", CredentialReference: "credential-ref-deepseek-1",
@@ -1902,6 +2575,10 @@ func TestSetupConversationProfilesOpenCodeDefaultIsNativeFreeTier(t *testing.T) 
 			NativeAuthObservation{Status: "available", AuthMode: "native_auth"},
 			nil,
 			accounts,
+			[]SetupRuntimePreview{{
+				AdapterType: "opencode", Status: "online",
+				ModelIDs: []string{provider.OpenCodeConversationDefaultModel},
+			}},
 		)
 		if len(profiles) < 2 {
 			t.Fatalf("profiles = %#v", profiles)
@@ -1917,7 +2594,7 @@ func TestSetupConversationProfilesOpenCodeDefaultIsNativeFreeTier(t *testing.T) 
 			opencode.ModelID != provider.OpenCodeConversationDefaultModel {
 			t.Fatalf("opencode profile = %#v", profiles)
 		}
-		if provider.OpenCodeConversationDefaultModel != "opencode/deepseek-v4-flash-free" {
+		if provider.OpenCodeConversationDefaultModel != "opencode/big-pickle" {
 			t.Fatalf("OpenCode default model = %q", provider.OpenCodeConversationDefaultModel)
 		}
 		// Native profiles are always last, with Codex (the frequently
@@ -1926,6 +2603,79 @@ func TestSetupConversationProfilesOpenCodeDefaultIsNativeFreeTier(t *testing.T) 
 		if profiles[len(profiles)-1].ProfileID != provider.CodexConversationProfileID {
 			t.Fatalf("Codex must be the last profile: %#v", profiles)
 		}
+	}
+	profiles := setupConversationProfiles(
+		NativeAuthObservation{},
+		nil,
+		nil,
+		[]SetupRuntimePreview{{
+			RuntimeInstanceID: "runtime.opencode.local", AdapterType: "opencode",
+			Status: "online", ModelIDs: []string{
+				"deepseek/deepseek-chat", "opencode/hy3-free", "opencode/x-preview-f-free",
+			},
+		}},
+	)
+	if len(profiles) != 1 || profiles[0].ModelID != "opencode/hy3-free" {
+		t.Fatalf("dynamic OpenCode profile = %#v", profiles)
+	}
+}
+
+func TestSetupConversationProfilesPublishAccountScopedOpenCodeRoutes(t *testing.T) {
+	profiles := setupConversationProfiles(
+		NativeAuthObservation{},
+		nil,
+		[]ProviderAccountDirectoryEntry{
+			{ProviderID: "openai", ProviderAccountID: "openai.primary", AuthMode: "brokered", Revision: 7, Status: "verified"},
+			{ProviderID: "openai", ProviderAccountID: "openai.team-a", AuthMode: "brokered", Revision: 9, Status: "verified"},
+		},
+		[]SetupRuntimePreview{{
+			RuntimeInstanceID: "runtime.opencode.local", AdapterType: "opencode",
+			Status: "online", ModelIDs: []string{"openai/gpt-5.5", "opencode/big-pickle"},
+		}},
+	)
+	byID := make(map[string]ConversationProviderProfile, len(profiles))
+	for _, profile := range profiles {
+		byID[profile.ProfileID] = profile
+	}
+	for _, account := range []struct {
+		id       string
+		revision int64
+	}{
+		{id: "openai.primary", revision: 7},
+		{id: "openai.team-a", revision: 9},
+	} {
+		profileID := provider.OpenCodeConversationAccountProfileID(
+			"openai", account.id, account.revision,
+		)
+		profile, found := byID[profileID]
+		if !found || profile.HarnessAdapter != "opencode" ||
+			profile.ProviderID != "openai" || profile.ProviderAccountID != account.id ||
+			profile.DisplayName != "OpenAI" ||
+			profile.CredentialRevision != account.revision ||
+			profile.ModelID != "openai/gpt-5.5" || profile.AuthMode != "brokered" {
+			t.Fatalf("account %s profile = %#v found=%v", account.id, profile, found)
+		}
+	}
+	native, found := byID[provider.OpenCodeConversationProfileID]
+	if !found || native.ProviderID != "opencode" ||
+		native.ModelID != "opencode/big-pickle" || native.AuthMode != "native_auth" {
+		t.Fatalf("native profile = %#v found=%v", native, found)
+	}
+}
+
+func TestNormalizeConversationProfileNamesRejectsHarnessProviderComposition(t *testing.T) {
+	profiles := normalizeConversationProfileNames([]ConversationProviderProfile{
+		{
+			ProfileID: "conversation-opencode-deepseek-r2", HarnessAdapter: "opencode",
+			ProviderID: "deepseek", DisplayName: "OpenCode · DeepSeek",
+		},
+		{
+			ProfileID: provider.CodexConversationProfileID, HarnessAdapter: "codex",
+			ProviderID: "openai", DisplayName: "Codex",
+		},
+	})
+	if profiles[0].DisplayName != "DeepSeek" || profiles[1].DisplayName != "OpenAI" {
+		t.Fatalf("normalized profiles = %#v", profiles)
 	}
 }
 
@@ -1987,6 +2737,30 @@ func TestSetupConversationProfilesPublishesAnthropicMessagesAccount(t *testing.T
 		profiles[0].ModelID != provider.AnthropicConversationModelID ||
 		profiles[0].CredentialRevision != 5 {
 		t.Fatalf("profiles = %#v", profiles)
+	}
+}
+
+func TestSetupConversationProfilesPublishesNativeClaudeCodeRouteWhenRuntimeIsOnline(
+	t *testing.T,
+) {
+	profiles := setupConversationProfiles(
+		NativeAuthObservation{}, nil, nil,
+		[]SetupRuntimePreview{{
+			RuntimeInstanceID: "runtime.claude-code.local",
+			AdapterType:       "claude-code", Status: "online",
+			ModelIDs: []string{provider.AnthropicConversationModelID},
+		}},
+	)
+	if len(profiles) != 1 ||
+		profiles[0].ProfileID != provider.ClaudeCodeConversationProfileID ||
+		profiles[0].HarnessAdapter != "claude-code" ||
+		profiles[0].ProviderID != "anthropic" ||
+		profiles[0].ProviderAccountID != "" ||
+		profiles[0].Protocol != "claude_code_agent" ||
+		profiles[0].ModelID != provider.AnthropicConversationModelID ||
+		profiles[0].AuthMode != "native_auth" ||
+		profiles[0].CredentialRevision != 0 {
+		t.Fatalf("Claude Code profiles = %#v", profiles)
 	}
 }
 

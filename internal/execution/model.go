@@ -8,6 +8,8 @@ package execution
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	"loom-pi-rebuild/internal/permissions"
@@ -15,21 +17,24 @@ import (
 )
 
 var (
-	ErrInvalidExecutionInput   = errors.New("invalid execution input")
-	ErrUnknownExecutionEvent   = errors.New("unknown execution event")
-	ErrInvalidExecutionEvent   = errors.New("invalid execution event")
-	ErrExecutionInFlight       = errors.New("execution already in flight")
-	ErrExecutionInterrupted    = errors.New("execution interrupted before terminal fact; terminalize before replay")
-	ErrApprovalConsumed        = errors.New("approval was already consumed by another execution")
-	ErrExecutionPathOutside    = errors.New("execution path outside worktree")
-	ErrExecutionLimit          = errors.New("execution limit exceeded")
-	ErrExecutionTimedOut       = errors.New("execution timed out")
-	ErrExecutionContent        = errors.New("execution content unavailable")
-	ErrUnsupportedTool         = errors.New("tool is not executable by the adapter")
-	ErrInvalidToolRecovery     = errors.New("invalid ToolCall recovery decision")
-	ErrToolRecoveryConflict    = errors.New("ToolCall recovery decision conflict")
-	ErrToolRecoveryUnavailable = errors.New("ToolCall recovery action unavailable")
-	ErrToolRecoveryEvidence    = errors.New("ToolCall recovery evidence is invalid")
+	ErrInvalidExecutionInput        = errors.New("invalid execution input")
+	ErrUnknownExecutionEvent        = errors.New("unknown execution event")
+	ErrInvalidExecutionEvent        = errors.New("invalid execution event")
+	ErrExecutionInFlight            = errors.New("execution already in flight")
+	ErrExecutionInterrupted         = errors.New("execution interrupted before terminal fact; terminalize before replay")
+	ErrApprovalConsumed             = errors.New("approval was already consumed by another execution")
+	ErrExecutionPathOutside         = errors.New("execution path outside worktree")
+	ErrExecutionLimit               = errors.New("execution limit exceeded")
+	ErrExecutionTimedOut            = errors.New("execution timed out")
+	ErrExecutionContent             = errors.New("execution content unavailable")
+	ErrUnsupportedTool              = errors.New("tool is not executable by the adapter")
+	ErrRemoteToolBindingRevoked     = errors.New("remote tool binding revoked")
+	ErrRemoteToolBindingPolicyDrift = errors.New("remote tool binding policy drift")
+	ErrRemoteToolResultRollback     = errors.New("remote tool result rollback failed")
+	ErrInvalidToolRecovery          = errors.New("invalid ToolCall recovery decision")
+	ErrToolRecoveryConflict         = errors.New("ToolCall recovery decision conflict")
+	ErrToolRecoveryUnavailable      = errors.New("ToolCall recovery action unavailable")
+	ErrToolRecoveryEvidence         = errors.New("ToolCall recovery evidence is invalid")
 )
 
 const (
@@ -52,6 +57,48 @@ type Proposal struct {
 	DispatchGate     ExecutionDispatchGate           `json:"-"`
 	ResultCommitGate ExecutionResultCommitGate       `json:"-"`
 	Diagnostics      ToolExecutionDiagnosticRecorder `json:"-"`
+}
+
+// AttemptWorktreeBinding is the daemon-owned, in-process binding between one
+// active Agent Attempt and its private managed workspace. It never crosses IPC
+// or enters the Journal. Tool proposals can select paths inside this workspace,
+// but cannot choose or replace the workspace root itself.
+type AttemptWorktreeBinding struct {
+	JobID           string
+	RunID           string
+	ClaimGeneration int64
+	WorkspacePath   string
+}
+
+type attemptWorktreeContextKey struct{}
+
+func BindAttemptWorktree(
+	ctx context.Context,
+	binding AttemptWorktreeBinding,
+) (context.Context, error) {
+	if ctx == nil || binding.JobID == "" || binding.RunID == "" ||
+		binding.ClaimGeneration < 1 || !validAttemptWorktreePath(binding.WorkspacePath) {
+		return nil, ErrInvalidExecutionInput
+	}
+	return context.WithValue(ctx, attemptWorktreeContextKey{}, binding), nil
+}
+
+func attemptWorktreeFromContext(ctx context.Context, jobID string) (string, bool) {
+	if ctx == nil || jobID == "" {
+		return "", false
+	}
+	binding, ok := ctx.Value(attemptWorktreeContextKey{}).(AttemptWorktreeBinding)
+	return binding.WorkspacePath, ok && binding.JobID == jobID &&
+		binding.RunID != "" && binding.ClaimGeneration > 0 &&
+		validAttemptWorktreePath(binding.WorkspacePath)
+}
+
+func validAttemptWorktreePath(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
 }
 
 // ExecutionDispatchInput is the content-free identity committed immediately
@@ -78,6 +125,63 @@ type RemoteToolExecutor interface {
 	AllowedRemoteTools() []permissions.ToolKind
 	ValidateProposal(permissions.ProposedCall) error
 	ExecuteProposalContent(context.Context, permissions.ProposedCall) ([]byte, error)
+}
+
+// RemoteToolScope freezes the exact persisted Enrollment selected by one
+// Agent Attempt. A scoped executor must never substitute another Enrollment,
+// even when it exposes the same backend kind or Provider Account.
+type RemoteToolScope struct {
+	EnrollmentID     string
+	EnrollmentDigest string
+}
+
+// ScopedRemoteToolExecutor is the fail-closed per-Attempt extension used by
+// Enrollment-backed Web/MCP transports. The unscoped RemoteToolExecutor
+// methods remain available for explicitly configured global transports.
+type ScopedRemoteToolExecutor interface {
+	AllowedRemoteToolsForScope(RemoteToolScope) []permissions.ToolKind
+	ValidateProposalForScope(context.Context, RemoteToolScope, permissions.ProposedCall) error
+	ExecuteProposalContentForScope(context.Context, RemoteToolScope, permissions.ProposedCall) ([]byte, error)
+}
+
+type remoteToolScopeContextKey struct{}
+
+// BindRemoteToolScope attaches content-free frozen Enrollment identity to the
+// existing execution context. Invalid or partial bindings fail closed.
+func BindRemoteToolScope(
+	ctx context.Context,
+	scope RemoteToolScope,
+) (context.Context, error) {
+	if ctx == nil || !validRemoteToolScope(scope) {
+		return nil, ErrInvalidExecutionInput
+	}
+	return context.WithValue(ctx, remoteToolScopeContextKey{}, scope), nil
+}
+
+func remoteToolScopeFromContext(ctx context.Context) (RemoteToolScope, bool) {
+	if ctx == nil {
+		return RemoteToolScope{}, false
+	}
+	scope, ok := ctx.Value(remoteToolScopeContextKey{}).(RemoteToolScope)
+	return scope, ok && validRemoteToolScope(scope)
+}
+
+func validRemoteToolScope(scope RemoteToolScope) bool {
+	if scope.EnrollmentID == "" || len(scope.EnrollmentID) > 128 ||
+		len(scope.EnrollmentDigest) != 64 {
+		return false
+	}
+	for _, character := range scope.EnrollmentID {
+		if character <= 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	for _, character := range scope.EnrollmentDigest {
+		if character < '0' || character > '9' && character < 'a' || character > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 // ExecutionResultCommitInput is the exact content-bearing result boundary used

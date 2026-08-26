@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	"loom-pi-rebuild/internal/api"
@@ -42,7 +43,17 @@ func productRouteManifest() []composition.RouteDescriptor {
 			owner: "loom-conversation", handler: conversation,
 			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_request",
 			privacyClass: composition.PrivacyLocalContent,
-			methods:      []composition.RouteMethod{"chat_message", "chat_thread"},
+			methods: []composition.RouteMethod{
+				"chat_message", "chat_thread", "chat_thread_delete",
+			},
+		},
+		{
+			owner: "loom-conversation", handler: conversation,
+			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_request",
+			privacyClass: composition.PrivacyMetadataOnly,
+			methods: []composition.RouteMethod{
+				"chat_context_disclosure", "chat_response_cancel",
+			},
 		},
 		{
 			owner: "loom-governance", handler: governance,
@@ -51,16 +62,25 @@ func productRouteManifest() []composition.RouteDescriptor {
 			methods: []composition.RouteMethod{
 				"customer_rule_command", "customer_rule_snapshot", "mission_decision",
 				"permissions_attention", "permissions_command", "permissions_snapshot",
-				"provider_account_policy_configure", "provider_model_rate_card_configure",
-				"setup_snapshot", "standing_order_command", "standing_order_snapshot",
+				"provider_account_policy_configure", "provider_endpoint_review_approve",
+				"provider_model_rate_card_configure", "remote_tool_backend_enrollment_configure",
+				"remote_tool_backend_enrollment_revoke", "setup_snapshot",
+				"standing_order_command", "standing_order_snapshot",
 			},
+		},
+		{
+			owner: "loom-governance", handler: governance,
+			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_request",
+			privacyClass: composition.PrivacyMetadataOnly,
+			methods:      []composition.RouteMethod{"provider_failure_lab_run"},
 		},
 		{
 			owner: "loom-vault", handler: vault,
 			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_credential",
 			privacyClass: composition.PrivacyLocalContent,
 			methods: []composition.RouteMethod{
-				"credential_configure", "credential_replace", "credential_revoke", "credential_verify",
+				"credential_configure", "credential_import", "credential_replace",
+				"credential_revoke", "credential_verify",
 			},
 		},
 		{
@@ -170,7 +190,7 @@ func (registry productRouteRegistry) admit(
 ) (localipc.Response, bool) {
 	route, found := registry.routes[composition.RouteMethod(request.Method)]
 	if !found {
-		return localipc.Response{}, false
+		return productErrorResponse("unknown_method", errors.New("unknown method")), true
 	}
 	return route.admit(ctx, request)
 }
@@ -197,6 +217,12 @@ func productRouteAdmissionFor(
 			if services.credentialVault == nil {
 				return reject(productCredentialErrorResponse(
 					"credential_unavailable", credentials.ErrCredentialStoreUnavailable,
+				))
+			}
+		case method == "provider_failure_lab_run":
+			if services.failureLab == nil {
+				return reject(productErrorResponse(
+					"state_unavailable", errProductFailureLabUnavailable,
 				))
 			}
 		case method == "mission_decision":
@@ -236,7 +262,9 @@ func productRouteAdmissionFor(
 				))
 			}
 		case method == "snapshot" || method == "timeline_page" ||
-			method == "chat_thread" || method == "chat_message":
+			method == "chat_context_disclosure" || method == "chat_thread" ||
+			method == "chat_thread_delete" ||
+			method == "chat_message":
 			if nilProductAssetPort(services.read) {
 				response := productErrorResponse(
 					"state_unavailable", api.ErrLocalProductStateUnavailable,
@@ -245,6 +273,12 @@ func productRouteAdmissionFor(
 					response = productConversationResponseStage(response, "conversation_dispatch")
 				}
 				return reject(response)
+			}
+		case method == "chat_response_cancel":
+			if services.chatCancel == nil {
+				return reject(productErrorResponse(
+					"state_unavailable", api.ErrLocalProductChatUnavailable,
+				))
 			}
 		case productAssetMethod(string(method)):
 			if services.assets == nil {

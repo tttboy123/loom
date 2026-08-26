@@ -14,9 +14,9 @@ import (
 //
 // Model lists and reasoning efforts are grounded in each Provider's official
 // documentation and the installed runtimes (verified 2026-08-16):
-//   - openai/Codex: installed Codex CLI 0.144.1 model catalog
-//     (~/.codex/models_cache.json) with per-model reasoning levels; native
-//     cc-switch DeepSeek V4 models carry none/high.
+//   - openai/Codex: installed Codex CLI model capabilities with per-model
+//     reasoning levels. Third-party cc-switch aliases are excluded until the
+//     current runtime explicitly discovers or verifies them.
 //   - deepseek: api-docs.deepseek.com current models deepseek-v4-flash /
 //     deepseek-v4-pro with reasoning_effort low/high/max (medium/xhigh map to
 //     high); deepseek-chat / deepseek-reasoner remain as legacy aliases that
@@ -52,10 +52,9 @@ type ConversationModel struct {
 func ProviderConversationModels(providerID string) []ConversationModel {
 	switch providerID {
 	case "openai":
-		// Grounded in the installed Codex CLI 0.144.1 model catalog
-		// (~/.codex/models_cache.json). `codex-default` is the Loom alias for
-		// the profile default (no --model override). The native cc-switch
-		// DeepSeek V4 models run through the user's own Codex configuration.
+		// `codex-default` is the Loom alias for the profile default (no --model
+		// override). Every explicit model below passed the installed live gate;
+		// third-party runtime aliases require separate capability discovery.
 		return []ConversationModel{
 			{ID: "codex-default", DisplayName: "Codex default"},
 			{ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
@@ -66,15 +65,13 @@ func ProviderConversationModels(providerID string) []ConversationModel {
 			{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", ReasoningEfforts: []string{"low", "medium", "high", "xhigh"}},
 			{ID: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3 Codex Spark", ReasoningEfforts: []string{"low", "medium", "high", "xhigh"}},
 			{ID: "codex-auto-review", DisplayName: "Codex Auto Review", ReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
-			{ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"none", "high"}},
-			{ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"none", "high"}},
 		}
 	case "deepseek":
 		return []ConversationModel{
 			{ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"low", "high", "max"}},
 			{ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"low", "high", "max"}},
-			{ID: "deepseek-chat", DisplayName: "DeepSeek Chat (legacy alias)"},
-			{ID: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner (legacy alias)"},
+			{ID: "deepseek-chat", DisplayName: "DeepSeek Chat"},
+			{ID: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner"},
 		}
 	case "kimi":
 		return []ConversationModel{
@@ -99,11 +96,11 @@ func ProviderConversationModels(providerID string) []ConversationModel {
 			{ID: "deepseek/deepseek-reasoner", DisplayName: "DeepSeek Reasoner"},
 			{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ReasoningEfforts: []string{"low", "high", "max"}},
 			{ID: "deepseek/deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ReasoningEfforts: []string{"high", "max"}},
-			{ID: "minimax/MiniMax-M2.7", DisplayName: "MiniMax M2.7"},
-			{ID: "minimax/MiniMax-M3", DisplayName: "MiniMax M3"},
+			{ID: "minimax-cn/MiniMax-M2.7", DisplayName: "MiniMax M2.7"},
+			{ID: "minimax-cn/MiniMax-M3", DisplayName: "MiniMax M3"},
 			{ID: "zai/glm-4.5", DisplayName: "Zhipu GLM-4.5"},
 			{ID: "zai/glm-5.2", DisplayName: "Zhipu GLM-5.2", ReasoningEfforts: []string{"high", "max"}},
-			{ID: "opencode/deepseek-v4-flash-free", DisplayName: "DeepSeek V4 Flash (OpenCode)", ReasoningEfforts: []string{"low", "high", "max"}},
+			{ID: OpenCodeConversationDefaultModel, DisplayName: "Big Pickle (OpenCode)"},
 		}
 	default:
 		return nil

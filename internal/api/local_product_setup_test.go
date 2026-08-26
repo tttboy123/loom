@@ -16,7 +16,17 @@ type setupAPIFixtureBackend struct {
 	policy        app.ProviderAccountPolicyResult
 	policyCommand app.ProviderAccountPolicyCommand
 	editCommand   app.BuilderEditCommand
+	importResult  app.CredentialSetupResult
+	importCommand app.CredentialImportCommand
 	closed        bool
+}
+
+func (backend *setupAPIFixtureBackend) ImportCredentialCandidate(
+	_ context.Context,
+	command app.CredentialImportCommand,
+) (app.CredentialSetupResult, error) {
+	backend.importCommand = command
+	return backend.importResult, nil
 }
 
 func TestLocalProductSetupAPINilReceiverFailsClosed(t *testing.T) {
@@ -130,6 +140,24 @@ func TestLocalProductSetupAPIConfiguresExactProviderAccountPolicy(t *testing.T) 
 	)
 	if err != nil || result != backend.policy || backend.policyCommand != command {
 		t.Fatalf("ConfigureProviderAccountPolicy() = %#v, command=%#v, err=%v", result, backend.policyCommand, err)
+	}
+}
+
+func TestLocalProductSetupAPIImportsExplicitCredentialCandidate(t *testing.T) {
+	backend := &setupAPIFixtureBackend{importResult: app.CredentialSetupResult{
+		ProviderID: "deepseek", Revision: 2, Status: "verified",
+	}}
+	service, err := NewLocalProductSetupAPI(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := app.CredentialImportCommand{
+		CandidateID: setupAPIDigest("candidate"), ProviderID: "deepseek",
+		ProviderAccountID: "deepseek.primary", Confirm: true,
+	}
+	result, err := service.ImportCredentialCandidate(context.Background(), command)
+	if err != nil || result != backend.importResult || backend.importCommand != command {
+		t.Fatalf("ImportCredentialCandidate() = %#v command=%#v err=%v", result, backend.importCommand, err)
 	}
 }
 

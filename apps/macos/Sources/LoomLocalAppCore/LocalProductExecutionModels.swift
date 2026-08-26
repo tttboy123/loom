@@ -64,6 +64,37 @@ private func validExecutionRoute(
   return true
 }
 
+private func validRemoteToolEnrollmentIdentifier(_ value: String) -> Bool {
+  guard !value.isEmpty, value.utf8.count <= 128,
+        let first = value.utf8.first, let last = value.utf8.last,
+        ![0x2d, 0x2e, 0x5f].contains(first),
+        ![0x2d, 0x2e, 0x5f].contains(last) else {
+    return false
+  }
+  var previousSeparator = false
+  for byte in value.utf8 {
+    if (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39) {
+      previousSeparator = false
+    } else if [0x2d, 0x2e, 0x5f].contains(byte), !previousSeparator {
+      previousSeparator = true
+    } else {
+      return false
+    }
+  }
+  return true
+}
+
+private func validRemoteToolBindingDigest(_ value: String) -> Bool {
+  value.utf8.count == 64 && value.utf8.allSatisfy {
+    ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+  }
+}
+
+private func standardizedExecutionWorkspacePath(_ value: String) -> String {
+  guard value.hasPrefix("/") else { return "" }
+  return URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL.path
+}
+
 public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
   public let schemaVersion: Int
   public let operation: String
@@ -72,6 +103,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
   public let workPackageID: String
   public let workPackageDigest: String
   public let objective: String
+  public let workspacePath: String
   public let contextVersion: Int
   public let confirmedConstraints: [String]
   public let acceptedDecisions: [String]
@@ -82,6 +114,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
   public let logicalNodeID: String
   public let attemptNumber: Int
   public let claimGeneration: Int64
+  public let newAttempt: Bool
   public let correlationID: String
 
   enum CodingKeys: String, CodingKey {
@@ -92,6 +125,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
     case workPackageID = "work_package_id"
     case workPackageDigest = "work_package_digest"
     case objective
+    case workspacePath = "workspace_path"
     case contextVersion = "context_version"
     case confirmedConstraints = "confirmed_constraints"
     case acceptedDecisions = "accepted_decisions"
@@ -102,6 +136,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
     case logicalNodeID = "logical_node_id"
     case attemptNumber = "attempt_number"
     case claimGeneration = "claim_generation"
+    case newAttempt = "new_attempt"
     case correlationID = "correlation_id"
   }
 
@@ -111,8 +146,10 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
     workPackageID: String,
     workPackageDigest: String,
     objective: String,
+    workspacePath: String = "",
     confirmedConstraints: [String] = [],
     acceptedDecisions: [String] = [],
+    newAttempt: Bool = false,
     expectedViewVersion: String,
     correlationID: String
   ) -> Self {
@@ -124,6 +161,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       workPackageID: workPackageID,
       workPackageDigest: workPackageDigest,
       objective: objective,
+      workspacePath: standardizedExecutionWorkspacePath(workspacePath),
       contextVersion: 1,
       confirmedConstraints: confirmedConstraints,
       acceptedDecisions: acceptedDecisions,
@@ -134,6 +172,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       logicalNodeID: "",
       attemptNumber: 0,
       claimGeneration: 0,
+      newAttempt: newAttempt,
       correlationID: correlationID
     )
   }
@@ -141,8 +180,10 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
   public static func start(
     preflight: LocalProductExecutionPreflight,
     objective: String,
+    workspacePath: String = "",
     confirmedConstraints: [String] = [],
     acceptedDecisions: [String] = [],
+    newAttempt: Bool = false,
     correlationID: String
   ) -> Self {
     .init(
@@ -153,6 +194,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       workPackageID: preflight.workPackageID,
       workPackageDigest: preflight.workPackageDigest,
       objective: objective,
+      workspacePath: standardizedExecutionWorkspacePath(workspacePath),
       contextVersion: 1,
       confirmedConstraints: confirmedConstraints,
       acceptedDecisions: acceptedDecisions,
@@ -163,6 +205,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       logicalNodeID: "",
       attemptNumber: 0,
       claimGeneration: 0,
+      newAttempt: newAttempt,
       correlationID: correlationID
     )
   }
@@ -186,6 +229,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       workPackageID: "",
       workPackageDigest: "",
       objective: "",
+      workspacePath: "",
       contextVersion: 0,
       confirmedConstraints: [],
       acceptedDecisions: [],
@@ -196,6 +240,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       logicalNodeID: logicalNodeID,
       attemptNumber: attemptNumber,
       claimGeneration: claimGeneration,
+      newAttempt: false,
       correlationID: correlationID
     )
   }
@@ -217,6 +262,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
       (CodingKeys.workPackageID, workPackageID),
       (.workPackageDigest, workPackageDigest),
       (.objective, objective),
+      (.workspacePath, workspacePath),
       (.preflightDigest, preflightDigest),
       (.controlAction, controlAction),
       (.executionDigest, executionDigest),
@@ -226,6 +272,7 @@ public struct LocalProductExecutionCommand: Encodable, Equatable, Sendable {
     }
     if attemptNumber != 0 { try values.encode(attemptNumber, forKey: .attemptNumber) }
     if claimGeneration != 0 { try values.encode(claimGeneration, forKey: .claimGeneration) }
+    if newAttempt { try values.encode(newAttempt, forKey: .newAttempt) }
   }
 }
 
@@ -411,6 +458,16 @@ public struct LocalProductExecutionNodePreview: Decodable, Equatable, Sendable {
 	remoteToolBindingDigest = try values.decodeIfPresent(
 	  String.self, forKey: .remoteToolBindingDigest
 	) ?? ""
+	let completeRemoteToolEnrollment =
+	  validRemoteToolEnrollmentIdentifier(remoteToolEnrollmentID) &&
+	  ["web_search", "mcp_server"].contains(remoteToolBackendKind) &&
+	  validRemoteToolBindingDigest(remoteToolBindingDigest)
+	let emptyRemoteToolEnrollment = remoteToolEnrollmentID.isEmpty &&
+	  remoteToolBackendKind.isEmpty && remoteToolBindingDigest.isEmpty
+	guard (remoteToolEnrollmentAvailable && completeRemoteToolEnrollment) ||
+	  (!remoteToolEnrollmentAvailable && emptyRemoteToolEnrollment) else {
+	  throw LocalProductWireError.invalidJSON
+	}
 	guard validExecutionRoute(
 	  harnessAdapter: harnessAdapter,
 	  providerID: providerID,
@@ -485,6 +542,7 @@ public struct LocalProductExecutionPreflight: Decodable, Equatable, Sendable {
   public let sideEffects: [String]
   public let permissionScopes: [String]
   public let approvalPoints: [String]
+  public let newAttempt: Bool
   public let nodes: [LocalProductExecutionNodePreview]
 
   enum CodingKeys: String, CodingKey {
@@ -506,6 +564,7 @@ public struct LocalProductExecutionPreflight: Decodable, Equatable, Sendable {
     case sideEffects = "side_effects"
     case permissionScopes = "permission_scopes"
     case approvalPoints = "approval_points"
+    case newAttempt = "new_attempt"
     case nodes
   }
 
@@ -531,6 +590,7 @@ public struct LocalProductExecutionPreflight: Decodable, Equatable, Sendable {
     sideEffects = try values.decode([String].self, forKey: .sideEffects)
     permissionScopes = try values.decode([String].self, forKey: .permissionScopes)
     approvalPoints = try values.decode([String].self, forKey: .approvalPoints)
+    newAttempt = try values.decodeIfPresent(Bool.self, forKey: .newAttempt) ?? false
     nodes = try values.decode([LocalProductExecutionNodePreview].self, forKey: .nodes)
   }
 }
@@ -543,7 +603,7 @@ extension LocalProductExecutionPreflight.CodingKeys {
       "expires_at",
       "runtime_instance_id", "runtime_profile_id", "model_id", "auth_mode",
       "capacity_available", "budget_status", "side_effects", "permission_scopes",
-      "approval_points", "nodes",
+      "approval_points", "new_attempt", "nodes",
     ]
   }
 }

@@ -3,6 +3,7 @@ package toolbroker
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,12 @@ import (
 	"testing"
 	"time"
 )
+
+type searchRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTrip searchRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
 
 func liteHTML(results ...string) string {
 	var builder strings.Builder
@@ -111,6 +118,40 @@ func TestDDGSearchClientBoundedAndRejectsNonPublicTargets(t *testing.T) {
 	}
 	if _, err := newDDGSearchClientWithClient(server.URL, server.Client(), 0, 1024); err == nil {
 		t.Fatal("zero maxResults accepted")
+	}
+}
+
+func TestDDGSearchFailsClosedWithoutFallbackEgress(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{name: "DDG failure", statusCode: http.StatusBadGateway},
+		{name: "DDG no result", statusCode: http.StatusOK, body: liteHTML()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests []string
+			client := &http.Client{Transport: searchRoundTripper(func(request *http.Request) (*http.Response, error) {
+				requests = append(requests, request.URL.String())
+				return &http.Response{
+					StatusCode: test.statusCode,
+					Body:       io.NopCloser(strings.NewReader(test.body)),
+					Header:     make(http.Header),
+					Request:    request,
+				}, nil
+			})}
+			search, err := newDDGSearchClientWithClient(ddgLiteBase, client, 4, 32<<10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := search.Search(context.Background(), "loom", 3); !errors.Is(err, ErrToolFailed) {
+				t.Fatalf("Search() error = %v, want ErrToolFailed", err)
+			}
+			if len(requests) != 1 || !strings.HasPrefix(requests[0], ddgLiteBase) {
+				t.Fatalf("requests = %v, want one DDG request", requests)
+			}
+		})
 	}
 }
 

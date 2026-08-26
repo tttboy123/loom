@@ -102,9 +102,7 @@ func wireSandboxProposal(t testing.TB, adapter *execution.Adapter, store *journa
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, executionAPI, nil, nil, nil,
-	)
+	handler := newProductRouteHandler(productRouteServices{execution: executionAPI})
 	input, _ := json.Marshal(map[string]any{
 		"job_id": "job-sb-wire",
 		"call":   map[string]any{"tool": "Bash", "command": "printf sb-wire", "path": ""},

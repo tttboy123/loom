@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/assets"
@@ -22,6 +25,7 @@ import (
 	"loom-pi-rebuild/internal/projection"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/state"
+	"loom-pi-rebuild/internal/supervisor"
 	"loom-pi-rebuild/internal/teams"
 	"loom-pi-rebuild/internal/work"
 )
@@ -46,12 +50,24 @@ type controlledMissionExecutionState struct {
 }
 
 func (state *controlledMissionExecutionState) TeamExecutions(
-	string,
-	int,
+	afterTeamID string,
+	limit int,
 ) ([]projection.TeamExecution, bool) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return append([]projection.TeamExecution(nil), state.executions...), false
+	start := 0
+	for start < len(state.executions) &&
+		state.executions[start].TeamInstanceID <= afterTeamID {
+		start++
+	}
+	end := min(start+limit, len(state.executions))
+	executions := make([]projection.TeamExecution, end-start)
+	for index := range executions {
+		executions[index] = cloneControlledMissionExecution(
+			state.executions[start+index],
+		)
+	}
+	return executions, end < len(state.executions)
 }
 
 func (state *controlledMissionExecutionState) Run(
@@ -90,10 +106,55 @@ func (state *controlledMissionExecutionState) TeamExecution(
 	defer state.mu.Unlock()
 	if state.byTeam != nil {
 		execution, ok := state.byTeam[teamID]
-		return execution, ok
+		return cloneControlledMissionExecution(execution), ok
 	}
-	return state.execution, state.visible && state.execution.TeamInstanceID == teamID
+	return cloneControlledMissionExecution(state.execution),
+		state.visible && state.execution.TeamInstanceID == teamID
 }
+
+func cloneControlledMissionExecution(
+	execution projection.TeamExecution,
+) projection.TeamExecution {
+	clone := execution
+	clone.Nodes = append([]projection.TeamExecutionNode(nil), execution.Nodes...)
+	for index := range clone.Nodes {
+		source := execution.Nodes[index]
+		clone.Nodes[index].DependsOn = append([]string(nil), source.DependsOn...)
+		clone.Nodes[index].PriorClassifications = append(
+			[]string(nil), source.PriorClassifications...,
+		)
+		clone.Nodes[index].InitialCapabilities = append(
+			[]string(nil), source.InitialCapabilities...,
+		)
+		if source.InitialBudget != nil {
+			budget := *source.InitialBudget
+			clone.Nodes[index].InitialBudget = &budget
+		}
+		clone.Nodes[index].AssetRevisionBindings = append(
+			[]assets.ExactAssetRevisionBinding(nil),
+			source.AssetRevisionBindings...,
+		)
+		clone.Nodes[index].Attempts = append(
+			[]projection.TeamExecutionAttempt(nil), source.Attempts...,
+		)
+		for attemptIndex := range clone.Nodes[index].Attempts {
+			attemptSource := source.Attempts[attemptIndex]
+			clone.Nodes[index].Attempts[attemptIndex].AssetRevisionBindings = append(
+				[]assets.ExactAssetRevisionBinding(nil),
+				attemptSource.AssetRevisionBindings...,
+			)
+			binding := attemptSource.ExecutionBinding
+			binding.Capabilities = append([]string(nil), binding.Capabilities...)
+			if binding.Budget != nil {
+				budget := *binding.Budget
+				binding.Budget = &budget
+			}
+			clone.Nodes[index].Attempts[attemptIndex].ExecutionBinding = binding
+		}
+	}
+	return clone
+}
+
 func (state *controlledMissionExecutionState) Stats() (bool, int) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -115,6 +176,20 @@ type recordingMissionFallbackDecisionPreparer struct {
 	candidates []MissionFallbackDecisionCandidate
 	calls      int
 	err        error
+}
+
+type unavailableMissionFallbackDecisionPreparer struct {
+	calls int
+}
+
+func (preparer *unavailableMissionFallbackDecisionPreparer) PrepareMissionFallbackDecisions(
+	context.Context,
+	string,
+	string,
+	[]MissionFallbackDecisionCandidate,
+) error {
+	preparer.calls++
+	return ErrInvalidMissionDecision
 }
 
 func (preparer *recordingMissionFallbackDecisionPreparer) PrepareMissionFallbackDecisions(
@@ -168,8 +243,8 @@ func (compiler *controlledMissionExecutionCompiler) ReconstructMissionExecution(
 }
 
 func (compiler *controlledMissionExecutionCompiler) CompileMissionExecution(
-	context.Context,
-	MissionExecutionCommand,
+	_ context.Context,
+	_ MissionExecutionCommand,
 ) (MissionExecutionCompilation, error) {
 	compiler.mu.Lock()
 	defer compiler.mu.Unlock()
@@ -247,6 +322,44 @@ func (incompleteMissionExecutionRunner) Run(
 	context.Context,
 	TeamExecutionRequest,
 ) (TeamExecutionResult, error) {
+	return TeamExecutionResult{}, ErrTeamExecutionIncomplete
+}
+
+type continuationMissionExecutionRunner struct {
+	state *controlledMissionExecutionState
+	calls int
+}
+
+func (runner *continuationMissionExecutionRunner) Run(
+	context.Context,
+	TeamExecutionRequest,
+) (TeamExecutionResult, error) {
+	runner.calls++
+	runner.state.mu.Lock()
+	defer runner.state.mu.Unlock()
+	runner.state.execution.Nodes[0].Status = "running"
+	runner.state.execution.Nodes[0].CurrentAttempt = 1
+	runner.state.execution.Nodes[0].Attempts = []projection.TeamExecutionAttempt{{
+		AttemptNumber: 1, WorkItemID: "work-main-1", RunID: "run-main-1",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+		RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
+		Status: "dispatched",
+	}}
+	if runner.state.runs == nil {
+		runner.state.runs = make(map[string]projection.Run)
+	}
+	runner.state.runs["run-main-1"] = projection.Run{
+		ID: "run-main-1", WorkItemID: "work-main-1", Phase: "running",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+	}
+	if runner.state.grants == nil {
+		runner.state.grants = make(map[string]projection.AgentGrant)
+	}
+	runner.state.grants["run-main-1"] = projection.AgentGrant{
+		ID: "grant-main-1", WorkItemID: "work-main-1", RunID: "run-main-1",
+		ClaimID: "claim-main-1", ClaimGeneration: 1,
+		RuntimeInstanceID: "runtime-pi", AgentInstanceID: "agent-main",
+	}
 	return TeamExecutionResult{}, ErrTeamExecutionIncomplete
 }
 
@@ -607,6 +720,63 @@ func TestAuthoritativeMissionExecutionStartReturnsOnlyAfterProjectedDispatch(
 	if err != nil || result.Status != "running" || runner.Calls() != 1 ||
 		!visible || refreshes < 2 {
 		t.Fatalf("start = %#v, err=%v calls=%d refreshes=%d", result, err, runner.Calls(), refreshes)
+	}
+}
+
+func TestAuthoritativeMissionPreflightSkipsFallbackGovernanceWithoutCandidates(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand(missionExecutionPreflight)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: command.TeamInstanceID,
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: command.Objective,
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{version: command.ExpectedViewVersion}
+	compiler := &controlledMissionExecutionCompiler{
+		compilation: MissionExecutionCompilation{
+			Plan:    plan,
+			Request: TeamExecutionRequest{Plan: plan},
+			Preflight: MissionExecutionPreflight{
+				SchemaVersion: MissionExecutionSchemaVersion,
+				MissionID:     command.MissionID, TeamInstanceID: command.TeamInstanceID,
+				WorkPackageID:     command.WorkPackageID,
+				WorkPackageDigest: command.WorkPackageDigest,
+				ViewVersion:       command.ExpectedViewVersion, PlanDigest: plan.Digest(),
+				RuntimeInstanceID: "runtime-pi", RuntimeProfileID: "pi-default",
+				ModelID: "qwen", AuthMode: "native", CapacityAvailable: 1,
+				BudgetStatus: "unavailable", SideEffects: []string{},
+				PermissionScopes: []string{"workspace"},
+				ApprovalPoints:   []string{"before_start"},
+				Nodes: []MissionExecutionNodePreview{{
+					LogicalNodeID: "main", Title: command.Objective,
+					Role: "main", DependsOn: []string{}, MaxAttempts: 2,
+				}},
+			},
+		},
+	}
+	preparer := &unavailableMissionFallbackDecisionPreparer{}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler, Runner: incompleteMissionExecutionRunner{},
+			FallbackDecisions: preparer, VisibilityTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if _, err := backend.PreflightMission(context.Background(), command); err != nil {
+		t.Fatalf("preflight without fallback candidates = %v", err)
+	}
+	if preparer.calls != 0 {
+		t.Fatalf("fallback governance called without candidates: %d", preparer.calls)
 	}
 }
 
@@ -1343,6 +1513,72 @@ func TestAuthoritativeMissionRestartResumesOneExactExpiredLineage(t *testing.T) 
 	}
 }
 
+func TestAuthoritativeMissionRestartPagesPastTerminalHistory(t *testing.T) {
+	now := time.Date(2026, 8, 21, 13, 20, 0, 0, time.UTC)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-zzz-running",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "Resume after terminal history",
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executions := make([]projection.TeamExecution, 0, maxAuthoritativeMissionFlights+1)
+	for index := 0; index < maxAuthoritativeMissionFlights; index++ {
+		executions = append(executions, projection.TeamExecution{
+			TeamInstanceID: fmt.Sprintf("team-%03d-terminal", index),
+			PlanDigest:     strings.Repeat("a", 64), Status: "succeeded",
+		})
+	}
+	executions = append(executions, projection.TeamExecution{
+		TeamInstanceID: plan.TeamInstanceID(), PlanDigest: plan.Digest(), Status: "running",
+		Nodes: []projection.TeamExecutionNode{{
+			LogicalNodeID: "main", CurrentAttempt: 1,
+			Attempts: []projection.TeamExecutionAttempt{{
+				AttemptNumber: 1, RunID: "run-paged-restart",
+				ClaimGeneration: 1, Status: "running",
+			}},
+		}},
+	})
+	state := &controlledMissionExecutionState{
+		version: strings.Repeat("b", 64), executions: executions,
+		runs: map[string]projection.Run{
+			"run-paged-restart": {
+				ID: "run-paged-restart", ClaimGeneration: 1,
+				PrepareLeaseExpiresAt: now.Add(-time.Second),
+			},
+		},
+	}
+	runner := &controlledTeamExecutionRunner{state: state}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state,
+			Compiler: &controlledMissionExecutionCompiler{
+				recoveryRequest: TeamExecutionRequest{Plan: plan},
+			},
+			Runner: runner, VisibilityTimeout: time.Second,
+			Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if err := backend.ResumeProjectedMissions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for runner.Calls() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runner.Calls() != 1 {
+		t.Fatalf("paged restart runner calls = %d", runner.Calls())
+	}
+}
+
 func TestAuthoritativeMissionRestartSkipsUnresumableProjection(t *testing.T) {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
@@ -1565,6 +1801,205 @@ func TestAuthoritativeMissionExecutionCompletedFlightWaitIsTickerBounded(
 	_, refreshes := state.Stats()
 	if refreshes > 20 {
 		t.Fatalf("refreshes = %d, completed flight busy-spun", refreshes)
+	}
+}
+
+func TestAuthoritativeMissionExecutionContinuesPendingNodeAfterCompletedFlight(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand("preflight")
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: command.TeamInstanceID,
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: command.Objective,
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{
+		version: command.ExpectedViewVersion, visible: true,
+		execution: projection.TeamExecution{
+			TeamInstanceID: command.TeamInstanceID, PlanDigest: plan.Digest(),
+			Status: "running",
+			Nodes: []projection.TeamExecutionNode{{
+				LogicalNodeID: "main", Status: "pending",
+			}},
+		},
+	}
+	runner := &continuationMissionExecutionRunner{state: state}
+	compiler := &controlledMissionExecutionCompiler{
+		compilation: MissionExecutionCompilation{
+			Plan: plan, Request: TeamExecutionRequest{Plan: plan},
+			Preflight: MissionExecutionPreflight{
+				SchemaVersion: 1, MissionID: command.MissionID,
+				TeamInstanceID:    command.TeamInstanceID,
+				WorkPackageID:     command.WorkPackageID,
+				WorkPackageDigest: command.WorkPackageDigest,
+				ViewVersion:       command.ExpectedViewVersion, PlanDigest: plan.Digest(),
+				RuntimeInstanceID: "runtime-pi", RuntimeProfileID: "pi-default",
+				ModelID: "qwen", AuthMode: "brokered", CapacityAvailable: 1,
+				BudgetStatus: "unavailable", PermissionScopes: []string{"workspace"},
+				ApprovalPoints: []string{"before_start"},
+				Nodes: []MissionExecutionNodePreview{{
+					LogicalNodeID: "main", Title: command.Objective,
+					Role: "main", MaxAttempts: 2,
+				}},
+			},
+		},
+	}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler, Runner: runner,
+			VisibilityTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	preflight, err := backend.PreflightMission(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionDigest := missionExecutionDigest(
+		command.TeamInstanceID, plan.Digest(), preflight.PreflightDigest,
+	)
+	previous, launch, err := backend.flight(
+		command.TeamInstanceID, plan.Digest(), executionDigest,
+	)
+	if err != nil || !launch {
+		t.Fatalf("previous flight = %#v, launch=%t, err=%v", previous, launch, err)
+	}
+	close(previous.done)
+	start := command
+	start.Operation = "start"
+	start.PreflightDigest = preflight.PreflightDigest
+	result, err := backend.StartMission(context.Background(), start)
+	if err != nil || result.Status != "running" || runner.calls != 1 {
+		t.Fatalf("continued result = %#v, calls=%d, err=%v", result, runner.calls, err)
+	}
+}
+
+func TestAuthoritativeMissionExecutionSurfacesCompletedTerminalFlightError(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand("preflight")
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: command.TeamInstanceID,
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: command.Objective,
+			AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-pi",
+			Role: teams.ExecutionRoleMain, MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &controlledMissionExecutionState{
+		version: command.ExpectedViewVersion, visible: true,
+		execution: projection.TeamExecution{
+			TeamInstanceID: command.TeamInstanceID, PlanDigest: plan.Digest(),
+			Status: "succeeded",
+			Nodes: []projection.TeamExecutionNode{{
+				LogicalNodeID: "main", Status: "succeeded",
+			}},
+		},
+	}
+	compiler := &controlledMissionExecutionCompiler{
+		compilation: MissionExecutionCompilation{
+			Plan: plan, Request: TeamExecutionRequest{Plan: plan},
+			Preflight: MissionExecutionPreflight{
+				SchemaVersion: 1, MissionID: command.MissionID,
+				TeamInstanceID:    command.TeamInstanceID,
+				WorkPackageID:     command.WorkPackageID,
+				WorkPackageDigest: command.WorkPackageDigest,
+				ViewVersion:       command.ExpectedViewVersion, PlanDigest: plan.Digest(),
+				RuntimeInstanceID: "runtime-pi", RuntimeProfileID: "pi-default",
+				ModelID: "qwen", AuthMode: "brokered", CapacityAvailable: 1,
+				BudgetStatus: "unavailable", PermissionScopes: []string{"workspace"},
+				ApprovalPoints: []string{"before_start"},
+				Nodes: []MissionExecutionNodePreview{{
+					LogicalNodeID: "main", Title: command.Objective,
+					Role: "main", MaxAttempts: 1,
+				}},
+			},
+		},
+	}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: compiler,
+			Runner: incompleteMissionExecutionRunner{}, VisibilityTimeout: time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	preflight, err := backend.PreflightMission(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionDigest := missionExecutionDigest(
+		command.TeamInstanceID, plan.Digest(), preflight.PreflightDigest,
+	)
+	flight, launch, err := backend.flight(
+		command.TeamInstanceID, plan.Digest(), executionDigest,
+	)
+	if err != nil || !launch {
+		t.Fatalf("flight = %#v, launch=%t, err=%v", flight, launch, err)
+	}
+	flight.errMu.Lock()
+	flight.err = errors.Join(ErrTeamWorkspacePublish, teamWorkspacePublishStageError("final_digest"))
+	flight.errMu.Unlock()
+	close(flight.done)
+
+	start := command
+	start.Operation = "start"
+	start.PreflightDigest = preflight.PreflightDigest
+	if _, err := backend.StartMission(context.Background(), start); !errors.Is(
+		err, ErrTeamWorkspacePublish,
+	) {
+		t.Fatalf("terminal publication error = %v", err)
+	} else if stage, ok := TeamWorkspacePublishStage(err); !ok || stage != "final_digest" {
+		t.Fatalf("terminal publication stage = %q, %t", stage, ok)
+	}
+}
+
+func TestMissionExecutionErrorTypesReportsTypesWithoutMessages(t *testing.T) {
+	err := errors.Join(
+		fmt.Errorf("sensitive detail: %w", context.Canceled),
+		teamWorkspacePublishStageError("main_candidate_missing"),
+	)
+	got := missionExecutionErrorTypes(err)
+	if !strings.Contains(got, "*errors.joinError") ||
+		!strings.Contains(got, "*fmt.wrapError") ||
+		!strings.Contains(got, "app.teamWorkspacePublishStageError") {
+		t.Fatalf("error types = %q", got)
+	}
+	if strings.Contains(got, "sensitive detail") || strings.Contains(got, "main_candidate_missing") {
+		t.Fatalf("error messages leaked into type-only diagnostic: %q", got)
+	}
+}
+
+func TestMissionExecutionNeedsCoordinatorContinuationAfterFailedAttempt(t *testing.T) {
+	projected := projection.TeamExecution{
+		Status: "awaiting_recovery",
+		Nodes: []projection.TeamExecutionNode{{
+			LogicalNodeID: "main", Status: "awaiting_recovery",
+			Attempts: []projection.TeamExecutionAttempt{{
+				AttemptNumber: 1, Status: "failed",
+			}},
+		}},
+	}
+	if !missionExecutionNeedsCoordinatorContinuation(projected) {
+		t.Fatal("failed durable attempt must wake the coordinator recovery path")
+	}
+	projected.Nodes[0].Attempts[0].Status = "dispatched"
+	if missionExecutionNeedsCoordinatorContinuation(projected) {
+		t.Fatal("a still-dispatched attempt must retain its active flight")
 	}
 }
 
@@ -2036,6 +2471,165 @@ func TestBuiltInMissionExecutionCompilerPreservesRoleSpecificExecutionBindings(
 	}
 }
 
+func TestMissionExecutionGrantLifetimeCoversEveryFrozenRuntime(t *testing.T) {
+	roles := []MissionExecutionRoleBinding{
+		{
+			Profile:            loomruntime.RuntimeProfile{Timeout: 10 * time.Minute},
+			FallbackConfigured: true,
+			FallbackProfile:    loomruntime.RuntimeProfile{Timeout: 12 * time.Minute},
+		},
+		{Profile: loomruntime.RuntimeProfile{Timeout: 3 * time.Minute}},
+	}
+
+	lifetime, err := missionExecutionGrantLifetime(roles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifetime != 13*time.Minute {
+		t.Fatalf("grant lifetime = %s, want 13m", lifetime)
+	}
+
+	roles[0].FallbackProfile.Timeout = time.Hour
+	if _, err := missionExecutionGrantLifetime(roles); !errors.Is(err, ErrInvalidMissionExecution) {
+		t.Fatalf("unsafe grant lifetime error = %v, want invalid mission execution", err)
+	}
+}
+
+func TestBuiltInMissionExecutionCompilerUsesExactCommandWorkspacePath(t *testing.T) {
+	command := missionExecutionTestCommand(missionExecutionPreflight)
+	configuredSource := t.TempDir()
+	requestedSource := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(configuredSource, "configured.txt"),
+		[]byte("configured\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(requestedSource, "requested.txt"),
+		[]byte("requested\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "profile-workspace", AdapterType: "pi-cli", ProviderID: "local",
+		ModelID: "qwen2.5-coder-1.5b-instruct-q4-k-m", AuthMode: loomruntime.AuthNative,
+		RequiredCapabilities: []string{}, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-workspace", DeviceID: "device-local", AdapterType: "pi-cli",
+		DisplayName: "Local Pi", ExecutableVersion: "0.82.1",
+		Status: loomruntime.RuntimeOnline, ObservedCapabilities: []string{}, Capacity: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &controlledMissionExecutionBindingSource{binding: MissionExecutionBinding{
+		ViewVersion: command.ExpectedViewVersion, TeamInstanceID: command.TeamInstanceID,
+		AgentInstanceID: "agent-main", Profile: profile, Instance: instance,
+		CapacityAvailable: 1,
+	}}
+	compiler, err := NewBuiltInMissionExecutionCompiler(BuiltInMissionExecutionCompilerConfig{
+		Bindings: source, SourcePath: configuredSource,
+		Now: func() time.Time { return time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	command.WorkspacePath = requestedSource
+	requested, err := compiler.CompileMissionExecution(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requested.Request.WorkspacePublisher == nil {
+		t.Fatal("selected workspace did not receive accepted-change publisher")
+	}
+	requestedSnapshot, err := supervisor.ObserveSourceSnapshot(requestedSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, execution := range requested.Request.Nodes {
+		if execution.SourcePath != requestedSource ||
+			execution.SourceSnapshotDigest != requestedSnapshot.TreeDigest() {
+			t.Fatalf("requested execution source = %q/%q, want %q/%q",
+				execution.SourcePath, execution.SourceSnapshotDigest,
+				requestedSource, requestedSnapshot.TreeDigest())
+		}
+	}
+	for _, semantic := range requested.Request.Semantics {
+		if semantic.VerifierExecution == nil ||
+			semantic.VerifierExecution.SourcePath != requestedSource ||
+			semantic.VerifierExecution.SourceSnapshotDigest != requestedSnapshot.TreeDigest() {
+			t.Fatalf("requested verifier source = %#v", semantic.VerifierExecution)
+		}
+	}
+
+	command.WorkspacePath = ""
+	compatible, err := compiler.CompileMissionExecution(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatible.Request.WorkspacePublisher != nil {
+		t.Fatal("implicit daemon source unexpectedly received workspace publisher")
+	}
+	configuredSnapshot, err := supervisor.ObserveSourceSnapshot(configuredSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, execution := range compatible.Request.Nodes {
+		if execution.SourcePath != configuredSource ||
+			execution.SourceSnapshotDigest != configuredSnapshot.TreeDigest() {
+			t.Fatalf("compatible execution source = %q/%q, want %q/%q",
+				execution.SourcePath, execution.SourceSnapshotDigest,
+				configuredSource, configuredSnapshot.TreeDigest())
+		}
+	}
+}
+
+func TestMissionExecutionRoleBindingsBoundLongObjectiveOnlyInPreviewTitle(t *testing.T) {
+	objective := strings.Repeat("界", 200)
+	roles := missionExecutionRoleBindings(MissionExecutionBinding{
+		Roles: []MissionExecutionRoleBinding{
+			{
+				LogicalNodeID: "main", Title: "Coordinator",
+				Role: teams.ExecutionRoleMain,
+			},
+			{
+				LogicalNodeID: "worker", Title: "Bounded worker",
+				Role: teams.ExecutionRoleSubAgent,
+			},
+		},
+	}, objective)
+	if len(roles) != 2 {
+		t.Fatalf("roles = %#v", roles)
+	}
+	var mainTitle, workerTitle string
+	for _, role := range roles {
+		switch role.LogicalNodeID {
+		case "main":
+			mainTitle = role.Title
+		case "worker":
+			workerTitle = role.Title
+		}
+	}
+	if mainTitle == objective || len(mainTitle) > maxMissionExecutionNodeTitleBytes ||
+		!utf8.ValidString(mainTitle) || !strings.HasPrefix(objective, mainTitle) {
+		t.Fatalf("bounded main title bytes=%d valid=%t", len(mainTitle), utf8.ValidString(mainTitle))
+	}
+	if workerTitle != "Bounded worker" {
+		t.Fatalf("worker title = %q", workerTitle)
+	}
+	if short := missionExecutionObjectiveTitle("Short objective"); short != "Short objective" {
+		t.Fatalf("short objective title = %q", short)
+	}
+}
+
 func TestBuiltInMissionExecutionCompilerBindsExactRecipeAndVerifier(
 	t *testing.T,
 ) {
@@ -2131,6 +2725,17 @@ func TestBuiltInMissionExecutionCompilerBindsExactRecipeAndVerifier(
 		semantics.VerifierExecution == nil {
 		t.Fatalf("semantics = %#v", semantics)
 	}
+	verifierProfile := semantics.VerifierExecution.Profile
+	if verifierProfile.ID == profile.ID ||
+		verifierProfile.AdapterType != profile.AdapterType ||
+		verifierProfile.ProviderID != profile.ProviderID ||
+		verifierProfile.ModelID != profile.ModelID ||
+		verifierProfile.AuthMode != profile.AuthMode ||
+		len(verifierProfile.RequiredCapabilities) != 0 ||
+		verifierProfile.RemoteToolEnrollmentID != "" ||
+		verifierProfile.RemoteToolEnrollmentDigest != "" {
+		t.Fatalf("verifier profile retained mutable/tool authority = %#v", verifierProfile)
+	}
 	for index, execution := range request.Nodes {
 		if execution.LogicalNodeID != "main" ||
 			execution.AttemptNumber != index+1 ||
@@ -2173,9 +2778,10 @@ func TestBuiltInMissionExecutionCompilerBindsExactRecipeAndVerifier(
 	}
 	projectedSemantics := started.Request.Semantics[0]
 	projected := projection.TeamExecution{
-		TeamInstanceID: command.TeamInstanceID,
-		PlanDigest:     started.Plan.Digest(),
-		Status:         "running",
+		TeamInstanceID:        command.TeamInstanceID,
+		PlanDigest:            started.Plan.Digest(),
+		ExecutionGenerationID: "22222222-2222-4222-8222-222222222222",
+		Status:                "running",
 		Nodes: []projection.TeamExecutionNode{{
 			LogicalNodeID: "main",
 			Title:         command.Objective, AgentInstanceID: source.binding.AgentInstanceID,
@@ -2206,12 +2812,175 @@ func TestBuiltInMissionExecutionCompilerBindsExactRecipeAndVerifier(
 		recovered.OutputObserver != observer || factory.calls != 2 {
 		t.Fatalf("recovered request = %#v, err=%v calls=%d", recovered, err, factory.calls)
 	}
+	if recovered.ExecutionGenerationID != projected.ExecutionGenerationID {
+		t.Fatalf(
+			"recovered execution generation = %q, want %q",
+			recovered.ExecutionGenerationID,
+			projected.ExecutionGenerationID,
+		)
+	}
+	for _, execution := range recovered.Nodes {
+		wantWorkID := appTeamAttemptIdentity(
+			"work", recovered.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber, projected.ExecutionGenerationID,
+		)
+		wantRunID := appTeamAttemptIdentity(
+			"run", recovered.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber, projected.ExecutionGenerationID,
+		)
+		if execution.Dispatch.WorkItemID() != wantWorkID ||
+			execution.Dispatch.RunID() != wantRunID {
+			t.Fatalf(
+				"recovered dispatch identity = (%q, %q), want (%q, %q)",
+				execution.Dispatch.WorkItemID(), execution.Dispatch.RunID(),
+				wantWorkID, wantRunID,
+			)
+		}
+	}
+	continued, err := compiler.compileMissionExecutionGeneration(
+		context.Background(),
+		command,
+		projected,
+	)
+	if err != nil || continued.Request.ExecutionGenerationID !=
+		projected.ExecutionGenerationID {
+		t.Fatalf("continued request = %#v, err=%v", continued.Request, err)
+	}
+	for _, execution := range continued.Request.Nodes {
+		wantWorkID := appTeamAttemptIdentity(
+			"work", continued.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber, projected.ExecutionGenerationID,
+		)
+		wantRunID := appTeamAttemptIdentity(
+			"run", continued.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber, projected.ExecutionGenerationID,
+		)
+		if execution.Dispatch.WorkItemID() != wantWorkID ||
+			execution.Dispatch.RunID() != wantRunID {
+			t.Fatalf(
+				"continued dispatch identity = (%q, %q), want (%q, %q)",
+				execution.Dispatch.WorkItemID(), execution.Dispatch.RunID(),
+				wantWorkID, wantRunID,
+			)
+		}
+	}
 	projected.Nodes[0].PrimaryWorkflowPath = "unknown/recipe"
 	if _, err := compiler.ReconstructMissionExecution(
 		context.Background(),
 		projected,
 	); !errors.Is(err, ErrMissionExecutionConflict) {
 		t.Fatalf("unknown recipe recovery error = %v", err)
+	}
+}
+
+func TestBuiltInMissionExecutionCompilerSaltsNewAttemptDispatchIdentities(
+	t *testing.T,
+) {
+	command := missionExecutionTestCommand(missionExecutionStart)
+	command.PreflightDigest = strings.Repeat("e", 64)
+	command.NewAttempt = true
+	now := time.Date(2026, 8, 24, 9, 30, 0, 0, time.UTC)
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "loom-main-native", AdapterType: "pi-cli",
+		ProviderID: "local", ModelID: "qwen-local",
+		AuthMode:             loomruntime.AuthNative,
+		RequiredCapabilities: []string{"models"},
+		Timeout:              5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID: "runtime-pi", DeviceID: "device-local",
+		AdapterType: "pi-cli", DisplayName: "Local Pi",
+		ExecutableVersion: "0.82.1", Status: loomruntime.RuntimeOnline,
+		ObservedCapabilities: []string{"models"}, Capacity: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler, err := NewBuiltInMissionExecutionCompiler(
+		BuiltInMissionExecutionCompilerConfig{
+			Bindings: &controlledMissionExecutionBindingSource{
+				binding: MissionExecutionBinding{
+					ViewVersion:     command.ExpectedViewVersion,
+					TeamInstanceID:  command.TeamInstanceID,
+					AgentInstanceID: "agent-main", Profile: profile,
+					Instance: instance, CapacityAvailable: 2,
+				},
+			},
+			SourcePath: t.TempDir(), Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compilation, err := compiler.CompileMissionExecution(
+		context.Background(), command,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !compilation.Request.RestartTerminal {
+		t.Fatal("new-attempt compilation did not request a terminal restart")
+	}
+	for _, execution := range compilation.Request.Nodes {
+		wantWorkItemID := appTeamAttemptIdentity(
+			"work", compilation.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber, command.CorrelationID,
+		)
+		wantRunID := appTeamAttemptIdentity(
+			"run", compilation.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber, command.CorrelationID,
+		)
+		if execution.Dispatch.WorkItemID() != wantWorkItemID ||
+			execution.Dispatch.RunID() != wantRunID {
+			t.Fatalf(
+				"attempt %d dispatch identities = (%q, %q), want (%q, %q)",
+				execution.AttemptNumber,
+				execution.Dispatch.WorkItemID(), execution.Dispatch.RunID(),
+				wantWorkItemID, wantRunID,
+			)
+		}
+		if execution.Dispatch.WorkItemID() == appTeamAttemptIdentity(
+			"work", compilation.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber,
+		) || execution.Dispatch.RunID() == appTeamAttemptIdentity(
+			"run", compilation.Plan, execution.LogicalNodeID,
+			execution.AttemptNumber,
+		) {
+			t.Fatalf("attempt %d retained unsalted dispatch identities", execution.AttemptNumber)
+		}
+	}
+}
+
+func TestMissionVerifierRuntimeProfileRemovesToolAuthority(t *testing.T) {
+	profile, err := missionVerifierRuntimeProfile(loomruntime.RuntimeProfile{
+		ID: "opencode-main", AdapterType: "opencode",
+		ProviderID: "opencode", ModelID: "opencode/big-pickle",
+		AuthMode: loomruntime.AuthNative, ReasoningEffort: "medium",
+		RequiredCapabilities: []string{
+			loomruntime.CapabilityContextRetrieval,
+			loomruntime.CapabilityGovernedToolLoop,
+			loomruntime.CapabilityReasoningEffort,
+			"workspace_edit",
+		},
+		Timeout:                    10 * time.Minute,
+		RemoteToolEnrollmentID:     "remote-enrollment",
+		RemoteToolEnrollmentDigest: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCapabilities := []string{
+		loomruntime.CapabilityReasoningEffort,
+		"workspace_edit",
+	}
+	if profile.ID != "opencode-main:independent-verifier:v1" ||
+		!reflect.DeepEqual(profile.RequiredCapabilities, wantCapabilities) ||
+		profile.RemoteToolEnrollmentID != "" ||
+		profile.RemoteToolEnrollmentDigest != "" {
+		t.Fatalf("verifier profile = %#v", profile)
 	}
 }
 
@@ -3490,6 +4259,28 @@ func missionExecutionTestCommand(operation string) MissionExecutionCommand {
 	return command
 }
 
+func TestMissionExecutionAcceptsMultilineObjectiveAndBuildsSingleLineTitle(t *testing.T) {
+	command := missionExecutionTestCommand(missionExecutionPreflight)
+	command.Objective = "Build the game.\n\nRequirements:\n1. Keyboard controls\n2. Mobile controls"
+	if !validMissionExecutionCommand(command, missionExecutionPreflight) {
+		t.Fatal("multiline Mission objective was rejected")
+	}
+	title := missionExecutionObjectiveTitle(command.Objective)
+	if title != "Build the game. Requirements: 1. Keyboard controls 2. Mobile controls" ||
+		strings.ContainsAny(title, "\r\n") {
+		t.Fatalf("single-line Mission title = %q", title)
+	}
+
+	command.Objective = "Build the game.\rHidden"
+	if validMissionExecutionCommand(command, missionExecutionPreflight) {
+		t.Fatal("carriage return must remain rejected")
+	}
+	command.Objective = "Build the game.\x00Hidden"
+	if validMissionExecutionCommand(command, missionExecutionPreflight) {
+		t.Fatal("NUL must remain rejected")
+	}
+}
+
 func TestMissionContextValidationAndPreflightDigestFreezeConfirmedAuthority(t *testing.T) {
 	command := missionExecutionTestCommand(missionExecutionPreflight)
 	command.ConfirmedConstraints = []string{"Do not change public APIs"}
@@ -3534,6 +4325,88 @@ func TestMissionContextValidationAndPreflightDigestFreezeConfirmedAuthority(t *t
 		if validMissionExecutionCommand(invalid, missionExecutionPreflight) {
 			t.Fatalf("invalid Mission Context accepted = %#v", invalid)
 		}
+	}
+}
+
+func TestMissionWorkspacePathValidationAndPreflightDigestFreeze(t *testing.T) {
+	workspace := t.TempDir()
+	command := missionExecutionTestCommand(missionExecutionPreflight)
+	command.WorkspacePath = workspace
+	if !validMissionExecutionCommand(command, missionExecutionPreflight) {
+		t.Fatal("valid Mission workspace path was rejected")
+	}
+
+	preflight := MissionExecutionPreflight{
+		SchemaVersion: MissionExecutionSchemaVersion,
+		MissionID:     command.MissionID, TeamInstanceID: command.TeamInstanceID,
+		WorkPackageID: command.WorkPackageID, WorkPackageDigest: command.WorkPackageDigest,
+		ViewVersion: command.ExpectedViewVersion, PlanDigest: executionTestDigest("plan"),
+		RuntimeInstanceID: "runtime-pi", RuntimeProfileID: "profile-pi",
+		ModelID: "model-pi", AuthMode: "native_auth", CapacityAvailable: 1,
+		BudgetStatus: "unavailable", SideEffects: []string{}, PermissionScopes: []string{},
+		ApprovalPoints: []string{}, Nodes: []MissionExecutionNodePreview{},
+	}
+	first, err := missionExecutionPreflightDigest(command, preflight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := command
+	drifted.WorkspacePath = t.TempDir()
+	second, err := missionExecutionPreflightDigest(drifted, preflight)
+	if err != nil || first == second {
+		t.Fatalf("workspace digest drift = %q/%q, %v", first, second, err)
+	}
+
+	filePath := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(filePath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlinkPath := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(workspace, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+	inaccessible := t.TempDir()
+	if err := os.Chmod(inaccessible, 0o077); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(inaccessible, 0o700) })
+	for name, path := range map[string]string{
+		"relative":           "relative/workspace",
+		"unclean":            workspace + string(filepath.Separator) + ".",
+		"file":               filePath,
+		"symlink":            symlinkPath,
+		"owner inaccessible": inaccessible,
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := command
+			invalid.WorkspacePath = path
+			if validMissionExecutionCommand(invalid, missionExecutionPreflight) {
+				t.Fatalf("invalid workspace path accepted: %q", path)
+			}
+		})
+	}
+
+	start := command
+	start.Operation = missionExecutionStart
+	start.PreflightDigest = first
+	if !validMissionExecutionCommand(start, missionExecutionStart) {
+		t.Fatal("valid start workspace path was rejected")
+	}
+	control := missionExecutionTestCommand(missionExecutionControl)
+	control.WorkPackageID = ""
+	control.WorkPackageDigest = ""
+	control.Objective = ""
+	control.ContextVersion = 0
+	control.ConfirmedConstraints = nil
+	control.AcceptedDecisions = nil
+	control.ControlAction = "cancel"
+	control.ExecutionDigest = executionTestDigest("execution")
+	control.LogicalNodeID = "main"
+	control.AttemptNumber = 1
+	control.ClaimGeneration = 1
+	control.WorkspacePath = workspace
+	if validMissionExecutionCommand(control, missionExecutionControl) {
+		t.Fatal("control command accepted workspace_path")
 	}
 }
 

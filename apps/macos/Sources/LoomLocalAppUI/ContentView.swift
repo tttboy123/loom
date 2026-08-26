@@ -26,12 +26,13 @@
                      await store.connectWithRetry(
                          maxAttempts: service.shouldWaitForConnection ? 12 : 1
                      )
+                     async let recovery: Void = store.reconnectWhileUnavailable()
                      async let setup: Void = store.refreshSetup()
                      async let permissions: Void = store.refreshPermissions()
                      async let executions: Void = store.refreshExecutions()
                      async let production: Void = store.refreshProduction()
                      _ = await (setup, permissions, executions, production)
-                     await store.reconnectWhileUnavailable()
+                     await recovery
                  }
              }
              .frame(minWidth: 900, minHeight: 580)

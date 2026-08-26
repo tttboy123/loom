@@ -119,6 +119,25 @@ private struct ProbeProductionOutput: Encodable {
     let degraded: Bool
 }
 
+private struct ProbeSetupOutput: Encodable {
+    let providers: Int
+    let runtimes: Int
+    let conversationProfiles: Int
+    let credentialImportCandidates: Int
+    let providerIDs: [String]
+    let runtimeIDs: [String]
+    let routes: [ProbeSetupRouteOutput]
+}
+
+private struct ProbeSetupRouteOutput: Encodable {
+    let profileID: String
+    let harnessAdapter: String
+    let providerID: String
+    let providerAccountID: String
+    let displayName: String
+    let modelID: String
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
@@ -128,6 +147,7 @@ enum LoomLocalAppContractProbe {
                     || arguments.count == 6 || arguments.count == 7,
                 arguments[1] == "--socket",
                 arguments.count == 3 || arguments.count == 4 && arguments[3] == "--execution"
+                    || arguments.count == 4 && arguments[3] == "--setup"
                     || arguments[3] == "--team" || arguments[3] == "--team-all"
                     || arguments[3] == "--decision"
                     || arguments.count == 5 && arguments[3] == "--assets"
@@ -154,6 +174,33 @@ enum LoomLocalAppContractProbe {
             )
             guard try await client.ping() else {
                 throw LocalProductClientError.invalidResponse
+            }
+            if arguments.count == 4 && arguments[3] == "--setup" {
+                let snapshot = try await client.setupSnapshot()
+                let encoded = try JSONEncoder().encode(ProbeSetupOutput(
+                    providers: snapshot.providers.count,
+                    runtimes: snapshot.runtimes.count,
+                    conversationProfiles: snapshot.conversationProfiles.count,
+                    credentialImportCandidates:
+                        snapshot.credentialImportCandidates.count,
+                    providerIDs: snapshot.providers.map(\.providerID),
+                    runtimeIDs: snapshot.runtimes.map(\.runtimeInstanceID),
+                    routes: snapshot.conversationProfiles.map {
+                        ProbeSetupRouteOutput(
+                            profileID: $0.profileID,
+                            harnessAdapter: $0.harnessAdapter,
+                            providerID: $0.providerID,
+                            providerAccountID: $0.providerAccountID,
+                            displayName: $0.displayName,
+                            modelID: $0.modelID
+                        )
+                    }
+                ))
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
             }
             if arguments.count == 5 && arguments[3] == "--assets" {
                 let snapshot = try await client.evolutionAssetSnapshot(

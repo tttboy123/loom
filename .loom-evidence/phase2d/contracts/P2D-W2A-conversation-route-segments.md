@@ -1,6 +1,6 @@
 # P2D-W2A Contract: Conversation Route Segments and Context Capsules
 
-Status: `ACTIVE / PARTIAL`
+Status: `ACCEPTED / ACTIVE PHASE SCOPE COMPLETE`
 
 Version line: `v0.5.x`
 
@@ -18,10 +18,10 @@ Attempts. Loom never mutates an earlier Segment binding and never passes a
 Provider-native session identifier to a different Provider, account, Model, or
 Segment.
 
-Installed build 17 rotates to a new thread when a Profile changes and remains
-the short-term fail-closed compatibility boundary. The current source Candidate
-uses persistence schema 2 to preserve one visible thread and append immutable
-Segments. It is not installed or live accepted yet.
+The early Build 17 thread-rotation boundary remains historical compatibility
+behavior. Current source and installed evidence preserve one visible Loom
+Conversation with immutable Segments, frozen Route bindings and governed
+Context disclosure.
 
 ## Route and Attempt contract
 
@@ -95,6 +95,22 @@ only, and Start clean. A trust-domain, retention, region, or sensitive-data
 policy change requires explicit confirmation. The user can inspect disclosed
 context categories, omissions, and the safe disclosure receipt, but never sees
 keys, hidden reasoning, or internal complete prompts.
+
+Provider Directory, Runtime inventory, and Conversation Routes are distinct
+authoritative projections. A Harness such as OpenCode cannot appear as a Model
+Provider row merely because it discovers or dispatches Provider models. A
+Conversation Route may bind OpenCode + DeepSeek, but its Provider display name
+is derived only from `provider_id`; the Harness/Provider combination is rendered
+only as an explicitly labelled Route. Synthetic Route/Profile IDs must never be
+accepted as Provider IDs or credential destinations.
+
+The Route picker groups compatible execution options by Harness. Each option
+shows the Provider and a human-readable Provider Account name only when the
+account is not the default Primary account. Internal account identifiers such as
+`deepseek.primary` are not user-facing labels. A Harness-owned route without an
+external Provider is named `Built-in`; it is not projected as another Provider.
+The collapsed selection remains an explicit Harness + Route summary, while Model
+selection remains a separate control.
 
 ## Incremental delivery
 
@@ -505,6 +521,25 @@ validation, incomplete compaction, ordered Queue/Steer/Inject delivery,
 stale-target rejection, draft preservation, and plaintext-negative Journal,
 diagnostic, and projection scans.
 
+### Context Meter minimum vertical slice status
+
+`CURRENT / INSTALLED LIVE / EXTENDED METER OPEN`: ordinary Conversation Capsule
+authority now projects its non-secret token budget and admitted token count into
+the immutable Segment and each Attempt. Both values are digest-bound in the new
+schema-5 execution binding; independent Segment and later-Turn Attempt values
+remain separately frozen, and substitution fails closed. Legacy records keep
+their prior digest and decode as 0/0.
+
+Swift renders this as `Estimated shared context` beside the Segment disclosure
+receipt. It does not label the Capsule budget as the model's full context
+window. Installed build 75 received a real DeepSeek reply with a valid bounded
+token projection while preserving 25 Provider, 4 Runtime, and 4 Profile setup
+projection. Full Provider/model capacity discovery, reserved-output projection,
+source-category contribution, stale-meter dispatch admission, compaction, Fork,
+and Queue/Steer/Inject remain `TARGET / NOT YET IMPLEMENTED`.
+
+Evidence: `../P2D-W2A-W2D-installed-model-segment-matrix-v54.md`.
+
 ## Product Team Builder RouteSet authoring status
 
 `SOURCE VERIFIED / INSTALLED LIVE OPEN`: the Team Builder now authors a
@@ -538,3 +573,116 @@ The `loom-conversation` Bundle provides bounded Conversation/Profile/Segment/
 Capsule ports and declares its IPC routes through RouteDescriptors. It cannot
 own Vault root access, a global Provider client, or Team/Agent execution
 authority. Normative composition contracts are P2D-COMP1 and P2D-COMP2.
+
+## Build 124 installed Conversation checkpoint (2026-08-24)
+
+Status: `INSTALLED CORE PATH VERIFIED / W2A PARTIAL`.
+
+Build 124 projects six executable Conversation Profiles and freezes the exact
+OpenCode + `deepseek.primary` revision 2 + `deepseek/deepseek-chat` binding.
+The installed App received the exact real reply before and after its owned
+daemon restarted, without a Conversation tool event or Keychain helper hot
+path. Strict Runtime decoding and account-scoped responder routing fail closed.
+
+Trust-domain confirmation, full-capacity Context Capsule disclosure and the
+broader route-transition matrix remain open. Evidence:
+`../P2D-W2A-W2D-full-review-remediation-build124.md`.
+
+## Live matrix scope deferral (2026-08-24)
+
+Status: `ACCEPTED / DEFERRED / NO FUTURE PHASE ACTIVATED`.
+
+The installed Codex/OpenAI + Claude/Anthropic + Loom/Kimi + Loom/MiniMax Team
+matrix is no longer a Phase 2D completion gate. Existing RouteSet, per-Agent
+binding, Role Capsule and narrower mixed-Team implementations remain part of
+Phase 2D and must not be removed. A later Phase may reactivate the real
+four-Provider matrix without changing this contract's immutable binding rules.
+
+## Build 127 trust, capacity and Route Transition acceptance (2026-08-24)
+
+Status: `ACCEPTED / SOURCE + INSTALLED GOVERNANCE VERIFIED`.
+
+The remaining active W2A cells are closed:
+
+- transition review derives source policy from the immutable source Segment
+  binding and requires explicit acknowledgement for changed trust domain,
+  retention mode or data region;
+- Context Capsule capacity authority distinguishes exact, estimated and
+  unavailable data, freezes counter identity and deterministic admitted
+  budget, and exposes only aggregate contribution and omission metadata;
+- authenticated private-UDS acceptance covers missing/stale expected bindings,
+  all three disclosure modes, exact target binding/digest/Incident freeze,
+  persistence and privacy-negative checks;
+- Codex explicit OpenAI models remain exact through binding and Context target
+  resolution while invalid substitutions fail closed.
+
+The installed Build 127 sheet verifies the acknowledgement gate and all three
+context modes. App/daemon restart restores the authoritative Conversation
+projection. Existing legacy Segments use the compatibility projection and say
+capacity is unavailable rather than inventing a model limit.
+
+Evidence: `../P2D-W2A-W2D-trust-capacity-route-build127.md`.
+
+## Post-Build-127 governance hardening (2026-08-24)
+
+Status: `SOURCE VERIFIED / INSTALL PENDING`.
+
+Parallel review tightened the accepted boundary: stale dispatch conflicts may
+not auto-retry around explicit review; missing immutable source authority is an
+acknowledged unavailable boundary rather than mutable Profile fallback; model
+and reasoning changes use the same reviewed target-binding transition. Capacity
+tokenization now follows policy/scope admission, and Pi freezes unavailable
+capacity authority instead of emitting a legacy capacity-free Capsule.
+
+Evidence:
+`../P2D-W2A-W2D-trust-capacity-route-hardening-post-build127.md`.
+
+## Complete capacity and all-Segment review closure (2026-08-25)
+
+Status: `SOURCE VERIFIED / INSTALL PENDING`.
+
+Parallel review found that dispatch-safe Capsule rebuilding and two production
+callers could still reconstruct a legacy capacity-free Capsule. The source now
+preserves the exact Capacity Projection during safe rebuild, requires the
+matching TokenCounter identity, and removes capacity-free fallback from
+controlled Mission, Conversation and Team role/dependency/aggregation paths.
+Conversation runtime composition rejects a resolver that cannot supply frozen
+capacity authority. Unknown model capacity remains explicitly `unavailable`;
+it is never treated as unlimited.
+
+Route Transition review now applies to every existing-thread new Segment with
+binding authority, even when trust domain, retention and data region do not
+change. Model, reasoning, Provider, Provider Account and credential revision
+changes all require a canonical v3 acknowledgement. Swift freezes that exact
+target review and the daemon recomputes it while holding Conversation authority
+before any mutation. Missing, stale or tampered review fails with zero message,
+Segment, Attempt, Capsule and responder mutation.
+
+The ADR-0022 acceptance now combines same-visible-Conversation Codex-to-Loom-
+Native Segment transition, Gateway Session lifecycle, immutable binding and
+capacity authority. Source verification is recorded in
+`../P2D-W2A-W2D-trust-capacity-route-hardening-post-build127.md`; Build 127
+remains the installed predecessor.
+
+## Second parallel governance revalidation (2026-08-24)
+
+Status: `SOURCE VERIFIED / INSTALL PENDING`.
+
+The accepted review authority is now version 2 and binds target reasoning
+effort as well as the exact Execution Binding, disclosure mode and changed
+trust dimensions. Confirmation consumes its App-side generation immediately;
+the daemon recomputes the same canonical digest while holding Conversation
+authority before any Segment, Attempt, Capsule or responder mutation. Persisted
+v1 review digests remain readable only through stored-thread compatibility;
+they are not accepted as authority for a new request.
+
+Context capacity now revalidates TokenCounter identity after tokenization,
+applies integer-safe cumulative bounds across authority, contributions and
+fixed extension omissions, and compares the complete canonical Capacity
+Projection between Segment and Attempt. The private-UDS matrix additionally
+rejects reasoning added after trust review and independently covers credential
+revision, trust domain, retention and region transitions with zero mutation on
+failure.
+
+Evidence:
+`../P2D-W2A-W2D-trust-capacity-route-hardening-post-build127.md`.

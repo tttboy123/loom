@@ -17,6 +17,27 @@ import (
 	bridgev1 "loom-pi-rebuild/protocol/bridge/v1"
 )
 
+func TestMiniMaxAgentResponseStripsInlineHiddenReasoning(t *testing.T) {
+	response, err := decodeDeepSeekAgentResponse(
+		[]byte(`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","content":"<think>private reasoning must not enter Evidence</think>\nVISIBLE-ONLY"}}]}`),
+		MiniMaxAgentModelID,
+	)
+	if err != nil || response.content != "VISIBLE-ONLY" ||
+		strings.Contains(response.content, "private reasoning") {
+		t.Fatalf("response=%#v error=%v", response, err)
+	}
+}
+
+func TestMiniMaxAgentResponseRejectsUnterminatedInlineHiddenReasoning(t *testing.T) {
+	response, err := decodeDeepSeekAgentResponse(
+		[]byte(`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","content":"<think>private reasoning must not enter Evidence"}}]}`),
+		MiniMaxAgentModelID,
+	)
+	if err == nil || response.content != "" {
+		t.Fatalf("response=%#v error=%v", response, err)
+	}
+}
+
 func TestLoomNativeOpenAICompatibleAdaptersConsumeExactProviderBinding(t *testing.T) {
 	tests := []struct {
 		name                string

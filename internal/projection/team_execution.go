@@ -65,11 +65,19 @@ type projectedTeamFallbackApprovalPayload struct {
 	Digest              string `json:"digest"`
 }
 
+type projectedTeamRecoveryRunProof struct {
+	RunID          string `json:"run_id"`
+	TerminalStatus string `json:"terminal_status"`
+	RunEventID     string `json:"run_event_id"`
+	RunSequence    int64  `json:"run_sequence"`
+}
+
 func projectTeamExecutions(
 	events []journal.Event,
 ) (map[string]TeamExecution, error) {
 	byStream := make(map[string][]journal.Event)
 	runClaimReferences := make(map[string]teamExecutionRunClaimReference)
+	runTerminalReferences := make(map[string]journal.Event)
 	workOutcomeReferences := make(map[string]journal.Event)
 	for _, event := range events {
 		if strings.HasPrefix(event.StreamID, "team-execution/") {
@@ -81,6 +89,10 @@ func projectTeamExecutions(
 				event.StreamID,
 				event.Seq,
 			)] = teamExecutionRunClaimReference{eventID: event.ID}
+		}
+		if strings.HasPrefix(event.StreamID, "run/") &&
+			event.Type == "RunTerminalCommitted" {
+			runTerminalReferences[event.ID] = event
 		}
 		if strings.HasPrefix(event.StreamID, "work-item/") &&
 			(event.Type == "WorkItemDone" ||
@@ -102,6 +114,7 @@ func projectTeamExecutions(
 			streamEvents,
 			runClaimReferences,
 			workOutcomeReferences,
+			runTerminalReferences,
 		)
 		if err != nil {
 			return nil, err
@@ -116,10 +129,16 @@ func projectTeamExecutionStream(
 	events []journal.Event,
 	runClaimReferences map[string]teamExecutionRunClaimReference,
 	workOutcomeReferences map[string]journal.Event,
+	runTerminalReferenceSets ...map[string]journal.Event,
 ) (TeamExecution, error) {
+	var runTerminalReferences map[string]journal.Event
+	if len(runTerminalReferenceSets) > 0 {
+		runTerminalReferences = runTerminalReferenceSets[0]
+	}
 	var record TeamExecution
 	var sequence int64
 	var lastEventID string
+	var executionGenerationID string
 	maxAttempts := make(map[string]int)
 	for _, event := range events {
 		if event.Seq != sequence+1 || event.SchemaVersion != 1 {
@@ -127,6 +146,30 @@ func projectTeamExecutionStream(
 		}
 		sequence = event.Seq
 		switch event.Type {
+		case "TeamExecutionReopened":
+			var payload struct {
+				TeamInstanceID     string                           `json:"team_instance_id"`
+				PreviousPlanDigest string                           `json:"previous_plan_digest"`
+				NextPlanDigest     string                           `json:"next_plan_digest"`
+				RecoveryRuns       *[]projectedTeamRecoveryRunProof `json:"recovery_runs,omitempty"`
+			}
+			if record.TeamInstanceID == "" ||
+				decodeExactProjectionPayload(event, &payload) != nil ||
+				payload.TeamInstanceID != teamInstanceID ||
+				!validSHA256Digest(payload.PreviousPlanDigest) ||
+				!validSHA256Digest(payload.NextPlanDigest) ||
+				payload.PreviousPlanDigest != record.PlanDigest ||
+				!validProjectedTeamReopenStatus(record.Status) ||
+				!validProjectedTeamRecoveryRunProofs(
+					record, payload.RecoveryRuns, runTerminalReferences,
+				) ||
+				event.CausationID != lastEventID {
+				return TeamExecution{}, ErrInvalidProjectionEvent
+			}
+			// The prior terminal execution remains in the journal. The current
+			// read model now represents the explicitly opened next Attempt.
+			executionGenerationID = event.CorrelationID
+			record = TeamExecution{}
 		case "TeamExecutionPlanned":
 			var payload struct {
 				TeamInstanceID string `json:"team_instance_id"`
@@ -204,6 +247,7 @@ func projectTeamExecutionStream(
 			record = TeamExecution{
 				TeamInstanceID:        teamInstanceID,
 				PlanDigest:            payload.PlanDigest,
+				ExecutionGenerationID: executionGenerationID,
 				Status:                "pending",
 				Nodes:                 make([]TeamExecutionNode, len(payload.Nodes)),
 				LegacySemanticUnbound: payload.SemanticBindings == nil,
@@ -1611,6 +1655,87 @@ func validProjectedTeamTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+// A failed attempt can leave the projection in awaiting_recovery while the
+// authority has already observed its run as terminal. An explicit user
+// restart is allowed from that state; it still requires the authority-side
+// terminal/run validation before this event can be appended.
+func validProjectedTeamReopenStatus(status string) bool {
+	// The projection may still show running when the durable Run stream has
+	// reached a terminal failure but the coordinator has not yet emitted the
+	// node terminal projection. Authority validates that run fact before
+	// appending TeamExecutionReopened; projection replay must preserve it.
+	return validProjectedTeamTerminal(status) ||
+		status == "awaiting_recovery" || status == "running"
+}
+
+func validProjectedTeamRecoveryRunProofs(
+	record TeamExecution,
+	proofs *[]projectedTeamRecoveryRunProof,
+	terminalEvents map[string]journal.Event,
+) bool {
+	// recovery_runs was added after TeamExecutionReopened schema v1 shipped.
+	// Absence therefore remains a valid legacy encoding; current authority
+	// writers add the proof whenever a stale active Team is reopened.
+	if proofs == nil {
+		return true
+	}
+	expectedRuns := make(map[string]struct{})
+	for _, node := range record.Nodes {
+		if node.Status != "running" && node.Status != "awaiting_recovery" {
+			continue
+		}
+		if len(node.Attempts) == 0 {
+			return false
+		}
+		attempt := node.Attempts[len(node.Attempts)-1]
+		if attempt.Status == "failed" || attempt.Status == "cancelled" {
+			continue
+		}
+		if !validLocalSetupIdentifier(attempt.RunID, 256) {
+			return false
+		}
+		expectedRuns[attempt.RunID] = struct{}{}
+	}
+	if len(expectedRuns) == 0 {
+		return false
+	}
+	if len(*proofs) != len(expectedRuns) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(*proofs))
+	for _, proof := range *proofs {
+		if !validLocalSetupIdentifier(proof.RunID, 256) ||
+			!validLocalSetupIdentifier(proof.RunEventID, 256) ||
+			(proof.TerminalStatus != "failed" &&
+				proof.TerminalStatus != "cancelled") ||
+			proof.RunSequence <= 0 {
+			return false
+		}
+		if _, duplicate := seen[proof.RunID]; duplicate {
+			return false
+		}
+		if _, expected := expectedRuns[proof.RunID]; !expected {
+			return false
+		}
+		event, found := terminalEvents[proof.RunEventID]
+		if !found || event.ID != proof.RunEventID ||
+			event.StreamID != "run/"+proof.RunID ||
+			event.Seq != proof.RunSequence ||
+			event.Type != "RunTerminalCommitted" ||
+			event.SchemaVersion != 1 {
+			return false
+		}
+		var payload runProjectionTerminalPayload
+		if decodeRunProjectionPayload(event, &payload) != nil ||
+			payload.RunID == nil || *payload.RunID != proof.RunID ||
+			payload.Status == nil || *payload.Status != proof.TerminalStatus {
+			return false
+		}
+		seen[proof.RunID] = struct{}{}
+	}
+	return len(seen) == len(expectedRuns)
 }
 
 func validProjectedOutputClassification(value string) bool {

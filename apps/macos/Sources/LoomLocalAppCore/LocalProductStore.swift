@@ -1,6 +1,259 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SwiftUI
+
+public struct LocalProductContextDisclosureIdentity: Hashable, Sendable {
+  public let threadID: String
+  public let segmentID: String
+  public let contextCapsuleDigest: String
+  public let disclosureReceiptDigest: String
+
+  public init(
+    threadID: String,
+    segmentID: String,
+    contextCapsuleDigest: String,
+    disclosureReceiptDigest: String
+  ) {
+    self.threadID = threadID
+    self.segmentID = segmentID
+    self.contextCapsuleDigest = contextCapsuleDigest
+    self.disclosureReceiptDigest = disclosureReceiptDigest
+  }
+
+  init(disclosure: LocalProductContextDisclosure) {
+    self.init(
+      threadID: disclosure.threadID,
+      segmentID: disclosure.segmentID,
+      contextCapsuleDigest: disclosure.contextCapsuleDigest,
+      disclosureReceiptDigest: disclosure.disclosureReceiptDigest
+    )
+  }
+}
+
+enum LocalPrivateRegistryStorage {
+  private static let directoryPermissions = mode_t(S_IRWXU)
+  private static let filePermissions = mode_t(S_IRUSR | S_IWUSR)
+  private static let legacyFilePermissions = mode_t(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+  private static let maximumFileBytes = 256 * 1_024
+
+  private struct FileIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+  }
+
+  private enum StorageError: Error {
+    case unsafePath
+    case ioFailure
+    case oversized
+  }
+
+  static func isSafeRegularFileMetadata(
+    mode: mode_t,
+    ownerUID: uid_t,
+    linkCount: nlink_t,
+    effectiveUID: uid_t = geteuid()
+  ) -> Bool {
+    mode & S_IFMT == S_IFREG
+      && mode & mode_t(0o777) == filePermissions
+      && ownerUID == effectiveUID
+      && linkCount == 1
+  }
+
+  static func read(from url: URL) throws -> Data? {
+    try withDirectoryDescriptor(for: url) { directoryDescriptor, fileName in
+      let descriptor = fileName.withCString {
+        openat(directoryDescriptor, $0, O_RDWR | O_NOFOLLOW)
+      }
+      if descriptor < 0 {
+        guard errno == ENOENT else { throw StorageError.unsafePath }
+        return nil
+      }
+      defer { Darwin.close(descriptor) }
+
+      var status = stat()
+      guard fstat(descriptor, &status) == 0 else {
+        throw StorageError.unsafePath
+      }
+      if isLegacyRegularFileMetadata(
+        mode: status.st_mode,
+        ownerUID: status.st_uid,
+        linkCount: status.st_nlink
+      ) {
+        guard fchmod(descriptor, filePermissions) == 0,
+          fsync(descriptor) == 0,
+          fstat(descriptor, &status) == 0
+        else {
+          throw StorageError.ioFailure
+        }
+      }
+      guard isSafeRegularFileMetadata(
+        mode: status.st_mode,
+        ownerUID: status.st_uid,
+        linkCount: status.st_nlink
+      ),
+        status.st_size >= 0,
+        status.st_size <= maximumFileBytes
+      else {
+        throw StorageError.unsafePath
+      }
+
+      var data = Data(count: Int(status.st_size))
+      var offset = 0
+      let dataCount = data.count
+      while offset < dataCount {
+        let count = data.withUnsafeMutableBytes { bytes in
+          Darwin.read(
+            descriptor,
+            bytes.baseAddress!.advanced(by: offset),
+            dataCount - offset
+          )
+        }
+        guard count > 0 else { throw StorageError.ioFailure }
+        offset += count
+      }
+      return data
+    }
+  }
+
+  private static func isLegacyRegularFileMetadata(
+    mode: mode_t,
+    ownerUID: uid_t,
+    linkCount: nlink_t
+  ) -> Bool {
+    mode & S_IFMT == S_IFREG
+      && mode & mode_t(0o777) == legacyFilePermissions
+      && ownerUID == geteuid()
+      && linkCount == 1
+  }
+
+  static func write(_ data: Data, to url: URL) throws {
+    guard data.count <= maximumFileBytes else { throw StorageError.oversized }
+    try withDirectoryDescriptor(for: url) { directoryDescriptor, fileName in
+      let originalIdentity = try existingFileIdentity(
+        directoryDescriptor: directoryDescriptor,
+        fileName: fileName
+      )
+      let temporaryName = ".\(fileName).\(UUID().uuidString).tmp"
+      let descriptor = temporaryName.withCString {
+        openat(
+          directoryDescriptor,
+          $0,
+          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+          filePermissions
+        )
+      }
+      guard descriptor >= 0 else { throw StorageError.ioFailure }
+      var shouldRemoveTemporary = true
+      defer {
+        Darwin.close(descriptor)
+        if shouldRemoveTemporary {
+          temporaryName.withCString { _ = unlinkat(directoryDescriptor, $0, 0) }
+        }
+      }
+
+      var temporaryStatus = stat()
+      guard fchmod(descriptor, filePermissions) == 0,
+        fstat(descriptor, &temporaryStatus) == 0,
+        isSafeRegularFileMetadata(
+          mode: temporaryStatus.st_mode,
+          ownerUID: temporaryStatus.st_uid,
+          linkCount: temporaryStatus.st_nlink
+        )
+      else {
+        throw StorageError.unsafePath
+      }
+
+      var offset = 0
+      let dataCount = data.count
+      while offset < dataCount {
+        let count = data.withUnsafeBytes { bytes in
+          Darwin.write(
+            descriptor,
+            bytes.baseAddress!.advanced(by: offset),
+            dataCount - offset
+          )
+        }
+        guard count > 0 else { throw StorageError.ioFailure }
+        offset += count
+      }
+      guard fsync(descriptor) == 0 else { throw StorageError.ioFailure }
+
+      let currentIdentity = try existingFileIdentity(
+        directoryDescriptor: directoryDescriptor,
+        fileName: fileName
+      )
+      guard currentIdentity == originalIdentity else { throw StorageError.unsafePath }
+      let renamed = temporaryName.withCString { temporaryPointer in
+        fileName.withCString { filePointer in
+          renameat(directoryDescriptor, temporaryPointer, directoryDescriptor, filePointer)
+        }
+      }
+      guard renamed == 0 else { throw StorageError.ioFailure }
+      shouldRemoveTemporary = false
+      _ = fsync(directoryDescriptor)
+    }
+  }
+
+  private static func existingFileIdentity(
+    directoryDescriptor: Int32,
+    fileName: String
+  ) throws -> FileIdentity? {
+    var status = stat()
+    let result = fileName.withCString {
+      fstatat(directoryDescriptor, $0, &status, AT_SYMLINK_NOFOLLOW)
+    }
+    if result != 0 {
+      guard errno == ENOENT else { throw StorageError.unsafePath }
+      return nil
+    }
+    guard isSafeRegularFileMetadata(
+      mode: status.st_mode,
+      ownerUID: status.st_uid,
+      linkCount: status.st_nlink
+    ) else {
+      throw StorageError.unsafePath
+    }
+    return FileIdentity(device: status.st_dev, inode: status.st_ino)
+  }
+
+  private static func withDirectoryDescriptor<T>(
+    for url: URL,
+    _ operation: (Int32, String) throws -> T
+  ) throws -> T {
+    guard url.isFileURL else { throw StorageError.unsafePath }
+    let standardizedURL = url.standardizedFileURL
+    guard standardizedURL.path == url.path else { throw StorageError.unsafePath }
+    let directoryURL = standardizedURL.deletingLastPathComponent()
+    let fileName = standardizedURL.lastPathComponent
+    guard !fileName.isEmpty, fileName != ".", fileName != ".." else {
+      throw StorageError.unsafePath
+    }
+
+    var directoryStatus = stat()
+    if lstat(directoryURL.path, &directoryStatus) != 0 {
+      guard errno == ENOENT,
+        mkdir(directoryURL.path, directoryPermissions) == 0
+      else {
+        throw StorageError.unsafePath
+      }
+    }
+    let directoryDescriptor = Darwin.open(
+      directoryURL.path,
+      O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+    )
+    guard directoryDescriptor >= 0 else { throw StorageError.unsafePath }
+    defer { Darwin.close(directoryDescriptor) }
+    guard fstat(directoryDescriptor, &directoryStatus) == 0,
+      directoryStatus.st_mode & S_IFMT == S_IFDIR,
+      directoryStatus.st_mode & mode_t(0o777) == directoryPermissions,
+      directoryStatus.st_uid == geteuid()
+    else {
+      throw StorageError.unsafePath
+    }
+    return try operation(directoryDescriptor, fileName)
+  }
+}
 
 public enum LocalProductWorkspaceTaskKind: String, Equatable, Sendable {
   case draft
@@ -56,6 +309,28 @@ public struct LocalProductWorkspaceTask: Identifiable, Equatable, Sendable {
     self.title = title
     self.subtitle = subtitle
     self.kind = kind
+  }
+}
+
+public struct LocalProductMissionPresentation: Codable, Equatable, Sendable {
+  public let missionID: String
+  public let title: String
+  public let conversationThreadID: String
+  public let workspacePath: String?
+  public let updatedAt: Date
+
+  public init(
+    missionID: String,
+    title: String,
+    conversationThreadID: String = "",
+    workspacePath: String? = nil,
+    updatedAt: Date = Date()
+  ) {
+    self.missionID = missionID
+    self.title = title
+    self.conversationThreadID = conversationThreadID
+    self.workspacePath = workspacePath
+    self.updatedAt = updatedAt
   }
 }
 
@@ -231,6 +506,23 @@ public enum LocalProductExecutionState: Equatable, Sendable {
   case failed(reason: String)
 }
 
+public enum LocalProductConversationTrustBoundaryDimension:
+  String, CaseIterable, Equatable, Sendable
+{
+  case trustDomain
+  case retentionMode
+  case dataRegion
+}
+
+public struct LocalProductConversationTrustBoundaryChange:
+  Identifiable, Equatable, Sendable
+{
+  public var id: LocalProductConversationTrustBoundaryDimension { dimension }
+  public let dimension: LocalProductConversationTrustBoundaryDimension
+  public let sourceValue: String
+  public let targetValue: String
+}
+
 public struct LocalProductConversationRouteTransition:
   Identifiable, Equatable, Sendable
 {
@@ -238,7 +530,14 @@ public struct LocalProductConversationRouteTransition:
   public let source: LocalProductConversationProfile
   public let target: LocalProductConversationProfile
   public let threadID: String
+  public let sourceSegmentID: String
+  public let sourceBindingDigest: String
   public let sourceExecutionBinding: LocalProductConversationExecutionBinding?
+  public let targetExecutionBinding: LocalProductConversationExecutionBinding
+  public let sourceReasoningEffort: String
+  public let targetReasoningEffort: String
+  public let trustBoundaryChanges: [LocalProductConversationTrustBoundaryChange]
+  public let trustBoundaryAuthorityUnavailable: Bool
   public let rebindsCurrentRoute: Bool
   fileprivate let generation: UInt64
 
@@ -247,7 +546,12 @@ public struct LocalProductConversationRouteTransition:
     source: LocalProductConversationProfile,
     target: LocalProductConversationProfile,
     threadID: String,
+    sourceSegmentID: String = "",
+    sourceBindingDigest: String = "",
     sourceExecutionBinding: LocalProductConversationExecutionBinding? = nil,
+    targetExecutionBinding: LocalProductConversationExecutionBinding? = nil,
+    sourceReasoningEffort: String = "",
+    targetReasoningEffort: String = "",
     rebindsCurrentRoute: Bool = false,
     generation: UInt64
   ) {
@@ -255,7 +559,70 @@ public struct LocalProductConversationRouteTransition:
     self.source = source
     self.target = target
     self.threadID = threadID
+    self.sourceSegmentID = sourceSegmentID
+    self.sourceBindingDigest = sourceBindingDigest
     self.sourceExecutionBinding = sourceExecutionBinding
+    self.targetExecutionBinding = targetExecutionBinding ??
+      LocalProductConversationExecutionBinding(
+        schemaVersion: 4,
+        harnessAdapter: target.harnessAdapter,
+        providerID: target.providerID,
+        providerAccountID: target.providerAccountID,
+        credentialRevision: target.credentialRevision,
+        modelID: target.modelID,
+        providerAccountPolicyVersion: target.policyVersion,
+        providerAccountPolicyRevision: target.policyRevision,
+        providerAccountPolicyDigest: target.policyDigest,
+        trustDomain: target.trustDomain,
+        retentionMode: target.retentionMode,
+        dataRegion: target.dataRegion
+      )
+    self.sourceReasoningEffort = sourceReasoningEffort
+    self.targetReasoningEffort = targetReasoningEffort
+    let sourceAuthorityComplete = sourceExecutionBinding.map(
+      conversationExecutionBindingHasCompletePolicyAuthority
+    ) ?? false
+    let targetAuthorityComplete =
+      conversationExecutionBindingHasCompletePolicyAuthority(
+        self.targetExecutionBinding
+      )
+    let reviewsAllTrustDimensions =
+      !sourceAuthorityComplete || !targetAuthorityComplete
+    trustBoundaryAuthorityUnavailable = reviewsAllTrustDimensions
+    let sourceTrustDomain = normalizedConversationTrustAuthorityValue(
+      sourceExecutionBinding?.trustDomain ?? ""
+    )
+    let sourceRetentionMode = normalizedConversationTrustAuthorityValue(
+      sourceExecutionBinding?.retentionMode ?? ""
+    )
+    let sourceDataRegion = normalizedConversationTrustAuthorityValue(
+      sourceExecutionBinding?.dataRegion ?? ""
+    )
+    trustBoundaryChanges = [
+      LocalProductConversationTrustBoundaryChange(
+        dimension: .trustDomain,
+        sourceValue: sourceTrustDomain,
+        targetValue: normalizedConversationTrustAuthorityValue(
+          self.targetExecutionBinding.trustDomain
+        )
+      ),
+      LocalProductConversationTrustBoundaryChange(
+        dimension: .retentionMode,
+        sourceValue: sourceRetentionMode,
+        targetValue: normalizedConversationTrustAuthorityValue(
+          self.targetExecutionBinding.retentionMode
+        )
+      ),
+      LocalProductConversationTrustBoundaryChange(
+        dimension: .dataRegion,
+        sourceValue: sourceDataRegion,
+        targetValue: normalizedConversationTrustAuthorityValue(
+          self.targetExecutionBinding.dataRegion
+        )
+      ),
+    ].filter {
+      reviewsAllTrustDimensions || $0.sourceValue != $0.targetValue
+    }
     self.rebindsCurrentRoute = rebindsCurrentRoute
     self.generation = generation
   }
@@ -359,6 +726,14 @@ public protocol LocalProductClientProtocol {
     limit: Int
   ) async throws -> LocalProductTimelinePage
   func chatThread(threadID: String) async throws -> LocalProductChatThread
+  func chatContextDisclosure(
+    threadID: String,
+    segmentID: String
+  ) async throws -> LocalProductContextDisclosure
+  func cancelChatResponse(
+    threadID: String,
+    incidentID: String
+  ) async throws
   func deleteChatThread(threadID: String) async throws
   func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread
   func sendChatMessage(
@@ -395,6 +770,17 @@ public protocol LocalProductClientProtocol {
     reasoningEffort: String,
     contextMode: LocalProductConversationContextMode?,
     expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+    trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+    incidentID: String
+  ) async throws -> LocalProductChatThread
+  func sendChatMessage(
+    threadID: String,
+    content: String,
+    profileID: String,
+    modelID: String,
+    reasoningEffort: String,
+    contextMode: LocalProductConversationContextMode?,
+    expectedExecutionBinding: LocalProductConversationExecutionBinding?,
     incidentID: String
   ) async throws -> LocalProductChatThread
 }
@@ -407,6 +793,20 @@ extension LocalProductClientProtocol {
   }
 
   public func chatThread(threadID: String) async throws -> LocalProductChatThread {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func chatContextDisclosure(
+    threadID: String,
+    segmentID: String
+  ) async throws -> LocalProductContextDisclosure {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func cancelChatResponse(
+    threadID: String,
+    incidentID: String
+  ) async throws {
     throw LocalProductClientError.unavailable
   }
 
@@ -426,6 +826,29 @@ extension LocalProductClientProtocol {
     profileID: String
   ) async throws -> LocalProductChatThread {
     try await sendChatMessage(threadID: threadID, content: content)
+  }
+
+  public func sendChatMessage(
+    threadID: String,
+    content: String,
+    profileID: String,
+    modelID: String,
+    reasoningEffort: String,
+    contextMode: LocalProductConversationContextMode?,
+    expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+    trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+    incidentID: String
+  ) async throws -> LocalProductChatThread {
+    try await sendChatMessage(
+      threadID: threadID,
+      content: content,
+      profileID: profileID,
+      modelID: modelID,
+      reasoningEffort: reasoningEffort,
+      contextMode: contextMode,
+      expectedExecutionBinding: expectedExecutionBinding,
+      incidentID: incidentID
+    )
   }
 
   public func sendChatMessage(
@@ -650,6 +1073,25 @@ public protocol LocalProductSetupClientProtocol {
     providerAccountID: String,
     secret: String
   ) async throws -> LocalProductCredentialSetupResult
+  func importCredentialCandidate(
+    candidateID: String,
+    providerID: String,
+    providerAccountID: String
+  ) async throws -> LocalProductCredentialSetupResult
+  func approveEndpointCandidate(
+    candidate: LocalProductCredentialImportCandidate,
+    providerAccountID: String
+  ) async throws -> LocalProductEndpointReviewResult
+  func importReviewedEndpointCandidate(
+    candidate: LocalProductCredentialImportCandidate,
+    review: LocalProductEndpointReviewResult,
+    providerAccountID: String
+  ) async throws -> LocalProductCredentialSetupResult
+  func runProviderFailureLab(
+    scenario: String,
+    providerAccountID: String,
+    healthyPeerAccountID: String
+  ) async throws -> LocalProductFailureLabResult
   func verifyCredential(
     providerID: String,
     reference: String,
@@ -784,6 +1226,37 @@ extension LocalProductSetupClientProtocol {
     return try await configureCredential(providerID: providerID, secret: secret)
   }
 
+  public func importCredentialCandidate(
+    candidateID: String,
+    providerID: String,
+    providerAccountID: String
+  ) async throws -> LocalProductCredentialSetupResult {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func approveEndpointCandidate(
+    candidate: LocalProductCredentialImportCandidate,
+    providerAccountID: String
+  ) async throws -> LocalProductEndpointReviewResult {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func importReviewedEndpointCandidate(
+    candidate: LocalProductCredentialImportCandidate,
+    review: LocalProductEndpointReviewResult,
+    providerAccountID: String
+  ) async throws -> LocalProductCredentialSetupResult {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func runProviderFailureLab(
+    scenario: String,
+    providerAccountID: String,
+    healthyPeerAccountID: String
+  ) async throws -> LocalProductFailureLabResult {
+    throw LocalProductClientError.unavailable
+  }
+
   public func verifyCredential(
     providerID: String,
     providerAccountID: String,
@@ -906,6 +1379,12 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var providerOperationIncidentID: [String: String] = [:]
   @Published public private(set) var providerOperationRetryable: [String: Bool] = [:]
   @Published public private(set) var providersInFlight: Set<String> = []
+  @Published public private(set) var approvedEndpointReviews:
+    [String: LocalProductEndpointReviewResult] = [:]
+  @Published public private(set) var failureLabResults:
+    [LocalProductFailureLabResult] = []
+  @Published public private(set) var failureLabInFlight = false
+  @Published public private(set) var failureLabError: String?
   @Published public private(set) var providerPolicyAccountsInFlight: Set<String> = []
   @Published public private(set) var providerPolicyOperationDetail: [String: String] = [:]
   @Published public private(set) var providerRateCardsInFlight: Set<String> = []
@@ -926,9 +1405,31 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var workbench = MissionWorkspaceState()
   @Published public private(set) var chatThread: LocalProductChatThread?
   @Published public private(set) var chatSessions: [LocalProductChatSession] = []
+  @Published public private(set) var missionPresentations:
+    [String: LocalProductMissionPresentation] = [:]
   @Published public private(set) var selectedChatSessionID: String = ""
-  @Published public private(set) var isSendingChatMessage = false
+  @Published public private(set) var activeChatResponsesByThreadID: [String: String] = [:]
+  @Published public private(set) var cancellingChatResponseThreadIDs: Set<String> = []
+  public var isSendingChatMessage: Bool {
+    activeChatResponsesByThreadID[currentChatThreadID()] != nil
+  }
+  public var isCancellingChatResponse: Bool {
+    cancellingChatResponseThreadIDs.contains(currentChatThreadID())
+  }
+  public var activeChatResponseThreadID: String? {
+    let threadID = currentChatThreadID()
+    return activeChatResponsesByThreadID[threadID] == nil ? nil : threadID
+  }
+  public var activeChatResponseIncidentID: String? {
+    activeChatResponsesByThreadID[currentChatThreadID()]
+  }
   @Published public private(set) var chatOperationFailure: LocalProductChatOperationFailure?
+  @Published public private(set) var conversationContextDisclosures:
+    [LocalProductContextDisclosureIdentity: LocalProductContextDisclosure] = [:]
+  @Published public private(set) var conversationContextDisclosuresInFlight:
+    Set<LocalProductContextDisclosureIdentity> = []
+  @Published public private(set) var conversationContextDisclosureFailures:
+    [LocalProductContextDisclosureIdentity: String] = [:]
   @Published public var conversationContextMode: LocalProductConversationContextMode = .summaryOnly
   @Published public private(set) var activeDecisionSheet: LocalProductDecisionSheet?
   @Published public private(set) var executionState: LocalProductExecutionState = .idle
@@ -975,7 +1476,10 @@ public final class LocalProductStore: ObservableObject {
   private let permissionClient: LocalProductPermissionClientProtocol?
   private let executionSnapshotClient: LocalProductExecutionSnapshotClientProtocol?
   private let productionSnapshotClient: LocalProductProductionSnapshotClientProtocol?
+  private var selectedConversationWorkspacePath = ""
   private var executionObjective = ""
+  private var executionWorkspacePath = ""
+  private var executionNewAttempt = false
   private var executionConfirmedConstraints: [String] = []
   private var executionAcceptedDecisions: [String] = []
   private var executionPreflightGeneration: UInt64 = 0
@@ -988,6 +1492,8 @@ public final class LocalProductStore: ObservableObject {
   private var forceNewConversationSegment = false
   private var confirmedConversationExecutionBinding:
     LocalProductConversationExecutionBinding?
+  private var confirmedConversationTrustBoundaryAcknowledgement:
+    LocalProductTrustBoundaryAcknowledgement?
 
   private static let timelinePageLimit = 64
   private static let maximumTimelinePages = 8
@@ -999,11 +1505,13 @@ public final class LocalProductStore: ObservableObject {
   }
 
   private let chatSessionsFileURL: URL
+  private let missionPresentationsFileURL: URL
 
   public init(
     client: LocalProductClientProtocol,
     initialSetupSnapshot: LocalProductSetupSnapshot? = nil,
-    chatSessionsFileURL: URL? = nil
+    chatSessionsFileURL: URL? = nil,
+    missionPresentationsFileURL: URL? = nil
   ) {
     if let chatSessionsFileURL {
       self.chatSessionsFileURL = chatSessionsFileURL
@@ -1011,6 +1519,13 @@ public final class LocalProductStore: ObservableObject {
       let home = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Loom")
       self.chatSessionsFileURL = home.appendingPathComponent("chat-sessions.json")
+    }
+    if let missionPresentationsFileURL {
+      self.missionPresentationsFileURL = missionPresentationsFileURL
+    } else {
+      self.missionPresentationsFileURL = self.chatSessionsFileURL
+        .deletingLastPathComponent()
+        .appendingPathComponent("mission-presentations.json")
     }
     self.client = client
     setupSnapshot = initialSetupSnapshot
@@ -1026,9 +1541,12 @@ public final class LocalProductStore: ObservableObject {
     permissionClient = client as? LocalProductPermissionClientProtocol
     executionSnapshotClient = client as? LocalProductExecutionSnapshotClientProtocol
     productionSnapshotClient = client as? LocalProductProductionSnapshotClientProtocol
-    loadPersistedChatSessions()
+    let restoredEmptyChatRegistry = loadPersistedChatSessions()
+    loadPersistedMissionPresentations()
     if chatSessions.isEmpty {
-      let initialThreadID = workspace.currentThreadID()
+      let initialThreadID = restoredEmptyChatRegistry
+        ? "thread-" + UUID().uuidString.lowercased()
+        : workspace.currentThreadID()
       let session = LocalProductChatSession(
         threadID: initialThreadID,
         title: "Conversation"
@@ -1462,6 +1980,27 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  public func roundtableRetireSeat(
+    sessionID: String,
+    seatID: String,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !seatID.isEmpty,
+          !moderatorSeat.isEmpty, seatID != moderatorSeat else {
+      roundtableError = "Roundtable invalid_request: a non-moderator seat is required"
+      return nil
+    }
+    return await runRoundtable {
+      try await roundtableClient.roundtableRetireSeat(
+        LocalRoundtableRetireSeatRequest(
+          schemaVersion: 1, sessionID: sessionID, seatID: seatID,
+          moderatorSeat: moderatorSeat,
+          correlationID: roundtableCorrelationID()
+        )
+      )
+    }
+  }
+
   public func roundtableOpenRound(
     sessionID: String,
     roundID: String,
@@ -1603,6 +2142,24 @@ public final class LocalProductStore: ObservableObject {
     sideTaskParentBinding(missionID: missionID) != nil
   }
 
+  public func canDecideSideTask(
+    _ sideTask: LocalProductSideTaskSummary
+  ) -> Bool {
+    guard !sideTask.availableDecisions.isEmpty,
+      let binding = projectedSideTaskParentBinding(
+        missionID: sideTask.parentMissionID,
+        teamInstanceID: sideTask.parentTeamInstanceID,
+        workItemID: sideTask.parentTaskID,
+        runID: sideTask.parentRunID,
+        executionDigest: sideTask.parentExecutionDigest
+      )
+    else { return false }
+    return binding.workItemID == sideTask.parentTaskID
+      && binding.runID == sideTask.parentRunID
+      && binding.claimGeneration == sideTask.parentClaimGeneration
+      && binding.executionDigest == sideTask.parentExecutionDigest
+  }
+
   public func proposeSideTask(
     missionID: String,
     purpose: String,
@@ -1695,7 +2252,7 @@ public final class LocalProductStore: ObservableObject {
     _ sideTask: LocalProductSideTaskSummary,
     decision: String
   ) async {
-    guard let handoffClient, let snapshot,
+    guard let handoffClient, let snapshot, canDecideSideTask(sideTask),
       sideTask.availableDecisions.contains(decision),
       let binding = projectedSideTaskParentBinding(
         missionID: sideTask.parentMissionID,
@@ -1782,6 +2339,7 @@ public final class LocalProductStore: ObservableObject {
     executionDigest: String
   ) -> SideTaskParentBinding? {
     guard let snapshot, let timeline,
+      timeline.gap == nil,
       executionDigest.count == 64,
       let mission = snapshot.missions.first(where: { $0.missionID == missionID }),
       mission.teamInstanceID == teamInstanceID,
@@ -1826,14 +2384,18 @@ public final class LocalProductStore: ObservableObject {
     team: LocalProductTeamSummary,
     workPackage: LocalProductWorkPackageOption,
     confirmedConstraints: [String] = [],
-    acceptedDecisions: [String] = []
+    acceptedDecisions: [String] = [],
+    newAttempt: Bool = false
   ) async {
+    let workspacePath = selectedConversationWorkspacePath
     executionPreflightGeneration &+= 1
     let generation = executionPreflightGeneration
     executionState = .preflighting
     executionPreflight = nil
     executionResult = nil
     executionObjective = ""
+    executionWorkspacePath = ""
+    executionNewAttempt = newAttempt
     executionConfirmedConstraints = []
     executionAcceptedDecisions = []
     let bounded = objective.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1864,8 +2426,10 @@ public final class LocalProductStore: ObservableObject {
       workPackageID: workPackage.id,
       workPackageDigest: workPackage.digest,
       objective: bounded,
+      workspacePath: workspacePath,
       confirmedConstraints: constraints,
       acceptedDecisions: decisions,
+      newAttempt: newAttempt,
       expectedViewVersion: snapshot.viewVersion,
       correlationID: UUID().uuidString.lowercased()
     )
@@ -1876,6 +2440,8 @@ public final class LocalProductStore: ObservableObject {
         throw LocalProductClientError.invalidResponse
       }
       executionObjective = bounded
+      executionWorkspacePath = command.workspacePath
+      executionNewAttempt = preflight.newAttempt
       executionConfirmedConstraints = constraints
       executionAcceptedDecisions = decisions
       executionPreflight = preflight
@@ -1886,7 +2452,7 @@ public final class LocalProductStore: ObservableObject {
       await refresh()
     } catch let remote as LocalIPCRemoteError {
       guard generation == executionPreflightGeneration else { return }
-      executionState = .failed(reason: remote.code.rawValue)
+      executionState = .failed(reason: missionExecutionFailureReason(remote))
     } catch {
       guard generation == executionPreflightGeneration else { return }
       executionState = .failed(reason: closedClientReason(error))
@@ -1899,6 +2465,8 @@ public final class LocalProductStore: ObservableObject {
       executionPreflightGeneration &+= 1
       executionPreflight = nil
       executionObjective = ""
+      executionWorkspacePath = ""
+      executionNewAttempt = false
       executionConfirmedConstraints = []
       executionAcceptedDecisions = []
       if executionResult == nil {
@@ -1925,9 +2493,11 @@ public final class LocalProductStore: ObservableObject {
       let command = LocalProductExecutionCommand.start(
         preflight: preflight,
         objective: executionObjective,
+        workspacePath: executionWorkspacePath,
         confirmedConstraints: executionConfirmedConstraints,
         acceptedDecisions: executionAcceptedDecisions,
-        correlationID: evolutionAssetJourneyID
+        newAttempt: executionNewAttempt,
+        correlationID: UUID().uuidString.lowercased()
       )
       let envelope = try await executionClient.executeMission(command)
       guard let result = envelope.result else {
@@ -1951,6 +2521,15 @@ public final class LocalProductStore: ObservableObject {
         return
       }
       await openMissionAndActivate(result.missionID)
+    } catch let remote as LocalIPCRemoteError {
+      // A governed start can race a projection update after the user reviews
+      // preflight. Refresh the authoritative view so the UI invalidates the
+      // stale digest and offers Review preflight again, without auto-starting
+      // a changed plan or silently bypassing confirmation.
+      if remote.code == .conflict || remote.code == .staleView {
+        await refresh()
+      }
+      executionState = .failed(reason: missionExecutionFailureReason(remote))
     } catch {
       executionState = .failed(reason: closedClientReason(error))
     }
@@ -1968,6 +2547,13 @@ public final class LocalProductStore: ObservableObject {
       result.append(value)
     }
     return result
+  }
+
+  private func missionExecutionFailureReason(_ remote: LocalIPCRemoteError) -> String {
+    guard remote.code == .conflict, let stage = remote.stage else {
+      return remote.code.rawValue
+    }
+    return "conflict.\(stage.rawValue)"
   }
 
   public func cancelCurrentMission() async {
@@ -2029,6 +2615,7 @@ public final class LocalProductStore: ObservableObject {
 
   private func currentAgentInputBinding(for node: LocalProductNode) -> AgentInputBinding? {
     guard agentInputClient != nil, let snapshot, let timeline,
+      timeline.gap == nil,
       timeline.viewVersion == snapshot.viewVersion,
       timeline.board.viewVersion == snapshot.viewVersion,
       timeline.board.nodes.contains(node), node.currentAttempt > 0,
@@ -2227,6 +2814,7 @@ public final class LocalProductStore: ObservableObject {
     guard let result = executionResult,
       let snapshot,
       let timeline,
+      timeline.gap == nil,
       case .mission(let selectedMissionID) = workbench.route,
       selectedMissionID == result.missionID,
       timeline.teamInstanceID == result.teamInstanceID,
@@ -2272,7 +2860,9 @@ public final class LocalProductStore: ObservableObject {
 
   public static let teamsEmptyMessage = "No Teams exist in this Journal yet."
 
-  public func refresh() async {
+  public func refresh(
+    preserveColdStartLoadingOnFailure: Bool = false
+  ) async {
     if snapshot == nil {
       connectionState = .loading
     }
@@ -2309,12 +2899,18 @@ public final class LocalProductStore: ObservableObject {
         timelineState = .idle
       }
     } catch let remote as LocalIPCRemoteError {
-      connectionState =
-        remote.recoverable
-        ? .offline(reason: remote.code.rawValue)
-        : .fatal(reason: remote.code.rawValue)
+      if remote.recoverable && preserveColdStartLoadingOnFailure && snapshot == nil {
+        connectionState = .loading
+      } else {
+        connectionState =
+          remote.recoverable
+          ? .offline(reason: remote.code.rawValue)
+          : .fatal(reason: remote.code.rawValue)
+      }
     } catch {
-      connectionState = .offline(reason: closedClientReason(error))
+      connectionState = preserveColdStartLoadingOnFailure && snapshot == nil
+        ? .loading
+        : .offline(reason: closedClientReason(error))
     }
   }
 
@@ -2324,10 +2920,18 @@ public final class LocalProductStore: ObservableObject {
   ) async {
     let boundedAttempts = min(max(maxAttempts, 1), 20)
     for attempt in 0..<boundedAttempts {
-      await refresh()
-      guard case .offline = connectionState,
-        attempt + 1 < boundedAttempts
-      else { return }
+      await refresh(
+        preserveColdStartLoadingOnFailure: snapshot == nil
+          && attempt + 1 < boundedAttempts
+      )
+      let shouldRetry: Bool
+      switch connectionState {
+      case .loading, .offline:
+        shouldRetry = true
+      default:
+        shouldRetry = false
+      }
+      guard shouldRetry, attempt + 1 < boundedAttempts else { return }
       do {
         try await Task.sleep(nanoseconds: delayNanoseconds)
       } catch {
@@ -2364,7 +2968,20 @@ public final class LocalProductStore: ObservableObject {
         }
       }
       let isOnline = connectionState == .online
-      if isOnline && !wasOnlineAtLastPoll {
+      // Product snapshot and setup/profile snapshot are independent IPC
+      // surfaces. A healthy daemon can answer the former while a transient
+      // startup failure leaves the latter unavailable, which must recover
+      // without asking the user to restart Loom or open Runtime & Providers.
+      let setupNeedsRecovery: Bool
+      switch setupState {
+      case .idle, .unavailable:
+        setupNeedsRecovery = true
+      case .loading, .ready, .fatal:
+        setupNeedsRecovery = setupSnapshot == nil ||
+          !(setupSnapshot.map(hasUsableSetupInventory) ?? false) ||
+          (setupSnapshot.map(hasPendingConversationProjection) ?? false)
+      }
+      if isOnline && (!wasOnlineAtLastPoll || setupNeedsRecovery) {
         async let setup: Void = refreshSetup()
         async let permissions: Void = refreshPermissions()
         async let executions: Void = refreshExecutions()
@@ -2382,7 +2999,7 @@ public final class LocalProductStore: ObservableObject {
 
   /// Confirmed, executable, non-read-only Teams a Mission can run on.
   public var executableTeams: [LocalProductTeamSummary] {
-    (snapshot?.teams ?? []).filter {
+    currentTeamConfigurations(snapshot?.teams ?? []).filter {
       $0.confirmed && $0.executable && !$0.readOnly
     }
   }
@@ -2412,11 +3029,24 @@ public final class LocalProductStore: ObservableObject {
 
   private func loadTimeline(
     teamInstanceID: String,
-    selection: TimelineLoadSelection
+    selection: TimelineLoadSelection,
+    preserveObservedTentativeRecords: Bool = false
   ) async {
+    let retainedTentativeRecords: [LocalProductTimelineRecord]
+    if preserveObservedTentativeRecords,
+      timeline?.teamInstanceID == teamInstanceID
+    {
+      retainedTentativeRecords = timeline?.records.filter {
+        $0.authority == "tentative" && !$0.payload.textDelta.isEmpty
+      } ?? []
+    } else {
+      retainedTentativeRecords = []
+    }
     let generation = beginTimelineLoad()
-    timeline = nil
-    timelineState = .loading
+    if !preserveObservedTentativeRecords || timeline == nil {
+      timeline = nil
+      timelineState = .loading
+    }
     do {
       var cursor = ""
       var seenCursors = Set<String>()
@@ -2444,6 +3074,29 @@ public final class LocalProductStore: ObservableObject {
           firstPage: firstPage,
           seenDeliveryIDs: &seenDeliveryIDs
         )
+        if page.gap != nil {
+          guard pageIndex == 0, firstPage == nil, !page.hasMore,
+            page.nextCursor.isEmpty
+          else {
+            throw LocalProductClientError.invalidResponse
+          }
+          timeline = LocalProductTimelinePage(
+            schemaVersion: page.schemaVersion,
+            teamInstanceID: page.teamInstanceID,
+            viewVersion: page.viewVersion,
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore,
+            gap: page.gap,
+            records: Self.timelineRecords(
+              page.records,
+              retaining: retainedTentativeRecords
+            ),
+            board: page.board,
+            attention: page.attention
+          )
+          timelineState = .unavailable
+          return
+        }
         if firstPage == nil { firstPage = page }
         records.append(contentsOf: page.records)
         guard records.count <= Self.maximumTimelineRecords else {
@@ -2453,6 +3106,10 @@ public final class LocalProductStore: ObservableObject {
           guard let firstPage else {
             throw LocalProductClientError.invalidResponse
           }
+          let visibleRecords = Self.timelineRecords(
+            records,
+            retaining: retainedTentativeRecords
+          )
           timeline = LocalProductTimelinePage(
             schemaVersion: firstPage.schemaVersion,
             teamInstanceID: teamInstanceID,
@@ -2460,7 +3117,7 @@ public final class LocalProductStore: ObservableObject {
             nextCursor: page.nextCursor,
             hasMore: false,
             gap: nil,
-            records: records,
+            records: visibleRecords,
             board: firstPage.board,
             attention: firstPage.attention
           )
@@ -2485,8 +3142,10 @@ public final class LocalProductStore: ObservableObject {
           selection: selection
         )
       else { return }
-      timeline = nil
-      timelineState = .idle
+      if !preserveObservedTentativeRecords {
+        timeline = nil
+        timelineState = .idle
+      }
     } catch let remote as LocalIPCRemoteError {
       if Task.isCancelled {
         guard
@@ -2495,8 +3154,10 @@ public final class LocalProductStore: ObservableObject {
             selection: selection
           )
         else { return }
-        timeline = nil
-        timelineState = .idle
+        if !preserveObservedTentativeRecords {
+          timeline = nil
+          timelineState = .idle
+        }
         return
       }
       guard
@@ -2505,6 +3166,17 @@ public final class LocalProductStore: ObservableObject {
           selection: selection
         )
       else { return }
+      if remote.code == .cursorConflict,
+        preserveObservedTentativeRecords,
+        timeline?.teamInstanceID == teamInstanceID
+      {
+        // Active Missions can append an event between two timeline pages.
+        // Keep the last complete activity snapshot visible and let the next
+        // bounded poll restart from the authoritative head cursor.
+        connectionState = .online
+        timelineState = .loaded
+        return
+      }
       if remote.code == .cursorConflict || remote.code == .streamGap {
         connectionState = .stale(reason: remote.code.rawValue)
         timelineState = .unavailable
@@ -2523,8 +3195,10 @@ public final class LocalProductStore: ObservableObject {
             selection: selection
           )
         else { return }
-        timeline = nil
-        timelineState = .idle
+        if !preserveObservedTentativeRecords {
+          timeline = nil
+          timelineState = .idle
+        }
         return
       }
       guard
@@ -2541,6 +3215,20 @@ public final class LocalProductStore: ObservableObject {
   private func beginTimelineLoad() -> UInt64 {
     timelineLoadGeneration &+= 1
     return timelineLoadGeneration
+  }
+
+  private static func timelineRecords(
+    _ current: [LocalProductTimelineRecord],
+    retaining observedTentative: [LocalProductTimelineRecord]
+  ) -> [LocalProductTimelineRecord] {
+    guard !observedTentative.isEmpty else { return current }
+    var deliveryIDs = Set(current.map(\.deliveryID))
+    var result = current
+    for record in observedTentative where result.count < maximumTimelineRecords {
+      guard deliveryIDs.insert(record.deliveryID).inserted else { continue }
+      result.append(record)
+    }
+    return result
   }
 
   private func invalidateTimelineLoad() {
@@ -2575,12 +3263,22 @@ public final class LocalProductStore: ObservableObject {
     guard page.schemaVersion == 1,
       page.teamInstanceID == teamInstanceID,
       !page.viewVersion.isEmpty,
-      page.gap == nil,
       page.board.schemaVersion == 1,
       page.board.teamInstanceID == teamInstanceID,
       page.board.viewVersion == page.viewVersion
     else {
       throw LocalProductClientError.invalidResponse
+    }
+    if let gap = page.gap {
+      guard gap.schemaVersion == 1,
+        gap.kind == "stream_gap",
+        gap.teamInstanceID == teamInstanceID,
+        gap.currentViewVersion == page.viewVersion,
+        !gap.deliveryID.isEmpty,
+        !gap.reason.isEmpty
+      else {
+        throw LocalProductClientError.invalidResponse
+      }
     }
     var attentionIDs = Set<String>()
     for attention in page.attention {
@@ -2618,9 +3316,19 @@ public final class LocalProductStore: ObservableObject {
     }
     setupState = .loading
     do {
-      setupSnapshot = try await setupClient.setupSnapshot()
+      let refreshed = try await setupClient.setupSnapshot()
+      // A transient daemon projection race can produce a structurally valid
+      // snapshot with every catalog empty. Treat it as recoverable rather
+      // than erasing a known-good provider/runtime directory.
+      guard hasUsableSetupInventory(refreshed) else {
+        setupState = .unavailable(reason: "empty_setup")
+        return
+      }
+      setupSnapshot = refreshed
       reconcileWorkspace()
-      setupState = .ready
+      setupState = hasPendingConversationProjection(refreshed)
+        ? .unavailable(reason: "conversation_profiles_pending")
+        : .ready
     } catch let remote as LocalIPCRemoteError {
       setupState =
         remote.recoverable
@@ -2628,6 +3336,31 @@ public final class LocalProductStore: ObservableObject {
         : .fatal(reason: remote.code.rawValue)
     } catch {
       setupState = .unavailable(reason: closedClientReason(error))
+    }
+  }
+
+  private func hasUsableSetupInventory(
+    _ snapshot: LocalProductSetupSnapshot
+  ) -> Bool {
+    !snapshot.providers.isEmpty ||
+      !snapshot.providerAccounts.isEmpty ||
+      !snapshot.conversationProfiles.isEmpty ||
+      !snapshot.runtimes.isEmpty ||
+      !snapshot.savedTeams.isEmpty ||
+      !snapshot.templates.isEmpty ||
+      !snapshot.roleOptions.isEmpty ||
+      !snapshot.skills.isEmpty ||
+      !snapshot.resources.isEmpty
+  }
+
+  private func hasPendingConversationProjection(
+    _ snapshot: LocalProductSetupSnapshot
+  ) -> Bool {
+    guard snapshot.conversationProfiles.isEmpty else { return false }
+    return snapshot.providers.contains { provider in
+      ["available", "configured", "verified"].contains(provider.status)
+    } || snapshot.runtimes.contains { runtime in
+      ["online", "ready", "available"].contains(runtime.status)
     }
   }
 
@@ -2682,22 +3415,74 @@ public final class LocalProductStore: ObservableObject {
     workbench.openMission(id)
   }
 
-  public func openMissionAndActivate(_ id: String) async {
+  @discardableResult
+  public func openMissionAndActivate(_ id: String) async -> Bool {
     guard
       let mission = snapshot?.missions.first(where: {
         $0.missionID == id
       })
-    else { return }
+    else { return false }
     workbench.openMission(id)
     await loadTimeline(
       teamInstanceID: mission.teamInstanceID,
       selection: .mission(id: id, teamID: mission.teamInstanceID)
     )
+    return workbench.route == .mission(id)
   }
 
   public func refreshMission(_ id: String) async {
     await refresh()
     await openMissionAndActivate(id)
+  }
+
+  /// Refreshes only the Mission the user is still viewing. Tentative model
+  /// output is retained in this App session when the terminal projection no
+  /// longer republishes it; it is never promoted to Journal authority.
+  @discardableResult
+  public func refreshVisibleMissionActivity(_ id: String) async -> Bool {
+    guard workbench.route == .mission(id) else { return false }
+    await refresh()
+    guard workbench.route == .mission(id),
+      let mission = snapshot?.missions.first(where: { $0.missionID == id })
+    else { return false }
+    await loadTimeline(
+      teamInstanceID: mission.teamInstanceID,
+      selection: .mission(id: id, teamID: mission.teamInstanceID),
+      preserveObservedTentativeRecords: true
+    )
+    // A newly-started Mission can be visible in the authoritative snapshot
+    // before its timeline projection is readable. Keep following the Mission
+    // through that transient gap; timeline availability is not route authority.
+    return workbench.route == .mission(id)
+      && snapshot?.missions.contains(where: { $0.missionID == id }) == true
+  }
+
+  /// Polling is intentionally App-owned and bounded to the visible Mission.
+  /// Leaving the room cancels the view task and the selection guard prevents a
+  /// late response from reopening or mutating a different surface.
+  public func followVisibleMissionActivity(
+    _ id: String,
+    pollNanoseconds: UInt64 = 1_000_000_000
+  ) async {
+    let boundedPoll = min(max(pollNanoseconds, 250_000_000), 10_000_000_000)
+    while !Task.isCancelled {
+      guard await refreshVisibleMissionActivity(id) else { return }
+      guard let status = snapshot?.missions.first(where: {
+        $0.missionID == id
+      })?.status,
+        !Self.terminalMissionActivityStatus(status)
+      else { return }
+      do {
+        try await Task.sleep(nanoseconds: boundedPoll)
+      } catch {
+        return
+      }
+    }
+  }
+
+  private static func terminalMissionActivityStatus(_ status: String) -> Bool {
+    ["succeeded", "failed", "cancelled", "blocked", "human_required"]
+      .contains(status)
   }
 
   public func showMissionBoard() {
@@ -2739,6 +3524,13 @@ public final class LocalProductStore: ObservableObject {
   /// Creates a brand-new conversation (a fresh backend thread) and switches to
   /// it. The thread is materialized lazily on the first message.
   public func newConversation() {
+    chatGeneration &+= 1
+    conversationRouteTransitionGeneration &+= 1
+    hasPendingConversationRoute = false
+    conversationRouteSourceProfileID = ""
+    forceNewConversationSegment = false
+    confirmedConversationExecutionBinding = nil
+    confirmedConversationTrustBoundaryAcknowledgement = nil
     let threadID = "thread-" + UUID().uuidString.lowercased()
     let session = LocalProductChatSession(
       threadID: threadID,
@@ -2747,8 +3539,10 @@ public final class LocalProductStore: ObservableObject {
     chatSessions.append(session)
     selectedChatSessionID = threadID
     workspace.updateThreadAnchor(threadID)
+    workspace.updateComposerDraft("")
     chatThread = nil
     chatOperationFailure = nil
+    resetConversationContextDisclosures()
     persistChatSessions()
     Task { await loadChatThread() }
   }
@@ -2764,11 +3558,66 @@ public final class LocalProductStore: ObservableObject {
     workspace.updateThreadAnchor(threadID)
     chatThread = nil
     chatOperationFailure = nil
+    resetConversationContextDisclosures()
     persistChatSessions()
     Task { await loadChatThread() }
   }
 
-  /// Renames a conversation (for example from its first user message).
+  public func saveMissionPresentation(
+    missionID: String,
+    title: String,
+    conversationThreadID: String?,
+    workspacePath: String? = nil
+  ) {
+    let boundedMissionID = String(
+      missionID.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128)
+    )
+    let boundedTitle = String(
+      title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(96)
+    )
+    let boundedThreadID = String(
+      (conversationThreadID ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines).prefix(256)
+    )
+    let boundedWorkspacePath = Self.missionPresentationWorkspacePath(
+      workspacePath ?? executionWorkspacePath
+    )
+    guard !boundedMissionID.isEmpty, !boundedTitle.isEmpty,
+      boundedThreadID.isEmpty || chatSessions.contains(where: {
+        $0.threadID == boundedThreadID
+      })
+    else { return }
+    missionPresentations[boundedMissionID] = LocalProductMissionPresentation(
+      missionID: boundedMissionID,
+      title: boundedTitle,
+      conversationThreadID: boundedThreadID,
+      workspacePath: boundedWorkspacePath
+    )
+    persistMissionPresentations()
+  }
+
+  public func conversationLinkedToMission(
+    _ missionID: String
+  ) -> LocalProductChatSession? {
+    guard let threadID = missionPresentations[missionID]?.conversationThreadID,
+      !threadID.isEmpty
+    else { return nil }
+    return chatSessions.first(where: { $0.threadID == threadID })
+  }
+
+  public func missionIDsLinkedToConversation(
+    _ threadID: String
+  ) -> [String] {
+    guard !threadID.isEmpty else { return [] }
+    return missionPresentations.values
+      .filter { $0.conversationThreadID == threadID }
+      .sorted {
+        if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+        return $0.missionID < $1.missionID
+      }
+      .map(\.missionID)
+  }
+
   /// Deletes a conversation thread from the daemon and removes it from the
   /// session registry, freeing a bounded conversation slot. The active session
   /// falls back to the next available one (or stays blank).
@@ -2779,7 +3628,10 @@ public final class LocalProductStore: ObservableObject {
     do {
       try await client.deleteChatThread(threadID: threadID)
       chatSessions.removeAll { $0.threadID == threadID }
+      removeConversationContextDisclosures(for: threadID)
+      unlinkMissionPresentations(from: threadID)
       if selectedChatSessionID == threadID {
+        chatGeneration &+= 1
         selectedChatSessionID = chatSessions.first?.threadID ?? ""
         workspace.updateThreadAnchor(selectedChatSessionID)
         chatThread = nil
@@ -2825,39 +3677,128 @@ public final class LocalProductStore: ObservableObject {
     var sessions: [LocalProductChatSession]
   }
 
-  private func loadPersistedChatSessions() {
-    guard let data = try? Data(contentsOf: chatSessionsFileURL) else {
-      return
+  private func loadPersistedChatSessions() -> Bool {
+    guard let data = try? LocalPrivateRegistryStorage.read(from: chatSessionsFileURL) else {
+      return false
     }
     guard let persisted = try? JSONDecoder().decode(
       PersistedChatSessions.self, from: data
     ), persisted.schemaVersion == Self.chatSessionsSchemaVersion,
-      !persisted.sessions.isEmpty
+      persisted.sessions.count <= 256,
+      persisted.selectedSessionID.utf8.count <= 256,
+      persisted.sessions.allSatisfy({ session in
+        !session.threadID.isEmpty && session.threadID.utf8.count <= 256
+          && !session.title.isEmpty && session.title.utf8.count <= 80
+      })
     else {
-      return
+      return false
     }
     chatSessions = persisted.sessions
     selectedChatSessionID = persisted.selectedSessionID
+    return persisted.sessions.isEmpty
   }
 
   private func persistChatSessions() {
-    guard !chatSessions.isEmpty else { return }
+    let boundedSessions = Array(chatSessions.prefix(256))
     let persisted = PersistedChatSessions(
       schemaVersion: Self.chatSessionsSchemaVersion,
-      selectedSessionID: selectedChatSessionID,
-      sessions: chatSessions
+      selectedSessionID: String(selectedChatSessionID.prefix(256)),
+      sessions: boundedSessions
     )
     guard let data = try? JSONEncoder().encode(persisted) else { return }
     do {
-      try FileManager.default.createDirectory(
-        at: chatSessionsFileURL.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-      )
-      try data.write(to: chatSessionsFileURL, options: .atomic)
+      try LocalPrivateRegistryStorage.write(data, to: chatSessionsFileURL)
     } catch {
       // Persistence is best-effort; the in-memory session registry still works
       // for the current launch.
     }
+  }
+
+  private static let missionPresentationsSchemaVersion = 1
+
+  private struct PersistedMissionPresentations: Codable {
+    var schemaVersion: Int
+    var presentations: [LocalProductMissionPresentation]
+  }
+
+  private func loadPersistedMissionPresentations() {
+    guard let data = try? LocalPrivateRegistryStorage.read(
+      from: missionPresentationsFileURL
+    ),
+      let persisted = try? JSONDecoder().decode(
+        PersistedMissionPresentations.self, from: data
+      ),
+      persisted.schemaVersion == Self.missionPresentationsSchemaVersion
+    else { return }
+    var loaded: [String: LocalProductMissionPresentation] = [:]
+    for presentation in persisted.presentations.prefix(512) {
+      let missionID = presentation.missionID
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let title = presentation.title
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !missionID.isEmpty, missionID.utf8.count <= 128,
+        !title.isEmpty, title.utf8.count <= 96,
+        presentation.conversationThreadID.utf8.count <= 256
+      else { continue }
+      loaded[missionID] = LocalProductMissionPresentation(
+        missionID: missionID,
+        title: title,
+        conversationThreadID: presentation.conversationThreadID,
+        workspacePath: Self.missionPresentationWorkspacePath(
+          presentation.workspacePath
+        ),
+        updatedAt: presentation.updatedAt
+      )
+    }
+    missionPresentations = loaded
+  }
+
+  private func persistMissionPresentations() {
+    let presentations = missionPresentations.values.sorted {
+      $0.updatedAt > $1.updatedAt
+    }.prefix(512)
+    let persisted = PersistedMissionPresentations(
+      schemaVersion: Self.missionPresentationsSchemaVersion,
+      presentations: Array(presentations)
+    )
+    guard let data = try? JSONEncoder().encode(persisted) else { return }
+    do {
+      try LocalPrivateRegistryStorage.write(data, to: missionPresentationsFileURL)
+    } catch {
+      // Presentation metadata is non-authoritative; Mission execution remains
+      // available even when this local navigation index cannot be persisted.
+    }
+  }
+
+  private func unlinkMissionPresentations(from threadID: String) {
+    let linkedMissionIDs = missionPresentations.values.compactMap { presentation in
+      presentation.conversationThreadID == threadID ? presentation.missionID : nil
+    }
+    guard !linkedMissionIDs.isEmpty else { return }
+    let updatedAt = Date()
+    for missionID in linkedMissionIDs {
+      guard let presentation = missionPresentations[missionID] else { continue }
+      missionPresentations[missionID] = LocalProductMissionPresentation(
+        missionID: presentation.missionID,
+        title: presentation.title,
+        conversationThreadID: "",
+        workspacePath: presentation.workspacePath,
+        updatedAt: updatedAt
+      )
+    }
+    persistMissionPresentations()
+  }
+
+  private static func missionPresentationWorkspacePath(
+    _ value: String?
+  ) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed == value, trimmed.hasPrefix("/"),
+      trimmed.utf8.count <= 4_096
+    else { return nil }
+    let standardized = URL(fileURLWithPath: trimmed).standardizedFileURL.path
+    return standardized == trimmed ? standardized : nil
   }
 
   public func loadChatThread() async {
@@ -2866,7 +3807,8 @@ public final class LocalProductStore: ObservableObject {
     do {
       let thread = try await client.chatThread(threadID: threadID)
       guard generation == chatGeneration,
-        workspace.selectedContinuity.threadAnchor == threadID
+        workspace.selectedContinuity.threadAnchor == threadID,
+        thread.threadID == threadID
       else {
         return
       }
@@ -2896,6 +3838,82 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  public func loadConversationContextDisclosure(
+    _ segment: LocalProductConversationSegment
+  ) async {
+    guard let identity = conversationContextDisclosureIdentity(for: segment),
+      !conversationContextDisclosuresInFlight.contains(identity)
+    else { return }
+    conversationContextDisclosuresInFlight.insert(identity)
+    conversationContextDisclosureFailures.removeValue(forKey: identity)
+    defer { conversationContextDisclosuresInFlight.remove(identity) }
+    do {
+      let disclosure = try await client.chatContextDisclosure(
+        threadID: identity.threadID,
+        segmentID: segment.segmentID
+      )
+      guard chatThread?.threadID == identity.threadID,
+        LocalProductContextDisclosureIdentity(disclosure: disclosure) == identity,
+        disclosure.disclosed.count == segment.disclosedContextCount,
+        disclosure.omitted.count == segment.omittedContextCount,
+        disclosure.contextCapacityStatus == segment.contextCapacityStatus,
+        disclosure.contextWindowTokens == segment.contextWindowTokens,
+        disclosure.reservedOutputTokens == segment.reservedOutputTokens,
+        disclosure.adapterToolOverheadTokens == segment.adapterToolOverheadTokens,
+        disclosure.admittedInputBudgetTokens == segment.admittedInputBudgetTokens,
+        disclosure.contextTokenCounterID == segment.contextTokenCounterID,
+        disclosure.contextTokenCounterVersion == segment.contextTokenCounterVersion,
+        disclosure.admittedContributionTokens == segment.admittedContributionTokens,
+        disclosure.budgetOmittedContributionTokens ==
+          segment.budgetOmittedContributionTokens,
+        disclosure.contextCapacityContributions == segment.contextCapacityContributions
+      else {
+        throw LocalProductClientError.invalidResponse
+      }
+      conversationContextDisclosures[identity] = disclosure
+    } catch {
+      guard chatThread?.threadID == identity.threadID else { return }
+      conversationContextDisclosureFailures[identity] = closedClientReason(error)
+    }
+  }
+
+  public func conversationContextDisclosureIdentity(
+    for segment: LocalProductConversationSegment
+  ) -> LocalProductContextDisclosureIdentity? {
+    guard let thread = chatThread,
+      !segment.disclosureReceiptDigest.isEmpty,
+      thread.segments.contains(where: {
+        $0.segmentID == segment.segmentID
+          && $0.contextCapsuleDigest == segment.contextCapsuleDigest
+          && $0.disclosureReceiptDigest == segment.disclosureReceiptDigest
+      })
+    else { return nil }
+    return LocalProductContextDisclosureIdentity(
+      threadID: thread.threadID,
+      segmentID: segment.segmentID,
+      contextCapsuleDigest: segment.contextCapsuleDigest,
+      disclosureReceiptDigest: segment.disclosureReceiptDigest
+    )
+  }
+
+  private func resetConversationContextDisclosures() {
+    conversationContextDisclosures = [:]
+    conversationContextDisclosuresInFlight = []
+    conversationContextDisclosureFailures = [:]
+  }
+
+  private func removeConversationContextDisclosures(for threadID: String) {
+    conversationContextDisclosures = conversationContextDisclosures.filter {
+      $0.key.threadID != threadID
+    }
+    conversationContextDisclosuresInFlight = conversationContextDisclosuresInFlight.filter {
+      $0.threadID != threadID
+    }
+    conversationContextDisclosureFailures = conversationContextDisclosureFailures.filter {
+      $0.key.threadID != threadID
+    }
+  }
+
   public var availableConversationProfiles: [LocalProductConversationProfile] {
     setupSnapshot?.conversationProfiles ?? []
   }
@@ -2913,10 +3931,67 @@ public final class LocalProductStore: ObservableObject {
     return availableConversationProfiles.first { $0.profileID == profileID }
   }
 
+  nonisolated public static func canSubmitChatMessage(
+    content: String,
+    isSending: Bool,
+    profileID: String
+  ) -> Bool {
+    !isSending
+      && !profileID.isEmpty
+      && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
   /// Providers with a usable conversation credential: native profiles
   /// (codex/openai, opencode) plus every verified brokered account profile.
   public var verifiedConversationProviderIDs: Set<String> {
     Set(availableConversationProfiles.map(\.providerID))
+  }
+
+  /// Conversation models advertised by the current installed Runtime. OpenCode
+  /// owns a dynamic multi-provider catalog, so stale compile-time entries must
+  /// never override the CLI inventory returned by the daemon.
+  public func conversationModels(
+    providerID: String
+  ) -> [LocalProductConversationModelOption] {
+    let baseline = localProductConversationModels(providerID: providerID)
+    guard providerID == "opencode" else { return baseline }
+    guard let snapshot = setupSnapshot else { return baseline }
+    let runtimes = snapshot.runtimes.filter { $0.adapterType == "opencode" }
+    guard !runtimes.isEmpty else { return baseline }
+    let modelIDs = runtimes
+      .filter { $0.status == "online" }
+      .flatMap(\.modelIDs)
+    guard !modelIDs.isEmpty else { return [] }
+    let metadata = Dictionary(uniqueKeysWithValues: baseline.map { ($0.modelID, $0) })
+    return Array(Set(modelIDs)).sorted().map { modelID in
+      metadata[modelID] ?? LocalProductConversationModelOption(
+        modelID: modelID,
+        displayName: modelID,
+        reasoningEfforts: []
+      )
+    }
+  }
+
+  /// Models are routed by the selected execution profile, not by Provider ID
+  /// alone. This keeps native Codex, native OpenCode, and account-scoped
+  /// OpenCode profiles separate even when they share the same Provider.
+  public func conversationModels(
+    profile: LocalProductConversationProfile?
+  ) -> [LocalProductConversationModelOption] {
+    guard let profile else { return [] }
+    guard profile.harnessAdapter == "opencode" else {
+      return localProductConversationModels(providerID: profile.providerID)
+    }
+    let catalog = conversationModels(providerID: "opencode")
+    return catalog.filter {
+      let owner = conversationModelOwnerProvider(
+        providerID: "opencode",
+        modelID: $0.modelID
+      )
+      return profile.providerID == "opencode"
+        ? owner == "opencode"
+        : owner == profile.providerID
+    }
   }
 
   /// Owning Provider of a model for the selected Provider: a qualified
@@ -2927,7 +4002,11 @@ public final class LocalProductStore: ObservableObject {
     modelID: String
   ) -> String {
     if let slash = modelID.firstIndex(of: "/") {
-      return String(modelID[..<slash])
+      switch String(modelID[..<slash]) {
+      case "minimax-cn": return "minimax"
+      case "zai": return "zhipu"
+      default: return String(modelID[..<slash])
+      }
     }
     return providerID
   }
@@ -2953,6 +4032,35 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  public func isConversationModelAvailable(
+    profile: LocalProductConversationProfile?,
+    modelID: String
+  ) -> Bool {
+    guard let profile,
+      conversationModels(profile: profile).contains(where: {
+        $0.modelID == modelID
+      })
+    else { return false }
+    let owner = conversationModelOwnerProvider(
+      providerID: profile.providerID,
+      modelID: modelID
+    )
+    switch profile.harnessAdapter {
+    case "opencode":
+      return profile.providerID == "opencode"
+        ? owner == "opencode" && profile.authMode == "native_auth"
+        : owner == profile.providerID &&
+          !profile.providerAccountID.isEmpty &&
+          profile.credentialRevision > 0 && profile.authMode == "brokered"
+    case "codex", "pi":
+      return profile.authMode == "native_auth"
+    default:
+      return owner == profile.providerID &&
+        !profile.providerAccountID.isEmpty &&
+        profile.credentialRevision > 0 && profile.authMode == "brokered"
+    }
+  }
+
   public func conversationModelUnavailableReason(
     providerID: String,
     modelID: String
@@ -2975,8 +4083,7 @@ public final class LocalProductStore: ObservableObject {
   /// revoked).
   public var effectiveConversationModelID: String {
     let profile = selectedConversationProfile
-    let providerID = profile?.providerID ?? ""
-    let catalog = localProductConversationModels(providerID: providerID)
+    let catalog = conversationModels(profile: profile)
     let selected = selectedConversationModelID
     // A user selection is honored only when it is a real model of the
     // selected Provider AND its owning Provider credential is usable. This
@@ -2986,22 +4093,23 @@ public final class LocalProductStore: ObservableObject {
     if !selected.isEmpty,
       catalog.contains(where: { $0.modelID == selected }),
       isConversationModelAvailable(
-        providerID: providerID,
+        profile: profile,
         modelID: selected
       ) {
       return selected
     }
     if let defaultModel = profile?.modelID,
       !defaultModel.isEmpty,
+      catalog.contains(where: { $0.modelID == defaultModel }),
       isConversationModelAvailable(
-        providerID: providerID,
+        profile: profile,
         modelID: defaultModel
       ) {
       return defaultModel
     }
     return catalog.first {
       isConversationModelAvailable(
-        providerID: providerID,
+        profile: profile,
         modelID: $0.modelID
       )
     }?.modelID ?? ""
@@ -3011,15 +4119,17 @@ public final class LocalProductStore: ObservableObject {
   /// ("medium") when the selected model supports reasoning and nothing was
   /// chosen yet.
   public var effectiveConversationReasoningEffort: String {
-    if !selectedConversationReasoningEffort.isEmpty {
+    let efforts = availableConversationReasoningEfforts
+    if efforts.contains(selectedConversationReasoningEffort) {
       return selectedConversationReasoningEffort
     }
-    let providerID = selectedConversationProfile?.providerID ?? ""
-    let efforts = localProductConversationReasoningEfforts(
-      providerID: providerID,
-      modelID: effectiveConversationModelID
-    )
     return efforts.contains("medium") ? "medium" : (efforts.first ?? "")
+  }
+
+  private var availableConversationReasoningEfforts: [String] {
+    return conversationModels(profile: selectedConversationProfile)
+      .first { $0.modelID == effectiveConversationModelID }?
+      .reasoningEfforts ?? []
   }
 
   public func selectConversationProfile(_ profileID: String) {
@@ -3028,11 +4138,14 @@ public final class LocalProductStore: ObservableObject {
   }
 
   public func selectConversationModel(_ modelID: String) {
-    let providerID = selectedConversationProfile?.providerID ?? ""
-    let catalog = localProductConversationModels(providerID: providerID)
+    let previousModelID = effectiveConversationModelID
+    let previousReasoningEffort = effectiveConversationReasoningEffort
+    let profile = selectedConversationProfile
+    let providerID = profile?.providerID ?? ""
+    let catalog = conversationModels(profile: profile)
     guard catalog.contains(where: { $0.modelID == modelID }),
       isConversationModelAvailable(
-        providerID: providerID,
+        profile: profile,
         modelID: modelID
       )
     else {
@@ -3046,16 +4159,27 @@ public final class LocalProductStore: ObservableObject {
     conversationModelSelectionNotice = nil
     selectedConversationModelID = modelID
     selectedConversationReasoningEffort = ""
-    let efforts = localProductConversationReasoningEfforts(
-      providerID: providerID,
-      modelID: modelID
-    )
+    let efforts = conversationModels(profile: profile)
+      .first { $0.modelID == modelID }?
+      .reasoningEfforts ?? []
     selectedConversationReasoningEffort =
       efforts.contains("medium") ? "medium" : (efforts.first ?? "")
+    if effectiveConversationModelID != previousModelID ||
+      effectiveConversationReasoningEffort != previousReasoningEffort
+    {
+      invalidateConfirmedConversationRouteTransition()
+    }
   }
 
   public func selectConversationReasoningEffort(_ reasoningEffort: String) {
+    guard reasoningEffort.isEmpty ||
+      availableConversationReasoningEfforts.contains(reasoningEffort)
+    else { return }
+    let previousReasoningEffort = effectiveConversationReasoningEffort
     selectedConversationReasoningEffort = reasoningEffort
+    if effectiveConversationReasoningEffort != previousReasoningEffort {
+      invalidateConfirmedConversationRouteTransition()
+    }
   }
 
   public func requestConversationProfileSelection(
@@ -3085,6 +4209,11 @@ public final class LocalProductStore: ObservableObject {
       source: source,
       target: target,
       threadID: workspace.selectedContinuity.threadAnchor,
+      sourceSegmentID: chatThread?.segments.last?.segmentID ?? "",
+      sourceBindingDigest: chatThread?.segments.last?.bindingDigest ?? "",
+      sourceExecutionBinding: chatThread?.segments.last?.executionBinding,
+      targetExecutionBinding: Self.conversationExecutionBinding(target),
+      sourceReasoningEffort: chatThread?.segments.last?.reasoningEffort ?? "",
       generation: conversationRouteTransitionGeneration
     )
   }
@@ -3109,21 +4238,40 @@ public final class LocalProductStore: ObservableObject {
         source: source,
         target: profile,
         threadID: workspace.selectedContinuity.threadAnchor,
+        sourceSegmentID: thread.segments.last?.segmentID ?? "",
+        sourceBindingDigest: thread.segments.last?.bindingDigest ?? "",
         sourceExecutionBinding: thread.segments.last?.executionBinding,
+        targetExecutionBinding: Self.conversationExecutionBinding(
+          profile,
+          modelID: effectiveConversationModelID
+        ),
+        sourceReasoningEffort: thread.segments.last?.reasoningEffort ?? "",
+        targetReasoningEffort: effectiveConversationReasoningEffort,
         generation: conversationRouteTransitionGeneration
       )
     }
     guard let segment = thread.segments.last,
       segment.profileID == profile.profileID
     else { return nil }
-    let current = Self.conversationExecutionBinding(profile)
-    guard segment.executionBinding != current else { return nil }
+    let current = Self.conversationExecutionBinding(
+      profile,
+      modelID: effectiveConversationModelID
+    )
+    let targetReasoningEffort = effectiveConversationReasoningEffort
+    guard segment.executionBinding != current ||
+      segment.reasoningEffort != targetReasoningEffort
+    else { return nil }
     conversationRouteTransitionGeneration &+= 1
     return LocalProductConversationRouteTransition(
       source: profile,
       target: profile,
       threadID: workspace.selectedContinuity.threadAnchor,
+      sourceSegmentID: segment.segmentID,
+      sourceBindingDigest: segment.bindingDigest,
       sourceExecutionBinding: segment.executionBinding,
+      targetExecutionBinding: current,
+      sourceReasoningEffort: segment.reasoningEffort,
+      targetReasoningEffort: targetReasoningEffort,
       rebindsCurrentRoute: true,
       generation: conversationRouteTransitionGeneration
     )
@@ -3131,24 +4279,45 @@ public final class LocalProductStore: ObservableObject {
 
   public func confirmConversationRouteTransition(
     _ transition: LocalProductConversationRouteTransition,
-    contextMode: LocalProductConversationContextMode
+    contextMode: LocalProductConversationContextMode,
+    trustBoundaryAcknowledged: Bool = false
   ) -> Bool {
+    guard transition.sourceExecutionBinding != nil,
+      transition.trustBoundaryChanges.isEmpty || trustBoundaryAcknowledged
+    else { return false }
     if transition.rebindsCurrentRoute {
       guard transition.generation == conversationRouteTransitionGeneration,
         selectedConversationProfileID == transition.target.profileID,
         workspace.selectedContinuity.threadAnchor == transition.threadID,
+        chatThread?.threadID == transition.threadID,
+        chatThread?.segments.last?.segmentID == transition.sourceSegmentID,
+        chatThread?.segments.last?.bindingDigest == transition.sourceBindingDigest,
         availableConversationProfiles.contains(transition.target),
         chatThread?.segments.last?.executionBinding ==
           transition.sourceExecutionBinding,
-        Self.conversationExecutionBinding(transition.target) !=
-          transition.sourceExecutionBinding
+        Self.conversationExecutionBinding(
+          transition.target,
+          modelID: effectiveConversationModelID
+        ) == transition.targetExecutionBinding,
+        effectiveConversationReasoningEffort ==
+          transition.targetReasoningEffort,
+        transition.targetExecutionBinding !=
+          transition.sourceExecutionBinding ||
+          transition.targetReasoningEffort !=
+            transition.sourceReasoningEffort
       else { return false }
+      let acknowledgement = trustBoundaryAcknowledgement(
+        for: transition,
+        contextMode: contextMode
+      )
+      guard acknowledgement != nil else { return false }
+      conversationRouteTransitionGeneration &+= 1
       conversationContextMode = contextMode
       forceNewConversationSegment = true
       hasPendingConversationRoute = false
       conversationRouteSourceProfileID = ""
-      confirmedConversationExecutionBinding =
-        Self.conversationExecutionBinding(transition.target)
+      confirmedConversationExecutionBinding = transition.targetExecutionBinding
+      confirmedConversationTrustBoundaryAcknowledgement = acknowledgement
       return true
     }
     let selectedProfileID = selectedConversationProfileID
@@ -3161,13 +4330,27 @@ public final class LocalProductStore: ObservableObject {
     guard transition.generation == conversationRouteTransitionGeneration,
       matchesSourceSelection || matchesRecoveredTargetSelection,
       workspace.selectedContinuity.threadAnchor == transition.threadID,
+      chatThread?.threadID == transition.threadID,
+      chatThread?.segments.last?.segmentID == transition.sourceSegmentID,
+      chatThread?.segments.last?.bindingDigest == transition.sourceBindingDigest,
+      chatThread?.segments.last?.executionBinding ==
+        transition.sourceExecutionBinding,
       availableConversationProfiles.contains(transition.source),
-      availableConversationProfiles.contains(transition.target)
+      availableConversationProfiles.contains(transition.target),
+      Self.conversationExecutionBinding(transition.target) ==
+        transition.targetExecutionBinding
     else { return false }
 
+    let acknowledgement = trustBoundaryAcknowledgement(
+      for: transition,
+      contextMode: contextMode
+    )
+    guard acknowledgement != nil else { return false }
+
+    conversationRouteTransitionGeneration &+= 1
     conversationContextMode = contextMode
     if matchesSourceSelection {
-      selectConversationProfile(transition.target.profileID)
+      applyConversationProfileSelection(transition.target.profileID)
     }
     // A confirmed switch must force a new segment on the next send; otherwise
     // the thread still carries the old profile and every send re-triggers the
@@ -3175,9 +4358,34 @@ public final class LocalProductStore: ObservableObject {
     forceNewConversationSegment = true
     hasPendingConversationRoute = false
     conversationRouteSourceProfileID = ""
-    confirmedConversationExecutionBinding =
-      Self.conversationExecutionBinding(transition.target)
+    confirmedConversationExecutionBinding = transition.targetExecutionBinding
+    confirmedConversationTrustBoundaryAcknowledgement = acknowledgement
     return selectedConversationProfileID == transition.target.profileID
+  }
+
+  private func trustBoundaryAcknowledgement(
+    for transition: LocalProductConversationRouteTransition,
+    contextMode: LocalProductConversationContextMode
+  ) -> LocalProductTrustBoundaryAcknowledgement? {
+    guard let sourceSegment = chatThread?.segments.last,
+      sourceSegment.segmentID == transition.sourceSegmentID,
+      sourceSegment.bindingDigest == transition.sourceBindingDigest
+    else { return nil }
+    return LocalProductTrustBoundaryAcknowledgement.reviewed(
+      threadID: transition.threadID,
+      sourceSegment: sourceSegment,
+      targetProfileID: transition.target.profileID,
+      targetExecutionBinding: transition.targetExecutionBinding,
+      targetReasoningEffort: transition.targetReasoningEffort,
+      contextMode: contextMode
+    )
+  }
+
+  private func invalidateConfirmedConversationRouteTransition() {
+    conversationRouteTransitionGeneration &+= 1
+    forceNewConversationSegment = false
+    confirmedConversationExecutionBinding = nil
+    confirmedConversationTrustBoundaryAcknowledgement = nil
   }
 
   private func applyConversationProfileSelection(_ profileID: String) {
@@ -3194,6 +4402,7 @@ public final class LocalProductStore: ObservableObject {
       : storedProfileID
     if previousProfileID != profileID {
       confirmedConversationExecutionBinding = nil
+      confirmedConversationTrustBoundaryAcknowledgement = nil
       chatGeneration &+= 1
       if !hasPendingConversationRoute {
         conversationRouteSourceProfileID =
@@ -3218,7 +4427,16 @@ public final class LocalProductStore: ObservableObject {
 
   public func sendChatMessage(_ content: String) async {
     let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, !isSendingChatMessage else { return }
+    let profileID = selectedConversationProfileID
+    guard Self.canSubmitChatMessage(
+      content: trimmed,
+      isSending: isSendingChatMessage,
+      profileID: profileID
+    ) else { return }
+    guard !conversationDispatchRequiresRouteReview else {
+      workspace.updateComposerDraft(trimmed)
+      return
+    }
     // The Credential Vault unlocks passphrase-free (LocalKeyFile). Auto-unlock
     // before sending so a locked vault after App restart never blocks a
     // conversation; the failure banner still offers an explicit Unlock action.
@@ -3229,7 +4447,6 @@ public final class LocalProductStore: ObservableObject {
       }
     }
     let threadID = currentChatThreadID()
-    let profileID = selectedConversationProfileID
     let contextMode =
       forceNewConversationSegment ||
         hasPendingConversationRoute && conversationRouteSourceProfileID != profileID
@@ -3258,8 +4475,13 @@ public final class LocalProductStore: ObservableObject {
     )
     workspace.updateComposerDraft("")
     chatOperationFailure = nil
-    isSendingChatMessage = true
-    defer { isSendingChatMessage = false }
+    activeChatResponsesByThreadID[threadID] = incidentID
+    defer {
+      if activeChatResponsesByThreadID[threadID] == incidentID {
+        activeChatResponsesByThreadID.removeValue(forKey: threadID)
+      }
+      cancellingChatResponseThreadIDs.remove(threadID)
+    }
     do {
       let thread = try await client.sendChatMessage(
         threadID: threadID,
@@ -3269,6 +4491,8 @@ public final class LocalProductStore: ObservableObject {
         reasoningEffort: effectiveConversationReasoningEffort,
         contextMode: contextMode,
         expectedExecutionBinding: confirmedConversationExecutionBinding,
+        trustBoundaryAcknowledgement:
+          confirmedConversationTrustBoundaryAcknowledgement,
         incidentID: incidentID
       )
       guard generation == chatGeneration,
@@ -3281,22 +4505,13 @@ public final class LocalProductStore: ObservableObject {
       conversationRouteSourceProfileID = ""
       forceNewConversationSegment = false
       confirmedConversationExecutionBinding = nil
-      if let sessionIndex = chatSessions.firstIndex(where: {
+      confirmedConversationTrustBoundaryAcknowledgement = nil
+      if chatSessions.contains(where: {
         $0.threadID == threadID
       }) {
-        // Auto-title a fresh conversation from its first user message so the
-        // session list can distinguish conversations.
-        let currentTitle = chatSessions[sessionIndex].title
-        if currentTitle.hasPrefix("Conversation"),
-          let firstUser = thread.messages.first(where: { $0.role == "user" })
-        {
-          let title = Self.conversationTitle(from: firstUser.content)
-          chatSessions[sessionIndex].title = title
-          chatSessions[sessionIndex].updatedAt = Date()
-          persistChatSessions()
-        } else {
-          touchChatSession(threadID)
-        }
+        // The plaintext navigation registry never derives metadata from chat
+        // content. Transcripts remain in the encrypted conversation store.
+        touchChatSession(threadID)
       }
       if let attempt = thread.attempts.last(where: {
         $0.incidentID == incidentID && $0.status == "failed"
@@ -3329,40 +4544,14 @@ public final class LocalProductStore: ObservableObject {
       if failure.code == .conflict && failure.stage == .conversationDispatch {
         forceNewConversationSegment = false
         confirmedConversationExecutionBinding = nil
+        confirmedConversationTrustBoundaryAcknowledgement = nil
         await recoverChatThreadAfterDispatchConflict(
           threadID: threadID,
           selectedProfileID: profileID,
           generation: generation
         )
-        // Self-heal: a stale segment binding (after a policy or credential
-        // revision bump) makes the server reject with conflict. Align to the
-        // current profile binding, force a new segment, and retry once so the
-        // user is not stuck in repeated conflicts or confirmation sheets.
-        if let currentProfile = selectedConversationProfile,
-          currentProfile.profileID == profileID
-        {
-          forceNewConversationSegment = true
-          conversationContextMode = .summaryOnly
-          confirmedConversationExecutionBinding =
-            Self.conversationExecutionBinding(currentProfile)
-          let retried = await sendChatMessageOnce(
-            trimmed,
-            threadID: threadID,
-            profileID: profileID,
-            contextMode: conversationContextMode,
-            generation: generation,
-            incidentID: Self.newChatIncidentID()
-          )
-          if retried { return }
-          // Retry failed: reset the self-heal state so the user can confirm
-          // the route transition through the normal sheet instead of being
-          // stuck with a suppressed confirmation.
-          forceNewConversationSegment = false
-          confirmedConversationExecutionBinding = nil
-        }
       } else if failure.code == .invalidRequest &&
-        failure.stage == .conversationDispatch,
-        let setupClient
+        failure.stage == .conversationDispatch
       {
         // The selected profile can go stale after a credential re-import or
         // revision bump. Refresh the authoritative setup and retry once with
@@ -3389,6 +4578,64 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  public func cancelActiveChatResponse() async {
+    let threadID = currentChatThreadID()
+    guard !cancellingChatResponseThreadIDs.contains(threadID),
+      let incidentID = activeChatResponsesByThreadID[threadID]
+    else { return }
+
+    let generation = chatGeneration
+    cancellingChatResponseThreadIDs.insert(threadID)
+    defer { cancellingChatResponseThreadIDs.remove(threadID) }
+    do {
+      try await client.cancelChatResponse(
+        threadID: threadID,
+        incidentID: incidentID
+      )
+      guard activeChatResponsesByThreadID[threadID] == incidentID,
+        generation == chatGeneration,
+        workspace.selectedContinuity.threadAnchor == threadID
+      else { return }
+      chatOperationFailure = nil
+    } catch let remote as LocalIPCRemoteError where remote.code == .notFound {
+      // The Response may settle between the user pressing Stop and daemon
+      // admission. Refresh authoritative state and let the original send finish.
+      do {
+        let thread = try await client.chatThread(threadID: threadID)
+        if generation == chatGeneration,
+          workspace.selectedContinuity.threadAnchor == threadID,
+          thread.threadID == threadID
+        {
+          chatThread = thread
+        }
+      } catch {
+        // The still-live send remains responsible for final settlement.
+      }
+      chatOperationFailure = nil
+    } catch {
+      guard activeChatResponsesByThreadID[threadID] == incidentID
+      else { return }
+      chatOperationFailure = Self.chatFailure(error, incidentID: incidentID)
+    }
+  }
+
+  private var conversationDispatchRequiresRouteReview: Bool {
+    guard !forceNewConversationSegment,
+      let thread = chatThread,
+      !thread.messages.isEmpty
+    else { return false }
+    guard let profile = selectedConversationProfile,
+      thread.profileID == profile.profileID,
+      let segment = thread.segments.last,
+      segment.profileID == profile.profileID,
+      let sourceBinding = segment.executionBinding
+    else { return true }
+    return sourceBinding != Self.conversationExecutionBinding(
+      profile,
+      modelID: effectiveConversationModelID
+    ) || segment.reasoningEffort != effectiveConversationReasoningEffort
+  }
+
   /// Sends one chat message with explicit parameters and returns whether it
   /// succeeded; used by the stale-profile retry path.
   private func sendChatMessageOnce(
@@ -3401,8 +4648,6 @@ public final class LocalProductStore: ObservableObject {
   ) async -> Bool {
     let previousThread = chatThread
     chatOperationFailure = nil
-    isSendingChatMessage = true
-    defer { isSendingChatMessage = false }
     do {
       let thread = try await client.sendChatMessage(
         threadID: threadID,
@@ -3420,6 +4665,7 @@ public final class LocalProductStore: ObservableObject {
       conversationRouteSourceProfileID = ""
       forceNewConversationSegment = false
       confirmedConversationExecutionBinding = nil
+      confirmedConversationTrustBoundaryAcknowledgement = nil
       workspace.updateComposerDraft("")
       return true
     } catch {
@@ -3455,18 +4701,28 @@ public final class LocalProductStore: ObservableObject {
     conversationRouteSourceProfileID = ""
     forceNewConversationSegment = false
     confirmedConversationExecutionBinding = nil
+    confirmedConversationTrustBoundaryAcknowledgement = nil
     workspace.updateThreadAnchor(
       "thread-\(UUID().uuidString.lowercased())"
     )
     chatThread = nil
+    resetConversationContextDisclosures()
   }
 
   private static func conversationExecutionBinding(
-    _ profile: LocalProductConversationProfile
+    _ profile: LocalProductConversationProfile,
+    modelID: String? = nil
   ) -> LocalProductConversationExecutionBinding {
-    LocalProductConversationExecutionBinding(
+    let resolvedModelID = modelID?.trimmingCharacters(
+      in: .whitespacesAndNewlines
+    ) ?? profile.modelID
+    return LocalProductConversationExecutionBinding(
+      schemaVersion: 4,
+      harnessAdapter: profile.harnessAdapter,
       providerID: profile.providerID,
       providerAccountID: profile.providerAccountID,
+      credentialRevision: profile.credentialRevision,
+      modelID: resolvedModelID,
       providerAccountPolicyVersion: profile.policyVersion,
       providerAccountPolicyRevision: profile.policyRevision,
       providerAccountPolicyDigest: profile.policyDigest,
@@ -3478,18 +4734,6 @@ public final class LocalProductStore: ObservableObject {
 
   private static func newChatIncidentID() -> String {
     "loom-chat-\(UUID().uuidString.lowercased())"
-  }
-
-  /// Builds a short, human-readable conversation title from the first user
-  /// message: the first line, trimmed to 40 characters.
-  private static func conversationTitle(from content: String) -> String {
-    let line = content
-      .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
-      .first
-      .map(String.init) ?? content
-    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Conversation" }
-    return String(trimmed.prefix(40))
   }
 
   private static func chatFailure(
@@ -3572,7 +4816,7 @@ public final class LocalProductStore: ObservableObject {
     case (.conversationLimit, _):
       presentation = (
         "Conversation limit reached",
-        "Loom keeps a bounded set of conversations (128). Delete or archive older conversations, then start a new one. Your existing conversations are preserved."
+        "Loom keeps a bounded set of conversations (1,024). Delete or archive older conversations, then start a new one. Your existing conversations are preserved."
       )
     case (.stateUnavailable, .vaultKeyLoad):
       presentation = (
@@ -4582,6 +5826,8 @@ public final class LocalProductStore: ObservableObject {
       "team_name", "purpose", "main_role", "subagent_role",
 	  "subagent_add", "subagent_remove",
 	  "main_fallback_role", "subagent_fallback_role",
+	  "main_parallel_route_add", "subagent_parallel_route_add",
+	  "main_parallel_route_remove", "subagent_parallel_route_remove",
 	  "main_harness_route", "subagent_harness_route",
 	  "main_provider_account_route", "subagent_provider_account_route",
       "main_model", "subagent_model",
@@ -4661,7 +5907,23 @@ public final class LocalProductStore: ObservableObject {
   }
 
   public func selectWorkspaceFolderDisplayName(_ value: String) {
+    selectedConversationWorkspacePath = ""
     workspace.selectFolderDisplayName(value)
+  }
+
+  public func selectWorkspaceFolder(_ url: URL) {
+    guard url.isFileURL else { return }
+    let standardizedURL = url.standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard standardizedURL.path.hasPrefix("/"),
+      FileManager.default.fileExists(
+        atPath: standardizedURL.path,
+        isDirectory: &isDirectory
+      ),
+      isDirectory.boolValue
+    else { return }
+    selectedConversationWorkspacePath = standardizedURL.path
+    workspace.selectFolderDisplayName(standardizedURL.lastPathComponent)
   }
 
   public func selectInspector(_ inspector: LocalProductInspectorTab) {
@@ -5261,6 +6523,208 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  public func importCredentialCandidate(
+    _ candidate: LocalProductCredentialImportCandidate,
+    providerAccountID: String? = nil
+  ) async {
+    guard let setupClient,
+      ["exact_provider", "custom_endpoint_review"].contains(candidate.importMode),
+      candidate.credentialAvailable,
+      candidate.protocolName == "openai_responses"
+    else { return }
+    let accountID = providerAccountID ?? candidate.targetProviderID + ".primary"
+    guard LocalIPCClient.validProviderAccountID(
+      accountID,
+      providerID: candidate.targetProviderID
+    ) else { return }
+    let operationKey = accountID
+    guard !providersInFlight.contains(operationKey) else { return }
+    if providerCredentialBinding(
+      providerID: candidate.targetProviderID,
+      providerAccountID: accountID
+    ) != nil {
+      providerOperationStatus[operationKey] = "Already connected"
+      providerOperationDetail[operationKey] =
+        "This Provider Account already has a Credential Vault binding."
+      return
+    }
+    providersInFlight.insert(operationKey)
+    providerOperationStatus[operationKey] = "Importing"
+    providerOperationDetail[operationKey] = nil
+    clearProviderOperationDiagnostics(operationKey)
+    defer { providersInFlight.remove(operationKey) }
+    do {
+      let result: LocalProductCredentialSetupResult
+      if candidate.importMode == "custom_endpoint_review" {
+        guard let review = approvedEndpointReview(
+          candidateDigest: candidate.candidateDigest,
+          providerAccountID: accountID
+        ) else {
+          throw LocalProductClientError.invalidRequest
+        }
+        result = try await setupClient.importReviewedEndpointCandidate(
+          candidate: candidate,
+          review: review,
+          providerAccountID: accountID
+        )
+      } else {
+        result = try await setupClient.importCredentialCandidate(
+          candidateID: candidate.id,
+          providerID: candidate.targetProviderID,
+          providerAccountID: accountID
+        )
+      }
+      let refreshed = try await setupClient.setupSnapshot()
+      guard
+        let binding = providerCredentialBinding(
+          in: refreshed,
+          providerID: candidate.targetProviderID,
+          providerAccountID: accountID
+        ),
+        binding.revision == result.revision,
+        binding.status == result.status,
+        binding.reason == result.reason,
+        result.status == "verified"
+      else {
+        throw LocalProductClientError.invalidResponse
+      }
+      credentialStatus = result
+      setupSnapshot = refreshed
+      recordProviderTerminalStatus(operationKey: operationKey, result: result)
+      if accountID == candidate.targetProviderID + ".primary",
+        let profile = refreshed.conversationProfiles.first(where: {
+          $0.providerID == candidate.targetProviderID
+        })
+      {
+        selectConversationProfile(profile.profileID)
+      }
+      reconcileWorkspace()
+      setupState = .ready
+    } catch {
+      recordProviderOperationError(
+        providerID: candidate.targetProviderID,
+        operationKey: operationKey,
+        error: error
+      )
+      handleSetupError(error)
+    }
+  }
+
+  public func approveEndpointCandidate(
+    _ candidate: LocalProductCredentialImportCandidate,
+    providerAccountID: String? = nil
+  ) async {
+    guard let setupClient,
+      candidate.importMode == "custom_endpoint_review",
+      candidate.credentialAvailable
+    else { return }
+    let accountID = providerAccountID ?? candidate.targetProviderID + ".primary"
+    guard LocalIPCClient.validProviderAccountID(
+      accountID, providerID: candidate.targetProviderID
+    ), !providersInFlight.contains(accountID) else { return }
+    providersInFlight.insert(accountID)
+    providerOperationStatus[accountID] = "Reviewing"
+    providerOperationDetail[accountID] = nil
+    clearProviderOperationDiagnostics(accountID)
+    defer { providersInFlight.remove(accountID) }
+    do {
+      let result = try await setupClient.approveEndpointCandidate(
+        candidate: candidate,
+        providerAccountID: accountID
+      )
+      guard result.candidateDigest == candidate.candidateDigest,
+        result.endpointFingerprint == candidate.endpointFingerprint,
+        result.providerID == candidate.targetProviderID,
+        result.providerAccountID == accountID,
+        result.reviewPolicyVersion == candidate.reviewPolicyVersion,
+        result.reviewPolicyDigest == candidate.reviewPolicyDigest,
+        result.status == "approved", result.revision == 2
+      else {
+        throw LocalProductClientError.invalidResponse
+      }
+      approvedEndpointReviews[Self.endpointReviewCacheKey(
+        candidateDigest: candidate.candidateDigest,
+        providerAccountID: accountID
+      )] = result
+      providerOperationStatus[accountID] = "Approved"
+      providerOperationDetail[accountID] =
+        "Endpoint approved for this Provider Account. Import is ready for the next 15 minutes."
+    } catch {
+      recordProviderOperationError(
+        providerID: candidate.targetProviderID,
+        operationKey: accountID,
+        error: error
+      )
+      handleSetupError(error)
+    }
+  }
+
+  public func runProviderFailureLabSuite() async {
+    guard let setupClient, !failureLabInFlight else { return }
+    failureLabInFlight = true
+    failureLabError = nil
+    failureLabResults = []
+    defer { failureLabInFlight = false }
+    let scenarios = [
+      "auth", "rate_limit", "timeout", "insufficient_balance",
+      "corrupt_vault_record", "revision_conflict",
+    ]
+    do {
+      var results: [LocalProductFailureLabResult] = []
+      for scenario in scenarios {
+        let result = try await setupClient.runProviderFailureLab(
+          scenario: scenario,
+          providerAccountID: "failure-lab.target",
+          healthyPeerAccountID: "failure-lab.healthy-peer"
+        )
+        results.append(result)
+      }
+      failureLabResults = results
+    } catch {
+      failureLabError =
+        "The local failure isolation suite did not complete. Retry and inspect the incident diagnostics."
+      handleSetupError(error)
+    }
+  }
+
+  public func runProviderFailureLabScenario(_ scenario: String) async {
+    let scenarios = [
+      "auth", "rate_limit", "timeout", "insufficient_balance",
+      "corrupt_vault_record", "revision_conflict",
+    ]
+    guard let setupClient, scenarios.contains(scenario), !failureLabInFlight else { return }
+    failureLabInFlight = true
+    failureLabError = nil
+    defer { failureLabInFlight = false }
+    do {
+      let result = try await setupClient.runProviderFailureLab(
+        scenario: scenario,
+        providerAccountID: "failure-lab.target",
+        healthyPeerAccountID: "failure-lab.healthy-peer"
+      )
+      var updated = failureLabResults.filter { $0.scenario != scenario }
+      updated.append(result)
+      failureLabResults = updated.sorted {
+        (scenarios.firstIndex(of: $0.scenario) ?? scenarios.count)
+          < (scenarios.firstIndex(of: $1.scenario) ?? scenarios.count)
+      }
+    } catch {
+      failureLabError =
+        "This failure check did not complete. Retry or inspect the incident diagnostics."
+      handleSetupError(error)
+    }
+  }
+
+  public func approvedEndpointReview(
+    candidateDigest: String,
+    providerAccountID: String
+  ) -> LocalProductEndpointReviewResult? {
+    approvedEndpointReviews[Self.endpointReviewCacheKey(
+      candidateDigest: candidateDigest,
+      providerAccountID: providerAccountID
+    )]
+  }
+
   public func verifyProvider(
     providerID: String,
     ownsFlight: Bool = false
@@ -5654,6 +7118,29 @@ public final class LocalProductStore: ObservableObject {
           "The Agent Attempt needs an explicit recovery decision after Loom restarted. Review the Agent diagnostics."
         case .agentInputAdmission:
           "The running Agent could not admit this input. Refresh the Mission and retry its current Attempt."
+        case .preflightLease, .viewDrift, .preflightDigest:
+          "The reviewed Mission preflight changed or expired. Review it again, then retry."
+        case .dispatchCapacity:
+          "The selected Runtime is at capacity. Retry when its current work finishes."
+        case .dispatchTeamAuthority:
+          "The previous Team Attempt has not fully settled. Refresh Missions, then start a new audited Attempt."
+        case .dispatchRecoveryRequired:
+          "This Team has an interrupted Attempt that needs recovery before a new run."
+		case .workspacePublication, .workspacePublicationInputValidation,
+		  .workspacePublicationSourceSnapshot, .workspacePublicationSourceDrift,
+		  .workspacePublicationStageCreate, .workspacePublicationChangeValidation,
+		  .workspacePublicationChangeConflict, .workspacePublicationDestructiveChange,
+		  .workspacePublicationStageWrite, .workspacePublicationApply,
+		  .workspacePublicationFinalDigest, .workspacePublicationSync,
+		  .workspacePublicationMainNodeMissing, .workspacePublicationMainCandidateMissing,
+		  .workspacePublicationMainChangesMissing, .workspacePublicationMainDigestMissing,
+		  .workspacePublicationCancelled:
+		  "The accepted Mission result could not be published to the selected project. Retry the Mission and review its incident details."
+        case .parentContinuation, .flightConflict, .dispatchAdmission,
+          .dispatchAttemptValidation, .dispatchViewConflict,
+          .dispatchIdentityUnavailable, .dispatchValidation,
+          .dispatchContextValidation, .dispatchIncomplete:
+          "The Mission could not be admitted at its reported governance stage. Open Missions to inspect the current Attempt."
         case nil:
           nil
         }
@@ -5771,6 +7258,38 @@ public final class LocalProductStore: ObservableObject {
     case .agentAttemptReconcile: return "Agent attempt recovery"
     case .agentInputAdmission: return "Agent input admission"
 	case .toolRecovery: return "Tool recovery"
+    case .preflightLease: return "Mission preflight lease"
+    case .viewDrift: return "Mission view drift"
+    case .preflightDigest: return "Mission preflight digest"
+    case .parentContinuation: return "Mission parent continuation"
+    case .flightConflict: return "Mission active execution"
+    case .dispatchAdmission: return "Mission dispatch admission"
+    case .dispatchTeamAuthority: return "Team execution authority"
+    case .dispatchCapacity: return "Mission dispatch capacity"
+    case .dispatchAttemptValidation: return "Mission attempt validation"
+    case .dispatchViewConflict: return "Mission dispatch view"
+    case .dispatchIdentityUnavailable: return "Mission dispatch identity"
+    case .dispatchRecoveryRequired: return "Mission recovery"
+    case .dispatchValidation: return "Mission dispatch validation"
+    case .dispatchContextValidation: return "Mission context validation"
+    case .dispatchIncomplete: return "Mission dispatch visibility"
+	case .workspacePublication: return "Workspace publication"
+	case .workspacePublicationInputValidation: return "Workspace publication input"
+	case .workspacePublicationSourceSnapshot: return "Workspace source snapshot"
+	case .workspacePublicationSourceDrift: return "Workspace source drift"
+	case .workspacePublicationStageCreate: return "Workspace publication staging"
+	case .workspacePublicationChangeValidation: return "Workspace change validation"
+	case .workspacePublicationChangeConflict: return "Workspace change conflict"
+	case .workspacePublicationDestructiveChange: return "Workspace destructive change review"
+	case .workspacePublicationStageWrite: return "Workspace publication write"
+	case .workspacePublicationApply: return "Workspace publication apply"
+	case .workspacePublicationFinalDigest: return "Workspace publication verification"
+	case .workspacePublicationSync: return "Workspace publication sync"
+	case .workspacePublicationMainNodeMissing: return "Main Agent publication route"
+	case .workspacePublicationMainCandidateMissing: return "Main Agent result collection"
+	case .workspacePublicationMainChangesMissing: return "Main Agent workspace changes"
+	case .workspacePublicationMainDigestMissing: return "Main Agent workspace verification"
+	case .workspacePublicationCancelled: return "Workspace publication cancelled"
     case nil: return nil
     }
   }
@@ -5901,6 +7420,21 @@ public final class LocalProductStore: ObservableObject {
   }
 
   private func reconcileWorkspace() {
+    if let reviews = setupSnapshot?.endpointReviews {
+      var restored: [String: LocalProductEndpointReviewResult] = [:]
+      var valid = true
+      for review in reviews {
+        let key = Self.endpointReviewCacheKey(
+          candidateDigest: review.candidateDigest,
+          providerAccountID: review.providerAccountID
+        )
+        if restored.updateValue(review, forKey: key) != nil {
+          valid = false
+          break
+        }
+      }
+      approvedEndpointReviews = valid ? restored : [:]
+    }
     let teams = (snapshot?.teams ?? []).map { team in
       LocalProductWorkspaceTask(
         id: "team:\(team.teamInstanceID)",
@@ -5956,6 +7490,13 @@ public final class LocalProductStore: ObservableObject {
         workspace.selectConversationProfile("")
       }
     }
+  }
+
+  private static func endpointReviewCacheKey(
+    candidateDigest: String,
+    providerAccountID: String
+  ) -> String {
+    candidateDigest + "\u{0}" + providerAccountID
   }
 
   private func reconcileMissions() {
@@ -6088,9 +7629,10 @@ public final class LocalProductStore: ObservableObject {
   /// The daemon marks `partial` for two very different reasons:
   /// - real degradation: runtime observation timouts, truncated side-task
   ///   decisions, or unknown server conditions (fail conservatively);
-  /// - navigation truncation: runtimes/teams/missions lists that overflow a
-  ///   page hide reachable destinations, so the user genuinely cannot see
-  ///   everything from the current view.
+  /// - navigation pagination: runtimes/teams/missions lists that overflow a
+  ///   page are a normal paginated view. The relevant page owns its "load
+  ///   more" affordance; the global connection surface must stay online so a
+  ///   healthy conversation is not presented as unavailable.
   ///
   /// Historical run/evidence lists also overflow at 64 entries, but that is a
   /// normal rich-data condition: the newest records stay fully useful and the
@@ -6108,10 +7650,9 @@ public final class LocalProductStore: ObservableObject {
     if snapshot.runtimePage.hasMore
       || snapshot.teamPage.hasMore
       || snapshot.missionPage.hasMore
+      || snapshot.runPage.hasMore
+      || snapshot.evidencePage.hasMore
     {
-      return true
-    }
-    if snapshot.runPage.hasMore || snapshot.evidencePage.hasMore {
       return false
     }
     // Unknown partial states stay conservative.

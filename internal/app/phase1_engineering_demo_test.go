@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/agents"
 	"loom-pi-rebuild/internal/api"
@@ -128,6 +129,7 @@ type demoAdapter struct {
 	runtimeID       string
 	terminalStatus  string
 	terminalReason  string
+	outputDelta     string
 	calls           *atomic.Int32
 	effectCalls     *atomic.Int32
 	effectOnSuccess bool
@@ -166,12 +168,16 @@ func (adapter *demoAdapter) Execute(
 	} else if reason == "" {
 		reason = "controlled_failure"
 	}
+	outputDelta := adapter.outputDelta
+	if outputDelta == "" {
+		outputDelta = "authorized-" + adapter.logicalNodeID
+	}
 	frames := []bridgev1.Frame{
 		demoInboundFrame(request, 2, bridgev1.MessageAck, map[string]string{
 			"message_id": request.Dispatch.MessageID(),
 		}, adapter.staleGeneration),
 		demoInboundFrame(request, 3, bridgev1.MessageEvent, map[string]string{
-			"delta": "authorized-" + adapter.logicalNodeID,
+			"delta": outputDelta,
 		}, adapter.staleGeneration),
 		demoInboundFrame(request, 4, bridgev1.MessageResult, map[string]string{
 			"status": status,
@@ -880,6 +886,9 @@ func cloneDemoRequestForAuthorities(
 				logicalNodeID: "verifier-main",
 				runtimeID:     execution.Instance.ID,
 				calls:         verifierCalls,
+				outputDelta: string(
+					verification.VerifierReasonCriteriaSatisfied,
+				),
 			},
 		)
 		semantic.VerifierExecution = &execution
@@ -1129,6 +1138,9 @@ func demoRequest(
 					logicalNodeID: "verifier-main",
 					runtimeID:     "runtime-verifier",
 					calls:         verifierCalls,
+					outputDelta: string(
+						verification.VerifierReasonCriteriaSatisfied,
+					),
 				},
 			),
 		}
@@ -1151,6 +1163,26 @@ func demoRequest(
 		observer
 }
 
+type appTestContextTokenCounter struct{}
+
+func (appTestContextTokenCounter) ID() string      { return "counter:app-test" }
+func (appTestContextTokenCounter) Version() string { return "v1" }
+func (appTestContextTokenCounter) CountTokens(content []byte) (int, error) {
+	count := (utf8.RuneCount(content) + 3) / 4
+	if count < 1 {
+		count = 1
+	}
+	return count, nil
+}
+
+func appTestContextCapacityAuthority() contextcapsule.CapacityAuthority {
+	return contextcapsule.CapacityAuthority{
+		SchemaVersion:  contextcapsule.CapacitySchemaVersion,
+		Status:         contextcapsule.CapacityUnavailable,
+		TokenCounterID: "counter:app-test", TokenCounterVersion: "v1",
+	}
+}
+
 func demoNodeExecution(
 	t *testing.T,
 	environment *demoEnvironment,
@@ -1166,7 +1198,9 @@ func demoNodeExecution(
 ) app.TeamNodeExecution {
 	t.Helper()
 	profile := demoProfile(t, "profile-"+logicalNodeID)
-	capsule, err := contextcapsule.BuildRoleContextCapsule(
+	counter := appTestContextTokenCounter{}
+	capacity := appTestContextCapacityAuthority()
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
 			TeamID:         plan.TeamInstanceID(), AgentID: agentInstanceID,
@@ -1179,11 +1213,13 @@ func demoNodeExecution(
 		[]contextcapsule.ItemInput{{
 			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
 			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
-			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Priority: contextcapsule.PrioritySystem, Required: true,
 			Content:    []byte("Execute the Phase 1 engineering demo."),
 			SourceType: contextcapsule.SourceAuthority,
 			SourceRef:  "team-plan:" + plan.Digest(),
 		}},
+		capacity,
+		counter,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1224,7 +1260,9 @@ func demoNodeExecution(
 					attemptNumber == 2,
 			},
 		),
-		ContextCapsule: capsule,
+		ContextCapsule:           capsule,
+		ContextCapacityAuthority: capacity,
+		ContextTokenCounter:      counter,
 	}
 }
 

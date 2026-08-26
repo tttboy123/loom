@@ -20,6 +20,7 @@ const (
 	FactSessionCreated  = "RoundtableSessionCreated"
 	FactSeatAdded       = "RoundtableSeatAdded"
 	FactSeatRetired     = "RoundtableSeatRetired"
+	FactSeatRejoined    = "RoundtableSeatRejoined"
 	FactRoundOpened     = "RoundtableRoundOpened"
 	FactMessageProposed = "RoundtableMessageProposed"
 	FactMessageRelayed  = "RoundtableMessageRelayed"

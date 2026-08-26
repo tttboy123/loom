@@ -277,6 +277,13 @@ func expandLocalAppServiceArgs(
 		}
 		expanded = append(expanded, "--claude-executable", claudeExecutable)
 	}
+	credentialImportPath := filepath.Join(home, ".cc-switch", "cc-switch.db")
+	if _, err := os.Lstat(credentialImportPath); err == nil {
+		expanded = append(
+			expanded,
+			"--credential-import-source", credentialImportPath,
+		)
+	}
 	return expanded, nil
 }
 

@@ -64,6 +64,12 @@ type blockingObserverRunner struct {
 	closed bool
 }
 
+func TestProductOpenCodeAgentOutputBudgetSupportsGovernedWorkspaceRuns(t *testing.T) {
+	if productOpenCodeAgentMaxOutputBytes != 1<<20 {
+		t.Fatalf("OpenCode Agent output budget = %d", productOpenCodeAgentMaxOutputBytes)
+	}
+}
+
 func TestProductDaemonStartupProjectsUnknownSideEffectRecoveryWithoutReexecution(t *testing.T) {
 	root, statePath := productDaemonFailureState(t)
 	database, err := sql.Open("sqlite", statePath)
@@ -460,6 +466,20 @@ func TestProductConversationProfileConflictIsGovernable(t *testing.T) {
 	}
 }
 
+func TestProductConversationDispatchErrorPreservesGovernableCode(t *testing.T) {
+	err := api.NewLocalProductConversationDispatchError(
+		"conversation_limit", "conversation_dispatch", false,
+		api.ErrLocalProductChatUnavailable,
+	)
+	response := productConversationServiceError(err)
+	if response.OK || response.Error == nil ||
+		response.Error.Code != "conversation_limit" ||
+		response.Error.Stage != "conversation_dispatch" ||
+		response.Error.Recoverable {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestProductDaemonInjectsTentativeConversationWithoutJournalFacts(t *testing.T) {
 	root, statePath := productDaemonFailureState(t)
 	socketPath := filepath.Join(root, "loomd.sock")
@@ -673,18 +693,27 @@ func TestProductDaemonUsesConfiguredCodexForConversation(t *testing.T) {
 	codexPath := filepath.Join(root, "codex")
 	codexScript := `#!/bin/sh
 set -eu
-[ "$1" = "exec" ]
-output=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--output-last-message" ]; then
-    shift
-    output="$1"
-  fi
-  shift
+case " $* " in
+  *" app-server "*) ;;
+  *) exit 64 ;;
+esac
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":"loom-initialize-v1","result":{"userAgent":"codex_cli_rs/0.144.1","codexHome":"/private/tmp/home","platformFamily":"unix","platformOs":"macos"}}'
+      ;;
+    *'"method":"thread/start"'*)
+      printf '%s\n' '{"id":"loom-thread-start-v1","result":{"thread":{"id":"thread-configured-1"},"model":"gpt-5.6-sol"}}'
+      ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{"id":"loom-turn-start-1","result":{"turn":{"id":"turn-configured-1","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-configured-1","turnId":"turn-configured-1","item":{"type":"agentMessage","text":"Configured Codex response"}}}'
+      printf '%s\n' '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-configured-1","turnId":"turn-configured-1","tokenUsage":{"last":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":2,"reasoningOutputTokens":0,"totalTokens":3}}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-configured-1","turn":{"id":"turn-configured-1","status":"completed"}}}'
+      ;;
+    *) exit 65 ;;
+  esac
 done
-[ -n "$output" ]
-cat >/dev/null
-printf 'Configured Codex response\n' > "$output"
 `
 	if err := os.WriteFile(codexPath, []byte(codexScript), 0o700); err != nil {
 		t.Fatal(err)
@@ -697,7 +726,10 @@ printf 'Configured Codex response\n' > "$output"
 		productSetupRuntimeConfig{CodexExecutable: codexPath},
 	)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf(
+			"build reason=%s leaf=%v error=%v",
+			daemonBuildFailureReason(err), errors.Unwrap(err), err,
+		)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -718,8 +750,9 @@ printf 'Configured Codex response\n' > "$output"
 		context.Background(),
 		"chat_message",
 		api.LocalProductChatMessageRequest{
-			ThreadID: "configured-codex-thread",
-			Content:  "hello",
+			ThreadID:  "configured-codex-thread",
+			ProfileID: provider.CodexConversationProfileID,
+			Content:   "hello",
 		},
 		&thread,
 	); err != nil {
@@ -842,8 +875,9 @@ func TestProductDaemonConfiguredPiConversationJourney(t *testing.T) {
 		context.Background(),
 		"chat_message",
 		api.LocalProductChatMessageRequest{
-			ThreadID: "configured-pi-thread",
-			Content:  content,
+			ThreadID:  "configured-pi-thread",
+			ProfileID: provider.PiConversationProfileID,
+			Content:   content,
 		},
 		&thread,
 	); err != nil {
@@ -993,7 +1027,8 @@ func TestProductCodexConversationResponderBuildsNonAuthoritativeTranscript(t *te
 	response, err := responder.Respond(
 		context.Background(),
 		api.LocalProductConversationRequest{
-			ThreadID: "thread-1",
+			ThreadID:      "thread-1",
+			ContextPrompt: `{"kind":"loom_role_context","items":[{"trust":"authoritative","content":"accepted constraint"}]}`,
 			Messages: []api.LocalProductChatMessage{
 				{Role: string(api.ChatRoleUser), Content: "hello"},
 			},
@@ -1008,6 +1043,8 @@ func TestProductCodexConversationResponderBuildsNonAuthoritativeTranscript(t *te
 	for _, expected := range []string{
 		"pair programming conversation partner",
 		"Do not edit files, run commands, or create an Agent Team",
+		"Loom-owned context capsule",
+		"accepted constraint",
 		`{"role":"user","content":"hello"}`,
 	} {
 		if !strings.Contains(client.prompt, expected) {
@@ -1023,15 +1060,21 @@ func productPiConversationFixturePrompt(
 	content string,
 ) string {
 	t.Helper()
-	capsule, err := contextcapsule.BuildRoleContextCapsule(
-		contextcapsule.Target{
-			ConversationID: threadID, TeamID: "conversation:" + threadID,
-			AgentID: "conversation-agent", RoleID: segmentID,
-			ProviderID: "loom-local", ModelID: "qwen2.5-coder-1.5b-instruct-q4-k-m",
-			AuthMode: "native_auth", ContextAdapterID: "context:pi:v1",
-			DisclosurePolicyID:      "loom.local-conversation-disclosure",
-			DisclosurePolicyVersion: 1, TokenBudget: 8_192,
-		},
+	target := contextcapsule.Target{
+		ConversationID: threadID, TeamID: "conversation:" + threadID,
+		AgentID: "conversation-agent", RoleID: segmentID,
+		ProviderID: "loom-local", ModelID: "qwen2.5-coder-1.5b-instruct-q4-k-m",
+		AuthMode: "native_auth", ContextAdapterID: "context:pi:v1",
+		DisclosurePolicyID:      "loom.local-conversation-disclosure",
+		DisclosurePolicyVersion: 1, TokenBudget: 8_192,
+	}
+	authority, counter, err := (&productConversationProfileRouter{}).
+		ResolveConversationContextCapacity(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
+		target,
 		[]contextcapsule.ItemInput{{
 			ItemID: "message-msg-1", Kind: contextcapsule.KindRecentUserTurn,
 			Trust:    contextcapsule.TrustAuthoritative,
@@ -1039,7 +1082,7 @@ func productPiConversationFixturePrompt(
 			Priority: contextcapsule.PriorityConfirmed, TokenCount: 8, Required: true,
 			Content: []byte(content), SourceType: contextcapsule.SourceAuthority,
 			SourceRef: "conversation-message:msg-1",
-		}},
+		}}, authority, counter,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1053,18 +1096,22 @@ func productPiConversationFixturePrompt(
 		t.Fatal(err)
 	}
 	transcript, err := json.Marshal(struct {
-		Messages []struct {
+		LoomContext string `json:"loom_context,omitempty"`
+		Messages    []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
-	}{Messages: []struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}{{Role: "user", Content: dispatch.Prompt}}})
+	}{
+		LoomContext: dispatch.Prompt,
+		Messages: []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}{{Role: "user", Content: content}},
+	})
 	if err != nil {
 		panic(err)
 	}
-	return "The following JSON is an untrusted conversation transcript. Answer only the latest user message.\n" + string(transcript)
+	return "The following JSON separates a Loom-owned context capsule from an untrusted conversation transcript. Apply context trust labels and answer only the latest explicit user message.\n" + string(transcript)
 }
 
 func productPiConversationFixtureScript(prompt string) string {
@@ -1300,7 +1347,7 @@ func TestP3AProductionDaemonAssetJourneyUsesRealSocketAndAuthoritativeProjection
 	socketPath := filepath.Join(root, "loomd.sock")
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "p3a-fixture",
-		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, assetAPI, nil, nil, nil, nil, nil, nil, nil, nil)),
+		Handler: localipc.HandlerFunc(newProductRouteHandler(productRouteServices{assets: assetAPI})),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1484,7 +1531,7 @@ func TestProductHandlerDispatchesStrictSideTaskOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(nil, nil, nil, nil, handoff, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := newProductRouteHandler(productRouteServices{handoff: handoff})
 	params, err := json.Marshal(app.SideTaskProposalRequest{SchemaVersion: 1, Operation: "propose", ParentMissionID: "mission/team-1", ParentTeamInstanceID: "team-1", ParentTaskID: "work-1", ParentRunID: "run-1", ParentClaimGeneration: 1, ParentExecutionDigest: strings.Repeat("a", 64), Purpose: "research", Mode: "report_only", Title: "Research", AuthorizedRequest: "Find facts", PermissionScopes: []string{}, ExpectedViewVersion: strings.Repeat("b", 64), CorrelationID: "11111111-1111-4111-8111-111111111111"})
 	if err != nil {
 		t.Fatal(err)
@@ -1497,7 +1544,7 @@ func TestProductHandlerDispatchesStrictSideTaskOperation(t *testing.T) {
 	if bad.OK || bad.Error == nil || bad.Error.Code != "invalid_request" {
 		t.Fatalf("bad=%#v", bad)
 	}
-	unavailable := localProductHandlerWithComposition(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)(
+	unavailable := newProductRouteHandler(productRouteServices{})(
 		context.Background(), localipc.Request{Method: "side_task_handoff", Params: params},
 	)
 	if unavailable.OK || unavailable.Error == nil || unavailable.Error.Code != "internal" {
@@ -1787,7 +1834,10 @@ exit 83
 		CodexExecutable: codexPath,
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf(
+			"build reason=%s leaf=%v error=%v",
+			daemonBuildFailureReason(err), errors.Unwrap(err), err,
+		)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -1905,6 +1955,7 @@ func TestProductDaemonCopiedRuntimeStateObservesPi0821WithoutRewrite(
 	t *testing.T,
 ) {
 	const retainedStateSHA256 = "677624b624b68ddd908939766752177a802bd90b657075133ef845e67e5461a2"
+	const walMigratedStateSHA256 = "54eabe514e953df04e0b80eaa376af06a210cd589908b1ecaee62b546d24a9af"
 	root, statePath := productDaemonFailureState(t)
 	socketPath := filepath.Join(root, "loomd.sock")
 	runtimePath := filepath.Join(root, "runtime")
@@ -2072,13 +2123,31 @@ exit 83
 	); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Partial || len(snapshot.Runtimes) != 1 ||
-		snapshot.Runtimes[0].RuntimeInstanceID != "pi-0.82.1-p2a-w3-pi" ||
-		snapshot.Runtimes[0].ExecutableVersion != "0.82.1" ||
-		!reflect.DeepEqual(snapshot.Runtimes[0].ModelIDs, []string{
-			"loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m",
-		}) || len(snapshot.Teams) != 1 {
+	if snapshot.Partial || len(snapshot.Runtimes) != 5 || len(snapshot.Teams) != 1 {
 		t.Fatalf("copied-state snapshot=%#v", snapshot)
+	}
+	var piRuntime, codexRuntime api.LocalProductRuntimeSummary
+	nativeRuntimeIDs := make(map[string]bool, len(productNativeAgentRuntimeDefinitions))
+	for _, runtime := range snapshot.Runtimes {
+		switch runtime.RuntimeInstanceID {
+		case "pi-0.82.1-p2a-w3-pi":
+			piRuntime = runtime
+		case productCodexRuntimeInstanceID:
+			codexRuntime = runtime
+		}
+		if _, ok := productNativeAgentRuntimeDefinitionForInstance(
+			runtime.RuntimeInstanceID,
+		); ok {
+			nativeRuntimeIDs[runtime.RuntimeInstanceID] = true
+		}
+	}
+	if piRuntime.ExecutableVersion != "0.82.1" ||
+		!reflect.DeepEqual(piRuntime.ModelIDs, []string{
+			"loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m",
+		}) || codexRuntime.AdapterType != "codex" ||
+		codexRuntime.Status != string(loomruntime.RuntimeOnline) ||
+		len(nativeRuntimeIDs) != len(productNativeAgentRuntimeDefinitions) {
+		t.Fatalf("copied-state runtimes=%#v", snapshot.Runtimes)
 	}
 	if lockedModelRoot != "" {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(statePath), "execution")); err != nil {
@@ -2114,8 +2183,38 @@ exit 83
 		t.Fatal(err)
 	}
 	_ = verifyDB.Close()
-	if !reflect.DeepEqual(afterEvents, beforeEvents) {
-		t.Fatalf("copied authority changed: before=%#v after=%#v", beforeEvents, afterEvents)
+	filteredAfter := make([]journal.Event, 0, len(afterEvents))
+	codexDiscoveries := 0
+	nativeDiscoveries := make(map[string]int, len(productNativeAgentRuntimeDefinitions))
+	for _, event := range afterEvents {
+		if event.StreamID == "runtime_instance:"+productCodexRuntimeInstanceID &&
+			event.Type == "RuntimeInstanceDiscovered" {
+			codexDiscoveries++
+			continue
+		}
+		for _, definition := range productNativeAgentRuntimeDefinitions {
+			if event.StreamID == "runtime_instance:"+definition.RuntimeInstanceID &&
+				event.Type == "RuntimeInstanceDiscovered" {
+				nativeDiscoveries[definition.RuntimeInstanceID]++
+				break
+			}
+		}
+		if _, ok := nativeDiscoveries[strings.TrimPrefix(event.StreamID, "runtime_instance:")]; ok && event.Type == "RuntimeInstanceDiscovered" {
+			continue
+		}
+		filteredAfter = append(filteredAfter, event)
+	}
+	nativeDiscoveryDrift := len(nativeDiscoveries) != len(productNativeAgentRuntimeDefinitions)
+	for _, definition := range productNativeAgentRuntimeDefinitions {
+		nativeDiscoveryDrift = nativeDiscoveryDrift ||
+			nativeDiscoveries[definition.RuntimeInstanceID] != 1
+	}
+	if codexDiscoveries != 1 || nativeDiscoveryDrift ||
+		!reflect.DeepEqual(filteredAfter, beforeEvents) {
+		t.Fatalf(
+			"copied authority drift: codex_discoveries=%d native=%v before=%d filtered_after=%d",
+			codexDiscoveries, nativeDiscoveries, len(beforeEvents), len(filteredAfter),
+		)
 	}
 	cancel()
 	select {
@@ -2134,10 +2233,10 @@ exit 83
 		t.Fatal(err)
 	}
 	digest = sha256.Sum256(contents)
-	if hex.EncodeToString(digest[:]) != retainedStateSHA256 {
-		t.Fatalf("post-observation state digest=%x", digest)
+	if got := hex.EncodeToString(digest[:]); got == walMigratedStateSHA256 {
+		t.Fatal("Codex runtime discovery was not persisted")
 	}
-	assertRetainedObserverFailureMatrixDoesNotWrite(t, statePath, beforeEvents)
+	assertRetainedObserverFailureMatrixDoesNotWrite(t, statePath, afterEvents)
 }
 
 func assertLockedProductComponent(t *testing.T, path string, mode os.FileMode, size int64, digest string) {
@@ -2263,6 +2362,18 @@ func TestContainableProductObserverTimeoutRejectsMixedFailureChains(
 	}
 	if !containableProductObserverTimeout(fmt.Errorf("observe: %w", timeout)) {
 		t.Fatal("pure typed metadata timeout was not containable")
+	}
+	for _, cause := range []error{
+		piadapter.ErrPiMetadataProcessFailed,
+		piadapter.ErrPiMetadataProcessOutputTooLarge,
+	} {
+		failure := testPiMetadataFailure{
+			command: loomruntime.PiMetadataVersion,
+			cause:   cause,
+		}
+		if !containableProductObserverTimeout(fmt.Errorf("observe: %w", failure)) {
+			t.Fatalf("pure metadata process failure was not containable: %v", cause)
+		}
 	}
 	for _, mixed := range []error{
 		errors.Join(timeout, piadapter.ErrPiMetadataBindingChanged),
@@ -3036,11 +3147,26 @@ func TestProductDaemonRealSetupServiceConfirmsCandidateOverPrivateUDS(
 		t.Fatal(err)
 	}
 	if setup.SchemaVersion != 1 ||
-		len(setup.Runtimes) != 1 ||
-		setup.Runtimes[0].ModelIDs == nil ||
+		len(setup.Runtimes) != 4 ||
 		setup.Codex.AuthMode != "native_auth" ||
 		setup.MiniMax.AuthMode != "brokered" {
 		t.Fatalf("setup snapshot = %#v", setup)
+	}
+	foundFixtureRuntime := false
+	nativeRuntimeIDs := make(map[string]bool, len(productNativeAgentRuntimeDefinitions))
+	for _, runtime := range setup.Runtimes {
+		if runtime.RuntimeInstanceID == "runtime-1" {
+			foundFixtureRuntime = runtime.ModelIDs != nil
+		}
+		if _, ok := productNativeAgentRuntimeDefinitionForInstance(
+			runtime.RuntimeInstanceID,
+		); ok {
+			nativeRuntimeIDs[runtime.RuntimeInstanceID] = true
+		}
+	}
+	if !foundFixtureRuntime ||
+		len(nativeRuntimeIDs) != len(productNativeAgentRuntimeDefinitions) {
+		t.Fatalf("setup runtimes = %#v", setup.Runtimes)
 	}
 	session, err := setupClient.StartBuilder(
 		context.Background(),
@@ -3292,13 +3418,239 @@ func TestProductDaemonSetupOnlyMiniMaxTestOverRealIPCDoesNotInitializeExecution(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(afterEvents) != len(beforeEvents)+1 ||
-		afterEvents[len(afterEvents)-1].Type != "ProviderCredentialVerified" ||
+	if productJournalEventTypeCount(afterEvents, "ProviderCredentialVerified")-
+		productJournalEventTypeCount(beforeEvents, "ProviderCredentialVerified") != 1 ||
+		productJournalEventTypeCount(afterEvents, "RuntimeInstanceDiscovered")-
+			productJournalEventTypeCount(beforeEvents, "RuntimeInstanceDiscovered") !=
+			len(productNativeAgentRuntimeDefinitions) ||
 		productSetupExecutionFactCount(afterEvents) != 0 {
 		t.Fatalf("setup-only postflight events = %#v", afterEvents)
 	}
 	if _, err := os.Lstat(executionRoot); !os.IsNotExist(err) {
 		t.Fatalf("setup-only postflight execution root: %v", err)
+	}
+}
+
+type productCredentialImportSourceFixture struct {
+	candidate credentials.ImportCandidate
+	secret    []byte
+	useCalls  int
+	zeroized  bool
+}
+
+func (source *productCredentialImportSourceFixture) Discover(
+	context.Context,
+) ([]credentials.ImportCandidate, error) {
+	return []credentials.ImportCandidate{source.candidate}, nil
+}
+
+func (source *productCredentialImportSourceFixture) UseAPIKey(
+	ctx context.Context,
+	candidateID string,
+	use func(context.Context, []byte) error,
+) error {
+	if candidateID != source.candidate.CandidateID || use == nil {
+		return errors.New("candidate unavailable")
+	}
+	source.useCalls++
+	leased := append([]byte(nil), source.secret...)
+	err := use(ctx, leased)
+	source.zeroized = true
+	for _, value := range leased {
+		if value != 0 {
+			source.zeroized = false
+		}
+	}
+	return err
+}
+
+type productCredentialImportMutatorFixture struct {
+	writer         *state.LocalProductSetupWriter
+	configureCalls int
+	verifyCalls    int
+	secretAccepted bool
+}
+
+func (mutator *productCredentialImportMutatorFixture) Configure(
+	ctx context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	mutator.configureCalls++
+	mutator.secretAccepted = string(command.Secret) == "sk-import-fixture-only"
+	return mutator.writer.CommitCredentialMetadata(
+		ctx,
+		credentials.MetadataCommand{
+			CommandID: command.CommandID, ProviderID: command.ProviderID,
+			ProviderAccountID:   command.ProviderAccountID,
+			CredentialReference: command.CredentialReference,
+			ExpectedRevision:    command.ExpectedRevision,
+			OccurredAt:          command.OccurredAt,
+			Status:              credentials.CredentialConfigured,
+			Reason:              credentials.VerificationReasonNone,
+		},
+	)
+}
+
+func (mutator *productCredentialImportMutatorFixture) Verify(
+	ctx context.Context,
+	command credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	mutator.verifyCalls++
+	return mutator.writer.CommitCredentialMetadata(
+		ctx,
+		credentials.MetadataCommand{
+			CommandID: command.CommandID, ProviderID: command.ProviderID,
+			ProviderAccountID:   command.ProviderAccountID,
+			CredentialReference: command.CredentialReference,
+			ExpectedRevision:    command.ExpectedRevision,
+			OccurredAt:          command.OccurredAt,
+			Status:              credentials.CredentialVerified,
+			Reason:              credentials.VerificationReasonNone,
+		},
+	)
+}
+
+func (*productCredentialImportMutatorFixture) Replace(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected replace")
+}
+
+func (*productCredentialImportMutatorFixture) Revoke(
+	context.Context,
+	credentials.CredentialCommand,
+) (credentials.MetadataResult, error) {
+	return credentials.MetadataResult{}, errors.New("unexpected revoke")
+}
+
+func TestProductDaemonImportsCredentialCandidateOverSecretlessPrivateUDS(
+	t *testing.T,
+) {
+	root, statePath := productDaemonFailureState(t)
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store := journal.NewStore(database)
+	writer, err := state.NewLocalProductSetupWriter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateID := strings.Repeat("c", 64)
+	source := &productCredentialImportSourceFixture{
+		candidate: credentials.ImportCandidate{
+			CandidateID: candidateID, SourceApplication: "CC Switch",
+			DisplayName: "DeepSeek", TargetProviderID: "deepseek",
+			Protocol:            credentials.ImportProtocolOpenAIResponses,
+			Endpoint:            "https://api.deepseek.com",
+			ModelIDs:            []string{"deepseek-chat"},
+			ImportMode:          credentials.ImportModeExactProvider,
+			CredentialAvailable: true,
+		},
+		secret: []byte("sk-import-fixture-only"),
+	}
+	mutator := &productCredentialImportMutatorFixture{writer: writer}
+	socketPath := filepath.Join(root, "loomd.sock")
+	runner, err := newProductDaemonRunner(
+		&blockingObserverRunner{},
+		statePath,
+		socketPath,
+		productSetupRuntimeConfig{
+			CredentialStore:   &productCredentialTestStore{},
+			CredentialMutator: mutator,
+			CredentialImports: source,
+		},
+	)
+	if err != nil {
+		var failure *daemonBuildFailure
+		if errors.As(err, &failure) {
+			t.Fatalf(
+				"daemon build failed at %s: %v",
+				failure.DaemonBuildFailureReason(), errors.Unwrap(failure),
+			)
+		}
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(ctx)
+		done <- runErr
+	}()
+	waitForProductSocket(t, runner, socketPath)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-done:
+			if !errors.Is(runErr, context.Canceled) {
+				t.Errorf("runner stop error = %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("runner did not stop")
+		}
+		if err := runner.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	client, err := localipc.NewClient(localipc.ClientConfig{
+		SocketPath: socketPath, Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before app.SetupSnapshot
+	if err := client.Call(context.Background(), "setup_snapshot", struct{}{}, &before); err != nil {
+		t.Fatal(err)
+	}
+	if len(before.CredentialImports) != 1 ||
+		before.CredentialImports[0].CandidateID != candidateID {
+		t.Fatalf("credential imports = %#v", before.CredentialImports)
+	}
+	command := app.CredentialImportCommand{
+		CandidateID: candidateID, ProviderID: "deepseek",
+		ProviderAccountID: "deepseek.primary", Confirm: true,
+	}
+	var result app.CredentialSetupResult
+	if err := client.Call(
+		context.Background(), "credential_import", command, &result,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderID != "deepseek" || result.Revision != 2 ||
+		result.Status != "verified" || source.useCalls != 1 || !source.zeroized ||
+		mutator.configureCalls != 1 || mutator.verifyCalls != 1 ||
+		!mutator.secretAccepted {
+		t.Fatalf(
+			"result=%#v source=%#v mutator=%#v",
+			result, source, mutator,
+		)
+	}
+	var after app.SetupSnapshot
+	if err := client.Call(context.Background(), "setup_snapshot", struct{}{}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.ProviderAccounts) != 1 ||
+		after.ProviderAccounts[0].ProviderAccountID != "deepseek.primary" ||
+		after.ProviderAccounts[0].Status != "verified" ||
+		after.ProviderAccounts[0].Revision != 2 {
+		t.Fatalf("Provider Accounts = %#v", after.ProviderAccounts)
+	}
+	var rejected app.CredentialSetupResult
+	err = client.Call(
+		context.Background(),
+		"credential_import",
+		struct {
+			app.CredentialImportCommand
+			Secret string
+		}{CredentialImportCommand: command, Secret: "must-not-cross"},
+		&rejected,
+	)
+	var remote *localipc.RemoteError
+	if !errors.As(err, &remote) || remote.Code != "invalid_request" ||
+		source.useCalls != 1 {
+		t.Fatalf("secret-bearing import error=%v source_calls=%d", err, source.useCalls)
 	}
 }
 
@@ -4426,10 +4778,7 @@ func TestProductCredentialVaultRuntimeLockCancelsActiveLeaseCallback(t *testing.
 
 func TestProductHandlerRoutesCredentialVaultRotation(t *testing.T) {
 	controller := &productCredentialVaultControllerFixture{}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		controller,
-	)
+	handler := newProductRouteHandler(productRouteServices{credentialVault: controller})
 	response := handler(context.Background(), localipc.Request{
 		Method: "credential_vault_rotate", Params: json.RawMessage(`{}`),
 	})
@@ -4440,10 +4789,7 @@ func TestProductHandlerRoutesCredentialVaultRotation(t *testing.T) {
 
 func TestProductHandlerRoutesCredentialVaultLockAndUnlock(t *testing.T) {
 	controller := &productCredentialVaultControllerFixture{}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		controller,
-	)
+	handler := newProductRouteHandler(productRouteServices{credentialVault: controller})
 	for _, method := range []string{
 		"credential_vault_lock", "credential_vault_unlock",
 	} {
@@ -4464,10 +4810,7 @@ func TestProductHandlerRoutesCredentialVaultLockAndUnlock(t *testing.T) {
 
 func TestProductHandlerRoutesCredentialVaultResetOnlyWithExactConfirmation(t *testing.T) {
 	controller := &productCredentialVaultControllerFixture{}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		controller,
-	)
+	handler := newProductRouteHandler(productRouteServices{credentialVault: controller})
 	denied := handler(context.Background(), localipc.Request{
 		Method: "credential_vault_reset", Params: json.RawMessage(`{"confirmation":"reset"}`),
 	})
@@ -4637,10 +4980,7 @@ func TestProductDaemonRecoveryResetCreatesFreshVaultAndRequiresCredentialReentry
 
 func TestProductHandlerRoutesCredentialVaultEncryptedExport(t *testing.T) {
 	controller := &productCredentialVaultControllerFixture{}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		controller,
-	)
+	handler := newProductRouteHandler(productRouteServices{credentialVault: controller})
 	response := handler(context.Background(), localipc.Request{
 		Method: "credential_vault_export",
 		Params: json.RawMessage(
@@ -6089,6 +6429,16 @@ func productSetupExecutionFactCount(events []journal.Event) int {
 	return count
 }
 
+func productJournalEventTypeCount(events []journal.Event, eventType string) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
+}
+
 func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 	t *testing.T,
 ) {
@@ -6162,6 +6512,29 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 		done <- runErr
 	}()
 	waitForProductSocket(t, runner, socketPath)
+	startupDB, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var startupEventCount int
+	if err := startupDB.QueryRow(
+		`SELECT COUNT(*) FROM events`,
+	).Scan(&startupEventCount); err != nil {
+		_ = startupDB.Close()
+		t.Fatal(err)
+	}
+	if startupEventCount != beforeEventCount+len(productNativeAgentRuntimeDefinitions) {
+		_ = startupDB.Close()
+		t.Fatalf(
+			"startup Runtime facts = %d, want %d",
+			startupEventCount, beforeEventCount+len(productNativeAgentRuntimeDefinitions),
+		)
+	}
+	beforeEventCount = startupEventCount
+	beforeHeads = productDaemonHeadsDigest(t, startupDB)
+	if err := startupDB.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	client, err := localipc.NewClient(localipc.ClientConfig{
 		SocketPath: socketPath,
@@ -6184,13 +6557,21 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 		len(snapshot.Teams) != 1 ||
 		len(snapshot.Missions) != 1 ||
 		snapshot.Missions[0].Title != "Saved team" ||
-		len(snapshot.Runtimes) != 1 ||
-		snapshot.Runtimes[0].ModelIDs == nil ||
-		snapshot.Runtimes[0].ObservedCapabilities == nil ||
+		len(snapshot.Runtimes) != 4 ||
 		len(snapshot.Runs) != 1 ||
 		len(snapshot.Evidence) != 1 ||
 		snapshot.Attention == nil || snapshot.SideTasks == nil {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	foundFixtureRuntime := false
+	for _, runtime := range snapshot.Runtimes {
+		if runtime.RuntimeInstanceID == "runtime-1" {
+			foundFixtureRuntime = runtime.ModelIDs != nil &&
+				runtime.ObservedCapabilities != nil
+		}
+	}
+	if !foundFixtureRuntime {
+		t.Fatalf("fixture Runtime missing from snapshot = %#v", snapshot.Runtimes)
 	}
 	readClient, err := loomtui.NewDaemonReadClient(client)
 	if err != nil {
@@ -6299,7 +6680,7 @@ func TestProductDaemonServesRealReadOnlySQLiteOverPrivateUDSAndCleansUp(
 		cliSnapshot.ViewVersion != snapshot.ViewVersion ||
 		len(cliSnapshot.Teams) != 1 ||
 		cliSnapshot.Teams[0].TeamInstanceID != "team-instance.one" ||
-		len(cliSnapshot.Runtimes) != 1 ||
+		len(cliSnapshot.Runtimes) != 4 ||
 		len(cliSnapshot.Runs) != 1 ||
 		cliSnapshot.Runs[0].RunID != "run-1" ||
 		len(cliSnapshot.Evidence) != 1 ||
@@ -6539,6 +6920,8 @@ func TestProductDaemonHelpersFailClosedWithSafeCodes(t *testing.T) {
 		{api.ErrTimelineCursorConflict, "cursor_conflict"},
 		{api.ErrStreamGap, "stream_gap"},
 		{app.ErrMissionExecutionConflict, "conflict"},
+		{app.ErrTeamExecutionIncomplete, "conflict"},
+		{errors.Join(app.ErrTeamWorkspacePublish, errors.New("publish failed")), "workspace_publish_failed"},
 		{app.ErrMissionExecutionBusy, "busy"},
 		{context.DeadlineExceeded, "timeout"},
 		{errors.New("private database path"), "state_unavailable"},
@@ -6547,9 +6930,15 @@ func TestProductDaemonHelpersFailClosedWithSafeCodes(t *testing.T) {
 		if response.OK || response.Error == nil ||
 			response.Error.Code != test.wantCode ||
 			strings.Contains(response.Error.Message, "private") {
+			var code, message string
+			if response.Error != nil {
+				code, message = response.Error.Code, response.Error.Message
+			}
 			t.Fatalf(
-				"productServiceError(%v) = %#v",
+				"productServiceError(%v) = code=%q message=%q response=%#v",
 				test.err,
+				code,
+				message,
 				response,
 			)
 		}
@@ -6587,6 +6976,33 @@ func TestProductDaemonHelpersFailClosedWithSafeCodes(t *testing.T) {
 		if response.OK || response.Error == nil {
 			t.Fatalf("invalid handler response = %#v", response)
 		}
+	}
+}
+
+func TestOpenProductReadDatabaseUsesWALAndSingleConnection(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.db")
+	file, err := os.OpenFile(statePath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openProductReadDatabase(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var mode string
+	if err := database.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal mode = %q, want wal", mode)
+	}
+	if got := database.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("max open connections = %d, want 1", got)
 	}
 }
 
@@ -8198,9 +8614,9 @@ func TestProductMissionExecutionVerticalLoopbackClosesAuthorizedLineage(
 	handoffServer, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(),
 		BuildID: "side-task-strict-swift-read",
-		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
-			readService, nil, nil, executionAPI, bundle.handoff, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		)),
+		Handler: localipc.HandlerFunc(newProductRouteHandler(productRouteServices{
+			read: readService, missionExecution: executionAPI, handoff: bundle.handoff,
+		})),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8452,7 +8868,7 @@ func appendProductExecutionInFlightFixture(
 		1,
 		[]string{
 			"authorized output is non-empty",
-			"result satisfies the confirmed Mission objective",
+			"result satisfies this node's assigned contribution to the confirmed Mission objective",
 		},
 		verification.AcceptanceRiskMedium,
 	)
@@ -11165,10 +11581,17 @@ func TestProductDaemonProjectsControlledRuntimeOfflineBeforeIPCAndReplaysOnResta
 		); err != nil {
 			t.Fatal(err)
 		}
-		if len(snapshot.Runtimes) != 1 ||
-			snapshot.Runtimes[0].RuntimeInstanceID != "runtime-1" ||
-			snapshot.Runtimes[0].Status != "offline" ||
+		if len(snapshot.Runtimes) != 4 ||
 			len(snapshot.Missions) != 0 {
+			t.Fatalf("controlled Runtime IPC snapshot %d = %#v", start, snapshot)
+		}
+		foundControlledRuntime := false
+		for _, runtime := range snapshot.Runtimes {
+			if runtime.RuntimeInstanceID == "runtime-1" {
+				foundControlledRuntime = runtime.Status == "offline"
+			}
+		}
+		if !foundControlledRuntime {
 			t.Fatalf("controlled Runtime IPC snapshot %d = %#v", start, snapshot)
 		}
 
@@ -11195,7 +11618,9 @@ func TestProductDaemonProjectsControlledRuntimeOfflineBeforeIPCAndReplaysOnResta
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[1].Type != "RuntimeInstanceStatusChanged" {
+	if productJournalEventTypeCount(events, "RuntimeInstanceDiscovered") !=
+		1+len(productNativeAgentRuntimeDefinitions) ||
+		productJournalEventTypeCount(events, "RuntimeInstanceStatusChanged") != 1 {
 		t.Fatalf("controlled Runtime restart facts = %#v", events)
 	}
 
@@ -11676,6 +12101,25 @@ type openCodeResponderClientFixture struct {
 	secret  []byte
 }
 
+type openCodeResponderLeaseFixture struct {
+	identity credentialvault.CredentialIdentity
+}
+
+func (fixture *openCodeResponderLeaseFixture) UseCredential(
+	ctx context.Context,
+	identity credentialvault.CredentialIdentity,
+	use func(context.Context, []byte) error,
+) error {
+	fixture.identity = identity
+	secret := []byte("fixture-minimax-secret")
+	defer func() {
+		for index := range secret {
+			secret[index] = 0
+		}
+	}()
+	return use(ctx, secret)
+}
+
 func (fixture *openCodeResponderClientFixture) Respond(
 	context.Context,
 	string,
@@ -11696,14 +12140,10 @@ func (fixture *openCodeResponderClientFixture) RespondConfigured(
 	return fixture.content, fixture.runErr
 }
 
-func TestOpenCodeResponderMissingModelCredentialReturnsActionableError(t *testing.T) {
+func TestOpenCodeNativeResponderRejectsBrokeredModelWithoutAccountProfile(t *testing.T) {
 	client := &openCodeResponderClientFixture{content: "unused"}
 	responder := &productOpenCodeConversationResponder{
-		client: client,
-		leases: &productCredentialLeaseRouteSlot{},
-		credentials: func(context.Context, string) []projection.ProviderCredentialRecord {
-			return nil
-		},
+		client: client, leases: &productCredentialLeaseRouteSlot{},
 	}
 	_, err := responder.Respond(
 		context.Background(),
@@ -11715,15 +12155,69 @@ func TestOpenCodeResponderMissingModelCredentialReturnsActionableError(t *testin
 		},
 	)
 	code, stage, retryable, ok := api.LocalProductConversationDispatchFailure(err)
-	if !ok || code != "provider_auth" || stage != "provider_connect" || retryable {
+	if !ok || code != "invalid_request" || stage != "conversation_dispatch" || retryable {
 		t.Fatalf("error code=%s stage=%s retryable=%v ok=%v err=%v", code, stage, retryable, ok, err)
 	}
 	info, ok := api.LocalProductConversationDispatchFailureDetails(err)
-	if !ok || !strings.Contains(info.UserMessage, "openai") {
-		t.Fatalf("user message missing provider hint: %#v", info)
+	if !ok || !strings.Contains(info.UserMessage, "Provider Account") {
+		t.Fatalf("user message missing account hint: %#v", info)
 	}
 	if client.envName != "" || len(client.secret) != 0 {
 		t.Fatalf("responder must not run without a credential: env=%q secret=%d", client.envName, len(client.secret))
+	}
+}
+
+func TestOpenCodeResponderRoutesMiniMaxCNThroughLoomMiniMaxAccount(t *testing.T) {
+	client := &openCodeResponderClientFixture{content: "MINIMAX-CN-OK"}
+	lease := &openCodeResponderLeaseFixture{}
+	responder := &productOpenCodeConversationResponder{
+		client: client, leases: lease,
+	}
+	response, err := responder.RespondBound(
+		context.Background(),
+		api.LocalProductConversationRequest{
+			ThreadID: "thread-opencode-minimax-cn",
+			ModelID:  "minimax-cn/MiniMax-M3",
+			Messages: []api.LocalProductChatMessage{{Role: "user", Content: "hello"}},
+		},
+		credentialvault.CredentialIdentity{
+			ProviderID: "minimax", ProviderAccountID: "minimax.primary",
+			CredentialReference: "credential-ref-minimax-cn", CredentialRevision: 23,
+		},
+	)
+	if err != nil || response.Content != "MINIMAX-CN-OK" {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+	if client.envName != "MINIMAX_API_KEY" ||
+		string(client.secret) != "fixture-minimax-secret" {
+		t.Fatalf("env=%q secret_length=%d", client.envName, len(client.secret))
+	}
+	if lease.identity.ProviderID != "minimax" ||
+		lease.identity.ProviderAccountID != "minimax.primary" ||
+		lease.identity.CredentialRevision != 23 {
+		t.Fatalf("lease identity = %#v", lease.identity)
+	}
+}
+
+func TestOpenCodeConversationFailurePreservesActionableProviderClass(t *testing.T) {
+	tests := []struct {
+		err       error
+		code      string
+		stage     string
+		retryable bool
+	}{
+		{provider.ErrOpenCodeConversationAuth, "provider_auth", "provider_auth", false},
+		{provider.ErrOpenCodeConversationInsufficientBalance, "provider_insufficient_balance", "provider_http", false},
+		{provider.ErrOpenCodeConversationModelUnavailable, "provider_model_unavailable", "provider_http", false},
+		{provider.ErrOpenCodeConversationRateLimit, "provider_rate_limit", "provider_rate_limit", true},
+	}
+	for _, test := range tests {
+		failure := productOpenCodeConversationFailure(test.err)
+		info, ok := api.LocalProductConversationDispatchFailureDetails(failure)
+		if !ok || info.Code != test.code || info.Stage != test.stage ||
+			info.Retryable != test.retryable || info.UserMessage == "" {
+			t.Fatalf("error=%v info=%#v ok=%v", test.err, info, ok)
+		}
 	}
 }
 
@@ -11731,7 +12225,7 @@ func TestProductCodexConversationUsageLimitMapsToActionableError(t *testing.T) {
 	err := productCodexConversationFailure(provider.ErrCodexConversationUsageLimit)
 	code, stage, retryable, ok := api.LocalProductConversationDispatchFailure(err)
 	if !ok || code != "provider_insufficient_balance" ||
-		stage != "provider_connect" || retryable {
+		stage != "provider_http" || retryable {
 		t.Fatalf("code=%s stage=%s retryable=%v ok=%v", code, stage, retryable, ok)
 	}
 	info, ok := api.LocalProductConversationDispatchFailureDetails(err)
@@ -11742,9 +12236,9 @@ func TestProductCodexConversationUsageLimitMapsToActionableError(t *testing.T) {
 
 func TestProductCodexConversationAuthMapsToActionableError(t *testing.T) {
 	err := productCodexConversationFailure(provider.ErrCodexConversationAuth)
-	code, _, _, ok := api.LocalProductConversationDispatchFailure(err)
-	if !ok || code != "provider_auth" {
-		t.Fatalf("code=%s ok=%v", code, ok)
+	code, stage, _, ok := api.LocalProductConversationDispatchFailure(err)
+	if !ok || code != "provider_auth" || stage != "provider_auth" {
+		t.Fatalf("code=%s stage=%s ok=%v", code, stage, ok)
 	}
 	// Unclassified failures pass through unchanged.
 	if err := productCodexConversationFailure(

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +54,9 @@ func TestMissionExecutionConfigFromDaemonBuildPreservesExactRuntimeBinding(
 	if config.RuntimeSearchPaths[0] != "/opt/pi-a" ||
 		config.LocalModelCatalog.ModelPath != "/private/model/model.gguf" {
 		t.Fatalf("execution config aliases daemon input = %#v", config)
+	}
+	if config.RemoteToolBroker == nil || !config.RemoteToolBroker.EnrollmentOnly {
+		t.Fatalf("runtime config must retain an enrollment-only remote transport: %#v", config.RemoteToolBroker)
 	}
 	if empty := missionExecutionConfigFromDaemonBuild(daemonBuildConfig{}); empty != nil {
 		t.Fatalf("empty execution config = %#v", empty)
@@ -108,6 +113,47 @@ func TestRunParsesExplicitConfigurationAndWritesDeterministicJSON(t *testing.T) 
 	}
 	if runner.runCalls != 1 || runner.closeCalls != 1 {
 		t.Fatalf("runner calls run=%d close=%d", runner.runCalls, runner.closeCalls)
+	}
+}
+
+func TestRunReportsMCPStartupFailureWithoutTakingDaemonOffline(t *testing.T) {
+	const secret = "private-mcp-config-content"
+	root := productMCPStdioTestRoot(t)
+	productMCPStdioWriteTestConfig(t, root, `{"version":1,"secret":"`+secret+`"`)
+	runner := &fakeDaemonRunner{result: app.LocalRuntimeObservationDaemonResult{
+		CompletedCycles: 1,
+	}}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		context.Background(), completeDaemonArgs(), &stdout, &stderr,
+		func(daemonBuildConfig) (daemonRunner, error) {
+			registry, diagnostic := prepareProductMCPStdioStartup(
+				context.Background(), root,
+			)
+			return newProductMCPStdioDaemonRunnerWithDiagnostics(
+				runner, registry, diagnostic,
+			), nil
+		},
+	)
+	if code != exitSuccess || runner.runCalls != 1 || runner.closeCalls != 1 {
+		t.Fatalf(
+			"code=%d run=%d close=%d stdout=%q stderr=%q",
+			code, runner.runCalls, runner.closeCalls, stdout.String(), stderr.String(),
+		)
+	}
+	var diagnostic productMCPStdioOperationalDiagnostic
+	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &diagnostic); err != nil {
+		t.Fatalf("decode diagnostic: %v output=%q", err, stderr.String())
+	}
+	if diagnostic.Stage != "mcp_config" ||
+		diagnostic.ErrorCode != "mcp_config_invalid" ||
+		diagnostic.IncidentID == "" {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+	for _, forbidden := range []string{secret, root, `"args"`, `"env"`, `"content"`} {
+		if strings.Contains(stderr.String(), forbidden) {
+			t.Fatalf("stderr disclosed %q: %q", forbidden, stderr.String())
+		}
 	}
 }
 
@@ -487,6 +533,57 @@ func TestExpandLocalAppServiceArgsUsesStableUserPathsAndInstalledRuntime(t *test
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("expanded args = %#v, want %#v", args, want)
+	}
+}
+
+func TestExpandLocalAppServiceArgsCarriesExistingCredentialImportSource(t *testing.T) {
+	home := t.TempDir()
+	runtimeBin := filepath.Join(
+		home,
+		"Library", "Application Support", "Loom", "runtimes", "pi", "0.82.1",
+		"node_modules", ".bin",
+	)
+	if err := os.MkdirAll(runtimeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	importRoot := filepath.Join(home, ".cc-switch")
+	if err := os.Mkdir(importRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	importPath := filepath.Join(importRoot, "cc-switch.db")
+	if err := os.WriteFile(importPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := expandLocalAppServiceArgs(
+		[]string{localAppServiceFlag}, home, []string{runtimeBin}, "", "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(args, "--credential-import-source") ||
+		!slices.Contains(args, importPath) {
+		t.Fatalf("credential import source absent from canonical args: %#v", args)
+	}
+}
+
+func TestOptionalCredentialImportSourceFailsClosedOnUnsafePath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "cc-switch.db")
+	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if source := optionalCredentialImportSource(path); source == nil {
+		t.Fatal("safe credential import source was rejected")
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if source := optionalCredentialImportSource(path); source != nil {
+		t.Fatal("world-readable credential import source was accepted")
 	}
 }
 

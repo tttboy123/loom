@@ -10,6 +10,7 @@ if [ ! -f "$builder" ]; then
 fi
 ! grep -Eq -- '-no_uuid|-random_uuid' "$builder"
 test "$(grep -c -- '-Xlinker -reproducible' "$builder")" = 2
+grep -Eq '^for dependency in node codex opencode claude$' "$builder"
 
 private_root=$(mktemp -d "${TMPDIR:-/tmp}/loom-native-build.XXXXXX")
 chmod 700 "$private_root"
@@ -211,9 +212,57 @@ test "$({
   grep -REn 'Process[[:space:]]*[(]' "$app_sources" "$core_sources" || true
 } | grep -Ev '/LocalServiceProcessHost[.]swift:' | wc -l | tr -d ' ')" = 0
 test "$(grep -Ec 'Process[[:space:]]*[(]' "$app_sources/LocalServiceProcessHost.swift")" = 1
+grep -q 'import LoomLocalAppCore' \
+  "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'guard LocalIPCClient.isTrustedSocket(at: path) else { return false }' \
+  "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'guard Self.validateSocketPathSyntax(socketPath) else' \
+  "$core_sources/LocalIPCClient.swift"
+grep -q 'guard isTrustedSocket(at: path) else' \
+  "$core_sources/LocalIPCClient.swift"
+grep -q 'O_NONBLOCK' "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'F_SETFL' "$app_sources/LocalServiceProcessHost.swift"
+grep -Eq 'socketHealthTimeoutMilliseconds: Int32 = [1-9][0-9]{0,2}$' \
+  "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'case EINPROGRESS, EALREADY:' \
+  "$app_sources/LocalServiceProcessHost.swift"
+grep -A1 'case EAGAIN:' "$app_sources/LocalServiceProcessHost.swift" |
+  grep -q 'return false'
+grep -q 'Darwin.poll' "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'Darwin.getsockopt' "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'SO_ERROR' "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'func start() async -> Bool' \
+  "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'nonisolated private static func probeSocketOffMain' \
+  "$app_sources/LocalServiceProcessHost.swift"
+grep -q 'Task.detached(priority: .utility)' \
+  "$app_sources/LocalServiceProcessHost.swift"
+! grep -q 'private var defaultSocketIsReachable' \
+  "$app_sources/LocalServiceProcessHost.swift"
+! grep -Eq 'return errno == .*EINPROGRESS|return errno == .*EALREADY|return errno == .*EAGAIN' \
+  "$app_sources/LocalServiceProcessHost.swift"
+! grep -Eq \
+  'removeStaleDefaultSocketIfOwned|defaultSocketPath[[:space:]]*\+[[:space:]]*"[.]lock"|removeItem\(atPath:[[:space:]]*defaultSocketPath' \
+  "$app_sources/LocalServiceProcessHost.swift"
 ! grep -REn \
   'getenv|ProcessInfo\\.processInfo\\.environment' \
   "$app_sources"
+feature_flag_allowlist=$(
+  sed -n \
+    '/allowedBundledServiceFeatureFlags: Set<String> = \[/,/^    \]/p' \
+    "$app_sources/LocalServiceProcessHost.swift"
+)
+test "$(printf '%s\n' "$feature_flag_allowlist" | grep -Ec '"LOOM_[A-Z0-9_]+"')" = 3
+for allowed_flag in LOOM_DEBUG_DAEMON LOOM_ENABLE_WEB_TOOLS LOOM_SANDBOX_REQUIRED; do
+  printf '%s\n' "$feature_flag_allowlist" | grep -q "\"$allowed_flag\""
+done
+! printf '%s\n' "$feature_flag_allowlist" |
+  grep -Eq 'API|AUTH|CREDENTIAL|KEY|SECRET|TOKEN'
+grep -q \
+  'allowedBundledServiceFeatureFlags.contains(key), value == "1"' \
+  "$app_sources/LocalServiceProcessHost.swift"
+! grep -Eq 'values\[key\] = value|child\.environment =.*environ' \
+  "$app_sources/LocalServiceProcessHost.swift"
 test "$(grep -c 'unsetenv(name)' "$app_sources/LoomLocalApp.swift")" = 1
 
 echo "native app build fixture PASS"

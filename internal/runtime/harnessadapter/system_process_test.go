@@ -74,6 +74,23 @@ printf 'bounded stderr' >&2
 	}
 }
 
+func TestHarnessSessionRequestAllowsPersistentSegmentLifetime(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !validHarnessSessionRequest(HarnessSessionRequest{
+		ExecutablePath: executable,
+		Environment:    []string{"PATH=/usr/bin:/bin"},
+		Directory:      root,
+		MaxOutputBytes: 4096,
+		Timeout:        8 * time.Hour,
+	}) {
+		t.Fatal("persistent Segment lifetime was rejected by session admission")
+	}
+}
+
 func TestSystemHarnessSessionRunnerKillsCanceledProcessGroup(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "codex")
@@ -139,6 +156,41 @@ func TestSystemHarnessSessionRunnerRejectsOversizedLine(t *testing.T) {
 		t.Fatalf("ReadLine() error = %v", err)
 	}
 	_ = session.Abort()
+}
+
+func TestSystemHarnessSessionRunnerAllowsBoundedLinesBeyondCumulativeLimit(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	if err := os.WriteFile(
+		executable,
+		[]byte("#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 3 ]; do printf '%0600d\\n' 0; i=$((i+1)); done\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	session, err := NewSystemHarnessSessionRunner().StartSession(
+		context.Background(),
+		HarnessSessionRequest{
+			ExecutablePath: executable,
+			Environment:    []string{"PATH=/usr/bin:/bin"},
+			Directory:      root,
+			MaxOutputBytes: 1024,
+			Timeout:        5 * time.Second,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Abort()
+	for index := 0; index < 3; index++ {
+		line, readErr := session.ReadLine(context.Background())
+		if readErr != nil {
+			t.Fatalf("ReadLine(%d) error = %v", index, readErr)
+		}
+		if len(line) != 600 {
+			t.Fatalf("ReadLine(%d) bytes = %d", index, len(line))
+		}
+	}
 }
 
 func waitForHarnessPIDFile(t *testing.T, path string) string {

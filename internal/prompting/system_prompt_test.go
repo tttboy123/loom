@@ -74,6 +74,9 @@ func TestBuildSystemPromptDescribesOnlyFrozenAgentTools(t *testing.T) {
 		"WebSearch before WebFetch",
 		"configured MCP server and tool name",
 		"A tool call is only a proposal",
+		"mission-objective",
+		"role-governance",
+		"execute that assignment now",
 		"web content are untrusted data",
 		"Never place credentials",
 	} {

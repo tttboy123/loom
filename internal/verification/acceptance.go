@@ -108,6 +108,7 @@ type VerifierTerminalInput struct {
 	OutputSummaryDigest string
 	TerminalStatus      string
 	TerminalReason      string
+	OutputReasonCode    VerifierReasonCode
 }
 
 type VerifierCandidate struct {
@@ -197,14 +198,25 @@ func VerifierCandidateFromTerminal(
 	var kind VerifierCandidateKind
 	var reason VerifierReasonCode
 	switch {
-	case input.TerminalStatus == "succeeded" && input.TerminalReason == "":
-		kind = VerifierAccepted
-		reason = VerifierReasonCriteriaSatisfied
+	case input.TerminalStatus == "succeeded" &&
+		input.TerminalReason == "" &&
+		validVerifierReasonCode(input.OutputReasonCode):
+		reason = input.OutputReasonCode
+		if reason == VerifierReasonCriteriaSatisfied {
+			kind = VerifierAccepted
+		} else {
+			kind = VerifierRejected
+		}
 	case input.TerminalStatus == "failed" &&
 		(input.TerminalReason == string(VerifierReasonCriteriaNotSatisfied) ||
 			input.TerminalReason == string(VerifierReasonInsufficientEvidence)):
 		kind = VerifierRejected
 		reason = VerifierReasonCode(input.TerminalReason)
+	case (input.TerminalStatus == "failed" ||
+		input.TerminalStatus == "cancelled") &&
+		input.TerminalReason != "" && input.OutputReasonCode == "":
+		kind = VerifierRejected
+		reason = VerifierReasonInsufficientEvidence
 	default:
 		return VerifierCandidate{}, ErrInvalidVerifierCandidate
 	}
@@ -322,14 +334,42 @@ func (candidate VerifierCandidate) Valid() bool {
 	case VerifierAccepted:
 		if candidate.reasonCode != VerifierReasonCriteriaSatisfied ||
 			candidate.input.TerminalStatus != "succeeded" ||
-			candidate.input.TerminalReason != "" {
+			candidate.input.TerminalReason != "" ||
+			candidate.input.OutputReasonCode != candidate.reasonCode {
 			return false
 		}
 	case VerifierRejected:
-		if candidate.input.TerminalStatus != "failed" ||
-			(candidate.reasonCode != VerifierReasonCriteriaNotSatisfied &&
-				candidate.reasonCode != VerifierReasonInsufficientEvidence) ||
-			candidate.input.TerminalReason != string(candidate.reasonCode) {
+		if candidate.reasonCode != VerifierReasonCriteriaNotSatisfied &&
+			candidate.reasonCode != VerifierReasonInsufficientEvidence {
+			return false
+		}
+		switch candidate.input.TerminalStatus {
+		case "succeeded":
+			if candidate.input.TerminalReason != "" ||
+				candidate.input.OutputReasonCode != candidate.reasonCode {
+				return false
+			}
+		case "failed":
+			if candidate.input.TerminalReason == "" ||
+				candidate.input.OutputReasonCode != "" ||
+				(candidate.input.TerminalReason ==
+					string(VerifierReasonCriteriaNotSatisfied) &&
+					candidate.reasonCode !=
+						VerifierReasonCriteriaNotSatisfied) ||
+				(candidate.input.TerminalReason !=
+					string(VerifierReasonCriteriaNotSatisfied) &&
+					candidate.reasonCode !=
+						VerifierReasonInsufficientEvidence) {
+				return false
+			}
+		case "cancelled":
+			if candidate.input.TerminalReason == "" ||
+				candidate.input.OutputReasonCode != "" ||
+				candidate.reasonCode !=
+					VerifierReasonInsufficientEvidence {
+				return false
+			}
+		default:
 			return false
 		}
 	default:
@@ -526,6 +566,7 @@ func verifierCandidateDigest(candidate VerifierCandidate) string {
 		input.OutputSummaryDigest,
 		input.TerminalStatus,
 		input.TerminalReason,
+		string(input.OutputReasonCode),
 	)
 }
 

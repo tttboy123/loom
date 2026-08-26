@@ -22,13 +22,30 @@ const (
 	// model (OpenCode CLI 1.18.3 catalog) so a profile starts from a usable
 	// model that needs no injected Provider credential, instead of silently
 	// routing a DeepSeek/MiniMax model through the OpenCode harness.
-	OpenCodeConversationDefaultModel   = "opencode/deepseek-v4-flash-free"
+	OpenCodeConversationDefaultModel   = "opencode/big-pickle"
 	maxOpenCodeConversationPromptBytes = 64 * 1024
+	openCodeConversationInlineConfig   = `{"permission":"deny","share":"disabled"}`
 )
 
 var (
 	ErrInvalidOpenCodeConversationConfig = errors.New("invalid OpenCode conversation configuration")
 	ErrOpenCodeConversationUnavailable   = errors.New("OpenCode conversation unavailable")
+	ErrOpenCodeConversationAuth          = errors.Join(
+		ErrOpenCodeConversationUnavailable,
+		errors.New("OpenCode Provider authentication failed"),
+	)
+	ErrOpenCodeConversationInsufficientBalance = errors.Join(
+		ErrOpenCodeConversationUnavailable,
+		errors.New("OpenCode Provider balance required"),
+	)
+	ErrOpenCodeConversationModelUnavailable = errors.Join(
+		ErrOpenCodeConversationUnavailable,
+		errors.New("OpenCode Provider model unavailable"),
+	)
+	ErrOpenCodeConversationRateLimit = errors.Join(
+		ErrOpenCodeConversationUnavailable,
+		errors.New("OpenCode Provider rate limit reached"),
+	)
 	ErrOpenCodeExecutableIdentityChanged = errors.New("OpenCode executable identity changed")
 )
 
@@ -211,7 +228,17 @@ func (client *OpenCodeConversationClient) RespondConfigured(
 			MaxOutputBytes:    client.maxOutputBytes,
 		},
 	)
-	if err != nil || len(output) > client.maxOutputBytes ||
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, context.Canceled) {
+			return "", err
+		}
+		if classifiedOpenCodeConversationFailure(err) {
+			return "", err
+		}
+		return "", ErrOpenCodeConversationUnavailable
+	}
+	if len(output) > client.maxOutputBytes ||
 		!utf8.Valid(output) || bytes.IndexByte(output, 0) >= 0 {
 		return "", ErrOpenCodeConversationUnavailable
 	}
@@ -260,18 +287,18 @@ func (SystemOpenCodeConversationRunner) RunOpenCodeConversation(
 	arguments = append(arguments, request.Prompt)
 	command := exec.CommandContext(ctx, request.ExecutablePath, arguments...)
 	command.Dir = request.PrivateRoot
-	// Inherit the parent environment (Provider credential variables such as
-	// DEEPSEEK_API_KEY / MINIMAX_API_KEY / ZHIPU_API_KEY must reach OpenCode's
-	// native auth) while pinning the Loom-controlled variables.
-	environment := append([]string{}, os.Environ()...)
-	environment = append(environment,
-		"HOME="+request.HomePath,
-		"TMPDIR="+request.PrivateRoot,
-		"PATH="+filepath.Dir(request.ExecutablePath)+":/usr/bin:/bin",
+	// Keep the Harness environment minimal. The exact Provider credential is
+	// injected from one bounded Vault lease below; daemon/global credentials
+	// and unrelated environment state must not cross this process boundary.
+	environment := []string{
+		"HOME=" + request.HomePath,
+		"TMPDIR=" + request.PrivateRoot,
+		"PATH=" + filepath.Dir(request.ExecutablePath) + ":/usr/bin:/bin",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 		"NO_COLOR=1",
-	)
+		"OPENCODE_CONFIG_CONTENT=" + openCodeConversationInlineConfig,
+	}
 	if request.CredentialEnvName != "" && len(request.Secret) > 0 {
 		environment = append(
 			environment,
@@ -303,6 +330,17 @@ func (SystemOpenCodeConversationRunner) RunOpenCodeConversation(
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		// OpenCode writes a structured, privacy-safe error event to stdout and
+		// then exits non-zero. Preserve its closed status classification before
+		// falling back to the opaque process error; never retain the message.
+		if stdout.err == nil {
+			_, eventErr := decodeOpenCodeConversation(
+				stdout.buffer.Bytes(), request.MaxOutputBytes,
+			)
+			if classifiedOpenCodeConversationFailure(eventErr) {
+				return nil, eventErr
+			}
+		}
 		return nil, ErrOpenCodeConversationUnavailable
 	}
 	after, identityErr := codexExecutableIdentity(request.ExecutablePath)
@@ -325,7 +363,14 @@ func (SystemOpenCodeConversationRunner) RunOpenCodeConversation(
 // event stream and returns the final assistant text. It is the shared decoder
 // for the conversation client and the team-attempt Harness adapter.
 func DecodeOpenCodeText(payload []byte, maximum int) ([]byte, error) {
-	return decodeOpenCodeConversation(payload, maximum)
+	return decodeOpenCodeEventStream(payload, maximum, false, false)
+}
+
+// DecodeOpenCodeHarnessText accepts a completed, tool-only Agent run. Coding
+// attempts may finish after governed workspace edits without emitting a final
+// prose message; that is distinct from an empty/no-op conversation response.
+func DecodeOpenCodeHarnessText(payload []byte, maximum int) ([]byte, error) {
+	return decodeOpenCodeEventStream(payload, maximum, false, true)
 }
 
 // decodeOpenCodeConversation parses the `opencode run --format json` newline-
@@ -335,12 +380,22 @@ func DecodeOpenCodeText(payload []byte, maximum int) ([]byte, error) {
 // mark completion; `session.error` and `auth.error` fail closed. The older
 // `message.part.updated` / `properties.part` shape is also accepted.
 func decodeOpenCodeConversation(payload []byte, maximum int) ([]byte, error) {
+	return decodeOpenCodeEventStream(payload, maximum, true, false)
+}
+
+func decodeOpenCodeEventStream(
+	payload []byte,
+	maximum int,
+	rejectToolEvents bool,
+	allowCompletedToolOnly bool,
+) ([]byte, error) {
 	if len(payload) == 0 || len(payload) > maximum || !utf8.Valid(payload) ||
 		bytes.IndexByte(payload, 0) >= 0 {
 		return nil, ErrOpenCodeConversationUnavailable
 	}
 	var content strings.Builder
 	completed := false
+	toolActivity := false
 	scanner := bufio.NewScanner(bytes.NewReader(payload))
 	scanner.Buffer(make([]byte, 4096), maximum)
 	for scanner.Scan() {
@@ -349,8 +404,8 @@ func decodeOpenCodeConversation(payload []byte, maximum int) ([]byte, error) {
 			continue
 		}
 		var event struct {
-			Type  string `json:"type"`
-			Error string `json:"error"`
+			Type  string          `json:"type"`
+			Error json.RawMessage `json:"error"`
 			Part  struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
@@ -374,10 +429,23 @@ func decodeOpenCodeConversation(payload []byte, maximum int) ([]byte, error) {
 		case "message.part.updated":
 			partType, partText =
 				event.Properties.Part.Type, event.Properties.Part.Text
+		case "tool", "tool_call", "tool_use":
+			if rejectToolEvents {
+				return nil, ErrOpenCodeConversationUnavailable
+			}
+			toolActivity = true
 		case "step_finish", "session.idle":
 			completed = true
-		case "session.error", "auth.error":
+		case "auth.error":
+			return nil, ErrOpenCodeConversationAuth
+		case "error", "session.error":
+			return nil, classifyOpenCodeEventError(event.Error)
+		}
+		if rejectToolEvents && partType != "" && partType != "text" {
 			return nil, ErrOpenCodeConversationUnavailable
+		}
+		if !rejectToolEvents && partType != "" && partType != "text" {
+			toolActivity = true
 		}
 		if partType == "text" {
 			if !utf8.ValidString(partText) ||
@@ -391,8 +459,61 @@ func decodeOpenCodeConversation(payload []byte, maximum int) ([]byte, error) {
 		return nil, ErrOpenCodeConversationUnavailable
 	}
 	response := strings.TrimSpace(content.String())
+	if response == "" && allowCompletedToolOnly && toolActivity {
+		return []byte{}, nil
+	}
 	if response == "" || len(response) > maximum {
 		return nil, ErrOpenCodeConversationUnavailable
 	}
 	return []byte(response), nil
+}
+
+func classifyOpenCodeEventError(raw json.RawMessage) error {
+	var failure struct {
+		StatusCode int    `json:"statusCode"`
+		Message    string `json:"message"`
+		Data       struct {
+			StatusCode int    `json:"statusCode"`
+			Message    string `json:"message"`
+		} `json:"data"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &failure) != nil {
+		return ErrOpenCodeConversationUnavailable
+	}
+	status := failure.StatusCode
+	if status == 0 {
+		status = failure.Data.StatusCode
+	}
+	message := failure.Message
+	if message == "" {
+		message = failure.Data.Message
+	}
+	switch status {
+	case 401, 403:
+		return ErrOpenCodeConversationAuth
+	case 402:
+		return ErrOpenCodeConversationInsufficientBalance
+	case 404:
+		return ErrOpenCodeConversationModelUnavailable
+	case 429:
+		return ErrOpenCodeConversationRateLimit
+	default:
+		// OpenCode Console currently reports a retired hosted model as HTTP
+		// 400. Use only a bounded, exact semantic classification and never
+		// retain the Provider message in the returned error.
+		lowerMessage := strings.ToLower(message)
+		if status == 400 && len(lowerMessage) <= 1024 &&
+			(strings.Contains(lowerMessage, "model is unavailable") ||
+				strings.Contains(lowerMessage, "model not found")) {
+			return ErrOpenCodeConversationModelUnavailable
+		}
+		return ErrOpenCodeConversationUnavailable
+	}
+}
+
+func classifiedOpenCodeConversationFailure(err error) bool {
+	return errors.Is(err, ErrOpenCodeConversationAuth) ||
+		errors.Is(err, ErrOpenCodeConversationInsufficientBalance) ||
+		errors.Is(err, ErrOpenCodeConversationModelUnavailable) ||
+		errors.Is(err, ErrOpenCodeConversationRateLimit)
 }

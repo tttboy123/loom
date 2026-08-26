@@ -1,6 +1,6 @@
 # P2D-W2B Contract: Per-Agent Provider Account identity
 
-Status: `CURRENT`
+Status: `ACCEPTED / ACTIVE PHASE SCOPE COMPLETE`
 
 Version line: `v0.5.x`
 

@@ -278,6 +278,28 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         )
     }
 
+    func testCurrentTeamConfigurationsKeepsLatestSameSourceVisibleName() throws {
+        let teams = try JSONDecoder().decode(
+            [LocalProductTeamSummary].self,
+            from: Data("""
+            [
+              {"team_instance_id":"team-new","team_definition_id":"definition-a","team_definition_version":3,"display_name":"Release Team","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
+              {"team_instance_id":"team-old","team_definition_id":"definition-a","team_definition_version":2,"display_name":"Release Team","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
+              {"team_instance_id":"team-other","team_definition_id":"definition-b","team_definition_version":1,"display_name":"Release Team","source_kind":"saved_team","state":"created","confirmed":true,"executable":true,"read_only":false},
+              {"team_instance_id":"team-template","team_definition_id":"definition-c","team_definition_version":1,"display_name":"Release Team","source_kind":"generated_team","state":"draft","confirmed":false,"executable":false,"read_only":false},
+              {"team_instance_id":"historical","team_definition_id":"","team_definition_version":0,"display_name":"Historical","source_kind":"historical_execution_only","state":"failed","confirmed":false,"executable":false,"read_only":true},
+              {"team_instance_id":"historical-old","team_definition_id":"","team_definition_version":0,"display_name":" historical ","source_kind":"historical_execution_only","state":"failed","confirmed":false,"executable":false,"read_only":true},
+              {"team_instance_id":"legacy-other","team_definition_id":"","team_definition_version":0,"display_name":"Other","source_kind":"historical_execution_only","state":"failed","confirmed":false,"executable":false,"read_only":true}
+            ]
+            """.utf8)
+        )
+
+        XCTAssertEqual(
+            currentTeamConfigurations(teams).map(\.teamInstanceID),
+            ["team-new", "team-template", "historical", "legacy-other"]
+        )
+    }
+
 
 
     func testCountActiveAttentionExcludesHistoricalAndArchivedTeams() throws {
@@ -418,8 +440,193 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
             missionBoardDetailText(lane: "Review", status: "blocked"),
             "Review · Blocked"
         )
+        XCTAssertEqual(
+            missionBoardDetailText(lane: "Review", status: "ready_for_review"),
+            "Review · Ready For Review"
+        )
         XCTAssertEqual(missionBoardDetailText(lane: "Proposed", status: ""), "Proposed")
         XCTAssertEqual(missionBoardDetailText(lane: "", status: "failed"), "Failed")
+    }
+
+    func testSuggestedMissionTitleUsesOneCompactBoundedLine() {
+        XCTAssertEqual(
+            suggestedMissionTitle(from: "  Fix provider setup timeout  \nMore detail"),
+            "Fix provider setup timeout"
+        )
+        XCTAssertEqual(suggestedMissionTitle(from: "   \n"), "")
+        XCTAssertEqual(
+            suggestedMissionTitle(from: String(repeating: "x", count: 100)).count,
+            72
+        )
+    }
+
+    func testMissionPlanSummaryUsesWorkflowLanguage() {
+        XCTAssertEqual(
+            missionPlanSummary(nodeCount: 1, completedNodeCount: 0, reviewNodeCount: 1),
+            "1 step · 0 complete · 1 in review"
+        )
+        XCTAssertEqual(
+            missionPlanSummary(nodeCount: 2, completedNodeCount: 2, reviewNodeCount: 0),
+            "2 steps · 2 complete · 0 in review"
+        )
+    }
+
+    func testNewMissionPreservesTheExplicitTeamSelection() {
+        XCTAssertEqual(
+            resolvedMissionTeamID(
+                preferred: "team-second",
+                executableTeamIDs: ["team-first", "team-second"]
+            ),
+            "team-second"
+        )
+        XCTAssertEqual(
+            resolvedMissionTeamID(
+                preferred: "team-stale",
+                executableTeamIDs: ["team-first", "team-second"]
+            ),
+            "team-first"
+        )
+    }
+
+    func testNewMissionAutomaticallyStartsFreshAfterTerminalTeamExecution() {
+        let terminalStatuses = [
+            "succeeded", "failed", "cancelled", "degraded", "blocked",
+            "human_required", "ready_for_review",
+        ]
+        for status in terminalStatuses {
+            XCTAssertTrue(
+                missionShouldStartNewAttempt(
+                    teamInstanceID: "team-1",
+                    missions: [missionSummary(teamInstanceID: "team-1", status: status)]
+                ),
+                "Expected a fresh Attempt after \(status)"
+            )
+        }
+        XCTAssertFalse(
+            missionShouldStartNewAttempt(
+                teamInstanceID: "team-1",
+                missions: [missionSummary(teamInstanceID: "team-1", status: "running")]
+            )
+        )
+        XCTAssertFalse(
+            missionShouldStartNewAttempt(
+                teamInstanceID: "team-1",
+                missions: [
+                    missionSummary(teamInstanceID: "team-1", status: "failed"),
+                    missionSummary(teamInstanceID: "team-1", status: "running"),
+                ]
+            ),
+            "An active Mission must remain the Team's current execution"
+        )
+        XCTAssertFalse(
+            missionShouldStartNewAttempt(
+                teamInstanceID: "team-2",
+                missions: [missionSummary(teamInstanceID: "team-1", status: "failed")]
+            )
+        )
+    }
+
+    private func missionSummary(
+        teamInstanceID: String,
+        status: String
+    ) -> LocalProductMissionSummary {
+        LocalProductMissionSummary(
+            missionID: "mission/\(teamInstanceID)/\(status)",
+            teamInstanceID: teamInstanceID,
+            title: "Mission",
+            sourceKind: "team_execution",
+            lane: status == "running" ? "Orchestrating" : "Complete",
+            status: status,
+            priority: "normal",
+            planDigest: String(repeating: "a", count: 64),
+            simple: true,
+            nodeCount: 1,
+            completedNodeCount: status == "succeeded" ? 1 : 0,
+            activeNodeCount: status == "running" ? 1 : 0,
+            reviewNodeCount: 0,
+            attentionCount: 0,
+            currentNodeID: "main",
+            lastMilestone: status,
+            teamPulse: [],
+            topology: []
+        )
+    }
+
+    func testConversationSendRequiresAnExecutableProfile() {
+        XCTAssertFalse(
+            LocalProductStore.canSubmitChatMessage(
+                content: "hello", isSending: false, profileID: ""
+            )
+        )
+        XCTAssertFalse(
+            LocalProductStore.canSubmitChatMessage(
+                content: "   ", isSending: false, profileID: "profile-1"
+            )
+        )
+        XCTAssertTrue(
+            LocalProductStore.canSubmitChatMessage(
+                content: "hello", isSending: false, profileID: "profile-1"
+            )
+        )
+    }
+
+    func testConversationComposerActionBecomesAccessibleStopWhileResponding() {
+        XCTAssertEqual(
+            conversationComposerActionPresentation(
+                isSending: false,
+                isCancelling: false
+            ),
+            ConversationComposerActionPresentation(
+                systemImage: "arrow.up",
+                accessibilityLabel: "Send message",
+                help: "Send message",
+                isEnabled: true
+            )
+        )
+        XCTAssertEqual(
+            conversationComposerActionPresentation(
+                isSending: true,
+                isCancelling: false
+            ),
+            ConversationComposerActionPresentation(
+                systemImage: "stop.fill",
+                accessibilityLabel: "Stop response",
+                help: "Stop response",
+                isEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            conversationComposerActionPresentation(
+                isSending: true,
+                isCancelling: true
+            ).isEnabled
+        )
+    }
+
+    func testRuntimeAvailabilityTextUsesRenderedValues() {
+        XCTAssertEqual(
+            runtimeAvailabilityDetail(
+                modelCount: 3,
+                status: "online",
+                ready: true
+            ),
+            "3 models · online"
+        )
+        XCTAssertEqual(
+            runtimeAvailabilityDetail(
+                modelCount: 0,
+                status: "degraded",
+                ready: false
+            ),
+            "degraded · reopen Loom after fixing the executable"
+        )
+        XCTAssertEqual(
+            runtimeAvailabilityAccessibilityLabel(
+                displayName: "OpenCode",
+                ready: true
+            ),
+            "OpenCode, available"
+        )
     }
 
 }

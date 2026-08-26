@@ -9,6 +9,85 @@ private var retainedMissionWorkbenchWindows: [NSWindow] = []
 
 @MainActor
 final class LoomGraphiteViewTests: XCTestCase {
+    func testActiveAndBlockedMissionsRemainVisibleWhenTeamIsNotExecutable() {
+        XCTAssertTrue(missionHistoryIncludesMission(
+            lane: .orchestrating,
+            hideCompleted: true,
+            teamExecutable: false
+        ))
+        XCTAssertTrue(missionHistoryIncludesMission(
+            lane: .review,
+            hideCompleted: true,
+            teamExecutable: false
+        ))
+        XCTAssertFalse(missionHistoryIncludesMission(
+            lane: .complete,
+            hideCompleted: true,
+            teamExecutable: false
+        ))
+    }
+
+    func testDisabledPreflightExplainsRuntimeAndProviderRecoveryPath() {
+        XCTAssertEqual(
+            missionRuntimeRecoveryReason(
+                hasExecutableTeam: false,
+                executionReachable: true,
+                setupState: .ready
+            ),
+            "No confirmed Team currently has executable Runtime and Provider bindings. Open Runtime & Providers to reconnect them, then retry."
+        )
+        XCTAssertEqual(
+            missionRuntimeRecoveryReason(
+                hasExecutableTeam: true,
+                executionReachable: false,
+                setupState: .ready
+            ),
+            "Mission preflight cannot reach Loom's local execution service. Open Runtime & Providers to refresh local service readiness, then retry."
+        )
+    }
+
+    func testUnavailableSetupSnapshotUsesRecoverableServiceState() {
+        let unavailable = missionSetupRecoveryPresentation(
+            .unavailable(reason: "setup_unavailable")
+        )
+        XCTAssertEqual(unavailable.title, "Runtime & Providers unavailable")
+        XCTAssertTrue(unavailable.detail.contains("local setup service"))
+        XCTAssertTrue(unavailable.detail.contains("Try Again"))
+        XCTAssertFalse(unavailable.isLoading)
+        XCTAssertNotEqual(unavailable.title, "No providers found")
+
+        XCTAssertTrue(
+            missionSetupRecoveryPresentation(.loading).isLoading
+        )
+    }
+
+    func testRuntimeAvailabilityExplainsDetectedHarnessWithoutAgentAccount() {
+        XCTAssertEqual(
+            runtimeAgentAvailabilityDetail(
+                adapterType: "codex",
+                modelIDs: ["gpt-5.5-codex"],
+                roleOptionCount: 0
+            ),
+            "Detected · Connect OpenAI in Model Providers to use with Agent Teams"
+        )
+        XCTAssertEqual(
+            runtimeAgentAvailabilityDetail(
+                adapterType: "claude-code",
+                modelIDs: ["claude-sonnet"],
+                roleOptionCount: 0
+            ),
+            "Detected · Connect Anthropic in Model Providers to use with Agent Teams"
+        )
+        XCTAssertEqual(
+            runtimeAgentAvailabilityDetail(
+                adapterType: "opencode",
+                modelIDs: ["deepseek/deepseek-chat"],
+                roleOptionCount: 2
+            ),
+            "deepseek/deepseek-chat · Available to Agent Teams"
+        )
+    }
+
     func testConversationVaultRecoveryActionUsesClosedFailureAllowlist() {
         XCTAssertTrue(conversationVaultRecoveryAvailable(
             stage: .vaultDecrypt,
@@ -45,11 +124,48 @@ final class LoomGraphiteViewTests: XCTestCase {
                 #"{"profile_id":"conversation-deepseek-deepseek-chat-account-work-r7","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.work","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":7}"#.utf8
             )
         )
-        // The Provider layer must not carry a model (three-layer separation).
+        // Route labels show the three independent bindings in execution order.
         XCTAssertEqual(
             conversationProfileMenuLabel(profile),
-            "DeepSeek · deepseek.work"
+            "Loom Native · DeepSeek · Work"
         )
+        XCTAssertEqual(conversationRouteOptionLabel(profile), "DeepSeek · Work")
+    }
+
+    func testConversationProfileMenuLabelDoesNotTreatOpenCodeRouteAsProvider() throws {
+        let profile = try JSONDecoder().decode(
+            LocalProductConversationProfile.self,
+            from: Data(
+                #"{"profile_id":"conversation-opencode-deepseek-r2","harness_adapter":"opencode","provider_id":"deepseek","provider_account_id":"deepseek.primary","display_name":"DeepSeek","protocol":"opencode_agent","model_id":"deepseek/deepseek-chat","auth_mode":"brokered","credential_revision":2}"#.utf8
+            )
+        )
+        XCTAssertEqual(
+            conversationProfileMenuLabel(profile),
+            "OpenCode · DeepSeek"
+        )
+        XCTAssertEqual(conversationRouteOptionLabel(profile), "DeepSeek")
+        XCTAssertFalse(conversationProfileMenuLabel(profile).contains("deepseek.primary"))
+    }
+
+    func testConversationRouteMenuGroupsHarnessesAndNamesNativeOpenCode() throws {
+        let profiles = try JSONDecoder().decode(
+            [LocalProductConversationProfile].self,
+            from: Data(
+                #"""
+                [
+                {"profile_id":"conversation-deepseek-r2","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.primary","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":2},
+                {"profile_id":"conversation-opencode-deepseek-r2","harness_adapter":"opencode","provider_id":"deepseek","provider_account_id":"deepseek.primary","display_name":"DeepSeek","protocol":"opencode_agent","model_id":"deepseek/deepseek-chat","auth_mode":"brokered","credential_revision":2},
+                {"profile_id":"conversation-opencode-default-v1","harness_adapter":"opencode","provider_id":"opencode","provider_account_id":"","display_name":"OpenCode","protocol":"opencode_agent","model_id":"opencode/big-pickle","auth_mode":"native_auth","credential_revision":0},
+                {"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"OpenAI","protocol":"openai_responses","model_id":"codex-default","auth_mode":"native_auth","credential_revision":0}
+                ]
+                """#.utf8
+            )
+        )
+        let groups = conversationRouteMenuGroups(profiles)
+        XCTAssertEqual(groups.map(\.displayName), ["Loom Native", "OpenCode", "Codex"])
+        XCTAssertEqual(groups.map { $0.profiles.count }, [1, 2, 1])
+        XCTAssertEqual(conversationRouteOptionLabel(groups[1].profiles[1]), "Built-in")
+        XCTAssertEqual(conversationProfileMenuLabel(groups[1].profiles[1]), "OpenCode · Built-in")
     }
 
     func testProviderAccountIdentifiersAreStableAndBounded() {
@@ -116,6 +232,11 @@ final class LoomGraphiteViewTests: XCTestCase {
         XCTAssertTrue(source.contains("showProviders = true"))
         XCTAssertTrue(source.contains("Open Credential Vault"))
         XCTAssertTrue(source.contains("prepareVaultDiagnosticPreview()"))
+        XCTAssertTrue(source.contains("runProviderFailureLabScenario(result.scenario)"))
+        XCTAssertTrue(source.contains("Copy incident ID"))
+        XCTAssertTrue(source.contains("View diagnostics for"))
+        XCTAssertTrue(source.contains("Exact endpoint"))
+        XCTAssertTrue(source.contains("presentation.endpoint"))
         XCTAssertTrue(source.contains("Confirmed constraints"))
         XCTAssertTrue(source.contains("Accepted decisions"))
         XCTAssertTrue(source.contains("I confirm this Mission context"))
@@ -156,20 +277,166 @@ final class LoomGraphiteViewTests: XCTestCase {
         XCTAssertFalse(source.contains("NSWorkspace.shared.open(diagnosticsDirectory)"))
     }
 
-    func testEmptyConversationOffersStartMissionWhenTeamReady() throws {
-    let sourceURL = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
-    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    func testEmptyConversationKeepsConversationAsThePrimaryAction() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-    // With a confirmed Team the empty conversation must lead to a Mission,
-    // not to another Team builder (a dead end for the user who already has one).
-    XCTAssertTrue(source.contains("teamReady ? \"Start Mission\" : \"Use Agent Team\""))
-    XCTAssertTrue(source.contains("fullGovernancePresentation = .newMission"))
-    XCTAssertTrue(source.contains("startBlankBuilder()"))
-  }
+        XCTAssertTrue(source.contains("Text(\"New conversation\")"))
+        XCTAssertFalse(source.contains("teamReady ? \"Start Mission\" : \"Use Agent Team\""))
+        XCTAssertFalse(source.contains("private var quickStartGuide"))
+    }
+
+    func testContentViewStartsSetupRecoveryAlongsideInitialRefreshes() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/ContentView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let recovery = try XCTUnwrap(
+            source.range(of: "async let recovery: Void = store.reconnectWhileUnavailable()")
+        )
+        let setup = try XCTUnwrap(
+            source.range(of: "async let setup: Void = store.refreshSetup()")
+        )
+        let refreshJoin = try XCTUnwrap(
+            source.range(of: "_ = await (setup, permissions, executions, production)")
+        )
+        let recoveryJoin = try XCTUnwrap(source.range(of: "await recovery"))
+
+        XCTAssertLessThan(recovery.lowerBound, setup.lowerBound)
+        XCTAssertLessThan(setup.lowerBound, refreshJoin.lowerBound)
+        XCTAssertLessThan(refreshJoin.lowerBound, recoveryJoin.lowerBound)
+    }
+
+    func testRoundtableSupportsDragDropAndSeatRemoval() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/RoundtableWorkbench.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".draggable(candidate.id)"))
+        XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))
+        XCTAssertTrue(source.contains("addRoundtableAgents([candidate])"))
+        XCTAssertTrue(source.contains("addRoundtableAgents(candidates)"))
+        XCTAssertTrue(source.contains("RoundTable Agent drop zone"))
+        XCTAssertTrue(source.contains("retireRoundtableAgent(candidate)"))
+        XCTAssertTrue(source.contains("store.roundtableRetireSeat("))
+        XCTAssertTrue(source.contains("Seats are frozen after the round opens"))
+    }
+
+    func testConversationContextMeterUsesFrozenSegmentBudget() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("Context capacity"))
+        XCTAssertTrue(source.contains("Exact capacity"))
+        XCTAssertTrue(source.contains("Estimated capacity"))
+        XCTAssertTrue(source.contains("Capacity unavailable"))
+        XCTAssertFalse(source.contains("Estimated shared context"))
+        XCTAssertTrue(source.contains("disclosure.contextTokenCount"))
+        XCTAssertTrue(source.contains("disclosure.contextTokenBudget"))
+        XCTAssertTrue(source.contains("disclosure.contextWindowTokens"))
+        XCTAssertTrue(source.contains("disclosure.reservedOutputTokens"))
+        XCTAssertTrue(source.contains("disclosure.adapterToolOverheadTokens"))
+        XCTAssertTrue(source.contains("disclosure.admittedInputBudgetTokens"))
+        XCTAssertTrue(source.contains("disclosure.contextCapacityContributions"))
+        XCTAssertTrue(source.contains("Budget omissions"))
+        XCTAssertFalse(source.contains("disclosureItem.content"))
+        XCTAssertFalse(source.contains("sourceRef"))
+        XCTAssertFalse(source.contains("itemID"))
+    }
+
+    func testConversationContextCapacityDetailsFit560AtLargeDynamicType() {
+        let contributions = [
+            LocalProductContextCapacityContribution(
+                priority: 0,
+                sourceType: "authority",
+                admittedItemCount: 2,
+                admittedTokenCount: 2_400,
+                budgetOmittedItemCount: 0,
+                budgetOmittedTokenCount: 0
+            ),
+            LocalProductContextCapacityContribution(
+                priority: 3,
+                sourceType: "model_output",
+                admittedItemCount: 1,
+                admittedTokenCount: 600,
+                budgetOmittedItemCount: 2,
+                budgetOmittedTokenCount: 900
+            ),
+        ]
+        let segment = LocalProductConversationSegment(
+            segmentID: "segment-capacity",
+            profileID: "conversation-deepseek",
+            contextMode: .summaryOnly,
+            contextCapsuleDigest: String(repeating: "a", count: 64),
+            disclosureReceiptDigest: String(repeating: "c", count: 64),
+            disclosedContextCount: 3,
+            omittedContextCount: 3,
+            contextTokenBudget: 120_000,
+            contextTokenCount: 3_000,
+            contextCapacityStatus: .exact,
+            contextWindowTokens: 128_000,
+            reservedOutputTokens: 8_192,
+            adapterToolOverheadTokens: 1_024,
+            admittedInputBudgetTokens: 118_784,
+            contextTokenCounterID: "loom-token-counter",
+            contextTokenCounterVersion: "v1",
+            admittedContributionTokens: 3_000,
+            budgetOmittedContributionTokens: 900,
+            contextCapacityContributions: contributions,
+            bindingDigest: String(repeating: "b", count: 64)
+        )
+        let hosting = NSHostingView(
+            rootView: ScrollView {
+                ConversationContextCapacityDetails(disclosure: segment)
+                    .padding(16)
+            }
+            .environment(\.dynamicTypeSize, .accessibility3)
+            .frame(width: 560, height: 520)
+        )
+        hosting.frame = NSRect(x: 0, y: 0, width: 560, height: 520)
+        hosting.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, 560)
+        XCTAssertGreaterThan(hosting.fittingSize.height, 200)
+        XCTAssertNotNil(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+    }
+
+    func testConversationLinkedMissionUsesAsyncActivationAndAccessibleTarget() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let linkedMissionStart = try XCTUnwrap(
+            source.range(of: "ForEach(linkedMissions.prefix(8))")
+        )
+        let linkedMissionEnd = try XCTUnwrap(
+            source.range(of: "Divider()", range: linkedMissionStart.upperBound..<source.endIndex)
+        )
+        let linkedMissionSurface = String(
+            source[linkedMissionStart.lowerBound..<linkedMissionEnd.lowerBound]
+        )
+
+        XCTAssertTrue(
+            linkedMissionSurface.contains("await store.openMissionAndActivate(mission.missionID)")
+        )
+        XCTAssertFalse(linkedMissionSurface.contains("store.openMission(mission.missionID)"))
+        XCTAssertTrue(linkedMissionSurface.contains(".loomActionTarget()"))
+    }
 
   func testWorkspaceShellConsumesAgentTeamBuilderSession() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
@@ -190,6 +457,14 @@ final class LoomGraphiteViewTests: XCTestCase {
 		XCTAssertTrue(source.contains("Context shared"))
 		XCTAssertTrue(source.contains("Disclosure receipt"))
 		XCTAssertTrue(source.contains("disclosureReceiptDigest"))
+		XCTAssertTrue(source.contains("Inspect context"))
+		XCTAssertTrue(source.contains("loadConversationContextDisclosure"))
+		XCTAssertTrue(source.contains("conversationContextDisclosureIdentity(for: disclosure)"))
+		XCTAssertFalse(source.contains("conversationContextDisclosures[\n                                    disclosure.contextCapsuleDigest"))
+		XCTAssertTrue(source.contains("omissionReason"))
+		XCTAssertTrue(source.contains("Agent can retrieve by scope"))
+		XCTAssertFalse(source.contains("Scoped retrieval available"))
+		XCTAssertFalse(source.contains("disclosureItem.content"))
 		XCTAssertTrue(source.contains("Provider account"))
 		XCTAssertTrue(source.contains("Account policy"))
 		XCTAssertTrue(source.contains("Trust domain"))
@@ -247,13 +522,14 @@ final class LoomGraphiteViewTests: XCTestCase {
       .appendingPathComponent("Sources/LoomLocalAppUI/MissionWorkbench.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-    // Every entry path into the New Mission sheet must pre-select the first
-    // executable Team; otherwise Review preflight is silently disabled.
+    // Every entry path into the New Mission sheet uses the same preparation
+    // path. It selects an executable Team and decides whether completed work
+    // requires a fresh audited Attempt.
     XCTAssertTrue(
-      source.contains("if newMissionTeamID.isEmpty {")
+      source.contains("prepareNewMission()")
     )
     XCTAssertTrue(
-      source.contains("newMissionTeamID = executableTeams.first?.teamInstanceID ?? \"\"")
+      source.contains("newMissionStartsNewAttempt = missionShouldStartNewAttempt(")
     )
     // The disabled Review-preflight action must explain what is missing.
     XCTAssertTrue(source.contains("missionReviewBlockedReason"))
@@ -300,7 +576,7 @@ final class LoomGraphiteViewTests: XCTestCase {
         XCTAssertTrue(source.contains("Start clean"))
         XCTAssertTrue(source.contains("Disclosure receipt"))
         XCTAssertTrue(source.contains("The route changed while you were reviewing"))
-        XCTAssertTrue(source.contains("Credential r\\(profile.credentialRevision)"))
+        XCTAssertTrue(source.contains("Credential r\\(revision)"))
         XCTAssertFalse(source.contains("set: store.selectConversationProfile"))
         XCTAssertFalse(source.contains("Context transfer mode"))
     }
@@ -315,7 +591,7 @@ final class LoomGraphiteViewTests: XCTestCase {
         let target = try JSONDecoder().decode(
             LocalProductConversationProfile.self,
             from: Data(
-                #"{"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"Codex","protocol":"codex_native","model_id":"gpt-5.5-codex","auth_mode":"native_auth","credential_revision":0}"#.utf8
+                #"{"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"OpenAI","protocol":"codex_native","model_id":"gpt-5.5-codex","auth_mode":"native_auth","credential_revision":0}"#.utf8
             )
         )
         let transition = LocalProductConversationRouteTransition(
@@ -323,6 +599,20 @@ final class LoomGraphiteViewTests: XCTestCase {
             source: source,
             target: target,
             threadID: "thread-1",
+            sourceExecutionBinding: LocalProductConversationExecutionBinding(
+                schemaVersion: 4,
+                harnessAdapter: "loom-native",
+                providerID: "deepseek",
+                providerAccountID: "deepseek.work",
+                credentialRevision: 7,
+                modelID: "deepseek-chat",
+                providerAccountPolicyVersion: 2,
+                providerAccountPolicyRevision: 3,
+                providerAccountPolicyDigest: String(repeating: "a", count: 64),
+                trustDomain: "external_provider",
+                retentionMode: "provider_default",
+                dataRegion: "global"
+            ),
             generation: 1
         )
 
@@ -334,7 +624,7 @@ final class LoomGraphiteViewTests: XCTestCase {
             let hosting = NSHostingView(
                 rootView: ConversationRouteTransitionSheet(
                     transition: transition,
-                    onConfirm: { mode in
+                    onConfirm: { mode, _ in
                         confirmedMode = mode
                         return true
                     },
@@ -353,6 +643,121 @@ final class LoomGraphiteViewTests: XCTestCase {
         }
     }
 
+    func testConversationRouteTransitionTrustBoundaryAcknowledgementGate() throws {
+        let source = try JSONDecoder().decode(
+            LocalProductConversationProfile.self,
+            from: Data(
+                #"{"profile_id":"conversation-deepseek-work-r7","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.work","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":7,"policy_version":2,"policy_revision":4,"policy_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","trust_domain":"enterprise_tenant","retention_mode":"zero_data_retention","data_region":"apac"}"#.utf8
+            )
+        )
+        let target = try JSONDecoder().decode(
+            LocalProductConversationProfile.self,
+            from: Data(
+                #"{"profile_id":"conversation-anthropic-work-r5","harness_adapter":"loom-native","provider_id":"anthropic","provider_account_id":"anthropic.work","display_name":"Anthropic","protocol":"anthropic_messages","model_id":"claude-sonnet-5","auth_mode":"brokered","credential_revision":5,"policy_version":2,"policy_revision":8,"policy_digest":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","trust_domain":"enterprise_tenant","retention_mode":"zero_data_retention","data_region":"apac"}"#.utf8
+            )
+        )
+        let frozenBinding = LocalProductConversationExecutionBinding(
+            schemaVersion: 4,
+            harnessAdapter: "loom-native",
+            providerID: "deepseek",
+            providerAccountID: "deepseek.work",
+            credentialRevision: 7,
+            modelID: "deepseek-chat",
+            providerAccountPolicyVersion: 2,
+            providerAccountPolicyRevision: 3,
+            providerAccountPolicyDigest: String(repeating: "a", count: 64),
+            trustDomain: "external_provider",
+            retentionMode: "provider_default",
+            dataRegion: "global"
+        )
+        let changed = LocalProductConversationRouteTransition(
+            source: source,
+            target: target,
+            threadID: "thread-1",
+            sourceExecutionBinding: frozenBinding,
+            generation: 1
+        )
+        let unchangedBinding = LocalProductConversationExecutionBinding(
+            schemaVersion: 4,
+            harnessAdapter: "loom-native",
+            providerID: "deepseek",
+            providerAccountID: "deepseek.work",
+            credentialRevision: 7,
+            modelID: "deepseek-chat",
+            providerAccountPolicyVersion: 2,
+            providerAccountPolicyRevision: 4,
+            providerAccountPolicyDigest: String(repeating: "b", count: 64),
+            trustDomain: "enterprise_tenant",
+            retentionMode: "zero_data_retention",
+            dataRegion: "apac"
+        )
+        let unchanged = LocalProductConversationRouteTransition(
+            source: source,
+            target: target,
+            threadID: "thread-legacy",
+            sourceExecutionBinding: unchangedBinding,
+            generation: 2
+        )
+        let legacy = LocalProductConversationRouteTransition(
+            source: source,
+            target: target,
+            threadID: "thread-missing-authority",
+            generation: 3
+        )
+
+        XCTAssertEqual(
+            changed.trustBoundaryChanges.map {
+                conversationTrustBoundaryDimensionLabel($0.dimension)
+            },
+            ["Trust domain", "Retention mode", "Data region"]
+        )
+        XCTAssertFalse(conversationRouteTransitionConfirmationEnabled(
+            changed,
+            trustBoundaryAcknowledged: false
+        ))
+        XCTAssertTrue(conversationRouteTransitionConfirmationEnabled(
+            changed,
+            trustBoundaryAcknowledged: true
+        ))
+        XCTAssertTrue(unchanged.trustBoundaryChanges.isEmpty)
+        XCTAssertTrue(conversationRouteTransitionConfirmationEnabled(
+            unchanged,
+            trustBoundaryAcknowledged: false
+        ))
+        XCTAssertEqual(legacy.trustBoundaryChanges.count, 3)
+        XCTAssertFalse(conversationRouteTransitionConfirmationEnabled(
+            legacy,
+            trustBoundaryAcknowledged: false
+        ))
+        XCTAssertFalse(conversationRouteTransitionConfirmationEnabled(
+            legacy,
+            trustBoundaryAcknowledged: true
+        ))
+    }
+
+    func testConversationRouteTransitionSheetNamesTrustBoundaryReview() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("Trust-boundary changes"))
+        XCTAssertTrue(source.contains("I acknowledge these trust-boundary changes"))
+        XCTAssertTrue(source.contains("Frozen source authority is unavailable"))
+        XCTAssertTrue(source.contains("Start new conversation"))
+        XCTAssertTrue(source.contains("onStartNewConversation"))
+        XCTAssertTrue(source.contains("store.newConversation()"))
+        XCTAssertTrue(
+            source.contains("store.selectConversationProfile(transition.target.profileID)")
+        )
+        XCTAssertFalse(source.contains("Reload this conversation before changing its route"))
+        XCTAssertTrue(source.contains("conversationTrustBoundaryDimensionLabel(change.dimension)"))
+        XCTAssertTrue(source.contains("trustBoundaryAcknowledged: trustBoundaryAcknowledged"))
+        XCTAssertTrue(source.contains("Button(\"Cancel\", action: onCancel)"))
+    }
+
     func testWorkspaceShellNamesEveryLiveJourneyAction() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -363,7 +768,7 @@ final class LoomGraphiteViewTests: XCTestCase {
 
         XCTAssertTrue(source.contains(".help(\"Try Again\")"))
         XCTAssertGreaterThanOrEqual(
-            source.components(separatedBy: ".help(\"Open Folder\")").count - 1,
+            source.components(separatedBy: ".help(\"Choose folder\")").count - 1,
             1
         )
         XCTAssertGreaterThanOrEqual(
@@ -371,7 +776,7 @@ final class LoomGraphiteViewTests: XCTestCase {
             1
         )
         XCTAssertTrue(
-            source.contains("\"Start a governed Mission with your Team\"")
+            source.contains(".help(\"Start a governed Mission from this conversation\")")
         )
         XCTAssertTrue(source.contains(".accessibilityLabel(actionLabel)"))
         XCTAssertTrue(source.contains(".help(actionLabel)"))

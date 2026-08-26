@@ -649,38 +649,44 @@ func TestServerUsesExtendedDeadlineOnlyForLongOperations(t *testing.T) {
 		got > 5*time.Second {
 		t.Fatalf("snapshot deadline remaining = %s, want (4s, 5s]", got)
 	}
-	for _, method := range []string{"credential_verify", "mission_execution"} {
-		if got := byMethod[method]; got <= 9*time.Second ||
-			got > 10*time.Second {
-			t.Fatalf(
-				"%s deadline remaining = %s, want (9s, 10s]",
-				method,
-				got,
-			)
-		}
+	if got := byMethod["mission_execution"]; got <= 179*time.Second ||
+		got > 180*time.Second {
+		t.Fatalf("mission_execution deadline remaining = %s, want (179s, 180s]", got)
 	}
-	if got := byMethod["chat_message"]; got <= 49*time.Second ||
-		got > 50*time.Second {
-		t.Fatalf("chat_message deadline remaining = %s, want (49s, 50s]", got)
+	if got := byMethod["credential_verify"]; got <= 9*time.Second ||
+		got > 10*time.Second {
+		t.Fatalf("credential_verify deadline remaining = %s, want (9s, 10s]", got)
+	}
+	if got := byMethod["chat_message"]; got <= 1804*time.Second ||
+		got > 1805*time.Second {
+		t.Fatalf("chat_message deadline remaining = %s, want (1804s, 1805s]", got)
 	}
 }
 
 func TestServerSeparatesHandlerAndResponseDeadlinesForLongOperations(t *testing.T) {
-	for _, method := range []string{"credential_verify", "mission_execution"} {
-		if got := requestDeadline(method); got != 10*time.Second {
-			t.Fatalf("%s handler deadline = %s, want 10s", method, got)
-		}
-		if got := responseDeadline(method); got != 12*time.Second {
-			t.Fatalf("%s response deadline = %s, want 12s", method, got)
-		}
+	if got := requestDeadline("credential_verify"); got != 10*time.Second {
+		t.Fatalf("credential_verify handler deadline = %s, want 10s", got)
 	}
-	for _, method := range []string{"chat_message", "agent_attempt_recovery"} {
-		if got := requestDeadline(method); got != 50*time.Second {
-			t.Fatalf("%s handler deadline = %s, want 50s", method, got)
-		}
-		if got := responseDeadline(method); got != 52*time.Second {
-			t.Fatalf("%s response deadline = %s, want 52s", method, got)
-		}
+	if got := responseDeadline("credential_verify"); got != 12*time.Second {
+		t.Fatalf("credential_verify response deadline = %s, want 12s", got)
+	}
+	if got := requestDeadline("mission_execution"); got != 180*time.Second {
+		t.Fatalf("mission_execution handler deadline = %s, want 180s", got)
+	}
+	if got := responseDeadline("mission_execution"); got != 182*time.Second {
+		t.Fatalf("mission_execution response deadline = %s, want 182s", got)
+	}
+	if got := requestDeadline("chat_message"); got != 1805*time.Second {
+		t.Fatalf("chat_message handler deadline = %s, want 1805s", got)
+	}
+	if got := responseDeadline("chat_message"); got != 1807*time.Second {
+		t.Fatalf("chat_message response deadline = %s, want 1807s", got)
+	}
+	if got := requestDeadline("agent_attempt_recovery"); got != 50*time.Second {
+		t.Fatalf("agent_attempt_recovery handler deadline = %s, want 50s", got)
+	}
+	if got := responseDeadline("agent_attempt_recovery"); got != 52*time.Second {
+		t.Fatalf("agent_attempt_recovery response deadline = %s, want 52s", got)
 	}
 	if got := requestDeadline("snapshot"); got != 5*time.Second {
 		t.Fatalf("snapshot handler deadline = %s, want 5s", got)

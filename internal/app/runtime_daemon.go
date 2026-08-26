@@ -673,6 +673,7 @@ func validateExistingRuntimeDaemonState(path string) error {
 func openRuntimeDaemonSQLite(path string) (*sql.DB, error) {
 	values := url.Values{}
 	values.Add("mode", "rwc")
+	values.Add("_pragma", "journal_mode(WAL)")
 	values.Add("_pragma", "busy_timeout(5000)")
 	values.Add("_pragma", "foreign_keys(1)")
 	uri := url.URL{Scheme: "file", Path: path}

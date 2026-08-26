@@ -123,6 +123,22 @@ func TestCOMP2CVaultConstructsInsideBundleAndRevokesBoundedPorts(t *testing.T) {
 	); err != nil || len(documents) != 0 {
 		t.Fatalf("documents=%#v err=%v", documents, err)
 	}
+	attemptResult := productAttemptPayloadVaultPayload(
+		"payload-vault-rollback", "private encrypted rollback payload",
+	)
+	frozenAttemptBinding := attemptResult.Binding
+	defer attemptResult.Close()
+	if err := slot.PutAttemptPayload(context.Background(), attemptResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := slot.DeleteAttemptPayload(context.Background(), frozenAttemptBinding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := slot.ReadAttemptPayload(
+		context.Background(), frozenAttemptBinding,
+	); !errors.Is(err, attemptpayload.ErrPayloadNotFound) {
+		t.Fatalf("deleted Attempt payload read=%v", err)
+	}
 	agentInput := productAgentInboxVaultPayload("agent-input-1", "private queued input")
 	frozenAgentInput := agentInput.Binding
 	if err := slot.PutAgentInput(context.Background(), agentInput); err != nil {
@@ -194,6 +210,27 @@ func productAgentCheckpointVaultPayload(
 			ContentType:   agentcheckpoint.ContentTypeTextUTF8,
 			ContentDigest: hex.EncodeToString(digest[:]),
 		},
+		Content: []byte(content),
+	}
+}
+
+func productAttemptPayloadVaultPayload(payloadID, content string) attemptpayload.Payload {
+	digest := sha256.Sum256([]byte(content))
+	return attemptpayload.Payload{
+		Binding: attemptpayload.Binding{
+			PayloadID: payloadID,
+			Scope: attemptpayload.Scope{
+				ConversationID: "mission:team-vault", WorkItemID: "work-vault",
+				RunID: "run-vault", ClaimGeneration: 1,
+				RuntimeInstanceID:      "runtime-vault",
+				ExecutionBindingDigest: productAgentInboxTestDigest("attempt-binding"),
+				CapsuleDigest:          productAgentInboxTestDigest("attempt-capsule"),
+			},
+			CallID: "call-vault", Sequence: 1,
+			ContentType:   attemptpayload.ContentTypeTextUTF8,
+			ContentDigest: hex.EncodeToString(digest[:]),
+		},
+		Status:  attemptpayload.StatusPending,
 		Content: []byte(content),
 	}
 }

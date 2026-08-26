@@ -8,12 +8,14 @@ import (
 )
 
 const (
-	CodexConversationProfileID    = "conversation-openai-codex-default-v1"
-	AnthropicConversationModelID  = "claude-sonnet-5"
-	DeepSeekConversationModelID   = "deepseek-chat"
-	KimiConversationModelID       = "kimi-k2.6"
-	MiniMaxConversationModelID    = "MiniMax-M3"
-	OpenCodeConversationProfileID = "conversation-opencode-default-v1"
+	CodexConversationProfileID      = "conversation-openai-codex-default-v1"
+	ClaudeCodeConversationProfileID = "conversation-anthropic-claude-code-default-v1"
+	AnthropicConversationModelID    = "claude-sonnet-5"
+	DeepSeekConversationModelID     = "deepseek-chat"
+	KimiConversationModelID         = "kimi-k2.6"
+	MiniMaxConversationModelID      = "MiniMax-M3"
+	OpenCodeConversationProfileID   = "conversation-opencode-default-v1"
+	PiConversationProfileID         = "conversation-loom-local-pi-default-v1"
 )
 
 func AnthropicConversationProfileID(revision int64) string {
@@ -56,6 +58,19 @@ func MiniMaxConversationAccountProfileID(accountID string, revision int64) strin
 	)
 }
 
+func OpenCodeConversationAccountProfileID(
+	providerID string,
+	accountID string,
+	revision int64,
+) string {
+	return conversationAccountProfileID(
+		providerID,
+		accountID,
+		"conversation-opencode-"+providerID,
+		revision,
+	)
+}
+
 func conversationAccountProfileID(
 	providerID,
 	accountID,
@@ -87,7 +102,7 @@ type Descriptor struct {
 }
 
 var providerCatalog = []Descriptor{
-	{ID: "openai", DisplayName: "OpenAI", Category: "official", Protocol: "openai_responses", AuthMode: "native_auth", ConnectionKind: "native_runtime", SupportsModelDiscovery: true},
+	{ID: "openai", DisplayName: "OpenAI", Category: "official", Protocol: "openai_responses", AuthMode: "brokered", ConnectionKind: "api_key", SupportsModelDiscovery: true},
 	{ID: "anthropic", DisplayName: "Anthropic", Category: "official", Protocol: "anthropic_messages", AuthMode: "brokered", ConnectionKind: "api_key", SupportsModelDiscovery: true},
 	{ID: "google-gemini", DisplayName: "Google Gemini", Category: "official", Protocol: "gemini_generate_content", AuthMode: "brokered", ConnectionKind: "api_key", SupportsModelDiscovery: true},
 	{ID: "deepseek", DisplayName: "DeepSeek", Category: "official", Protocol: "openai_compatible", AuthMode: "brokered", ConnectionKind: "api_key", SupportsModelDiscovery: true},
@@ -116,6 +131,20 @@ var providerCatalog = []Descriptor{
 
 func Catalog() []Descriptor {
 	return append([]Descriptor(nil), providerCatalog...)
+}
+
+// ModelCatalog returns only actual model service Providers. Harnesses such as
+// OpenCode are discovered through the Runtime inventory and must never be
+// projected as Provider Accounts or credential destinations.
+func ModelCatalog() []Descriptor {
+	result := make([]Descriptor, 0, len(providerCatalog))
+	for _, descriptor := range providerCatalog {
+		if descriptor.ConnectionKind == "native_runtime" {
+			continue
+		}
+		result = append(result, descriptor)
+	}
+	return result
 }
 
 func DescriptorByID(id string) (Descriptor, bool) {

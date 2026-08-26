@@ -314,6 +314,110 @@ func TestRoundtableSeatRetiredRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestRoundtableRetiredSeatCanRejoinBeforeRoundWithReplayAndIdempotency(t *testing.T) {
+	authority, _, journalStore := newRoundtableFixture(t)
+	ctx := context.Background()
+	const sessionID = "session-rejoin"
+	const moderator = "seat-moderator"
+	const seatID = "agent-reviewer"
+	const correlation = "11111111-1111-4111-8111-111111111111"
+
+	if _, err := authority.CreateSession(ctx, CreateSessionCommand{
+		SessionID: sessionID, ModeratorSeat: moderator, Title: "Rejoin",
+		EmittedAt: utcTime(1), CorrelationID: correlation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.AddSeat(ctx, AddSeatCommand{
+		SessionID: sessionID, SeatID: seatID, DisplayName: "Reviewer",
+		EmittedAt: utcTime(2), CorrelationID: correlation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.RetireSeat(ctx, RetireSeatCommand{
+		SessionID: sessionID, SeatID: seatID, ModeratorSeat: moderator,
+		EmittedAt: utcTime(3), CorrelationID: correlation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rejoin := AddSeatCommand{
+		SessionID: sessionID, SeatID: seatID, DisplayName: "Reviewer",
+		EmittedAt: utcTime(4), CorrelationID: correlation,
+	}
+	first, err := authority.AddSeat(ctx, rejoin)
+	if err != nil {
+		t.Fatalf("rejoin retired seat: %v", err)
+	}
+	if !first.Seats[seatID].Available || len(first.Rounds) != 0 {
+		t.Fatalf("rejoined view = %#v", first)
+	}
+	second, err := authority.AddSeat(ctx, rejoin)
+	if err != nil {
+		t.Fatalf("idempotent rejoin: %v", err)
+	}
+	if second.Digest != first.Digest {
+		t.Fatalf("idempotent rejoin digest = %q, want %q", second.Digest, first.Digest)
+	}
+
+	events, err := journalStore.ReadStream(ctx, sessionStream(sessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 || events[3].Type != FactSeatRejoined {
+		t.Fatalf("rejoin facts = %#v", events)
+	}
+	var payload seatRejoinedPayload
+	if err := decodeExact(events[3].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SeatID != seatID || payload.MembershipRevision != 2 {
+		t.Fatalf("rejoin payload = %#v", payload)
+	}
+
+	replayed, err := authority.ReadView(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Digest != first.Digest || !replayed.Seats[seatID].Available {
+		t.Fatalf("replayed view = %#v, want digest %q", replayed, first.Digest)
+	}
+
+	if _, err := authority.RetireSeat(ctx, RetireSeatCommand{
+		SessionID: sessionID, SeatID: seatID, ModeratorSeat: moderator,
+		EmittedAt: utcTime(5), CorrelationID: correlation,
+	}); err != nil {
+		t.Fatalf("retire rejoined seat: %v", err)
+	}
+	third, err := authority.AddSeat(ctx, AddSeatCommand{
+		SessionID: sessionID, SeatID: seatID, DisplayName: "Reviewer",
+		EmittedAt: utcTime(6), CorrelationID: correlation,
+	})
+	if err != nil {
+		t.Fatalf("rejoin seat a second time: %v", err)
+	}
+	events, err = journalStore.ReadStream(ctx, sessionStream(sessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 6 || events[4].Type != FactSeatRetired ||
+		events[5].Type != FactSeatRejoined {
+		t.Fatalf("second membership facts = %#v", events)
+	}
+	if err := decodeExact(events[5].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MembershipRevision != 3 {
+		t.Fatalf("second rejoin payload = %#v", payload)
+	}
+	replayed, err = authority.ReadView(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Digest != third.Digest || !replayed.Seats[seatID].Available {
+		t.Fatalf("second replayed view = %#v, want digest %q", replayed, third.Digest)
+	}
+}
+
 func TestRoundtableProposeIdempotentOnExactFact(t *testing.T) {
 	authority, _, _ := newRoundtableFixture(t)
 	ctx := context.Background()

@@ -346,6 +346,28 @@ func TestTeamExecutionProjectionTracksLogicalAttemptsAndDeepCopies(t *testing.T)
 	if again.Nodes[0].Attempts[0].EvidenceDigest != digest {
 		t.Fatal("Team execution view aliases caller mutation")
 	}
+
+	// A user-authorized new Mission Attempt reopens the current projection
+	// only after the old terminal fact. The old result remains in the journal;
+	// the next TeamExecutionPlanned event will populate the fresh read model.
+	nextEvents := append(append([]journal.Event(nil), events...),
+		teamProjectionEvent(t, "team-reopened", "team-execution/team-1", 7, "team-reopened", "TeamExecutionReopened", map[string]any{
+			"team_instance_id":     "team-1",
+			"previous_plan_digest": digest,
+			"next_plan_digest":     strings.Repeat("c", 64),
+		}, "team-terminal"),
+	)
+	reopened, err := projectTeamExecutionStream(
+		"team-1", nextEvents, map[string]teamExecutionRunClaimReference{
+			teamExecutionRunReferenceKey("run/team-run-1", 2): {eventID: "run-reclaim"},
+		}, nil,
+	)
+	if err != nil {
+		t.Fatalf("reopened TeamExecution projection = %v", err)
+	}
+	if reopened.Status != "" || len(reopened.Nodes) != 0 {
+		t.Fatalf("reopened TeamExecution = %#v, want empty pending shell", reopened)
+	}
 }
 
 func TestTeamExecutionProjectionReplaysSemanticRecoveryMetadata(t *testing.T) {
@@ -523,6 +545,60 @@ func TestTeamExecutionProjectionReplaysSemanticRecoveryMetadata(t *testing.T) {
 			got.Version(),
 			view.Version(),
 		)
+	}
+}
+
+func TestProjectedTeamRecoveryRunProofsRequireExactTerminalEvent(t *testing.T) {
+	record := TeamExecution{
+		TeamInstanceID: "team-recovery-proof",
+		Status:         "running",
+		Nodes: []TeamExecutionNode{{
+			LogicalNodeID: "worker",
+			Status:        "running",
+			Attempts: []TeamExecutionAttempt{{
+				AttemptNumber: 1,
+				RunID:         "run-recovery-proof",
+				Status:        "dispatched",
+			}},
+		}},
+	}
+	terminal := teamProjectionEvent(
+		t,
+		"evt-run-terminal",
+		"run/run-recovery-proof",
+		3,
+		"run-terminal",
+		"RunTerminalCommitted",
+		map[string]any{
+			"run_id": "run-recovery-proof",
+			"status": "failed",
+		},
+	)
+	proofs := []projectedTeamRecoveryRunProof{{
+		RunID:          "run-recovery-proof",
+		TerminalStatus: "failed",
+		RunEventID:     terminal.ID,
+		RunSequence:    terminal.Seq,
+	}}
+	terminals := map[string]journal.Event{terminal.ID: terminal}
+	if !validProjectedTeamRecoveryRunProofs(record, &proofs, terminals) {
+		t.Fatal("exact terminal Run proof should reopen stale running projection")
+	}
+	if !validProjectedTeamRecoveryRunProofs(record, nil, terminals) {
+		t.Fatal("legacy reopen events without the optional proof field must remain replayable")
+	}
+	tampered := append([]projectedTeamRecoveryRunProof(nil), proofs...)
+	tampered[0].RunSequence++
+	if validProjectedTeamRecoveryRunProofs(record, &tampered, terminals) {
+		t.Fatal("mismatched terminal sequence must fail closed")
+	}
+
+	legacy := record
+	legacy.Status = "awaiting_recovery"
+	legacy.Nodes[0].Status = "awaiting_recovery"
+	legacy.Nodes[0].Attempts[0].Status = "failed"
+	if !validProjectedTeamRecoveryRunProofs(legacy, nil, terminals) {
+		t.Fatal("legacy terminal Team attempt remains replayable without new proof field")
 	}
 }
 

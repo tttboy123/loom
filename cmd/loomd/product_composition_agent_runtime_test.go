@@ -7,7 +7,9 @@ import (
 	"go/parser"
 	"go/token"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
@@ -123,6 +125,193 @@ func TestCOMP2CAgentRuntimeFailureRollsBackAssetsBeforeProductScope(t *testing.T
 			t.Fatalf("Product scope opened after Runtime failure: %#v", recorder.snapshot())
 		}
 	}
+}
+
+func TestCOMP2CDegradedAgentRuntimeDoesNotAdvertiseReady(t *testing.T) {
+	diagnostics := &productAgentRuntimeBuildDiagnosticFixture{}
+	runtimeSlot := &productAgentRuntimeRouteSlot{}
+	construction := productCompatibilityConstruction{
+		assetSlot:        &productAssetRouteSlot{},
+		assetFactory:     func(context.Context) (productAssetBundle, error) { return productAssetBundle{}, nil },
+		workSlot:         &productWorkRouteSlot{},
+		workFactory:      func(context.Context) (productWorkRoutes, error) { return productWorkRoutes{}, nil },
+		agentRuntimeSlot: runtimeSlot,
+		agentRuntimeFactory: func(context.Context) (productAgentRuntimeRoutes, error) {
+			return productDegradedAgentRuntimeRoutes(productSavedTeamMaterializerFixture{}),
+				newProductAgentRuntimeBuildError(
+					"runtime_adapters", errors.New("private provider detail"),
+				)
+		},
+		diagnostics: diagnostics,
+		profileID:   composition.ProfileTest,
+	}
+	effect, err := construction.startAgentRuntime(context.Background(), nil)
+	if err != nil || effect == nil {
+		t.Fatalf("start effect=%#v err=%v", effect, err)
+	}
+	if runtimeSlot.Ready() {
+		t.Fatal("degraded Agent Runtime advertised ready")
+	}
+	reason := runtimeSlot.UnavailableReason()
+	if reason == nil || reason.Error() != "agent runtime unavailable: runtime_adapters" ||
+		strings.Contains(reason.Error(), "private provider detail") ||
+		!errors.Is(reason, api.ErrInvalidLocalProductExecutionAPI) {
+		t.Fatalf("unavailable reason = %v", reason)
+	}
+	if readyErr := construction.agentRuntimeReady(context.Background(), nil); readyErr != nil {
+		t.Fatalf("degraded Bundle must not block the product composition: %v", readyErr)
+	}
+	if _, missionErr := runtimeSlot.ExecuteMission(
+		context.Background(), app.MissionExecutionCommand{},
+	); missionErr != reason {
+		t.Fatalf("Mission error = %v, want scoped reason %v", missionErr, reason)
+	}
+	if len(diagnostics.records) != 1 ||
+		diagnostics.records[0].ErrorCode != "agent_runtime_runtime_adapters" {
+		t.Fatalf("diagnostics = %#v", diagnostics.records)
+	}
+	if _, err := runtimeSlot.MaterializeConfirmedTeam(
+		context.Background(), app.BuilderConfirmation{},
+	); err != nil {
+		t.Fatalf("compatibility materializer = %v", err)
+	}
+	if err := effect.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCOMP2CDiagnosticAppendFailureDoesNotBlockDegradedAgentRuntime(t *testing.T) {
+	diagnostics := &productAgentRuntimeBuildDiagnosticFixture{
+		appendErr: errors.New("private diagnostics storage failure"),
+	}
+	assetsSlot := &productAssetRouteSlot{}
+	workSlot := &productWorkRouteSlot{}
+	runtimeSlot := &productAgentRuntimeRouteSlot{}
+	facade, err := activateProductCompatibilityComposition(
+		context.Background(), composition.ProfileTest,
+		localipc.HandlerFunc(func(context.Context, localipc.Request) localipc.Response {
+			return localipc.Response{OK: true}
+		}), "incident-comp2c-diagnostic-append-failure", nil,
+		productCompatibilityConstruction{
+			assetSlot: assetsSlot,
+			assetFactory: func(context.Context) (productAssetBundle, error) {
+				return productAssetBundleFixture(nil), nil
+			},
+			workSlot: workSlot,
+			workFactory: func(context.Context) (productWorkRoutes, error) {
+				return productWorkRoutesFixture(), nil
+			},
+			agentRuntimeSlot: runtimeSlot,
+			agentRuntimeFactory: func(context.Context) (productAgentRuntimeRoutes, error) {
+				return productDegradedAgentRuntimeRoutes(productSavedTeamMaterializerFixture{}),
+					newProductAgentRuntimeBuildError(
+						"runtime_adapters", errors.New("private provider detail"),
+					)
+			},
+			diagnostics: diagnostics,
+			profileID:   composition.ProfileTest,
+		},
+	)
+	if err != nil || facade == nil {
+		t.Fatalf("facade=%#v err=%v", facade, err)
+	}
+	if diagnostics.appendCalls != 1 {
+		t.Fatalf("diagnostic append calls = %d", diagnostics.appendCalls)
+	}
+	if !assetsSlot.Ready() || !workSlot.Ready() ||
+		!runtimeSlot.compositionReady() || runtimeSlot.Ready() {
+		t.Fatalf(
+			"assetsReady=%t workReady=%t runtimeBound=%t runtimeReady=%t",
+			assetsSlot.Ready(), workSlot.Ready(),
+			runtimeSlot.compositionReady(), runtimeSlot.Ready(),
+		)
+	}
+	reason := runtimeSlot.UnavailableReason()
+	if reason == nil || reason.Error() != "agent runtime unavailable: runtime_adapters" ||
+		strings.Contains(reason.Error(), "private provider detail") ||
+		strings.Contains(reason.Error(), diagnostics.appendErr.Error()) ||
+		!errors.Is(reason, api.ErrInvalidLocalProductExecutionAPI) {
+		t.Fatalf("unavailable reason = %v", reason)
+	}
+	if _, missionErr := runtimeSlot.ExecuteMission(
+		context.Background(), app.MissionExecutionCommand{},
+	); missionErr != reason {
+		t.Fatalf("Mission error = %v, want scoped reason %v", missionErr, reason)
+	}
+	if err := facade.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCOMP2CDegradedAgentRuntimePreservesTeamMaterialization(t *testing.T) {
+	routes := productDegradedAgentRuntimeRoutes(productSavedTeamMaterializerFixture{})
+	if !routes.valid() {
+		t.Fatalf("degraded routes are not closed: %#v", routes)
+	}
+	if _, err := routes.mission.ExecuteMission(
+		context.Background(), app.MissionExecutionCommand{},
+	); !errors.Is(err, api.ErrInvalidLocalProductExecutionAPI) {
+		t.Fatalf("degraded Mission error = %v", err)
+	}
+	confirmation := app.BuilderConfirmation{
+		TeamDefinitionID: "team-preserved", TeamDefinitionVersion: 1,
+		TeamDefinitionDigest: strings.Repeat("a", 64), Status: "active",
+	}
+	materialized, err := routes.materializer.MaterializeConfirmedTeam(
+		context.Background(), confirmation,
+	)
+	if err != nil || materialized != confirmation {
+		t.Fatalf("materialization = %#v, %v", materialized, err)
+	}
+}
+
+func TestCOMP2CDegradedAgentRuntimeRecordsSafeBuildStage(t *testing.T) {
+	diagnostics := &productAgentRuntimeBuildDiagnosticFixture{}
+	if err := recordProductAgentRuntimeBuildFailure(
+		diagnostics,
+		newProductAgentRuntimeBuildError("runtime_adapters", errors.New("private cause")),
+		composition.ProfileTest,
+		strings.Repeat("b", 64),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics.records) != 1 {
+		t.Fatalf("diagnostics=%#v", diagnostics.records)
+	}
+	record := diagnostics.records[0]
+	if record.Operation != "composition" || record.BundleID != "loom-agent-runtime" ||
+		record.Stage != "bundle_start" || record.Result != "failed" ||
+		record.ErrorCode != "agent_runtime_runtime_adapters" || !record.Retryable {
+		t.Fatalf("diagnostic = %#v", record)
+	}
+	if !validProductOperationalDiagnosticRecord(record) {
+		t.Fatalf("diagnostic is not accepted by the installed store: %#v", record)
+	}
+}
+
+type productAgentRuntimeBuildDiagnosticFixture struct {
+	records     []productOperationalDiagnosticRecord
+	appendErr   error
+	appendCalls int
+}
+
+func (*productAgentRuntimeBuildDiagnosticFixture) operationalNow() time.Time {
+	return time.Date(2026, 8, 21, 13, 0, 0, 0, time.UTC)
+}
+
+func (*productAgentRuntimeBuildDiagnosticFixture) credentialRuntimeValue() string {
+	return productCredentialRuntimeVault
+}
+
+func (fixture *productAgentRuntimeBuildDiagnosticFixture) append(
+	record productOperationalDiagnosticRecord,
+) error {
+	fixture.appendCalls++
+	if fixture.appendErr != nil {
+		return fixture.appendErr
+	}
+	fixture.records = append(fixture.records, record)
+	return nil
 }
 
 func TestCOMP2CProductionBuilderDoesNotConstructAgentRuntimeOutsideBundle(t *testing.T) {

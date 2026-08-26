@@ -22,6 +22,8 @@ const (
 	maxReadFileBytes       = int64(8 << 20)
 	defaultGrepMatchLimit  = 100
 	maxGrepMatchLimit      = 1000
+	maxGrepFiles           = 2000
+	maxGrepBytes           = int64(16 << 20)
 )
 
 func (e *SandboxExecutor) Read(
@@ -71,34 +73,110 @@ func (e *SandboxExecutor) Grep(
 	if matchLimit > maxGrepMatchLimit {
 		return GrepResult{}, ErrExecutionLimit
 	}
-	content, err := readSecureWorkspaceText(ctx, request.Worktree, request.RelativePath)
-	if err != nil {
-		return GrepResult{}, err
-	}
-	defer zeroExecutionBytes(content)
 	var output []byte
 	truncated := false
 	matches := 0
-	lines := bytes.Split(content, []byte{'\n'})
-	for index, line := range lines {
-		if err := ctx.Err(); err != nil {
-			zeroExecutionBytes(output)
+	root, err := secureWorktreeRoot(request.Worktree)
+	if err != nil {
+		return GrepResult{}, err
+	}
+	relative, err := secureGrepRelativePath(request.RelativePath)
+	if err != nil {
+		return GrepResult{}, err
+	}
+	target := filepath.Join(root, relative)
+	if relative != "." && !pathWithin(root, target) {
+		return GrepResult{}, ErrExecutionPathOutside
+	}
+	validationDirectory := filepath.Dir(target)
+	if relative == "." {
+		validationDirectory = root
+	}
+	if err := ensureNoSymlinkComponents(root, validationDirectory); err != nil {
+		return GrepResult{}, err
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		return GrepResult{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return GrepResult{}, ErrExecutionPathOutside
+	}
+	files := []string{relative}
+	if info.IsDir() {
+		files = files[:0]
+		err = filepath.WalkDir(target, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return ErrExecutionPathOutside
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !entry.Type().IsRegular() || len(files) >= maxGrepFiles {
+				return ErrExecutionLimit
+			}
+			fileRelative, relErr := filepath.Rel(root, path)
+			if relErr != nil || fileRelative == "." || !pathWithin(root, path) {
+				return ErrExecutionPathOutside
+			}
+			files = append(files, fileRelative)
+			return nil
+		})
+		if err != nil {
 			return GrepResult{}, err
 		}
-		if !pattern.Match(line) {
-			continue
+	} else if !info.Mode().IsRegular() {
+		return GrepResult{}, ErrExecutionPathOutside
+	}
+	scannedBytes := int64(0)
+	for _, file := range files {
+		content, readErr := readSecureWorkspaceText(ctx, root, file)
+		if readErr != nil {
+			zeroExecutionBytes(output)
+			return GrepResult{}, readErr
 		}
-		matches++
-		entry := []byte(strconv.Itoa(index+1) + ":")
-		entry = append(entry, line...)
-		entry = append(entry, '\n')
-		if matches > matchLimit || int64(len(output)+len(entry)) > limit {
+		scannedBytes += int64(len(content))
+		if scannedBytes > maxGrepBytes {
+			zeroExecutionBytes(content)
+			zeroExecutionBytes(output)
+			return GrepResult{}, ErrExecutionLimit
+		}
+		lines := bytes.Split(content, []byte{'\n'})
+		for index, line := range lines {
+			if err := ctx.Err(); err != nil {
+				zeroExecutionBytes(content)
+				zeroExecutionBytes(output)
+				return GrepResult{}, err
+			}
+			if !pattern.Match(line) {
+				continue
+			}
+			matches++
+			prefix := ""
+			if len(files) > 1 || info.IsDir() {
+				prefix = file + ":"
+			}
+			entry := []byte(prefix + strconv.Itoa(index+1) + ":")
+			entry = append(entry, line...)
+			entry = append(entry, '\n')
+			if matches > matchLimit || int64(len(output)+len(entry)) > limit {
+				zeroExecutionBytes(entry)
+				truncated = true
+				break
+			}
+			output = append(output, entry...)
 			zeroExecutionBytes(entry)
-			truncated = true
+		}
+		zeroExecutionBytes(content)
+		if truncated {
 			break
 		}
-		output = append(output, entry...)
-		zeroExecutionBytes(entry)
 	}
 	if len(output) == 0 && !truncated {
 		output, truncated = boundedUTF8Prefix([]byte("No matches.\n"), limit)
@@ -106,7 +184,7 @@ func (e *SandboxExecutor) Grep(
 	return GrepResult{
 		Content:       output,
 		ContentDigest: digestBytes(output),
-		OutputDigest:  digestBytes(content),
+		OutputDigest:  digestBytes(output),
 		Truncated:     truncated,
 		DurationMS:    time.Since(started).Milliseconds(),
 	}, nil

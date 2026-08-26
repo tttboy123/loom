@@ -11,7 +11,10 @@ import (
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 )
 
-const productCredentialLeaseTTL = 2 * time.Minute
+// Harness execution is bounded to 15 minutes. The lease still closes as soon
+// as its parent request finishes, so shorter conversations and Agent Attempts
+// do not retain plaintext until this upper bound.
+const productCredentialLeaseTTL = 15 * time.Minute
 
 type productCredentialLeaseAccess interface {
 	UseCredential(

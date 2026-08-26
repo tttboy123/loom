@@ -8,6 +8,132 @@ import XCTest
 @MainActor
 final class LocalProductExperienceViewTests: XCTestCase {
 
+    func testBlockedMissionContinuationPreparesBoundedAuditedAttempt() throws {
+        let preparation = try XCTUnwrap(
+            missionContinuationPreparation(
+                status: "blocked",
+                title: "MiniMax live Agent conversation",
+                teamInstanceID: "team-minimax",
+                draft: "  Retry the coordinator with a shorter response.  "
+            )
+        )
+
+        XCTAssertEqual(preparation.title, "MiniMax live Agent conversation")
+        XCTAssertEqual(
+            preparation.objective,
+            "Retry the coordinator with a shorter response."
+        )
+        XCTAssertEqual(preparation.teamInstanceID, "team-minimax")
+        XCTAssertTrue(preparation.newAttempt)
+        XCTAssertEqual(missionContinuationSheetTitle(newAttempt: true), "Continue Mission")
+        XCTAssertEqual(missionContinuationSheetTitle(newAttempt: false), "New Mission")
+    }
+
+    func testMissionContinuationRejectsActiveEmptyAndOversizedDrafts() {
+        XCTAssertNil(
+            missionContinuationPreparation(
+                status: "running", title: "Active", teamInstanceID: "team-1",
+                draft: "Change direction"
+            )
+        )
+        XCTAssertNil(
+            missionContinuationPreparation(
+                status: "blocked", title: "Blocked", teamInstanceID: "team-1",
+                draft: "   "
+            )
+        )
+        XCTAssertNil(
+            missionContinuationPreparation(
+                status: "blocked", title: "Blocked", teamInstanceID: "team-1",
+                draft: String(repeating: "x", count: 4_097)
+            )
+        )
+        XCTAssertTrue(missionContinuationAcceptsInput(status: "failed"))
+        XCTAssertTrue(missionContinuationAcceptsInput(status: "cancelled"))
+        XCTAssertFalse(missionContinuationAcceptsInput(status: "succeeded"))
+    }
+
+    func testMissionActivityGroupsStreamingOutputByAgentAttempt() throws {
+        let snapshot = try LocalProductWire.decodeSnapshot(
+            Data(MissionOrchestrationTests.snapshotJSON.utf8)
+        )
+        let mission = try XCTUnwrap(snapshot.missions.first)
+        let page = try timelinePage(
+            teamID: mission.teamInstanceID,
+            boardStatus: "running",
+            hasMore: false,
+            records: [
+                timelineRecord(
+                    deliveryID: "activity-1",
+                    kind: "node_output_delta",
+                    teamID: mission.teamInstanceID,
+                    authority: "tentative",
+                    logicalNodeID: mission.currentNodeID,
+                    attemptNumber: 1,
+                    sourceSequence: 1,
+                    textDelta: "Planning the implementation. "
+                ),
+                timelineRecord(
+                    deliveryID: "activity-2",
+                    kind: "node_output_delta",
+                    teamID: mission.teamInstanceID,
+                    authority: "tentative",
+                    logicalNodeID: mission.currentNodeID,
+                    attemptNumber: 1,
+                    sourceSequence: 2,
+                    textDelta: "Creating the first artifact."
+                ),
+            ]
+        )
+
+        let entries = missionActivityEntries(mission: mission, timeline: page)
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].logicalNodeID, mission.currentNodeID)
+        XCTAssertEqual(entries[0].attemptNumber, 1)
+        XCTAssertEqual(
+            entries[0].text,
+            "Planning the implementation. Creating the first artifact."
+        )
+        XCTAssertTrue(entries[0].isTentative)
+        XCTAssertTrue(missionActivityNeedsRefresh(status: "running"))
+        XCTAssertFalse(missionActivityNeedsRefresh(status: "succeeded"))
+        XCTAssertEqual(
+            missionActivityVisibleText("first\nsecond\nlatest", expanded: false, limit: 12),
+            "…cond\nlatest"
+        )
+        XCTAssertEqual(
+            missionActivityVisibleText("first\nsecond\nlatest", expanded: true, limit: 12),
+            "first\nsecond\nlatest"
+        )
+    }
+
+    func testMissionResultPresentationOpensWebEntryPointBeforeWorkspaceFolder() throws {
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-mission-result-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: workspace,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let folderResult = try XCTUnwrap(
+            missionResultPresentation(workspacePath: workspace.path)
+        )
+        XCTAssertEqual(folderResult.openURL, workspace.standardizedFileURL)
+        XCTAssertFalse(folderResult.isWebResult)
+
+        let index = workspace.appendingPathComponent("index.html")
+        try Data("<html></html>".utf8).write(to: index)
+
+        let webResult = try XCTUnwrap(
+            missionResultPresentation(workspacePath: workspace.path)
+        )
+        XCTAssertEqual(webResult.openURL, index.standardizedFileURL)
+        XCTAssertEqual(webResult.revealURL, index.standardizedFileURL)
+        XCTAssertTrue(webResult.isWebResult)
+    }
+
     func testToolRecoveryActionsDescribeBoundedAuthorityWithoutRerun() {
         XCTAssertEqual(
             missionToolRecoveryActionLabel(.abortAttempt),
@@ -124,6 +250,13 @@ final class LocalProductExperienceViewTests: XCTestCase {
         async throws
     {
         let snapshot = try ExperienceFixtures.populatedSnapshot()
+        let agents = try XCTUnwrap(snapshot.teams.first?.agents)
+        XCTAssertEqual(agents.count, 2)
+        XCTAssertEqual(
+            teamAgentRouteLabel(agents[0]),
+            "Opencode · Deepseek / deepseek.primary · deepseek/deepseek-chat"
+        )
+        XCTAssertEqual(teamAgentTitle(agents[1]), "Subagent")
         XCTAssertEqual(
             missionDisplayTitle(
                 candidate: "team-first",
@@ -307,9 +440,14 @@ final class LocalProductExperienceViewTests: XCTestCase {
               "active_attempts":0,"attempt_count":1,"failed_attempts":1,
               "rate_limited_attempts":0,"error_rate_basis_points":10000,
               "budget_attempt_count":1,"budget_units":100,
+              "policy_available":true,"policy_revision":9,
+              "policy_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "maximum_concurrent_attempts":3,"dispatch_window_seconds":60,
+              "maximum_dispatch_starts":4,"maximum_assigned_budget_units":800,
+              "active_assigned_budget_units":100,
               "accounting_attempt_count":1,"usage_attempt_count":1,
-              "input_tokens":90,"output_tokens":10,"cache_read_tokens":0,
-              "cache_write_tokens":0,"total_tokens":100,"cost_attempt_count":1,
+              "input_tokens":90,"output_tokens":10,"cache_read_tokens":20,
+              "cache_write_tokens":5,"total_tokens":100,"cost_attempt_count":1,
               "costs":[{"currency":"USD","source":"harness_reported","amount_microunits":450}],
               "aggregation_overflow":true
             }],
@@ -326,6 +464,29 @@ final class LocalProductExperienceViewTests: XCTestCase {
                 timeline: timeline
             )
         }
+        let paginatedTimeline = LocalProductTimelinePage(
+            schemaVersion: timeline.schemaVersion,
+            teamInstanceID: timeline.teamInstanceID,
+            viewVersion: timeline.viewVersion,
+            nextCursor: "next-event-page",
+            hasMore: true,
+            gap: timeline.gap,
+            records: timeline.records,
+            board: timeline.board,
+            attention: timeline.attention
+        )
+        let paginatedTeam = missionInspectorSection(
+            tab: .team,
+            record: mission,
+            timeline: paginatedTimeline
+        )
+
+        XCTAssertTrue(paginatedTimeline.hasMore, "hasMore paginates events, not the board")
+        XCTAssertEqual(paginatedTeam.rows.count, timeline.board.nodes.count)
+        XCTAssertEqual(
+            paginatedTeam.providerAccountRows.map(\.providerAccountID),
+            timeline.board.providerAccounts.map(\.providerAccountID)
+        )
         XCTAssertEqual(
             sections.map(\.heading),
             ["Team Pulse", "Plan", "Changes", "Evidence"]
@@ -351,17 +512,27 @@ final class LocalProductExperienceViewTests: XCTestCase {
         XCTAssertTrue(sections[0].rows.joined().contains("Retry available"))
         XCTAssertTrue(sections[0].rows.joined().contains("Tests 2 passed, 1 failed"))
         XCTAssertTrue(sections[0].rows.joined().contains("Latest Go Test All Passed"))
-        XCTAssertTrue(sections[0].rows.joined().contains("Accounting incomplete"))
-        let accountRow = try XCTUnwrap(
-            sections[0].rows.last(where: { $0.contains("anthropic.production") })
+        let accountRow = try XCTUnwrap(sections[0].providerAccountRows.first)
+        XCTAssertEqual(accountRow.providerName, "Anthropic")
+        XCTAssertEqual(accountRow.providerAccountID, "anthropic.production")
+        XCTAssertEqual(accountRow.attempts, "1 attempt · 1 failed")
+        XCTAssertEqual(accountRow.reliability, "100% error rate · 0 rate limited")
+        XCTAssertEqual(accountRow.accountingCoverage, "1/1 attempts accounted")
+        XCTAssertEqual(
+            accountRow.tokens,
+            "Input 90 · Output 10 · Cache read 20 · Cache write 5 · Total 100 · usage on 1/1 attempts"
         )
-        XCTAssertTrue(accountRow.contains("Anthropic / anthropic.production"))
-        XCTAssertTrue(accountRow.contains("1/1 failed"))
-        XCTAssertTrue(accountRow.contains("100% error rate"))
-        XCTAssertTrue(accountRow.contains("0 rate limited"))
-        XCTAssertTrue(accountRow.contains("Accounting 1/1 attempts"))
-		XCTAssertTrue(accountRow.contains("Harness reported cost 0.00045 USD"))
-        XCTAssertFalse(accountRow.contains("450 microunits"))
+        XCTAssertEqual(
+            accountRow.costSource,
+            "Harness reported cost 0.00045 USD · cost on 1/1 attempts"
+        )
+        XCTAssertEqual(accountRow.policyRevision, "Revision 9")
+        XCTAssertEqual(accountRow.concurrencyCeiling, "0 active / 3 maximum")
+        XCTAssertEqual(accountRow.dispatchCeiling, "4 starts / 60s")
+        XCTAssertEqual(accountRow.budgetCeiling, "100 active / 800 maximum")
+        XCTAssertEqual(accountRow.completeness, "Incomplete accounting")
+        XCTAssertTrue(accountRow.isIncomplete)
+        XCTAssertFalse(accountRow.costSource.contains("450 microunits"))
         XCTAssertEqual(
             sections[0].systemImage(at: 0, fallback: "fallback"),
             "person.crop.circle"
@@ -371,14 +542,14 @@ final class LocalProductExperienceViewTests: XCTestCase {
             "arrow.triangle.merge"
         )
         XCTAssertEqual(
-            sections[0].systemImage(at: 3, fallback: "fallback"),
-            "server.rack"
+            sections[0].providerAccountRows.count,
+            1
         )
         XCTAssertEqual(sections[0].accessibilityLabel(at: 0), "Agent status")
         XCTAssertEqual(sections[0].accessibilityLabel(at: 1), "Synthesis status")
         XCTAssertEqual(
-            sections[0].accessibilityLabel(at: 3),
-            "Provider Account governance"
+            accountRow.accessibilityLabel,
+            "Anthropic anthropic.production Provider Account governance, Incomplete accounting"
         )
         XCTAssertEqual(
             sections[0].incidentIDs.first,
@@ -474,6 +645,15 @@ final class LocalProductExperienceViewTests: XCTestCase {
                 )
             }
         }
+        let gapTeam = missionInspectorSection(
+            tab: .team,
+            record: mission,
+            timeline: gapTimeline
+        )
+        XCTAssertEqual(gapTeam.rows.count, gapTimeline.board.nodes.count)
+        XCTAssertTrue(gapTeam.rows.joined().contains("anthropic.production"))
+        XCTAssertNotNil(gapTeam.notice)
+        XCTAssertTrue(gapTeam.notice?.contains("Activity history is incomplete") == true)
     }
 
     func testVaultRecoveryActionIsLimitedToDurableVaultFailures() {
@@ -532,6 +712,18 @@ final class LocalProductExperienceViewTests: XCTestCase {
 				source: "rate_card_estimate", microunits: 450, currency: "USD"),
 			"Rate-card estimate 0.00045 USD"
 		)
+        XCTAssertEqual(
+            missionProviderAccountTokenSummary(
+                inputTokens: 90,
+                outputTokens: 10,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                totalTokens: 100,
+                usageAttemptCount: 1,
+                attemptCount: 1
+            ),
+            "Input 90 · Output 10 · Total 100 · usage on 1/1 attempts"
+        )
     }
 
     func testSideTaskDrawerAlwaysPresentsEveryContractField() throws {

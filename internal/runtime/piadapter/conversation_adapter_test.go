@@ -33,7 +33,7 @@ func TestPiRPCConversationAdapterReturnsStrictToolDisabledText(t *testing.T) {
 			{Role: "user", Content: "Review this function for a race."},
 		},
 	}
-	prompt, err := buildPiRPCConversationPrompt(request.Messages)
+	prompt, err := buildPiRPCConversationPrompt("", request.Messages)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestPiRPCConversationAdapterRejectsToolCalls(t *testing.T) {
 			{Role: "user", Content: "Do not use tools."},
 		},
 	}
-	prompt, err := buildPiRPCConversationPrompt(request.Messages)
+	prompt, err := buildPiRPCConversationPrompt("", request.Messages)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestPiRPCConversationPromptDropsOldestHistoryFirst(t *testing.T) {
 	oldest := strings.Repeat("a", 4_096)
 	middle := strings.Repeat("b", 4_096)
 	latest := "latest user request"
-	prompt, err := buildPiRPCConversationPrompt([]PiRPCConversationMessage{
+	prompt, err := buildPiRPCConversationPrompt("", []PiRPCConversationMessage{
 		{Role: "user", Content: oldest},
 		{Role: "loom", Content: middle},
 		{Role: "user", Content: latest},
@@ -108,7 +108,7 @@ func TestPiRPCConversationAdapterCancellationReapsProcess(t *testing.T) {
 			{Role: "user", Content: "Wait until cancelled."},
 		},
 	}
-	prompt, err := buildPiRPCConversationPrompt(request.Messages)
+	prompt, err := buildPiRPCConversationPrompt("", request.Messages)
 	if err != nil {
 		t.Fatal(err)
 	}

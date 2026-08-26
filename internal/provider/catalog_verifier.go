@@ -22,6 +22,7 @@ type credentialVerificationSpec struct {
 }
 
 var credentialVerificationSpecs = map[string]credentialVerificationSpec{
+	"openai":          {URL: "https://api.openai.com/v1/models", Header: "Authorization", HeaderValue: "Bearer %s"},
 	"anthropic":       {URL: "https://api.anthropic.com/v1/models", Header: "x-api-key", HeaderValue: "%s", ExtraHeader: map[string]string{"anthropic-version": "2023-06-01"}},
 	"google-gemini":   {URL: "https://generativelanguage.googleapis.com/v1beta/models", Header: "x-goog-api-key", HeaderValue: "%s"},
 	"deepseek":        {URL: "https://api.deepseek.com/models", Header: "Authorization", HeaderValue: "Bearer %s"},

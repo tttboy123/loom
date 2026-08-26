@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const maximumCredentialLeaseTTL = 5 * time.Minute
+const maximumCredentialLeaseTTL = 15 * time.Minute
 
 var (
 	ErrCredentialLeaseClosed  = errors.New("credential lease closed")

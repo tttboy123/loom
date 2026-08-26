@@ -61,7 +61,7 @@ func TestOpenAICompatibleConversationClientsUseFixedProviderContracts(t *testing
 		{
 			name: "MiniMax", providerID: "minimax", modelID: MiniMaxConversationModelID,
 			endpoint: MiniMaxConversationEndpoint, newClient: NewMiniMaxConversationClient,
-			wantTokenField: `"max_completion_tokens":2048`, forbidTokenField: `"max_tokens"`,
+			wantTokenField: `"max_completion_tokens":8192`, forbidTokenField: `"max_tokens"`,
 		},
 	}
 	for _, test := range tests {
@@ -102,6 +102,115 @@ func TestOpenAICompatibleConversationClientsUseFixedProviderContracts(t *testing
 	}
 }
 
+func TestMiniMaxConversationSeparatesHiddenReasoningFromVisibleContent(t *testing.T) {
+	doer := deepSeekConversationDoerFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.Contains(string(body), `"reasoning_split":true`) {
+			t.Fatalf("MiniMax request did not separate reasoning: %s", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","reasoning_content":"private reasoning must not escape","content":"VISIBLE-ONLY"}}]}`,
+			)),
+			Request: request,
+		}, nil
+	})
+	client, err := NewMiniMaxConversationClient(OpenAICompatibleConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Respond(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: "hello"}},
+		[]byte("private-test-key"),
+	)
+	if err != nil || response != "VISIBLE-ONLY" || strings.Contains(response, "private reasoning") {
+		t.Fatalf("response=%q error=%v", response, err)
+	}
+}
+
+func TestMiniMaxConversationStripsInlineHiddenReasoningFromContent(t *testing.T) {
+	doer := deepSeekConversationDoerFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","content":"<think>private reasoning must not escape</think>\nVISIBLE-ONLY"}}]}`,
+			)),
+			Request: request,
+		}, nil
+	})
+	client, err := NewMiniMaxConversationClient(OpenAICompatibleConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Respond(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: "hello"}},
+		[]byte("private-test-key"),
+	)
+	if err != nil || response != "VISIBLE-ONLY" || strings.Contains(response, "private reasoning") {
+		t.Fatalf("response=%q error=%v", response, err)
+	}
+}
+
+func TestMiniMaxConversationRejectsUnterminatedInlineHiddenReasoning(t *testing.T) {
+	doer := deepSeekConversationDoerFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","content":"<think>private reasoning must not escape"}}]}`,
+			)),
+			Request: request,
+		}, nil
+	})
+	client, err := NewMiniMaxConversationClient(OpenAICompatibleConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Respond(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: "hello"}},
+		[]byte("private-test-key"),
+	)
+	if response != "" || err == nil {
+		t.Fatalf("response=%q error=%v", response, err)
+	}
+}
+
+func TestDeepSeekReasoningUsesExpandedBoundedCompletionBudget(t *testing.T) {
+	doer := &deepSeekConversationDoer{}
+	client, err := NewDeepSeekConversationClient(DeepSeekConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.RespondConfigured(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: "hello"}},
+		[]byte("private-test-key"),
+		"deepseek-v4-flash",
+		"high",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doer.body, `"max_tokens":8192`) ||
+		!strings.Contains(doer.body, `"reasoning_effort":"high"`) {
+		t.Fatalf("reasoning request does not carry the bounded expanded budget: %s", doer.body)
+	}
+}
+
 func TestDeepSeekConversationUsesFixedBoundedNonStreamingRequest(t *testing.T) {
 	doer := &deepSeekConversationDoer{}
 	client, err := NewDeepSeekConversationClient(DeepSeekConversationConfig{
@@ -130,6 +239,28 @@ func TestDeepSeekConversationUsesFixedBoundedNonStreamingRequest(t *testing.T) {
 		!strings.Contains(doer.body, `"stream":false`) ||
 		strings.Contains(doer.body, "private-test-key") {
 		t.Fatalf("response=%q request=%#v body=%q", response, doer.request, doer.body)
+	}
+}
+
+func TestDeepSeekConversationKeepsLoomContextInSystemRole(t *testing.T) {
+	doer := &deepSeekConversationDoer{}
+	client, err := NewDeepSeekConversationClient(DeepSeekConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Respond(context.Background(), []ConversationMessage{
+		{Role: "system", Content: `{"kind":"loom_role_context","items":[]}`},
+		{Role: "user", Content: "SESSION-A"},
+	}, []byte("private-test-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doer.body, `Loom-owned context capsule`) ||
+		!strings.Contains(doer.body, `"content":"SESSION-A"`) ||
+		strings.Contains(doer.body, `"role":"user","content":"{\"kind\":\"loom_role_context`) {
+		t.Fatalf("context/user role boundary missing: %s", doer.body)
 	}
 }
 

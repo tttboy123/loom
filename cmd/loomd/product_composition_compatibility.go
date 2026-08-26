@@ -9,8 +9,6 @@ import (
 	"loom-pi-rebuild/internal/localipc"
 )
 
-const productCompatibilityDispatchRoute composition.RouteMethod = "legacy.product.dispatch"
-
 type productCompatibilityPort interface {
 	CompatibilityBundleID() string
 }
@@ -139,7 +137,37 @@ func activateProductCompatibilityComposition(
 		if !construction.valid() {
 			return nil, composition.ErrInvalidComposition
 		}
+		construction.profileID = profileID
 	}
+	return activateProductCompositionWithHandler(
+		ctx, profileID, handler, incidentID, recorder, construction,
+	)
+}
+
+func activateProductComposition(
+	ctx context.Context,
+	profileID composition.ProfileID,
+	incidentID string,
+	recorder composition.DiagnosticRecorder,
+	construction productCompatibilityConstruction,
+) (*productCompatibilityComposition, error) {
+	if ctx == nil || !construction.valid() || construction.localIPCSlot == nil {
+		return nil, composition.ErrInvalidComposition
+	}
+	construction.profileID = profileID
+	return activateProductCompositionWithHandler(
+		ctx, profileID, nil, incidentID, recorder, construction,
+	)
+}
+
+func activateProductCompositionWithHandler(
+	ctx context.Context,
+	profileID composition.ProfileID,
+	handler localipc.Handler,
+	incidentID string,
+	recorder composition.DiagnosticRecorder,
+	construction productCompatibilityConstruction,
+) (*productCompatibilityComposition, error) {
 	directHandler := !nilProductAssetPort(handler)
 	constructedHandler := construction.localIPCSlot != nil
 	if directHandler == constructedHandler {

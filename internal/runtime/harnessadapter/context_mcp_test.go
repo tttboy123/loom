@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -137,7 +138,9 @@ func (fixture *harnessContextDeliveryFixture) Acknowledge(
 			break
 		}
 	}
-	if matched < 0 || proof != attemptpayload.ProofHarnessFinalOutput {
+	if matched < 0 ||
+		(proof != attemptpayload.ProofHarnessFinalOutput &&
+			proof != attemptpayload.ProofHarnessToolResponse) {
 		return contextcapsule.ErrInvalidContextDelivery
 	}
 	if fixture.ackFailures != nil && fixture.ackFailures[binding.Sequence] > 0 {
@@ -170,6 +173,7 @@ type harnessToolGatewayFixture struct {
 	bindings     []loomruntime.ToolCallBinding
 	sequences    []int64
 	ackSequences []int64
+	ackProofs    []attemptpayload.DeliveryProof
 }
 
 func (fixture *harnessToolGatewayFixture) AllowedToolCalls() []permissions.ToolKind {
@@ -227,16 +231,100 @@ func (fixture *harnessToolGatewayFixture) AcknowledgeToolCallResultWithProof(
 	result loomruntime.ToolCallResult,
 	proof attemptpayload.DeliveryProof,
 ) error {
-	if result.Delivery == nil || proof != attemptpayload.ProofHarnessFinalOutput {
+	if result.Delivery == nil ||
+		(proof != attemptpayload.ProofHarnessFinalOutput &&
+			proof != attemptpayload.ProofHarnessToolResponse) {
 		return errors.New("invalid Harness ToolCall acknowledgement")
 	}
 	fixture.ackSequences = append(
 		fixture.ackSequences, result.Delivery.Binding.Sequence,
 	)
+	fixture.ackProofs = append(fixture.ackProofs, proof)
 	return nil
 }
 
-func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *testing.T) {
+func TestHarnessAttemptMCPAcknowledgesEachHTTPToolResponseBeforeNextCall(t *testing.T) {
+	gateway := &harnessToolGatewayFixture{
+		allowed: []permissions.ToolKind{permissions.ToolEdit, permissions.ToolBash},
+		contents: map[permissions.ToolKind][]byte{
+			permissions.ToolEdit: []byte("edit committed\n"),
+			permissions.ToolBash: []byte("tests passed\n"),
+		},
+	}
+	binding := loomruntime.ToolCallBinding{
+		ConversationID: "conversation-http-tools", WorkItemID: "work-http-tools",
+		RunID: "run-http-tools", ClaimGeneration: 1, RuntimeInstanceID: "runtime-opencode",
+		AgentInstanceID: "agent-opencode", ExecutionBindingDigest: strings.Repeat("1", 64),
+		CapsuleDigest: strings.Repeat("2", 64), ClaimID: "claim-http-tools",
+		IncidentID: "11111111-1111-4111-8111-111111111111",
+		JourneyID:  "11111111-1111-4111-8111-111111111111",
+	}
+	service, err := newHarnessAttemptMCPWithContext(
+		context.Background(), harnessAttemptMCPConfig{
+			ToolGateway: gateway, ToolBinding: binding,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	lease := service.Lease()
+	post := func(id int, name string, arguments map[string]any) []byte {
+		payload, marshalErr := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": "tools/call",
+			"params": map[string]any{"name": name, "arguments": arguments},
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		request, requestErr := http.NewRequest(http.MethodPost, lease.URL, bytes.NewReader(payload))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+lease.Token)
+		response, requestErr := http.DefaultClient.Do(request)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		defer response.Body.Close()
+		body, readErr := io.ReadAll(response.Body)
+		if readErr != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("HTTP tool response status=%d err=%v", response.StatusCode, readErr)
+		}
+		return body
+	}
+	if body := post(1, "loom_edit_file", map[string]any{
+		"path": "index.html", "content": "<main>Snake</main>\n",
+	}); !bytes.Contains(body, []byte("edit committed")) {
+		t.Fatalf("edit response=%s", body)
+	}
+	if !reflect.DeepEqual(gateway.ackSequences, []int64{1}) {
+		t.Fatalf("edit response acknowledgement=%v", gateway.ackSequences)
+	}
+	if body := post(2, "loom_run_command", map[string]any{
+		"command": "node tests.js",
+	}); !bytes.Contains(body, []byte("tests passed")) {
+		t.Fatalf("Bash response=%s", body)
+	}
+	if !reflect.DeepEqual(gateway.ackSequences, []int64{1, 2}) ||
+		!reflect.DeepEqual(gateway.ackProofs, []attemptpayload.DeliveryProof{
+			attemptpayload.ProofHarnessToolResponse,
+			attemptpayload.ProofHarnessToolResponse,
+		}) {
+		t.Fatalf("HTTP acknowledgements=%v proofs=%v", gateway.ackSequences, gateway.ackProofs)
+	}
+	if err := service.Acknowledge(
+		context.Background(), attemptpayload.ProofHarnessFinalOutput,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.ackSequences) != 2 {
+		t.Fatalf("final output redelivered ToolCall results: %v", gateway.ackSequences)
+	}
+}
+
+func TestHarnessAttemptMCPExecutesGovernedWorkspaceToolsUntilFinalOutput(t *testing.T) {
 	gateway := &harnessToolGatewayFixture{
 		allowed: []permissions.ToolKind{
 			permissions.ToolBash, permissions.ToolRead, permissions.ToolGrep,
@@ -245,6 +333,8 @@ func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *tes
 		contents: map[permissions.ToolKind][]byte{
 			permissions.ToolRead: []byte("bounded source content\n"),
 			permissions.ToolGrep: []byte("src/main.go:12: bounded match\n"),
+			permissions.ToolEdit: []byte("edit committed\n"),
+			permissions.ToolBash: []byte("tests passed\n"),
 		},
 	}
 	binding := loomruntime.ToolCallBinding{
@@ -265,7 +355,9 @@ func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *tes
 	}
 	defer service.Close()
 	tools := service.toolNames()
-	if !reflect.DeepEqual(tools, []string{"loom_grep_files", "loom_read_file"}) {
+	if !reflect.DeepEqual(tools, []string{
+		"loom_edit_file", "loom_grep_files", "loom_read_file", "loom_run_command",
+	}) {
 		t.Fatalf("published Harness tools = %v", tools)
 	}
 	calls := []struct {
@@ -281,6 +373,17 @@ func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *tes
 			name:      "loom_grep_files",
 			arguments: map[string]any{"path": "src", "pattern": "governed"},
 			content:   gateway.contents[permissions.ToolGrep],
+		},
+		{
+			name: "loom_edit_file",
+			arguments: map[string]any{
+				"path": "index.html", "content": "<main>Snake</main>\n",
+			},
+			content: gateway.contents[permissions.ToolEdit],
+		},
+		{
+			name: "loom_run_command", arguments: map[string]any{"command": "node tests.js"},
+			content: gateway.contents[permissions.ToolBash],
 		},
 	}
 	for index, call := range calls {
@@ -301,13 +404,19 @@ func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *tes
 			t.Fatalf("%s acknowledged before final output", call.name)
 		}
 	}
-	if !reflect.DeepEqual(gateway.sequences, []int64{1, 2}) ||
+	if !reflect.DeepEqual(gateway.sequences, []int64{1, 2, 3, 4}) ||
 		gateway.envelopes[0].JobID != binding.WorkItemID ||
 		gateway.envelopes[0].Call != (permissions.ProposedCall{
 			Tool: permissions.ToolRead, Path: "src/main.go",
 		}) ||
 		gateway.envelopes[1].Call != (permissions.ProposedCall{
 			Tool: permissions.ToolGrep, Path: "src", Pattern: "governed",
+		}) ||
+		gateway.envelopes[2].Call != (permissions.ProposedCall{
+			Tool: permissions.ToolEdit, Path: "index.html", Command: "<main>Snake</main>\n",
+		}) ||
+		gateway.envelopes[3].Call != (permissions.ProposedCall{
+			Tool: permissions.ToolBash, Command: "node tests.js",
 		}) {
 		t.Fatalf("gateway calls = %#v / %v", gateway.envelopes, gateway.sequences)
 	}
@@ -316,8 +425,50 @@ func TestHarnessAttemptMCPExecutesOnlyGovernedReadAndGrepUntilFinalOutput(t *tes
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(gateway.ackSequences, []int64{1, 2}) {
+	if !reflect.DeepEqual(gateway.ackSequences, []int64{1, 2, 3, 4}) {
 		t.Fatalf("Harness ToolCall acknowledgements = %v", gateway.ackSequences)
+	}
+}
+
+func TestHarnessWorkspaceToolNormalizesOnlyPathsInsideFrozenWorkspace(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	for _, test := range []struct {
+		name string
+		call permissions.ProposedCall
+		want permissions.ProposedCall
+		ok   bool
+	}{
+		{
+			name: "absolute file", call: permissions.ProposedCall{
+				Tool: permissions.ToolRead, Path: filepath.Join(workspace, "src", "main.js"),
+			},
+			want: permissions.ProposedCall{Tool: permissions.ToolRead, Path: "src/main.js"}, ok: true,
+		},
+		{
+			name: "workspace root grep", call: permissions.ProposedCall{
+				Tool: permissions.ToolGrep, Path: workspace, Pattern: ".*",
+			},
+			want: permissions.ProposedCall{Tool: permissions.ToolGrep, Path: ".", Pattern: ".*"}, ok: true,
+		},
+		{
+			name: "outside", call: permissions.ProposedCall{
+				Tool: permissions.ToolEdit, Path: filepath.Join(filepath.Dir(workspace), "outside.js"),
+			},
+			ok: false,
+		},
+		{
+			name: "relative traversal", call: permissions.ProposedCall{
+				Tool: permissions.ToolRead, Path: "../outside.js",
+			},
+			ok: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := normalizeHarnessWorkspaceCall(test.call, workspace)
+			if ok != test.ok || ok && got != test.want {
+				t.Fatalf("normalize = %#v, %t; want %#v, %t", got, ok, test.want, test.ok)
+			}
+		})
 	}
 }
 
@@ -460,7 +611,8 @@ func (fixture *harnessMultiContextDeliveryFixture) Acknowledge(
 	binding attemptpayload.Binding,
 	proof attemptpayload.DeliveryProof,
 ) error {
-	if proof != attemptpayload.ProofHarnessFinalOutput {
+	if proof != attemptpayload.ProofHarnessFinalOutput &&
+		proof != attemptpayload.ProofHarnessToolResponse {
 		return contextcapsule.ErrInvalidContextDelivery
 	}
 	for index := range fixture.payloads {

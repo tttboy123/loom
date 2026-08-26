@@ -16,11 +16,20 @@ does not reopen P2C-W1/W2/W3 or their accepted source lock.
 ## Unified Goal
 
 Phase 2D is the only active product Goal: complete Loom's multi-Provider,
-multi-model Agent Team orchestration so an installed App can run real
-conversations and independently bind each Agent to a Provider Account,
-credential revision, and Model with observable governance and failure
-isolation. Provider incidents are blocking WorkItems under this Goal; they do
-not replace it. Phase 2C remains accepted and closed.
+multi-model Agent Team orchestration so the installed App opens into a usable
+real conversation and every Agent in one Team can independently bind and
+freeze its Provider Account, credential revision, Model, Harness, limits,
+capabilities, and governed context.
+
+This single Goal includes the installed Provider credential path and Loom-owned
+Credential Vault; Conversation Profiles, immutable Route Segments, and Context
+Capsules; per-Agent Execution Binding, dispatch, and role-scoped context;
+Incident diagnostics, failure isolation, explicit fallback, Provider Account
+accounting, and governance UI. Completion requires the installed credential
+import, real conversation, mixed-Provider Team, and single-Agent failure
+isolation matrix. Provider incidents and all named capabilities are WorkItems
+or acceptance slices under this Goal; none replaces it or creates a parallel
+product Goal. Phase 2C remains accepted and closed.
 
 Observability is a horizontal Phase 2D acceptance gate, not a temporary
 DeepSeek debugging aid. Provider connection, conversation dispatch, Agent
@@ -28,11 +37,107 @@ Attempt dispatch, failure isolation, fallback, and user-visible recovery must
 share one privacy-safe operational correlation chain while the Event Journal
 remains the authority for business facts only.
 
+## Build 85 installed mixed-Team checkpoint (2026-08-21)
+
+`CURRENT / VERIFIED SLICE`: installed `v0.5.3 (85)` completes a fresh four-Agent
+DeepSeek/MiniMax Mission 4/4. Each Agent freezes its own Provider Account,
+credential revision, model, Capsule, Segment and policy binding; each Provider
+Account projects two completed Attempts with usage and cost and zero failures.
+The same installed runtime publishes 25 Providers, 4 Runtimes and 4
+Conversation Profiles, retains the OpenCode Runtime/Profile, and returns a real
+OpenCode `E2E-OK` conversation reply.
+
+The repaired boundary maps an encrypted Vault Capsule-not-found cause to the
+bounded `ErrContextItemNotRetrievable` domain result without weakening ACLs or
+discarding the original cause. A denied Context read now commits encrypted
+payload, `ToolResultAccepted`, Provider-continuation delivery, and
+`ToolResultDelivered` before the Agent Attempt can finish. This prevents a
+successful Agent answer from being downgraded to `runtime_process_failed` while
+keeping denied content out of Journal and Evidence. Phase 2D remains partial at
+the four-Provider/four-Harness, extended failure-isolation, explicit fallback,
+complete governance UI and Capsule privacy gates.
+
+## Build 92 installed Provider/Runtime recovery and CC Switch checkpoint (2026-08-22)
+
+`CURRENT / VERIFIED SLICE`: installed `v0.5.3 (92)` keeps the full Provider
+directory and executable-attested Runtime inventory available independently of
+Provider Account readiness. A cold launch produced 25 Providers, 6 online
+Runtimes, 4 Conversation Profiles, and 5 privacy-safe CC Switch credential
+candidates; the App started its bundled daemon without a manual service step.
+
+The new import source discovers only non-secret metadata. Exact official
+endpoint candidates require explicit confirmation and cross the private UDS as
+candidate/account identity only. The daemon obtains one bounded secret lease,
+configures and verifies the Loom-owned Vault entry, then zeroizes it. Custom
+compatible endpoints remain review-required; no endpoint is silently promoted
+to an official Provider identity. Ordinary conversation and Agent dispatch do
+not read CC Switch or Keychain.
+
+Full Go tests and vet, the 293-test macOS suite, 16 strict Swift contracts,
+reproducible packaging, strict signing, installed setup inspection, and a real
+DeepSeek reply pass. The locked graphical session prevented honest installed
+visual acceptance. Phase 2D therefore remains partial at custom endpoint
+approval, unlocked UI inspection, the four-Harness/four-Provider Team, complete
+failure isolation, explicit fallback, accounting, and Capsule/privacy gates.
+
+## Build 99 installed OpenCode and operational UX checkpoint (2026-08-22)
+
+`CURRENT / VERIFIED SLICE`: installed `v0.5.3 (99)` preserves 25 Providers, 6
+Runtimes and 4 Conversation Profiles while the App owns its bundled daemon
+lifecycle. Build 97 passed both native OpenCode and OpenCode with the
+Vault-backed DeepSeek account as real two-node Teams. The verifier execution
+context is no longer cancelled by the short durable-commit deadline, and
+acceptance is derived only from an exact terminal output reason.
+
+Mission is a compact title list linked to a Conversation where available;
+selection opens one workflow and its Team, Plan, Changes and Evidence. Installed
+review confirms readable status and step language and a stable Inspector.
+RoundTable exposes draggable Agent candidates, an explicit drop zone and an Add
+accessibility equivalent. A successful retire fact now removes the seat from
+the active projection; installed restart/reopen changed the same historical
+Session from a stale `1/2` view to `0/2` without deleting its append-only fact.
+
+The full Go suite, Go vet, 297 macOS tests with one intentional skip, 16 strict
+Swift contracts, strict bundle signing and the installed 25/6/4 setup probe
+pass. Phase 2D remains partial at the four-Harness/four-Provider Team, expanded
+failure isolation, explicit fallback, full accounting/governance UI and
+Capsule disclosure/encryption gates.
+
+## Build 101 installed Runtime and workflow UX checkpoint (2026-08-22)
+
+`CURRENT / VERIFIED SLICE`: installed `v0.5.3 (101)` cold-starts the bundled
+daemon and returns 25 Providers, 7 Runtimes and 4 Conversation Profiles. The
+inventory contains Claude Code, Codex, OpenCode, Pi and three Loom Native
+routes; adding OpenCode no longer hides or disables unrelated detected
+Runtimes. OpenAI is a configurable brokered Provider Account while the Codex
+native-auth Conversation Profile remains independently available.
+
+Conversation route selection now enumerates every Profile and labels the exact
+Harness and Provider Account instead of deduplicating by Provider. Mission
+history keeps active and blocked workflows visible when a Team loses executable
+bindings, and disabled preflight/setup states offer Runtime & Providers recovery
+rather than an inert control or false empty directory. RoundTable writer/target
+assignment follows confirmed drag/add order and ignores retired seats.
+
+The installed App remains conversation-first and shows `Local service ready`.
+The 305-test macOS suite, 16 strict Swift contracts, affected Go tests, full Go
+vet, reproducible App build, strict signing and installed 25/7/4 probe pass.
+Phase 2D remains partial at the four-Harness/four-Provider Team, complete
+account-local failure matrix, approved fallback, complete accounting UI and
+remaining Capsule disclosure/encryption gates.
+
 ## WorkItems
 
 ### P2D-BLOCKER-1 Installed Provider credential path
 
-`ACTIVE / REOPENED`: the installed v0.5.1 App still fails a real DeepSeek key
+`CLOSED / SUPERSEDED BY INSTALLED LIVE EVIDENCE (2026-08-21)`: the following
+entries preserve the chronology of the v0.5.1-v0.5.2 incident. Later installed
+Vault, restart, immutable Segment, and real DeepSeek reply evidence closes this
+credential/bootstrap/stale-anchor blocker. Remaining Conversation disclosure,
+Anthropic transition, four-Provider Team, failure-isolation, fallback, and
+accounting work belongs to G2-G6 and W2A-W2D; it does not reopen this blocker.
+
+`HISTORICAL / REOPENED`: the installed v0.5.1 App still fails a real DeepSeek key
 before authoritative credential metadata is visible. v0.5.1 proved the legacy
 Provider-ID restriction was removed, but did not prove the installed Swift ->
 UDS -> process Keychain helper -> metadata writer -> projection path. The repair
@@ -100,7 +205,7 @@ IPC. A subsequent real installed configure and verify now reports DeepSeek and
 `conversation-deepseek-deepseek-chat-r3`. This accepts the credential,
 Keychain, metadata, projection, and Profile-publication portion of the blocker.
 
-`ACTIVE / CONVERSATION LIVE BLOCKER`: switching the installed App from the
+`HISTORICAL / CONVERSATION LIVE BLOCKER`: switching the installed App from the
 persisted Codex thread to the verified DeepSeek Profile can reuse the stale
 Codex thread anchor when its asynchronous load has not completed. The daemon
 correctly rejects that Profile conflict before persisting the user message or
@@ -111,7 +216,7 @@ shows a safe `conversation_dispatch` error with Retry, diagnostics, and Incident
 ID. P2D-BLOCKER-1 stays open until this Candidate is packaged and a new
 DeepSeek thread receives a real installed reply.
 
-`CURRENT / INSTALLED CHAT REPAIR CANDIDATE`: v0.5.2 build 17 packages and
+`HISTORICAL / INSTALLED CHAT REPAIR CANDIDATE`: v0.5.2 build 17 packages and
 installs the stale-anchor/load-generation repair, explicit profile-conflict
 transport, safe `chat_message` correlation, and inline recovery controls. The
 App automatically starts its canonical bundled daemon, retained and installed
@@ -127,7 +232,8 @@ required.
 `CURRENT`: replace fixed Provider fields as the primary client surface with an
 ordered registry; separate Agent Runtimes from model Providers; add search,
 category filtering, status, and API-key connect/test/replace/revoke journeys.
-Credentials remain in Broker/Keychain. Fixed verification endpoints are
+Credentials remain in the Loom-owned Credential Vault; Keychain is restricted
+to explicit one-time migration. Fixed verification endpoints are
 non-generative, origin-bound, redirect-free, proxy-free, timed, and bounded.
 
 ### P2D-W2 Run-bound Provider Profiles
@@ -2998,3 +3104,177 @@ V22 does not complete the general Tool Loop or Phase 2D. General tools,
 arbitrary parallel effects, Runtime restart reattachment, installed CV6,
 mixed-Team ATL9, UI/accounting and COMP2-E remain open under the sole
 `ACTIVE / PARTIAL` Phase 2D Goal.
+
+`CURRENT / P2D-W2A/W2D BUILD 108 INSTALLED CONVERSATION AND GOVERNANCE SLICE
+VERIFIED (2026-08-22)`: the installed App starts its bundled daemon without a
+manual service step or a transient unavailable publication, retains the exact
+25-Provider/7-Runtime/4-Profile setup catalog, and completes a real OpenCode
+conversation. The focused DeepSeek/OpenCode Context Capsule gate passes all
+four explicit route transitions; `summary_only` and later `start_clean` both
+freeze distinct disclosure receipts with explicit omission counts.
+
+Mission pagination now checks streams discovered after projection rebuild
+before publishing `has_more=false`. Mission remains a title-to-one-workflow
+drill-in, and Team pickers collapse same-source same-name historical
+configurations while retaining every authoritative execution in Mission
+history. Full Go, vet, diff, Swift, strict contract, reproducible build and
+installed signature gates pass. Builds 104-107 were intermediate candidates;
+build 108 is the current installed slice. Evidence:
+`../phase2d/P2D-W2A-W2D-runtime-governance-context-build108.md`.
+
+This does not complete Phase 2D. The complete shipped-account Vault lifecycle,
+trust-domain/restart/encrypted-Capsule coverage, installed four-Provider Team,
+remaining account-local failure cells, installed MCP mid-flight revocation,
+explicit fallback and complete accounting visual matrix remain open.
+
+`CURRENT / P2D-W1E/W1F/W1G + P2D-W2D-FL1/FL2 BUILD 121 SOURCE + INSTALLED
+VERIFIED (2026-08-23)`: custom Provider candidates now freeze deterministic
+candidate, endpoint-fingerprint and policy bindings before review. W1E enforces
+HTTPS, public DNS/address resolution, no URL credentials, no redirects and no
+proxy use. W1F records a 15-minute, versioned Journal approval separately from
+credential import. W1G exposes the exact non-secret review surface and supports
+account-scoped custom OpenAI-compatible verification; approval itself neither
+imports nor sends a credential.
+
+FL1/FL2 add a credential-free loopback Failure Lab with separate temporary
+accounts. The installed private-UDS and Swift UI matrix now passes auth, rate
+limit, timeout, insufficient balance, corrupt Vault record and credential-
+revision conflict. Each target receives its exact safe stage/code/retryability
+and Incident ID while the healthy peer succeeds. Controlled account-local
+failure coverage is therefore closed rather than inferred from source tests.
+
+Build 121 also fixes two installed-loop regressions: local socket probing is
+non-blocking, and secure CC Switch database growth no longer invalidates source
+identity while path replacement and unsafe filesystem identity still fail
+closed. The installed contract sees 25 Providers, 7 Runtimes, 4 Conversation
+Profiles and 5 safe candidates, and a real OpenCode Conversation returns exact
+`E2E-OK`.
+
+Phase 2D remains the sole `ACTIVE / PARTIAL` Goal. Live import/verify of an
+operator-approved custom endpoint plus its executable frozen Agent binding, and
+the four-distinct-Provider installed Team, remain open. Existing W2A/W2B,
+Credential Vault, Composition and Attempt Loop work is preserved.
+
+## Phase 2D external live-gate scope deferral (2026-08-24)
+
+Status: `ACCEPTED / DEFERRED / NO FUTURE PHASE ACTIVATED`.
+
+This amendment supersedes earlier statements that made the following three
+external live scenarios mandatory Phase 2D completion gates:
+
+1. Codex/OpenAI + Claude/Anthropic + Loom/Kimi + Loom/MiniMax in one installed
+   independently bound Team.
+2. Real Provider Account revoke or rate-limit isolation while peer Agents
+   continue.
+3. Approved custom-endpoint credential import, verification, exact frozen
+   binding and real Conversation.
+
+They are preserved as future-Phase acceptance candidates. No Phase number or
+parallel product Goal is activated by this deferral. Existing implementations,
+controlled tests and historical live evidence remain valid and are not reset.
+Phase 2D retains the underlying per-Agent binding, Vault, diagnostics, failure
+isolation, explicit fallback, accounting and governance contracts; only the
+three external live completion requirements move.
+
+## Phase 2D active-scope closure — Build 127 (2026-08-24)
+
+Status: `ACCEPTED / COMPLETE FOR ACTIVE SCOPE`.
+
+Build 127 closes the three completion cells that remained after the external
+live-gate deferral:
+
+1. Trust-domain confirmation compares the immutable source Segment binding
+   with the target route and requires acknowledgement for each changed policy
+   dimension.
+2. Context Capsule capacity handling freezes exact, estimated or unavailable
+   authority, deterministic budget packing, counter identity, safe contribution
+   totals and explicit omissions. Unknown capacity remains unavailable.
+3. Route Transition acceptance covers all disclosure modes plus missing/stale
+   binding rejection through the authenticated private UDS boundary, with no
+   mutation on failure.
+
+Complete Go, relevant race, vet, Swift, package/sign/install and installed
+App/daemon restart gates pass. No credential was changed and no new external
+Provider request was made. The four-distinct-Provider Team, real-account
+revoke/rate-limit matrix and custom-endpoint real Conversation remain deferred
+exactly as recorded above; no future Phase is activated here.
+
+Evidence:
+`../phase2d/P2D-W2A-W2D-trust-capacity-route-build127.md`.
+
+## Phase 2D HG1 continuation after Build 127 (2026-08-24)
+
+Status: `ACTIVE / PARTIAL / SOURCE VERIFIED / INSTALLED PENDING`.
+
+ADR-0022 adds the unified Harness Gateway and Segment Session lifecycle to the
+same Phase 2D Goal. It does not reopen the three Build 127 governance cells:
+trust-domain confirmation, complete Context Capsule capacity admission and the
+authenticated Route Transition matrix remain accepted. It does add a new
+completion boundary for persistent Harness Sessions and exact Response
+cancellation.
+
+The current source registers all five built-in Harness identities through one
+Gateway. Codex now owns a persistent App Server Session per immutable Segment,
+freezes reasoning effort with the rest of its authority, reuses its native
+thread across same-Segment turns and supports exact `turn/interrupt` through a
+metadata-only Swift/private-UDS cancellation route. Full Go, cross-layer race,
+vet and current Swift source suites pass.
+
+HG1 is not complete. Claude Code, OpenCode, Pi and Loom Native still enter
+registered compatibility Backends; remaining lifecycle/event findings and the
+installed Codex reuse/switch/concurrency/cancel matrix remain open. Build 127 is
+the installed predecessor, and this source checkpoint did not read or modify a
+credential, contact an external Provider, package or install the App.
+
+Evidence:
+`../phase2d/P2D-HG1-persistent-codex-cancel-source.md`.
+
+## Phase 2D HG1 authority/evidence hardening (2026-08-25)
+
+Status: `SOURCE VERIFIED / INSTALLED PENDING`.
+
+The Build 127 trust-domain confirmation, complete Context Capsule capacity and
+authenticated Route Transition cells remain accepted. Their exact authority is
+now also carried through HG1: Segment Session, Response, privacy-safe event and
+operational diagnostic all freeze the same optional Route Transition review
+digest. Native-auth Harnesses preserve explicit absent credential authority;
+brokered routes still require exact Provider Account and positive credential
+revision.
+
+All five built-in Harnesses now use governed Segment Backends. Codex alone owns
+a persistent native App Server process/thread Session; Claude Code resumes a
+stable native CLI session ID across bounded response processes; OpenCode, Pi
+and Loom Native retain persistent Loom-owned Segment authority without claiming
+unsupported native persistence.
+
+The installed G7 gate is tightened: raw daemon JSONL may satisfy source
+verification only. Installed evidence must be the App-exported privacy-safe
+diagnostic bundle, must originate from `$HOME/Applications/Loom.app`, and must
+embed App/daemon build hashes matching the exact bundle under acceptance. This
+prevents an old trace from being combined with a newly stamped bundle.
+
+Evidence remains:
+`../phase2d/P2D-HG1-persistent-codex-cancel-source.md`.
+
+## Phase 2D Build 136 installed HG1 acceptance (2026-08-25)
+
+Status: `ACCEPTED / ACTIVE SCOPE COMPLETE`.
+
+Loom `0.5.3` Build 136 is installed at the canonical owner-controlled user App
+path and passes the ADR-0022 G7 installed matrix. The App-exported, privacy-safe
+v3 trace is bound to the exact installed App and daemon hashes. It proves source
+Codex Session reuse, reviewed same-visible-Conversation switching to Loom
+Native/DeepSeek, two target responses with independent Attempt Capsules,
+cross-Conversation overlap, exact Response cancellation and post-cancel Session
+reuse. The diagnostic exporter and verifier use the production Codex backend
+identity, freeze Profile authority and fail closed on historical aliases,
+unknown fields or binding substitution.
+
+The trust-domain confirmation, full Context Capsule capacity and Route
+Transition cells remain accepted and are now exercised through the installed
+Gateway path. The four-distinct-Provider Team, real-account revoke/rate-limit
+matrix and custom-endpoint real Conversation remain deferred exactly as decided
+on 2026-08-24; no future Phase or parallel Goal is activated here.
+
+Evidence:
+`../phase2d/P2D-HG1-build136-installed-g7.md`.

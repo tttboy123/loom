@@ -304,6 +304,15 @@ func TestPiRPCReadToolExecuteReturnsPrivateContentToChildOnly(t *testing.T) {
 
 func TestPiRPCToolAttemptCancellationReapsProcessAndExtensionResources(t *testing.T) {
 	fixture := newPiRPCBridgeFixture(t, "success")
+	fallbackRoot := filepath.Join(
+		"/tmp", ".loom-tool-45454545-4545-4545-8545-454545454545",
+	)
+	if err := os.RemoveAll(fallbackRoot); err != nil {
+		t.Fatalf("clear test-owned fallback Tool root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(fallbackRoot)
+	})
 	testBinary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -331,6 +340,8 @@ func TestPiRPCToolAttemptCancellationReapsProcessAndExtensionResources(t *testin
 	}()
 	select {
 	case <-hook.called:
+	case executeErr := <-answer:
+		t.Fatalf("Pi child exited before entering the governed Tool channel: %v", executeErr)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Pi child did not enter the governed Tool channel")
 	}
@@ -358,9 +369,6 @@ func TestPiRPCToolAttemptCancellationReapsProcessAndExtensionResources(t *testin
 			}
 		}
 	}
-	fallbackRoot := filepath.Join(
-		"/tmp", ".loom-tool-45454545-4545-4545-8545-454545454545",
-	)
 	if _, err := os.Lstat(fallbackRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fallback Tool socket root survived: %v", err)
 	}

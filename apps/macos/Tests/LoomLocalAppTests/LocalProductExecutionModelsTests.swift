@@ -119,15 +119,55 @@ final class LocalProductExecutionModelsTests: XCTestCase {
     XCTAssertThrowsError(
       try LocalProductExecutionWire.decodeEnvelope(Data(unknown.utf8))
     )
+
+    for malformed in [
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_enrollment_id\":\"enr-search\"",
+        with: "\"remote_tool_enrollment_id\":\"\""
+      ),
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_enrollment_id\":\"enr-search\"",
+        with: "\"remote_tool_enrollment_id\":\""
+          + String(repeating: "a", count: 129) + "\""
+      ),
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_enrollment_id\":\"enr-search\"",
+        with: "\"remote_tool_enrollment_id\":\"Enr Search\""
+      ),
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_backend_kind\":\"web_search\"",
+        with: "\"remote_tool_backend_kind\":\"unknown\""
+      ),
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_binding_digest\":\"" + digest64 + "\"",
+        with: "\"remote_tool_binding_digest\":\""
+          + String(repeating: "e", count: 63) + "\""
+      ),
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_binding_digest\":\"" + digest64 + "\"",
+        with: "\"remote_tool_binding_digest\":\""
+          + String(repeating: "E", count: 64) + "\""
+      ),
+      withEnrollment.replacingOccurrences(
+        of: "\"remote_tool_enrollment_available\":true",
+        with: "\"remote_tool_enrollment_available\":false"
+      ),
+    ] {
+      XCTAssertThrowsError(
+        try LocalProductExecutionWire.decodeEnvelope(Data(malformed.utf8))
+      )
+    }
   }
 
   func testMissionExecutionCommandEncodesClosedPreflightShape() throws {
+    let workspacePath = "/tmp/loom-selected-workspace"
     let command = LocalProductExecutionCommand.preflight(
       missionID: "mission/team-1",
       teamInstanceID: "team-1",
       workPackageID: "work-package.coding",
       workPackageDigest: String(repeating: "a", count: 64),
       objective: "Implement bounded change",
+      workspacePath: workspacePath,
       confirmedConstraints: ["Do not change public APIs"],
       acceptedDecisions: ["Use the existing execution adapter"],
       expectedViewVersion: String(repeating: "b", count: 64),
@@ -140,6 +180,7 @@ final class LocalProductExecutionModelsTests: XCTestCase {
 
     XCTAssertEqual(object["schema_version"] as? Int, 1)
     XCTAssertEqual(object["operation"] as? String, "preflight")
+    XCTAssertEqual(object["workspace_path"] as? String, workspacePath)
     XCTAssertEqual(object["context_version"] as? Int, 1)
     XCTAssertEqual(
       object["confirmed_constraints"] as? [String],
@@ -151,6 +192,71 @@ final class LocalProductExecutionModelsTests: XCTestCase {
     )
     XCTAssertNil(object["control_action"])
     XCTAssertNil(object["preflight_digest"])
+
+    let preflight = try XCTUnwrap(
+      LocalProductExecutionWire.decodeEnvelope(Data(Self.preflightEnvelope.utf8)).preflight
+    )
+    let start = LocalProductExecutionCommand.start(
+      preflight: preflight,
+      objective: "Implement bounded change",
+      workspacePath: workspacePath,
+      correlationID: "22222222-2222-4222-8222-222222222222"
+    )
+    let startObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(start))
+        as? [String: Any]
+    )
+    XCTAssertEqual(startObject["operation"] as? String, "start")
+    XCTAssertEqual(startObject["workspace_path"] as? String, workspacePath)
+
+    let retryCommand = LocalProductExecutionCommand.preflight(
+      missionID: "mission/team-1",
+      teamInstanceID: "team-1",
+      workPackageID: "work-package.coding",
+      workPackageDigest: String(repeating: "a", count: 64),
+      objective: "Retry the bounded change",
+      workspacePath: "",
+      newAttempt: true,
+      expectedViewVersion: String(repeating: "b", count: 64),
+      correlationID: "22222222-2222-4222-8222-222222222222"
+    )
+    let retryObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(retryCommand))
+        as? [String: Any]
+    )
+    XCTAssertEqual(retryObject["new_attempt"] as? Bool, true)
+    XCTAssertNil(retryObject["workspace_path"])
+  }
+
+  func testMissionExecutionCommandStandardizesOnlyAbsoluteWorkspacePaths() throws {
+    let nonstandard = LocalProductExecutionCommand.preflight(
+      missionID: "mission/team-1",
+      teamInstanceID: "team-1",
+      workPackageID: "work-package.coding",
+      workPackageDigest: String(repeating: "a", count: 64),
+      objective: "Implement bounded change",
+      workspacePath: "/tmp/loom-parent/../loom-workspace",
+      expectedViewVersion: String(repeating: "b", count: 64),
+      correlationID: "11111111-1111-4111-8111-111111111111"
+    )
+    XCTAssertEqual(nonstandard.workspacePath, "/tmp/loom-workspace")
+
+    let relative = LocalProductExecutionCommand.preflight(
+      missionID: "mission/team-1",
+      teamInstanceID: "team-1",
+      workPackageID: "work-package.coding",
+      workPackageDigest: String(repeating: "a", count: 64),
+      objective: "Implement bounded change",
+      workspacePath: "relative/workspace",
+      expectedViewVersion: String(repeating: "b", count: 64),
+      correlationID: "11111111-1111-4111-8111-111111111111"
+    )
+    let object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(relative))
+        as? [String: Any]
+    )
+    XCTAssertEqual(relative.workspacePath, "")
+    XCTAssertNil(object["workspace_path"])
   }
 
   func testMissionExecutionControlOmitsMissionContext() throws {
@@ -172,6 +278,7 @@ final class LocalProductExecutionModelsTests: XCTestCase {
     XCTAssertNil(object["context_version"])
     XCTAssertNil(object["confirmed_constraints"])
     XCTAssertNil(object["accepted_decisions"])
+    XCTAssertNil(object["workspace_path"])
   }
 
   func testMissionExecutionResultAcceptsOnlyProjectedClosedStatuses() throws {

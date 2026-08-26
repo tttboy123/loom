@@ -270,7 +270,19 @@ func (broker *Broker) webSearch(ctx context.Context, call Call) (Result, error) 
 		return Result{}, ErrInvalidCall
 	}
 	results, err := broker.search.Search(ctx, query, limit)
-	if err != nil || len(results) == 0 {
+	if err != nil {
+		if !errors.Is(err, ErrToolFailed) ||
+			errors.Is(err, ErrToolDenied) ||
+			errors.Is(err, ErrResultTooLarge) ||
+			errors.Is(err, ErrInvalidCall) ||
+			errors.Is(err, ErrInvalidConfig) {
+			return Result{}, err
+		}
+		// ErrToolFailed identifies a transient backend failure that the model
+		// may recover from with a different query or a known URL.
+		return Result{Content: `{"error":"search_unavailable","message":"The web search backend returned no results for this query. Try a different query or use web_fetch on a known URL."}`}, nil
+	}
+	if len(results) == 0 {
 		// The search backend can be intermittently rate-limited or return no
 		// hits (e.g. DuckDuckGo 202 from some IPs). Return a bounded,
 		// non-empty result so the model receives a clear message and the

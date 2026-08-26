@@ -109,8 +109,44 @@ func (authority *Authority) AddSeat(
 			!validCorrelationID(command.CorrelationID) {
 			return View{}, fact{}, ErrInvalidRoundtableSeat
 		}
-		if _, exists := state.seats[command.SeatID]; exists {
-			return View{}, fact{}, ErrRoundtableConflict
+		if existing, exists := state.seats[command.SeatID]; exists {
+			if existing.Available {
+				if existing.DisplayName == command.DisplayName {
+					return cloneView(state.view), fact{}, nil
+				}
+				return View{}, fact{}, ErrRoundtableConflict
+			}
+			if len(state.rounds) != 0 {
+				return View{}, fact{}, ErrRoundtableConflict
+			}
+			revision := state.seatMembershipRevisions[command.SeatID] + 1
+			payload, err := json.Marshal(seatRejoinedPayload{
+				SchemaVersion: SchemaVersion, SessionID: command.SessionID,
+				SeatID: command.SeatID, DisplayName: command.DisplayName,
+				MembershipRevision: revision, RejoinedAt: command.EmittedAt,
+			})
+			if err != nil {
+				return View{}, fact{}, err
+			}
+			view := cloneView(state.view)
+			existing.DisplayName = command.DisplayName
+			existing.Available = true
+			view.Seats[command.SeatID] = existing
+			revisionText := fmtInt(revision)
+			return view, fact{
+				Event: journal.Event{
+					ID: authority.deterministicID(
+						"roundtable-seat-rejoined", command.SessionID,
+						command.SeatID, revisionText,
+					),
+					StreamID: sessionStream(command.SessionID), Seq: state.head.Sequence + 1,
+					IdempotencyKey: "roundtable.seat-rejoined." + command.SessionID + "." + command.SeatID + "." + revisionText,
+					Type:           FactSeatRejoined, SchemaVersion: SchemaVersion,
+					EmittedAt: command.EmittedAt, CorrelationID: command.CorrelationID,
+					CausationID: state.head.EventID, PayloadJSON: payload,
+				},
+				commandID: "seat-rejoined:" + command.SessionID + ":" + command.SeatID + ":" + revisionText,
+			}, nil
 		}
 		if len(state.seats) >= MaxSeats {
 			return View{}, fact{}, ErrRoundtableTooManySeats
@@ -174,11 +210,13 @@ func (authority *Authority) RetireSeat(
 			return View{}, fact{}, ErrRoundtableSeatNotFound
 		}
 		if !seat.Available {
-			return View{}, fact{}, ErrRoundtableConflict
+			return cloneView(state.view), fact{}, nil
 		}
+		revision := state.seatMembershipRevisions[command.SeatID]
 		payload, err := json.Marshal(seatRetiredPayload{
 			SchemaVersion: SchemaVersion, SessionID: command.SessionID,
-			SeatID: command.SeatID, RetiredAt: command.EmittedAt,
+			SeatID: command.SeatID, MembershipRevision: revision,
+			RetiredAt: command.EmittedAt,
 		})
 		if err != nil {
 			return View{}, fact{}, err
@@ -186,11 +224,20 @@ func (authority *Authority) RetireSeat(
 		view := cloneView(state.view)
 		seat.Available = false
 		view.Seats[command.SeatID] = seat
+		eventIDParts := []string{
+			"roundtable-seat-retired", command.SessionID, command.SeatID,
+		}
+		idempotencyKey := "roundtable.retire." + command.SessionID + "." + command.SeatID
+		if revision > 1 {
+			revisionText := fmtInt(revision)
+			eventIDParts = append(eventIDParts, revisionText)
+			idempotencyKey += "." + revisionText
+		}
 		return view, fact{
 			Event: journal.Event{
-				ID:       authority.deterministicID("roundtable-seat-retired", command.SessionID, command.SeatID),
+				ID:       authority.deterministicID(eventIDParts...),
 				StreamID: sessionStream(command.SessionID), Seq: state.head.Sequence + 1,
-				IdempotencyKey: "roundtable.retire." + command.SessionID + "." + command.SeatID,
+				IdempotencyKey: idempotencyKey,
 				Type:           FactSeatRetired, SchemaVersion: SchemaVersion,
 				EmittedAt: command.EmittedAt, CorrelationID: command.CorrelationID,
 				CausationID: state.head.EventID, PayloadJSON: payload,

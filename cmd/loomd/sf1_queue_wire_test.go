@@ -49,9 +49,7 @@ func TestSF1QueueWireOverSocket(t *testing.T) {
 	socketPath := filepath.Join(root, "loomd.sock")
 	server, err := localipc.NewServer(localipc.ServerConfig{
 		SocketPath: socketPath, EffectiveUID: os.Geteuid(), BuildID: "sf1-queue-fixture",
-		Handler: localipc.HandlerFunc(localProductHandlerWithComposition(
-			nil, nil, nil, nil, nil, nil, nil, queueAPI, nil, nil, nil, nil, nil, nil, nil,
-		)),
+		Handler: localipc.HandlerFunc(newProductRouteHandler(productRouteServices{queue: queueAPI})),
 	})
 	if err != nil {
 		t.Fatal(err)

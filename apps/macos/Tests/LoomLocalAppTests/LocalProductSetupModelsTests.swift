@@ -75,6 +75,22 @@ func setupSnapshotDecodesStrictCanonicalCollections() throws {
             "retention_mode": "zero_data_retention",
             "data_region": "apac"
           }],
+          "credential_import_candidates": [{
+            "candidate_id": "\(String(repeating: "c", count: 64))",
+            "candidate_digest": "\(String(repeating: "d", count: 64))",
+            "source_application": "CC Switch",
+            "display_name": "DeepSeek",
+            "target_provider_id": "deepseek",
+            "protocol": "openai_responses",
+            "endpoint": "https://api.deepseek.com",
+            "endpoint_fingerprint": "\(String(repeating: "e", count: 64))",
+            "model_ids": ["deepseek-chat"],
+            "import_mode": "exact_provider",
+            "current": true,
+            "credential_available": true,
+            "review_policy_version": 1,
+            "review_policy_digest": "\(String(repeating: "f", count: 64))"
+          }],
           "credential_vault": {
             "schema_version": 1,
             "status": "unlocked",
@@ -125,6 +141,13 @@ func setupSnapshotDecodesStrictCanonicalCollections() throws {
     #expect(snapshot.providerAccounts.first?.maximumAssignedBudgetUnits == 8_000)
     #expect(snapshot.providerAccounts.first?.disclosurePolicyConfigured == true)
     #expect(snapshot.providerAccounts.first?.retentionMode == "zero_data_retention")
+    #expect(snapshot.credentialImportCandidates.first?.displayName == "DeepSeek")
+    #expect(snapshot.credentialImportCandidates.first?.candidateDigest == String(repeating: "d", count: 64))
+    #expect(snapshot.credentialImportCandidates.first?.endpointFingerprint == String(repeating: "e", count: 64))
+    #expect(snapshot.credentialImportCandidates.first?.modelIDs == ["deepseek-chat"])
+    #expect(snapshot.credentialImportCandidates.first?.importMode == "exact_provider")
+    #expect(snapshot.credentialImportCandidates.first?.reviewPolicyVersion == 1)
+    #expect(snapshot.credentialImportCandidates.first?.reviewPolicyDigest == String(repeating: "f", count: 64))
     #expect(snapshot.credentialVault?.status == "unlocked")
     #expect(snapshot.credentialVault?.storageMode == "local_key_file")
     #expect(snapshot.credentialVault?.migrationRequiredAccounts == 0)
@@ -133,6 +156,230 @@ func setupSnapshotDecodesStrictCanonicalCollections() throws {
     #expect(snapshot.runtimes.first?.modelIDs == ["model-a"])
     #expect(snapshot.savedTeams.first?.streamHead == 3)
     #expect(snapshot.templates.isEmpty)
+}
+
+@Test
+func setupRuntimeRejectsMalformedAuthoritativeProjectionValues() throws {
+    let valid =
+        #"{"runtime_instance_id":"runtime-pi","display_name":"Pi Coding Agent","adapter_type":"pi","executable_version":"0.82.1","status":"online","capacity":2,"model_id":"model-a","model_ids":["model-a"],"observed_capabilities":["rpc"],"source_probe_id":"pi-probe"}"#
+
+    for adapter in ["pi", "pi-cli", "loom-native", "codex", "claude-code", "opencode"] {
+        let candidate = valid.replacingOccurrences(
+            of: #""adapter_type":"pi""#,
+            with: #""adapter_type":"\#(adapter)""#
+        )
+        #expect(throws: Never.self) {
+            try JSONDecoder().decode(
+                LocalProductSetupRuntime.self,
+                from: Data(candidate.utf8)
+            )
+        }
+    }
+
+    let invalid = [
+        valid.replacingOccurrences(of: "runtime-pi", with: ""),
+        valid.replacingOccurrences(of: "Pi Coding Agent", with: #"Pi\nAgent"#),
+        valid.replacingOccurrences(of: #""adapter_type":"pi""#, with: #""adapter_type":"remote-plugin""#),
+        valid.replacingOccurrences(of: #""status":"online""#, with: #""status":"starting""#),
+        valid.replacingOccurrences(of: #""capacity":2"#, with: #""capacity":0"#),
+        valid.replacingOccurrences(of: #""capacity":2"#, with: #""capacity":-1"#),
+        valid.replacingOccurrences(of: #""model_ids":["model-a"]"#, with: #""model_ids":[" model-a"]"#),
+        valid.replacingOccurrences(of: #""model_ids":["model-a"]"#, with: #""model_ids":["model-a","model-a"]"#),
+        valid.replacingOccurrences(of: #""observed_capabilities":["rpc"]"#, with: #""observed_capabilities":["bad capability"]"#),
+        valid.replacingOccurrences(of: #""observed_capabilities":["rpc"]"#, with: #""observed_capabilities":["rpc","rpc"]"#),
+        valid.replacingOccurrences(of: "pi-probe", with: ""),
+    ]
+    for candidate in invalid {
+        #expect(throws: LocalProductWireError.invalidJSON) {
+            try JSONDecoder().decode(
+                LocalProductSetupRuntime.self,
+                from: Data(candidate.utf8)
+            )
+        }
+    }
+}
+
+@Test
+func credentialImportCandidateIsStrictBoundedAndNonSecret() throws {
+    let candidateID = String(repeating: "c", count: 64)
+    let candidateDigest = String(repeating: "d", count: 64)
+    let endpointFingerprint = String(repeating: "e", count: 64)
+    let reviewPolicyDigest = String(repeating: "f", count: 64)
+    let valid =
+        #"{"candidate_id":"\#(candidateID)","candidate_digest":"\#(candidateDigest)","source_application":"CC Switch","display_name":"DeepSeek","target_provider_id":"deepseek","protocol":"openai_responses","endpoint":"https://api.deepseek.com","endpoint_fingerprint":"\#(endpointFingerprint)","model_ids":["deepseek-chat"],"import_mode":"exact_provider","current":true,"credential_available":true,"review_policy_version":1,"review_policy_digest":"\#(reviewPolicyDigest)"}"#
+    let candidate = try JSONDecoder().decode(
+        LocalProductCredentialImportCandidate.self,
+        from: Data(valid.utf8)
+    )
+    #expect(candidate.id == candidateID)
+    #expect(candidate.candidateDigest == candidateDigest)
+    #expect(candidate.targetProviderID == "deepseek")
+    #expect(candidate.endpointFingerprint == endpointFingerprint)
+    #expect(candidate.reviewPolicyVersion == 1)
+    #expect(candidate.reviewPolicyDigest == reviewPolicyDigest)
+
+    let unknownField = valid.replacingOccurrences(
+        of: "\"credential_available\":true",
+        with: "\"credential_available\":true,\"secret\":\"forbidden\""
+    )
+    #expect(throws: LocalProductWireError.unknownField) {
+        try JSONDecoder().decode(
+            LocalProductCredentialImportCandidate.self,
+            from: Data(unknownField.utf8)
+        )
+    }
+
+    for invalid in [
+        valid.replacingOccurrences(
+            of: "https://api.deepseek.com",
+            with: "http://127.0.0.1:9000"
+        ),
+        valid.replacingOccurrences(
+            of: "\"exact_provider\"",
+            with: "\"silent_replace\""
+        ),
+        valid.replacingOccurrences(
+            of: "\"candidate_digest\":\"\(candidateDigest)\"",
+            with: "\"candidate_digest\":\"ABC\""
+        ),
+        valid.replacingOccurrences(
+            of: "\"endpoint_fingerprint\":\"\(endpointFingerprint)\"",
+            with: "\"endpoint_fingerprint\":\"\(String(repeating: "E", count: 64))\""
+        ),
+        valid.replacingOccurrences(
+            of: "\"review_policy_version\":1",
+            with: "\"review_policy_version\":0"
+        ),
+        valid.replacingOccurrences(
+            of: "\"review_policy_digest\":\"\(reviewPolicyDigest)\"",
+            with: "\"review_policy_digest\":\"\(String(repeating: "g", count: 64))\""
+        ),
+        valid.replacingOccurrences(
+            of: "\"display_name\":\"DeepSeek\"",
+            with: "\"display_name\":\"\(String(repeating: "x", count: 129))\""
+        ),
+        valid.replacingOccurrences(
+            of: "\"model_ids\":[\"deepseek-chat\"]",
+            with: "\"model_ids\":[\"\(String(repeating: "m", count: 257))\"]"
+        ),
+    ] {
+        #expect(throws: LocalProductWireError.invalidJSON) {
+            try JSONDecoder().decode(
+                LocalProductCredentialImportCandidate.self,
+                from: Data(invalid.utf8)
+            )
+        }
+    }
+}
+
+@Test
+func endpointReviewResultIsStrictApprovedAndNonSecret() throws {
+    let digest = String(repeating: "a", count: 64)
+    let payload = Data(
+        """
+        {
+          "candidate_id":"\(digest)",
+          "candidate_digest":"\(digest)",
+          "authority_candidate_digest":"\(digest)",
+          "provider_id":"custom-openai",
+          "provider_account_id":"custom-openai.primary",
+          "protocol":"openai_responses",
+          "endpoint":"https://gateway.example.com/v1",
+          "endpoint_fingerprint":"\(digest)",
+          "model_digest":"\(digest)",
+          "review_policy_version":1,
+          "review_policy_digest":"\(digest)",
+          "status":"approved",
+          "revision":2,
+          "approval_digest":"\(digest)",
+          "approved_at":"2026-08-23T05:00:00Z",
+          "expires_at":"2026-08-23T05:15:00Z"
+        }
+        """.utf8
+    )
+    let result = try LocalProductSetupWire.decodeEndpointReviewResult(payload)
+    #expect(result.status == "approved")
+    #expect(result.providerAccountID == "custom-openai.primary")
+    for invalid in [
+        String(data: payload, encoding: .utf8)!.replacingOccurrences(
+            of: "\"status\":\"approved\"", with: "\"status\":\"requested\""
+        ),
+        String(data: payload, encoding: .utf8)!.replacingOccurrences(
+            of: "\"revision\":2", with: "\"revision\":1"
+        ),
+        String(data: payload, encoding: .utf8)!.replacingOccurrences(
+            of: "\"expires_at\"", with: "\"secret\":\"forbidden\",\"expires_at\""
+        ),
+    ] {
+        #expect(throws: Error.self) {
+            try LocalProductSetupWire.decodeEndpointReviewResult(Data(invalid.utf8))
+        }
+    }
+}
+
+@Test
+func failureLabResultRequiresFailedTargetAndHealthyPeer() throws {
+    let payload = Data(
+        """
+        {
+          "schema_version":1,
+          "scenario":"rate_limit",
+          "incident_id":"incident-failure-lab",
+          "agents":[
+            {"agent_id":"target-agent","provider_account_id":"failurelab_tmp_0123456789abcdef0123456789abcdef","status":"failed","stage":"provider_rate_limit","code":"provider_rate_limit","retryable":true,"elapsed_milliseconds":1},
+            {"agent_id":"healthy-peer","provider_account_id":"failurelab_tmp_fedcba9876543210fedcba9876543210","status":"succeeded","retryable":false,"elapsed_milliseconds":0}
+          ]
+        }
+        """.utf8
+    )
+    let result = try LocalProductSetupWire.decodeFailureLabResult(payload)
+    #expect(result.agents[0].retryable)
+    #expect(result.agents[1].status == "succeeded")
+    let pollutedPeer = String(data: payload, encoding: .utf8)!.replacingOccurrences(
+        of: "\"status\":\"succeeded\",\"retryable\"",
+        with: "\"status\":\"failed\",\"stage\":\"provider_auth\",\"code\":\"provider_auth\",\"retryable\""
+    )
+    #expect(throws: Error.self) {
+        try LocalProductSetupWire.decodeFailureLabResult(Data(pollutedPeer.utf8))
+    }
+
+    let mismatchedScenario = String(data: payload, encoding: .utf8)!
+        .replacingOccurrences(of: "\"scenario\":\"rate_limit\"", with: "\"scenario\":\"timeout\"")
+    #expect(throws: Error.self) {
+        try LocalProductSetupWire.decodeFailureLabResult(Data(mismatchedScenario.utf8))
+    }
+
+    let mismatchedRetryability = String(data: payload, encoding: .utf8)!
+        .replacingOccurrences(of: "\"retryable\":true", with: "\"retryable\":false")
+    #expect(throws: Error.self) {
+        try LocalProductSetupWire.decodeFailureLabResult(Data(mismatchedRetryability.utf8))
+    }
+}
+
+@Test
+func failureLabCorruptRecordRequiresVersionedAADStage() throws {
+    let payload = Data(
+        """
+        {
+          "schema_version":1,
+          "scenario":"corrupt_vault_record",
+          "incident_id":"incident-failure-lab",
+          "agents":[
+            {"agent_id":"target-agent","provider_account_id":"failurelab_tmp_0123456789abcdef0123456789abcdef","status":"failed","stage":"vault_aad_validation","code":"corrupt_vault_record","retryable":false,"elapsed_milliseconds":1},
+            {"agent_id":"healthy-peer","provider_account_id":"failurelab_tmp_fedcba9876543210fedcba9876543210","status":"succeeded","retryable":false,"elapsed_milliseconds":0}
+          ]
+        }
+        """.utf8
+    )
+    let result = try LocalProductSetupWire.decodeFailureLabResult(payload)
+    #expect(result.agents[0].stage == "vault_aad_validation")
+
+    let legacyStage = String(data: payload, encoding: .utf8)!.replacingOccurrences(
+        of: "vault_aad_validation", with: "vault_read"
+    )
+    #expect(throws: Error.self) {
+        try LocalProductSetupWire.decodeFailureLabResult(Data(legacyStage.utf8))
+    }
 }
 
 @Test

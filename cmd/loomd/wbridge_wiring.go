@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/execution"
@@ -23,6 +24,17 @@ type productToolExecutionPort interface {
 	Execute(context.Context, execution.Proposal) (execution.ExecutionResult, error)
 	RemoteToolKinds() []permissions.ToolKind
 }
+
+type productScopedToolExecutionPort interface {
+	RemoteToolKindsForScope(execution.RemoteToolScope) []permissions.ToolKind
+	RevalidateRemoteToolScope(
+		context.Context,
+		execution.RemoteToolScope,
+		permissions.ProposedCall,
+	) error
+}
+
+const productAttemptPayloadRollbackTimeout = 5 * time.Second
 
 type bridgeExecutionHook struct {
 	adapter     productToolExecutionPort
@@ -41,6 +53,28 @@ func (hook *bridgeExecutionHook) AllowedToolCalls() []permissions.ToolKind {
 		allowed = append(allowed, hook.adapter.RemoteToolKinds()...)
 	}
 	return allowed
+}
+
+func (hook *bridgeExecutionHook) AllowedToolCallsForBinding(
+	binding loomruntime.FrozenExecutionBinding,
+) []permissions.ToolKind {
+	allowed := []permissions.ToolKind{
+		permissions.ToolBash, permissions.ToolEdit,
+		permissions.ToolRead, permissions.ToolGrep,
+	}
+	if hook == nil || hook.adapter == nil ||
+		binding.RemoteToolEnrollmentID == "" ||
+		binding.RemoteToolEnrollmentDigest == "" {
+		return allowed
+	}
+	adapter, ok := hook.adapter.(productScopedToolExecutionPort)
+	if !ok {
+		return allowed
+	}
+	return append(allowed, adapter.RemoteToolKindsForScope(execution.RemoteToolScope{
+		EnrollmentID:     binding.RemoteToolEnrollmentID,
+		EnrollmentDigest: binding.RemoteToolEnrollmentDigest,
+	})...)
 }
 
 func newBridgeExecutionHook(
@@ -86,8 +120,10 @@ func (hook *bridgeExecutionHook) ExecuteToolCall(
 	var dispatchGate execution.ExecutionDispatchGate
 	var diagnosticRecorder execution.ToolExecutionDiagnosticRecorder
 	var gateway *productAttemptToolDispatchGate
+	var invocation productAttemptLoopInvocation
 	if hook.loops != nil {
-		invocation, found := productAttemptLoopInvocationFromContext(ctx)
+		var found bool
+		invocation, found = productAttemptLoopInvocationFromContext(ctx)
 		if !found || !validBridgeProposalBinding(binding) ||
 			!sameProductAttemptToolBinding(invocation, binding, envelope.JobID) ||
 			sequence > int64(invocation.Budget.MaxToolCalls) {
@@ -105,6 +141,45 @@ func (hook *bridgeExecutionHook) ExecuteToolCall(
 			}
 		}
 	}
+	if envelope.Call.Tool != permissions.ToolWebSearch &&
+		envelope.Call.Tool != permissions.ToolWebFetch &&
+		envelope.Call.Tool != permissions.ToolMCPTool && hook.loops != nil {
+		var worktreeErr error
+		ctx, worktreeErr = execution.BindAttemptWorktree(
+			ctx,
+			execution.AttemptWorktreeBinding{
+				JobID: envelope.JobID, RunID: binding.RunID,
+				ClaimGeneration: binding.ClaimGeneration,
+				WorkspacePath:   invocation.WorkspacePath,
+			},
+		)
+		if worktreeErr != nil {
+			return loomruntime.ToolCallResult{}, loomruntime.ErrInvalidToolCallEnvelope
+		}
+	}
+	if invocation.ExecutionBinding.RemoteToolEnrollmentID != "" ||
+		invocation.ExecutionBinding.RemoteToolEnrollmentDigest != "" {
+		scopedAdapter, ok := hook.adapter.(productScopedToolExecutionPort)
+		if !ok {
+			return loomruntime.ToolCallResult{}, loomruntime.ErrInvalidToolCallEnvelope
+		}
+		scope := execution.RemoteToolScope{
+			EnrollmentID:     invocation.ExecutionBinding.RemoteToolEnrollmentID,
+			EnrollmentDigest: invocation.ExecutionBinding.RemoteToolEnrollmentDigest,
+		}
+		var scopeErr error
+		ctx, scopeErr = execution.BindRemoteToolScope(ctx, scope)
+		if scopeErr != nil {
+			return loomruntime.ToolCallResult{}, loomruntime.ErrInvalidToolCallEnvelope
+		}
+		if gateway != nil {
+			gateway.revalidateRemoteBinding = func(commitCtx context.Context) error {
+				return scopedAdapter.RevalidateRemoteToolScope(
+					commitCtx, scope, envelope.Call,
+				)
+			}
+		}
+	}
 	result, err := hook.adapter.Execute(ctx, execution.Proposal{
 		JobID:            envelope.JobID,
 		Call:             envelope.Call,
@@ -115,9 +190,27 @@ func (hook *bridgeExecutionHook) ExecuteToolCall(
 		Diagnostics:      diagnosticRecorder,
 	})
 	if err != nil {
+		cancelProductAttemptForRemoteBindingFailure(invocation, err)
 		return loomruntime.ToolCallResult{}, err
 	}
 	defer result.Close()
+	switch result.ErrorCode {
+	case "remote_tool_binding_revoked":
+		cancelProductAttemptForRemoteBindingFailure(
+			invocation, execution.ErrRemoteToolBindingRevoked,
+		)
+		return loomruntime.ToolCallResult{}, execution.ErrRemoteToolBindingRevoked
+	case "remote_tool_binding_policy_drift":
+		cancelProductAttemptForRemoteBindingFailure(
+			invocation, execution.ErrRemoteToolBindingPolicyDrift,
+		)
+		return loomruntime.ToolCallResult{}, execution.ErrRemoteToolBindingPolicyDrift
+	case "remote_tool_result_rollback_failed":
+		cancelProductAttemptForRemoteBindingFailure(
+			invocation, execution.ErrRemoteToolResultRollback,
+		)
+		return loomruntime.ToolCallResult{}, execution.ErrRemoteToolResultRollback
+	}
 	outcome := loomruntime.ToolCallResult{
 		Verdict:            result.Verdict,
 		ExecutionID:        result.ExecutionID,
@@ -196,6 +289,7 @@ func (hook *bridgeExecutionHook) ExecuteToolCall(
 			Binding: delivery, CallDigest: gateway.callDigest,
 			Tool: gateway.call.Tool, OperationID: gateway.operationID,
 		}
+		outcome.ContentDigest = "sha256:" + delivery.ContentDigest
 	}
 	if outcome.Verdict == permissions.VerdictAllow &&
 		outcome.ExecutionID == "" {
@@ -207,6 +301,20 @@ func (hook *bridgeExecutionHook) ExecuteToolCall(
 		return loomruntime.ToolCallResult{}, err
 	}
 	return outcome, nil
+}
+
+func cancelProductAttemptForRemoteBindingFailure(
+	invocation productAttemptLoopInvocation,
+	err error,
+) {
+	if invocation.cancelAttempt == nil {
+		return
+	}
+	if errors.Is(err, execution.ErrRemoteToolBindingRevoked) ||
+		errors.Is(err, execution.ErrRemoteToolBindingPolicyDrift) ||
+		errors.Is(err, execution.ErrRemoteToolResultRollback) {
+		invocation.cancelAttempt(err)
+	}
 }
 
 func advanceProductAttemptTurnAfterToolResult(
@@ -232,13 +340,14 @@ func advanceProductAttemptTurnAfterToolResult(
 }
 
 type productAttemptToolDispatchGate struct {
-	loops       *work.AttemptLoopAuthority
-	payloads    attemptpayload.Store
-	invocation  productAttemptLoopInvocation
-	call        permissions.ProposedCall
-	callDigest  string
-	operationID string
-	callInput   work.AttemptLoopToolCallInput
+	loops                   *work.AttemptLoopAuthority
+	payloads                attemptpayload.Store
+	invocation              productAttemptLoopInvocation
+	call                    permissions.ProposedCall
+	callDigest              string
+	operationID             string
+	callInput               work.AttemptLoopToolCallInput
+	revalidateRemoteBinding func(context.Context) error
 }
 
 type productAttemptToolDiagnosticObserver struct {
@@ -319,7 +428,7 @@ func (gate *productAttemptToolDispatchGate) CommitExecutionResult(
 	ctx context.Context,
 	input execution.ExecutionResultCommitInput,
 ) error {
-	if gate == nil || gate.loops == nil || gate.payloads == nil ||
+	if ctx == nil || gate == nil || gate.loops == nil || gate.payloads == nil ||
 		!productAttemptRemoteContentTool(gate.call.Tool) ||
 		input.JobID != gate.invocation.Binding.PayloadAuthority.WorkItemID ||
 		input.CallDigest != gate.callDigest || input.Tool != gate.call.Tool ||
@@ -328,6 +437,37 @@ func (gate *productAttemptToolDispatchGate) CommitExecutionResult(
 		input.ExecutionID == "" || len(input.Content) == 0 ||
 		input.OutputDigest != "sha256:"+toolproposal.ContentDigest(input.Content) {
 		return work.ErrInvalidAttemptLoop
+	}
+	if gate.revalidateRemoteBinding != nil {
+		rollback, ok := gate.payloads.(attemptpayload.RollbackStore)
+		if !ok || nilProductAssetPort(rollback) {
+			return execution.ErrRemoteToolResultRollback
+		}
+		if err := gate.revalidateRemoteBinding(ctx); err != nil {
+			return err
+		}
+		binding, err := gate.remoteResultBinding(input.ExecutionID, input.OutputDigest)
+		if err != nil {
+			return err
+		}
+		if err := gate.payloads.PutAttemptPayload(ctx, attemptpayload.Payload{
+			Binding: binding, Status: attemptpayload.StatusPending, Content: input.Content,
+		}); err != nil {
+			return err
+		}
+		if err := gate.revalidateRemoteBinding(ctx); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), productAttemptPayloadRollbackTimeout,
+			)
+			deleteErr := rollback.DeleteAttemptPayload(cleanupCtx, binding)
+			cancel()
+			if deleteErr != nil && !errors.Is(deleteErr, attemptpayload.ErrPayloadNotFound) {
+				return errors.Join(execution.ErrRemoteToolResultRollback, err)
+			}
+			return err
+		}
+		_, err = gate.loops.AcceptToolResult(ctx, gate.invocation.Binding, binding)
+		return err
 	}
 	binding, err := gate.remoteResultBinding(input.ExecutionID, input.OutputDigest)
 	if err != nil {
@@ -551,7 +691,7 @@ func (hook *bridgeExecutionHook) ReadToolCallResultContent(
 		!productAttemptContentTool(result.Delivery.Tool) ||
 		!sameProductAttemptToolBinding(invocation, binding, binding.WorkItemID) ||
 		result.Delivery.Binding.Scope != invocation.Binding.PayloadAuthority.Scope ||
-		result.ContentDigest == "" || result.ContentDigest != result.OutputDigest {
+		result.ContentDigest == "" {
 		return nil, work.ErrInvalidAttemptLoop
 	}
 	payload, err := hook.payloads.ReadAttemptPayload(ctx, result.Delivery.Binding)
@@ -559,9 +699,14 @@ func (hook *bridgeExecutionHook) ReadToolCallResultContent(
 		return nil, err
 	}
 	defer payload.Close()
+	expectedContentType := attemptpayload.ContentTypeTextUTF8
+	if result.Delivery.Tool == permissions.ToolEdit ||
+		result.Delivery.Tool == permissions.ToolBash {
+		expectedContentType = attemptpayload.ContentTypeJSON
+	}
 	if payload.Status != attemptpayload.StatusPending ||
 		payload.Binding != result.Delivery.Binding ||
-		payload.Binding.ContentType != attemptpayload.ContentTypeTextUTF8 ||
+		payload.Binding.ContentType != expectedContentType ||
 		payload.Binding.ContentDigest != toolproposal.ContentDigest(payload.Content) ||
 		result.ContentDigest != "sha256:"+payload.Binding.ContentDigest {
 		return nil, work.ErrInvalidAttemptLoop
@@ -571,6 +716,7 @@ func (hook *bridgeExecutionHook) ReadToolCallResultContent(
 
 func productAttemptContentTool(tool permissions.ToolKind) bool {
 	return tool == permissions.ToolRead || tool == permissions.ToolGrep ||
+		tool == permissions.ToolEdit || tool == permissions.ToolBash ||
 		productAttemptRemoteContentTool(tool)
 }
 
@@ -600,6 +746,7 @@ func (hook *bridgeExecutionHook) AcknowledgeToolCallResultWithProof(
 		result.Verdict != permissions.VerdictAllow ||
 		result.Delivery.Binding.Scope != invocation.Binding.PayloadAuthority.Scope ||
 		(proof != attemptpayload.ProofRunStreamToolResult &&
+			proof != attemptpayload.ProofHarnessToolResponse &&
 			proof != attemptpayload.ProofHarnessFinalOutput) {
 		return work.ErrInvalidAttemptLoop
 	}

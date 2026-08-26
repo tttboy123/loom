@@ -1297,6 +1297,61 @@ public struct LocalProductSetupRuntime:
             forKey: .observedCapabilities
         )
         sourceProbeID = try values.decode(String.self, forKey: .sourceProbeID)
+        guard LocalIPCClient.validIdentifier(runtimeInstanceID),
+              Self.validDisplayName(displayName),
+              Self.validAdapterTypes.contains(adapterType),
+              Self.validExecutableVersion(executableVersion),
+              Self.validStatuses.contains(status),
+              (1...4_096).contains(capacity),
+              modelID.isEmpty || LocalIPCClient.validModelID(modelID),
+              Self.validUniqueValues(
+                modelIDs,
+                maximumCount: 128,
+                validator: LocalIPCClient.validModelID
+              ),
+              modelID.isEmpty || modelIDs.contains(modelID),
+              Self.validUniqueValues(
+                observedCapabilities,
+                maximumCount: 64,
+                validator: LocalIPCClient.validIdentifier
+              ),
+              LocalIPCClient.validIdentifier(sourceProbeID) else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+
+    private static let validAdapterTypes: Set<String> = [
+        "pi", "pi-cli", "loom-native", "codex", "claude-code", "opencode",
+    ]
+
+    private static let validStatuses: Set<String> = [
+        "online", "offline", "incompatible", "disabled",
+    ]
+
+    private static func validDisplayName(_ value: String) -> Bool {
+        (1...256).contains(value.utf8.count) &&
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            !value.unicodeScalars.contains(where: {
+                CharacterSet.controlCharacters.contains($0)
+            })
+    }
+
+    private static func validExecutableVersion(_ value: String) -> Bool {
+        value.utf8.count <= 128 &&
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            !value.unicodeScalars.contains(where: {
+                CharacterSet.controlCharacters.contains($0)
+            })
+    }
+
+    private static func validUniqueValues(
+        _ values: [String],
+        maximumCount: Int,
+        validator: (String) -> Bool
+    ) -> Bool {
+        values.count <= maximumCount &&
+            values.allSatisfy(validator) &&
+            Set(values).count == values.count
     }
 }
 
@@ -1541,6 +1596,388 @@ public struct LocalProductSetupResource:
     }
 }
 
+public struct LocalProductCredentialImportCandidate:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { candidateID }
+    public let candidateID: String
+    public let candidateDigest: String
+    public let sourceApplication: String
+    public let displayName: String
+    public let targetProviderID: String
+    public let protocolName: String
+    public let endpoint: String
+    public let endpointFingerprint: String
+    public let modelIDs: [String]
+    public let importMode: String
+    public let current: Bool
+    public let credentialAvailable: Bool
+    public let reviewPolicyVersion: Int
+    public let reviewPolicyDigest: String
+
+    enum CodingKeys: String, CodingKey {
+        case candidateID = "candidate_id"
+        case candidateDigest = "candidate_digest"
+        case sourceApplication = "source_application"
+        case displayName = "display_name"
+        case targetProviderID = "target_provider_id"
+        case protocolName = "protocol"
+        case endpoint
+        case endpointFingerprint = "endpoint_fingerprint"
+        case modelIDs = "model_ids"
+        case importMode = "import_mode"
+        case current
+        case credentialAvailable = "credential_available"
+        case reviewPolicyVersion = "review_policy_version"
+        case reviewPolicyDigest = "review_policy_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownSetupKeys(decoder, allowed: [
+            "candidate_id", "candidate_digest", "source_application",
+            "display_name", "target_provider_id", "protocol", "endpoint",
+            "endpoint_fingerprint", "model_ids", "import_mode", "current",
+            "credential_available", "review_policy_version",
+            "review_policy_digest",
+        ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        candidateID = try values.decode(String.self, forKey: .candidateID)
+        candidateDigest = try values.decode(
+            String.self,
+            forKey: .candidateDigest
+        )
+        sourceApplication = try values.decode(
+            String.self,
+            forKey: .sourceApplication
+        )
+        displayName = try values.decode(String.self, forKey: .displayName)
+        targetProviderID = try values.decode(
+            String.self,
+            forKey: .targetProviderID
+        )
+        protocolName = try values.decode(String.self, forKey: .protocolName)
+        endpoint = try values.decode(String.self, forKey: .endpoint)
+        endpointFingerprint = try values.decode(
+            String.self,
+            forKey: .endpointFingerprint
+        )
+        modelIDs = try values.decode([String].self, forKey: .modelIDs)
+        importMode = try values.decode(String.self, forKey: .importMode)
+        current = try values.decode(Bool.self, forKey: .current)
+        credentialAvailable = try values.decode(
+            Bool.self,
+            forKey: .credentialAvailable
+        )
+        reviewPolicyVersion = try values.decode(
+            Int.self,
+            forKey: .reviewPolicyVersion
+        )
+        reviewPolicyDigest = try values.decode(
+            String.self,
+            forKey: .reviewPolicyDigest
+        )
+        guard Self.validDigest(candidateID),
+              Self.validDigest(candidateDigest),
+              Self.validDisplay(sourceApplication, maximumBytes: 64),
+              Self.validDisplay(displayName, maximumBytes: 128),
+              LocalIPCClient.validIdentifier(targetProviderID),
+              protocolName == "openai_responses",
+              Self.validEndpoint(endpoint),
+              Self.validDigest(endpointFingerprint),
+              Self.validModels(modelIDs),
+              ["exact_provider", "custom_endpoint_review"].contains(importMode),
+              reviewPolicyVersion > 0,
+              Self.validDigest(reviewPolicyDigest)
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+
+    private static func validDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        }
+    }
+
+    private static func validDisplay(
+        _ value: String,
+        maximumBytes: Int
+    ) -> Bool {
+        !value.isEmpty && value.utf8.count <= maximumBytes &&
+            value.unicodeScalars.allSatisfy {
+                $0.value >= 0x20 && $0.value != 0x7f
+            }
+    }
+
+    private static func validModels(_ values: [String]) -> Bool {
+        guard !values.isEmpty, values.count <= 64,
+              values.count == Set(values).count else {
+            return false
+        }
+        return values.allSatisfy { value in
+            !value.isEmpty && value.utf8.count <= 256 &&
+                value == value.trimmingCharacters(in: .whitespacesAndNewlines) &&
+                value.unicodeScalars.allSatisfy {
+                    $0.value >= 0x20 && $0.value != 0x7f
+                }
+        }
+    }
+
+    private static func validEndpoint(_ value: String) -> Bool {
+        guard value.utf8.count <= 2_048,
+              let parts = URLComponents(string: value),
+              parts.scheme == "https", parts.user == nil, parts.password == nil,
+              parts.query == nil, parts.fragment == nil,
+              parts.port == nil || parts.port == 443,
+              let host = parts.host?.lowercased(), host == parts.host,
+              !host.contains(":"), host != "localhost",
+              !host.hasSuffix(".local"), !host.hasSuffix(".internal") else {
+            return false
+        }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2,
+              !labels.allSatisfy({ $0.allSatisfy(\.isNumber) }) else {
+            return false
+        }
+        return labels.allSatisfy { label in
+            !label.isEmpty && label.count <= 63 &&
+                label.first != "-" && label.last != "-" &&
+                label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        }
+    }
+}
+
+public struct LocalProductEndpointReviewResult:
+    Codable, Equatable, Sendable
+{
+    public let candidateID: String
+    public let candidateDigest: String
+    public let authorityCandidateDigest: String
+    public let providerID: String
+    public let providerAccountID: String
+    public let protocolName: String
+    public let endpoint: String
+    public let endpointFingerprint: String
+    public let modelDigest: String
+    public let reviewPolicyVersion: Int
+    public let reviewPolicyDigest: String
+    public let status: String
+    public let revision: Int
+    public let approvalDigest: String
+    public let approvedAt: String
+    public let expiresAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case candidateID = "candidate_id"
+        case candidateDigest = "candidate_digest"
+        case authorityCandidateDigest = "authority_candidate_digest"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case protocolName = "protocol"
+        case endpoint
+        case endpointFingerprint = "endpoint_fingerprint"
+        case modelDigest = "model_digest"
+        case reviewPolicyVersion = "review_policy_version"
+        case reviewPolicyDigest = "review_policy_digest"
+        case status, revision
+        case approvalDigest = "approval_digest"
+        case approvedAt = "approved_at"
+        case expiresAt = "expires_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownSetupKeys(decoder, allowed: [
+            "candidate_id", "candidate_digest", "authority_candidate_digest",
+            "provider_id", "provider_account_id", "protocol", "endpoint",
+            "endpoint_fingerprint", "model_digest", "review_policy_version",
+            "review_policy_digest", "status", "revision", "approval_digest",
+            "approved_at", "expires_at",
+        ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        candidateID = try values.decode(String.self, forKey: .candidateID)
+        candidateDigest = try values.decode(String.self, forKey: .candidateDigest)
+        authorityCandidateDigest = try values.decode(
+            String.self, forKey: .authorityCandidateDigest
+        )
+        providerID = try values.decode(String.self, forKey: .providerID)
+        providerAccountID = try values.decode(String.self, forKey: .providerAccountID)
+        protocolName = try values.decode(String.self, forKey: .protocolName)
+        endpoint = try values.decode(String.self, forKey: .endpoint)
+        endpointFingerprint = try values.decode(String.self, forKey: .endpointFingerprint)
+        modelDigest = try values.decode(String.self, forKey: .modelDigest)
+        reviewPolicyVersion = try values.decode(Int.self, forKey: .reviewPolicyVersion)
+        reviewPolicyDigest = try values.decode(String.self, forKey: .reviewPolicyDigest)
+        status = try values.decode(String.self, forKey: .status)
+        revision = try values.decode(Int.self, forKey: .revision)
+        approvalDigest = try values.decode(String.self, forKey: .approvalDigest)
+        approvedAt = try values.decode(String.self, forKey: .approvedAt)
+        expiresAt = try values.decode(String.self, forKey: .expiresAt)
+        let digests = [
+            candidateID, candidateDigest, authorityCandidateDigest,
+            endpointFingerprint, modelDigest, reviewPolicyDigest, approvalDigest,
+        ]
+        guard digests.allSatisfy(Self.validDigest),
+              LocalIPCClient.validIdentifier(providerID),
+              LocalIPCClient.validProviderAccountID(
+                providerAccountID, providerID: providerID
+              ),
+              protocolName == "openai_responses",
+              URL(string: endpoint)?.scheme?.lowercased() == "https",
+              reviewPolicyVersion > 0, status == "approved", revision == 2,
+              Self.validDate(approvedAt), Self.validDate(expiresAt)
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+
+    private static func validDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        }
+    }
+
+    private static func validDate(_ value: String) -> Bool {
+        let formatter = ISO8601DateFormatter()
+        if formatter.date(from: value) != nil { return true }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value) != nil
+    }
+}
+
+public struct LocalProductFailureLabAgentResult:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { agentID }
+    public let agentID: String
+    public let providerAccountID: String
+    public let status: String
+    public let stage: String?
+    public let code: String?
+    public let retryable: Bool
+    public let elapsedMilliseconds: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case agentID = "agent_id"
+        case providerAccountID = "provider_account_id"
+        case status, stage, code, retryable
+        case elapsedMilliseconds = "elapsed_milliseconds"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownSetupKeys(decoder, allowed: [
+            "agent_id", "provider_account_id", "status", "stage", "code",
+            "retryable", "elapsed_milliseconds",
+        ])
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        agentID = try values.decode(String.self, forKey: .agentID)
+        providerAccountID = try values.decode(String.self, forKey: .providerAccountID)
+        status = try values.decode(String.self, forKey: .status)
+        stage = try values.decodeIfPresent(String.self, forKey: .stage)
+        code = try values.decodeIfPresent(String.self, forKey: .code)
+        retryable = try values.decode(Bool.self, forKey: .retryable)
+        elapsedMilliseconds = try values.decode(Int64.self, forKey: .elapsedMilliseconds)
+        let knownStages = [
+            "provider_auth", "provider_rate_limit", "provider_connect",
+            "provider_http", "vault_aad_validation", "agent_attempt_dispatch",
+        ]
+        let knownCodes = [
+            "provider_auth", "provider_rate_limit", "timeout",
+            "provider_insufficient_balance", "corrupt_vault_record",
+            "credential_revision_conflict",
+        ]
+        guard LocalIPCClient.validIdentifier(agentID),
+              LocalIPCClient.validIdentifier(providerAccountID),
+              ["failed", "succeeded"].contains(status),
+              elapsedMilliseconds >= 0,
+              status == "failed"
+                ? (stage.map(knownStages.contains) == true && code.map(knownCodes.contains) == true)
+                : (stage == nil && code == nil && !retryable)
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+}
+
+public struct LocalProductFailureLabResult:
+    Codable, Equatable, Sendable, Identifiable
+{
+    public var id: String { incidentID }
+    public let schemaVersion: Int
+    public let scenario: String
+    public let incidentID: String
+    public let agents: [LocalProductFailureLabAgentResult]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case scenario
+        case incidentID = "incident_id"
+        case agents
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownSetupKeys(
+            decoder,
+            allowed: ["schema_version", "scenario", "incident_id", "agents"]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        scenario = try values.decode(String.self, forKey: .scenario)
+        incidentID = try values.decode(String.self, forKey: .incidentID)
+        agents = try values.decode(
+            [LocalProductFailureLabAgentResult].self, forKey: .agents
+        )
+        let scenarios = [
+            "auth", "rate_limit", "timeout", "insufficient_balance",
+            "corrupt_vault_record", "revision_conflict",
+        ]
+        let temporaryAccountPrefix = "failurelab_tmp_"
+        let validTemporaryAccount: (String) -> Bool = { value in
+            guard value.hasPrefix(temporaryAccountPrefix),
+                  value.utf8.count == temporaryAccountPrefix.utf8.count + 32
+            else { return false }
+            return value.dropFirst(temporaryAccountPrefix.count).allSatisfy {
+                $0.isHexDigit && (!$0.isLetter || $0.isLowercase)
+            }
+        }
+        guard schemaVersion == 1, scenarios.contains(scenario),
+              LocalIPCClient.validIdentifier(incidentID), agents.count == 2,
+              agents[0].agentID == "target-agent", agents[0].status == "failed",
+              agents[1].agentID == "healthy-peer", agents[1].status == "succeeded",
+              validTemporaryAccount(agents[0].providerAccountID),
+              validTemporaryAccount(agents[1].providerAccountID),
+              agents[0].providerAccountID != agents[1].providerAccountID
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        let expected: (stage: String, code: String, retryable: Bool)
+        switch scenario {
+        case "auth":
+            expected = ("provider_auth", "provider_auth", false)
+        case "rate_limit":
+            expected = ("provider_rate_limit", "provider_rate_limit", true)
+        case "timeout":
+            expected = ("provider_connect", "timeout", true)
+        case "insufficient_balance":
+            expected = ("provider_http", "provider_insufficient_balance", false)
+        case "corrupt_vault_record":
+            expected = ("vault_aad_validation", "corrupt_vault_record", false)
+        case "revision_conflict":
+            expected = ("agent_attempt_dispatch", "credential_revision_conflict", false)
+        default:
+            throw LocalProductWireError.invalidJSON
+        }
+        guard agents[0].stage == expected.stage,
+              agents[0].code == expected.code,
+              agents[0].retryable == expected.retryable,
+              agents[1].stage == nil,
+              agents[1].code == nil,
+              !agents[1].retryable
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+    }
+}
+
 public struct LocalProductSetupSnapshot: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let viewVersion: String
@@ -1549,6 +1986,8 @@ public struct LocalProductSetupSnapshot: Codable, Equatable, Sendable {
     public let providers: [LocalProductProviderDirectoryEntry]
     public let providerAccounts: [LocalProductProviderAccountDirectoryEntry]
     public let credentialVault: LocalProductCredentialVaultStatus?
+    public let credentialImportCandidates: [LocalProductCredentialImportCandidate]
+    public let endpointReviews: [LocalProductEndpointReviewResult]
     public let conversationProfiles: [LocalProductConversationProfile]
     public let runtimes: [LocalProductSetupRuntime]
     public let savedTeams: [LocalProductSetupSavedTeam]
@@ -1564,6 +2003,8 @@ public struct LocalProductSetupSnapshot: Codable, Equatable, Sendable {
         case codex, providers, runtimes, templates, skills, permissions, resources
         case providerAccounts = "provider_accounts"
         case credentialVault = "credential_vault"
+        case credentialImportCandidates = "credential_import_candidates"
+        case endpointReviews = "endpoint_reviews"
         case conversationProfiles = "conversation_profiles"
         case miniMax = "minimax"
         case savedTeams = "saved_teams"
@@ -1575,6 +2016,8 @@ public struct LocalProductSetupSnapshot: Codable, Equatable, Sendable {
             "schema_version", "view_version", "codex", "minimax", "providers",
             "provider_accounts",
             "credential_vault",
+            "credential_import_candidates",
+            "endpoint_reviews",
             "conversation_profiles", "runtimes",
             "saved_teams", "templates", "role_options", "skills",
             "permissions", "resources",
@@ -1605,6 +2048,14 @@ public struct LocalProductSetupSnapshot: Codable, Equatable, Sendable {
             LocalProductCredentialVaultStatus.self,
             forKey: .credentialVault
         )
+        credentialImportCandidates = try values.decodeIfPresent(
+            [LocalProductCredentialImportCandidate].self,
+            forKey: .credentialImportCandidates
+        ) ?? []
+        endpointReviews = try values.decodeIfPresent(
+            [LocalProductEndpointReviewResult].self,
+            forKey: .endpointReviews
+        ) ?? []
         conversationProfiles = try values.decodeIfPresent(
             [LocalProductConversationProfile].self,
             forKey: .conversationProfiles
@@ -2304,6 +2755,18 @@ public enum LocalProductSetupWire {
         _ data: Data
     ) throws -> LocalProductCredentialSetupResult {
         try decode(LocalProductCredentialSetupResult.self, data)
+    }
+
+    public static func decodeEndpointReviewResult(
+        _ data: Data
+    ) throws -> LocalProductEndpointReviewResult {
+        try decode(LocalProductEndpointReviewResult.self, data)
+    }
+
+    public static func decodeFailureLabResult(
+        _ data: Data
+    ) throws -> LocalProductFailureLabResult {
+        try decode(LocalProductFailureLabResult.self, data)
     }
 
     public static func decodeSavedTeam(

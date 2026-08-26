@@ -193,6 +193,41 @@ func TestBrokerReturnsBoundedMessageWhenSearchBackendEmptyOrBlocked(t *testing.T
 	}
 }
 
+func TestBrokerWebSearchPropagatesFailClosedBackendErrors(t *testing.T) {
+	unknown := errors.New("unknown search backend failure")
+	tests := map[string]error{
+		"tool denied":      ErrToolDenied,
+		"result too large": ErrResultTooLarge,
+		"invalid call":     ErrInvalidCall,
+		"invalid config":   ErrInvalidConfig,
+		"unknown":          unknown,
+		"denied joined with transient": errors.Join(
+			ErrToolFailed,
+			ErrToolDenied,
+		),
+	}
+	for name, backendErr := range tests {
+		t.Run(name, func(t *testing.T) {
+			broker, err := New(Config{
+				Search:  &searchFixture{err: backendErr},
+				Timeout: 10 * time.Second, MaxResultBytes: 4096,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := broker.Execute(context.Background(), Call{
+				Tool: permissions.ToolWebSearch, Query: "fail closed", MaxResults: 3,
+			})
+			if !errors.Is(err, backendErr) {
+				t.Fatalf("search error=%v, want %v", err, backendErr)
+			}
+			if result.Content != "" || len(result.Sources) != 0 {
+				t.Fatalf("fail-closed search returned result: %#v", result)
+			}
+		})
+	}
+}
+
 func TestBrokerPublishesOnlyConfiguredRemoteTools(t *testing.T) {
 	broker, err := New(Config{
 		Search: &searchFixture{}, HTTP: &httpFixture{}, MCP: &mcpFixture{},

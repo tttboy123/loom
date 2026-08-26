@@ -1566,7 +1566,7 @@ func TestStrictSwiftExecutionProbeRejectsMalformedPreflightWire(t *testing.T) {
 				probe, "--socket", socketPath, "--execution",
 			).CombinedOutput()
 			if err == nil ||
-				strings.TrimSpace(string(output)) != "error:invalid_response" {
+				strings.TrimSpace(string(output)) != "error:invalid_response:true" {
 				t.Fatalf("malformed execution result = %v, %q", err, output)
 			}
 			<-done
@@ -1731,6 +1731,7 @@ func TestSwiftClientInteroperatesWithRealGoServer(t *testing.T) {
 		"cursor_conflict",
 		"stream_gap",
 		"state_unavailable",
+		"workspace_publish_failed",
 		"timeout",
 		"busy",
 		"internal",

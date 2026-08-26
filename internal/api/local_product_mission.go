@@ -65,29 +65,21 @@ type LocalProductMissionSummary struct {
 
 func buildLocalProductMissionPage(
 	view projection.GlobalReadView,
-	executions []projection.TeamExecution,
-	limit int,
+	rows []projection.TeamRow,
 	sourceHasMore bool,
 ) ([]LocalProductMissionSummary, LocalProductPageCursor) {
-	ordered := append([]projection.TeamExecution(nil), executions...)
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].TeamInstanceID < ordered[j].TeamInstanceID
-	})
-	hasMore := sourceHasMore || len(ordered) > limit
-	if len(ordered) > limit {
-		ordered = ordered[:limit]
+	page := LocalProductPageCursor{HasMore: sourceHasMore}
+	if len(rows) > 0 {
+		page.NextCursor = rows[len(rows)-1].TeamInstanceID
 	}
-	missions := make([]LocalProductMissionSummary, 0, len(ordered))
-	for _, execution := range ordered {
-		missions = append(missions, buildLocalProductMission(view, execution))
+	missions := make([]LocalProductMissionSummary, 0, len(rows))
+	for _, row := range rows {
+		if !row.ExecutionAvailable {
+			continue
+		}
+		missions = append(missions, buildLocalProductMission(view, row.Execution))
 	}
-	return missions, localProductPageCursor(
-		missions,
-		hasMore,
-		func(record LocalProductMissionSummary) string {
-			return record.MissionID
-		},
-	)
+	return missions, page
 }
 
 func buildLocalProductMission(
@@ -301,6 +293,7 @@ func missionStatus(execution projection.TeamExecution) string {
 	for _, preferred := range []string{
 		"human_required",
 		"blocked",
+		"awaiting_recovery",
 		"ready_for_review",
 		"retry_scheduled",
 		"fallback_scheduled",
@@ -354,7 +347,7 @@ func missionPulseState(status string) string {
 	switch status {
 	case "pending":
 		return "ready"
-	case "running", "retry_scheduled", "fallback_scheduled":
+	case "running", "retry_scheduled", "fallback_scheduled", "awaiting_recovery":
 		return "working"
 	case "ready_for_review":
 		return "review"

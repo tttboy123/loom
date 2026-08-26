@@ -30,6 +30,8 @@ type productSetupRoute interface {
 	ArchiveTeam(context.Context, app.TeamStatusCommand) (app.SetupSavedTeamPreview, error)
 	RestoreTeam(context.Context, app.TeamStatusCommand) (app.SetupSavedTeamPreview, error)
 	ConfigureCredential(context.Context, app.CredentialSetupCommand) (app.CredentialSetupResult, error)
+	ImportCredentialCandidate(context.Context, app.CredentialImportCommand) (app.CredentialSetupResult, error)
+	ApproveEndpointCandidate(context.Context, app.EndpointReviewCommand) (app.EndpointReviewResult, error)
 	VerifyCredential(context.Context, app.CredentialSetupCommand) (app.CredentialSetupResult, error)
 	ReplaceCredential(context.Context, app.CredentialSetupCommand) (app.CredentialSetupResult, error)
 	RevokeCredential(context.Context, app.CredentialSetupCommand) (app.CredentialSetupResult, error)
@@ -317,6 +319,36 @@ func (slot *productSetupRouteSlot) ConfigureCredential(ctx context.Context, comm
 	return slot.credential(command, func(route productSetupRoute) (app.CredentialSetupResult, error) {
 		return route.ConfigureCredential(ctx, command)
 	})
+}
+
+func (slot *productSetupRouteSlot) ImportCredentialCandidate(
+	ctx context.Context,
+	command app.CredentialImportCommand,
+) (app.CredentialSetupResult, error) {
+	if slot == nil || ctx == nil {
+		return app.CredentialSetupResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return app.CredentialSetupResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	return slot.routes.route.ImportCredentialCandidate(ctx, command)
+}
+
+func (slot *productSetupRouteSlot) ApproveEndpointCandidate(
+	ctx context.Context,
+	command app.EndpointReviewCommand,
+) (app.EndpointReviewResult, error) {
+	if slot == nil || ctx == nil {
+		return app.EndpointReviewResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return app.EndpointReviewResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	return slot.routes.route.ApproveEndpointCandidate(ctx, command)
 }
 
 func (slot *productSetupRouteSlot) VerifyCredential(ctx context.Context, command app.CredentialSetupCommand) (app.CredentialSetupResult, error) {

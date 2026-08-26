@@ -25,6 +25,7 @@ import (
 	"loom-pi-rebuild/internal/attemptpayload"
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/contextcapsule"
+	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/execution"
 	"loom-pi-rebuild/internal/journal"
@@ -59,6 +60,20 @@ func TestProductAttemptLoopContextToolPolicySeparatesHarnessAndNativeProofs(t *t
 				t.Fatalf("policy = %d/%q, want %d/%q", parallel, mode, test.parallel, test.mode)
 			}
 		})
+	}
+}
+
+func TestProductAttemptLoopOpenCodeWorkspaceBudgetSupportsSmallProject(t *testing.T) {
+	_, run, executionBinding, capsule, _, _ :=
+		productAttemptLoopFixtureForAdapter(t, harnessadapter.OpenCodeAdapterType)
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	binding, budget, err := productAttemptLoopBinding(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.AttemptID == "" || budget.MaxToolCalls != productAttemptLoopOpenCodeMaxToolCalls ||
+		budget.MaxParallelToolCalls != 1 {
+		t.Fatalf("OpenCode budget=%#v binding=%#v", budget, binding)
 	}
 }
 
@@ -471,6 +486,121 @@ func TestProductLoomNativeGovernsSequentialProviderContextContinuations(t *testi
 	if bytes.Contains(encoded, privateContext) ||
 		bytes.Contains(encoded, []byte("private-native-key")) {
 		t.Fatal("native sequential Context or credential entered Journal")
+	}
+}
+
+func TestProductLoomNativeClosesDeniedContextResultWithEncryptedVault(t *testing.T) {
+	ctx := context.Background()
+	runs, run, executionBinding, capsule, _, journalStore := productAttemptLoopFixture(t)
+	payloads, err := work.NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := work.NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadStore := productAttemptLoopEncryptedPayloadStore(t)
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	capsuleValue := productAttemptLoopCapsuleValue(
+		t, productAttemptLoopProfile("account.primary"),
+	)
+	dispatchPayload, err := contextcapsule.RenderDispatchPayload(capsuleValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Dispatch, err = bridgev1.NewFrame(bridgev1.FrameInput{
+		MessageID: request.Dispatch.MessageID(), CorrelationID: request.Dispatch.CorrelationID(),
+		WorkItemID: request.Binding.WorkItemID, RunID: request.Binding.RunID,
+		ClaimGeneration:       request.Binding.ClaimGeneration,
+		RuntimeInstanceID:     request.Binding.RuntimeInstanceID,
+		SenderAgentInstanceID: request.Binding.SenderAgentInstanceID,
+		Sequence:              1, Type: bridgev1.MessageDispatch,
+		EmittedAt: time.Date(2026, 8, 21, 14, 30, 0, 0, time.UTC), Payload: dispatchPayload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := capsuleValue.Disclosed()[0]
+	toolResponse := fmt.Sprintf(
+		`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"provider-context-denied","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"%s\",\"content_digest\":\"%s\"}"}}]}}]}`,
+		requested.ItemID, requested.ContentDigest,
+	)
+	doer := &productNativeAgentInputDoer{responses: []string{
+		toolResponse,
+		`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"LOOM-MIXED-TEAM-OK after bounded context denial"}}]}`,
+	}}
+	credential := &productNativeAgentInputCredential{secret: []byte("private-native-key")}
+	native, err := nativeadapter.NewDeepSeekAgentAdapter(nativeadapter.DeepSeekAgentAdapterConfig{
+		RuntimeInstanceID: executionBinding.RuntimeInstanceID,
+		CredentialAccess:  credential, Diagnostics: productNativeAgentInputDiagnostics{},
+		Client: doer, Now: func() time.Time {
+			return time.Date(2026, 8, 21, 14, 30, 0, 0, time.UTC)
+		},
+		MaxResponseBytes: 64 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := newProductAttemptLoopRuntimeAdapter(native, loops, payloadStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.FrameSink = &productNativeAgentInputFrameSink{}
+	request.ContextRetriever, err = contextcapsule.NewScopedRetriever(
+		request.ContextCapsule,
+		contextcapsule.AttemptIdentity{
+			WorkItemID: request.Binding.WorkItemID, RunID: request.Binding.RunID,
+			ClaimID: request.ClaimID, ClaimGeneration: request.Binding.ClaimGeneration,
+			RuntimeInstanceID:      request.Binding.RuntimeInstanceID,
+			ExecutionBindingDigest: request.ExecutionBinding.BindingDigest,
+			IncidentID:             request.IncidentID,
+		},
+		payloadStore, productAgentInboxRetrievalAuditorFixture{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Execute(ctx, request)
+	if err != nil {
+		t.Fatalf("bounded Context denial must not fail the Agent Attempt: %v", err)
+	}
+	if !result.ResultAcknowledged() || doer.calls != 2 {
+		t.Fatalf("result=%#v provider calls=%d", result, doer.calls)
+	}
+	loopBinding, _, err := productAttemptLoopBinding(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := loops.Snapshot(ctx, loopBinding)
+	if err != nil || len(snapshot.Turns) != 1 || len(snapshot.Turns[0].Steps) != 1 ||
+		len(snapshot.Turns[0].Steps[0].ToolCalls) != 1 {
+		t.Fatalf("denied Context Attempt loop = %#v, %v", snapshot, err)
+	}
+	call := snapshot.Turns[0].Steps[0].ToolCalls[0]
+	if snapshot.Turns[0].Status != work.AttemptTurnSucceeded ||
+		call.ResultStatus != attemptpayload.FactDelivered ||
+		call.DeliveryProof != attemptpayload.ProofProviderContinuation {
+		t.Fatalf("denied Context result did not close authoritatively: %#v", call)
+	}
+	events, err := journalStore.ReadAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, delivered := 0, 0
+	for _, event := range events {
+		if event.Type == "ToolResultAccepted" {
+			accepted++
+		}
+		if event.Type == "ToolResultDelivered" {
+			delivered++
+		}
+		if bytes.Contains(event.PayloadJSON, []byte("context_item_unavailable")) {
+			t.Fatal("bounded Context result entered the Journal")
+		}
+	}
+	if accepted != 1 || delivered != 1 {
+		t.Fatalf("denied Context facts accepted/delivered = %d/%d", accepted, delivered)
 	}
 }
 
@@ -1484,6 +1614,7 @@ func TestProductAttemptLoopRuntimeGovernsLocalToolDispatchAndDelivery(t *testing
 		t.Fatal(err)
 	}
 	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	request.WorkspacePath = t.TempDir()
 	request.ContextRetriever = productAttemptLoopRetrieverFixture{
 		content: []byte("unused-context-for-local-tool-attempt"),
 	}
@@ -1615,6 +1746,7 @@ func TestProductAttemptLoopRuntimeDoesNotReportOrdinaryBashAsTests(t *testing.T)
 		t.Fatal(err)
 	}
 	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	request.WorkspacePath = t.TempDir()
 	request.ContextRetriever = productAttemptLoopRetrieverFixture{
 		content: []byte("unused-context-for-ordinary-bash"),
 	}
@@ -1690,7 +1822,7 @@ func TestProductAttemptLoopRuntimeEncryptsReadAndGrepContentUntilHarnessDelivery
 	}
 }
 
-func TestCodexHarnessMCPUsesProductAuthorityAndDeliversAfterFinalOutput(t *testing.T) {
+func TestCodexHarnessMCPUsesProductAuthorityAndDeliversEachHTTPResponse(t *testing.T) {
 	ctx := context.Background()
 	runs, run, executionBinding, capsule, payloadStore, journalStore :=
 		productAttemptLoopFixtureForAdapter(t, harnessadapter.CodexAdapterType)
@@ -1823,8 +1955,9 @@ func TestCodexHarnessMCPUsesProductAuthorityAndDeliversAfterFinalOutput(t *testi
 			return fmt.Errorf("pending Harness calls = %#v", snapshot)
 		}
 		for _, call := range snapshot.Turns[0].Steps[0].ToolCalls {
-			if call.ResultStatus != attemptpayload.FactAccepted {
-				return fmt.Errorf("Harness call acknowledged before final output: %#v", call)
+			if call.ResultStatus != attemptpayload.FactDelivered ||
+				call.DeliveryProof != attemptpayload.ProofHarnessToolResponse {
+				return fmt.Errorf("Harness HTTP response not acknowledged: %#v", call)
 			}
 		}
 		return nil
@@ -1862,8 +1995,9 @@ func TestCodexHarnessMCPUsesProductAuthorityAndDeliversAfterFinalOutput(t *testi
 		t.Fatalf("Harness tool snapshot = %#v", snapshot)
 	}
 	for _, call := range snapshot.Turns[0].Steps[0].ToolCalls {
-		if call.ResultStatus != attemptpayload.FactDelivered {
-			t.Fatalf("Harness call not delivered after final output: %#v", call)
+		if call.ResultStatus != attemptpayload.FactDelivered ||
+			call.DeliveryProof != attemptpayload.ProofHarnessToolResponse {
+			t.Fatalf("Harness call delivery proof drifted after final output: %#v", call)
 		}
 	}
 	for _, event := range mustProductAttemptLoopEvents(t, journalStore) {
@@ -1912,6 +2046,7 @@ func testProductAttemptLoopEncryptedReadOnlyContent(
 		t.Fatal(err)
 	}
 	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	request.WorkspacePath = t.TempDir()
 	request.ContextRetriever = productAttemptLoopRetrieverFixture{content: []byte("unused")}
 	loopBinding, _, err := productAttemptLoopBinding(request)
 	if err != nil {
@@ -2089,6 +2224,342 @@ func TestProductAttemptLoopPersistsRemoteResultBeforeExecutionTerminal(t *testin
 	}
 }
 
+func TestProductAttemptLoopRemoteResultCommitRollsBackRevokeDuringEncryptedPut(t *testing.T) {
+	ctx := context.Background()
+	runs, run, executionBinding, capsule, payloadStore, journalStore := productAttemptLoopFixture(t)
+	payloads, err := work.NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := work.NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissionAuthority, err := permissions.NewAuthority(
+		journalStore,
+		func() time.Time { return time.Date(2026, 8, 23, 8, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionAuthority.DefineProfile(ctx, permissions.ProfileInput{
+		ProfileID: "attempt-commit-race-default", Mode: permissions.ModeDefault,
+	}, "op-attempt-commit-race-profile", "11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionAuthority.BindJob(
+		ctx, run.WorkItemID(), "attempt-commit-race-default",
+		"op-attempt-commit-race-bind", "11111111-1111-4111-8111-111111111111",
+	); err != nil {
+		t.Fatal(err)
+	}
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	loopBinding, budget, err := productAttemptLoopBinding(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := permissions.ProposedCall{
+		Tool: permissions.ToolWebSearch, Path: "bounded commit-race query",
+	}
+	callDigest := permissions.ProposedCallDigest(call)
+	operationID := "op-remote-result-commit-race"
+	scope := execution.RemoteToolScope{
+		EnrollmentID:     "enrollment.commit-race",
+		EnrollmentDigest: strings.Repeat("e", 64),
+	}
+	remote := &productCommitRaceRemoteExecutorFixture{
+		expectedScope: scope,
+		content:       []byte("private revoked result must not be persisted"),
+	}
+	evidenceRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceStore, err := evidence.NewStore(evidenceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionAdapter, err := execution.NewAdapter(
+		journalStore, evidenceStore, &productAttemptLoopExecutionFixture{},
+		productAttemptLoopResolver{root: t.TempDir()}, nil, nil,
+		func() time.Time { return time.Date(2026, 8, 23, 8, 1, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionAdapter = executionAdapter.WithRemoteToolExecutor(remote)
+	gate := newProductAttemptToolDispatchGate(
+		loops,
+		payloadStore,
+		productAttemptLoopInvocation{Binding: loopBinding, Budget: budget},
+		call,
+		callDigest,
+		operationID,
+		1,
+	)
+	gate.revalidateRemoteBinding = func(commitCtx context.Context) error {
+		return executionAdapter.RevalidateRemoteToolScope(commitCtx, scope, call)
+	}
+	payloadStore.beforePut = func() {
+		if validations := remote.validationCount(); validations != 3 {
+			t.Fatalf("revoke reached encrypted Put after %d validations, want 3", validations)
+		}
+		remote.revoke()
+	}
+	boundCtx, err := execution.BindRemoteToolScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executionAdapter.Execute(boundCtx, execution.Proposal{
+		JobID: run.WorkItemID(), OperationID: operationID,
+		JourneyID: loopBinding.PayloadAuthority.IncidentID,
+		Call:      call, ResultCommitGate: gate,
+	})
+	if err != nil || result.Verdict != permissions.VerdictDeny ||
+		result.ErrorCode != "remote_tool_binding_revoked" ||
+		remote.validationCount() != 4 {
+		t.Fatalf(
+			"commit race result=%#v validations=%d err=%v",
+			result, remote.validationCount(), err,
+		)
+	}
+	payloadStore.mu.Lock()
+	payloadCount := len(payloadStore.payloads)
+	putCalls := payloadStore.putCalls
+	deleteCalls := payloadStore.deleteCalls
+	payloadStore.mu.Unlock()
+	if putCalls != 1 || deleteCalls != 1 || payloadCount != 0 {
+		t.Fatalf(
+			"revoked payload writes=%d deletes=%d remaining=%d",
+			putCalls, deleteCalls, payloadCount,
+		)
+	}
+	wantFacts := map[string]bool{
+		execution.EventToolFailed: false,
+	}
+	for _, event := range mustProductAttemptLoopEvents(t, journalStore) {
+		if event.Type == execution.EventToolCompleted || event.Type == "ToolResultAccepted" {
+			t.Fatalf("revoked commit appended forbidden fact %s", event.Type)
+		}
+		if _, wanted := wantFacts[event.Type]; wanted {
+			wantFacts[event.Type] = true
+		}
+		if bytes.Contains(event.PayloadJSON, remote.content) ||
+			bytes.Contains(event.PayloadJSON, []byte(call.Path)) {
+			t.Fatalf("Journal event %s leaked remote content/query", event.Type)
+		}
+	}
+	if !wantFacts[execution.EventToolFailed] {
+		t.Fatal("revoked commit did not append ToolExecutionFailed")
+	}
+}
+
+func TestProductAttemptLoopRemoteResultRollbackFailureNeverAcceptsContent(t *testing.T) {
+	ctx := context.Background()
+	runs, run, executionBinding, capsule, payloadStore, journalStore := productAttemptLoopFixture(t)
+	payloads, err := work.NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := work.NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	loopBinding, budget, err := productAttemptLoopBinding(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := permissions.ProposedCall{
+		Tool: permissions.ToolWebSearch, Path: "bounded rollback-failure query",
+	}
+	callDigest := permissions.ProposedCallDigest(call)
+	operationID := "op-remote-result-rollback-failure"
+	gate := newProductAttemptToolDispatchGate(
+		loops,
+		payloadStore,
+		productAttemptLoopInvocation{Binding: loopBinding, Budget: budget},
+		call,
+		callDigest,
+		operationID,
+		1,
+	)
+	validations := 0
+	gate.revalidateRemoteBinding = func(context.Context) error {
+		validations++
+		if validations == 1 {
+			return nil
+		}
+		return execution.ErrRemoteToolBindingPolicyDrift
+	}
+	privateContent := []byte("private cleanup-failure result")
+	payloadStore.deleteErr = fmt.Errorf("cleanup failed around %q", privateContent)
+	err = gate.CommitExecutionResult(ctx, execution.ExecutionResultCommitInput{
+		JobID: run.WorkItemID(), ExecutionID: "execution-rollback-failure",
+		CallDigest: callDigest, Tool: call.Tool, OperationID: operationID,
+		CorrelationID: loopBinding.PayloadAuthority.IncidentID,
+		OutputDigest:  "sha256:" + productJourneySHA256Hex(privateContent),
+		Content:       privateContent,
+	})
+	if !errors.Is(err, execution.ErrRemoteToolResultRollback) ||
+		!errors.Is(err, execution.ErrRemoteToolBindingPolicyDrift) || validations != 2 {
+		t.Fatalf("rollback failure=%v validations=%d", err, validations)
+	}
+	if strings.Contains(err.Error(), string(privateContent)) ||
+		strings.Contains(err.Error(), call.Path) {
+		t.Fatalf("rollback failure leaked content or arguments: %v", err)
+	}
+	payloadStore.mu.Lock()
+	putCalls := payloadStore.putCalls
+	deleteCalls := payloadStore.deleteCalls
+	payloadCount := len(payloadStore.payloads)
+	payloadStore.mu.Unlock()
+	if putCalls != 1 || deleteCalls != 1 || payloadCount != 1 {
+		t.Fatalf(
+			"failed rollback writes=%d deletes=%d encrypted remnants=%d",
+			putCalls, deleteCalls, payloadCount,
+		)
+	}
+	for _, event := range mustProductAttemptLoopEvents(t, journalStore) {
+		if event.Type == "ToolResultAccepted" || event.Type == execution.EventToolCompleted {
+			t.Fatalf("failed rollback appended forbidden fact %s", event.Type)
+		}
+		if bytes.Contains(event.PayloadJSON, privateContent) ||
+			bytes.Contains(event.PayloadJSON, []byte(call.Path)) {
+			t.Fatalf("Journal event %s leaked rollback content/query", event.Type)
+		}
+	}
+}
+
+func TestBridgeRemoteBindingFailureCancelsOnlyExactAttemptWithTypedCause(t *testing.T) {
+	tests := []struct {
+		name  string
+		cause error
+	}{
+		{name: "revoked", cause: execution.ErrRemoteToolBindingRevoked},
+		{name: "policy drift", cause: execution.ErrRemoteToolBindingPolicyDrift},
+		{name: "rollback failure", cause: execution.ErrRemoteToolResultRollback},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exactCtx, cancelExact := context.WithCancelCause(context.Background())
+			defer cancelExact(nil)
+			peerCtx, cancelPeer := context.WithCancelCause(context.Background())
+			defer cancelPeer(nil)
+			cancelProductAttemptForRemoteBindingFailure(
+				productAttemptLoopInvocation{cancelAttempt: cancelExact},
+				test.cause,
+			)
+			if !errors.Is(context.Cause(exactCtx), test.cause) {
+				t.Fatalf("exact Attempt cause = %v", context.Cause(exactCtx))
+			}
+			if cause := context.Cause(peerCtx); cause != nil {
+				t.Fatalf("peer Attempt was canceled: %v", cause)
+			}
+		})
+	}
+}
+
+func TestProductAttemptLoopRevokedRemoteBindingCancelsAndEndsAttempt(t *testing.T) {
+	ctx := context.Background()
+	runs, run, executionBinding, capsule, payloadStore, journalStore := productAttemptLoopFixture(t)
+	payloads, err := work.NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := work.NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissionAuthority, err := permissions.NewAuthority(
+		journalStore,
+		func() time.Time { return time.Date(2026, 8, 14, 12, 25, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionAuthority.DefineProfile(ctx, permissions.ProfileInput{
+		ProfileID: "attempt-revoked-remote-default", Mode: permissions.ModeDefault,
+	}, "op-attempt-revoked-profile", "11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permissionAuthority.BindJob(
+		ctx, run.WorkItemID(), "attempt-revoked-remote-default",
+		"op-attempt-revoked-bind", "11111111-1111-4111-8111-111111111111",
+	); err != nil {
+		t.Fatal(err)
+	}
+	evidenceRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceStore, err := evidence.NewStore(evidenceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	request.ContextRetriever = productAttemptLoopRetrieverFixture{content: []byte("unused")}
+	loopBinding, _, err := productAttemptLoopBinding(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &productAttemptRemoteExecutorFixture{
+		loops: loops, binding: loopBinding,
+		executeErr: execution.ErrRemoteToolBindingRevoked,
+	}
+	executionAdapter, err := execution.NewAdapter(
+		journalStore, evidenceStore, &productAttemptLoopExecutionFixture{},
+		productAttemptLoopResolver{root: t.TempDir()}, nil, nil,
+		func() time.Time { return time.Date(2026, 8, 14, 12, 26, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionAdapter = executionAdapter.WithRemoteToolExecutor(remote)
+	hook, err := newBridgeExecutionHook(executionAdapter, nil, loops, payloadStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate := &productAttemptLoopBindingFailureAdapterFixture{hook: hook}
+	adapter, err := newProductAttemptLoopRuntimeAdapter(delegate, loops, payloadStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Execute(ctx, request); !errors.Is(err, execution.ErrRemoteToolBindingRevoked) {
+		t.Fatalf(
+			"revoked remote binding error=%v call error=%v context cause=%v remote calls=%d",
+			err, delegate.callErr, delegate.contextCause, remote.calls,
+		)
+	}
+	if !errors.Is(delegate.callErr, execution.ErrRemoteToolBindingRevoked) ||
+		!errors.Is(delegate.contextCause, execution.ErrRemoteToolBindingRevoked) {
+		t.Fatalf("delegate call error=%v context cause=%v", delegate.callErr, delegate.contextCause)
+	}
+	snapshot, err := loops.Snapshot(ctx, loopBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != work.AttemptLoopFailed || len(snapshot.Turns) != 1 ||
+		snapshot.Turns[0].Status != work.AttemptTurnFailed ||
+		len(snapshot.Turns[0].Steps) != 1 ||
+		snapshot.Turns[0].Steps[0].Outcome != work.AttemptStepFailed {
+		t.Fatalf("revoked remote binding Attempt Loop=%#v", snapshot)
+	}
+	wantFacts := map[string]bool{
+		execution.EventToolFailed: false, "StepEnded": false, "TurnEnded": false,
+	}
+	for _, event := range mustProductAttemptLoopEvents(t, journalStore) {
+		if _, wanted := wantFacts[event.Type]; wanted {
+			wantFacts[event.Type] = true
+		}
+	}
+	for fact, found := range wantFacts {
+		if !found {
+			t.Fatalf("missing terminal fact %s after remote binding revocation", fact)
+		}
+	}
+}
+
 type productAttemptToolDiagnosticFixture struct {
 	records []productAttemptToolDiagnostic
 }
@@ -2124,6 +2595,82 @@ type productAttemptRemoteExecutorFixture struct {
 	content          []byte
 	calls            int
 	dispatchObserved bool
+	executeErr       error
+}
+
+type productCommitRaceRemoteExecutorFixture struct {
+	mu            sync.Mutex
+	expectedScope execution.RemoteToolScope
+	content       []byte
+	revoked       bool
+	validations   int
+}
+
+func (*productCommitRaceRemoteExecutorFixture) AllowedRemoteTools() []permissions.ToolKind {
+	return nil
+}
+
+func (*productCommitRaceRemoteExecutorFixture) ValidateProposal(
+	permissions.ProposedCall,
+) error {
+	return execution.ErrUnsupportedTool
+}
+
+func (*productCommitRaceRemoteExecutorFixture) ExecuteProposalContent(
+	context.Context,
+	permissions.ProposedCall,
+) ([]byte, error) {
+	return nil, execution.ErrUnsupportedTool
+}
+
+func (fixture *productCommitRaceRemoteExecutorFixture) AllowedRemoteToolsForScope(
+	scope execution.RemoteToolScope,
+) []permissions.ToolKind {
+	if scope != fixture.expectedScope {
+		return nil
+	}
+	return []permissions.ToolKind{permissions.ToolWebSearch}
+}
+
+func (fixture *productCommitRaceRemoteExecutorFixture) ValidateProposalForScope(
+	_ context.Context,
+	scope execution.RemoteToolScope,
+	proposal permissions.ProposedCall,
+) error {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	fixture.validations++
+	if scope != fixture.expectedScope || proposal.Tool != permissions.ToolWebSearch ||
+		proposal.Path == "" || proposal.Command != "" {
+		return execution.ErrUnsupportedTool
+	}
+	if fixture.revoked {
+		return execution.ErrRemoteToolBindingRevoked
+	}
+	return nil
+}
+
+func (fixture *productCommitRaceRemoteExecutorFixture) ExecuteProposalContentForScope(
+	_ context.Context,
+	scope execution.RemoteToolScope,
+	proposal permissions.ProposedCall,
+) ([]byte, error) {
+	if scope != fixture.expectedScope || proposal.Tool != permissions.ToolWebSearch {
+		return nil, execution.ErrUnsupportedTool
+	}
+	return bytes.Clone(fixture.content), nil
+}
+
+func (fixture *productCommitRaceRemoteExecutorFixture) revoke() {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	fixture.revoked = true
+}
+
+func (fixture *productCommitRaceRemoteExecutorFixture) validationCount() int {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	return fixture.validations
 }
 
 func (*productAttemptRemoteExecutorFixture) AllowedRemoteTools() []permissions.ToolKind {
@@ -2155,7 +2702,50 @@ func (fixture *productAttemptRemoteExecutorFixture) ExecuteProposalContent(
 	if !fixture.dispatchObserved {
 		return nil, errors.New("remote call preceded ToolDispatchCommitted")
 	}
-	return bytes.Clone(fixture.content), nil
+	return bytes.Clone(fixture.content), fixture.executeErr
+}
+
+type productAttemptLoopBindingFailureAdapterFixture struct {
+	hook         *bridgeExecutionHook
+	callErr      error
+	contextCause error
+}
+
+func (*productAttemptLoopBindingFailureAdapterFixture) AdapterType() string {
+	return "loom-native"
+}
+
+func (*productAttemptLoopBindingFailureAdapterFixture) RuntimeInstanceID() string {
+	return "runtime-1"
+}
+
+func (fixture *productAttemptLoopBindingFailureAdapterFixture) Execute(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+) (supervisor.AdapterResult, error) {
+	binding := piadapter.ToolCallBinding{
+		ConversationID: request.ContextCapsule.ConversationID,
+		WorkItemID:     request.Binding.WorkItemID, RunID: request.Binding.RunID,
+		ClaimGeneration:        request.Binding.ClaimGeneration,
+		RuntimeInstanceID:      request.Binding.RuntimeInstanceID,
+		AgentInstanceID:        request.Binding.SenderAgentInstanceID,
+		ExecutionBindingDigest: request.ExecutionBinding.BindingDigest,
+		CapsuleDigest:          request.ContextCapsule.CapsuleDigest,
+		ClaimID:                request.ClaimID, IncidentID: request.IncidentID,
+		JourneyID: request.Dispatch.CorrelationID(),
+	}
+	_, fixture.callErr = fixture.hook.ExecuteToolCall(
+		ctx,
+		piadapter.ToolCallEnvelope{
+			JobID: request.Binding.WorkItemID,
+			Call: permissions.ProposedCall{
+				Tool: permissions.ToolWebSearch, Path: "bounded revoked query",
+			},
+		},
+		binding,
+	)
+	fixture.contextCause = context.Cause(ctx)
+	return supervisor.AdapterResult{}, fixture.contextCause
 }
 
 func (fixture *productAttemptLoopExecutionFixture) Read(
@@ -2367,7 +2957,7 @@ func (adapter *productAttemptLoopToolAdapterFixture) Execute(
 		binding,
 	)
 	if err != nil {
-		return supervisor.AdapterResult{}, err
+		return supervisor.AdapterResult{}, fmt.Errorf("execute governed tool call: %w", err)
 	}
 	adapter.result = result
 	if productAttemptContentTool(call.Tool) {
@@ -2377,7 +2967,7 @@ func (adapter *productAttemptLoopToolAdapterFixture) Execute(
 		}
 		adapter.content, err = reader.ReadToolCallResultContent(ctx, binding, result)
 		if err != nil {
-			return supervisor.AdapterResult{}, err
+			return supervisor.AdapterResult{}, fmt.Errorf("read governed tool result: %w", err)
 		}
 	}
 	acknowledger, ok := any(adapter.hook).(piadapter.ToolCallResultProofAcknowledger)
@@ -2388,7 +2978,7 @@ func (adapter *productAttemptLoopToolAdapterFixture) Execute(
 	if err := acknowledger.AcknowledgeToolCallResultWithProof(
 		ctx, binding, result, adapter.proof,
 	); err != nil {
-		return supervisor.AdapterResult{}, err
+		return supervisor.AdapterResult{}, fmt.Errorf("acknowledge governed tool result: %w", err)
 	}
 	return supervisor.NewAdapterResult(supervisor.AdapterResultInput{
 		ExitCode: 0, DispatchAcknowledged: true, ResultAcknowledged: true,
@@ -2514,9 +3104,45 @@ func (fixture productAttemptLoopRetrieverFixture) Retrieve(
 	}, nil
 }
 
+func productAttemptLoopEncryptedPayloadStore(t *testing.T) *credentialvault.VaultStore {
+	t.Helper()
+	root := t.TempDir()
+	privateDir := filepath.Join(root, "private")
+	stateDir := filepath.Join(root, "state")
+	for _, directory := range []string{privateDir, stateDir} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	material, err := (credentialvault.LocalKeyFile{
+		Path: filepath.Join(privateDir, "vault.key"),
+	}).LoadOrCreate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentialvault.OpenStore(credentialvault.StoreConfig{
+		DatabasePath: filepath.Join(stateDir, "credential-vault.db"),
+		KeyMaterial:  material,
+	})
+	if err != nil {
+		material.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close encrypted Attempt payload store: %v", err)
+		}
+	})
+	return store
+}
+
 type productAttemptLoopPayloadStore struct {
-	mu       sync.Mutex
-	payloads map[attemptpayload.Binding]attemptpayload.Payload
+	mu          sync.Mutex
+	payloads    map[attemptpayload.Binding]attemptpayload.Payload
+	beforePut   func()
+	putCalls    int
+	deleteCalls int
+	deleteErr   error
 }
 
 func newProductAttemptLoopPayloadStore() *productAttemptLoopPayloadStore {
@@ -2527,12 +3153,35 @@ func (store *productAttemptLoopPayloadStore) PutAttemptPayload(
 	_ context.Context,
 	payload attemptpayload.Payload,
 ) error {
+	if store.beforePut != nil {
+		store.beforePut()
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.putCalls++
 	if _, exists := store.payloads[payload.Binding]; exists {
 		return errors.New("duplicate Attempt payload")
 	}
 	store.payloads[payload.Binding] = cloneProductAttemptLoopPayload(payload)
+	return nil
+}
+
+func (store *productAttemptLoopPayloadStore) DeleteAttemptPayload(
+	_ context.Context,
+	binding attemptpayload.Binding,
+) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.deleteCalls++
+	if store.deleteErr != nil {
+		return store.deleteErr
+	}
+	payload, ok := store.payloads[binding]
+	if !ok {
+		return attemptpayload.ErrPayloadNotFound
+	}
+	payload.Close()
+	delete(store.payloads, binding)
 	return nil
 }
 
@@ -2617,10 +3266,16 @@ func productAttemptLoopFixtureForAdapter(
 	}
 	profile := productAttemptLoopProfile("account.primary")
 	instance := productAttemptLoopInstance()
-	if adapterType == harnessadapter.CodexAdapterType {
+	if adapterType == harnessadapter.CodexAdapterType ||
+		adapterType == harnessadapter.OpenCodeAdapterType {
 		profile = productAttemptLoopCodexProfile()
-		instance.AdapterType = harnessadapter.CodexAdapterType
+		profile.AdapterType = adapterType
+		instance.AdapterType = adapterType
 		instance.DisplayName = "Codex"
+		if adapterType == harnessadapter.OpenCodeAdapterType {
+			profile.ID = "profile-opencode-test"
+			instance.DisplayName = "OpenCode"
+		}
 		instance.ObservedCapabilities = append(
 			[]string(nil), profile.RequiredCapabilities...,
 		)

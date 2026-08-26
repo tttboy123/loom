@@ -11,11 +11,11 @@ final class LocalProductModelsTests: XCTestCase {
           "codex":{"provider_id":"codex","auth_mode":"native_auth","credential_reference":"","revision":0,"status":"available","reason":""},
           "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
           "providers":[
-            {"provider_id":"openai","display_name":"OpenAI","category":"official","protocol":"openai_responses","auth_mode":"native_auth","connection_kind":"native_runtime","credential_reference":"","revision":0,"status":"available","reason":"","supports_model_discovery":true},
+            {"provider_id":"openai","display_name":"OpenAI","category":"official","protocol":"openai_responses","auth_mode":"brokered","connection_kind":"api_key","credential_reference":"","revision":0,"status":"unconfigured","reason":"","supports_model_discovery":true},
             {"provider_id":"deepseek","display_name":"DeepSeek","category":"official","protocol":"openai_compatible","auth_mode":"brokered","connection_kind":"api_key","credential_reference":"","revision":0,"status":"unconfigured","reason":"","supports_model_discovery":true}
           ],
           "conversation_profiles":[
-            {"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"Codex","protocol":"openai_responses","model_id":"codex-default","auth_mode":"native_auth","credential_revision":0},
+            {"profile_id":"conversation-openai-codex-default-v1","harness_adapter":"codex","provider_id":"openai","provider_account_id":"","display_name":"OpenAI","protocol":"openai_responses","model_id":"codex-default","auth_mode":"native_auth","credential_revision":0},
             {"profile_id":"conversation-anthropic-claude-sonnet-5-account-work-r5","harness_adapter":"loom-native","provider_id":"anthropic","provider_account_id":"anthropic.work","display_name":"Anthropic","protocol":"anthropic_messages","model_id":"claude-sonnet-5","auth_mode":"brokered","credential_revision":5},
             {"profile_id":"conversation-deepseek-deepseek-chat-r2","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.primary","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":2}
           ],
@@ -109,6 +109,8 @@ final class LocalProductModelsTests: XCTestCase {
                     "disclosure_receipt_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                     "disclosed_context_count":1,
                     "omitted_context_count":0,
+                    "context_token_budget":2048,
+                    "context_token_count":7,
                     "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "created_at":"2026-08-10T00:00:00Z"
                   }],
@@ -142,6 +144,8 @@ final class LocalProductModelsTests: XCTestCase {
         )
         XCTAssertEqual(thread.segments.first?.disclosedContextCount, 1)
         XCTAssertEqual(thread.segments.first?.omittedContextCount, 0)
+        XCTAssertEqual(thread.segments.first?.contextTokenBudget, 2048)
+        XCTAssertEqual(thread.segments.first?.contextTokenCount, 7)
         XCTAssertEqual(thread.messages.first?.segmentID, "segment-1")
         XCTAssertFalse(thread.messages[0].displayContent.contains("/private/sentinel"))
     }
@@ -195,6 +199,55 @@ final class LocalProductModelsTests: XCTestCase {
         }
     }
 
+    func testConversationExecutionBindingV4FreezesHarnessCredentialAndModel() throws {
+        let binding = """
+        {
+          "schema_version":4,
+          "harness_adapter":"opencode",
+          "provider_id":"openai",
+          "provider_account_id":"openai.team",
+          "credential_revision":9,
+          "model_id":"openai/gpt-5.5",
+          "provider_account_policy_version":0,
+          "provider_account_policy_revision":0,
+          "provider_account_policy_digest":"",
+          "trust_domain":"",
+          "retention_mode":"",
+          "data_region":""
+        }
+        """
+        let decoded = try JSONDecoder().decode(
+            LocalProductConversationExecutionBinding.self,
+            from: Data(binding.utf8)
+        )
+        XCTAssertEqual(decoded.harnessAdapter, "opencode")
+        XCTAssertEqual(decoded.providerAccountID, "openai.team")
+        XCTAssertEqual(decoded.credentialRevision, 9)
+        XCTAssertEqual(decoded.modelID, "openai/gpt-5.5")
+
+        for invalid in [
+            binding.replacingOccurrences(
+                of: "\"credential_revision\":9",
+                with: "\"credential_revision\":0"
+            ),
+            binding.replacingOccurrences(
+                of: "\"harness_adapter\":\"opencode\"",
+                with: "\"harness_adapter\":\"\""
+            ),
+            binding.replacingOccurrences(
+                of: "\"model_id\":\"openai/gpt-5.5\"",
+                with: "\"model_id\":\"\""
+            ),
+        ] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(
+                    LocalProductConversationExecutionBinding.self,
+                    from: Data(invalid.utf8)
+                )
+            )
+        }
+    }
+
     func testConversationAttemptDecodesSafeProviderFailureAndIncident() throws {
         let thread = try LocalProductWire.decodeChatThread(
             Data(
@@ -212,6 +265,9 @@ final class LocalProductModelsTests: XCTestCase {
                     "disclosure_receipt_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                     "disclosed_context_count":2,
                     "omitted_context_count":3,
+                    "context_token_budget":4096,
+                    "context_token_count":21,
+                    "route_transition_review_digest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
                     "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "incident_id":"loom-chat-11111111-1111-4111-8111-111111111111",
                     "status":"failed",
@@ -240,6 +296,12 @@ final class LocalProductModelsTests: XCTestCase {
         )
         XCTAssertEqual(attempt.disclosedContextCount, 2)
         XCTAssertEqual(attempt.omittedContextCount, 3)
+        XCTAssertEqual(attempt.contextTokenBudget, 4096)
+        XCTAssertEqual(attempt.contextTokenCount, 21)
+        XCTAssertEqual(
+            attempt.routeTransitionReviewDigest,
+            String(repeating: "d", count: 64)
+        )
         XCTAssertEqual(attempt.incidentID, "loom-chat-11111111-1111-4111-8111-111111111111")
         XCTAssertEqual(attempt.failureCode, "provider_rate_limit")
         XCTAssertEqual(attempt.failureStage, "provider_http")
@@ -248,6 +310,155 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertEqual(attempt.failureMessage, "Provider rate limit reached.")
         XCTAssertEqual(attempt.retryAfterSeconds, 18)
         XCTAssertTrue(attempt.retryable)
+    }
+
+    func testConversationContextDisclosureDecodesMetadataOnlyAndRejectsContent() throws {
+        let source = """
+        {
+          "schema_version":1,
+          "thread_id":"thread-deepseek",
+          "segment_id":"segment-2",
+          "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "disclosure_receipt_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "disclosed":[{
+            "kind":"confirmed_user_constraint",
+            "trust":"authoritative",
+            "scope":"conversation_shared",
+            "token_count":12,
+            "omission_reason":"",
+            "retrievable":false
+          }],
+          "omitted":[{
+            "kind":"untrusted_model_output",
+            "trust":"untrusted",
+            "scope":"conversation_shared",
+            "token_count":24,
+            "omission_reason":"budget_exceeded",
+            "retrievable":true
+          }]
+        }
+        """
+        let disclosure = try LocalProductWire.decodeContextDisclosure(
+            Data(source.utf8)
+        )
+        XCTAssertEqual(disclosure.schemaVersion, 1)
+        XCTAssertEqual(disclosure.threadID, "thread-deepseek")
+        XCTAssertEqual(disclosure.segmentID, "segment-2")
+        XCTAssertEqual(disclosure.disclosed.first?.kind, "confirmed_user_constraint")
+        XCTAssertEqual(disclosure.omitted.first?.omissionReason, "budget_exceeded")
+        XCTAssertTrue(disclosure.omitted.first?.retrievable ?? false)
+
+        let withContent = source.replacingOccurrences(
+            of: "\"token_count\":24,",
+            with: "\"token_count\":24,\"content\":\"must-not-cross-wire\","
+        )
+        XCTAssertThrowsError(
+            try LocalProductWire.decodeContextDisclosure(Data(withContent.utf8))
+        )
+    }
+
+    func testConversationContextDisclosureDecodesUnavailableCapacityMetadata() throws {
+        let source = """
+        {
+          "schema_version":1,
+          "thread_id":"thread-deepseek",
+          "segment_id":"segment-2",
+          "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "disclosure_receipt_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "context_capacity_status":"unavailable",
+          "admitted_input_budget_tokens":8192,
+          "context_token_counter_id":"loom-unicode-rune-quarter-estimate",
+          "context_token_counter_version":"v1",
+          "admitted_contribution_tokens":12,
+          "context_capacity_contributions":[{
+            "priority":1,
+            "source_type":"authority",
+            "admitted_item_count":1,
+            "admitted_token_count":12,
+            "budget_omitted_item_count":0,
+            "budget_omitted_token_count":0
+          }],
+          "disclosed":[{
+            "kind":"confirmed_user_constraint",
+            "trust":"authoritative",
+            "scope":"conversation_shared",
+            "token_count":12,
+            "omission_reason":"",
+            "retrievable":false
+          }],
+          "omitted":[]
+        }
+        """
+
+        let disclosure = try LocalProductWire.decodeContextDisclosure(
+            Data(source.utf8)
+        )
+
+        XCTAssertEqual(disclosure.contextCapacityStatus, .unavailable)
+        XCTAssertEqual(disclosure.contextWindowTokens, 0)
+        XCTAssertEqual(disclosure.admittedInputBudgetTokens, 8192)
+        XCTAssertEqual(disclosure.contextTokenCounterID, "loom-unicode-rune-quarter-estimate")
+        XCTAssertEqual(disclosure.admittedContributionTokens, 12)
+        XCTAssertEqual(disclosure.contextCapacityContributions.count, 1)
+    }
+
+    func testChatThreadNestedObjectsRejectUnknownPrivacyFields() {
+        let source = """
+        {
+          "thread_id":"thread-strict",
+          "profile_id":"conversation-deepseek",
+          "segments":[{
+            "segment_id":"segment-1",
+            "profile_id":"conversation-deepseek",
+            "context_mode":"start_clean",
+            "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "created_at":"2026-08-23T00:00:00Z"
+          }],
+          "attempts":[{
+            "attempt_id":"attempt-1",
+            "segment_id":"segment-1",
+            "profile_id":"conversation-deepseek",
+            "context_mode":"start_clean",
+            "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "status":"succeeded",
+            "failure_code":"",
+            "retryable":false,
+            "started_at":"2026-08-23T00:00:00Z",
+            "completed_at":"2026-08-23T00:00:01Z"
+          }],
+          "messages":[{
+            "message_id":"message-1",
+            "segment_id":"segment-1",
+            "role":"loom",
+            "content":"safe visible reply",
+            "tentative":false,
+            "created_at":"2026-08-23T00:00:01Z"
+          }],
+          "can_reply":true,
+          "requires_confirmation":false
+        }
+        """
+
+        for poisoned in [
+            source.replacingOccurrences(
+                of: "\"tentative\":false,",
+                with: "\"tentative\":false,\"prompt\":\"forbidden\","
+            ),
+            source.replacingOccurrences(
+                of: "\"created_at\":\"2026-08-23T00:00:00Z\"",
+                with: "\"created_at\":\"2026-08-23T00:00:00Z\",\"provider_body\":\"forbidden\""
+            ),
+            source.replacingOccurrences(
+                of: "\"completed_at\":\"2026-08-23T00:00:01Z\"",
+                with: "\"completed_at\":\"2026-08-23T00:00:01Z\",\"secret\":\"forbidden\""
+            ),
+        ] {
+            XCTAssertThrowsError(
+                try LocalProductWire.decodeChatThread(Data(poisoned.utf8))
+            )
+        }
     }
 
     func testMissionSummaryDecodesBlockReason() throws {
@@ -383,6 +594,8 @@ final class LocalProductModelsTests: XCTestCase {
         let decoded = try LocalProductWire.decodeChatThread(Data(legacy.utf8))
         XCTAssertEqual(decoded.segments.first?.disclosureReceiptDigest, "")
         XCTAssertEqual(decoded.segments.first?.disclosedContextCount, 0)
+        XCTAssertEqual(decoded.segments.first?.contextTokenBudget, 0)
+        XCTAssertEqual(decoded.segments.first?.contextTokenCount, 0)
         XCTAssertEqual(decoded.attempts.first?.omittedContextCount, 0)
 
         let missingReceipt = legacy.replacingOccurrences(
@@ -400,6 +613,161 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertThrowsError(
             try LocalProductWire.decodeChatThread(Data(zeroDisclosed.utf8))
         )
+
+        let invalidTokenProjection = legacy.replacingOccurrences(
+            of: "\"binding_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"",
+            with: "\"context_token_budget\":1,\"context_token_count\":2,\"binding_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\""
+        )
+        XCTAssertThrowsError(
+            try LocalProductWire.decodeChatThread(Data(invalidTokenProjection.utf8))
+        )
+    }
+
+    func testConversationCapacityProjectionDecodesExactSegmentAndAttempt() throws {
+        let thread = try LocalProductWire.decodeChatThread(
+            Data(Self.capacityThreadJSON(status: "exact", window: 128_000).utf8)
+        )
+        let segment = try XCTUnwrap(thread.segments.first)
+        let attempt = try XCTUnwrap(thread.attempts.first)
+
+        XCTAssertEqual(segment.contextCapacityStatus, .exact)
+        XCTAssertEqual(segment.contextWindowTokens, 128_000)
+        XCTAssertEqual(segment.reservedOutputTokens, 8_192)
+        XCTAssertEqual(segment.adapterToolOverheadTokens, 1_024)
+        XCTAssertEqual(segment.admittedInputBudgetTokens, 118_784)
+        XCTAssertEqual(segment.contextTokenCounterID, "loom-token-counter")
+        XCTAssertEqual(segment.contextTokenCounterVersion, "v1")
+        XCTAssertEqual(segment.admittedContributionTokens, 3_000)
+        XCTAssertEqual(segment.budgetOmittedContributionTokens, 400)
+        XCTAssertEqual(segment.contextCapacityContributions.count, 2)
+        XCTAssertEqual(segment.contextCapacityContributions[1].priority, 1)
+        XCTAssertEqual(segment.contextCapacityContributions[1].sourceType, "observation")
+        XCTAssertEqual(attempt.contextCapacityStatus, .exact)
+        XCTAssertEqual(attempt.contextCapacityContributions, segment.contextCapacityContributions)
+    }
+
+    func testConversationCapacityProjectionDecodesEstimatedAndUnavailable() throws {
+        let estimated = try LocalProductWire.decodeChatThread(
+            Data(Self.capacityThreadJSON(status: "estimated", window: 128_000).utf8)
+        )
+        XCTAssertEqual(estimated.segments.first?.contextCapacityStatus, .estimated)
+        XCTAssertEqual(estimated.segments.first?.admittedInputBudgetTokens, 118_784)
+
+        let unavailableJSON = Self.capacityThreadJSON(
+            status: "unavailable",
+            window: nil,
+            reservedOutput: 0,
+            adapterOverhead: 0,
+            admittedBudget: 120_000
+        )
+        let unavailable = try LocalProductWire.decodeChatThread(Data(unavailableJSON.utf8))
+        let unavailableSegment = try XCTUnwrap(unavailable.segments.first)
+        XCTAssertEqual(unavailableSegment.contextCapacityStatus, .unavailable)
+        XCTAssertEqual(unavailableSegment.contextWindowTokens, 0)
+        XCTAssertEqual(unavailableSegment.contextTokenBudget, 120_000)
+        XCTAssertEqual(unavailableSegment.admittedInputBudgetTokens, 120_000)
+
+        let goUnavailableWire = unavailableJSON
+            .replacingOccurrences(of: "\"omitted_context_count\":1", with: "\"omitted_context_count\":0")
+            .replacingOccurrences(of: "\"reserved_output_tokens\":0,", with: "")
+            .replacingOccurrences(of: "\"adapter_tool_overhead_tokens\":0,", with: "")
+            .replacingOccurrences(of: "\"budget_omitted_contribution_tokens\":400,", with: "")
+            .replacingOccurrences(of: "\"budget_omitted_item_count\":1,\"budget_omitted_token_count\":400", with: "\"budget_omitted_item_count\":0,\"budget_omitted_token_count\":0")
+        XCTAssertNoThrow(
+            try LocalProductWire.decodeChatThread(Data(goUnavailableWire.utf8)),
+            "Swift must accept zero-valued capacity fields omitted by Go"
+        )
+
+        let goEstimatedZeroWire = Self.capacityThreadJSON(
+            status: "estimated",
+            window: 128_000,
+            reservedOutput: 0,
+            adapterOverhead: 0,
+            admittedBudget: 120_000
+        )
+            .replacingOccurrences(of: "\"omitted_context_count\":1", with: "\"omitted_context_count\":0")
+            .replacingOccurrences(of: "\"reserved_output_tokens\":0,", with: "")
+            .replacingOccurrences(of: "\"adapter_tool_overhead_tokens\":0,", with: "")
+            .replacingOccurrences(of: "\"budget_omitted_contribution_tokens\":400,", with: "")
+            .replacingOccurrences(of: "\"budget_omitted_item_count\":1,\"budget_omitted_token_count\":400", with: "\"budget_omitted_item_count\":0,\"budget_omitted_token_count\":0")
+        XCTAssertNoThrow(
+            try LocalProductWire.decodeChatThread(Data(goEstimatedZeroWire.utf8)),
+            "Estimated capacity must accept omitted semantic zeros"
+        )
+
+        let explicitZeroWindow = Self.capacityThreadJSON(
+            status: "unavailable",
+            window: 0,
+            reservedOutput: 0,
+            adapterOverhead: 0,
+            admittedBudget: 120_000
+        )
+        XCTAssertNoThrow(
+            try LocalProductWire.decodeChatThread(Data(explicitZeroWindow.utf8))
+        )
+        let inventedWindow = explicitZeroWindow.replacingOccurrences(
+            of: "\"context_window_tokens\":0",
+            with: "\"context_window_tokens\":128000"
+        )
+        XCTAssertThrowsError(
+            try LocalProductWire.decodeChatThread(Data(inventedWindow.utf8))
+        )
+    }
+
+    func testConversationCapacityProjectionAllows512AggregateItemsAndPolicyOmissions() throws {
+        let aggregate512 = Self.capacityThreadJSON(status: "exact", window: 128_000)
+            .replacingOccurrences(
+                of: "\"disclosed_context_count\":2,\"omitted_context_count\":1",
+                with: "\"disclosed_context_count\":300,\"omitted_context_count\":212"
+            )
+            .replacingOccurrences(
+                of: "\"admitted_item_count\":1,\"admitted_token_count\":1000",
+                with: "\"admitted_item_count\":150,\"admitted_token_count\":1000"
+            )
+            .replacingOccurrences(
+                of: "\"admitted_item_count\":1,\"admitted_token_count\":2000,\"budget_omitted_item_count\":1",
+                with: "\"admitted_item_count\":150,\"admitted_token_count\":2000,\"budget_omitted_item_count\":212"
+            )
+        XCTAssertNoThrow(
+            try LocalProductWire.decodeChatThread(Data(aggregate512.utf8))
+        )
+
+        let includesPolicyOmission = Self.capacityThreadJSON(
+            status: "exact", window: 128_000
+        ).replacingOccurrences(
+            of: "\"disclosed_context_count\":2,\"omitted_context_count\":1",
+            with: "\"disclosed_context_count\":2,\"omitted_context_count\":2"
+        )
+        XCTAssertNoThrow(
+            try LocalProductWire.decodeChatThread(Data(includesPolicyOmission.utf8)),
+            "Capacity contributions must not require policy/access omissions"
+        )
+    }
+
+    func testConversationCapacityProjectionRejectsPartialAndTamperedAuthority() {
+        let exact = Self.capacityThreadJSON(status: "exact", window: 128_000)
+        let malformed = [
+            exact.replacingOccurrences(of: "\"context_capacity_status\":\"exact\",", with: ""),
+            exact.replacingOccurrences(of: "\"reserved_output_tokens\":8192,", with: ""),
+            exact.replacingOccurrences(of: "\"reserved_output_tokens\":8192", with: "\"reserved_output_tokens\":null"),
+            exact.replacingOccurrences(of: "\"context_capacity_status\":\"exact\"", with: "\"context_capacity_status\":\"guessed\""),
+            exact.replacingOccurrences(of: "\"context_window_tokens\":128000", with: "\"context_window_tokens\":0"),
+            exact.replacingOccurrences(of: "\"admitted_input_budget_tokens\":118784", with: "\"admitted_input_budget_tokens\":118785"),
+            exact.replacingOccurrences(of: "\"admitted_contribution_tokens\":3000", with: "\"admitted_contribution_tokens\":3001"),
+            exact.replacingOccurrences(of: "\"budget_omitted_contribution_tokens\":400", with: "\"budget_omitted_contribution_tokens\":401"),
+            exact.replacingOccurrences(of: "\"admitted_token_count\":2000", with: "\"admitted_token_count\":2001"),
+            exact.replacingOccurrences(
+                of: "\"priority\":1,\"source_type\":\"observation\"",
+                with: "\"priority\":0,\"source_type\":\"authority\""
+            ),
+            exact.replacingOccurrences(of: "\"source_type\":\"observation\"", with: "\"source_type\":\"prompt\""),
+        ]
+        for value in malformed {
+            XCTAssertThrowsError(
+                try LocalProductWire.decodeChatThread(Data(value.utf8)),
+                "Capacity authority drift must fail closed"
+            )
+        }
     }
 
     func testChatThreadDecodesSafeMigrationAvailabilityFailure() throws {
@@ -521,7 +889,7 @@ final class LocalProductModelsTests: XCTestCase {
               "fallback_consumed":false,
               "execution_binding_available":true,"harness_adapter":"claude-code",
               "provider_id":"anthropic","provider_account_id":"anthropic.production",
-              "model_id":"claude-sonnet","reasoning_effort":"high",
+              "model_id":"anthropic/claude-sonnet","reasoning_effort":"high",
               "timeout_nanoseconds":300000000000,"binding_budget_credits":1200,
               "capabilities":["reasoning_effort","workspace_edit"],
               "credential_revision":7,
@@ -584,7 +952,7 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertTrue(node.executionBindingAvailable)
         XCTAssertEqual(node.harnessAdapter, "claude-code")
         XCTAssertEqual(node.providerAccountID, "anthropic.production")
-        XCTAssertEqual(node.modelID, "claude-sonnet")
+        XCTAssertEqual(node.modelID, "anthropic/claude-sonnet")
         XCTAssertEqual(node.reasoningEffort, "high")
         XCTAssertEqual(node.timeoutNanoseconds, 300_000_000_000)
         XCTAssertEqual(node.bindingBudgetCredits, 1_200)
@@ -978,11 +1346,67 @@ final class LocalProductModelsTests: XCTestCase {
       "evidence_page":{"next_cursor":"","has_more":false}
     }
     """
+
+    static func capacityThreadJSON(
+        status: String,
+        window: Int?,
+        reservedOutput: Int = 8_192,
+        adapterOverhead: Int = 1_024,
+        admittedBudget: Int = 118_784
+    ) -> String {
+        let windowField = window.map { "\"context_window_tokens\":\($0)," } ?? ""
+        let capacity = """
+            "context_capacity_status":"\(status)",
+            \(windowField)
+            "reserved_output_tokens":\(reservedOutput),
+            "adapter_tool_overhead_tokens":\(adapterOverhead),
+            "admitted_input_budget_tokens":\(admittedBudget),
+            "context_token_counter_id":"loom-token-counter",
+            "context_token_counter_version":"v1",
+            "admitted_contribution_tokens":3000,
+            "budget_omitted_contribution_tokens":400,
+            "context_capacity_contributions":[
+              {"priority":0,"source_type":"authority","admitted_item_count":1,"admitted_token_count":1000,"budget_omitted_item_count":0,"budget_omitted_token_count":0},
+              {"priority":1,"source_type":"observation","admitted_item_count":1,"admitted_token_count":2000,"budget_omitted_item_count":1,"budget_omitted_token_count":400}
+            ],
+            """
+        return """
+            {
+              "thread_id":"thread-capacity",
+              "profile_id":"conversation-deepseek",
+              "segments":[{
+                "segment_id":"segment-1","profile_id":"conversation-deepseek",
+                "context_mode":"summary_only",
+                "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "disclosure_receipt_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "disclosed_context_count":2,"omitted_context_count":1,
+                "context_token_budget":120000,"context_token_count":3000,
+                \(capacity)
+                "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }],
+              "attempts":[{
+                "attempt_id":"attempt-1","segment_id":"segment-1","profile_id":"conversation-deepseek",
+                "context_mode":"summary_only",
+                "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "disclosure_receipt_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "disclosed_context_count":2,"omitted_context_count":1,
+                "context_token_budget":120000,"context_token_count":3000,
+                \(capacity)
+                "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "status":"succeeded","failure_code":""
+              }],
+              "messages":[],"can_reply":true,"requires_confirmation":false
+            }
+            """
+    }
 }
 
+final class LocalConversationCatalogTests: XCTestCase {
 func testConversationModelCatalogCoversCodexAndThreeLayers() {
     let codex = localProductConversationModels(providerID: "openai")
     XCTAssertTrue(codex.contains { $0.modelID == "codex-default" })
+    XCTAssertFalse(codex.contains { $0.modelID == "deepseek-v4-flash" })
+    XCTAssertFalse(codex.contains { $0.modelID == "deepseek-v4-pro" })
     // Grounded in the installed Codex CLI 0.144.1 catalog: GPT-5.6-Sol carries
     // low/medium/high/xhigh/max/ultra and GPT-5.5 carries low/medium/high/xhigh.
     XCTAssertEqual(
@@ -995,6 +1419,8 @@ func testConversationModelCatalogCoversCodexAndThreeLayers() {
     )
     let opencode = localProductConversationModels(providerID: "opencode")
     XCTAssertTrue(opencode.contains { $0.modelID == "deepseek/deepseek-chat" })
+    XCTAssertTrue(opencode.contains { $0.modelID == "opencode/big-pickle" })
+    XCTAssertFalse(opencode.contains { $0.modelID == "opencode/deepseek-v4-flash-free" })
     // DeepSeek Chat is toggle-only in the OpenCode CLI: no effort values.
     XCTAssertTrue(
         localProductConversationReasoningEfforts(
@@ -1020,5 +1446,15 @@ func testConversationModelCatalogCoversCodexAndThreeLayers() {
     XCTAssertTrue(
         localProductConversationReasoningEfforts(providerID: "deepseek", modelID: "deepseek-chat").isEmpty
     )
+    XCTAssertEqual(
+        localProductConversationModels(providerID: "deepseek")
+            .first { $0.modelID == "deepseek-chat" }?.displayName,
+        "DeepSeek Chat"
+    )
+    XCTAssertFalse(
+        localProductConversationModels(providerID: "deepseek")
+            .contains { $0.displayName.localizedCaseInsensitiveContains("legacy") }
+    )
     XCTAssertTrue(localProductConversationModels(providerID: "unknown").isEmpty)
+}
 }

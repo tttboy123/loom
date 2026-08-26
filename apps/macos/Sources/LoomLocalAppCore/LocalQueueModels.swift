@@ -179,7 +179,7 @@ public struct QueueSuccessorCompileRequest: Codable, Equatable, Sendable {
     }
 }
 
-public struct QueueCommand<Input: Encodable>: Encodable, Sendable {
+public struct QueueCommand<Input: Encodable & Sendable>: Encodable, Sendable {
     public var operationID: String
     public var action: String
     public var journeyID: String
@@ -276,7 +276,7 @@ public extension LocalIPCClient {
         return try QueueWire.decodeSnapshot(result)
     }
 
-    func queueCommand<Input: Encodable>(
+    func queueCommand<Input: Encodable & Sendable>(
         _ command: QueueCommand<Input>
     ) async throws -> QueueCommandReceipt {
         guard Self.validJourneyID(command.journeyID),

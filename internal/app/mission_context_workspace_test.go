@@ -85,6 +85,7 @@ func TestMissionCompilerDisclosesContentAddressedObservedWorkspaceSnapshot(t *te
 	}
 	var workspaceContent string
 	var workspaceSourceRef string
+	var currentTaskContent string
 	authorityContext := make(map[contextcapsule.ItemKind]string)
 	for _, item := range prompt.Items {
 		if item.Kind == contextcapsule.KindConfirmedConstraint ||
@@ -92,6 +93,9 @@ func TestMissionCompilerDisclosesContentAddressedObservedWorkspaceSnapshot(t *te
 			authorityContext[item.Kind] = item.Content
 		}
 		if item.ItemID != "workspace-snapshot" {
+			if item.ItemID == "current-task-state" {
+				currentTaskContent = item.Content
+			}
 			continue
 		}
 		if item.Kind != contextcapsule.KindWorkspaceSnapshot ||
@@ -108,6 +112,16 @@ func TestMissionCompilerDisclosesContentAddressedObservedWorkspaceSnapshot(t *te
 		authorityContext[contextcapsule.KindAcceptedDecision] !=
 			"Use the existing execution adapter" {
 		t.Fatalf("canonical mission context = %#v", authorityContext)
+	}
+	var currentTask struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(currentTaskContent), &currentTask); err != nil {
+		t.Fatalf("decode current task: %v", err)
+	}
+	if currentTask.Operation != missionExecutionStart {
+		t.Fatalf("preflight Capsule operation = %q, want executable task %q",
+			currentTask.Operation, missionExecutionStart)
 	}
 	var snapshot struct {
 		SchemaVersion  int    `json:"schema_version"`

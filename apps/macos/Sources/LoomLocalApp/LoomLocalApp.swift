@@ -79,7 +79,7 @@ private struct LoomApplication: App {
                 return outcome
             }
             serviceLogger.notice("starting bundled service fallback")
-            guard serviceProcessHost.start() else {
+            guard await serviceProcessHost.start() else {
                 serviceLogger.error("bundled service fallback failed to start")
                 return .unavailable
             }
@@ -94,7 +94,7 @@ private struct LoomApplication: App {
             return .registered
         case .requiresApproval, .unavailable:
             serviceLogger.notice("starting foreground bundled service")
-            return serviceProcessHost.start() ? .registered : outcome
+            return await serviceProcessHost.start() ? .registered : outcome
         }
     }
 }

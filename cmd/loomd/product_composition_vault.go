@@ -490,6 +490,21 @@ func (slot *productVaultRouteSlot) MarkAttemptPayloadDelivered(ctx context.Conte
 	}
 	return slot.routes.attemptPayloads.MarkAttemptPayloadDelivered(ctx, binding)
 }
+func (slot *productVaultRouteSlot) DeleteAttemptPayload(ctx context.Context, binding attemptpayload.Binding) error {
+	if slot == nil {
+		return credentials.ErrCredentialStoreUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || nilProductAssetPort(slot.routes.attemptPayloads) {
+		return slot.unavailable()
+	}
+	rollback, ok := slot.routes.attemptPayloads.(attemptpayload.RollbackStore)
+	if !ok || nilProductAssetPort(rollback) {
+		return credentials.ErrCredentialStoreUnavailable
+	}
+	return rollback.DeleteAttemptPayload(ctx, binding)
+}
 func (slot *productVaultRouteSlot) PutAgentInput(ctx context.Context, payload agentinbox.Payload) error {
 	if slot == nil {
 		payload.Close()

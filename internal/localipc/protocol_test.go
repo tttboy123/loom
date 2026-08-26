@@ -64,6 +64,38 @@ func TestCredentialVaultLifecycleMethodsAreStrictAndExtended(t *testing.T) {
 	}
 }
 
+func TestCredentialImportMethodIsStrictAndUsesVerificationDeadline(t *testing.T) {
+	const method = "credential_import"
+	if !validMethod(method) {
+		t.Fatalf("%s method unavailable", method)
+	}
+	if !usesExtendedRequestDeadline(method) {
+		t.Fatalf("%s lacks Provider verification deadline", method)
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"credential-import-1","method":"credential_import","params":{"candidate_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","provider_id":"deepseek","provider_account_id":"deepseek.primary","confirm":true}}`,
+	))
+	if err != nil || request.Method != method {
+		t.Fatalf("decoded import request = %+v, %v", request, err)
+	}
+}
+
+func TestChatContextDisclosureMethodIsStrictAndUsesReadDeadline(t *testing.T) {
+	const method = "chat_context_disclosure"
+	if !validMethod(method) {
+		t.Fatalf("%s method unavailable", method)
+	}
+	if requiresJourney(method) || usesExtendedRequestDeadline(method) {
+		t.Fatalf("%s has non-read routing policy", method)
+	}
+	request, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"context-disclosure-1","method":"chat_context_disclosure","params":{"thread_id":"thread-1","segment_id":"segment-1"}}`,
+	))
+	if err != nil || request.Method != method {
+		t.Fatalf("decoded context disclosure request = %+v, %v", request, err)
+	}
+}
+
 func TestAgentAttemptRecoveryMethodIsStrictAndUsesProviderDeadline(t *testing.T) {
 	method := "agent_attempt_recovery"
 	if !validMethod(method) {

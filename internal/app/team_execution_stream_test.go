@@ -401,8 +401,10 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 	}
 	verifierAdapter := &streamTestAdapter{
 		runtimeID: "runtime-stream-verifier",
-		delta:     "verifier-private-delta",
-		errors:    make(chan error, 1),
+		delta: "\n" + string(
+			verification.VerifierReasonCriteriaSatisfied,
+		) + "\n",
+		errors: make(chan error, 1),
 	}
 	verifierExecutor := newStreamTestSupervisor(
 		t,
@@ -420,15 +422,17 @@ func TestTeamExecutionStreamReceivesPostCaptureAuthorizedOutput(t *testing.T) {
 	result, err := coordinator.Run(ctx, app.TeamExecutionRequest{
 		Plan: plan,
 		Nodes: []app.TeamNodeExecution{{
-			LogicalNodeID:  "main",
-			AttemptNumber:  1,
-			WorkflowPath:   "primary",
-			SourcePath:     t.TempDir(),
-			Profile:        profile,
-			Instance:       instance,
-			Dispatch:       dispatchFrame,
-			Executor:       executor,
-			ContextCapsule: contextCapsule,
+			LogicalNodeID:            "main",
+			AttemptNumber:            1,
+			WorkflowPath:             "primary",
+			SourcePath:               t.TempDir(),
+			Profile:                  profile,
+			Instance:                 instance,
+			Dispatch:                 dispatchFrame,
+			Executor:                 executor,
+			ContextCapsule:           contextCapsule,
+			ContextCapacityAuthority: appTestContextCapacityAuthority(),
+			ContextTokenCounter:      appTestContextTokenCounter{},
 		}},
 		Semantics: []app.TeamNodeSemantics{{
 			LogicalNodeID:             "main",
@@ -698,7 +702,7 @@ func streamTestContextCapsule(
 ) contextcapsule.RoleContextCapsule {
 	t.Helper()
 	node := plan.Nodes()[0]
-	capsule, err := contextcapsule.BuildRoleContextCapsule(
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
 			TeamID:         plan.TeamInstanceID(), AgentID: node.AgentInstanceID(), RoleID: "main",
@@ -711,11 +715,13 @@ func streamTestContextCapsule(
 		[]contextcapsule.ItemInput{{
 			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
 			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
-			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Priority: contextcapsule.PrioritySystem, Required: true,
 			Content:    []byte("Execute the stream integration test."),
 			SourceType: contextcapsule.SourceAuthority,
 			SourceRef:  "team-plan:" + plan.Digest(),
 		}},
+		appTestContextCapacityAuthority(),
+		appTestContextTokenCounter{},
 	)
 	if err != nil {
 		t.Fatal(err)

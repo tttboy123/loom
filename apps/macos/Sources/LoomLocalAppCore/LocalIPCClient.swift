@@ -42,6 +42,7 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case cursorConflict = "cursor_conflict"
         case streamGap = "stream_gap"
         case stateUnavailable = "state_unavailable"
+		case workspacePublishFailed = "workspace_publish_failed"
         case timeout
         case busy
         case `internal`
@@ -85,6 +86,38 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case profilePublish = "profile_publish"
         case conversationDispatch = "conversation_dispatch"
         case agentAttemptDispatch = "agent_attempt_dispatch"
+        case preflightLease = "preflight_lease"
+        case viewDrift = "view_drift"
+        case preflightDigest = "preflight_digest"
+        case parentContinuation = "parent_continuation"
+        case flightConflict = "flight_conflict"
+        case dispatchAdmission = "dispatch_admission"
+        case dispatchTeamAuthority = "dispatch_team_authority"
+        case dispatchCapacity = "dispatch_capacity"
+        case dispatchAttemptValidation = "dispatch_attempt_validation"
+        case dispatchViewConflict = "dispatch_view_conflict"
+        case dispatchIdentityUnavailable = "dispatch_identity_unavailable"
+        case dispatchRecoveryRequired = "dispatch_recovery_required"
+        case dispatchValidation = "dispatch_validation"
+        case dispatchContextValidation = "dispatch_context_validation"
+        case dispatchIncomplete = "dispatch_incomplete"
+		case workspacePublication = "workspace_publication"
+		case workspacePublicationInputValidation = "workspace_publication_input_validation"
+		case workspacePublicationSourceSnapshot = "workspace_publication_source_snapshot"
+		case workspacePublicationSourceDrift = "workspace_publication_source_drift"
+		case workspacePublicationStageCreate = "workspace_publication_stage_create"
+		case workspacePublicationChangeValidation = "workspace_publication_change_validation"
+		case workspacePublicationChangeConflict = "workspace_publication_change_conflict"
+		case workspacePublicationDestructiveChange = "workspace_publication_destructive_change"
+		case workspacePublicationStageWrite = "workspace_publication_stage_write"
+		case workspacePublicationApply = "workspace_publication_apply"
+		case workspacePublicationFinalDigest = "workspace_publication_final_digest"
+		case workspacePublicationSync = "workspace_publication_sync"
+		case workspacePublicationMainNodeMissing = "workspace_publication_main_node_missing"
+		case workspacePublicationMainCandidateMissing = "workspace_publication_main_candidate_missing"
+		case workspacePublicationMainChangesMissing = "workspace_publication_main_changes_missing"
+		case workspacePublicationMainDigestMissing = "workspace_publication_main_digest_missing"
+		case workspacePublicationCancelled = "workspace_publication_cancelled"
         case agentAttemptReconcile = "agent_attempt_reconcile"
         case agentInputAdmission = "agent_input_admission"
 		case toolRecovery = "tool_recovery"
@@ -511,6 +544,64 @@ private struct CredentialParams: Encodable {
     }
 }
 
+private struct CredentialImportParams: Encodable {
+    let candidateID: String
+    let candidateDigest: String?
+    let providerID: String
+    let providerAccountID: String
+    let endpointFingerprint: String?
+    let reviewPolicyVersion: Int?
+    let reviewPolicyDigest: String?
+    let approvalDigest: String?
+    let confirm: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case candidateID = "candidate_id"
+        case candidateDigest = "candidate_digest"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case endpointFingerprint = "endpoint_fingerprint"
+        case reviewPolicyVersion = "review_policy_version"
+        case reviewPolicyDigest = "review_policy_digest"
+        case approvalDigest = "approval_digest"
+        case confirm
+    }
+}
+
+private struct EndpointReviewParams: Encodable {
+    let candidateID: String
+    let candidateDigest: String
+    let providerID: String
+    let providerAccountID: String
+    let endpointFingerprint: String
+    let reviewPolicyVersion: Int
+    let reviewPolicyDigest: String
+    let confirm: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case candidateID = "candidate_id"
+        case candidateDigest = "candidate_digest"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case endpointFingerprint = "endpoint_fingerprint"
+        case reviewPolicyVersion = "review_policy_version"
+        case reviewPolicyDigest = "review_policy_digest"
+        case confirm
+    }
+}
+
+private struct FailureLabParams: Encodable {
+    let scenario: String
+    let providerAccountID: String
+    let healthyPeerAccountID: String
+
+    enum CodingKeys: String, CodingKey {
+        case scenario
+        case providerAccountID = "provider_account_id"
+        case healthyPeerAccountID = "healthy_peer_account_id"
+    }
+}
+
 struct ProviderAccountPolicyParams: Encodable {
     let providerID: String
     let providerAccountID: String
@@ -651,6 +742,44 @@ private struct IPCRequest<Params: Encodable>: Encodable {
     }
 }
 
+struct ChatResponseCancelParams: Encodable {
+    let threadID: String
+    let incidentID: String
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case incidentID = "incident_id"
+    }
+}
+
+struct ChatResponseCancelAcknowledgement: Decodable {
+    let threadID: String
+    let incidentID: String
+    let cancelled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case incidentID = "incident_id"
+        case cancelled
+    }
+
+    init(from decoder: Decoder) throws {
+        try rejectIPCUnknownKeys(
+            decoder,
+            allowed: ["thread_id", "incident_id", "cancelled"]
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        threadID = try values.decode(String.self, forKey: .threadID)
+        incidentID = try values.decode(String.self, forKey: .incidentID)
+        cancelled = try values.decode(Bool.self, forKey: .cancelled)
+        guard LocalIPCClient.validIdentifier(threadID),
+              LocalIPCWire.validRequestID(incidentID),
+              cancelled else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
 public final class LocalIPCClient:
     LocalProductClientProtocol,
     LocalProductDecisionClientProtocol,
@@ -667,7 +796,7 @@ public final class LocalIPCClient:
 
     public static let requestMaximum = 65_536
     public static let responseMaximum = 524_288
-    public static let maximumRequestTimeoutSeconds = 55
+    public static let maximumRequestTimeoutSeconds = 1_810
     private let socketPath: String
     private let requestID: @Sendable () -> String
     private let operationalDiagnostics: LocalOperationalDiagnostics
@@ -693,7 +822,7 @@ public final class LocalIPCClient:
         operationalDiagnostics: LocalOperationalDiagnostics,
         recordsInstalledDiagnostics: Bool = true
     ) throws {
-        guard Self.validateSocketConfiguration(socketPath) else {
+        guard Self.validateSocketPathSyntax(socketPath) else {
             throw LocalProductClientError.invalidSocket
         }
         self.socketPath = socketPath
@@ -903,30 +1032,52 @@ public final class LocalIPCClient:
     public func executeMission(
         _ command: LocalProductExecutionCommand
     ) async throws -> LocalProductExecutionEnvelope {
-        let result = try await call(
-            method: "mission_execution",
-            params: command
-        )
-        let envelope = try LocalProductExecutionWire.decodeEnvelope(result)
-        guard envelope.operation == command.operation else {
-            throw LocalProductClientError.invalidResponse
-        }
-        if let preflight = envelope.preflight {
-            guard preflight.missionID == command.missionID,
-                  preflight.teamInstanceID == command.teamInstanceID,
-                  preflight.workPackageID == command.workPackageID,
-                  preflight.workPackageDigest == command.workPackageDigest,
-                  preflight.viewVersion == command.expectedViewVersion else {
+        let started = Date()
+        do {
+            let result = try await call(
+                method: "mission_execution",
+                params: command,
+                incidentID: command.correlationID
+            )
+            let envelope = try LocalProductExecutionWire.decodeEnvelope(result)
+            guard envelope.operation == command.operation else {
                 throw LocalProductClientError.invalidResponse
             }
-        }
-        if let execution = envelope.result {
-            guard execution.missionID == command.missionID,
-                  execution.teamInstanceID == command.teamInstanceID else {
-                throw LocalProductClientError.invalidResponse
+            if let preflight = envelope.preflight {
+                guard preflight.missionID == command.missionID,
+                      preflight.teamInstanceID == command.teamInstanceID,
+                      preflight.workPackageID == command.workPackageID,
+                      preflight.workPackageDigest == command.workPackageDigest,
+                      preflight.viewVersion == command.expectedViewVersion else {
+                    throw LocalProductClientError.invalidResponse
+                }
             }
+            if let execution = envelope.result {
+                guard execution.missionID == command.missionID,
+                      execution.teamInstanceID == command.teamInstanceID else {
+                    throw LocalProductClientError.invalidResponse
+                }
+            }
+            recordMissionExecution(
+                command: command,
+                started: started,
+                result: "succeeded",
+                failure: nil
+            )
+            return envelope
+        } catch {
+            let failure = Self.missionExecutionOperationError(
+                error,
+                incidentID: command.correlationID
+            )
+            recordMissionExecution(
+                command: command,
+                started: started,
+                result: "failed",
+                failure: failure
+            )
+            throw failure
         }
-        return envelope
     }
 
     public func sendAgentInput(
@@ -1796,6 +1947,175 @@ public final class LocalIPCClient:
         )
     }
 
+    public func importCredentialCandidate(
+        candidateID: String,
+        providerID: String,
+        providerAccountID: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        let started = Date()
+        let incidentID = requestID()
+        guard Self.validDigest(candidateID),
+              Self.validIdentifier(providerID),
+              Self.validProviderAccountID(
+                providerAccountID,
+                providerID: providerID
+              ) else {
+            let failure = LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: "credential_import",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+        do {
+            let result = try await call(
+                method: "credential_import",
+                params: CredentialImportParams(
+                    candidateID: candidateID,
+                    candidateDigest: nil,
+                    providerID: providerID,
+                    providerAccountID: providerAccountID,
+                    endpointFingerprint: nil,
+                    reviewPolicyVersion: nil,
+                    reviewPolicyDigest: nil,
+                    approvalDigest: nil,
+                    confirm: true
+                ),
+                incidentID: incidentID
+            )
+            let decoded = try LocalProductSetupWire.decodeCredentialResult(result)
+            recordCredentialResult(
+                operation: "credential_import",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                result: decoded,
+                incidentID: incidentID,
+                started: started
+            )
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(error, incidentID: incidentID)
+            recordCredentialFailure(
+                operation: "credential_import",
+                providerID: providerID,
+                providerAccountID: providerAccountID,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+    }
+
+    public func importReviewedEndpointCandidate(
+        candidate: LocalProductCredentialImportCandidate,
+        review: LocalProductEndpointReviewResult,
+        providerAccountID: String
+    ) async throws -> LocalProductCredentialSetupResult {
+        let incidentID = requestID()
+        guard candidate.importMode == "custom_endpoint_review",
+              review.candidateDigest == candidate.candidateDigest,
+              review.endpointFingerprint == candidate.endpointFingerprint,
+              review.providerID == candidate.targetProviderID,
+              review.providerAccountID == providerAccountID,
+              review.reviewPolicyVersion == candidate.reviewPolicyVersion,
+              review.reviewPolicyDigest == candidate.reviewPolicyDigest,
+              review.status == "approved", review.revision == 2 else {
+            throw LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+        }
+        let result = try await call(
+            method: "credential_import",
+            params: CredentialImportParams(
+                candidateID: candidate.candidateID,
+                candidateDigest: candidate.candidateDigest,
+                providerID: candidate.targetProviderID,
+                providerAccountID: providerAccountID,
+                endpointFingerprint: candidate.endpointFingerprint,
+                reviewPolicyVersion: candidate.reviewPolicyVersion,
+                reviewPolicyDigest: candidate.reviewPolicyDigest,
+                approvalDigest: review.approvalDigest,
+                confirm: true
+            ),
+            incidentID: incidentID
+        )
+        return try LocalProductSetupWire.decodeCredentialResult(result)
+    }
+
+    public func approveEndpointCandidate(
+        candidate: LocalProductCredentialImportCandidate,
+        providerAccountID: String
+    ) async throws -> LocalProductEndpointReviewResult {
+        let incidentID = requestID()
+        guard candidate.importMode == "custom_endpoint_review",
+              candidate.credentialAvailable,
+              Self.validProviderAccountID(
+                providerAccountID, providerID: candidate.targetProviderID
+              ) else {
+            throw LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+        }
+        let result = try await call(
+            method: "provider_endpoint_review_approve",
+            params: EndpointReviewParams(
+                candidateID: candidate.candidateID,
+                candidateDigest: candidate.candidateDigest,
+                providerID: candidate.targetProviderID,
+                providerAccountID: providerAccountID,
+                endpointFingerprint: candidate.endpointFingerprint,
+                reviewPolicyVersion: candidate.reviewPolicyVersion,
+                reviewPolicyDigest: candidate.reviewPolicyDigest,
+                confirm: true
+            ),
+            incidentID: incidentID
+        )
+        return try LocalProductSetupWire.decodeEndpointReviewResult(result)
+    }
+
+    public func runProviderFailureLab(
+        scenario: String,
+        providerAccountID: String,
+        healthyPeerAccountID: String
+    ) async throws -> LocalProductFailureLabResult {
+        let incidentID = requestID()
+        let scenarios = [
+            "auth", "rate_limit", "timeout", "insufficient_balance",
+            "corrupt_vault_record", "revision_conflict",
+        ]
+        guard scenarios.contains(scenario),
+              Self.validIdentifier(providerAccountID),
+              Self.validIdentifier(healthyPeerAccountID),
+              providerAccountID != healthyPeerAccountID else {
+            throw LocalIPCRemoteError(
+                code: .invalidRequest, recoverable: false,
+                stage: .inputAdmission, incidentID: incidentID
+            )
+        }
+        let result = try await call(
+            method: "provider_failure_lab_run",
+            params: FailureLabParams(
+                scenario: scenario,
+                providerAccountID: providerAccountID,
+                healthyPeerAccountID: healthyPeerAccountID
+            ),
+            incidentID: incidentID
+        )
+        return try LocalProductSetupWire.decodeFailureLabResult(result)
+    }
+
     public func configureCredential(
         providerID: String,
         providerAccountID: String,
@@ -2025,7 +2345,50 @@ public final class LocalIPCClient:
             method: "chat_thread",
             params: LocalProductChatThreadRequest(threadID: threadID)
         )
-        return try LocalProductWire.decodeChatThread(result)
+        return try Self.decodeChatThreadResponse(result)
+    }
+
+    public func chatContextDisclosure(
+        threadID: String,
+        segmentID: String
+    ) async throws -> LocalProductContextDisclosure {
+        guard Self.validIdentifier(threadID),
+              Self.validIdentifier(segmentID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "chat_context_disclosure",
+            params: LocalProductContextDisclosureRequest(
+                threadID: threadID,
+                segmentID: segmentID
+            )
+        )
+        return try LocalProductWire.decodeContextDisclosure(result)
+    }
+
+    public func cancelChatResponse(
+        threadID: String,
+        incidentID: String
+    ) async throws {
+        guard Self.validIdentifier(threadID),
+              LocalIPCWire.validRequestID(incidentID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "chat_response_cancel",
+            params: ChatResponseCancelParams(
+                threadID: threadID,
+                incidentID: incidentID
+            )
+        )
+        let acknowledgement = try JSONDecoder().decode(
+            ChatResponseCancelAcknowledgement.self,
+            from: result
+        )
+        guard acknowledgement.threadID == threadID,
+              acknowledgement.incidentID == incidentID else {
+            throw LocalProductClientError.invalidResponse
+        }
     }
 
     public func deleteChatThread(threadID: String) async throws {
@@ -2121,6 +2484,30 @@ public final class LocalIPCClient:
         expectedExecutionBinding: LocalProductConversationExecutionBinding?,
         incidentID: String
     ) async throws -> LocalProductChatThread {
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: profileID,
+            modelID: modelID,
+            reasoningEffort: reasoningEffort,
+            contextMode: contextMode,
+            expectedExecutionBinding: expectedExecutionBinding,
+            trustBoundaryAcknowledgement: nil,
+            incidentID: incidentID
+        )
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String,
+        modelID: String,
+        reasoningEffort: String,
+        contextMode: LocalProductConversationContextMode?,
+        expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+        trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
         let started = Date()
         guard Self.validIdentifier(threadID),
               profileID.isEmpty || Self.validIdentifier(profileID),
@@ -2153,11 +2540,12 @@ public final class LocalIPCClient:
                     modelID: modelID,
                     reasoningEffort: reasoningEffort,
                     contextMode: contextMode,
-                    expectedExecutionBinding: expectedExecutionBinding
+                    expectedExecutionBinding: expectedExecutionBinding,
+                    trustBoundaryAcknowledgement: trustBoundaryAcknowledgement
                 ),
                 incidentID: incidentID
             )
-            let thread = try LocalProductWire.decodeChatThread(result)
+            let thread = try Self.decodeChatThreadResponse(result)
             if let failure = Self.conversationAttemptError(
                 thread,
                 incidentID: incidentID
@@ -2217,6 +2605,90 @@ public final class LocalIPCClient:
         )
     }
 
+    static func decodeChatThreadResponse(
+        _ data: Data
+    ) throws -> LocalProductChatThread {
+        try StrictJSONScanner.validate(data)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var attempts = object["attempts"] as? [[String: Any]] else {
+            return try LocalProductWire.decodeChatThread(data)
+        }
+
+        var cancelledIndexes = Set<Int>()
+        for index in attempts.indices
+        where attempts[index]["status"] as? String == "cancelled" {
+            cancelledIndexes.insert(index)
+            attempts[index]["status"] = "succeeded"
+        }
+        guard !cancelledIndexes.isEmpty else {
+            return try LocalProductWire.decodeChatThread(data)
+        }
+
+        object["attempts"] = attempts
+        let normalized = try JSONSerialization.data(withJSONObject: object)
+        let thread = try LocalProductWire.decodeChatThread(normalized)
+        guard thread.attempts.count == attempts.count else {
+            throw LocalProductClientError.invalidResponse
+        }
+        let restoredAttempts = thread.attempts.enumerated().map { index, attempt in
+            cancelledIndexes.contains(index)
+                ? Self.chatAttempt(attempt, replacingStatusWith: "cancelled")
+                : attempt
+        }
+        return LocalProductChatThread(
+            threadID: thread.threadID,
+            profileID: thread.profileID,
+            segments: thread.segments,
+            attempts: restoredAttempts,
+            messages: thread.messages,
+            canReply: thread.canReply,
+            requiresConfirmation: thread.requiresConfirmation,
+            availabilityFailure: thread.availabilityFailure
+        )
+    }
+
+    private static func chatAttempt(
+        _ attempt: LocalProductConversationAttempt,
+        replacingStatusWith status: String
+    ) -> LocalProductConversationAttempt {
+        LocalProductConversationAttempt(
+            attemptID: attempt.attemptID,
+            segmentID: attempt.segmentID,
+            profileID: attempt.profileID,
+            modelID: attempt.modelID,
+            reasoningEffort: attempt.reasoningEffort,
+            contextMode: attempt.contextMode,
+            contextCapsuleDigest: attempt.contextCapsuleDigest,
+            disclosureReceiptDigest: attempt.disclosureReceiptDigest,
+            disclosedContextCount: attempt.disclosedContextCount,
+            omittedContextCount: attempt.omittedContextCount,
+            contextTokenBudget: attempt.contextTokenBudget,
+            contextTokenCount: attempt.contextTokenCount,
+            contextCapacityStatus: attempt.contextCapacityStatus,
+            contextWindowTokens: attempt.contextWindowTokens,
+            reservedOutputTokens: attempt.reservedOutputTokens,
+            adapterToolOverheadTokens: attempt.adapterToolOverheadTokens,
+            admittedInputBudgetTokens: attempt.admittedInputBudgetTokens,
+            contextTokenCounterID: attempt.contextTokenCounterID,
+            contextTokenCounterVersion: attempt.contextTokenCounterVersion,
+            admittedContributionTokens: attempt.admittedContributionTokens,
+            budgetOmittedContributionTokens: attempt.budgetOmittedContributionTokens,
+            contextCapacityContributions: attempt.contextCapacityContributions,
+            executionBinding: attempt.executionBinding,
+            routeTransitionReviewDigest: attempt.routeTransitionReviewDigest,
+            bindingDigest: attempt.bindingDigest,
+            incidentID: attempt.incidentID,
+            status: status,
+            failureCode: attempt.failureCode,
+            failureStage: attempt.failureStage,
+            httpStatus: attempt.httpStatus,
+            providerCode: attempt.providerCode,
+            failureMessage: attempt.failureMessage,
+            retryAfterSeconds: attempt.retryAfterSeconds,
+            retryable: attempt.retryable
+        )
+    }
+
     func call<Params: Encodable>(
         method: String,
         params: Params,
@@ -2231,7 +2703,9 @@ public final class LocalIPCClient:
             "remote_tool_backend_enrollment_revoke",
             "builder_start", "builder_answer", "builder_edit",
             "builder_validate", "builder_confirm", "team_archive",
-            "team_restore", "credential_configure", "credential_verify",
+            "team_restore", "credential_configure", "credential_import",
+            "provider_endpoint_review_approve", "credential_verify",
+            "provider_failure_lab_run",
             "credential_replace", "credential_revoke", "credential_vault_rotate",
             "credential_vault_lock", "credential_vault_unlock", "credential_vault_reset",
             "credential_vault_export",
@@ -2239,6 +2713,8 @@ public final class LocalIPCClient:
             "mission_execution",
             "side_task_handoff",
             "chat_thread",
+            "chat_context_disclosure",
+            "chat_response_cancel",
             "chat_thread_delete",
             "chat_message",
             "roundtable_session_create",
@@ -2353,13 +2829,19 @@ public final class LocalIPCClient:
 
     static func requestTimeoutSeconds(for method: String) -> Int {
         switch method {
-        case "chat_message", "agent_attempt_recovery":
+        case "chat_message":
+            return 1_810
+        case "chat_response_cancel":
+            return 2
+        case "agent_attempt_recovery":
             return 55
         case "credential_verify", "credential_vault_rotate",
              "credential_vault_lock", "credential_vault_unlock", "credential_vault_reset",
              "credential_vault_export",
-			 "mission_execution", "tool_recovery":
+			 "tool_recovery":
             return 15
+        case "mission_execution", "setup_snapshot":
+            return 185
         default:
             return 5
         }
@@ -2377,7 +2859,7 @@ public final class LocalIPCClient:
         request: Data,
         timeoutSeconds: Int
     ) throws -> Data {
-        guard validateSocketPath(path) else {
+        guard isTrustedSocket(at: path) else {
             throw LocalProductClientError.invalidSocket
         }
         guard (1...maximumRequestTimeoutSeconds).contains(timeoutSeconds) else {
@@ -2471,6 +2953,10 @@ public final class LocalIPCClient:
     }
 
     static func validateSocketPath(_ path: String) -> Bool {
+        isTrustedSocket(at: path)
+    }
+
+    public static func isTrustedSocket(at path: String) -> Bool {
         validateSocketConfiguration(path, requireSocket: true)
     }
 
@@ -2478,14 +2964,7 @@ public final class LocalIPCClient:
         _ path: String,
         requireSocket: Bool = false
     ) -> Bool {
-        guard path.hasPrefix("/"), !path.hasSuffix("/"),
-              !path.contains("//"),
-              !path.split(separator: "/", omittingEmptySubsequences: true)
-                .contains(where: { $0 == "." || $0 == ".." }),
-              path.utf8.count <= 96,
-              URL(fileURLWithPath: path).lastPathComponent == "loomd.sock" else {
-            return false
-        }
+        guard validateSocketPathSyntax(path) else { return false }
         let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
         var parentStat = stat()
         guard lstat(parent, &parentStat) == 0,
@@ -2508,6 +2987,15 @@ public final class LocalIPCClient:
         return (socketStat.st_mode & S_IFMT) == S_IFSOCK &&
             (socketStat.st_mode & 0o777) == 0o600 &&
             socketStat.st_uid == geteuid()
+    }
+
+    private static func validateSocketPathSyntax(_ path: String) -> Bool {
+        path.hasPrefix("/") && !path.hasSuffix("/") &&
+            !path.contains("//") &&
+            !path.split(separator: "/", omittingEmptySubsequences: true)
+                .contains(where: { $0 == "." || $0 == ".." }) &&
+            path.utf8.count <= 96 &&
+            URL(fileURLWithPath: path).lastPathComponent == "loomd.sock"
     }
 
     static func validIdentifier(_ value: String) -> Bool {
@@ -2749,6 +3237,80 @@ public final class LocalIPCClient:
             retryable: false,
             elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
         )
+    }
+
+    private func recordMissionExecution(
+        command: LocalProductExecutionCommand,
+        started: Date,
+        result: String,
+        failure: LocalIPCRemoteError?
+    ) {
+        guard recordsInstalledDiagnostics else { return }
+        let successStage: LocalIPCRemoteError.Stage = command.operation == "start"
+            ? .agentAttemptDispatch
+            : .daemonAdmission
+        try? operationalDiagnostics.recordMissionExecution(
+            incidentID: failure?.incidentID ?? command.correlationID,
+            executionOperation: command.operation,
+            stage: failure?.stage ?? successStage,
+            result: result,
+            errorCode: failure?.code,
+            retryable: failure?.recoverable ?? false,
+            elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+        )
+    }
+
+    private static func missionExecutionOperationError(
+        _ error: Error,
+        incidentID: String
+    ) -> LocalIPCRemoteError {
+        if let remote = error as? LocalIPCRemoteError { return remote }
+        if error is DecodingError || error is LocalProductWireError {
+            return LocalIPCRemoteError(
+                code: .invalidResponse,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
+        guard let local = error as? LocalProductClientError else {
+            return LocalIPCRemoteError(
+                code: .internal,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
+        switch local {
+        case .invalidRequest:
+            return LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: incidentID
+            )
+        case .timeout:
+            return LocalIPCRemoteError(
+                code: .timeout,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        case .invalidResponse:
+            return LocalIPCRemoteError(
+                code: .invalidResponse,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        case .invalidSocket, .unavailable, .notFound:
+            return LocalIPCRemoteError(
+                code: .stateUnavailable,
+                recoverable: true,
+                stage: .udsTransport,
+                incidentID: incidentID
+            )
+        }
     }
 
 	private func recordAgentInput(

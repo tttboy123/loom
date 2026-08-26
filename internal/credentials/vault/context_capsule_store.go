@@ -357,6 +357,11 @@ func (store *VaultStore) RetrieveContextItem(
 		ctx, request.Authority.ConversationID, request.Authority.CapsuleDigest,
 	)
 	if err != nil {
+		if errors.Is(err, ErrContextCapsuleNotFound) {
+			return contextcapsule.RetrievedItem{}, errors.Join(
+				contextcapsule.ErrContextItemNotRetrievable, err,
+			)
+		}
 		return contextcapsule.RetrievedItem{}, err
 	}
 	defer clearBytes(stored.DispatchPayload)

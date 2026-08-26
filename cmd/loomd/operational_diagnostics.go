@@ -15,6 +15,7 @@ import (
 	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/execution"
+	"loom-pi-rebuild/internal/harnessgateway"
 	"loom-pi-rebuild/internal/localipc"
 	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/runtime/nativeadapter"
@@ -28,47 +29,83 @@ const (
 )
 
 type productOperationalDiagnosticRecord struct {
-	SchemaVersion                 int    `json:"schema_version"`
-	OccurredAt                    string `json:"occurred_at"`
-	IncidentID                    string `json:"incident_id"`
-	Operation                     string `json:"operation"`
-	CredentialRuntime             string `json:"credential_runtime,omitempty"`
-	CredentialHelperSpawnAttempts uint64 `json:"credential_helper_spawn_attempts"`
-	ProviderID                    string `json:"provider_id,omitempty"`
-	ProviderAccountID             string `json:"provider_account_id,omitempty"`
-	ModelID                       string `json:"model_id,omitempty"`
-	ThreadID                      string `json:"thread_id,omitempty"`
-	ProfileID                     string `json:"profile_id,omitempty"`
-	WorkItemID                    string `json:"work_item_id,omitempty"`
-	RunID                         string `json:"run_id,omitempty"`
-	ClaimGeneration               int64  `json:"claim_generation,omitempty"`
-	RuntimeInstanceID             string `json:"runtime_instance_id,omitempty"`
-	ExecutionBindingDigest        string `json:"execution_binding_digest,omitempty"`
-	CapsuleDigest                 string `json:"context_capsule_digest,omitempty"`
-	ContextItemID                 string `json:"context_item_id,omitempty"`
-	ContextItemDigest             string `json:"context_item_digest,omitempty"`
-	AgentID                       string `json:"agent_id,omitempty"`
-	RoleID                        string `json:"role_id,omitempty"`
-	ArtifactRef                   string `json:"artifact_ref,omitempty"`
-	ExecutionID                   string `json:"execution_id,omitempty"`
-	ToolCallID                    string `json:"tool_call_id,omitempty"`
-	Tool                          string `json:"tool,omitempty"`
-	CallDigest                    string `json:"call_digest,omitempty"`
-	ToolOperationID               string `json:"tool_operation_id,omitempty"`
-	CompositionSnapshotDigest     string `json:"composition_snapshot_digest,omitempty"`
-	BundleID                      string `json:"bundle_id,omitempty"`
-	BundleVersion                 string `json:"bundle_version,omitempty"`
-	ScopeKind                     string `json:"scope_kind,omitempty"`
-	ScopeID                       string `json:"scope_id,omitempty"`
-	ScopeDigest                   string `json:"scope_digest,omitempty"`
-	Stage                         string `json:"stage"`
-	ElapsedMS                     int64  `json:"elapsed_ms"`
-	Result                        string `json:"result"`
-	ErrorCode                     string `json:"error_code,omitempty"`
-	HTTPStatus                    int    `json:"http_status,omitempty"`
-	ProviderErrorCode             string `json:"provider_error_code,omitempty"`
-	RetryAfterSeconds             int64  `json:"retry_after_seconds,omitempty"`
-	Retryable                     bool   `json:"retryable"`
+	SchemaVersion                   int    `json:"schema_version"`
+	OccurredAt                      string `json:"occurred_at"`
+	IncidentID                      string `json:"incident_id"`
+	Operation                       string `json:"operation"`
+	CredentialRuntime               string `json:"credential_runtime,omitempty"`
+	CredentialHelperSpawnAttempts   uint64 `json:"credential_helper_spawn_attempts"`
+	ProviderID                      string `json:"provider_id,omitempty"`
+	ProviderAccountID               string `json:"provider_account_id,omitempty"`
+	CredentialRevision              int64  `json:"credential_revision,omitempty"`
+	ModelID                         string `json:"model_id,omitempty"`
+	ReasoningEffort                 string `json:"reasoning_effort,omitempty"`
+	ThreadID                        string `json:"thread_id,omitempty"`
+	ProfileID                       string `json:"profile_id,omitempty"`
+	GatewayEventSchemaVersion       int    `json:"gateway_event_schema_version,omitempty"`
+	GatewayInstanceID               string `json:"gateway_instance_id,omitempty"`
+	GatewayConfiguredHarnessVersion int    `json:"gateway_configured_harness_version,omitempty"`
+	GatewayBackendVersion           int    `json:"gateway_backend_version,omitempty"`
+	GatewayEventSequence            uint64 `json:"gateway_event_sequence,omitempty"`
+	GatewayEventType                string `json:"gateway_event_type,omitempty"`
+	SessionID                       string `json:"session_id,omitempty"`
+	HarnessID                       string `json:"harness_id,omitempty"`
+	BackendID                       string `json:"backend_id,omitempty"`
+	SegmentID                       string `json:"segment_id,omitempty"`
+	WorkspaceID                     string `json:"workspace_id,omitempty"`
+	WorkspaceDigest                 string `json:"workspace_digest,omitempty"`
+	SegmentContextCapsuleDigest     string `json:"segment_context_capsule_digest,omitempty"`
+	GovernancePolicyDigest          string `json:"governance_policy_digest,omitempty"`
+	RouteTransitionReviewDigest     string `json:"route_transition_review_digest,omitempty"`
+	ResponseID                      string `json:"response_id,omitempty"`
+	WorkItemID                      string `json:"work_item_id,omitempty"`
+	RunID                           string `json:"run_id,omitempty"`
+	ClaimGeneration                 int64  `json:"claim_generation,omitempty"`
+	RuntimeInstanceID               string `json:"runtime_instance_id,omitempty"`
+	ExecutionBindingDigest          string `json:"execution_binding_digest,omitempty"`
+	CapsuleDigest                   string `json:"context_capsule_digest,omitempty"`
+	ContextItemID                   string `json:"context_item_id,omitempty"`
+	ContextItemDigest               string `json:"context_item_digest,omitempty"`
+	AgentID                         string `json:"agent_id,omitempty"`
+	RoleID                          string `json:"role_id,omitempty"`
+	ArtifactRef                     string `json:"artifact_ref,omitempty"`
+	ExecutionID                     string `json:"execution_id,omitempty"`
+	ToolCallID                      string `json:"tool_call_id,omitempty"`
+	Tool                            string `json:"tool,omitempty"`
+	CallDigest                      string `json:"call_digest,omitempty"`
+	ToolOperationID                 string `json:"tool_operation_id,omitempty"`
+	CompositionSnapshotDigest       string `json:"composition_snapshot_digest,omitempty"`
+	BundleID                        string `json:"bundle_id,omitempty"`
+	BundleVersion                   string `json:"bundle_version,omitempty"`
+	ScopeKind                       string `json:"scope_kind,omitempty"`
+	ScopeID                         string `json:"scope_id,omitempty"`
+	ScopeDigest                     string `json:"scope_digest,omitempty"`
+	Stage                           string `json:"stage"`
+	ElapsedMS                       int64  `json:"elapsed_ms"`
+	Result                          string `json:"result"`
+	ErrorCode                       string `json:"error_code,omitempty"`
+	HTTPStatus                      int    `json:"http_status,omitempty"`
+	ProviderErrorCode               string `json:"provider_error_code,omitempty"`
+	RetryAfterSeconds               int64  `json:"retry_after_seconds,omitempty"`
+	Retryable                       bool   `json:"retryable"`
+}
+
+func (record productOperationalDiagnosticRecord) MarshalJSON() ([]byte, error) {
+	type diagnosticAlias productOperationalDiagnosticRecord
+	if record.GatewayEventSchemaVersion != harnessgateway.EventSchemaVersion {
+		return json.Marshal(diagnosticAlias(record))
+	}
+	return json.Marshal(struct {
+		diagnosticAlias
+		ProviderAccountID      string `json:"provider_account_id"`
+		CredentialRevision     int64  `json:"credential_revision"`
+		GovernancePolicyDigest string `json:"governance_policy_digest"`
+	}{
+		diagnosticAlias:        diagnosticAlias(record),
+		ProviderAccountID:      record.ProviderAccountID,
+		CredentialRevision:     record.CredentialRevision,
+		GovernancePolicyDigest: record.GovernancePolicyDigest,
+	})
 }
 
 type productAttemptToolDiagnostic struct {
@@ -352,6 +389,7 @@ func productIPCOperationalDiagnosticMethod(method string) bool {
 		method == "provider_model_rate_card_configure" ||
 		method == "remote_tool_backend_enrollment_configure" ||
 		method == "remote_tool_backend_enrollment_revoke" || method == "chat_message" ||
+		method == "chat_response_cancel" ||
 		method == "agent_attempt_recovery" || method == "tool_recovery"
 }
 
@@ -765,6 +803,10 @@ func productOperationalDiagnosticFromResponse(
 			}
 		}
 	}
+	if request.Method == "chat_response_cancel" {
+		record.ThreadID, _ = productDiagnosticConversationIdentity(request.Params)
+		record.Stage = "conversation_dispatch"
+	}
 	if request.Method == "agent_attempt_recovery" {
 		record.Stage = "agent_attempt_reconcile"
 	}
@@ -947,9 +989,17 @@ func validProductOperationalDiagnosticRecord(
 			validProductCredentialRuntime(record.CredentialRuntime)) &&
 		(record.ProviderID == "" || validProductDiagnosticProviderID(record.ProviderID)) &&
 		(record.ProviderAccountID == "" || validProductDiagnosticIdentifier(record.ProviderAccountID, 128)) &&
+		record.CredentialRevision >= 0 &&
 		(record.ModelID == "" || validProductDiagnosticIdentifier(record.ModelID, 256)) &&
+		(record.ReasoningEffort == "" || validProductDiagnosticIdentifier(record.ReasoningEffort, 128)) &&
 		(record.ThreadID == "" || validProductDiagnosticIdentifier(record.ThreadID, 256)) &&
 		(record.ProfileID == "" || validProductDiagnosticIdentifier(record.ProfileID, 256)) &&
+		(record.WorkspaceDigest == "" || validProductHex(record.WorkspaceDigest, 64)) &&
+		(record.SegmentContextCapsuleDigest == "" ||
+			validProductHex(record.SegmentContextCapsuleDigest, 64)) &&
+		(record.GovernancePolicyDigest == "" || validProductHex(record.GovernancePolicyDigest, 64)) &&
+		(record.RouteTransitionReviewDigest == "" ||
+			validProductHex(record.RouteTransitionReviewDigest, 64)) &&
 		productOperationalDiagnosticStage(record.Stage) &&
 		record.ElapsedMS >= 0 &&
 		(record.HTTPStatus == 0 || record.HTTPStatus >= 100 && record.HTTPStatus <= 599) &&
@@ -967,22 +1017,39 @@ func validProductOperationalDiagnosticRecord(
 }
 
 func validProductContextRetrievalDiagnostic(record productOperationalDiagnosticRecord) bool {
-	executionFieldsAbsent := record.WorkItemID == "" && record.RunID == "" &&
+	executionIdentityFieldsAbsent := record.WorkItemID == "" && record.RunID == "" &&
 		record.ClaimGeneration == 0 && record.RuntimeInstanceID == "" &&
-		record.ExecutionBindingDigest == "" && record.CapsuleDigest == "" &&
 		record.ContextItemID == "" && record.ContextItemDigest == "" &&
 		record.AgentID == "" && record.RoleID == "" && record.ArtifactRef == "" &&
 		record.ExecutionID == "" && record.ToolCallID == "" && record.Tool == "" &&
 		record.CallDigest == "" && record.ToolOperationID == ""
+	executionFieldsAbsent := executionIdentityFieldsAbsent &&
+		record.ExecutionBindingDigest == "" && record.CapsuleDigest == ""
 	compositionFieldsAbsent := record.CompositionSnapshotDigest == "" &&
 		record.BundleID == "" && record.BundleVersion == "" &&
 		record.ScopeKind == "" && record.ScopeID == "" && record.ScopeDigest == ""
-	fieldsAbsent := executionFieldsAbsent && compositionFieldsAbsent
+	gatewayFieldsAbsent := record.GatewayEventSchemaVersion == 0 &&
+		record.GatewayInstanceID == "" &&
+		record.GatewayConfiguredHarnessVersion == 0 && record.GatewayBackendVersion == 0 &&
+		record.GatewayEventSequence == 0 && record.GatewayEventType == "" &&
+		record.SessionID == "" && record.HarnessID == "" && record.BackendID == "" &&
+		record.SegmentID == "" && record.WorkspaceID == "" && record.ResponseID == "" &&
+		record.WorkspaceDigest == "" && record.CredentialRevision == 0 &&
+		record.ReasoningEffort == "" && record.SegmentContextCapsuleDigest == "" &&
+		record.GovernancePolicyDigest == "" &&
+		record.RouteTransitionReviewDigest == ""
+	fieldsAbsent := executionFieldsAbsent && compositionFieldsAbsent && gatewayFieldsAbsent
+	if record.Operation == "chat_message" && !gatewayFieldsAbsent {
+		return executionIdentityFieldsAbsent && compositionFieldsAbsent &&
+			validProductHarnessGatewayDiagnostic(record)
+	}
 	if record.Operation == "composition" {
-		return executionFieldsAbsent && validProductCompositionDiagnostic(record)
+		return executionFieldsAbsent && gatewayFieldsAbsent &&
+			validProductCompositionDiagnostic(record)
 	}
 	if record.Operation == "authorization_reconcile" {
-		return compositionFieldsAbsent && record.ThreadID == "" && record.ProfileID == "" &&
+		return compositionFieldsAbsent && gatewayFieldsAbsent &&
+			record.ThreadID == "" && record.ProfileID == "" &&
 			validProductDiagnosticProviderID(record.ProviderID) &&
 			validProductDiagnosticIdentifier(record.ProviderAccountID, 128) &&
 			validProductDiagnosticIdentifier(record.ModelID, 256) &&
@@ -1003,7 +1070,7 @@ func validProductContextRetrievalDiagnostic(record productOperationalDiagnosticR
 		if fieldsAbsent {
 			return true
 		}
-		return compositionFieldsAbsent &&
+		return compositionFieldsAbsent && gatewayFieldsAbsent &&
 			validProductDiagnosticIdentifier(record.WorkItemID, 256) &&
 			validProductDiagnosticIdentifier(record.RunID, 256) &&
 			record.ClaimGeneration > 0 &&
@@ -1017,7 +1084,7 @@ func validProductContextRetrievalDiagnostic(record productOperationalDiagnosticR
 			record.Tool == "" && record.CallDigest == "" && record.ToolOperationID == ""
 	}
 	if record.Operation == "tool_call" {
-		return compositionFieldsAbsent &&
+		return compositionFieldsAbsent && gatewayFieldsAbsent &&
 			validProductDiagnosticProviderID(record.ProviderID) &&
 			validProductDiagnosticIdentifier(record.ProviderAccountID, 128) &&
 			validProductDiagnosticIdentifier(record.ModelID, 256) &&
@@ -1039,7 +1106,8 @@ func validProductContextRetrievalDiagnostic(record productOperationalDiagnosticR
 	if record.Operation != "context_retrieval" {
 		return fieldsAbsent
 	}
-	return compositionFieldsAbsent && record.Stage == "context_retrieval" &&
+	return compositionFieldsAbsent && gatewayFieldsAbsent &&
+		record.Stage == "context_retrieval" &&
 		validProductDiagnosticIdentifier(record.WorkItemID, 256) &&
 		validProductDiagnosticIdentifier(record.RunID, 256) &&
 		record.ClaimGeneration > 0 &&
@@ -1053,6 +1121,162 @@ func validProductContextRetrievalDiagnostic(record productOperationalDiagnosticR
 		(record.ArtifactRef == "" || validProductDiagnosticIdentifier(record.ArtifactRef, 512)) &&
 		(record.Result == "succeeded" && record.ErrorCode == "" ||
 			record.Result == "failed" && record.ErrorCode == "context_access_denied")
+}
+
+func validProductHarnessGatewayDiagnostic(record productOperationalDiagnosticRecord) bool {
+	if record.GatewayEventSchemaVersion == 1 {
+		return validLegacyProductHarnessGatewayDiagnosticV1(record)
+	}
+	if record.GatewayEventSchemaVersion == 2 {
+		if record.GatewayInstanceID != "" {
+			return false
+		}
+		record.GatewayEventSchemaVersion = harnessgateway.EventSchemaVersion
+		record.GatewayInstanceID = "gateway-legacy-v2"
+		return validProductHarnessGatewayDiagnostic(record)
+	}
+	if record.GatewayEventSchemaVersion != harnessgateway.EventSchemaVersion {
+		return false
+	}
+	if record.Operation != "chat_message" || record.Stage != "conversation_dispatch" ||
+		record.ProfileID != "" ||
+		!validProductDiagnosticIdentifier(record.GatewayInstanceID, 255) ||
+		!validProductDiagnosticProviderID(record.ProviderID) ||
+		!validProductHarnessGatewayProviderAuthority(record) ||
+		!validProductDiagnosticIdentifier(record.ModelID, 256) ||
+		(record.ReasoningEffort != "" &&
+			!validProductDiagnosticIdentifier(record.ReasoningEffort, 128)) ||
+		!validProductHex(record.WorkspaceDigest, 64) ||
+		!validProductHex(record.ExecutionBindingDigest, 64) ||
+		!validProductHex(record.SegmentContextCapsuleDigest, 64) {
+		return false
+	}
+	occurredAt, err := time.Parse(time.RFC3339Nano, record.OccurredAt)
+	if err != nil {
+		return false
+	}
+	eventType := harnessgateway.EventType(record.GatewayEventType)
+	incidentID := record.IncidentID
+	result, errorCode, retryable, ok := productHarnessGatewayDiagnosticOutcome(eventType)
+	if !ok || record.Result != result || record.ErrorCode != errorCode ||
+		record.Retryable != retryable || record.HTTPStatus != 0 ||
+		record.ProviderErrorCode != "" || record.RetryAfterSeconds != 0 {
+		return false
+	}
+	switch eventType {
+	case harnessgateway.EventSessionOpening, harnessgateway.EventSessionReady,
+		harnessgateway.EventSessionClosing, harnessgateway.EventSessionClosed,
+		harnessgateway.EventSessionFailed:
+		if record.IncidentID != "loom-session-"+productHarnessGatewayDigest(record.SessionID)[:48] {
+			return false
+		}
+		incidentID = ""
+	}
+	return (harnessgateway.Event{
+		SchemaVersion:               record.GatewayEventSchemaVersion,
+		GatewayInstanceID:           record.GatewayInstanceID,
+		ConfiguredHarnessVersion:    record.GatewayConfiguredHarnessVersion,
+		BackendVersion:              record.GatewayBackendVersion,
+		Sequence:                    record.GatewayEventSequence,
+		OccurredAt:                  occurredAt,
+		Type:                        eventType,
+		SessionID:                   record.SessionID,
+		HarnessID:                   harnessgateway.HarnessID(record.HarnessID),
+		BackendID:                   harnessgateway.BackendID(record.BackendID),
+		ConversationID:              record.ThreadID,
+		SegmentID:                   record.SegmentID,
+		WorkspaceID:                 record.WorkspaceID,
+		WorkspaceDigest:             record.WorkspaceDigest,
+		ExecutionBindingDigest:      record.ExecutionBindingDigest,
+		ProviderID:                  record.ProviderID,
+		ProviderAccountID:           record.ProviderAccountID,
+		CredentialRevision:          record.CredentialRevision,
+		ModelID:                     record.ModelID,
+		ReasoningEffort:             record.ReasoningEffort,
+		SegmentContextCapsuleDigest: record.SegmentContextCapsuleDigest,
+		ContextCapsuleDigest:        record.CapsuleDigest,
+		GovernancePolicyDigest:      record.GovernancePolicyDigest,
+		RouteTransitionReviewDigest: record.RouteTransitionReviewDigest,
+		ResponseID:                  record.ResponseID,
+		IncidentID:                  incidentID,
+	}).Valid()
+}
+
+func validProductHarnessGatewayProviderAuthority(record productOperationalDiagnosticRecord) bool {
+	if record.ProviderAccountID == "" {
+		return record.CredentialRevision == 0 && record.GovernancePolicyDigest == ""
+	}
+	return credentials.ValidProviderAccountIdentifier(record.ProviderID, record.ProviderAccountID) &&
+		record.CredentialRevision > 0 &&
+		(record.GovernancePolicyDigest == "" ||
+			validProductHex(record.GovernancePolicyDigest, 64))
+}
+
+func validLegacyProductHarnessGatewayDiagnosticV1(
+	record productOperationalDiagnosticRecord,
+) bool {
+	if record.Operation != "chat_message" || record.Stage != "conversation_dispatch" ||
+		record.ProviderID != "" || record.ProviderAccountID != "" ||
+		record.CredentialRevision != 0 || record.ModelID != "" ||
+		record.ReasoningEffort != "" || record.ProfileID != "" ||
+		record.GatewayInstanceID != "" ||
+		record.WorkspaceDigest != "" || record.ExecutionBindingDigest != "" ||
+		record.SegmentContextCapsuleDigest != "" || record.CapsuleDigest != "" ||
+		record.GovernancePolicyDigest != "" ||
+		record.RouteTransitionReviewDigest != "" ||
+		record.GatewayConfiguredHarnessVersion < 1 || record.GatewayBackendVersion < 1 ||
+		record.GatewayEventSequence == 0 ||
+		!validProductDiagnosticIdentifier(record.SessionID, 255) ||
+		!validProductDiagnosticIdentifier(record.HarnessID, 255) ||
+		!validProductDiagnosticIdentifier(record.BackendID, 255) ||
+		!validProductDiagnosticIdentifier(record.ThreadID, 255) ||
+		!validProductDiagnosticIdentifier(record.SegmentID, 255) ||
+		!validProductDiagnosticIdentifier(record.WorkspaceID, 255) {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, record.OccurredAt); err != nil {
+		return false
+	}
+	eventType := harnessgateway.EventType(record.GatewayEventType)
+	result, errorCode, retryable, ok := productHarnessGatewayDiagnosticOutcome(eventType)
+	if !ok || record.Result != result || record.ErrorCode != errorCode ||
+		record.Retryable != retryable || record.HTTPStatus != 0 ||
+		record.ProviderErrorCode != "" || record.RetryAfterSeconds != 0 {
+		return false
+	}
+	switch eventType {
+	case harnessgateway.EventSessionOpening, harnessgateway.EventSessionReady,
+		harnessgateway.EventSessionClosing, harnessgateway.EventSessionClosed,
+		harnessgateway.EventSessionFailed:
+		return record.ResponseID == "" &&
+			record.IncidentID == "loom-session-"+
+				productHarnessGatewayDigest(record.SessionID)[:48]
+	case harnessgateway.EventResponseStarted, harnessgateway.EventResponseCompleted,
+		harnessgateway.EventResponseCancelled, harnessgateway.EventResponseFailed:
+		return validProductDiagnosticIdentifier(record.ResponseID, 255) &&
+			validProductDiagnosticIncidentID(record.IncidentID)
+	default:
+		return false
+	}
+}
+
+func productHarnessGatewayDiagnosticOutcome(
+	eventType harnessgateway.EventType,
+) (string, string, bool, bool) {
+	switch eventType {
+	case harnessgateway.EventResponseFailed:
+		return "failed", "provider_unavailable", true, true
+	case harnessgateway.EventResponseCancelled:
+		return "failed", "cancelled", false, true
+	case harnessgateway.EventSessionFailed:
+		return "failed", "conversation_unavailable", true, true
+	case harnessgateway.EventSessionOpening, harnessgateway.EventSessionReady,
+		harnessgateway.EventSessionClosing, harnessgateway.EventSessionClosed,
+		harnessgateway.EventResponseStarted, harnessgateway.EventResponseCompleted:
+		return "succeeded", "", false, true
+	default:
+		return "", "", false, false
+	}
 }
 
 func validProductCompositionDiagnostic(record productOperationalDiagnosticRecord) bool {

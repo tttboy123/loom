@@ -1,6 +1,6 @@
 # P2D-COMP1 - Governed Composition Kernel
 
-**Status**: SOURCE VERIFIED / PRODUCT ACTIVATION OPEN  
+**Status**: SOURCE VERIFIED / PRODUCT ACTIVATION VIA COMP2-A+ PARTIAL
 **Goal**: Phase 2D only; this is not a new product Goal  
 **Owner**: Loom Harness Platform Core  
 **Decision**: ADR-0021
@@ -234,6 +234,13 @@ the full repository Go suite and `go vet ./...` also pass. Product Bundle
 facades and complete product route manifests remain P2D-COMP2-A/B, so no daemon
 or IPC production behavior has switched. Evidence:
 `../P2D-COMP1-governed-composition-kernel-v1.md`.
+
+`SOURCE VERIFIED ADDENDUM (2026-08-23)`: a compatibility activation test now
+uses the real SQLite-backed Journal Store and proves an already committed fact
+remains present during and after reverse Effect rollback caused by a later
+Bundle Ready failure. Acceptance item 13 is therefore covered by persistent
+authority, not only an in-memory Effect model. Evidence:
+`../P2D-COMP1-COMP2-E-positional-removal-v1.md`.
 
 ## Non-goals
 

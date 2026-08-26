@@ -71,11 +71,18 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 				"project_id": "project.one", "generation_id": "generation.one",
 			},
 			"name": "Release Crew", "status": "active",
-			"roles": []map[string]any{{
-				"kind": "main", "agent_definition_id": "agent.main",
-				"runtime_profile_id": "profile.main",
-				"responsibility":     "Coordinate bounded work",
-			}},
+			"roles": []map[string]any{
+				{
+					"kind": "main", "agent_definition_id": "agent.main",
+					"runtime_profile_id": "profile.main",
+					"responsibility":     "Coordinate bounded work",
+				},
+				{
+					"kind": "subagent", "agent_definition_id": "agent.reviewer",
+					"runtime_profile_id": "profile.reviewer",
+					"responsibility":     "Review bounded work",
+				},
+			},
 			"digest": strings.Repeat("a", 64),
 		},
 		"draft_id": "draft-release", "draft_revision": 1,
@@ -84,14 +91,37 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 		"binding_digest": strings.Repeat("d", 64),
 		"configuration": map[string]any{
 			"requested_concurrency": 1, "maximum_budget_credits": 100,
-			"role_bindings": []map[string]any{{
-				"kind": "main", "agent_definition_id": "agent.main",
-				"runtime_profile_id":  "profile.main",
-				"runtime_instance_id": "runtime.shared",
-				"model_id":            "model.local",
-				"skill_revisions":     []any{}, "permission_ids": []any{},
-				"resource_ids": []any{},
-			}},
+			"role_bindings": []map[string]any{
+				{
+					"kind": "main", "agent_definition_id": "agent.main",
+					"runtime_profile_id":  "profile.main",
+					"runtime_instance_id": "runtime.shared",
+					"model_id":            "deepseek-chat",
+					"execution_profile": map[string]any{
+						"version": 1, "id": "profile.main",
+						"harness_adapter":       "loom-native",
+						"provider_id":           "deepseek",
+						"provider_account_id":   "deepseek.primary",
+						"model_id":              "deepseek-chat",
+						"auth_mode":             "brokered",
+						"endpoint_fingerprint":  strings.Repeat("e", 64),
+						"credential_reference":  "credential-ref-private",
+						"credential_revision":   int64(7),
+						"timeout_nanoseconds":   int64(time.Minute),
+						"required_capabilities": []any{},
+					},
+					"skill_revisions": []any{}, "permission_ids": []any{},
+					"resource_ids": []any{},
+				},
+				{
+					"kind": "subagent", "agent_definition_id": "agent.reviewer",
+					"runtime_profile_id":  "profile.reviewer",
+					"runtime_instance_id": "runtime.shared",
+					"model_id":            "model.pending",
+					"skill_revisions":     []any{}, "permission_ids": []any{},
+					"resource_ids": []any{},
+				},
+			},
 		},
 	})
 	if _, err := store.Append(context.Background(), journal.Event{
@@ -136,11 +166,36 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 		snapshot.Stale ||
 		len(snapshot.Teams) != 1 ||
 		snapshot.Teams[0].TeamInstanceID != "team-instance.one" ||
+		snapshot.Teams[0].TeamDefinitionID != "team.delivery" ||
+		snapshot.Teams[0].TeamDefinitionVersion != 1 ||
 		snapshot.Teams[0].DisplayName != "Release Crew" ||
 		snapshot.Teams[0].SourceKind != "saved_team" ||
+		len(snapshot.Teams[0].Agents) != 2 ||
 		len(snapshot.Missions) != 1 ||
 		snapshot.Missions[0].Title != "Release Crew" {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if got := snapshot.Teams[0].Agents[0]; got != (LocalProductTeamAgentSummary{
+		RoleKind:           "main",
+		AgentDefinitionID:  "agent.main",
+		RuntimeProfileID:   "profile.main",
+		BindingStatus:      "configured",
+		HarnessAdapter:     "loom-native",
+		ProviderID:         "deepseek",
+		ProviderAccountID:  "deepseek.primary",
+		ModelID:            "deepseek-chat",
+		CredentialRevision: 7,
+	}) {
+		t.Fatalf("configured Agent summary = %#v", got)
+	}
+	if got := snapshot.Teams[0].Agents[1]; got != (LocalProductTeamAgentSummary{
+		RoleKind:          "subagent",
+		AgentDefinitionID: "agent.reviewer",
+		RuntimeProfileID:  "profile.reviewer",
+		BindingStatus:     "unavailable",
+		ModelID:           "model.pending",
+	}) {
+		t.Fatalf("unavailable Agent summary = %#v", got)
 	}
 	encodedSnapshot, err := json.Marshal(snapshot)
 	if err != nil {
@@ -148,6 +203,16 @@ func TestLocalProductReadServicePublishesBoundedSnapshotAndPreservesStaleView(t 
 	}
 	if !bytes.Contains(encodedSnapshot, []byte(`"side_tasks":[]`)) {
 		t.Fatalf("snapshot missing required empty side_tasks array: %s", encodedSnapshot)
+	}
+	for _, privateValue := range [][]byte{
+		[]byte("credential-ref-private"),
+		[]byte(strings.Repeat("e", 64)),
+		[]byte("credential_reference"),
+		[]byte("endpoint_fingerprint"),
+	} {
+		if bytes.Contains(encodedSnapshot, privateValue) {
+			t.Fatalf("snapshot leaked private binding data %q: %s", privateValue, encodedSnapshot)
+		}
 	}
 	health.reason = "observer_models_timeout"
 	health.partial = true
@@ -778,6 +843,282 @@ func TestLocalProductTeamPageAdvancesPastNonHistoricalExecutions(
 		second.TeamPage.NextCursor != "team-active-064" {
 		t.Fatalf("second stale nonhistorical page = %#v", second)
 	}
+	if _, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{AfterTeamID: "team-missing", Limit: 64},
+	); !errors.Is(err, ErrInvalidLocalProductRequest) {
+		t.Fatalf("unknown Team cursor error = %v", err)
+	}
+}
+
+func TestLocalProductMissionPageAdvancesPastSavedOnlyTeamRows(t *testing.T) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	digestA := strings.Repeat("a", 64)
+	digestB := strings.Repeat("b", 64)
+	savedTeamID := "team-mission-saved-only"
+	savedTeamPayload := mustMarshalLocalProductTest(t, map[string]any{
+		"team": map[string]any{
+			"id": savedTeamID, "work_request_id": "request.mission.saved-only",
+			"source_kind": "saved_team", "team_definition_id": "team.saved-only",
+			"team_definition_version": 1, "team_definition_scope": "project",
+			"scope_identity": map[string]any{
+				"project_id": "project.one", "generation_id": "",
+			},
+			"team_definition_digest": digestA, "source_plan_digest": digestB,
+			"state": "created", "created_at": int64(1_722_000_000),
+		},
+		"dormant_sub_agents": []any{}, "source_plan_digest": digestB,
+		"source_record_set_digest": digestA, "team_instance_count": 1,
+		"agent_instance_count": 1, "active_sub_agent_count": 0,
+		"work_item_count": 0,
+	})
+	if _, err := store.Append(context.Background(), journal.Event{
+		ID: "event-team-mission-saved-only", StreamID: "team_instance:" + savedTeamID,
+		Seq: 1, IdempotencyKey: "key-team-mission-saved-only",
+		Type: "TeamInstanceCreated", SchemaVersion: 1,
+		EmittedAt:     time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC),
+		CorrelationID: "request.mission.saved-only", PayloadJSON: savedTeamPayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	savedAgentPayload := mustMarshalLocalProductTest(t, map[string]any{
+		"main_agent": map[string]any{
+			"id": "agent-mission-saved-only", "team_instance_id": savedTeamID,
+			"agent_definition_id": "agent.main", "agent_definition_version": 1,
+			"agent_definition_scope": "project",
+			"scope_identity": map[string]any{
+				"project_id": "project.one", "generation_id": "",
+			},
+			"runtime_profile_id": "profile.main", "runtime_instance_id": "runtime.main",
+			"is_main": true, "state": "created",
+		},
+		"runtime_binding": map[string]any{
+			"accepted": true, "profile_id": "profile.main", "instance_id": "runtime.main",
+		},
+		"source_plan_digest": digestB, "source_record_set_digest": digestA,
+		"team_created_at": int64(1_722_000_000), "binding_digest": digestB,
+		"runtime_discovery_digest": digestA,
+	})
+	if _, err := store.Append(context.Background(), journal.Event{
+		ID:       "event-agent-mission-saved-only",
+		StreamID: "agent_instance:agent-mission-saved-only",
+		Seq:      1, IdempotencyKey: "key-agent-mission-saved-only",
+		Type: "AgentInstanceCreated", SchemaVersion: 1,
+		EmittedAt:     time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC),
+		CorrelationID: "request.mission.saved-only",
+		CausationID:   "event-team-mission-saved-only", PayloadJSON: savedAgentPayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	missionTeamID := "team-mission-after-saved-only"
+	appendLocalProductMissionPlan(t, store, missionTeamID, 1)
+	service := newLocalProductMissionReadService(t, store, projection.New(db))
+
+	first, err := service.ReadLocalProductSnapshot(
+		context.Background(), LocalProductSnapshotRequest{Limit: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Missions) != 0 || !first.MissionPage.HasMore ||
+		first.MissionPage.NextCursor != savedTeamID {
+		t.Fatalf("saved-only Mission page = %#v", first)
+	}
+	second, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{
+			AfterTeamID: first.MissionPage.NextCursor,
+			Limit:       1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Missions) != 1 || second.MissionPage.HasMore ||
+		second.Missions[0].TeamInstanceID != missionTeamID {
+		t.Fatalf("Mission page after saved-only row = %#v", second)
+	}
+}
+
+func TestLocalProductMissionPageAdvancesPastFilteredSideTaskRows(t *testing.T) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	filteredTeamID := "team-mission-filtered-000"
+	missionTeamID := "team-mission-filtered-001"
+	appendLocalProductMissionPlan(t, store, filteredTeamID, 0)
+	appendLocalProductMissionPlan(t, store, missionTeamID, 1)
+	sideTaskPayload := mustMarshalLocalProductTest(t, map[string]any{
+		"side_task_id":            "side-mission-cursor",
+		"parent_mission_id":       "mission/team-parent",
+		"parent_team_instance_id": "team-parent", "parent_task_id": "task-parent",
+		"parent_run_id": "run-parent", "parent_claim_generation": int64(1),
+		"parent_execution_digest":         strings.Repeat("1", 64),
+		"side_execution_team_instance_id": filteredTeamID,
+		"purpose":                         "verification", "mode": "decision_required", "title": "Verify result",
+		"admission_kind": "explicit_confirmation", "proposal_digest": strings.Repeat("2", 64),
+		"input_artifact_digest": strings.Repeat("3", 64),
+		"expected_view_version": strings.Repeat("4", 64),
+		"permission_scopes":     []any{}, "policy_stream_id": "", "policy_version": 0,
+		"policy_digest": "", "budget_microunits": int64(0), "budget_currency": "",
+	})
+	if _, err := store.Append(context.Background(), journal.Event{
+		ID: "event-side-mission-cursor", StreamID: "side-task/side-mission-cursor",
+		Seq: 1, IdempotencyKey: "key-side-mission-cursor", Type: "SideTaskAdmitted",
+		SchemaVersion: 1, EmittedAt: time.Date(2026, 8, 24, 10, 0, 2, 0, time.UTC),
+		CorrelationID: "request.side-mission-cursor", PayloadJSON: sideTaskPayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := newLocalProductMissionReadService(t, store, projection.New(db))
+
+	first, err := service.ReadLocalProductSnapshot(
+		context.Background(), LocalProductSnapshotRequest{Limit: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Missions) != 0 || !first.MissionPage.HasMore ||
+		first.MissionPage.NextCursor != filteredTeamID {
+		t.Fatalf("filtered side-task Mission page = %#v", first)
+	}
+	second, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{
+			AfterTeamID: first.MissionPage.NextCursor,
+			Limit:       1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Missions) != 1 || second.MissionPage.HasMore ||
+		second.Missions[0].TeamInstanceID != missionTeamID {
+		t.Fatalf("Mission page after filtered side-task row = %#v", second)
+	}
+}
+
+func TestLocalProductMissionPageCursorFeedsAfterTeamID(t *testing.T) {
+	db := openAPITimelineDB(t)
+	store := journal.NewStore(db)
+	digest := strings.Repeat("a", 64)
+	for index := 0; index < 2; index++ {
+		teamID := fmt.Sprintf("team-mission-cursor-%03d", index)
+		payload := mustMarshalLocalProductTest(t, map[string]any{
+			"team_instance_id": teamID,
+			"plan_digest":      digest,
+			"view_version":     digest,
+			"nodes": []map[string]any{{
+				"logical_node_id":     "main",
+				"title":               "Main",
+				"agent_instance_id":   "agent-main",
+				"runtime_instance_id": "runtime-main",
+				"role":                "main",
+				"depends_on":          []string{},
+				"max_attempts":        1,
+			}},
+		})
+		if _, err := store.Append(context.Background(), journal.Event{
+			ID:             "event-plan-" + teamID,
+			StreamID:       "team-execution/" + teamID,
+			Seq:            1,
+			IdempotencyKey: "key-plan-" + teamID,
+			Type:           "TeamExecutionPlanned",
+			SchemaVersion:  1,
+			EmittedAt: time.Date(
+				2026, 8, 24, 10, 0, index, 0, time.UTC,
+			),
+			PayloadJSON: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readModel := projection.New(db)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocalProductReadService(LocalProductReadConfig{
+		Journal: store, Projection: readModel,
+		Now: func() time.Time {
+			return time.Date(2026, 8, 24, 10, 1, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.ReadLocalProductSnapshot(
+		context.Background(), LocalProductSnapshotRequest{Limit: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Missions) != 1 || !first.MissionPage.HasMore ||
+		first.MissionPage.NextCursor != "team-mission-cursor-000" {
+		t.Fatalf("first Mission page = %#v", first)
+	}
+	second, err := service.ReadLocalProductSnapshot(
+		context.Background(),
+		LocalProductSnapshotRequest{
+			AfterTeamID: first.MissionPage.NextCursor,
+			Limit:       1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Missions) != 1 || second.MissionPage.HasMore ||
+		second.Missions[0].TeamInstanceID != "team-mission-cursor-001" {
+		t.Fatalf("second Mission page = %#v", second)
+	}
+}
+
+func appendLocalProductMissionPlan(
+	t *testing.T,
+	store *journal.Store,
+	teamID string,
+	second int,
+) {
+	t.Helper()
+	payload := mustMarshalLocalProductTest(t, map[string]any{
+		"team_instance_id": teamID,
+		"plan_digest":      strings.Repeat("a", 64),
+		"view_version":     strings.Repeat("b", 64),
+		"nodes": []map[string]any{{
+			"logical_node_id": "main", "title": "Main",
+			"agent_instance_id": "agent-main", "runtime_instance_id": "runtime-main",
+			"role": "main", "depends_on": []string{}, "max_attempts": 1,
+		}},
+	})
+	if _, err := store.Append(context.Background(), journal.Event{
+		ID: "event-plan-" + teamID, StreamID: "team-execution/" + teamID,
+		Seq: 1, IdempotencyKey: "key-plan-" + teamID,
+		Type: "TeamExecutionPlanned", SchemaVersion: 1,
+		EmittedAt:   time.Date(2026, 8, 24, 10, 0, second, 0, time.UTC),
+		PayloadJSON: payload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newLocalProductMissionReadService(
+	t *testing.T,
+	store *journal.Store,
+	readModel *projection.Projection,
+) *LocalProductReadService {
+	t.Helper()
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocalProductReadService(LocalProductReadConfig{
+		Journal: store, Projection: readModel,
+		Now: func() time.Time {
+			return time.Date(2026, 8, 24, 10, 1, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
 
 func localProductRuntimeCollectionView(

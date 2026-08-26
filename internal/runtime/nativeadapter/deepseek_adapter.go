@@ -22,6 +22,7 @@ import (
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/permissions"
 	"loom-pi-rebuild/internal/prompting"
+	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/supervisor"
 	"loom-pi-rebuild/internal/verification"
@@ -1084,14 +1085,25 @@ func decodeDeepSeekAgentResponse(
 		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
 	}
 	message := decoded.Choices[0].Message
-	content := strings.TrimSpace(message.Content)
+	rawContent := strings.TrimSpace(message.Content)
+	providerID := DeepSeekAgentProviderID
+	if expectedModel == KimiAgentModelID {
+		providerID = KimiAgentProviderID
+	} else if expectedModel == MiniMaxAgentModelID {
+		providerID = MiniMaxAgentProviderID
+	}
+	content, visible := provider.NormalizeVisibleResponseContent(
+		providerID,
+		rawContent,
+	)
 	// A tool call may be accompanied by a short content preamble (DeepSeek
 	// often emits "I'll search..." before the function call). A response with
 	// no tool call may carry empty content; the exchange loop substitutes a
 	// bounded fallback so an exhausted model still completes the attempt.
 	if len(message.ToolCalls) > contextToolMaxCallsPerExchange ||
-		len(content) > deepSeekAgentMaxContentBytes ||
-		!utf8.ValidString(content) || strings.IndexByte(content, 0) >= 0 {
+		len(rawContent) > deepSeekAgentMaxContentBytes ||
+		!utf8.ValidString(rawContent) || strings.IndexByte(rawContent, 0) >= 0 ||
+		!visible {
 		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
 	}
 	response := deepSeekAgentResponse{content: content}

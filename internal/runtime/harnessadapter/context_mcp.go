@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -31,10 +32,12 @@ var ErrHarnessContextMCP = errors.New("Harness scoped Context MCP unavailable")
 
 const (
 	harnessContextMCPTokenEnv       = "LOOM_CONTEXT_ATTEMPT_TOKEN"
-	harnessContextMCPMaxRequest     = 8 << 10
-	harnessContextMCPMaxContent     = 24 << 10
-	harnessContextMCPMaxResponse    = 32 << 10
+	harnessContextMCPMaxRequest     = 72 << 10
+	harnessContextMCPMaxContent     = 64 << 10
+	harnessContextMCPMaxResponse    = 96 << 10
+	harnessMCPToolMaxArguments      = 64 << 10
 	harnessContextMCPMaxCalls       = 4
+	harnessWorkspaceMCPMaxCalls     = 24
 	harnessContextMCPShutdownBudget = 2 * time.Second
 )
 
@@ -44,8 +47,11 @@ type HarnessContextMCPLease struct {
 	ContextEnabled   bool
 	ReadEnabled      bool
 	GrepEnabled      bool
+	EditEnabled      bool
+	BashEnabled      bool
 	WebSearchEnabled bool
 	WebFetchEnabled  bool
+	MCPToolEnabled   bool
 }
 
 type harnessPreparedDelivery struct {
@@ -56,10 +62,12 @@ type harnessPreparedDelivery struct {
 }
 
 type harnessAttemptMCPConfig struct {
-	Retriever   contextcapsule.Retriever
-	Delivery    contextcapsule.DeliveryBroker
-	ToolGateway loomruntime.AttemptToolGateway
-	ToolBinding loomruntime.ToolCallBinding
+	Retriever     contextcapsule.Retriever
+	Delivery      contextcapsule.DeliveryBroker
+	ToolGateway   loomruntime.AttemptToolGateway
+	ToolBinding   loomruntime.ToolCallBinding
+	AllowedTools  []permissions.ToolKind
+	WorkspacePath string
 }
 
 type harnessContextMCP struct {
@@ -69,11 +77,13 @@ type harnessContextMCP struct {
 	delivery       contextcapsule.DeliveryBroker
 	toolGateway    loomruntime.AttemptToolGateway
 	toolBinding    loomruntime.ToolCallBinding
+	workspacePath  string
 	tools          map[string]permissions.ToolKind
 	listener       net.Listener
 	server         *http.Server
 	mu             sync.Mutex
 	calls          int
+	maxCalls       int
 	prepared       []harnessPreparedDelivery
 	acknowledged   int
 	proposals      map[string]struct{}
@@ -157,14 +167,25 @@ func newHarnessAttemptMCPWithContext(
 	}
 	tools := make(map[string]permissions.ToolKind)
 	if gatewayPresent {
-		provider, providerOK := config.ToolGateway.(loomruntime.ToolCallCapabilityProvider)
 		_, readerOK := config.ToolGateway.(loomruntime.ToolCallResultContentReader)
 		_, acknowledgerOK := config.ToolGateway.(loomruntime.ToolCallResultProofAcknowledger)
-		if !providerOK || !readerOK || !acknowledgerOK || !validHarnessToolBinding(config.ToolBinding) {
+		if !readerOK || !acknowledgerOK || !validHarnessToolBinding(config.ToolBinding) {
 			return nil, ErrHarnessContextMCP
 		}
-		for _, tool := range provider.AllowedToolCalls() {
+		allowedTools := config.AllowedTools
+		if len(allowedTools) == 0 {
+			provider, providerOK := config.ToolGateway.(loomruntime.ToolCallCapabilityProvider)
+			if !providerOK {
+				return nil, ErrHarnessContextMCP
+			}
+			allowedTools = provider.AllowedToolCalls()
+		}
+		for _, tool := range allowedTools {
 			switch tool {
+			case permissions.ToolEdit:
+				tools["loom_edit_file"] = tool
+			case permissions.ToolBash:
+				tools["loom_run_command"] = tool
 			case permissions.ToolRead:
 				tools["loom_read_file"] = tool
 			case permissions.ToolGrep:
@@ -173,6 +194,8 @@ func newHarnessAttemptMCPWithContext(
 				tools["loom_web_search"] = tool
 			case permissions.ToolWebFetch:
 				tools["loom_web_fetch"] = tool
+			case permissions.ToolMCPTool:
+				tools["loom_mcp_call"] = tool
 			}
 		}
 		if len(tools) == 0 {
@@ -196,18 +219,28 @@ func newHarnessAttemptMCPWithContext(
 		_ = listener.Close()
 		return nil, ErrHarnessContextMCP
 	}
+	maxCalls := harnessContextMCPMaxCalls
+	if tools["loom_edit_file"] == permissions.ToolEdit ||
+		tools["loom_run_command"] == permissions.ToolBash {
+		maxCalls = harnessWorkspaceMCPMaxCalls
+	}
 	service := &harnessContextMCP{
 		lease: HarnessContextMCPLease{
 			URL: "http://127.0.0.1:" + port + "/mcp", Token: token,
 			ContextEnabled:   contextPresent,
 			ReadEnabled:      tools["loom_read_file"] == permissions.ToolRead,
 			GrepEnabled:      tools["loom_grep_files"] == permissions.ToolGrep,
+			EditEnabled:      tools["loom_edit_file"] == permissions.ToolEdit,
+			BashEnabled:      tools["loom_run_command"] == permissions.ToolBash,
 			WebSearchEnabled: tools["loom_web_search"] == permissions.ToolWebSearch,
 			WebFetchEnabled:  tools["loom_web_fetch"] == permissions.ToolWebFetch,
+			MCPToolEnabled:   tools["loom_mcp_call"] == permissions.ToolMCPTool,
 		},
 		attemptContext: ctx, retriever: config.Retriever, delivery: config.Delivery,
-		toolGateway: config.ToolGateway, toolBinding: config.ToolBinding, tools: tools,
+		toolGateway: config.ToolGateway, toolBinding: config.ToolBinding,
+		workspacePath: config.WorkspacePath, tools: tools,
 		listener: listener, proposals: make(map[string]struct{}), closed: make(chan struct{}),
+		maxCalls: maxCalls,
 	}
 	service.server = &http.Server{
 		Handler:           service,
@@ -267,9 +300,27 @@ func (service *harnessContextMCP) Acknowledge(
 	ctx context.Context,
 	proof attemptpayload.DeliveryProof,
 ) error {
+	if proof != attemptpayload.ProofHarnessFinalOutput {
+		return ErrHarnessContextMCP
+	}
+	return service.acknowledgePrepared(ctx, proof, true)
+}
+
+func (service *harnessContextMCP) acknowledgeToolResponses(ctx context.Context) error {
+	return service.acknowledgePrepared(
+		ctx, attemptpayload.ProofHarnessToolResponse, false,
+	)
+}
+
+func (service *harnessContextMCP) acknowledgePrepared(
+	ctx context.Context,
+	proof attemptpayload.DeliveryProof,
+	seal bool,
+) error {
 	if service == nil || ctx == nil || ctx.Err() != nil ||
 		(service.delivery == nil && service.toolGateway == nil) ||
-		proof != attemptpayload.ProofHarnessFinalOutput {
+		(seal && proof != attemptpayload.ProofHarnessFinalOutput) ||
+		(!seal && proof != attemptpayload.ProofHarnessToolResponse) {
 		return ErrHarnessContextMCP
 	}
 	service.mu.Lock()
@@ -277,7 +328,9 @@ func (service *harnessContextMCP) Acknowledge(
 		service.mu.Unlock()
 		return ErrHarnessContextMCP
 	}
-	service.sealed = true
+	if seal {
+		service.sealed = true
+	}
 	service.acknowledging = true
 	service.mu.Unlock()
 	defer func() {
@@ -324,6 +377,24 @@ func (service *harnessContextMCP) Acknowledge(
 	}
 }
 
+func (service *harnessContextMCP) hasPendingAcknowledgements() bool {
+	if service == nil {
+		return false
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return service.acknowledged < len(service.prepared)
+}
+
+func (service *harnessContextMCP) failDelivery() {
+	if service == nil {
+		return
+	}
+	service.mu.Lock()
+	service.failed = true
+	service.mu.Unlock()
+}
+
 func (service *harnessContextMCP) toolNames() []string {
 	if service == nil {
 		return nil
@@ -344,14 +415,14 @@ func (service *harnessContextMCP) toolNames() []string {
 func (service *harnessContextMCP) mcpTools() []any {
 	names := service.toolNames()
 	result := make([]any, 0, len(names))
-	annotations := map[string]any{
-		"readOnlyHint": true, "destructiveHint": false,
-		"idempotentHint": false, "openWorldHint": false,
-	}
 	for _, name := range names {
 		var description string
 		var properties map[string]any
 		var required []string
+		annotations := map[string]any{
+			"readOnlyHint": true, "destructiveHint": false,
+			"idempotentHint": false, "openWorldHint": false,
+		}
 		switch name {
 		case "loom_read_context":
 			description = "Read one exact Loom-authorized omitted Context item per call."
@@ -366,12 +437,47 @@ func (service *harnessContextMCP) mcpTools() []any {
 			properties = map[string]any{"path": map[string]any{"type": "string"}}
 			required = []string{"path"}
 		case "loom_grep_files":
-			description = "Search workspace files through the Loom-governed workspace gateway."
+			description = "Search workspace files with an RE2 regular expression through the Loom-governed workspace gateway. Use path . for the workspace root."
 			properties = map[string]any{
 				"path":    map[string]any{"type": "string"},
 				"pattern": map[string]any{"type": "string"},
 			}
 			required = []string{"path", "pattern"}
+		case "loom_edit_file":
+			description = "Create or replace one workspace-relative text file through the Loom-governed workspace gateway."
+			annotations = map[string]any{
+				"readOnlyHint": false, "destructiveHint": true,
+				"idempotentHint": true, "openWorldHint": false,
+			}
+			properties = map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+			}
+			required = []string{"path", "content"}
+		case "loom_run_command":
+			description = "Run one bounded command inside the Loom-governed workspace. Use it for local tests and inspection."
+			annotations = map[string]any{
+				"readOnlyHint": false, "destructiveHint": true,
+				"idempotentHint": false, "openWorldHint": false,
+			}
+			properties = map[string]any{
+				"command": map[string]any{"type": "string"},
+			}
+			required = []string{"command"}
+		case "loom_mcp_call":
+			description = "Call one tool through the Loom-governed MCP gateway."
+			// Enrollment authorization is exact, but a generic MCP tool's
+			// side-effect semantics are not known to the Harness adapter.
+			annotations = map[string]any{
+				"readOnlyHint": false, "destructiveHint": true,
+				"idempotentHint": false, "openWorldHint": true,
+			}
+			properties = map[string]any{
+				"server":    map[string]any{"type": "string"},
+				"tool":      map[string]any{"type": "string"},
+				"arguments": map[string]any{"type": "object"},
+			}
+			required = []string{"server", "tool", "arguments"}
 		default:
 			continue
 		}
@@ -396,6 +502,20 @@ func acknowledgeHarnessContextMCP(
 	return service.Acknowledge(ctx, attemptpayload.ProofHarnessFinalOutput)
 }
 
+func harnessContextMCPHasToolActivity(service *harnessContextMCP) bool {
+	if service == nil {
+		return false
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	for _, prepared := range service.prepared {
+		if !prepared.context {
+			return true
+		}
+	}
+	return false
+}
+
 func (service *harnessContextMCP) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("Content-Type", "application/json")
@@ -415,6 +535,14 @@ func (service *harnessContextMCP) ServeHTTP(writer http.ResponseWriter, request 
 	}
 	response, status := service.handle(request.Context(), body)
 	zeroHarnessBytes(body)
+	if status == http.StatusOK && service.hasPendingAcknowledgements() {
+		if err := service.acknowledgeToolResponses(service.attemptContext); err != nil {
+			zeroHarnessBytes(response)
+			service.failDelivery()
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
 	if len(response) > harnessContextMCPMaxResponse {
 		zeroHarnessBytes(response)
 		writer.WriteHeader(http.StatusInternalServerError)
@@ -422,8 +550,13 @@ func (service *harnessContextMCP) ServeHTTP(writer http.ResponseWriter, request 
 	}
 	writer.WriteHeader(status)
 	if len(response) != 0 {
-		_, _ = writer.Write(response)
+		responseLength := len(response)
+		written, writeErr := writer.Write(response)
 		zeroHarnessBytes(response)
+		if writeErr != nil || written != responseLength {
+			service.failDelivery()
+			return
+		}
 	}
 }
 
@@ -592,6 +725,10 @@ func (service *harnessContextMCP) callTool(
 	if !ok {
 		return harnessMCPError(id, -32602, "invalid_request"), http.StatusOK
 	}
+	call, ok = normalizeHarnessWorkspaceCall(call, service.workspacePath)
+	if !ok {
+		return harnessMCPError(id, -32602, "invalid_request"), http.StatusOK
+	}
 	sequence, reserved := service.reserveCall("tool:" + permissions.ProposedCallDigest(call))
 	if !reserved {
 		return harnessMCPError(id, -32602, "tool_call_denied"), http.StatusOK
@@ -654,7 +791,7 @@ func (service *harnessContextMCP) reserveCall(key string) (int64, bool) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	if key == "" || service.sealed || service.failed || service.inFlight ||
-		service.calls >= harnessContextMCPMaxCalls {
+		service.calls >= service.maxCalls {
 		return 0, false
 	}
 	if _, duplicate := service.proposals[key]; duplicate {
@@ -735,14 +872,13 @@ func (service *harnessContextMCP) harnessToolResult(
 		if !readerOK || result.Delivery == nil || result.Delivery.Tool != call.Tool ||
 			result.Delivery.CallDigest != callDigest ||
 			result.Delivery.Binding.Sequence != sequence || result.ContentDigest == "" ||
-			result.ContentDigest != result.OutputDigest ||
-			result.OutputDigest != "sha256:"+result.Delivery.Binding.ContentDigest {
+			result.ContentDigest != "sha256:"+result.Delivery.Binding.ContentDigest {
 			return nil, harnessPreparedDelivery{}, ErrHarnessContextMCP
 		}
 		content, err := reader.ReadToolCallResultContent(ctx, service.toolBinding, result)
 		if err != nil || len(content) == 0 || len(content) > harnessContextMCPMaxContent ||
 			!utf8.Valid(content) || harnessContextControls(content) ||
-			result.OutputDigest != "sha256:"+harnessContextDigest(content) {
+			result.ContentDigest != "sha256:"+harnessContextDigest(content) {
 			zeroHarnessBytes(content)
 			return nil, harnessPreparedDelivery{}, ErrHarnessContextMCP
 		}
@@ -792,6 +928,29 @@ func decodeHarnessToolCall(
 			return permissions.ProposedCall{}, false
 		}
 		return permissions.ProposedCall{Tool: tool, Path: value.Path}, true
+	case permissions.ToolEdit:
+		var value struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validHarnessContextIdentifier(value.Path, 2048) ||
+			len(value.Content) > harnessMCPToolMaxArguments || !utf8.ValidString(value.Content) ||
+			harnessContextControls([]byte(value.Content)) {
+			return permissions.ProposedCall{}, false
+		}
+		return permissions.ProposedCall{
+			Tool: tool, Path: value.Path, Command: value.Content,
+		}, true
+	case permissions.ToolBash:
+		var value struct {
+			Command string `json:"command"`
+		}
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validHarnessToolArgument(value.Command, 8192) {
+			return permissions.ProposedCall{}, false
+		}
+		return permissions.ProposedCall{Tool: tool, Command: value.Command}, true
 	case permissions.ToolGrep:
 		var value struct {
 			Path    string `json:"path"`
@@ -821,9 +980,124 @@ func decodeHarnessToolCall(
 			return permissions.ProposedCall{}, false
 		}
 		return permissions.ProposedCall{Tool: tool, Path: value.URL}, true
+	case permissions.ToolMCPTool:
+		var value struct {
+			Server    string          `json:"server"`
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			!validHarnessMCPToolIdentifier(value.Server) ||
+			!validHarnessMCPToolIdentifier(value.Tool) || len(value.Arguments) == 0 ||
+			len(value.Arguments) > harnessMCPToolMaxArguments ||
+			rejectHarnessDuplicateJSONKeys(value.Arguments) {
+			return permissions.ProposedCall{}, false
+		}
+		argumentsDecoder := json.NewDecoder(bytes.NewReader(value.Arguments))
+		argumentsDecoder.UseNumber()
+		var arguments map[string]any
+		if argumentsDecoder.Decode(&arguments) != nil || arguments == nil ||
+			argumentsDecoder.Decode(&struct{}{}) != io.EOF ||
+			!validHarnessMCPArguments(arguments, 0) {
+			return permissions.ProposedCall{}, false
+		}
+		canonical, err := json.Marshal(arguments)
+		if err != nil || len(canonical) == 0 || len(canonical) > harnessMCPToolMaxArguments {
+			zeroHarnessBytes(canonical)
+			return permissions.ProposedCall{}, false
+		}
+		call := permissions.ProposedCall{
+			Tool: tool, Path: value.Server + "/" + value.Tool, Command: string(canonical),
+		}
+		zeroHarnessBytes(canonical)
+		return call, true
 	default:
 		return permissions.ProposedCall{}, false
 	}
+}
+
+func normalizeHarnessWorkspaceCall(
+	call permissions.ProposedCall,
+	workspacePath string,
+) (permissions.ProposedCall, bool) {
+	if call.Tool != permissions.ToolRead && call.Tool != permissions.ToolEdit &&
+		call.Tool != permissions.ToolGrep {
+		return call, true
+	}
+	path := call.Path
+	if filepath.IsAbs(path) {
+		if workspacePath == "" || !filepath.IsAbs(workspacePath) ||
+			filepath.Clean(workspacePath) != workspacePath {
+			return permissions.ProposedCall{}, false
+		}
+		relative, err := filepath.Rel(workspacePath, filepath.Clean(path))
+		if err != nil || relative == ".." ||
+			strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return permissions.ProposedCall{}, false
+		}
+		path = relative
+	}
+	path = filepath.Clean(path)
+	if path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) ||
+		filepath.IsAbs(path) || path == "." && call.Tool != permissions.ToolGrep {
+		return permissions.ProposedCall{}, false
+	}
+	call.Path = path
+	return call, true
+}
+
+func validHarnessMCPToolIdentifier(value string) bool {
+	if value == "" || len(value) > 128 || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if !(unicode.IsLetter(character) || unicode.IsDigit(character) ||
+			character == '-' || character == '_' || character == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+func validHarnessMCPArguments(value any, depth int) bool {
+	if depth > 64 {
+		return false
+	}
+	switch typed := value.(type) {
+	case nil, bool, json.Number:
+		return true
+	case string:
+		return validHarnessMCPArgumentText(typed)
+	case []any:
+		for _, item := range typed {
+			if !validHarnessMCPArguments(item, depth+1) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		for key, item := range typed {
+			if !validHarnessMCPArgumentText(key) ||
+				!validHarnessMCPArguments(item, depth+1) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func validHarnessMCPArgumentText(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 func harnessContextProposalKey(proposal contextcapsule.RetrievalProposal) string {

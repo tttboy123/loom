@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"loom-pi-rebuild/internal/assets"
 	"loom-pi-rebuild/internal/authorization"
 	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/credentials"
@@ -42,8 +43,89 @@ type teamCanaryClock struct {
 	step time.Duration
 }
 
+func TestVerifierPrivacyInstructionDistinguishesMissionMarkersFromCredentials(t *testing.T) {
+	instruction := verifierPrivacyInstruction(
+		"Return the exact non-secret acceptance marker LOOM-MIXED-TEAM-OK.",
+	)
+	if strings.Contains(instruction, "secrets, tokens, or credentials") ||
+		!strings.Contains(instruction, "API keys") ||
+		!strings.Contains(instruction, "non-secret acceptance markers") {
+		t.Fatalf("ambiguous verifier privacy instruction: %q", instruction)
+	}
+}
+
 type p3aCleanupRecordingMaterializer struct {
 	values []TeamAssetMaterialization
+}
+
+type recordingTeamWorkspacePublisher struct {
+	publications []TeamWorkspacePublication
+	err          error
+}
+
+func (publisher *recordingTeamWorkspacePublisher) PublishAcceptedWorkspace(
+	_ context.Context,
+	publication TeamWorkspacePublication,
+) error {
+	publisher.publications = append(publisher.publications, publication)
+	return publisher.err
+}
+
+type restartAssetMaterializer struct {
+	authority  *assets.Authority
+	sourcePath string
+	requests   []TeamAssetMaterializationRequest
+}
+
+func (materializer *restartAssetMaterializer) PrepareTeamAttemptMaterialization(
+	ctx context.Context,
+	request TeamAssetMaterializationRequest,
+) (TeamAssetMaterialization, error) {
+	materializer.requests = append(materializer.requests, request)
+	manifestDigest := strings.Repeat("c", 64)
+	rootDigest := strings.Repeat("d", 64)
+	prepared, err := materializer.authority.PrepareMaterialization(ctx, assets.Command{
+		OperationID:               fmt.Sprintf("materialize:%s:%d:%d", request.RunID, request.AttemptNumber, request.Generation),
+		JourneyID:                 request.JourneyID,
+		ExpectedViewVersion:       strings.Repeat("a", 64),
+		TeamExecutionID:           request.TeamExecutionID,
+		LogicalNodeID:             request.LogicalNodeID,
+		RunID:                     request.RunID,
+		AttemptNumber:             request.AttemptNumber,
+		Generation:                request.Generation,
+		RuntimeInstanceID:         request.Instance.ID,
+		RuntimeIdentityDigest:     strings.Repeat("b", 64),
+		Capability:                "loom.skill-materialization.pi.v1",
+		Bindings:                  request.Bindings,
+		AssetRevisionSetDigest:    request.RevisionSetDigest,
+		ManifestArtifactDigest:    manifestDigest,
+		MaterializationRootDigest: rootDigest,
+	})
+	if err != nil {
+		return TeamAssetMaterialization{}, err
+	}
+	return TeamAssetMaterialization{
+		SourcePath: materializer.sourcePath,
+		RunID:      request.RunID, AttemptNumber: request.AttemptNumber,
+		Generation: request.Generation, JourneyID: request.JourneyID,
+		ManifestDigest: manifestDigest, RootDigest: rootDigest,
+		Authoritative: prepared.AlreadyCommitted(),
+		AttemptLineage: work.TeamAttemptMaterialization{
+			LogicalNodeID: request.LogicalNodeID, AttemptNumber: request.AttemptNumber,
+			AssetRevisionBindings:         append([]assets.ExactAssetRevisionBinding(nil), request.Bindings...),
+			AssetRevisionSetDigest:        request.RevisionSetDigest,
+			MaterializationManifestDigest: manifestDigest,
+			MaterializationRootDigest:     rootDigest,
+			Prepared:                      prepared,
+		},
+	}, nil
+}
+
+func (*restartAssetMaterializer) CleanupTeamAttemptMaterialization(
+	context.Context,
+	TeamAssetMaterialization,
+) error {
+	return nil
 }
 
 func (*p3aCleanupRecordingMaterializer) PrepareTeamAttemptMaterialization(
@@ -139,8 +221,10 @@ type teamCanaryAdapter struct {
 	runtimeID       string
 	calls           *atomic.Int32
 	omitOutput      bool
+	outputDelta     string
 	accounting      *work.RunAccounting
 	requestObserver func(supervisor.AdapterRequest) error
+	contextObserver func(context.Context) error
 	credentialUse   func(
 		context.Context,
 		loomruntime.FrozenExecutionBinding,
@@ -171,6 +255,11 @@ func (adapter *teamCanaryAdapter) Execute(
 	ctx context.Context,
 	request supervisor.AdapterRequest,
 ) (supervisor.AdapterResult, error) {
+	if adapter.contextObserver != nil {
+		if err := adapter.contextObserver(ctx); err != nil {
+			return supervisor.AdapterResult{}, err
+		}
+	}
 	if adapter.requestObserver != nil {
 		if err := adapter.requestObserver(request); err != nil {
 			return supervisor.AdapterResult{}, err
@@ -232,12 +321,16 @@ func (adapter *teamCanaryAdapter) Execute(
 		),
 	}
 	if !adapter.omitOutput {
+		outputDelta := adapter.outputDelta
+		if outputDelta == "" {
+			outputDelta = "authorized-" + request.Binding.RunID
+		}
 		frames = append(frames, teamCanaryInboundFrame(
 			request,
 			3,
 			bridgev1.MessageEvent,
 			mustTeamCanaryJSON(map[string]string{
-				"delta": "authorized-" + request.Binding.RunID,
+				"delta": outputDelta,
 			}),
 		))
 	}
@@ -315,6 +408,97 @@ type fourProviderTeamCanaryFixture struct {
 type teamAggregationCapsuleCapture struct {
 	mu       sync.Mutex
 	capsules map[string]contextcapsule.RoleContextCapsule
+}
+
+type staleOnceTeamCapsuleStore struct {
+	store   *journal.Store
+	now     time.Time
+	once    sync.Once
+	mu      sync.Mutex
+	digests []string
+}
+
+func (store *staleOnceTeamCapsuleStore) PutRoleContextCapsule(
+	ctx context.Context,
+	capsule contextcapsule.RoleContextCapsule,
+	_ []byte,
+) error {
+	store.mu.Lock()
+	store.digests = append(store.digests, capsule.AuthorityRecord().CapsuleDigest)
+	store.mu.Unlock()
+	var appendErr error
+	store.once.Do(func() {
+		payload, err := json.Marshal(map[string]any{
+			"discovery_digest": strings.Repeat("9", 64),
+			"source_probe_id":  "probe-stale-context-retry",
+			"instance": map[string]any{
+				"id": "runtime-recovery", "device_id": "device-1",
+				"adapter_type": "pi", "display_name": "stale retry noise",
+				"executable_version": "1.0.0", "status": "online",
+				"observed_capabilities": []string{"models"}, "capacity": 1,
+			},
+			"model_ids": []string{},
+		})
+		if err != nil {
+			appendErr = err
+			return
+		}
+		_, appendErr = store.store.Append(ctx, journal.Event{
+			ID:       "runtime-stale-context-retry",
+			StreamID: "runtime_instance:runtime-recovery", Seq: 2,
+			IdempotencyKey: "runtime-stale-context-retry",
+			Type:           "RuntimeInstanceDiscovered", SchemaVersion: 1,
+			EmittedAt: store.now, CorrelationID: "33333333-3333-4333-8333-333333333333",
+			PayloadJSON: payload,
+		})
+	})
+	return appendErr
+}
+
+func (store *staleOnceTeamCapsuleStore) capturedDigests() []string {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]string(nil), store.digests...)
+}
+
+type teamAggregationCapacityCounter struct {
+	mu         sync.Mutex
+	identifier string
+	version    string
+	inputs     [][]byte
+}
+
+func (counter *teamAggregationCapacityCounter) ID() string {
+	return counter.identifier
+}
+
+func (counter *teamAggregationCapacityCounter) Version() string {
+	return counter.version
+}
+
+func (counter *teamAggregationCapacityCounter) CountTokens(content []byte) (int, error) {
+	counter.mu.Lock()
+	defer counter.mu.Unlock()
+	counter.inputs = append(counter.inputs, append([]byte(nil), content...))
+	return missionContextTokenCount(content), nil
+}
+
+func (counter *teamAggregationCapacityCounter) inputCount() int {
+	counter.mu.Lock()
+	defer counter.mu.Unlock()
+	return len(counter.inputs)
+}
+
+func testTeamAggregationCapacityAuthority() contextcapsule.CapacityAuthority {
+	return contextcapsule.CapacityAuthority{
+		SchemaVersion:             contextcapsule.CapacitySchemaVersion,
+		Status:                    contextcapsule.CapacityExact,
+		ContextWindowTokens:       16_384,
+		ReservedOutputTokens:      1_024,
+		AdapterToolOverheadTokens: 512,
+		TokenCounterID:            "counter:team-aggregation-test",
+		TokenCounterVersion:       "v1",
+	}
 }
 
 type teamGovernedTestReportSourceCapture struct {
@@ -433,6 +617,11 @@ func TestParallelRouteSiblingsDispatchIndependentAttemptsThenAggregation(t *test
 		t.Fatal(err)
 	}
 	var aggregationPayload []byte
+	capacityAuthority := testTeamAggregationCapacityAuthority()
+	capacityCounter := &teamAggregationCapacityCounter{
+		identifier: capacityAuthority.TokenCounterID,
+		version:    capacityAuthority.TokenCounterVersion,
+	}
 	nodes := make([]TeamNodeExecution, 0, 3)
 	for _, node := range plan.Nodes() {
 		accountingTokens := map[string]int64{"route-a": 11, "route-b": 22, "main": 33}[node.LogicalNodeID()]
@@ -460,8 +649,11 @@ func TestParallelRouteSiblingsDispatchIndependentAttemptsThenAggregation(t *test
 		if node.Kind() == teams.ExecutionNodeAggregation {
 			execution.Aggregation = &TeamAggregationExecution{
 				MaxSourceArtifactBytes: maxTeamAggregationSourceBytes,
+				CapacityAuthority:      capacityAuthority,
+				TokenCounter:           capacityCounter,
 			}
-			base, capsuleErr := contextcapsule.BuildRoleContextCapsule(
+			goalContent := []byte("Execute the controlled canary.")
+			base, capsuleErr := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 				contextcapsule.Target{
 					ConversationID: "team-conversation:" + plan.TeamInstanceID(),
 					TeamID:         plan.TeamInstanceID(), AgentID: node.AgentInstanceID(),
@@ -472,19 +664,40 @@ func TestParallelRouteSiblingsDispatchIndependentAttemptsThenAggregation(t *test
 					DisclosurePolicyID: "policy.test", DisclosurePolicyVersion: 1,
 					TokenBudget: 2048,
 				},
-				[]contextcapsule.ItemInput{{
-					ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
-					Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
-					Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
-					Content:    []byte("Execute the controlled canary."),
-					SourceType: contextcapsule.SourceAuthority,
-					SourceRef:  "team-plan:" + plan.Digest(),
-				}},
+				[]contextcapsule.ItemInput{
+					{
+						ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+						Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+						Priority:   contextcapsule.PrioritySystem,
+						TokenCount: missionContextTokenCount(goalContent), Required: true,
+						Content: goalContent, SourceType: contextcapsule.SourceAuthority,
+						SourceRef: "team-plan:" + plan.Digest(),
+					},
+					{
+						ItemID: "fixed-policy-omission", Kind: contextcapsule.KindPriorModelOutput,
+						Trust: contextcapsule.TrustUntrusted, Scope: contextcapsule.ScopeRoleRestricted,
+						Priority: contextcapsule.PriorityHistory, TokenCount: 4,
+						Content: []byte("API_KEY=fixed-private"), SourceType: contextcapsule.SourceModelOutput,
+						SourceRef: "attempt-output:" + strings.Repeat("9", 64), AllowedRoleID: "main",
+						PolicyFiltered: true,
+					},
+					{
+						ItemID: "fixed-scope-omission", Kind: contextcapsule.KindObservedExecutionState,
+						Trust: contextcapsule.TrustObserved, Scope: contextcapsule.ScopeAgentPrivate,
+						Priority: contextcapsule.PriorityWorkspace, TokenCount: 3,
+						Content: []byte("other agent state"), SourceType: contextcapsule.SourceObservation,
+						SourceRef: "acceptance:" + strings.Repeat("8", 64), AllowedAgentID: "agent-other",
+					},
+				},
+				capacityAuthority,
+				capacityCounter,
 			)
 			if capsuleErr != nil {
 				t.Fatal(capsuleErr)
 			}
 			execution.ContextCapsule = base
+			execution.ContextCapacityAuthority = capacityAuthority
+			execution.ContextTokenCounter = capacityCounter
 			payload, renderErr := contextcapsule.RenderDispatchPayload(base)
 			if renderErr != nil {
 				t.Fatal(renderErr)
@@ -527,6 +740,33 @@ func TestParallelRouteSiblingsDispatchIndependentAttemptsThenAggregation(t *test
 	capture.mu.Unlock()
 	if !aggregationCapsule.Valid() {
 		t.Fatal("aggregation Capsule was not persisted")
+	}
+	capacityProjection, capacityAvailable := aggregationCapsule.CapacityProjection()
+	admittedItemsBySource := make(map[contextcapsule.SourceType]int)
+	for _, contribution := range capacityProjection.Contributions {
+		admittedItemsBySource[contribution.SourceType] += contribution.AdmittedItemCount
+	}
+	if !capacityAvailable ||
+		capacityProjection.AdmittedContributionTokens != aggregationCapsule.TokenCount() ||
+		capacityProjection.TokenCounterID != capacityAuthority.TokenCounterID ||
+		capacityProjection.TokenCounterVersion != capacityAuthority.TokenCounterVersion ||
+		capacityCounter.inputCount() != 8 ||
+		admittedItemsBySource[contextcapsule.SourceAuthority] != 3 ||
+		admittedItemsBySource[contextcapsule.SourceObservation] != 2 ||
+		admittedItemsBySource[contextcapsule.SourceModelOutput] != 2 {
+		t.Fatalf(
+			"aggregation capacity projection=%#v available=%t token_count=%d counter_inputs=%d admitted_items=%v",
+			capacityProjection, capacityAvailable, aggregationCapsule.TokenCount(),
+			capacityCounter.inputCount(), admittedItemsBySource,
+		)
+	}
+	omissions := make(map[string]contextcapsule.OmissionReason)
+	for _, omission := range aggregationCapsule.Omitted() {
+		omissions[omission.ItemID] = omission.Reason
+	}
+	if omissions["fixed-policy-omission"] != contextcapsule.OmissionPolicyFiltered ||
+		omissions["fixed-scope-omission"] != contextcapsule.OmissionAccessDenied {
+		t.Fatalf("aggregation fixed omissions = %#v", aggregationCapsule.Omitted())
 	}
 	authorityCount, observationCount, outputCount := 0, 0, 0
 	for _, item := range aggregationCapsule.Disclosed() {
@@ -620,7 +860,13 @@ func TestAggregationCapsuleRejectsSourceAndPlanSubstitution(t *testing.T) {
 	if !found {
 		t.Fatal("aggregation node not found")
 	}
-	base, err := contextcapsule.BuildRoleContextCapsule(
+	capacityAuthority := testTeamAggregationCapacityAuthority()
+	capacityCounter := &teamAggregationCapacityCounter{
+		identifier: capacityAuthority.TokenCounterID,
+		version:    capacityAuthority.TokenCounterVersion,
+	}
+	goalContent := []byte("Synthesize routes.")
+	base, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
 			TeamID:         plan.TeamInstanceID(), AgentID: "agent-main", RoleID: "main",
@@ -632,10 +878,13 @@ func TestAggregationCapsuleRejectsSourceAndPlanSubstitution(t *testing.T) {
 		[]contextcapsule.ItemInput{{
 			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
 			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
-			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
-			Content: []byte("Synthesize routes."), SourceType: contextcapsule.SourceAuthority,
+			Priority:   contextcapsule.PrioritySystem,
+			TokenCount: missionContextTokenCount(goalContent), Required: true,
+			Content: goalContent, SourceType: contextcapsule.SourceAuthority,
 			SourceRef: "team-plan:" + plan.Digest(),
 		}},
+		capacityAuthority,
+		capacityCounter,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -668,7 +917,9 @@ func TestAggregationCapsuleRejectsSourceAndPlanSubstitution(t *testing.T) {
 			Content:                []byte(`{"schema_version":1,"events":[{"text":"route b"}]}`),
 		},
 	}
-	capsule, err := buildTeamAggregationContextCapsule(plan, aggregator, base, sources)
+	capsule, err := buildTeamAggregationContextCapsule(
+		plan, aggregator, base, sources, capacityAuthority, capacityCounter,
+	)
 	if err != nil || !capsule.Valid() {
 		t.Fatalf("valid aggregation Capsule error=%v", err)
 	}
@@ -676,6 +927,20 @@ func TestAggregationCapsuleRejectsSourceAndPlanSubstitution(t *testing.T) {
 		if item.Kind == contextcapsule.KindPriorModelOutput &&
 			(item.Trust != contextcapsule.TrustUntrusted || item.SourceType != contextcapsule.SourceModelOutput) {
 			t.Fatalf("model output trust was elevated: %#v", item)
+		}
+	}
+	filteredSources := append([]TeamAggregationSource(nil), sources...)
+	filteredSources[0].Content = []byte("API_KEY=untrusted-output")
+	filtered, err := buildTeamAggregationContextCapsule(
+		plan, aggregator, base, filteredSources, capacityAuthority, capacityCounter,
+	)
+	if err != nil || !filtered.Valid() {
+		t.Fatalf("policy-filtered model output Capsule error=%v", err)
+	}
+	for _, item := range filtered.Omitted() {
+		if item.Kind == contextcapsule.KindPriorModelOutput && item.Reason != contextcapsule.OmissionPolicyFiltered &&
+			item.Reason != contextcapsule.OmissionBudgetExceeded {
+			t.Fatalf("model output omission reason = %s", item.Reason)
 		}
 	}
 
@@ -700,7 +965,9 @@ func TestAggregationCapsuleRejectsSourceAndPlanSubstitution(t *testing.T) {
 		t.Run(mutation.name, func(t *testing.T) {
 			candidate := append([]TeamAggregationSource(nil), sources...)
 			candidate = mutation.mutate(candidate)
-			if _, err := buildTeamAggregationContextCapsule(plan, aggregator, base, candidate); !errors.Is(err, ErrInvalidTeamCoordinator) {
+			if _, err := buildTeamAggregationContextCapsule(
+				plan, aggregator, base, candidate, capacityAuthority, capacityCounter,
+			); !errors.Is(err, ErrInvalidTeamCoordinator) {
 				t.Fatalf("substitution error = %v", err)
 			}
 		})
@@ -718,28 +985,67 @@ func TestAggregationCapsuleRejectsSourceAndPlanSubstitution(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreignAggregator, _ := missionContextPlanNode(otherPlan, "main")
-	if _, err := buildTeamAggregationContextCapsule(plan, foreignAggregator, base, sources); !errors.Is(err, ErrInvalidTeamCoordinator) {
+	if _, err := buildTeamAggregationContextCapsule(
+		plan, foreignAggregator, base, sources, capacityAuthority, capacityCounter,
+	); !errors.Is(err, ErrInvalidTeamCoordinator) {
 		t.Fatalf("foreign aggregation node error = %v", err)
 	}
 
-	baseWithOmission, err := contextcapsule.BuildRoleContextCapsule(
+	driftedAuthority := capacityAuthority
+	driftedAuthority.ReservedOutputTokens++
+	if _, err := buildTeamAggregationContextCapsule(
+		plan, aggregator, base, sources,
+		contextcapsule.CapacityAuthority{}, nil,
+	); !errors.Is(err, contextcapsule.ErrInvalidCapacityAuthority) {
+		t.Fatalf("missing aggregation capacity authority error = %v", err)
+	}
+	if _, err := buildTeamAggregationContextCapsule(
+		plan, aggregator, base, sources, driftedAuthority, capacityCounter,
+	); !errors.Is(err, contextcapsule.ErrInvalidCapacityAuthority) {
+		t.Fatalf("aggregation authority drift error = %v", err)
+	}
+	driftedCounter := &teamAggregationCapacityCounter{
+		identifier: capacityAuthority.TokenCounterID,
+		version:    "v2",
+	}
+	if _, err := buildTeamAggregationContextCapsule(
+		plan, aggregator, base, sources, capacityAuthority, driftedCounter,
+	); !errors.Is(err, contextcapsule.ErrInvalidCapacityAuthority) {
+		t.Fatalf("aggregation counter drift error = %v", err)
+	}
+
+	overflowGoal := []byte("Goal")
+	overflowGoalTokens := missionContextTokenCount(overflowGoal)
+	overflowCounter := &teamAggregationCapacityCounter{
+		identifier: capacityAuthority.TokenCounterID,
+		version:    capacityAuthority.TokenCounterVersion,
+	}
+	baseWithFixedOmission, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "team-conversation:" + plan.TeamInstanceID(), TeamID: plan.TeamInstanceID(),
 			AgentID: "agent-main", RoleID: "main", ProviderID: "openai",
 			ProviderAccountID: "openai.aggregate", ModelID: "gpt-test",
 			AuthMode: string(loomruntime.AuthBrokered), ContextAdapterID: "context:pi:v1",
-			DisclosurePolicyID: "policy.test", DisclosurePolicyVersion: 1, TokenBudget: 4,
+			DisclosurePolicyID: "policy.test", DisclosurePolicyVersion: 1, TokenBudget: 256,
 		},
 		[]contextcapsule.ItemInput{
-			{ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal, Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared, Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true, Content: []byte("Goal"), SourceType: contextcapsule.SourceAuthority, SourceRef: "team-plan:" + plan.Digest()},
-			{ItemID: "history-1", Kind: contextcapsule.KindPriorModelOutput, Trust: contextcapsule.TrustUntrusted, Scope: contextcapsule.ScopeRoleRestricted, Priority: contextcapsule.PriorityHistory, TokenCount: 4, Content: []byte("Prior output"), SourceType: contextcapsule.SourceModelOutput, SourceRef: "attempt-output:" + strings.Repeat("f", 64), AllowedRoleID: "main"},
+			{ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal, Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared, Priority: contextcapsule.PrioritySystem, TokenCount: overflowGoalTokens, Required: true, Content: overflowGoal, SourceType: contextcapsule.SourceAuthority, SourceRef: "team-plan:" + plan.Digest()},
+			{ItemID: "fixed-policy-omission", Kind: contextcapsule.KindPriorModelOutput, Trust: contextcapsule.TrustUntrusted, Scope: contextcapsule.ScopeRoleRestricted, Priority: contextcapsule.PriorityHistory, TokenCount: contextcapsule.MaxCapacityTokens - overflowGoalTokens, Content: []byte("fixed private output"), SourceType: contextcapsule.SourceModelOutput, SourceRef: "attempt-output:" + strings.Repeat("f", 64), AllowedRoleID: "main", PolicyFiltered: true},
 		},
+		capacityAuthority,
+		overflowCounter,
 	)
-	if err != nil || len(baseWithOmission.Omitted()) != 1 {
-		t.Fatalf("omitted base error=%v omitted=%d", err, len(baseWithOmission.Omitted()))
+	if err != nil || len(baseWithFixedOmission.Omitted()) != 1 {
+		t.Fatalf("fixed-omission base error=%v omitted=%d", err, len(baseWithFixedOmission.Omitted()))
 	}
-	if _, err := buildTeamAggregationContextCapsule(plan, aggregator, baseWithOmission, sources); !errors.Is(err, ErrInvalidTeamCoordinator) {
-		t.Fatalf("omitted base error = %v", err)
+	countBeforeOverflow := overflowCounter.inputCount()
+	if _, err := buildTeamAggregationContextCapsule(
+		plan, aggregator, baseWithFixedOmission, sources, capacityAuthority, overflowCounter,
+	); !errors.Is(err, contextcapsule.ErrInvalidCapacityAuthority) {
+		t.Fatalf("aggregation cumulative overflow error = %v", err)
+	}
+	if overflowCounter.inputCount() != countBeforeOverflow {
+		t.Fatalf("counter observed extension before overflow admission")
 	}
 }
 
@@ -816,6 +1122,7 @@ func TestDependencyCapsuleRejectsPeerSourceAndKeepsOutputRoleRestricted(t *testi
 	}
 	capsule, err := buildTeamDependencyContextCapsule(
 		plan, main, base, []TeamAggregationSource{source},
+		missionContextCapacityAuthority(), missionContextCounter,
 	)
 	if err != nil || !capsule.Valid() {
 		t.Fatalf("dependency Capsule = %#v, err=%v", capsule.AuthorityRecord(), err)
@@ -884,6 +1191,7 @@ func TestDependencyCapsuleRejectsPeerSourceAndKeepsOutputRoleRestricted(t *testi
 		t.Run(name, func(t *testing.T) {
 			if _, err := buildTeamDependencyContextCapsule(
 				plan, main, base, []TeamAggregationSource{mutate(source)},
+				missionContextCapacityAuthority(), missionContextCounter,
 			); !errors.Is(err, ErrInvalidTeamCoordinator) {
 				t.Fatalf("substitution error = %v", err)
 			}
@@ -1806,6 +2114,143 @@ func clearTeamCanaryBytes(value []byte) {
 	}
 }
 
+func TestTeamCoordinatorWaveLimitScalesWithTopologyAndRetries(t *testing.T) {
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-wave-budget",
+		Nodes: []teams.ExecutionNodeInput{
+			{LogicalNodeID: "main", Title: "finish", AgentInstanceID: "agent-main", RuntimeInstanceID: "runtime-main", Role: teams.ExecutionRoleMain, DependsOn: []string{"worker-a", "worker-b", "worker-c"}, MaxAttempts: 2},
+			{LogicalNodeID: "worker-a", Title: "a", AgentInstanceID: "agent-a", RuntimeInstanceID: "runtime-a", Role: teams.ExecutionRoleSubAgent, MaxAttempts: 2},
+			{LogicalNodeID: "worker-b", Title: "b", AgentInstanceID: "agent-b", RuntimeInstanceID: "runtime-b", Role: teams.ExecutionRoleSubAgent, MaxAttempts: 2},
+			{LogicalNodeID: "worker-c", Title: "c", AgentInstanceID: "agent-c", RuntimeInstanceID: "runtime-c", Role: teams.ExecutionRoleSubAgent, MaxAttempts: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := teamCoordinatorWaveLimit(plan)
+	if limit <= 9 || limit > 512 {
+		t.Fatalf("four-node retry wave limit = %d, want bounded topology-aware budget", limit)
+	}
+}
+
+func TestTeamCoordinatorRestartAuthorityEndsAfterTerminalReopen(t *testing.T) {
+	generationID := "22222222-2222-4222-8222-222222222222"
+	request := TeamExecutionRequest{
+		RestartTerminal: true,
+		CorrelationID:   generationID,
+	}
+	if salt := appTeamAttemptIdentitySalt(request); len(salt) != 1 || salt[0] != generationID {
+		t.Fatalf("initial restart identity salt = %#v", salt)
+	}
+	if !restartTeamExecutionFromTerminal(
+		request,
+		projection.TeamExecution{Status: "blocked"},
+	) {
+		t.Fatal("explicit new Attempt did not authorize terminal reopen")
+	}
+	for _, status := range []string{"running", "awaiting_recovery"} {
+		active := projection.TeamExecution{
+			Status: status,
+			Nodes: []projection.TeamExecutionNode{{
+				Status: status, CurrentAttempt: 1,
+				Attempts: []projection.TeamExecutionAttempt{{
+					AttemptNumber: 1, Status: "dispatched",
+				}},
+			}},
+		}
+		if restartTeamExecutionFromTerminal(request, active) {
+			t.Fatalf("restart authority leaked into active %s attempt", status)
+		}
+		active.Nodes[0].Attempts[0].Status = "failed"
+		if !restartTeamExecutionFromTerminal(request, active) {
+			t.Fatalf("durable failed %s attempt did not authorize reopen", status)
+		}
+	}
+	request.RestartTerminal = false
+	request.ExecutionGenerationID = generationID
+	if salt := appTeamAttemptIdentitySalt(request); len(salt) != 1 || salt[0] != generationID {
+		t.Fatalf("continuation identity salt = %#v", salt)
+	}
+	if restartTeamExecutionFromTerminal(
+		request,
+		projection.TeamExecution{Status: "blocked"},
+	) {
+		t.Fatal("ordinary continuation reopened a terminal Team")
+	}
+}
+
+func TestTerminalTeamSuccessPublishesRememberedMainCandidate(t *testing.T) {
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-publish-terminal",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "publish", AgentInstanceID: "agent-main",
+			RuntimeInstanceID: "runtime-main", Role: teams.ExecutionRoleMain,
+			MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := &recordingTeamWorkspacePublisher{}
+	request := TeamExecutionRequest{
+		Plan: plan, WorkspacePublisher: publisher,
+	}
+	candidates := map[string]teamWorkspaceCandidate{
+		"main": {
+			execution: TeamNodeExecution{
+				LogicalNodeID: "main", SourcePath: "/workspace",
+				SourceSnapshotDigest: strings.Repeat("1", 64),
+			},
+			attemptNumber: 1, workspaceDigest: strings.Repeat("2", 64),
+			changes: []TeamWorkspaceChange{{
+				Path: "index.html", Kind: supervisor.WorkspaceChangeAdded,
+				Mode: 0o600, Digest: strings.Repeat("3", 64), Content: []byte("snake"),
+			}},
+		},
+	}
+	if err := publishTerminalTeamWorkspace(
+		context.Background(), request, "succeeded", candidates,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.publications) != 1 ||
+		publisher.publications[0].LogicalNodeID != "main" ||
+		len(publisher.publications[0].Changes) != 1 {
+		t.Fatalf("terminal publications = %#v", publisher.publications)
+	}
+	if err := publishTerminalTeamWorkspace(
+		context.Background(), request, "failed", candidates,
+	); err != nil || len(publisher.publications) != 1 {
+		t.Fatalf("failed Team publication = %#v, err=%v", publisher.publications, err)
+	}
+}
+
+func TestTerminalTeamSuccessClassifiesMissingMainCandidate(t *testing.T) {
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: "team-publish-missing-candidate",
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID: "main", Title: "publish", AgentInstanceID: "agent-main",
+			RuntimeInstanceID: "runtime-main", Role: teams.ExecutionRoleMain,
+			MaxAttempts: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = publishTerminalTeamWorkspace(
+		context.Background(),
+		TeamExecutionRequest{Plan: plan, WorkspacePublisher: &recordingTeamWorkspacePublisher{}},
+		"succeeded",
+		map[string]teamWorkspaceCandidate{},
+	)
+	if !errors.Is(err, ErrTeamWorkspacePublish) {
+		t.Fatalf("missing candidate error = %v", err)
+	}
+	if stage, ok := TeamWorkspacePublishStage(err); !ok || stage != "main_candidate_missing" {
+		t.Fatalf("missing candidate stage = %q, %t", stage, ok)
+	}
+}
+
 func TestTeamCoordinatorUsesDistinctIndependentVerifierLineage(t *testing.T) {
 	fixture := newTeamRecoveryFixture(t)
 	now := fixture.clock.Now()
@@ -1825,6 +2270,16 @@ func TestTeamCoordinatorUsesDistinctIndependentVerifierLineage(t *testing.T) {
 			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
 			runtimeID: "runtime-verifier",
 			calls:     &verifierCalls,
+			outputDelta: string(
+				verification.VerifierReasonCriteriaSatisfied,
+			),
+			contextObserver: func(ctx context.Context) error {
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) <= 20*time.Second {
+					return errors.New("verifier inherited terminal commit deadline")
+				}
+				return nil
+			},
 		},
 	)
 	template := teamCanaryNodeExecution(
@@ -1837,6 +2292,7 @@ func TestTeamCoordinatorUsesDistinctIndependentVerifierLineage(t *testing.T) {
 		now,
 		verifierExecutor,
 	)
+	template.Profile.Timeout = 30 * time.Second
 	contract, err := verification.NewAcceptanceContract(
 		1,
 		[]string{"controlled output is accepted"},
@@ -1964,6 +2420,31 @@ func TestTeamCoordinatorUsesDistinctIndependentVerifierLineage(t *testing.T) {
 	}
 }
 
+func TestVerifierRoleScopeInstructionSeparatesNodeContribution(t *testing.T) {
+	subagent, err := verifierRoleScopeInstruction(
+		teams.ExecutionRoleSubAgent,
+		"Produce a short implementation plan without editing files",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		"Current node role: subagent",
+		"Produce a short implementation plan without editing files",
+		"Do not require work explicitly assigned to another role",
+	} {
+		if !strings.Contains(subagent, fragment) {
+			t.Fatalf("subagent verifier scope %q missing %q", subagent, fragment)
+		}
+	}
+
+	if _, err := verifierRoleScopeInstruction(
+		teams.ExecutionRole("unknown"), "assignment",
+	); !errors.Is(err, ErrInvalidTeamCoordinator) {
+		t.Fatalf("invalid verifier role error = %v", err)
+	}
+}
+
 func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing.T) {
 	fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
 	now := fixture.clock.Now()
@@ -1980,11 +2461,10 @@ func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing
 		fixture.work,
 		fixture.grants,
 		&teamCanaryAdapter{
-			barrier:        &teamCanaryBarrier{release: make(chan struct{})},
-			runtimeID:      "runtime-verifier",
-			calls:          &verifierCalls,
-			terminalStatus: "failed",
-			terminalReason: string(
+			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID: "runtime-verifier",
+			calls:     &verifierCalls,
+			outputDelta: string(
 				verification.VerifierReasonCriteriaNotSatisfied,
 			),
 		},
@@ -2091,6 +2571,110 @@ func TestTeamCoordinatorRoutesVerifierRejectionThroughBoundedRecovery(t *testing
 	}
 }
 
+func TestTeamCoordinatorTurnsVerifierRuntimeFailureIntoGovernedRejection(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	now := fixture.clock.Now()
+	seedTeamCanaryRuntime(
+		t,
+		fixture.store,
+		"runtime-verifier",
+		1,
+		now,
+	)
+	var verifierCalls atomic.Int32
+	verifierExecutor := newTeamCanarySupervisor(
+		t,
+		fixture.work,
+		fixture.grants,
+		&teamCanaryAdapter{
+			barrier:        &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID:      "runtime-verifier",
+			calls:          &verifierCalls,
+			terminalStatus: "failed",
+			terminalReason: "runtime_process_failed",
+		},
+	)
+	template := teamCanaryNodeExecution(
+		t,
+		fixture.plan,
+		"main",
+		1,
+		"agent-verifier",
+		"runtime-verifier",
+		now,
+		verifierExecutor,
+	)
+	contract, err := verification.NewAcceptanceContract(
+		1,
+		[]string{"controlled output is accepted"},
+		verification.AcceptanceRiskHigh,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semantics := &fixture.request.Semantics[0]
+	semantics.AcceptanceContract = contract
+	semantics.VerifierAgentInstanceID = "agent-verifier"
+	semantics.VerifierRuntimeInstanceID = "runtime-verifier"
+	semantics.VerifierWorkflowPath = "independent-verification"
+	semantics.VerifierExecution = &TeamVerifierExecution{
+		SourcePath: template.SourcePath,
+		Profile:    template.Profile,
+		Instance:   template.Instance,
+		Executor:   verifierExecutor,
+	}
+	fixture.clock.SetStep(time.Millisecond)
+	result, err := fixture.coordinator.Run(
+		context.Background(),
+		fixture.request,
+	)
+	if err != nil || result.Team().Status() != "blocked" ||
+		fixture.calls.Load() != 1 || verifierCalls.Load() != 1 {
+		t.Fatalf(
+			"runtime failure result=%#v source_calls=%d verifier_calls=%d err=%v",
+			result,
+			fixture.calls.Load(),
+			verifierCalls.Load(),
+			err,
+		)
+	}
+	events, err := fixture.store.ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int)
+	foundGovernedReason := false
+	foundTerminalCause := false
+	for _, event := range events {
+		counts[event.Type]++
+		if event.Type == "WorkItemVerificationCommitted" &&
+			strings.Contains(
+				string(event.PayloadJSON),
+				`"verifier_reason_code":"insufficient_evidence"`,
+			) {
+			foundGovernedReason = true
+		}
+		if event.Type == "RunTerminalCommitted" &&
+			strings.Contains(
+				string(event.PayloadJSON),
+				`"reason":"runtime_process_failed"`,
+			) {
+			foundTerminalCause = true
+		}
+	}
+	if counts["EvidenceSubmitted"] != 2 ||
+		counts["WorkItemRejected"] != 1 ||
+		counts["TeamNodeRecoveryRecorded"] != 1 ||
+		!foundGovernedReason || !foundTerminalCause {
+		t.Fatalf(
+			"runtime failure governance counts=%v reason=%v cause=%v",
+			counts,
+			foundGovernedReason,
+			foundTerminalCause,
+		)
+	}
+}
+
 func TestIndependentVerifierTerminalReceiptRestartsWithoutReexecution(t *testing.T) {
 	fixture := newTeamRecoveryFixture(t)
 	now := fixture.clock.Now()
@@ -2110,6 +2694,9 @@ func TestIndependentVerifierTerminalReceiptRestartsWithoutReexecution(t *testing
 			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
 			runtimeID: "runtime-verifier",
 			calls:     &verifierCalls,
+			outputDelta: string(
+				verification.VerifierReasonCriteriaSatisfied,
+			),
 		},
 	)
 	template := teamCanaryNodeExecution(
@@ -2706,9 +3293,11 @@ func TestFourProviderTeamDAGExecutionControlledCanary(t *testing.T) {
 			LogicalNodeID: node.LogicalNodeID(), AttemptNumber: 1,
 			WorkflowPath: "primary",
 			SourcePath:   t.TempDir(), Profile: profile, Instance: instance,
-			Dispatch:       dispatch,
-			ContextCapsule: capsule,
-			Executor:       newTeamCanarySupervisor(t, workAuthority, grantAuthority, adapter),
+			Dispatch:                 dispatch,
+			ContextCapsule:           capsule,
+			ContextCapacityAuthority: missionContextCapacityAuthority(),
+			ContextTokenCounter:      missionContextCounter,
+			Executor:                 newTeamCanarySupervisor(t, workAuthority, grantAuthority, adapter),
 		})
 	}
 	mainAttemptTwo := teamCanaryNodeExecution(
@@ -3233,6 +3822,40 @@ func TestTeamCoordinatorStartsHealthySiblingWithInitialProviderBlock(t *testing.
 }
 
 func TestTeamCoordinatorRecoversDurableAttemptWindows(t *testing.T) {
+	t.Run("startup terminal before capture records governed failure", func(t *testing.T) {
+		fixture := newTeamRecoveryFixtureWithMaxAttempts(t, 2)
+		dispatched := fixture.dispatch(t)
+		nodes := dispatched.Nodes()
+		if len(nodes) != 1 {
+			t.Fatalf("dispatched nodes = %d, want 1", len(nodes))
+		}
+		run := nodes[0].Run()
+		if _, _, err := fixture.work.CommitTerminal(
+			context.Background(),
+			work.RunTerminalInput{
+				RunGenerationInput: work.RunGenerationInput{
+					WorkItemID: run.WorkItemID(), RunID: run.ID(),
+					ClaimID: run.ClaimID(), ClaimGeneration: run.ClaimGeneration(),
+					RuntimeInstanceID: run.RuntimeInstanceID(), AgentInstanceID: run.AgentInstanceID(),
+					CorrelationID: "22222222-2222-4222-8222-222222222222",
+				},
+				Status: "failed", Reason: "agent_attempt_recovery_required",
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.coordinator.Run(context.Background(), fixture.request)
+		if err != nil || result.Team().Status() != "blocked" || fixture.calls.Load() != 0 {
+			t.Fatalf("recovery Run() = %#v, calls=%d, err=%v", result, fixture.calls.Load(), err)
+		}
+		attempts := result.Team().Nodes()[0].Attempts()
+		if len(attempts) != 1 || attempts[0].Status() != "failed" ||
+			attempts[0].TerminalReason() != "agent_attempt_recovery_required" ||
+			attempts[0].EvidenceID() == "" || attempts[0].EvidenceDigest() == "" {
+			t.Fatalf("recovered attempts = %#v", attempts)
+		}
+	})
+
 	t.Run("terminal Run capture finalizes without duplicate execution", func(t *testing.T) {
 		fixture := newTeamRecoveryFixture(t)
 		tasks := fixture.dispatchAndPrepare(t)
@@ -3725,6 +4348,21 @@ type teamProjectionFreshnessObserver struct {
 	seen               atomic.Int32
 }
 
+type teamRejectingOutputObserver struct {
+	seen atomic.Int32
+}
+
+func (observer *teamRejectingOutputObserver) ObserveNodeOutput(
+	_ context.Context,
+	output NodeOutput,
+) error {
+	if output.AuthorizedFrame().Frame().Type() == bridgev1.MessageEvent {
+		observer.seen.Add(1)
+		return errors.New("tentative Mission timeline unavailable")
+	}
+	return nil
+}
+
 func (observer *teamProjectionFreshnessObserver) ObserveNodeOutput(
 	_ context.Context,
 	output NodeOutput,
@@ -3837,8 +4475,372 @@ func TestTeamCoordinatorRefreshesProjectionBeforeAuthorizedObservation(t *testin
 	})
 }
 
+func TestTeamCoordinatorDoesNotLetTentativeOutputObserverRejectResult(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	observer := &teamRejectingOutputObserver{}
+	fixture.request.OutputObserver = observer
+
+	result, err := fixture.coordinator.Run(context.Background(), fixture.request)
+	if err != nil || result.Team().Status() != "succeeded" ||
+		fixture.calls.Load() != 1 {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if observer.seen.Load() != 1 {
+		t.Fatalf("tentative output observations = %d, want 1", observer.seen.Load())
+	}
+	assertTeamRecoveryExactOnce(t, fixture)
+}
+
+func TestTeamCoordinatorRebuildsDependencyCapsuleAfterStaleDispatchView(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	now := fixture.clock.Current()
+	seedTeamCanaryRuntime(t, fixture.store, "runtime-dependency-sub", 1, now)
+	plan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: fixture.plan.TeamInstanceID(),
+		Nodes: []teams.ExecutionNodeInput{
+			{
+				LogicalNodeID: "main", Title: "Integrate accepted dependency",
+				AgentInstanceID: "agent-recovery", RuntimeInstanceID: "runtime-recovery",
+				Role: teams.ExecutionRoleMain, DependsOn: []string{"sub"}, MaxAttempts: 1,
+			},
+			{
+				LogicalNodeID: "sub", Title: "Inspect source",
+				AgentInstanceID:   "agent-dependency-sub",
+				RuntimeInstanceID: "runtime-dependency-sub",
+				Role:              teams.ExecutionRoleSubAgent, MaxAttempts: 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainCalls := &atomic.Int32{}
+	subCalls := &atomic.Int32{}
+	mainExecution := teamCanaryNodeExecution(
+		t, plan, "main", 1, "agent-recovery", "runtime-recovery", now,
+		newTeamCanarySupervisor(t, fixture.work, fixture.grants, &teamCanaryAdapter{
+			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID: "runtime-recovery", calls: mainCalls,
+		}),
+	)
+	subExecution := teamCanaryNodeExecution(
+		t, plan, "sub", 1, "agent-dependency-sub", "runtime-dependency-sub", now,
+		newTeamCanarySupervisor(t, fixture.work, fixture.grants, &teamCanaryAdapter{
+			barrier:   &teamCanaryBarrier{release: make(chan struct{})},
+			runtimeID: "runtime-dependency-sub", calls: subCalls,
+		}),
+	)
+	contextStore := &staleOnceTeamCapsuleStore{store: fixture.store, now: now}
+	request := TeamExecutionRequest{
+		Plan: plan, Nodes: []TeamNodeExecution{mainExecution, subExecution},
+		Semantics:         testTeamNodeSemantics(t, plan, 0, ""),
+		AuthoritativeTime: now, PrepareLeaseDuration: time.Minute,
+		GrantLifetime:   time.Minute,
+		CorrelationID:   "11111111-1111-4111-8111-111111111111",
+		ContextCapsules: contextStore,
+	}
+
+	result, err := fixture.coordinator.Run(context.Background(), request)
+	if err != nil || result.Team().Status() != "succeeded" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if mainCalls.Load() != 1 || subCalls.Load() != 1 {
+		t.Fatalf("adapter calls main=%d sub=%d", mainCalls.Load(), subCalls.Load())
+	}
+	digests := contextStore.capturedDigests()
+	if len(digests) != 2 || digests[0] == "" || digests[0] != digests[1] {
+		t.Fatalf("dependency Capsule retry digests = %#v", digests)
+	}
+}
+
 func newTeamRecoveryFixture(t testing.TB) *teamRecoveryFixture {
 	return newTeamRecoveryFixtureWithMaxAttempts(t, 1)
+}
+
+func TestTeamCoordinatorRestartTerminalMaterializesAuthoritativeSaltedRun(t *testing.T) {
+	fixture := newTeamRecoveryFixture(t)
+	assetAuthority, err := assets.NewAuthority(assets.AuthorityConfig{
+		Store: fixture.store,
+		Now:   fixture.clock.Now,
+		ViewVersion: func() string {
+			return strings.Repeat("a", 64)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := seedRestartMaterializationAsset(t, assetAuthority)
+	setDigest, err := assets.CanonicalAssetRevisionSetDigest(
+		[]assets.ExactAssetRevisionBinding{binding},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetPlan, err := teams.BuildExecutionPlan(teams.ExecutionPlanInput{
+		TeamInstanceID: fixture.plan.TeamInstanceID(),
+		Nodes: []teams.ExecutionNodeInput{{
+			LogicalNodeID:          fixture.plan.Nodes()[0].LogicalNodeID(),
+			Title:                  fixture.plan.Nodes()[0].Title(),
+			AgentInstanceID:        fixture.plan.Nodes()[0].AgentInstanceID(),
+			RuntimeInstanceID:      fixture.plan.Nodes()[0].RuntimeInstanceID(),
+			Role:                   teams.ExecutionRoleMain,
+			MaxAttempts:            1,
+			AssetRevisionBindings:  []assets.ExactAssetRevisionBinding{binding},
+			AssetRevisionSetDigest: setDigest,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialTime := fixture.clock.Current()
+	initialExecution := teamCanaryNodeExecution(
+		t,
+		assetPlan,
+		"main",
+		1,
+		"agent-recovery",
+		"runtime-recovery",
+		initialTime,
+		fixture.request.Nodes[0].Executor,
+	)
+	initialExecution = teamExecutionWithWorkspaceSnapshot(t, assetPlan, initialExecution)
+	materializer := &restartAssetMaterializer{
+		authority:  assetAuthority,
+		sourcePath: initialExecution.SourcePath,
+	}
+	if err := fixture.coordinator.SetAssetMaterializer(materializer); err != nil {
+		t.Fatal(err)
+	}
+	initialRequest := fixture.request
+	initialRequest.Plan = assetPlan
+	initialRequest.Nodes = []TeamNodeExecution{initialExecution}
+	initialRequest.Semantics = testTeamNodeSemantics(t, assetPlan, 0, "")
+	first, err := fixture.coordinator.Run(context.Background(), initialRequest)
+	if err != nil || first.Team().Status() != "succeeded" {
+		t.Fatalf("initial terminal Run() = %#v, %v", first, err)
+	}
+	priorRunID := first.Team().Nodes()[0].Attempts()[0].RunID()
+
+	now := fixture.clock.Current().Add(time.Minute)
+	fixture.clock.Set(now)
+	restartExecution := teamCanaryNodeExecution(
+		t,
+		assetPlan,
+		"main",
+		1,
+		"agent-recovery",
+		"runtime-recovery",
+		now,
+		fixture.request.Nodes[0].Executor,
+	)
+	restartCorrelationID := "22222222-2222-4222-8222-222222222222"
+	restartExecution = teamExecutionWithRestartIdentity(
+		t, assetPlan, restartCorrelationID, restartExecution,
+	)
+	restartExecution = teamExecutionWithWorkspaceSnapshot(t, assetPlan, restartExecution)
+	restartRequest := fixture.request
+	restartRequest.Plan = assetPlan
+	restartRequest.Nodes = []TeamNodeExecution{restartExecution}
+	restartRequest.Semantics = testTeamNodeSemantics(t, assetPlan, 0, "")
+	restartRequest.AuthoritativeTime = now
+	restartRequest.CorrelationID = restartCorrelationID
+	restartRequest.RestartTerminal = true
+	executions, err := validateTeamExecutionRequest(context.Background(), restartRequest)
+	if err != nil {
+		t.Fatalf("restart request validation: %v", err)
+	}
+	if err := fixture.readModel.Rebuild(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	view := fixture.readModel.GlobalReadView()
+	node := assetPlan.Nodes()[0]
+	execution := executions[appExecutionKey("main", 1)]
+	selection := work.TeamAttemptSelection{
+		LogicalNodeID: "main", AttemptNumber: 1,
+		ExecutionBinding: execution.executionBinding,
+		ContextCapsule:   execution.ContextCapsule,
+	}
+	_, materializations, cleanup, err := fixture.coordinator.prepareTeamAssetMaterializations(
+		context.Background(), restartRequest, view,
+		[]teams.ExecutionNode{node}, []work.TeamAttemptSelection{selection},
+		[]TeamNodeExecution{execution},
+	)
+	if err != nil {
+		t.Fatalf("restart materialization: %v", err)
+	}
+	dispatched, err := fixture.work.DispatchTeamReadySet(
+		context.Background(),
+		work.TeamDispatchInput{
+			Plan: assetPlan, ReadyAttempts: []work.TeamAttemptSelection{selection},
+			RouteSummaries:   appInitialDispatchRoutes(restartRequest, view),
+			SemanticBindings: appSemanticBindings(restartRequest),
+			Materializations: materializations,
+			ViewVersion:      view.Version(),
+			ExpectedHeads: appDispatchHeadsWithSources(
+				view, assetPlan, []work.TeamAttemptSelection{selection},
+				[]teams.ExecutionNode{node}, nil, materializations,
+				appTeamAttemptIdentitySalt(restartRequest)...,
+			),
+			AuthoritativeTime: now, PrepareLeaseDuration: time.Minute,
+			CorrelationID: restartCorrelationID, RestartTerminal: true,
+		},
+	)
+	if err != nil {
+		fixture.coordinator.cleanupTeamAssetMaterializations(context.Background(), cleanup)
+		t.Fatalf("restart terminal dispatch: %v", err)
+	}
+	if len(materializer.requests) != 2 {
+		t.Fatalf("materialization requests = %d, want 2", len(materializer.requests))
+	}
+	authoritativeRunID := dispatched.Nodes()[0].Attempt().RunID()
+	if got := materializer.requests[1].RunID; got != authoritativeRunID {
+		t.Fatalf("materialization RunID = %q, authoritative RunID = %q", got, authoritativeRunID)
+	}
+	if authoritativeRunID == priorRunID {
+		t.Fatalf("restarted RunID reused prior lineage %q", priorRunID)
+	}
+}
+
+func teamExecutionWithRestartIdentity(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	correlationID string,
+	execution TeamNodeExecution,
+) TeamNodeExecution {
+	t.Helper()
+	dispatch, err := bridgev1.NewFrame(bridgev1.FrameInput{
+		MessageID: execution.Dispatch.MessageID(), CorrelationID: correlationID,
+		WorkItemID: appTeamAttemptIdentity(
+			"work", plan, execution.LogicalNodeID, execution.AttemptNumber, correlationID,
+		),
+		RunID: appTeamAttemptIdentity(
+			"run", plan, execution.LogicalNodeID, execution.AttemptNumber, correlationID,
+		),
+		ClaimGeneration:       execution.Dispatch.ClaimGeneration(),
+		RuntimeInstanceID:     execution.Dispatch.RuntimeInstanceID(),
+		SenderAgentInstanceID: execution.Dispatch.SenderAgentInstanceID(),
+		Sequence:              execution.Dispatch.Sequence(), Type: execution.Dispatch.Type(),
+		EmittedAt: execution.Dispatch.EmittedAt(), Payload: execution.Dispatch.Payload(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution.Dispatch = dispatch
+	return execution
+}
+
+func teamExecutionWithWorkspaceSnapshot(
+	t testing.TB,
+	plan teams.ExecutionPlan,
+	execution TeamNodeExecution,
+) TeamNodeExecution {
+	t.Helper()
+	snapshot, err := supervisor.ObserveSourceSnapshot(execution.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := json.Marshal(struct {
+		SchemaVersion  int    `json:"schema_version"`
+		SnapshotKind   string `json:"snapshot_kind"`
+		TreeDigest     string `json:"tree_digest"`
+		EntryCount     int    `json:"entry_count"`
+		FileCount      int    `json:"file_count"`
+		DirectoryCount int    `json:"directory_count"`
+		TotalBytes     int64  `json:"total_bytes"`
+	}{
+		SchemaVersion: 1, SnapshotKind: "managed_source_baseline",
+		TreeDigest: snapshot.TreeDigest(), EntryCount: snapshot.EntryCount(),
+		FileCount: snapshot.FileCount(), DirectoryCount: snapshot.DirectoryCount(),
+		TotalBytes: snapshot.TotalBytes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
+		contextcapsule.Target{
+			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
+			TeamID:         plan.TeamInstanceID(), AgentID: appPlanNode(plan, execution.LogicalNodeID).AgentInstanceID(),
+			RoleID: execution.LogicalNodeID, ProviderID: execution.Profile.ProviderID,
+			ProviderAccountID: execution.Profile.ProviderAccountID,
+			ModelID:           execution.Profile.ModelID, AuthMode: string(execution.Profile.AuthMode),
+			ContextAdapterID:   "context:" + execution.Profile.AdapterType + ":v1",
+			DisclosurePolicyID: "policy.test", DisclosurePolicyVersion: 1,
+			TokenBudget: 2048,
+		},
+		[]contextcapsule.ItemInput{
+			{
+				ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+				Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
+				Priority: contextcapsule.PrioritySystem, Required: true,
+				Content:    []byte("Execute the controlled canary."),
+				SourceType: contextcapsule.SourceAuthority, SourceRef: "team-plan:" + plan.Digest(),
+			},
+			{
+				ItemID: "workspace-snapshot", Kind: contextcapsule.KindWorkspaceSnapshot,
+				Trust: contextcapsule.TrustObserved, Scope: contextcapsule.ScopeTeamShared,
+				Priority: contextcapsule.PrioritySystem, Required: true,
+				Content: content, SourceType: contextcapsule.SourceObservation,
+				SourceRef: "managed-source:" + snapshot.TreeDigest(),
+			},
+		},
+		missionContextCapacityAuthority(),
+		missionContextCounter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := contextcapsule.RenderDispatchPayload(capsule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution.ContextCapsule = capsule
+	execution.ContextCapacityAuthority = missionContextCapacityAuthority()
+	execution.ContextTokenCounter = missionContextCounter
+	execution.Dispatch = replaceTeamDispatchPayload(t, execution.Dispatch, payload)
+	execution.SourceSnapshotDigest = snapshot.TreeDigest()
+	return execution
+}
+
+func seedRestartMaterializationAsset(
+	t testing.TB,
+	authority *assets.Authority,
+) assets.ExactAssetRevisionBinding {
+	t.Helper()
+	digest := strings.Repeat("a", 64)
+	command := assets.Command{
+		OperationID:            "create-restart-asset",
+		JourneyID:              "33333333-3333-4333-8333-333333333333",
+		ExpectedViewVersion:    digest,
+		DecisionSource:         "user_explicit",
+		AssetKind:              assets.AssetKindSkill,
+		DefinitionID:           "skill-restart",
+		RevisionID:             "revision-restart",
+		CandidateID:            "candidate-restart",
+		Name:                   "Restart materialization",
+		Description:            "Regression fixture",
+		Scope:                  "project",
+		ArtifactDigest:         digest,
+		ContentDigest:          digest,
+		SourceScope:            assets.SourceScopeLocal,
+		SourceReferenceDigest:  digest,
+		ProvenanceDigest:       digest,
+		Risk:                   assets.RiskLow,
+		CompatibleCapabilities: []string{"loom.skill-materialization.pi.v1"},
+	}
+	if _, err := authority.CreateSkill(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	command.OperationID = "activate-restart-asset"
+	if _, err := authority.ActivateCandidate(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	return assets.ExactAssetRevisionBinding{
+		AssetKind:    assets.AssetKindSkill,
+		DefinitionID: command.DefinitionID,
+		RevisionID:   command.RevisionID,
+		SHA256Digest: digest,
+		SourceScope:  assets.SourceScopeLocal,
+	}
 }
 
 func TestPhase2DTeamExecutionRejectsSilentRetryBindingChange(t *testing.T) {
@@ -4675,15 +5677,17 @@ func teamCanaryNodeExecution(
 		t.Fatal(err)
 	}
 	return TeamNodeExecution{
-		LogicalNodeID:  logicalNodeID,
-		AttemptNumber:  attemptNumber,
-		WorkflowPath:   "primary",
-		SourcePath:     t.TempDir(),
-		Profile:        profile,
-		Instance:       instance,
-		Dispatch:       dispatch,
-		Executor:       executor,
-		ContextCapsule: capsule,
+		LogicalNodeID:            logicalNodeID,
+		AttemptNumber:            attemptNumber,
+		WorkflowPath:             "primary",
+		SourcePath:               t.TempDir(),
+		Profile:                  profile,
+		Instance:                 instance,
+		Dispatch:                 dispatch,
+		Executor:                 executor,
+		ContextCapsule:           capsule,
+		ContextCapacityAuthority: missionContextCapacityAuthority(),
+		ContextTokenCounter:      missionContextCounter,
 	}
 }
 
@@ -4695,7 +5699,7 @@ func testTeamRoleCapsule(
 	profile loomruntime.RuntimeProfile,
 ) contextcapsule.RoleContextCapsule {
 	t.Helper()
-	capsule, err := contextcapsule.BuildRoleContextCapsule(
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
 		contextcapsule.Target{
 			ConversationID: "team-conversation:" + plan.TeamInstanceID(),
 			TeamID:         plan.TeamInstanceID(), AgentID: agentInstanceID,
@@ -4709,11 +5713,13 @@ func testTeamRoleCapsule(
 		[]contextcapsule.ItemInput{{
 			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
 			Trust: contextcapsule.TrustAuthoritative, Scope: contextcapsule.ScopeTeamShared,
-			Priority: contextcapsule.PrioritySystem, TokenCount: 4, Required: true,
+			Priority: contextcapsule.PrioritySystem, Required: true,
 			Content:    []byte("Execute the controlled canary."),
 			SourceType: contextcapsule.SourceAuthority,
 			SourceRef:  "team-plan:" + plan.Digest(),
 		}},
+		missionContextCapacityAuthority(),
+		missionContextCounter,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -4946,8 +5952,9 @@ func TestPhase2DPerAgentFailureIsolationMatrix(t *testing.T) {
 		failedNode string
 		reason     string
 	}{
-		{name: "rate limit isolates one agent", failedNode: "sub-a", reason: "provider_rate_limited"},
-		{name: "timeout isolates one agent", failedNode: "sub-b", reason: "provider_timeout"},
+		{name: "provider auth isolates one account", failedNode: "sub-a", reason: "provider_auth"},
+		{name: "rate limit isolates one agent", failedNode: "sub-a", reason: "provider_rate_limit"},
+		{name: "timeout isolates one agent", failedNode: "sub-b", reason: "timeout"},
 		{name: "insufficient balance isolates one agent", failedNode: "sub-c", reason: "provider_insufficient_balance"},
 		{name: "credential unavailable isolates one agent", failedNode: "sub-a", reason: "credential_unavailable"},
 	}
@@ -4956,8 +5963,10 @@ func TestPhase2DPerAgentFailureIsolationMatrix(t *testing.T) {
 			fixture := newFourProviderTeamCanaryFixture(
 				t, "team-isolation-matrix-"+cell.failedNode,
 			)
+			expectedAccounts := make(map[string]string, len(fixture.request.Nodes))
 			for index := range fixture.request.Nodes {
 				execution := &fixture.request.Nodes[index]
+				expectedAccounts[execution.LogicalNodeID] = execution.Profile.ProviderAccountID
 				adapter := fixture.adapters[execution.LogicalNodeID]
 				adapter.terminalStatus = "succeeded"
 				adapter.terminalReason = ""
@@ -4980,6 +5989,10 @@ func TestPhase2DPerAgentFailureIsolationMatrix(t *testing.T) {
 				attempts := node.Attempts()
 				if len(attempts) != 1 {
 					t.Fatalf("%s Attempts = %#v", node.LogicalNodeID(), attempts)
+				}
+				if account := attempts[0].ExecutionBinding().ProviderAccountID; account != expectedAccounts[node.LogicalNodeID()] {
+					t.Fatalf("Agent %s account = %q, want %q",
+						node.LogicalNodeID(), account, expectedAccounts[node.LogicalNodeID()])
 				}
 				if node.LogicalNodeID() == cell.failedNode {
 					if node.Status() != "blocked" ||

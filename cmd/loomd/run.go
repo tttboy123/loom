@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"loom-pi-rebuild/internal/app"
+	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/credentials/ccswitch"
 	"loom-pi-rebuild/internal/runtime/piadapter"
 )
 
@@ -97,11 +100,12 @@ func daemonBuildFailureReason(err error) string {
 }
 
 type daemonBuildConfig struct {
-	Observer           app.LocalRuntimeObservationDaemonConfig
-	SocketPath         string
-	CodexExecutable    string
-	ClaudeExecutable   string
-	OpenCodeExecutable string
+	Observer               app.LocalRuntimeObservationDaemonConfig
+	SocketPath             string
+	CodexExecutable        string
+	ClaudeExecutable       string
+	OpenCodeExecutable     string
+	CredentialImportSource string
 }
 
 type daemonBuilder func(daemonBuildConfig) (daemonRunner, error)
@@ -134,7 +138,11 @@ func productionDaemonBuilder(
 	if config.SocketPath == "" {
 		return observer, nil
 	}
-	return newProductDaemonRunner(
+	registry, mcpDiagnostic := prepareProductMCPStdioStartup(
+		context.Background(), config.Observer.IsolationRoot,
+	)
+	executionConfig := missionExecutionConfigFromDaemonBuildWithMCP(config, registry)
+	runner, err := newProductDaemonRunner(
 		observer,
 		config.Observer.StatePath,
 		config.SocketPath,
@@ -142,10 +150,31 @@ func productionDaemonBuilder(
 			CodexExecutable:    config.CodexExecutable,
 			ClaudeExecutable:   config.ClaudeExecutable,
 			OpenCodeExecutable: config.OpenCodeExecutable,
+			CredentialImports:  optionalCredentialImportSource(config.CredentialImportSource),
 			UseCredentialVault: true,
-			Execution:          missionExecutionConfigFromDaemonBuild(config),
+			Execution:          executionConfig,
 		},
 	)
+	if err != nil {
+		if registry != nil {
+			_ = registry.Close()
+		}
+		return nil, err
+	}
+	return newProductMCPStdioDaemonRunnerWithDiagnostics(
+		runner, registry, mcpDiagnostic,
+	), nil
+}
+
+func optionalCredentialImportSource(path string) credentials.ImportSource {
+	if path == "" {
+		return nil
+	}
+	source, err := ccswitch.NewSource(path)
+	if err != nil {
+		return nil
+	}
+	return source
 }
 
 func missionExecutionConfigFromDaemonBuild(
@@ -165,11 +194,20 @@ func missionExecutionConfigFromDaemonBuild(
 		catalog := *config.Observer.LocalModelCatalog
 		execution.LocalModelCatalog = &catalog
 	}
-	// Explicit operator opt-in (launchctl setenv LOOM_ENABLE_WEB_TOOLS 1):
-	// enables the governed remote-tool broker (web search + web fetch). The
-	// default production composition stays fail-closed (nil).
-	if os.Getenv("LOOM_ENABLE_WEB_TOOLS") == "1" {
+	// Load the built-in transport when a daemon runtime is configured so
+	// persisted, policy-current Enrollments work after an ordinary App launch.
+	// The transport stays EnrollmentOnly unless the operator explicitly opts in
+	// to unenrolled tools; materialization still requires the Agent binding and
+	// Provider Account policy, so this does not grant a global capability.
+	hasRuntimeConfig := execution.RuntimeInstanceID != "" ||
+		len(execution.RuntimeSearchPaths) > 0 ||
+		execution.LocalModelCatalog != nil ||
+		execution.CodexExecutable != "" ||
+		execution.ClaudeExecutable != "" ||
+		execution.OpenCodeExecutable != ""
+	if hasRuntimeConfig || os.Getenv("LOOM_ENABLE_WEB_TOOLS") == "1" {
 		if brokerConfig, brokerErr := newProductDefaultRemoteToolBrokerConfig(); brokerErr == nil {
+			brokerConfig.EnrollmentOnly = os.Getenv("LOOM_ENABLE_WEB_TOOLS") != "1"
 			execution.RemoteToolBroker = brokerConfig
 		}
 	}
@@ -181,6 +219,17 @@ func missionExecutionConfigFromDaemonBuild(
 		execution.OpenCodeExecutable == "" &&
 		execution.RemoteToolBroker == nil {
 		return nil
+	}
+	return execution
+}
+
+func missionExecutionConfigFromDaemonBuildWithMCP(
+	config daemonBuildConfig,
+	registry *productMCPStdioRegistry,
+) *productMissionExecutionRuntimeConfig {
+	execution := missionExecutionConfigFromDaemonBuild(config)
+	if registry != nil && execution != nil && execution.RemoteToolBroker != nil {
+		applyProductMCPStdioClients(execution.RemoteToolBroker, registry.Clients())
 	}
 	return execution
 }
@@ -216,6 +265,7 @@ func run(
 	codexExecutable := fs.String("codex-executable", "", "")
 	opencodeExecutable := fs.String("opencode-executable", "", "")
 	claudeExecutable := fs.String("claude-executable", "", "")
+	credentialImportSource := fs.String("credential-import-source", "", "")
 	localModelPrivateRoot := fs.String("local-model-private-root", "", "")
 	localModelExecutable := fs.String("local-model-executable", "", "")
 	localModelPath := fs.String("local-model-path", "", "")
@@ -269,18 +319,38 @@ func run(
 			MaxCycles:           *maxCycles,
 			LocalModelCatalog:   localModelCatalog,
 		},
-		SocketPath:         *socketPath,
-		CodexExecutable:    *codexExecutable,
-		ClaudeExecutable:   *claudeExecutable,
-		OpenCodeExecutable: *opencodeExecutable,
+		SocketPath:             *socketPath,
+		CodexExecutable:        *codexExecutable,
+		ClaudeExecutable:       *claudeExecutable,
+		OpenCodeExecutable:     *opencodeExecutable,
+		CredentialImportSource: *credentialImportSource,
 	}
 	daemon, err := builder(config)
 	if err != nil || daemon == nil {
+		if os.Getenv("LOOM_DEBUG_DAEMON") == "1" && err != nil {
+			var leaves []string
+			var visit func(error)
+			visit = func(current error) {
+				if current == nil {
+					return
+				}
+				if joined, ok := current.(interface{ Unwrap() []error }); ok {
+					for _, child := range joined.Unwrap() {
+						visit(child)
+					}
+					return
+				}
+				leaves = append(leaves, fmt.Sprintf("%T: %#v", current, current))
+			}
+			visit(err)
+			_, _ = fmt.Fprintf(stderr, "daemon build detail: %s\n", strings.Join(leaves, " | "))
+		}
 		return writeDaemonError(
 			stderr, exitUnavailable,
 			"daemon unavailable: "+daemonBuildFailureReason(err),
 		)
 	}
+	writeDaemonStartupOperationalDiagnostics(stderr, daemon)
 
 	result, runErr := daemon.Run(ctx)
 	closeErr := daemon.Close()
@@ -308,6 +378,21 @@ func run(
 		)
 	}
 	return exitSuccess
+}
+
+type daemonStartupOperationalDiagnosticSource interface {
+	StartupOperationalDiagnostics() []productMCPStdioOperationalDiagnostic
+}
+
+func writeDaemonStartupOperationalDiagnostics(writer io.Writer, daemon daemonRunner) {
+	source, ok := daemon.(daemonStartupOperationalDiagnosticSource)
+	if !ok || writer == nil {
+		return
+	}
+	encoder := json.NewEncoder(writer)
+	for _, diagnostic := range source.StartupOperationalDiagnostics() {
+		_ = encoder.Encode(diagnostic)
+	}
 }
 
 func daemonFailureMessage(err error) string {

@@ -79,6 +79,28 @@ func TestAnthropicConversationUsesFixedBoundedMessagesContract(t *testing.T) {
 	}
 }
 
+func TestAnthropicConversationKeepsLoomContextInSystemField(t *testing.T) {
+	doer := &anthropicConversationDoer{}
+	client, err := NewAnthropicConversationClient(AnthropicConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Respond(context.Background(), []ConversationMessage{
+		{Role: "system", Content: `{"kind":"loom_role_context","items":[]}`},
+		{Role: "user", Content: "SESSION-A"},
+	}, []byte("private-anthropic-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doer.body, `Loom-owned context capsule`) ||
+		!strings.Contains(doer.body, `"content":"SESSION-A"`) ||
+		strings.Contains(doer.body, `"role":"user","content":"{\"kind\":\"loom_role_context`) {
+		t.Fatalf("context/user role boundary missing: %s", doer.body)
+	}
+}
+
 func TestAnthropicConversationRejectsModelAndContentBlockDrift(t *testing.T) {
 	for _, test := range []struct {
 		name string

@@ -9,12 +9,14 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"loom-pi-rebuild/internal/credentials"
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
 	loomruntime "loom-pi-rebuild/internal/runtime"
 	"loom-pi-rebuild/internal/runtime/harnessadapter"
 	"loom-pi-rebuild/internal/runtime/nativeadapter"
@@ -28,6 +30,8 @@ const productClaudeCodeRuntimeInstanceID = "runtime.claude-code.local"
 const productCodexRuntimeInstanceID = "runtime.codex.local"
 
 const productOpenCodeRuntimeInstanceID = "runtime.opencode.local"
+
+const productDesktopHarnessRuntimeCapacity = 3
 
 const (
 	productKimiAgentRuntimeInstanceID    = "runtime.loom-native.kimi"
@@ -52,6 +56,7 @@ type productCodexAgentRuntimeProbe struct {
 
 type productOpenCodeAgentRuntimeProbe struct {
 	executableVersion string
+	modelIDs          []string
 }
 
 func (productClaudeCodeAgentRuntimeProbe) ID() string {
@@ -74,7 +79,8 @@ func (probe productClaudeCodeAgentRuntimeProbe) ObserveRuntime(
 			AdapterType: harnessadapter.ClaudeCodeAdapterType,
 			DisplayName: "Claude Code", ExecutableVersion: probe.executableVersion,
 			Status:               loomruntime.RuntimeOnline,
-			ObservedCapabilities: capabilities, Capacity: 2,
+			ObservedCapabilities: capabilities,
+			Capacity:             productDesktopHarnessRuntimeCapacity,
 		},
 		ModelIDs: []string{harnessadapter.ClaudeCodeModelID},
 	}}, nil
@@ -101,7 +107,7 @@ func (probe productCodexAgentRuntimeProbe) ObserveRuntime(
 			DisplayName: "Codex", ExecutableVersion: probe.executableVersion,
 			Status:               loomruntime.RuntimeOnline,
 			ObservedCapabilities: capabilities,
-			Capacity:             2,
+			Capacity:             productDesktopHarnessRuntimeCapacity,
 		},
 		ModelIDs: []string{harnessadapter.CodexModelID},
 	}}, nil
@@ -128,9 +134,9 @@ func (probe productOpenCodeAgentRuntimeProbe) ObserveRuntime(
 			DisplayName: "OpenCode", ExecutableVersion: probe.executableVersion,
 			Status:               loomruntime.RuntimeOnline,
 			ObservedCapabilities: capabilities,
-			Capacity:             1,
+			Capacity:             productDesktopHarnessRuntimeCapacity,
 		},
-		ModelIDs: nil,
+		ModelIDs: append([]string(nil), probe.modelIDs...),
 	}}, nil
 }
 
@@ -296,21 +302,12 @@ func ensureProductVerifiedNativeAgentRuntimes(
 	if ctx == nil || store == nil || readModel == nil {
 		return errors.New("native Agent runtime unavailable")
 	}
-	if err := readModel.Rebuild(ctx); err != nil {
-		return err
-	}
-	view := readModel.GlobalReadView()
-	for _, definition := range productNativeAgentRuntimeDefinitions {
-		if len(productVerifiedAgentCredentials(view, definition.ProviderID)) == 0 {
-			continue
-		}
-		if err := ensureProductNativeAgentProviderRuntime(
-			ctx, store, readModel, emittedAt, definition.ProviderID,
-		); err != nil {
-			return err
-		}
-	}
-	return nil
+	// Loom Native is an executable Runtime independently from Provider Account
+	// readiness. Verified credentials gate Execution Profiles and role options,
+	// never discovery visibility.
+	return ensureProductNativeAgentRuntime(
+		ctx, store, readModel, emittedAt,
+	)
 }
 
 func ensureProductClaudeCodeAgentRuntime(
@@ -336,6 +333,7 @@ func ensureProductClaudeCodeAgentRuntime(
 		return err
 	}
 	migratingHistoricalRuntime := false
+	migratingCapacity := false
 	if current, found := readModel.GlobalReadView().RuntimeInstance(
 		productClaudeCodeRuntimeInstanceID,
 	); found {
@@ -346,6 +344,7 @@ func ensureProductClaudeCodeAgentRuntime(
 			return errors.New("Claude Code runtime identity drift")
 		}
 		migratingHistoricalRuntime = true
+		migratingCapacity = current.Capacity != productDesktopHarnessRuntimeCapacity
 	}
 	discovery, err := loomruntime.DiscoverRuntime(
 		ctx,
@@ -363,24 +362,38 @@ func ensureProductClaudeCodeAgentRuntime(
 		)
 		sequence = max(current.DiscoverySequence, current.StatusSequence) + 1
 	}
+	discoveryID := productHarnessRuntimeIdentity(
+		productClaudeCodeRuntimeInstanceID, migratingHistoricalRuntime, "discovery",
+	)
+	eventID := productHarnessRuntimeIdentity(
+		productClaudeCodeRuntimeInstanceID, migratingHistoricalRuntime, "event",
+	)
+	idempotencyID := productHarnessRuntimeIdentity(
+		productClaudeCodeRuntimeInstanceID, migratingHistoricalRuntime, "idempotency",
+	)
+	if migratingCapacity {
+		discoveryID = productHarnessCapacityMigrationIdentity(
+			productClaudeCodeRuntimeInstanceID, "discovery",
+		)
+		eventID = productHarnessCapacityMigrationIdentity(
+			productClaudeCodeRuntimeInstanceID, "event",
+		)
+		idempotencyID = productHarnessCapacityMigrationIdentity(
+			productClaudeCodeRuntimeInstanceID, "idempotency",
+		)
+	}
 	commit, err := state.CommitRuntimeDiscoverySnapshot(
 		ctx,
 		store,
 		discovery,
 		state.RuntimeDiscoveryCommitInput{
-			DiscoveryID: productHarnessRuntimeIdentity(
-				productClaudeCodeRuntimeInstanceID, migratingHistoricalRuntime, "discovery",
-			),
-			EmittedAt: emittedAt,
+			DiscoveryID: discoveryID,
+			EmittedAt:   emittedAt,
 			Events: []state.RuntimeDiscoveryEventInput{{
 				RuntimeInstanceID: productClaudeCodeRuntimeInstanceID,
-				EventID: productHarnessRuntimeIdentity(
-					productClaudeCodeRuntimeInstanceID, migratingHistoricalRuntime, "event",
-				),
-				IdempotencyKey: "harness-agent-runtime." + productHarnessRuntimeIdentity(
-					productClaudeCodeRuntimeInstanceID, migratingHistoricalRuntime, "idempotency",
-				),
-				Seq: sequence,
+				EventID:           eventID,
+				IdempotencyKey:    "harness-agent-runtime." + idempotencyID,
+				Seq:               sequence,
 			}},
 		},
 	)
@@ -409,17 +422,8 @@ func ensureProductVerifiedClaudeCodeAgentRuntime(
 	if executablePath == "" {
 		return nil
 	}
-	if ctx == nil || store == nil || readModel == nil {
-		return errors.New("Claude Code runtime unavailable")
-	}
-	if err := readModel.Rebuild(ctx); err != nil {
-		return err
-	}
-	if len(productVerifiedAgentCredentials(
-		readModel.GlobalReadView(), harnessadapter.ClaudeCodeProviderID,
-	)) == 0 {
-		return nil
-	}
+	// Runtime discovery describes the attested executable. Provider Account
+	// verification gates profile and role publication separately.
 	return ensureProductClaudeCodeAgentRuntime(
 		ctx, store, readModel, emittedAt, executablePath,
 	)
@@ -448,6 +452,7 @@ func ensureProductCodexAgentRuntime(
 		return err
 	}
 	migratingHistoricalRuntime := false
+	migratingCapacity := false
 	if current, found := readModel.GlobalReadView().RuntimeInstance(
 		productCodexRuntimeInstanceID,
 	); found {
@@ -458,6 +463,7 @@ func ensureProductCodexAgentRuntime(
 			return errors.New("Codex runtime identity drift")
 		}
 		migratingHistoricalRuntime = true
+		migratingCapacity = current.Capacity != productDesktopHarnessRuntimeCapacity
 	}
 	discovery, err := loomruntime.DiscoverRuntime(
 		ctx,
@@ -475,24 +481,38 @@ func ensureProductCodexAgentRuntime(
 		)
 		sequence = max(current.DiscoverySequence, current.StatusSequence) + 1
 	}
+	discoveryID := productHarnessRuntimeIdentity(
+		productCodexRuntimeInstanceID, migratingHistoricalRuntime, "discovery",
+	)
+	eventID := productHarnessRuntimeIdentity(
+		productCodexRuntimeInstanceID, migratingHistoricalRuntime, "event",
+	)
+	idempotencyID := productHarnessRuntimeIdentity(
+		productCodexRuntimeInstanceID, migratingHistoricalRuntime, "idempotency",
+	)
+	if migratingCapacity {
+		discoveryID = productHarnessCapacityMigrationIdentity(
+			productCodexRuntimeInstanceID, "discovery",
+		)
+		eventID = productHarnessCapacityMigrationIdentity(
+			productCodexRuntimeInstanceID, "event",
+		)
+		idempotencyID = productHarnessCapacityMigrationIdentity(
+			productCodexRuntimeInstanceID, "idempotency",
+		)
+	}
 	commit, err := state.CommitRuntimeDiscoverySnapshot(
 		ctx,
 		store,
 		discovery,
 		state.RuntimeDiscoveryCommitInput{
-			DiscoveryID: productHarnessRuntimeIdentity(
-				productCodexRuntimeInstanceID, migratingHistoricalRuntime, "discovery",
-			),
-			EmittedAt: emittedAt,
+			DiscoveryID: discoveryID,
+			EmittedAt:   emittedAt,
 			Events: []state.RuntimeDiscoveryEventInput{{
 				RuntimeInstanceID: productCodexRuntimeInstanceID,
-				EventID: productHarnessRuntimeIdentity(
-					productCodexRuntimeInstanceID, migratingHistoricalRuntime, "event",
-				),
-				IdempotencyKey: "harness-agent-runtime." + productHarnessRuntimeIdentity(
-					productCodexRuntimeInstanceID, migratingHistoricalRuntime, "idempotency",
-				),
-				Seq: sequence,
+				EventID:           eventID,
+				IdempotencyKey:    "harness-agent-runtime." + idempotencyID,
+				Seq:               sequence,
 			}},
 		},
 	)
@@ -521,17 +541,8 @@ func ensureProductVerifiedCodexAgentRuntime(
 	if executablePath == "" {
 		return nil
 	}
-	if ctx == nil || store == nil || readModel == nil {
-		return errors.New("Codex runtime unavailable")
-	}
-	if err := readModel.Rebuild(ctx); err != nil {
-		return err
-	}
-	if len(productVerifiedAgentCredentials(
-		readModel.GlobalReadView(), harnessadapter.CodexProviderID,
-	)) == 0 {
-		return nil
-	}
+	// Runtime discovery describes the attested executable. Provider Account
+	// verification gates profile and role publication separately.
 	return ensureProductCodexAgentRuntime(
 		ctx, store, readModel, emittedAt, executablePath,
 	)
@@ -540,20 +551,61 @@ func ensureProductVerifiedCodexAgentRuntime(
 func validProductOpenCodeAgentRuntime(
 	current projection.RuntimeInstance,
 	executableVersion string,
+	modelIDs []string,
+) bool {
+	return validProductOpenCodeAgentRuntimeIdentity(current, executableVersion) &&
+		reflect.DeepEqual(current.ModelIDs, modelIDs)
+}
+
+func validProductOpenCodeAgentRuntimeIdentity(
+	current projection.RuntimeInstance,
+	executableVersion string,
 ) bool {
 	return current.ID == productOpenCodeRuntimeInstanceID &&
 		current.AdapterType == harnessadapter.OpenCodeAdapterType &&
 		current.DeviceID == "device.local" && current.DisplayName == "OpenCode" &&
 		current.ExecutableVersion == executableVersion &&
-		current.Status == string(loomruntime.RuntimeOnline) && current.Capacity == 1 &&
+		current.Status == string(loomruntime.RuntimeOnline) &&
+		current.Capacity == productDesktopHarnessRuntimeCapacity &&
 		reflect.DeepEqual(
 			current.ObservedCapabilities,
 			productOpenCodeCapabilities(executableVersion),
 		)
 }
 
+func validHistoricalProductOpenCodeAgentRuntime(
+	current projection.RuntimeInstance,
+	executableVersion string,
+) bool {
+	if current.Capacity < 1 || current.Capacity > productDesktopHarnessRuntimeCapacity {
+		return false
+	}
+	capacityCandidate := current
+	capacityCandidate.Capacity = productDesktopHarnessRuntimeCapacity
+	if validProductOpenCodeAgentRuntimeIdentity(capacityCandidate, executableVersion) {
+		return true
+	}
+	targetCapabilities := productOpenCodeCapabilities(executableVersion)
+	if !harnessadapter.HasGovernedToolMCPConformance(
+		harnessadapter.OpenCodeAdapterType, executableVersion,
+	) || !reflect.DeepEqual(current.ObservedCapabilities, []string{"workspace_edit"}) &&
+		!reflect.DeepEqual(current.ObservedCapabilities, targetCapabilities) {
+		return false
+	}
+	current.Capacity = productDesktopHarnessRuntimeCapacity
+	current.ObservedCapabilities = targetCapabilities
+	return validProductOpenCodeAgentRuntimeIdentity(current, executableVersion)
+}
+
 func productOpenCodeCapabilities(executableVersion string) []string {
-	return []string{"workspace_edit"}
+	capabilities := []string{"workspace_edit"}
+	if harnessadapter.HasGovernedToolMCPConformance(
+		harnessadapter.OpenCodeAdapterType, executableVersion,
+	) {
+		capabilities = append(capabilities, loomruntime.CapabilityGovernedToolLoop)
+	}
+	sort.Strings(capabilities)
+	return capabilities
 }
 
 func ensureProductVerifiedOpenCodeAgentRuntime(
@@ -599,38 +651,71 @@ func ensureProductOpenCodeAgentRuntime(
 	if err := readModel.Rebuild(ctx); err != nil {
 		return err
 	}
-	if current, found := readModel.GlobalReadView().RuntimeInstance(
+	current, found := readModel.GlobalReadView().RuntimeInstance(
 		productOpenCodeRuntimeInstanceID,
-	); found && validProductOpenCodeAgentRuntime(current, executableVersion) {
-		return nil
+	)
+	if found && !validProductOpenCodeAgentRuntimeIdentity(current, executableVersion) &&
+		!validHistoricalProductOpenCodeAgentRuntime(current, executableVersion) {
+		return errors.New("OpenCode runtime identity drift")
+	}
+	homePath, homeErr := os.UserHomeDir()
+	modelContext, cancelModels := context.WithTimeout(ctx, 10*time.Second)
+	modelIDs, modelErr := provider.DiscoverSystemOpenCodeModels(
+		modelContext, executablePath, homePath,
+	)
+	cancelModels()
+	if homeErr != nil || modelErr != nil {
+		// A transient catalog lookup must not hide an already attested Runtime or
+		// make the entire local service unavailable. Existing model metadata is
+		// retained; a first discovery publishes the Harness without executable
+		// Team profiles until a later successful refresh.
+		if found {
+			return nil
+		}
+		modelIDs = nil
+	}
+	if found {
+		if validProductOpenCodeAgentRuntime(current, executableVersion, modelIDs) {
+			return nil
+		}
+		if !validProductOpenCodeAgentRuntimeIdentity(current, executableVersion) &&
+			!validHistoricalProductOpenCodeAgentRuntime(current, executableVersion) {
+			return errors.New("OpenCode runtime identity drift")
+		}
 	}
 	discovery, err := loomruntime.DiscoverRuntime(
 		ctx,
 		[]loomruntime.RuntimeProbe{productOpenCodeAgentRuntimeProbe{
 			executableVersion: executableVersion,
+			modelIDs:          modelIDs,
 		}},
 	)
 	if err != nil {
 		return err
+	}
+	sequence := int64(1)
+	discoveryID := productOpenCodeCatalogIdentity(
+		executableVersion, modelIDs, "discovery",
+	)
+	eventID := productOpenCodeCatalogIdentity(executableVersion, modelIDs, "event")
+	idempotencyID := productOpenCodeCatalogIdentity(
+		executableVersion, modelIDs, "idempotency",
+	)
+	if found {
+		sequence = max(current.DiscoverySequence, current.StatusSequence) + 1
 	}
 	commit, err := state.CommitRuntimeDiscoverySnapshot(
 		ctx,
 		store,
 		discovery,
 		state.RuntimeDiscoveryCommitInput{
-			DiscoveryID: productHarnessRuntimeIdentity(
-				productOpenCodeRuntimeInstanceID, false, "discovery",
-			),
-			EmittedAt: emittedAt,
+			DiscoveryID: discoveryID,
+			EmittedAt:   emittedAt,
 			Events: []state.RuntimeDiscoveryEventInput{{
 				RuntimeInstanceID: productOpenCodeRuntimeInstanceID,
-				EventID: productHarnessRuntimeIdentity(
-					productOpenCodeRuntimeInstanceID, false, "event",
-				),
-				IdempotencyKey: "harness-agent-runtime." + productHarnessRuntimeIdentity(
-					productOpenCodeRuntimeInstanceID, false, "idempotency",
-				),
-				Seq: 1,
+				EventID:           eventID,
+				IdempotencyKey:    "harness-agent-runtime." + idempotencyID,
+				Seq:               sequence,
 			}},
 		},
 	)
@@ -640,13 +725,28 @@ func ensureProductOpenCodeAgentRuntime(
 	if err := readModel.Rebuild(ctx); err != nil {
 		return err
 	}
-	current, found := readModel.GlobalReadView().RuntimeInstance(
+	current, found = readModel.GlobalReadView().RuntimeInstance(
 		productOpenCodeRuntimeInstanceID,
 	)
-	if !found || !validProductOpenCodeAgentRuntime(current, executableVersion) {
+	if !found || !validProductOpenCodeAgentRuntime(current, executableVersion, modelIDs) {
 		return errors.New("OpenCode runtime unavailable")
 	}
 	return nil
+}
+
+func productOpenCodeCatalogIdentity(
+	executableVersion string,
+	modelIDs []string,
+	kind string,
+) string {
+	identityParts := []string{executableVersion}
+	identityParts = append(identityParts, productOpenCodeCapabilities(executableVersion)...)
+	identityParts = append(identityParts, modelIDs...)
+	hash := sha256.Sum256([]byte(strings.Join(identityParts, "\x00")))
+	return productDeterministicUUID(
+		"harness-agent-runtime", productOpenCodeRuntimeInstanceID,
+		"model-catalog-v2", hex.EncodeToString(hash[:]), kind,
+	)
 }
 
 func productHarnessExecutableVersion(path string) (string, error) {
@@ -675,6 +775,15 @@ func productHarnessRuntimeIdentity(
 	return productDeterministicUUID(append(parts, kind)...)
 }
 
+func productHarnessCapacityMigrationIdentity(
+	runtimeInstanceID string,
+	kind string,
+) string {
+	return productDeterministicUUID(
+		"harness-agent-runtime", runtimeInstanceID, "capacity-3", kind,
+	)
+}
+
 func validProductClaudeCodeAgentRuntime(
 	current projection.RuntimeInstance,
 	executableVersion string,
@@ -683,7 +792,8 @@ func validProductClaudeCodeAgentRuntime(
 		current.AdapterType == harnessadapter.ClaudeCodeAdapterType &&
 		current.DeviceID == "device.local" && current.DisplayName == "Claude Code" &&
 		current.ExecutableVersion == executableVersion &&
-		current.Status == string(loomruntime.RuntimeOnline) && current.Capacity == 2 &&
+		current.Status == string(loomruntime.RuntimeOnline) &&
+		current.Capacity == productDesktopHarnessRuntimeCapacity &&
 		reflect.DeepEqual(
 			current.ObservedCapabilities,
 			productClaudeCodeCapabilities(executableVersion),
@@ -699,7 +809,8 @@ func validProductCodexAgentRuntime(
 		current.AdapterType == harnessadapter.CodexAdapterType &&
 		current.DeviceID == "device.local" && current.DisplayName == "Codex" &&
 		current.ExecutableVersion == executableVersion &&
-		current.Status == string(loomruntime.RuntimeOnline) && current.Capacity == 2 &&
+		current.Status == string(loomruntime.RuntimeOnline) &&
+		current.Capacity == productDesktopHarnessRuntimeCapacity &&
 		reflect.DeepEqual(current.ObservedCapabilities, productCodexCapabilities(executableVersion)) &&
 		reflect.DeepEqual(current.ModelIDs, []string{harnessadapter.CodexModelID})
 }
@@ -708,15 +819,25 @@ func validHistoricalProductClaudeCodeAgentRuntime(
 	current projection.RuntimeInstance,
 	executableVersion string,
 ) bool {
+	if current.Capacity < 1 || current.Capacity > productDesktopHarnessRuntimeCapacity {
+		return false
+	}
+	capacityCandidate := current
+	capacityCandidate.Capacity = productDesktopHarnessRuntimeCapacity
+	if validProductClaudeCodeAgentRuntime(capacityCandidate, executableVersion) {
+		return true
+	}
+	targetCapabilities := productClaudeCodeCapabilities(executableVersion)
 	if !harnessadapter.HasGovernedToolMCPConformance(
 		harnessadapter.ClaudeCodeAdapterType, executableVersion,
 	) || !reflect.DeepEqual(current.ObservedCapabilities, []string{"workspace_edit"}) &&
 		!reflect.DeepEqual(current.ObservedCapabilities, []string{
 			loomruntime.CapabilityContextRetrieval, "workspace_edit",
-		}) {
+		}) && !reflect.DeepEqual(current.ObservedCapabilities, targetCapabilities) {
 		return false
 	}
-	current.ObservedCapabilities = productClaudeCodeCapabilities(executableVersion)
+	current.Capacity = productDesktopHarnessRuntimeCapacity
+	current.ObservedCapabilities = targetCapabilities
 	return validProductClaudeCodeAgentRuntime(current, executableVersion)
 }
 
@@ -724,16 +845,26 @@ func validHistoricalProductCodexAgentRuntime(
 	current projection.RuntimeInstance,
 	executableVersion string,
 ) bool {
+	if current.Capacity < 1 || current.Capacity > productDesktopHarnessRuntimeCapacity {
+		return false
+	}
+	capacityCandidate := current
+	capacityCandidate.Capacity = productDesktopHarnessRuntimeCapacity
+	if validProductCodexAgentRuntime(capacityCandidate, executableVersion) {
+		return true
+	}
+	targetCapabilities := productCodexCapabilities(executableVersion)
 	if !harnessadapter.HasGovernedToolMCPConformance(
 		harnessadapter.CodexAdapterType, executableVersion,
 	) || !reflect.DeepEqual(current.ObservedCapabilities, []string{
 		"reasoning_effort", "workspace_edit",
 	}) && !reflect.DeepEqual(current.ObservedCapabilities, []string{
 		loomruntime.CapabilityContextRetrieval, "reasoning_effort", "workspace_edit",
-	}) {
+	}) && !reflect.DeepEqual(current.ObservedCapabilities, targetCapabilities) {
 		return false
 	}
-	current.ObservedCapabilities = productCodexCapabilities(executableVersion)
+	current.Capacity = productDesktopHarnessRuntimeCapacity
+	current.ObservedCapabilities = targetCapabilities
 	return validProductCodexAgentRuntime(current, executableVersion)
 }
 

@@ -14,6 +14,7 @@ import (
 	"loom-pi-rebuild/internal/credentials"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
+	"loom-pi-rebuild/internal/runtime/harnessadapter"
 	"loom-pi-rebuild/internal/work"
 )
 
@@ -96,6 +97,25 @@ func (slot *productConversationRouteSlot) ChatThread(
 	return slot.routes.route.ChatThread(ctx, threadID)
 }
 
+func (slot *productConversationRouteSlot) InspectChatContextDisclosure(
+	ctx context.Context,
+	request api.LocalProductChatContextDisclosureRequest,
+) (api.LocalProductChatContextDisclosure, error) {
+	if slot == nil {
+		return api.LocalProductChatContextDisclosure{}, api.ErrLocalProductChatUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return api.LocalProductChatContextDisclosure{}, api.ErrLocalProductChatUnavailable
+	}
+	inspector, ok := slot.routes.route.(api.LocalProductChatContextDisclosureInspector)
+	if !ok || inspector == nil {
+		return api.LocalProductChatContextDisclosure{}, api.ErrLocalProductChatUnavailable
+	}
+	return inspector.InspectChatContextDisclosure(ctx, request)
+}
+
 func (slot *productConversationRouteSlot) SendMessage(
 	ctx context.Context,
 	request api.LocalProductChatMessageRequest,
@@ -109,6 +129,25 @@ func (slot *productConversationRouteSlot) SendMessage(
 		return api.LocalProductChatThread{}, api.ErrLocalProductChatUnavailable
 	}
 	return slot.routes.route.SendMessage(ctx, request)
+}
+
+func (slot *productConversationRouteSlot) CancelChatResponse(
+	ctx context.Context,
+	request api.LocalProductChatResponseCancelRequest,
+) error {
+	if slot == nil {
+		return api.ErrLocalProductChatUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return api.ErrLocalProductChatUnavailable
+	}
+	canceller, ok := slot.routes.route.(api.LocalProductConversationResponseCanceller)
+	if !ok || canceller == nil {
+		return api.ErrLocalProductChatUnavailable
+	}
+	return canceller.CancelChatResponse(ctx, request)
 }
 
 func (slot *productConversationRouteSlot) DeleteThread(
@@ -170,7 +209,15 @@ func newProductConversationConstructionFactory(
 		conversationResponder := setup.ConversationResponder
 		var leases productCredentialLeaseAccess
 		var localModel productLocalModelRuntime
+		var harnessGateway *productHarnessGatewayConversationResponder
 		defer func() {
+			if resultErr != nil && harnessGateway != nil {
+				closeContext, cancel := context.WithTimeout(
+					context.Background(), 5*time.Second,
+				)
+				resultErr = errors.Join(resultErr, harnessGateway.Close(closeContext))
+				cancel()
+			}
 			if resultErr != nil && !nilProductAssetPort(localModel) {
 				resultErr = errors.Join(resultErr, localModel.Close())
 			}
@@ -217,11 +264,21 @@ func newProductConversationConstructionFactory(
 					provider.ErrInvalidOpenCodeConversationConfig,
 				)
 			}
+			modelID := provider.OpenCodeConversationDefaultModel
+			if runtime, found := readModel.GlobalReadView().RuntimeInstance(
+				productOpenCodeRuntimeInstanceID,
+			); found {
+				if selected, available := provider.SelectOpenCodeNativeModel(
+					runtime.ModelIDs,
+				); available {
+					modelID = selected
+				}
+			}
 			client, err := provider.NewOpenCodeConversationClient(
 				provider.OpenCodeConversationConfig{
 					ExecutablePath: resolved, HomePath: homePath,
 					PrivateRoot: filepath.Join(filepath.Dir(statePath), "conversation-opencode"),
-					ModelID:     provider.OpenCodeConversationDefaultModel,
+					ModelID:     modelID,
 					Timeout:     2 * time.Minute, MaxOutputBytes: 32 * 1024,
 					Runner: provider.NewSystemOpenCodeConversationRunner(),
 				},
@@ -234,6 +291,7 @@ func newProductConversationConstructionFactory(
 			openCodeClient = client
 		}
 		var codexClient *provider.CodexConversationClient
+		var codexSegment *productCodexSegmentBackendConfig
 		if setup.CodexExecutable != "" {
 			resolved, err := provider.ResolveCodexNativeExecutable(setup.CodexExecutable)
 			if err != nil {
@@ -248,10 +306,11 @@ func newProductConversationConstructionFactory(
 					provider.ErrInvalidCodexConversationConfig,
 				)
 			}
+			privateRoot := filepath.Join(filepath.Dir(statePath), "conversation-codex")
 			client, err := provider.NewCodexConversationClient(
 				provider.CodexConversationConfig{
 					ExecutablePath: resolved, HomePath: homePath,
-					PrivateRoot: filepath.Join(filepath.Dir(statePath), "conversation-codex"),
+					PrivateRoot: privateRoot,
 					Timeout:     2 * time.Minute, MaxOutputBytes: 32 * 1024,
 					Runner: provider.NewSystemCodexConversationRunner(),
 				},
@@ -262,6 +321,42 @@ func newProductConversationConstructionFactory(
 				)
 			}
 			codexClient = client
+			segmentPrivateRoot := filepath.Join(
+				filepath.Dir(statePath), "conversation-codex-segments",
+			)
+			if err := prepareProductHarnessGatewayWorkspace(segmentPrivateRoot); err != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationNativeAuthConstruction, err,
+				)
+			}
+			codexSegment = &productCodexSegmentBackendConfig{
+				ExecutablePath: resolved, HomePath: homePath,
+				PrivateRoot: segmentPrivateRoot,
+				Timeout:     8 * time.Hour, MaxOutputBytes: 64 << 10,
+				Sessions: harnessadapter.NewSystemHarnessSessionRunner(),
+			}
+		}
+		var claudeCodeRunner harnessadapter.HarnessProcessRunner
+		var claudeCodeHomePath string
+		if setup.ClaudeExecutable != "" {
+			var err error
+			claudeCodeHomePath, err = os.UserHomeDir()
+			if err != nil || !filepath.IsAbs(claudeCodeHomePath) {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationNativeAuthConstruction,
+					harnessadapter.ErrInvalidClaudeCodeAdapter,
+				)
+			}
+			claudeCodeRunner, err = harnessadapter.NewClaudeCodeProcessRunner(
+				harnessadapter.ClaudeCodeProcessRunnerConfig{
+					Commands: harnessadapter.NewSystemHarnessCommandRunner(),
+				},
+			)
+			if err != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationNativeAuthConstruction, err,
+				)
+			}
 		}
 		deepSeekClient, err := provider.NewSystemDeepSeekConversationClient(45*time.Second, 256*1024)
 		if err != nil {
@@ -296,31 +391,60 @@ func newProductConversationConstructionFactory(
 		if leases == nil {
 			return productConversationRoutes{}, errProductConversationRouteUnavailable
 		}
+		gatewayWorkspacePath := filepath.Join(
+			filepath.Dir(statePath), "conversation-workspace",
+		)
+		if err := prepareProductHarnessGatewayWorkspace(gatewayWorkspacePath); err != nil {
+			return productConversationRoutes{}, errors.Join(
+				errProductConversationRouteUnavailable, err,
+			)
+		}
 		var codexResponder api.LocalProductConversationResponder
 		if codexClient != nil {
 			codexResponder = &productCodexConversationResponder{client: codexClient}
 		}
-		if conversationResponder == nil && openCodeClient != nil {
-			// OpenCode is a native conversation profile that needs the Loom
-			// Vault lease access to inject the bound model's Provider
-			// credential (for example DEEPSEEK_API_KEY) into the OpenCode
-			// process environment. Bind it only after leases is resolved so the
-			// responder never captures a nil lease access.
-			conversationResponder = &productOpenCodeConversationResponder{
+		var openCodeResponder api.LocalProductConversationResponder
+		if openCodeClient != nil {
+			// Native OpenCode runs without a Loom credential. Account-scoped
+			// OpenCode profiles use this same responder's exact bound lease path.
+			openCodeResponder = &productOpenCodeConversationResponder{
 				client: openCodeClient,
 				leases: leases,
-				credentials: func(
-					ctx context.Context,
-					providerID string,
-				) []projection.ProviderCredentialRecord {
-					return readModel.GlobalReadView().ProviderAccountCredentials(
-						providerID,
-					)
-				},
 			}
+		}
+		var claudeCodeResponder api.LocalProductConversationResponder
+		var claudeCodeSegment *productClaudeCodeSegmentBackendConfig
+		if claudeCodeRunner != nil {
+			configuredClaudeCodeResponder, responderErr := newProductClaudeCodeConversationResponder(
+				productClaudeCodeConversationConfig{
+					ExecutablePath: setup.ClaudeExecutable,
+					HomePath:       claudeCodeHomePath,
+					WorkspacePath:  gatewayWorkspacePath,
+					PrivateRoot: filepath.Join(
+						filepath.Dir(statePath), "conversation-claude-code",
+					),
+					Runner: claudeCodeRunner, Timeout: 2 * time.Minute,
+					MaxOutputBytes: 32 * 1024,
+				},
+			)
+			if responderErr != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationNativeAuthConstruction, responderErr,
+				)
+			}
+			claudeCodeResponder = configuredClaudeCodeResponder
+			claudeCodeSegment = &productClaudeCodeSegmentBackendConfig{
+				Responder: configuredClaudeCodeResponder,
+			}
+		}
+		if conversationResponder == nil && openCodeResponder != nil {
+			conversationResponder = openCodeResponder
 		}
 		if conversationResponder == nil && codexResponder != nil {
 			conversationResponder = codexResponder
+		}
+		if conversationResponder == nil && claudeCodeResponder != nil {
+			conversationResponder = claudeCodeResponder
 		}
 		router, err := newProductConversationProfileRouterWithPolicy(
 			conversationResponder,
@@ -330,7 +454,7 @@ func newProductConversationConstructionFactory(
 			func(providerID, accountID string) (work.ProviderAccountPolicy, bool) {
 				return readModel.GlobalReadView().ProviderAccountPolicy(providerID, accountID)
 			},
-			leases, deepSeekClient, true, codexResponder,
+			leases, deepSeekClient, true, openCodeResponder, codexResponder,
 			productConversationProviderRoute{
 				providerID: "anthropic", profileID: provider.AnthropicConversationAccountProfileID,
 				client: anthropicClient,
@@ -347,6 +471,22 @@ func newProductConversationConstructionFactory(
 		if err != nil {
 			return productConversationRoutes{}, errors.Join(errProductConversationProviderConstruction, err)
 		}
+		router.claudeCodeResponder = claudeCodeResponder
+		harnessGateway, err = newProductHarnessGatewayConversationResponder(
+			productHarnessGatewayConversationConfig{
+				Executor: router, WorkspacePath: gatewayWorkspacePath,
+				CodexSegment: codexSegment, ClaudeCodeSegment: claudeCodeSegment,
+				Events: &productHarnessGatewayOperationalEventSink{
+					diagnostics: diagnostics,
+				},
+				Now: func() time.Time { return time.Now().UTC() },
+			},
+		)
+		if err != nil {
+			return productConversationRoutes{}, errors.Join(
+				errProductConversationRouteUnavailable, err,
+			)
+		}
 		migration := &productChatMigrationDiagnosticRecorder{
 			store: diagnostics,
 			incidentID: "loom-migration-" + productDeterministicUUID(
@@ -360,13 +500,13 @@ func newProductConversationConstructionFactory(
 		case documents != nil:
 			chat, err = api.NewEncryptedPersistentLocalProductChatAPI(
 				ctx, storePath, documents, func() time.Time { return time.Now().UTC() },
-				router, migration,
+				harnessGateway, migration,
 			)
 		case setup.UseCredentialVault:
 			chat = api.NewUnavailableLocalProductChatAPI(func() time.Time { return time.Now().UTC() })
 		default:
 			chat, err = api.NewPersistentLocalProductChatAPI(
-				storePath, func() time.Time { return time.Now().UTC() }, router,
+				storePath, func() time.Time { return time.Now().UTC() }, harnessGateway,
 			)
 		}
 		if err != nil {
@@ -396,9 +536,16 @@ func newProductConversationConstructionFactory(
 				return productConversationRoutes{}, err
 			}
 		}
-		closeRoute := func() error { return nil }
-		if !nilProductAssetPort(localModel) {
-			closeRoute = localModel.Close
+		closeRoute := func() error {
+			closeContext, cancel := context.WithTimeout(
+				context.Background(), 5*time.Second,
+			)
+			defer cancel()
+			result := harnessGateway.Close(closeContext)
+			if !nilProductAssetPort(localModel) {
+				result = errors.Join(result, localModel.Close())
+			}
+			return result
 		}
 		return productConversationRoutes{
 			route: chat, localModel: localModel, close: closeRoute,
@@ -458,3 +605,5 @@ func (construction productCompatibilityConstruction) conversationReady(
 
 var _ api.LocalProductChatSource = (*api.LocalProductChatAPI)(nil)
 var _ api.LocalProductChatSource = (*productConversationRouteSlot)(nil)
+var _ api.LocalProductChatContextDisclosureInspector = (*productConversationRouteSlot)(nil)
+var _ api.LocalProductConversationResponseCanceller = (*productConversationRouteSlot)(nil)

@@ -26,6 +26,10 @@ type source interface {
 	Events(context.Context) ([]journal.Event, error)
 }
 
+type appendOnlyRevisionSource interface {
+	Revision(context.Context) (int64, error)
+}
+
 type journalSource struct {
 	db *sql.DB
 }
@@ -58,6 +62,17 @@ func (s journalSource) Events(ctx context.Context) ([]journal.Event, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+func (s journalSource) Revision(ctx context.Context) (int64, error) {
+	var revision int64
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(MAX(rowid), 0) FROM events`,
+	).Scan(&revision); err != nil {
+		return 0, err
+	}
+	return revision, nil
 }
 
 type Snapshot struct {
@@ -253,11 +268,13 @@ type AgentInstance struct {
 }
 
 type Projection struct {
-	mu          sync.RWMutex
-	source      source
-	snapshot    Snapshot
-	view        GlobalReadView
-	rebuildGate chan struct{}
+	mu                  sync.RWMutex
+	source              source
+	snapshot            Snapshot
+	view                GlobalReadView
+	rebuildGate         chan struct{}
+	sourceRevision      int64
+	sourceRevisionKnown bool
 }
 
 func New(db *sql.DB) *Projection {
@@ -283,6 +300,25 @@ func (p *Projection) Rebuild(ctx context.Context) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	var (
+		sourceRevision int64
+		revisionKnown  bool
+	)
+	if revisionSource, ok := p.source.(appendOnlyRevisionSource); ok {
+		var err error
+		sourceRevision, err = revisionSource.Revision(ctx)
+		if err != nil {
+			return err
+		}
+		revisionKnown = true
+		p.mu.RLock()
+		unchanged := p.sourceRevisionKnown &&
+			p.sourceRevision == sourceRevision
+		p.mu.RUnlock()
+		if unchanged {
+			return nil
+		}
 	}
 
 	events, err := p.source.Events(ctx)
@@ -312,6 +348,8 @@ func (p *Projection) Rebuild(ctx context.Context) error {
 	defer p.mu.Unlock()
 	p.snapshot = candidate.clone()
 	p.view = candidateView
+	p.sourceRevision = sourceRevision
+	p.sourceRevisionKnown = revisionKnown
 	return nil
 }
 

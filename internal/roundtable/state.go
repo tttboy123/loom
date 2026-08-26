@@ -13,16 +13,17 @@ import (
 )
 
 type sessionState struct {
-	found                  bool
-	head                   journal.StreamHead
-	session                Session
-	seats                  map[string]Seat
-	messages               map[string]Message
-	rounds                 []roundRecord
-	view                   View
-	concludedSummaryDigest string
-	concludedAt            time.Time
-	importedContracts      map[string]struct{}
+	found                   bool
+	head                    journal.StreamHead
+	session                 Session
+	seats                   map[string]Seat
+	seatMembershipRevisions map[string]int
+	messages                map[string]Message
+	rounds                  []roundRecord
+	view                    View
+	concludedSummaryDigest  string
+	concludedAt             time.Time
+	importedContracts       map[string]struct{}
 }
 
 type roundRecord struct {
@@ -166,10 +167,11 @@ func replaySession(
 	events []journal.Event,
 ) (sessionState, error) {
 	state := sessionState{
-		seats:             make(map[string]Seat),
-		messages:          make(map[string]Message),
-		rounds:            make([]roundRecord, 0, 4),
-		importedContracts: make(map[string]struct{}),
+		seats:                   make(map[string]Seat),
+		seatMembershipRevisions: make(map[string]int),
+		messages:                make(map[string]Message),
+		rounds:                  make([]roundRecord, 0, 4),
+		importedContracts:       make(map[string]struct{}),
 	}
 	for index, event := range events {
 		if event.StreamID != sessionStream(sessionID) ||
@@ -209,6 +211,7 @@ func applyFact(state *sessionState, event journal.Event) error {
 		state.seats[payload.ModeratorSeat] = Seat{
 			ID: payload.ModeratorSeat, DisplayName: "Moderator", Available: true,
 		}
+		state.seatMembershipRevisions[payload.ModeratorSeat] = 1
 		return nil
 	case FactSeatRetired:
 		var payload seatRetiredPayload
@@ -217,7 +220,9 @@ func applyFact(state *sessionState, event journal.Event) error {
 			return ErrRoundtableConflict
 		}
 		seat, ok := state.seats[payload.SeatID]
-		if !ok || !seat.Available {
+		if !ok || !seat.Available ||
+			(payload.MembershipRevision != 0 &&
+				payload.MembershipRevision != state.seatMembershipRevisions[payload.SeatID]) {
 			return ErrRoundtableConflict
 		}
 		seat.Available = false
@@ -235,6 +240,23 @@ func applyFact(state *sessionState, event journal.Event) error {
 		state.seats[payload.SeatID] = Seat{
 			ID: payload.SeatID, DisplayName: payload.DisplayName, Available: true,
 		}
+		state.seatMembershipRevisions[payload.SeatID] = 1
+		return nil
+	case FactSeatRejoined:
+		var payload seatRejoinedPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID || len(state.rounds) != 0 {
+			return ErrRoundtableConflict
+		}
+		seat, exists := state.seats[payload.SeatID]
+		if !exists || seat.Available ||
+			payload.MembershipRevision != state.seatMembershipRevisions[payload.SeatID]+1 {
+			return ErrRoundtableConflict
+		}
+		seat.DisplayName = payload.DisplayName
+		seat.Available = true
+		state.seats[payload.SeatID] = seat
+		state.seatMembershipRevisions[payload.SeatID] = payload.MembershipRevision
 		return nil
 	case FactRoundOpened:
 		var payload roundOpenedPayload
@@ -495,10 +517,11 @@ type sessionCreatedPayload struct {
 }
 
 type seatRetiredPayload struct {
-	SchemaVersion int       `json:"schema_version"`
-	SessionID     string    `json:"session_id"`
-	SeatID        string    `json:"seat_id"`
-	RetiredAt     time.Time `json:"retired_at"`
+	SchemaVersion      int       `json:"schema_version"`
+	SessionID          string    `json:"session_id"`
+	SeatID             string    `json:"seat_id"`
+	MembershipRevision int       `json:"membership_revision,omitempty"`
+	RetiredAt          time.Time `json:"retired_at"`
 }
 
 type seatAddedPayload struct {
@@ -507,6 +530,15 @@ type seatAddedPayload struct {
 	SeatID        string    `json:"seat_id"`
 	DisplayName   string    `json:"display_name"`
 	EmittedAt     time.Time `json:"emitted_at"`
+}
+
+type seatRejoinedPayload struct {
+	SchemaVersion      int       `json:"schema_version"`
+	SessionID          string    `json:"session_id"`
+	SeatID             string    `json:"seat_id"`
+	DisplayName        string    `json:"display_name"`
+	MembershipRevision int       `json:"membership_revision"`
+	RejoinedAt         time.Time `json:"rejoined_at"`
 }
 
 type roundOpenedPayload struct {

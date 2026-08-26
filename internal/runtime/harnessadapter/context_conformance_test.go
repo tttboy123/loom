@@ -112,12 +112,21 @@ func TestHarnessGovernedToolMCPConformanceIsExactExecutableBound(t *testing.T) {
 			want:              true,
 		},
 		{
+			adapterType:       OpenCodeAdapterType,
+			executableVersion: "sha256:43f7083d450567706a80b6441331a25b5ed6d6c9f742826790545b068229cbb2",
+			want:              true,
+		},
+		{
 			adapterType:       CodexAdapterType,
 			executableVersion: "sha256:19915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a",
 		},
 		{
 			adapterType:       ClaudeCodeAdapterType,
 			executableVersion: "sha256:29915529b97697def1a957b0505e770aa6a45744435d62fc263e98d7619e167a",
+		},
+		{
+			adapterType:       OpenCodeAdapterType,
+			executableVersion: "sha256:53f7083d450567706a80b6441331a25b5ed6d6c9f742826790545b068229cbb2",
 		},
 	} {
 		if got := HasGovernedToolMCPConformance(

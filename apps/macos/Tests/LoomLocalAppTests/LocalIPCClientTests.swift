@@ -228,6 +228,40 @@ final class LocalIPCClientTests: XCTestCase {
         }
     }
 
+    func testMissionExecutionStagesDecodeThroughClosedWireSet() throws {
+        let stages: [LocalIPCRemoteError.Stage] = [
+            .preflightLease, .viewDrift, .preflightDigest,
+            .parentContinuation, .flightConflict, .dispatchAdmission,
+            .dispatchTeamAuthority, .dispatchCapacity, .dispatchAttemptValidation,
+            .dispatchViewConflict, .dispatchIdentityUnavailable,
+            .dispatchRecoveryRequired, .dispatchValidation,
+			.dispatchContextValidation, .dispatchIncomplete,
+			.workspacePublication, .workspacePublicationInputValidation,
+			.workspacePublicationSourceSnapshot, .workspacePublicationSourceDrift,
+			.workspacePublicationStageCreate, .workspacePublicationChangeValidation,
+			.workspacePublicationChangeConflict, .workspacePublicationDestructiveChange,
+			.workspacePublicationStageWrite, .workspacePublicationApply,
+			.workspacePublicationFinalDigest, .workspacePublicationSync,
+			.workspacePublicationMainNodeMissing, .workspacePublicationMainCandidateMissing,
+			.workspacePublicationMainChangesMissing, .workspacePublicationMainDigestMissing,
+			.workspacePublicationCancelled,
+        ]
+        for stage in stages {
+            let body = """
+            {"version":1,"request_id":"request-mission","ok":false,"result":null,"error":{"code":"conflict","message":"conflict","recoverable":true,"stage":"\(stage.rawValue)"}}
+            """
+            XCTAssertThrowsError(
+                try LocalIPCWire.decodeResponse(
+                    Data(body.utf8),
+                    expectedRequestID: "request-mission"
+                )
+            ) { error in
+                XCTAssertEqual((error as? LocalIPCRemoteError)?.code, .conflict)
+                XCTAssertEqual((error as? LocalIPCRemoteError)?.stage, stage)
+            }
+        }
+    }
+
     func testResponseRejectsDuplicateUnknownTrailingAndOversizedData() {
         let duplicate = """
         {"version":1,"version":1,"request_id":"request-1","ok":true,"result":{},"error":null}
@@ -287,6 +321,7 @@ final class LocalIPCClientTests: XCTestCase {
 			"provider_invalid_request",
 			"provider_unavailable",
             "state_unavailable",
+			"workspace_publish_failed",
             "timeout",
             "busy",
             "internal",
@@ -335,13 +370,12 @@ final class LocalIPCClientTests: XCTestCase {
     }
 
     func testLongOperationsReceiveExtendedRequestTimeout() {
-        XCTAssertEqual(LocalIPCClient.maximumRequestTimeoutSeconds, 55)
+        XCTAssertEqual(LocalIPCClient.maximumRequestTimeoutSeconds, 1_810)
         for method in [
             "credential_verify", "credential_vault_rotate",
             "credential_vault_lock", "credential_vault_unlock",
             "credential_vault_reset",
             "credential_vault_export",
-            "mission_execution",
         ] {
             XCTAssertEqual(
                 LocalIPCClient.requestTimeoutSeconds(for: method),
@@ -349,21 +383,35 @@ final class LocalIPCClientTests: XCTestCase {
                 method
             )
         }
-        for method in ["chat_message", "agent_attempt_recovery"] {
-            XCTAssertEqual(
-                LocalIPCClient.requestTimeoutSeconds(for: method),
-                55,
-                method
-            )
-        }
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "chat_message"),
+            1_810
+        )
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "chat_response_cancel"),
+            2
+        )
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "agent_attempt_recovery"),
+            55
+        )
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "mission_execution"),
+            185
+        )
+        XCTAssertEqual(
+            LocalIPCClient.requestTimeoutSeconds(for: "setup_snapshot"),
+            185
+        )
         for method in [
-            "ping", "snapshot", "timeline_page", "setup_snapshot",
+            "ping", "snapshot", "timeline_page",
             "codex_connect", "builder_start", "builder_answer",
             "builder_edit", "builder_validate", "builder_confirm",
             "team_archive", "team_restore", "credential_configure",
             "credential_replace", "credential_revoke",
             "provider_account_policy_configure",
             "provider_model_rate_card_configure", "chat_thread",
+            "chat_context_disclosure",
         ] {
             XCTAssertEqual(
                 LocalIPCClient.requestTimeoutSeconds(for: method),
@@ -520,8 +568,12 @@ final class LocalIPCClientTests: XCTestCase {
 
     func testChatMessageRequestUsesExactDaemonWireKeys() throws {
         let binding = LocalProductConversationExecutionBinding(
+            schemaVersion: 4,
+            harnessAdapter: "loom-native",
             providerID: "deepseek",
             providerAccountID: "deepseek.primary",
+            credentialRevision: 2,
+            modelID: "deepseek-chat",
             providerAccountPolicyVersion: 2,
             providerAccountPolicyRevision: 4,
             providerAccountPolicyDigest: String(repeating: "a", count: 64),
@@ -535,7 +587,18 @@ final class LocalIPCClientTests: XCTestCase {
                 content: "hello",
                 profileID: "conversation-deepseek-deepseek-chat-r2",
                 contextMode: .summaryOnly,
-                expectedExecutionBinding: binding
+                expectedExecutionBinding: binding,
+                trustBoundaryAcknowledgement:
+                    LocalProductTrustBoundaryAcknowledgement(
+                        schemaVersion: 3,
+                        sourceSegmentID: "segment-1",
+                        sourceBindingDigest: String(repeating: "b", count: 64),
+                        targetProfileID: "conversation-deepseek-deepseek-chat-r2",
+                        targetExecutionBinding: binding,
+                        contextMode: .summaryOnly,
+                        acknowledged: true,
+                        reviewDigest: String(repeating: "c", count: 64)
+                    )
             )
         )
         let object = try XCTUnwrap(
@@ -548,6 +611,7 @@ final class LocalIPCClientTests: XCTestCase {
                 "thread_id", "content", "profile_id", "model_id",
                 "reasoning_effort", "context_mode",
                 "expected_execution_binding",
+                "trust_boundary_acknowledgement",
             ])
         )
         XCTAssertEqual(object["thread_id"] as? String, "thread-1")
@@ -568,7 +632,210 @@ final class LocalIPCClientTests: XCTestCase {
             encodedBinding["provider_account_id"] as? String,
             "deepseek.primary"
         )
+        XCTAssertEqual(encodedBinding["harness_adapter"] as? String, "loom-native")
+        XCTAssertEqual(encodedBinding["credential_revision"] as? Int, 2)
+        XCTAssertEqual(encodedBinding["model_id"] as? String, "deepseek-chat")
+        let acknowledgement = try XCTUnwrap(
+            object["trust_boundary_acknowledgement"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(acknowledgement.keys),
+            Set([
+                "schema_version", "source_segment_id", "source_binding_digest",
+                "target_profile_id", "target_execution_binding",
+                "target_reasoning_effort", "context_mode", "acknowledged",
+                "review_digest",
+            ])
+        )
+        XCTAssertEqual(acknowledgement["source_segment_id"] as? String, "segment-1")
+        XCTAssertEqual(acknowledgement["schema_version"] as? Int, 3)
+        XCTAssertEqual(
+            acknowledgement["target_profile_id"] as? String,
+            "conversation-deepseek-deepseek-chat-r2"
+        )
+        XCTAssertEqual(acknowledgement["target_reasoning_effort"] as? String, "")
+        XCTAssertEqual(acknowledgement["context_mode"] as? String, "summary_only")
+        XCTAssertEqual(acknowledgement["acknowledged"] as? Bool, true)
+        XCTAssertEqual(
+            acknowledgement["review_digest"] as? String,
+            String(repeating: "c", count: 64)
+        )
         XCTAssertNil(object["threadID"])
+    }
+
+    func testTrustBoundaryReviewDigestMatchesDaemonCanonicalVector() throws {
+        let sourceBinding = LocalProductConversationExecutionBinding(
+            schemaVersion: 4, harnessAdapter: "loom-native",
+            providerID: "deepseek", providerAccountID: "deepseek.work",
+            credentialRevision: 7, modelID: "deepseek-chat",
+            providerAccountPolicyVersion: 2,
+            providerAccountPolicyRevision: 3,
+            providerAccountPolicyDigest: String(repeating: "a", count: 64),
+            trustDomain: "external_provider",
+            retentionMode: "provider_default", dataRegion: "global"
+        )
+        let targetBinding = LocalProductConversationExecutionBinding(
+            schemaVersion: 4, harnessAdapter: "claude-code",
+            providerID: "anthropic", providerAccountID: "anthropic.work",
+            credentialRevision: 5, modelID: "claude-sonnet-4",
+            providerAccountPolicyVersion: 2,
+            providerAccountPolicyRevision: 4,
+            providerAccountPolicyDigest: String(repeating: "b", count: 64),
+            trustDomain: "enterprise_tenant",
+            retentionMode: "zero_data_retention", dataRegion: "apac"
+        )
+        let source = LocalProductConversationSegment(
+            segmentID: "segment-1",
+            profileID: "conversation-deepseek-work-r7",
+            contextMode: .startClean,
+            contextCapsuleDigest: String(repeating: "c", count: 64),
+            executionBinding: sourceBinding,
+            bindingDigest: "04c575cf749b3ee6196aa1ba100b2b0a0ecd67edf52414666f662de40eb123fe"
+        )
+        let review = try XCTUnwrap(
+            LocalProductTrustBoundaryAcknowledgement.reviewed(
+                threadID: "thread-trust-review",
+                sourceSegment: source,
+                targetProfileID: "conversation-anthropic-work-r5",
+                targetExecutionBinding: targetBinding,
+                targetReasoningEffort: "",
+                contextMode: .summaryOnly
+            )
+        )
+        XCTAssertEqual(
+            review.reviewDigest,
+            "fcc87e6a321b2f7b303831173b63c928a394f5abe0519df5efcb94ae01474398"
+        )
+        XCTAssertEqual(review.schemaVersion, 3)
+        XCTAssertEqual(review.targetProfileID, "conversation-anthropic-work-r5")
+        let differentProfile = try XCTUnwrap(
+            LocalProductTrustBoundaryAcknowledgement.reviewed(
+                threadID: "thread-trust-review",
+                sourceSegment: source,
+                targetProfileID: "conversation-anthropic-work-r6",
+                targetExecutionBinding: targetBinding,
+                targetReasoningEffort: "",
+                contextMode: .summaryOnly
+            )
+        )
+        XCTAssertNotEqual(differentProfile.reviewDigest, review.reviewDigest)
+    }
+
+    func testChatContextDisclosureRequestUsesExactSafeWireKeys() throws {
+        let body = try JSONEncoder().encode(
+            LocalProductContextDisclosureRequest(
+                threadID: "thread-1",
+                segmentID: "segment-2"
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), Set(["thread_id", "segment_id"]))
+        XCTAssertEqual(object["thread_id"] as? String, "thread-1")
+        XCTAssertEqual(object["segment_id"] as? String, "segment-2")
+        XCTAssertNil(object["context_capsule_digest"])
+        XCTAssertNil(object["content"])
+        XCTAssertNil(object["prompt"])
+    }
+
+    func testChatResponseCancelRequestUsesOnlyResponseIdentity() throws {
+        let body = try JSONEncoder().encode(
+            ChatResponseCancelParams(
+                threadID: "thread-1",
+                incidentID: "loom-chat-11111111-1111-4111-8111-111111111111"
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+
+        XCTAssertEqual(Set(object.keys), Set(["thread_id", "incident_id"]))
+        XCTAssertEqual(object["thread_id"] as? String, "thread-1")
+        XCTAssertEqual(
+            object["incident_id"] as? String,
+            "loom-chat-11111111-1111-4111-8111-111111111111"
+        )
+        XCTAssertNil(object["content"])
+        XCTAssertNil(object["prompt"])
+        XCTAssertNil(object["profile_id"])
+    }
+
+    func testChatResponseCancelAcknowledgementIsExactAndMetadataOnly() throws {
+        let acknowledgement = try JSONDecoder().decode(
+            ChatResponseCancelAcknowledgement.self,
+            from: Data(
+                """
+                {"thread_id":"thread-1","incident_id":"loom-chat-1","cancelled":true}
+                """.utf8
+            )
+        )
+        XCTAssertEqual(acknowledgement.threadID, "thread-1")
+        XCTAssertEqual(acknowledgement.incidentID, "loom-chat-1")
+        XCTAssertTrue(acknowledgement.cancelled)
+
+        for body in [
+            "{\"thread_id\":\"thread-1\",\"incident_id\":\"loom-chat-1\",\"cancelled\":false}",
+            "{\"thread_id\":\"thread-1\",\"incident_id\":\"loom-chat-1\",\"cancelled\":true,\"content\":\"private\"}",
+            "{\"thread_id\":\"thread-1\",\"incident_id\":\"loom-chat-1\",\"cancelled\":true,\"messages\":[]}",
+        ] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(
+                    ChatResponseCancelAcknowledgement.self,
+                    from: Data(body.utf8)
+                ),
+                body
+            )
+        }
+    }
+
+    func testChatMessageDecoderPreservesCancelledAttemptFromFinalThread() throws {
+        let thread = try LocalIPCClient.decodeChatThreadResponse(
+            Data(
+                """
+                {
+                  "thread_id":"thread-1","profile_id":"profile-1",
+                  "attempts":[{
+                    "attempt_id":"attempt-1","segment_id":"segment-1",
+                    "profile_id":"profile-1","context_mode":"start_clean",
+                    "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "incident_id":"loom-chat-1","status":"cancelled","failure_code":""
+                  }],
+                  "messages":[],"can_reply":true,"requires_confirmation":false
+                }
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(thread.attempts.count, 1)
+        XCTAssertEqual(thread.attempts[0].status, "cancelled")
+        XCTAssertEqual(thread.attempts[0].incidentID, "loom-chat-1")
+        XCTAssertEqual(thread.threadID, "thread-1")
+    }
+
+    func testChatMessageDecoderRejectsCancelledAttemptWithFailureMetadata() {
+        XCTAssertThrowsError(
+            try LocalIPCClient.decodeChatThreadResponse(
+                Data(
+                    """
+                    {
+                      "thread_id":"thread-1","profile_id":"profile-1",
+                      "attempts":[{
+                        "attempt_id":"attempt-1","segment_id":"segment-1",
+                        "profile_id":"profile-1","context_mode":"start_clean",
+                        "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "incident_id":"loom-chat-1","status":"cancelled",
+                        "failure_code":"timeout","failure_stage":"conversation_dispatch",
+                        "retryable":true
+                      }],
+                      "messages":[],"can_reply":true,"requires_confirmation":false
+                    }
+                    """.utf8
+                )
+            )
+        )
     }
 
     func testClientAcceptsPrivateOwnedUnixSocket() throws {
@@ -622,6 +889,193 @@ final class LocalIPCClientTests: XCTestCase {
             XCTFail("realpath failed")
         }
         XCTAssertNoThrow(try LocalIPCClient(socketPath: path))
+    }
+
+    func testClientCreatedBeforeRunDirectoryRecoversWhenDaemonAppears() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-swift-\(UUID().uuidString.prefix(8))")
+        let diagnosticsRoot = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-swift-diagnostics-\(UUID().uuidString.prefix(8))")
+        let runDirectory = root.appendingPathComponent("run")
+        let path = runDirectory.appendingPathComponent("loomd.sock").path
+        defer {
+            if FileManager.default.fileExists(atPath: root.path) {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        defer {
+            if FileManager.default.fileExists(atPath: diagnosticsRoot.path) {
+                try? FileManager.default.removeItem(at: diagnosticsRoot)
+            }
+        }
+
+        let client: LocalIPCClient
+        do {
+            client = try LocalIPCClient(
+                socketPath: path,
+                requestID: { "bootstrap-recovery-1" },
+                operationalDiagnostics: LocalOperationalDiagnostics(
+                    directory: diagnosticsRoot,
+                    maximumBytes: 512,
+                    now: { Date(timeIntervalSince1970: 0) }
+                ),
+                recordsInstalledDiagnostics: false
+            )
+        } catch {
+            XCTFail("client construction must survive a missing run directory: \(error)")
+            return
+        }
+        let boundary: LocalProductClientProtocol = client
+        XCTAssertNotNil(boundary as? LocalProductDecisionClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductSetupClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductExecutionClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductAgentRecoveryClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductToolRecoveryClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductAgentInputClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductHandoffClientProtocol)
+        XCTAssertNotNil(boundary as? LocalRoundtableClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductAssetClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductPermissionClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductExecutionSnapshotClientProtocol)
+        XCTAssertNotNil(boundary as? LocalProductProductionSnapshotClientProtocol)
+
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            at: runDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let server = try Self.makeListeningSocket(at: path, permissions: 0o600)
+        defer { Darwin.close(server) }
+        let responseTask = Task.detached {
+            try Self.servePingOnce(server: server)
+        }
+
+        let available = try await client.ping()
+        XCTAssertTrue(available)
+        try await responseTask.value
+    }
+
+    func testReachableSameOwnerSocketWithMalformedModeIsNotTrusted() throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-swift-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("loomd.sock").path
+        let server = try Self.makeListeningSocket(at: path, permissions: 0o640)
+        defer { Darwin.close(server) }
+
+        let probe = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(probe, 0)
+        defer { Darwin.close(probe) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8CString)
+        withUnsafeMutableBytes(of: &address.sun_path) {
+            $0.copyBytes(from: bytes.map { UInt8(bitPattern: $0) })
+        }
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(
+                    probe,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_un>.size)
+                )
+            }
+        }
+        XCTAssertEqual(connected, 0, "fixture socket must be reachable")
+        XCTAssertFalse(LocalIPCClient.isTrustedSocket(at: path))
+    }
+
+    private static func makeListeningSocket(
+        at path: String,
+        permissions: mode_t
+    ) throws -> Int32 {
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw LocalProductClientError.unavailable }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8CString)
+        guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+            Darwin.close(descriptor)
+            throw LocalProductClientError.invalidSocket
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) {
+            $0.copyBytes(from: bytes.map { UInt8(bitPattern: $0) })
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_un>.size)
+                )
+            }
+        }
+        guard bound == 0,
+              chmod(path, permissions) == 0,
+              Darwin.listen(descriptor, 1) == 0 else {
+            Darwin.close(descriptor)
+            throw LocalProductClientError.unavailable
+        }
+        return descriptor
+    }
+
+    private static func servePingOnce(server: Int32) throws {
+        let connection = Darwin.accept(server, nil, nil)
+        guard connection >= 0 else { throw LocalProductClientError.unavailable }
+        defer { Darwin.close(connection) }
+        var request = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = Darwin.recv(connection, &buffer, buffer.count, 0)
+            if count == 0 { break }
+            guard count > 0 else { throw LocalProductClientError.unavailable }
+            request.append(buffer, count: count)
+        }
+        let body = try LocalIPCWire.unframe(
+            request,
+            maximum: LocalIPCClient.requestMaximum
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let requestID = try XCTUnwrap(object["request_id"] as? String)
+        let response = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "request_id": requestID,
+            "ok": true,
+            "result": [
+                "protocol_version": 1,
+                "available": true,
+                "build_id": "bootstrap-test",
+            ],
+        ])
+        let framed = try LocalIPCWire.frame(
+            response,
+            maximum: LocalIPCClient.responseMaximum
+        )
+        try framed.withUnsafeBytes { bytes in
+            var sent = 0
+            while sent < bytes.count {
+                let count = Darwin.send(
+                    connection,
+                    bytes.baseAddress!.advanced(by: sent),
+                    bytes.count - sent,
+                    0
+                )
+                guard count > 0 else { throw LocalProductClientError.unavailable }
+                sent += count
+            }
+        }
     }
 
     private static func makeClientBackedByPrivateSocket() throws -> LocalIPCClient {

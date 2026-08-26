@@ -1,16 +1,33 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/composition"
+	"loom-pi-rebuild/internal/credentials"
+	"loom-pi-rebuild/internal/harnessgateway"
+	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/localipc"
+	"loom-pi-rebuild/internal/projection"
+	"loom-pi-rebuild/internal/provider"
+	"loom-pi-rebuild/internal/runtime/piadapter"
+	"loom-pi-rebuild/internal/state"
 )
 
 func TestCOMP2CConversationRouteHandoffBindsAndRevokesChat(t *testing.T) {
@@ -201,6 +218,484 @@ func TestCOMP2CConversationConstructionPreservesFailureStage(t *testing.T) {
 	}
 }
 
+func TestCOMP2CProductionConversationCompositionKeepsPiAndOpenCodeRespondersDistinct(t *testing.T) {
+	root := t.TempDir()
+	executablePath := filepath.Join(root, "opencode")
+	if err := os.WriteFile(executablePath, []byte(`#!/bin/sh
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-COMPOSITION-OK"}}' '{"type":"step_finish"}'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := &productConversationCompositionDiagnosticFixture{
+		now: time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC),
+	}
+	factory := newProductConversationConstructionFactory(
+		filepath.Join(root, "loom.db"),
+		productSetupRuntimeConfig{
+			OpenCodeExecutable:    executablePath,
+			CredentialLeases:      &profileConversationLeaseRecorder{},
+			ConversationResponder: &productPiConversationResponder{},
+		},
+		projection.New(nil), nil, diagnostics,
+	)
+	routes, err := factory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := routes.close(); closeErr != nil {
+			t.Errorf("close conversation routes: %v", closeErr)
+		}
+	})
+	thread, err := routes.route.SendMessage(
+		context.Background(),
+		api.LocalProductChatMessageRequest{
+			ThreadID: "thread-production-pi-opencode", Content: "hello",
+			ProfileID: provider.OpenCodeConversationProfileID,
+			ModelID:   provider.OpenCodeConversationDefaultModel,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := thread.Messages[len(thread.Messages)-1]
+	if last.Role != "loom" || last.Content != "OPENCODE-COMPOSITION-OK" || !last.Tentative {
+		t.Fatalf("last message = %#v attempts=%#v diagnostics=%#v", last, thread.Attempts, diagnostics.records)
+	}
+}
+
+func TestCOMP2CProductionConversationPublishesClaudeCodeThroughHarnessGateway(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	executablePath := filepath.Join(root, "claude")
+	if err := os.WriteFile(executablePath, []byte(`#!/bin/sh
+set -eu
+[ "${ANTHROPIC_API_KEY-}" = "" ]
+[ "${ANTHROPIC_BASE_URL-}" = "" ]
+session_flag=
+session_id=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session-id|--resume)
+      session_flag=$1
+      session_id=$2
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+[ -n "$session_flag" ]
+[ -n "$session_id" ]
+printf '%s %s\n' "$session_flag" "$session_id" >> "$0.session-flags"
+cat >/dev/null
+printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"CLAUDE-COMPOSITION-OK","total_cost_usd":"0","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}\n' "$session_id"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := &productConversationCompositionDiagnosticFixture{
+		now: time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC),
+	}
+	factory := newProductConversationConstructionFactory(
+		filepath.Join(root, "loom.db"),
+		productSetupRuntimeConfig{
+			ClaudeExecutable: executablePath,
+			CredentialLeases: &profileConversationLeaseRecorder{},
+		},
+		projection.New(nil), nil, diagnostics,
+	)
+	routes, err := factory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := routes.close(); closeErr != nil {
+			t.Errorf("close conversation routes: %v", closeErr)
+		}
+	})
+	thread, err := routes.route.SendMessage(
+		context.Background(), api.LocalProductChatMessageRequest{
+			ThreadID: "thread-production-claude", Content: "hello",
+			ProfileID: provider.ClaudeCodeConversationProfileID,
+			ModelID:   provider.AnthropicConversationModelID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err = routes.route.SendMessage(
+		context.Background(), api.LocalProductChatMessageRequest{
+			ThreadID: "thread-production-claude", Content: "hello again",
+			ProfileID: provider.ClaudeCodeConversationProfileID,
+			ModelID:   provider.AnthropicConversationModelID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := thread.Messages[len(thread.Messages)-1]
+	if last.Role != "loom" || last.Content != "CLAUDE-COMPOSITION-OK" ||
+		!last.Tentative || len(thread.Segments) != 1 || len(thread.Attempts) != 2 ||
+		thread.Segments[0].ExecutionBinding == nil ||
+		thread.Segments[0].ExecutionBinding.HarnessAdapter != "claude-code" {
+		t.Fatalf(
+			"last=%#v segments=%#v diagnostics=%#v",
+			last, thread.Segments, diagnostics.records,
+		)
+	}
+	var opening *productOperationalDiagnosticRecord
+	for index := range diagnostics.records {
+		record := &diagnostics.records[index]
+		if record.GatewayEventType == string(harnessgateway.EventSessionOpening) {
+			opening = record
+			break
+		}
+	}
+	if opening == nil || opening.ThreadID != thread.ThreadID ||
+		opening.HarnessID != string(harnessgateway.HarnessClaudeCode) ||
+		opening.BackendID != string(productClaudeCodeSegmentBackendID) ||
+		opening.GatewayEventSchemaVersion != harnessgateway.EventSchemaVersion ||
+		opening.GatewayConfiguredHarnessVersion != productHarnessGatewayConfiguredVersion ||
+		opening.GatewayBackendVersion != productClaudeCodeSegmentBackendVersion ||
+		opening.GatewayEventSequence == 0 || opening.SessionID == "" ||
+		opening.SegmentID != thread.Segments[0].SegmentID || opening.ResponseID != "" ||
+		!validProductOperationalDiagnosticRecord(*opening) {
+		t.Fatalf("Claude Code Gateway opening = %#v diagnostics=%#v", opening, diagnostics.records)
+	}
+	flags, err := os.ReadFile(executablePath + ".session-flags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(flags))
+	if len(lines) != 4 || lines[0] != "--session-id" || lines[2] != "--resume" ||
+		lines[1] == "" || lines[1] != lines[3] {
+		t.Fatalf(
+			"Claude Code native Session flags = %q thread=%#v diagnostics=%#v",
+			flags, thread, diagnostics.records,
+		)
+	}
+}
+
+func TestCOMP2CProductionConversationPublishesGovernedHarnessesThroughGateway(
+	t *testing.T,
+) {
+	t.Run("Codex", func(t *testing.T) {
+		root := t.TempDir()
+		executablePath := filepath.Join(root, "codex")
+		if err := os.WriteFile(executablePath, []byte(`#!/bin/sh
+set -eu
+turn=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":"loom-initialize-v1","result":{"userAgent":"codex-cli/0.144.1","codexHome":"/private/codex","platformFamily":"unix","platformOs":"darwin"}}'
+      ;;
+    *'"method":"thread/start"'*)
+      printf '%s\n' '{"id":"loom-thread-start-v1","result":{"thread":{"id":"thread-production-codex"},"model":"gpt-5.6-sol"}}'
+      ;;
+    *'"method":"turn/start"'*)
+      turn=$((turn + 1))
+      printf '{"id":"loom-turn-start-%s","result":{"turn":{"id":"turn-%s","status":"inProgress"}}}\n' "$turn" "$turn"
+      printf '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-production-codex","turnId":"turn-%s","tokenUsage":{"last":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":2}}}}\n' "$turn"
+      printf '{"method":"item/completed","params":{"threadId":"thread-production-codex","turnId":"turn-%s","item":{"type":"agentMessage","text":"CODEX-GATEWAY-OK"}}}\n' "$turn"
+      printf '{"method":"turn/completed","params":{"threadId":"thread-production-codex","turn":{"id":"turn-%s","status":"completed"}}}\n' "$turn"
+      ;;
+  esac
+done
+`), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		assertCOMP2CProductionGovernedGatewayRoute(
+			t,
+			filepath.Join(root, "loom.db"),
+			productSetupRuntimeConfig{
+				CodexExecutable:  executablePath,
+				CredentialLeases: &profileConversationLeaseRecorder{},
+			},
+			projection.New(nil),
+			api.LocalProductChatMessageRequest{
+				ThreadID: "thread-production-codex-gateway", Content: "codex governed input",
+				ProfileID: provider.CodexConversationProfileID, ModelID: "codex-default",
+			},
+			harnessgateway.HarnessCodex,
+			"CODEX-GATEWAY-OK",
+		)
+	})
+
+	t.Run("OpenCode", func(t *testing.T) {
+		root := t.TempDir()
+		executablePath := filepath.Join(root, "opencode")
+		if err := os.WriteFile(executablePath, []byte(`#!/bin/sh
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-GATEWAY-OK"}}' '{"type":"step_finish"}'
+`), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		assertCOMP2CProductionGovernedGatewayRoute(
+			t,
+			filepath.Join(root, "loom.db"),
+			productSetupRuntimeConfig{
+				OpenCodeExecutable: executablePath,
+				CredentialLeases:   &profileConversationLeaseRecorder{},
+			},
+			projection.New(nil),
+			api.LocalProductChatMessageRequest{
+				ThreadID: "thread-production-opencode-gateway", Content: "opencode input secret",
+				ProfileID: provider.OpenCodeConversationProfileID,
+				ModelID:   provider.OpenCodeConversationDefaultModel,
+			},
+			harnessgateway.HarnessOpenCode,
+			"OPENCODE-GATEWAY-OK",
+		)
+	})
+
+	t.Run("Pi", func(t *testing.T) {
+		root := t.TempDir()
+		content := "review the configured runtime"
+		piPath := filepath.Join(root, "pi")
+		prompt := productPiConversationFixturePrompt(
+			t, "thread-production-pi-gateway", "segment-1", content,
+		)
+		if err := os.WriteFile(
+			piPath, []byte(productPiConversationFixtureScript(prompt)), 0o700,
+		); err != nil {
+			t.Fatal(err)
+		}
+		modelConfig := piadapter.PiLocalModelCatalogConfig{
+			PrivateRoot:    filepath.Join(root, "local-model"),
+			ExecutablePath: filepath.Join(root, "llama-server"),
+			ModelPath:      filepath.Join(root, "model.gguf"),
+		}
+		assertCOMP2CProductionGovernedGatewayRoute(
+			t,
+			filepath.Join(root, "loom.db"),
+			productSetupRuntimeConfig{
+				CredentialLeases:            &profileConversationLeaseRecorder{},
+				ConversationContextCapsules: &productGatewaySegmentAcceptanceCapsuleStore{},
+				Execution: &productMissionExecutionRuntimeConfig{
+					RuntimeSearchPaths: []string{root}, RuntimeInstanceID: "runtime-pi-production",
+					LocalModelCatalog: &modelConfig,
+					LocalModelRuntime: &productSharedLocalModelFixture{},
+					Now: func() time.Time {
+						return time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
+					},
+					Random: bytes.NewReader(bytes.Repeat([]byte{0x45}, 2_048)),
+				},
+			},
+			projection.New(nil),
+			api.LocalProductChatMessageRequest{
+				ThreadID: "thread-production-pi-gateway", Content: content,
+				ProfileID: provider.PiConversationProfileID,
+			},
+			harnessgateway.HarnessPi,
+			"Hello world",
+		)
+	})
+
+	t.Run("LoomNative", func(t *testing.T) {
+		_, statePath := productDaemonFailureState(t)
+		readModel, database, revision := productCOMP2CVerifiedDeepSeekProjection(
+			t, statePath,
+		)
+		t.Cleanup(func() {
+			if err := database.Close(); err != nil {
+				t.Errorf("close projection database: %v", err)
+			}
+		})
+		requestSeen := make(chan struct{}, 1)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(
+			writer http.ResponseWriter,
+			request *http.Request,
+		) {
+			if request.Method != http.MethodPost || request.URL.Path != "/chat/completions" ||
+				request.Header.Get("Authorization") != "Bearer account-private-key" {
+				http.Error(writer, "invalid bounded request", http.StatusBadRequest)
+				return
+			}
+			requestSeen <- struct{}{}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(
+				`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"LOOM-NATIVE-GATEWAY-OK"}}]}`,
+			))
+		}))
+		defer server.Close()
+
+		transport := server.Client().Transport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		transport.TLSClientConfig.ServerName = server.Certificate().DNSNames[0]
+		transport.DialContext = func(
+			ctx context.Context, network string, address string,
+		) (net.Conn, error) {
+			if address != "api.deepseek.com:443" {
+				return nil, errors.New("bounded fixture rejected external network")
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		}
+		originalTransport := http.DefaultTransport
+		http.DefaultTransport = transport
+		defer func() { http.DefaultTransport = originalTransport }()
+
+		assertCOMP2CProductionGovernedGatewayRoute(
+			t,
+			statePath,
+			productSetupRuntimeConfig{
+				CredentialLeases: &profileConversationLeaseRecorder{},
+			},
+			readModel,
+			api.LocalProductChatMessageRequest{
+				ThreadID:  "thread-production-loom-native-gateway",
+				Content:   "loom native input secret",
+				ProfileID: provider.DeepSeekConversationProfileID(revision),
+				ModelID:   provider.DeepSeekConversationModelID,
+			},
+			harnessgateway.HarnessLoomNative,
+			"LOOM-NATIVE-GATEWAY-OK",
+		)
+		select {
+		case <-requestSeen:
+		default:
+			t.Fatal("bounded Loom Native Provider fixture was not called")
+		}
+	})
+}
+
+func assertCOMP2CProductionGovernedGatewayRoute(
+	t *testing.T,
+	statePath string,
+	setup productSetupRuntimeConfig,
+	readModel *projection.Projection,
+	request api.LocalProductChatMessageRequest,
+	wantHarness harnessgateway.HarnessID,
+	wantContent string,
+) {
+	t.Helper()
+	diagnostics := &productConversationCompositionDiagnosticFixture{
+		now: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
+	}
+	routes, err := newProductConversationConstructionFactory(
+		statePath, setup, readModel, nil, diagnostics,
+	)(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := routes.close(); closeErr != nil {
+			t.Errorf("close conversation routes: %v", closeErr)
+		}
+	})
+	thread, err := routes.route.SendMessage(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(thread.Messages) != 2 || len(thread.Segments) != 1 || len(thread.Attempts) != 1 {
+		t.Fatalf("production thread = %#v", thread)
+	}
+	last := thread.Messages[len(thread.Messages)-1]
+	if last.Role != "loom" || last.Content != wantContent || !last.Tentative ||
+		thread.Segments[0].ExecutionBinding == nil ||
+		thread.Segments[0].ExecutionBinding.HarnessAdapter != string(wantHarness) {
+		t.Fatalf(
+			"production response = %#v segment=%#v diagnostics=%#v",
+			last, thread.Segments[0], diagnostics.records,
+		)
+	}
+
+	wantTypes := []harnessgateway.EventType{
+		harnessgateway.EventSessionOpening,
+		harnessgateway.EventSessionReady,
+		harnessgateway.EventResponseStarted,
+		harnessgateway.EventResponseCompleted,
+	}
+	gatewayRecords := make([]productOperationalDiagnosticRecord, 0, len(wantTypes))
+	for _, record := range diagnostics.records {
+		if record.GatewayEventType != "" {
+			gatewayRecords = append(gatewayRecords, record)
+		}
+	}
+	if len(gatewayRecords) != len(wantTypes) {
+		t.Fatalf(
+			"production responder bypassed registered Gateway: diagnostics=%#v",
+			diagnostics.records,
+		)
+	}
+	wantBackend := "backend.segment." + string(wantHarness)
+	wantBackendVersion := productHarnessGatewayBackendVersion
+	if wantHarness == harnessgateway.HarnessCodex {
+		wantBackend = string(productCodexSegmentBackendID)
+	}
+	for index, record := range gatewayRecords {
+		if record.GatewayEventType != string(wantTypes[index]) ||
+			record.GatewayEventSchemaVersion != harnessgateway.EventSchemaVersion ||
+			record.GatewayConfiguredHarnessVersion != productHarnessGatewayConfiguredVersion ||
+			record.GatewayBackendVersion != wantBackendVersion ||
+			record.HarnessID != string(wantHarness) || record.BackendID != wantBackend ||
+			record.ThreadID != thread.ThreadID || record.SegmentID != thread.Segments[0].SegmentID ||
+			record.SessionID == "" || record.WorkspaceID == "" || record.WorkspaceDigest == "" ||
+			record.GatewayEventSequence != uint64(index+1) ||
+			!validProductOperationalDiagnosticRecord(record) {
+			t.Fatalf("Gateway diagnostic %d = %#v", index, record)
+		}
+	}
+	encoded, err := json.Marshal(gatewayRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{request.Content, wantContent, "account-private-key"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("Gateway diagnostics leaked content %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func productCOMP2CVerifiedDeepSeekProjection(
+	t *testing.T,
+	statePath string,
+) (*projection.Projection, *sql.DB, int64) {
+	t.Helper()
+	database, err := sql.Open("sqlite", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := state.NewLocalProductSetupWriter(journal.NewStore(database))
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 24, 11, 30, 0, 0, time.UTC)
+	configured, err := writer.CommitCredentialMetadata(
+		context.Background(), credentials.MetadataCommand{
+			CommandID: "configure-deepseek-composition-gateway", ProviderID: "deepseek",
+			ProviderAccountID:   "deepseek.primary",
+			CredentialReference: "credential-ref-deepseek-composition-gateway",
+			ExpectedRevision:    0, OccurredAt: now,
+			Status: credentials.CredentialConfigured,
+		},
+	)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	verified, err := writer.CommitCredentialMetadata(
+		context.Background(), credentials.MetadataCommand{
+			CommandID: "verify-deepseek-composition-gateway", ProviderID: "deepseek",
+			ProviderAccountID:   "deepseek.primary",
+			CredentialReference: configured.CredentialReference,
+			ExpectedRevision:    configured.Revision, OccurredAt: now.Add(time.Second),
+			Status: credentials.CredentialVerified,
+		},
+	)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	readModel := projection.New(database)
+	if err := readModel.Rebuild(context.Background()); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	return readModel, database, verified.Revision
+}
+
 func TestCOMP2CConversationOwnsSharedLocalModelForAgentRuntime(t *testing.T) {
 	shared := &productSharedLocalModelFixture{}
 	slot := &productConversationRouteSlot{}
@@ -223,6 +718,26 @@ func TestCOMP2CConversationOwnsSharedLocalModelForAgentRuntime(t *testing.T) {
 }
 
 type productSharedLocalModelFixture struct{ closed int }
+
+type productConversationCompositionDiagnosticFixture struct {
+	now     time.Time
+	records []productOperationalDiagnosticRecord
+}
+
+func (fixture *productConversationCompositionDiagnosticFixture) operationalNow() time.Time {
+	return fixture.now
+}
+
+func (*productConversationCompositionDiagnosticFixture) credentialRuntimeValue() string {
+	return productCredentialRuntimeExplicitLegacy
+}
+
+func (fixture *productConversationCompositionDiagnosticFixture) append(
+	record productOperationalDiagnosticRecord,
+) error {
+	fixture.records = append(fixture.records, record)
+	return nil
+}
 
 func (*productSharedLocalModelFixture) BaseURL(context.Context) (string, error) {
 	return "http://127.0.0.1:18427/v1", nil

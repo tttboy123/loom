@@ -307,6 +307,44 @@ func (service *LocalProductSetupAPI) ConfigureCredential(
 	return backend.ConfigureCredential(ctx, command)
 }
 
+func (service *LocalProductSetupAPI) ImportCredentialCandidate(
+	ctx context.Context,
+	command app.CredentialImportCommand,
+) (app.CredentialSetupResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.CredentialSetupResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ImportCredentialCandidate(
+			context.Context,
+			app.CredentialImportCommand,
+		) (app.CredentialSetupResult, error)
+	})
+	if !ok {
+		return app.CredentialSetupResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ImportCredentialCandidate(ctx, command)
+}
+
+func (service *LocalProductSetupAPI) ApproveEndpointCandidate(
+	ctx context.Context,
+	command app.EndpointReviewCommand,
+) (app.EndpointReviewResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.EndpointReviewResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ApproveEndpointCandidate(
+			context.Context,
+			app.EndpointReviewCommand,
+		) (app.EndpointReviewResult, error)
+	})
+	if !ok {
+		return app.EndpointReviewResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ApproveEndpointCandidate(ctx, command)
+}
+
 func (service *LocalProductSetupAPI) VerifyCredential(
 	ctx context.Context,
 	command app.CredentialSetupCommand,

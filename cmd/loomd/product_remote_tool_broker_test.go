@@ -22,6 +22,21 @@ func TestProductRemoteToolBrokerDefaultFailClosed(t *testing.T) {
 	}
 }
 
+func TestProductRemoteToolBrokerEnrollmentOnlyDoesNotExposeGlobalTools(t *testing.T) {
+	config, err := newProductDefaultRemoteToolBrokerConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.EnrollmentOnly = true
+	executor, effect, err := newProductRemoteToolBroker(context.Background(), config)
+	if err != nil {
+		t.Fatalf("enrollment-only broker: %v", err)
+	}
+	if executor != nil || effect != nil {
+		t.Fatalf("enrollment-only config exposed an unenrolled executor: %#v %#v", executor, effect)
+	}
+}
+
 // TestProductRemoteToolBrokerWebSearchLive proves the daemon's remote tool
 // executor really queries the internet (governed web search), with no Codex.
 func TestProductRemoteToolBrokerWebSearchLive(t *testing.T) {

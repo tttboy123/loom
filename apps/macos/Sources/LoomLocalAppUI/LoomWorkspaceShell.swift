@@ -4,31 +4,255 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ConversationComposerActionPresentation: Equatable {
+    let systemImage: String
+    let accessibilityLabel: String
+    let help: String
+    let isEnabled: Bool
+}
+
+func conversationComposerActionPresentation(
+    isSending: Bool,
+    isCancelling: Bool
+) -> ConversationComposerActionPresentation {
+    if isSending {
+        return ConversationComposerActionPresentation(
+            systemImage: "stop.fill",
+            accessibilityLabel: "Stop response",
+            help: "Stop response",
+            isEnabled: !isCancelling
+        )
+    }
+    return ConversationComposerActionPresentation(
+        systemImage: "arrow.up",
+        accessibilityLabel: "Send message",
+        help: "Send message",
+        isEnabled: true
+    )
+}
+
 func conversationProfileMenuLabel(
     _ profile: LocalProductConversationProfile
 ) -> String {
-    // The Provider layer must not carry a model; Model is a separate layer.
-    [profile.displayName, profile.providerAccountID]
-        .filter { !$0.isEmpty }
-        .joined(separator: " · ")
+    [
+        conversationHarnessDisplayName(profile.harnessAdapter),
+        conversationRouteOptionLabel(profile),
+    ]
+    .filter { !$0.isEmpty }
+    .joined(separator: " · ")
+}
+
+func conversationRouteOptionLabel(
+    _ profile: LocalProductConversationProfile
+) -> String {
+    if profile.harnessAdapter == "opencode",
+       profile.providerID == "opencode",
+       profile.providerAccountID.isEmpty {
+        return "Built-in"
+    }
+    var parts = [profile.displayName.isEmpty ? profile.providerID : profile.displayName]
+    if !profile.providerAccountID.isEmpty {
+        let account = providerAccountDisplayName(
+            profile.providerAccountID,
+            providerID: profile.providerID
+        )
+        if account != "Primary" {
+            parts.append(account)
+        }
+    }
+    return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+}
+
+struct ConversationRouteMenuGroup: Identifiable {
+    var id: String { harnessAdapter }
+    let harnessAdapter: String
+    let displayName: String
+    var profiles: [LocalProductConversationProfile]
+}
+
+func conversationRouteMenuGroups(
+    _ profiles: [LocalProductConversationProfile]
+) -> [ConversationRouteMenuGroup] {
+    var groups: [ConversationRouteMenuGroup] = []
+    var indexes: [String: Int] = [:]
+    for profile in profiles {
+        if let index = indexes[profile.harnessAdapter] {
+            groups[index].profiles.append(profile)
+            continue
+        }
+        indexes[profile.harnessAdapter] = groups.count
+        groups.append(ConversationRouteMenuGroup(
+            harnessAdapter: profile.harnessAdapter,
+            displayName: conversationHarnessDisplayName(profile.harnessAdapter),
+            profiles: [profile]
+        ))
+    }
+    return groups
+}
+
+private func conversationHarnessDisplayName(_ adapter: String) -> String {
+    switch adapter {
+    case "loom-native": return "Loom Native"
+    case "claude-code": return "Claude Code"
+    case "codex": return "Codex"
+    case "opencode": return "OpenCode"
+    case "pi", "pi-cli": return "Pi"
+    default: return adapter
+    }
+}
+
+func conversationTrustBoundaryDimensionLabel(
+    _ dimension: LocalProductConversationTrustBoundaryDimension
+) -> String {
+    switch dimension {
+    case .trustDomain: return "Trust domain"
+    case .retentionMode: return "Retention mode"
+    case .dataRegion: return "Data region"
+    }
+}
+
+func conversationRouteTransitionConfirmationEnabled(
+    _ transition: LocalProductConversationRouteTransition,
+    trustBoundaryAcknowledged: Bool
+) -> Bool {
+    transition.sourceExecutionBinding != nil &&
+        (transition.trustBoundaryChanges.isEmpty || trustBoundaryAcknowledged)
+}
+
+func conversationContextCapacityStatusLabel(
+    _ status: LocalProductContextCapacityStatus?
+) -> String {
+    switch status {
+    case .exact: return "Exact capacity"
+    case .estimated: return "Estimated capacity"
+    case .unavailable: return "Capacity unavailable"
+    case nil: return "Legacy policy budget"
+    }
+}
+
+struct ConversationContextCapacityDetails: View {
+    let disclosure: LocalProductConversationSegment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            metric("Shared context", "\(disclosure.disclosedContextCount) items")
+            metric("Omitted context", "\(disclosure.omittedContextCount) items")
+
+            if let status = disclosure.contextCapacityStatus {
+                Divider()
+                metric("Context capacity", conversationContextCapacityStatusLabel(status))
+                if status == .unavailable {
+                    metric("Model window", "Unavailable")
+                } else {
+                    metric("Model window", "\(disclosure.contextWindowTokens) tokens")
+                    metric("Reserved output", "\(disclosure.reservedOutputTokens) tokens")
+                    metric(
+                        "Adapter / tool overhead",
+                        "\(disclosure.adapterToolOverheadTokens) tokens"
+                    )
+                }
+                metric(
+                    "Admitted input budget",
+                    "\(disclosure.admittedInputBudgetTokens) of \(disclosure.contextTokenBudget) policy tokens"
+                )
+                metric("Shared input", "\(disclosure.contextTokenCount) tokens")
+                metric(
+                    "Budget omissions",
+                    "\(budgetOmittedItemCount) items · \(disclosure.budgetOmittedContributionTokens) tokens"
+                )
+                metric(
+                    "Token counter",
+                    "\(disclosure.contextTokenCounterID) · \(disclosure.contextTokenCounterVersion)"
+                )
+
+                if !disclosure.contextCapacityContributions.isEmpty {
+                    Text("Capacity contributions")
+                        .font(.caption.weight(.semibold))
+                        .padding(.top, 2)
+                    ForEach(disclosure.contextCapacityContributions) { contribution in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(
+                                "P\(contribution.priority) · \(capacitySourceLabel(contribution.sourceType))"
+                            )
+                            .font(.caption)
+                            Text(
+                                "\(contribution.admittedItemCount) admitted · \(contribution.admittedTokenCount) tokens · \(contribution.budgetOmittedItemCount) budget omitted"
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            } else if disclosure.contextTokenBudget > 0 {
+                metric(
+                    "Policy input budget",
+                    "\(disclosure.contextTokenCount) of \(disclosure.contextTokenBudget) tokens"
+                )
+                Text("Model capacity was not recorded for this Segment.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "Context capacity: \(conversationContextCapacityStatusLabel(disclosure.contextCapacityStatus))"
+        )
+    }
+
+    private var budgetOmittedItemCount: Int {
+        disclosure.contextCapacityContributions.reduce(0) {
+            $0 + $1.budgetOmittedItemCount
+        }
+    }
+
+    @ViewBuilder
+    private func metric(_ label: String, _ value: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(label).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(value).multilineTextAlignment(.trailing)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).foregroundStyle(.secondary)
+                Text(value)
+            }
+        }
+        .font(.caption2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func capacitySourceLabel(_ value: String) -> String {
+        value.split(separator: "_")
+            .map { $0.capitalized }
+            .joined(separator: " ")
+    }
 }
 
 struct ConversationRouteTransitionSheet: View {
     let transition: LocalProductConversationRouteTransition
-    let onConfirm: (LocalProductConversationContextMode) -> Bool
+    let onConfirm: (LocalProductConversationContextMode, Bool) -> Bool
     let onCancel: () -> Void
+    let onStartNewConversation: () -> Void
     @State private var contextMode: LocalProductConversationContextMode
+    @State private var trustBoundaryAcknowledged = false
     @State private var confirmationFailed = false
 
     init(
         transition: LocalProductConversationRouteTransition,
         initialContextMode: LocalProductConversationContextMode = .summaryOnly,
-        onConfirm: @escaping (LocalProductConversationContextMode) -> Bool,
-        onCancel: @escaping () -> Void
+        onConfirm: @escaping (LocalProductConversationContextMode, Bool) -> Bool,
+        onCancel: @escaping () -> Void,
+        onStartNewConversation: @escaping () -> Void = {}
     ) {
         self.transition = transition
         self.onConfirm = onConfirm
         self.onCancel = onCancel
+        self.onStartNewConversation = onStartNewConversation
         _contextMode = State(initialValue: initialContextMode)
     }
 
@@ -56,6 +280,7 @@ struct ConversationRouteTransitionSheet: View {
                             : "Current route",
                         profile: transition.source,
                         executionBinding: transition.sourceExecutionBinding,
+                        reasoningEffort: transition.sourceReasoningEffort,
                         showsFrozenPolicy: transition.rebindsCurrentRoute
                     )
 
@@ -71,8 +296,63 @@ struct ConversationRouteTransitionSheet: View {
                         label: transition.rebindsCurrentRoute
                             ? "Current account policy"
                             : "New route",
-                        profile: transition.target
+                        profile: transition.target,
+                        executionBinding: transition.targetExecutionBinding,
+                        reasoningEffort: transition.targetReasoningEffort,
+                        showsFrozenPolicy: true
                     )
+
+                    if transition.sourceExecutionBinding == nil {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(
+                                "Frozen source authority is unavailable. This legacy Segment cannot be safely rebound. Start a new conversation to use this route.",
+                                systemImage: "exclamationmark.shield"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(LoomGraphite.statusDanger)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            Button("Start new conversation", action: onStartNewConversation)
+                        }
+                    } else if !transition.trustBoundaryChanges.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(
+                                transition.trustBoundaryAuthorityUnavailable
+                                    ? "Trust authority unavailable"
+                                    : "Trust-boundary changes",
+                                systemImage: "shield.lefthalf.filled"
+                            )
+                                .font(.headline)
+
+                            if transition.trustBoundaryAuthorityUnavailable {
+                                Text("One or both routes lack complete v2 policy authority. Review all trust dimensions as unavailable or unknown.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            ForEach(transition.trustBoundaryChanges) { change in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(conversationTrustBoundaryDimensionLabel(change.dimension))
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(
+                                        "\(displayPolicy(change.sourceValue)) to \(displayPolicy(change.targetValue))"
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Toggle(
+                                "I acknowledge these trust-boundary changes",
+                                isOn: $trustBoundaryAcknowledged
+                            )
+                            .toggleStyle(.checkbox)
+                            .accessibilityHint(
+                                "Required before confirming this route change"
+                            )
+                        }
+                    }
 
                     Divider()
 
@@ -136,9 +416,16 @@ struct ConversationRouteTransitionSheet: View {
                         ? "Confirm new Segment"
                         : "Confirm route change"
                 ) {
-                    confirmationFailed = !onConfirm(contextMode)
+                    confirmationFailed = !onConfirm(
+                        contextMode,
+                        trustBoundaryAcknowledged
+                    )
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!conversationRouteTransitionConfirmationEnabled(
+                    transition,
+                    trustBoundaryAcknowledged: trustBoundaryAcknowledged
+                ))
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
@@ -149,6 +436,7 @@ struct ConversationRouteTransitionSheet: View {
         label: String,
         profile: LocalProductConversationProfile,
         executionBinding: LocalProductConversationExecutionBinding? = nil,
+        reasoningEffort: String = "",
         showsFrozenPolicy: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -157,7 +445,11 @@ struct ConversationRouteTransitionSheet: View {
                 .foregroundStyle(.secondary)
             Text(profile.displayName)
                 .font(.headline)
-            Text(bindingLabel(profile))
+            Text(bindingLabel(
+                profile,
+                executionBinding: executionBinding,
+                reasoningEffort: reasoningEffort
+            ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -210,14 +502,26 @@ struct ConversationRouteTransitionSheet: View {
         .accessibilityLabel("\(title). \(detail)")
     }
 
-    private func bindingLabel(_ profile: LocalProductConversationProfile) -> String {
-        let account = profile.providerAccountID.isEmpty
-            ? profile.providerID
-            : profile.providerAccountID
-        var parts = [harnessLabel(profile.harnessAdapter), account, profile.modelID]
+    private func bindingLabel(
+        _ profile: LocalProductConversationProfile,
+        executionBinding: LocalProductConversationExecutionBinding? = nil,
+        reasoningEffort: String = ""
+    ) -> String {
+        let providerID = executionBinding?.providerID ?? profile.providerID
+        let providerAccountID = executionBinding?.providerAccountID
+            ?? profile.providerAccountID
+        let account = providerAccountID.isEmpty ? providerID : providerAccountID
+        let modelID = executionBinding?.modelID ?? profile.modelID
+        let harness = executionBinding?.harnessAdapter ?? profile.harnessAdapter
+        let revision = executionBinding?.credentialRevision
+            ?? profile.credentialRevision
+        var parts = [harnessLabel(harness), account, modelID]
             .filter { !$0.isEmpty }
-        if profile.credentialRevision > 0 {
-            parts.append("Credential r\(profile.credentialRevision)")
+        if !reasoningEffort.isEmpty {
+            parts.append("Reasoning \(reasoningEffort)")
+        }
+        if revision > 0 {
+            parts.append("Credential r\(revision)")
         }
         return parts
             .filter { !$0.isEmpty }
@@ -241,7 +545,8 @@ struct ConversationRouteTransitionSheet: View {
     }
 
     private func displayPolicy(_ value: String) -> String {
-        value.split(separator: "_").map { $0.capitalized }.joined(separator: " ")
+        guard !value.isEmpty else { return "Not specified" }
+        return value.split(separator: "_").map { $0.capitalized }.joined(separator: " ")
     }
 
     private func harnessLabel(_ harnessAdapter: String) -> String {
@@ -281,7 +586,7 @@ public enum LoomWorkspaceNavigationItem: String, CaseIterable, Identifiable, Sen
     public var accessibilityLabel: String {
         switch self {
         case .home: return "Conversation"
-        case .work: return "Mission Board"
+        case .work: return "Missions"
         case .teams: return "Agent Teams"
         case .roundtable: return "Governed handoff roundtable"
         case .attention: return "Items needing attention"
@@ -418,7 +723,16 @@ public struct LoomWorkspaceShell: View {
                     store: store,
                     showProvidersInitially: presentation == .runtimeProviders,
                     showNewMissionInitially: presentation == .newMission,
-                    initialMissionObjective: pendingMissionObjective
+                    initialMissionTeamID: presentation == .newMission
+                      ? store.selectedTeamID
+                      : nil,
+                    initialMissionObjective: pendingMissionObjective,
+                    initialConversationThreadID: presentation == .newMission
+                      ? store.currentChatThreadID()
+                      : nil,
+                    initialConversationTitle: presentation == .newMission
+                      ? store.selectedChatSession?.title
+                      : nil
                 )
                     .frame(minWidth: 1_080, minHeight: 680)
             }
@@ -435,15 +749,21 @@ public struct LoomWorkspaceShell: View {
             ConversationRouteTransitionSheet(
                 transition: transition,
                 initialContextMode: .summaryOnly,
-                onConfirm: { mode in
+                onConfirm: { mode, trustBoundaryAcknowledged in
                     let confirmed = store.confirmConversationRouteTransition(
                         transition,
-                        contextMode: mode
+                        contextMode: mode,
+                        trustBoundaryAcknowledged: trustBoundaryAcknowledged
                     )
                     if confirmed { pendingConversationRouteTransition = nil }
                     return confirmed
                 },
-                onCancel: { pendingConversationRouteTransition = nil }
+                onCancel: { pendingConversationRouteTransition = nil },
+                onStartNewConversation: {
+                    pendingConversationRouteTransition = nil
+                    store.newConversation()
+                    store.selectConversationProfile(transition.target.profileID)
+                }
             )
                 .frame(minWidth: 560, minHeight: 520)
         }
@@ -539,7 +859,9 @@ public struct LoomWorkspaceShell: View {
                     railSectionTitle("AGENT TEAMS")
                     // Only runnable (non-archived) Teams belong in the rail;
                     // archived Teams remain visible in the Teams governance view.
-                    let teams = store.snapshot?.teams.filter(\.executable) ?? []
+                    let teams = currentTeamConfigurations(
+                        store.snapshot?.teams ?? []
+                    ).filter(\.executable)
                     if teams.isEmpty {
                         if !compact {
                             Text("No Agent Teams yet")
@@ -1042,75 +1364,14 @@ public struct LoomWorkspaceShell: View {
         }
     }
 
-    /// First-run quick start: show the current conversation Provider status and
-    /// the 3-step path so a new user knows what to do next without reading docs.
-    @ViewBuilder
-    private var quickStartGuide: some View {
-        let profile = store.selectedConversationProfile
-        let providerReady = profile != nil
-        let folderReady = store.workspace.selectedFolderDisplayName != nil
-        let teamReady = !(store.snapshot?.teams.isEmpty ?? true)
-
-        VStack(alignment: .leading, spacing: 10) {
-            if providerReady, let profile {
-                Label(
-                    "Chat is ready with \(conversationProfileMenuLabel(profile))",
-                    systemImage: "checkmark.circle.fill"
-                )
-                .foregroundStyle(LoomGraphite.statusSuccess)
-            } else {
-                Label(
-                    "Connect a Provider (Runtime & Providers) to start chatting",
-                    systemImage: "exclamationmark.triangle"
-                )
-                .foregroundStyle(LoomGraphite.statusWarning)
-            }
-            Label(
-                quickStartStepLabel(
-                    ready: folderReady,
-                    value: store.workspace.selectedFolderDisplayName ?? "",
-                    done: "Folder: %@",
-                    pending: "Open Folder so work has a home"
-                ),
-                systemImage: folderReady ? "checkmark.circle.fill" : "folder"
-            )
-            .foregroundStyle(folderReady ? LoomGraphite.statusSuccess : Color.secondary)
-            Label(
-                quickStartStepLabel(
-                    ready: teamReady,
-                    value: "",
-                    done: "Agent Team ready",
-                    pending: "Create an Agent Team when the work needs governed execution"
-                ),
-                systemImage: teamReady ? "checkmark.circle.fill" : "person.3"
-            )
-            .foregroundStyle(teamReady ? LoomGraphite.statusSuccess : Color.secondary)
-        }
-        .font(.callout)
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LoomGraphite.surface,
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Quick start: \(providerReady ? "chat ready" : "connect a provider"), \(folderReady ? "folder ready" : "open a folder"), \(teamReady ? "team ready" : "create a team when needed")")
-    }
-
     private var emptyConversation: some View {
-        let teamReady = !(store.snapshot?.teams.isEmpty ?? true)
         return VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "bubble.left.and.text.bubble.right")
                 .font(.system(size: 26, weight: .regular))
                 .foregroundStyle(LoomGraphite.accent)
                 .accessibilityHidden(true)
-            Text("What are we working on?")
+            Text("New conversation")
                 .font(.title2.weight(.semibold))
-            Text("Describe the outcome in your own words. Bring in an Agent Team only when the work needs governed execution.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            quickStartGuide
 
             if hasGovernanceActivity {
                 HStack(spacing: 14) {
@@ -1126,38 +1387,6 @@ public struct LoomWorkspaceShell: View {
                 .accessibilityLabel(
                     "\(activeMissionCount) active missions, \(activeAttentionCount) items need you"
                 )
-            }
-            HStack(spacing: 10) {
-                Button {
-                    showFolderImporter = true
-                } label: {
-                    Label("Open Folder...", systemImage: "folder")
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Open Folder")
-                .help("Open Folder")
-
-                // With a confirmed Team the primary action is to run a
-                // Mission; "Use Agent Team" would start another builder and
-                // dead-end the user who already has a Team.
-                Button {
-                    if teamReady {
-                        fullGovernancePresentation = .newMission
-                    } else {
-                        governance.open(.team)
-                        Task { await store.startBlankBuilder() }
-                    }
-                } label: {
-                    Label(
-                        teamReady ? "Start Mission" : "Use Agent Team",
-                        systemImage: teamReady
-                            ? "flag.checkered"
-                            : "person.3"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel(teamReady ? "Start Mission" : "Use Agent Team")
-                .help(teamReady ? "Start a governed Mission with your Team" : "Use Agent Team")
             }
         }
         .frame(maxWidth: 560, alignment: .leading)
@@ -1215,14 +1444,7 @@ public struct LoomWorkspaceShell: View {
                         }
                         if let disclosure = conversationDisclosureSummary(for: message) {
                             DisclosureGroup {
-                                LabeledContent(
-                                    "Shared context",
-                                    value: "\(disclosure.disclosedContextCount) items"
-                                )
-                                LabeledContent(
-                                    "Omitted context",
-                                    value: "\(disclosure.omittedContextCount) items"
-                                )
+                                ConversationContextCapacityDetails(disclosure: disclosure)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Disclosure receipt")
                                         .foregroundStyle(.secondary)
@@ -1230,6 +1452,57 @@ public struct LoomWorkspaceShell: View {
                                         .font(.system(.caption2, design: .monospaced))
                                         .textSelection(.enabled)
                                         .lineLimit(2)
+                                }
+                                Divider()
+                                let disclosureIdentity = store
+                                    .conversationContextDisclosureIdentity(for: disclosure)
+                                if let disclosureIdentity,
+                                   let inspection = store.conversationContextDisclosures[
+                                    disclosureIdentity
+                                   ] {
+                                    conversationContextInspection(inspection)
+                                } else {
+                                    if let disclosureIdentity,
+                                       store.conversationContextDisclosuresInFlight.contains(
+                                        disclosureIdentity
+                                       ) {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Inspecting context")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .accessibilityElement(children: .combine)
+                                    } else {
+                                        Button {
+                                            Task {
+                                                await store.loadConversationContextDisclosure(
+                                                    disclosure
+                                                )
+                                            }
+                                        } label: {
+                                            Label(
+                                                "Inspect context",
+                                                systemImage: "doc.text.magnifyingglass"
+                                            )
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .accessibilityHint(
+                                            "Shows disclosed categories and omission reasons without message content"
+                                        )
+                                    }
+                                    if let disclosureIdentity,
+                                       let failure = store
+                                        .conversationContextDisclosureFailures[
+                                            disclosureIdentity
+                                        ] {
+                                        Label(
+                                            "Context details unavailable · \(conversationPolicyLabel(failure))",
+                                            systemImage: "exclamationmark.triangle"
+                                        )
+                                        .font(.caption)
+                                        .foregroundStyle(LoomGraphite.statusDanger)
+                                    }
                                 }
                                 if let binding = disclosure.executionBinding {
                                     Divider()
@@ -1262,7 +1535,7 @@ public struct LoomWorkspaceShell: View {
                                 }
                             } label: {
                                 Label(
-                                    "Context shared \(disclosure.disclosedContextCount) · \(disclosure.omittedContextCount) omitted",
+                                    conversationContextMeterLabel(disclosure),
                                     systemImage: "doc.text.magnifyingglass"
                                 )
                             }
@@ -1348,7 +1621,14 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let action = conversationComposerActionPresentation(
+            isSending: store.isSendingChatMessage,
+            isCancelling: store.isCancellingChatResponse
+        )
+        let actionEnabled = store.isSendingChatMessage
+            ? action.isEnabled
+            : sendButtonEnabled
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
                     showFolderImporter = true
@@ -1443,23 +1723,27 @@ public struct LoomWorkspaceShell: View {
                 }
 
                 Button {
-                    sendConversationDraft()
+                    if store.isSendingChatMessage {
+                        Task { await store.cancelActiveChatResponse() }
+                    } else {
+                        sendConversationDraft()
+                    }
                 } label: {
-                    Image(systemName: "arrow.up")
+                    Image(systemName: action.systemImage)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(LoomGraphite.onAccent)
                         .frame(width: 40, height: 40)
                         .background(
-                            sendButtonEnabled
+                            actionEnabled
                                 ? LoomGraphite.accent
                                 : LoomGraphite.accent.opacity(0.35),
                             in: Circle()
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(!sendButtonEnabled)
-                .accessibilityLabel("Send message")
-                .help("Send message")
+                .disabled(!actionEnabled)
+                .accessibilityLabel(action.accessibilityLabel)
+                .help(action.help)
             }
 
             if let failure = store.chatOperationFailure {
@@ -1477,56 +1761,50 @@ public struct LoomWorkspaceShell: View {
             store.requestConversationProfileSelection(profileID)
     }
 
-    private func uniqueConversationProviders()
-        -> [LocalProductConversationProfile]
-    {
-        var seen = Set<String>()
-        return store.availableConversationProfiles.filter {
-            seen.insert($0.providerID).inserted
-        }
-    }
-
     @ViewBuilder
     private var conversationSelectionControls: some View {
         let selectedProfile = store.selectedConversationProfile
         let providerID = selectedProfile?.providerID ?? ""
-        let models = localProductConversationModels(providerID: providerID)
+        let models = store.conversationModels(profile: selectedProfile)
         let effectiveModelID = store.effectiveConversationModelID
         let effectiveReasoning = store.effectiveConversationReasoningEffort
-        let reasoningEfforts = localProductConversationReasoningEfforts(
-            providerID: providerID,
-            modelID: effectiveModelID
-        )
+        let reasoningEfforts = models.first {
+            $0.modelID == effectiveModelID
+        }?.reasoningEfforts ?? []
 
         Menu {
-            ForEach(uniqueConversationProviders()) { profile in
-                Button {
-                    requestConversationProfileSelection(profile.profileID)
-                } label: {
-                    Label(
-                        conversationProfileMenuLabel(profile),
-                        systemImage: profile.profileID == store.selectedConversationProfileID
-                            ? "checkmark"
-                            : "circle"
-                    )
+            ForEach(conversationRouteMenuGroups(store.availableConversationProfiles)) { group in
+                Section(group.displayName) {
+                    ForEach(group.profiles) { profile in
+                        Button {
+                            requestConversationProfileSelection(profile.profileID)
+                        } label: {
+                            Label(
+                                conversationRouteOptionLabel(profile),
+                                systemImage: profile.profileID == store.selectedConversationProfileID
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+                    }
                 }
             }
         } label: {
             Label(
-                selectedProfile.map(conversationProfileMenuLabel) ?? "Provider",
-                systemImage: "globe"
+                selectedProfile.map(conversationProfileMenuLabel) ?? "Route",
+                systemImage: "point.3.connected.trianglepath.dotted"
             )
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .accessibilityLabel("Choose Provider")
-        .help("Provider depends on the configured account")
+        .accessibilityLabel("Choose conversation route")
+        .help("Choose an execution Route: Harness and Provider Account")
 
         if !models.isEmpty {
             Menu {
                 ForEach(models) { model in
                     let available = store.isConversationModelAvailable(
-                        providerID: providerID,
+                        profile: selectedProfile,
                         modelID: model.modelID
                     )
                     Button {
@@ -1555,7 +1833,7 @@ public struct LoomWorkspaceShell: View {
                 }
                 if models.contains(where: { model in
                     !store.isConversationModelAvailable(
-                        providerID: providerID,
+                        profile: selectedProfile,
                         modelID: model.modelID
                     )
                 }) {
@@ -1569,7 +1847,7 @@ public struct LoomWorkspaceShell: View {
             } label: {
                 Label(
                     conversationModelDisplayName(
-                        providerID: providerID,
+                        profile: selectedProfile,
                         modelID: effectiveModelID
                     ),
                     systemImage: "cpu"
@@ -1622,10 +1900,10 @@ public struct LoomWorkspaceShell: View {
     }
 
     private func conversationModelDisplayName(
-        providerID: String,
+        profile: LocalProductConversationProfile?,
         modelID: String
     ) -> String {
-        if let model = localProductConversationModels(providerID: providerID)
+        if let model = store.conversationModels(profile: profile)
             .first(where: { $0.modelID == modelID })
         {
             return model.displayName
@@ -1785,6 +2063,87 @@ public struct LoomWorkspaceShell: View {
             return nil
         }
         return segment
+    }
+
+    private func conversationContextMeterLabel(
+        _ disclosure: LocalProductConversationSegment
+    ) -> String {
+        guard let capacityStatus = disclosure.contextCapacityStatus else {
+            guard disclosure.contextTokenBudget > 0 else {
+                return "Context shared \(disclosure.disclosedContextCount) · \(disclosure.omittedContextCount) omitted"
+            }
+            return "Policy context \(disclosure.contextTokenCount) / \(disclosure.contextTokenBudget) tokens · \(disclosure.omittedContextCount) omitted"
+        }
+        guard capacityStatus != .unavailable else {
+            return "Capacity unavailable · policy budget \(disclosure.contextTokenBudget) tokens · \(disclosure.omittedContextCount) omitted"
+        }
+        guard disclosure.admittedInputBudgetTokens > 0 else {
+            return "Context shared \(disclosure.disclosedContextCount) · \(disclosure.omittedContextCount) omitted"
+        }
+        return "\(conversationContextCapacityStatusLabel(capacityStatus)) \(disclosure.contextTokenCount) / \(disclosure.admittedInputBudgetTokens) input tokens · \(disclosure.omittedContextCount) omitted"
+    }
+
+    @ViewBuilder
+    private func conversationContextInspection(
+        _ disclosure: LocalProductContextDisclosure
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Shared categories")
+                .font(.caption.weight(.semibold))
+            ForEach(Array(disclosure.disclosed.enumerated()), id: \.offset) {
+                _, disclosureItem in
+                conversationContextInspectionRow(disclosureItem)
+            }
+            if !disclosure.omitted.isEmpty {
+                Text("Omissions")
+                    .font(.caption.weight(.semibold))
+                    .padding(.top, 2)
+                ForEach(Array(disclosure.omitted.enumerated()), id: \.offset) {
+                    _, disclosureItem in
+                    conversationContextInspectionRow(disclosureItem)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "Context disclosure: \(disclosure.disclosed.count) shared, \(disclosure.omitted.count) omitted"
+        )
+    }
+
+    private func conversationContextInspectionRow(
+        _ disclosureItem: LocalProductContextDisclosureItem
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(
+                conversationPolicyLabel(disclosureItem.kind),
+                systemImage: disclosureItem.omissionReason.isEmpty
+                    ? "checkmark.circle" : "minus.circle"
+            )
+            .font(.caption)
+            Text(
+                conversationContextInspectionDetail(disclosureItem)
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func conversationContextInspectionDetail(
+        _ disclosureItem: LocalProductContextDisclosureItem
+    ) -> String {
+        var details = [
+            conversationPolicyLabel(disclosureItem.trust),
+            conversationPolicyLabel(disclosureItem.scope),
+            "\(disclosureItem.tokenCount) estimated tokens",
+        ]
+        if !disclosureItem.omissionReason.isEmpty {
+            details.append(conversationPolicyLabel(disclosureItem.omissionReason))
+            details.append(
+                disclosureItem.retrievable ? "Agent can retrieve by scope" : "Not retrievable"
+            )
+        }
+        return details.joined(separator: " · ")
     }
 
     private func conversationPolicyLabel(_ value: String) -> String {
@@ -2020,14 +2379,39 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var boardPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if (store.snapshot?.missions ?? []).isEmpty {
-                emptyPanelState("No missions yet", symbol: "square.3.layers.3d")
+        let linkedMissionIDs = store.missionIDsLinkedToConversation(
+            store.currentChatThreadID()
+        )
+        let linkedMissionIDSet = Set(linkedMissionIDs)
+        let linkedMissions = (store.snapshot?.missions ?? []).filter {
+            linkedMissionIDSet.contains($0.missionID)
+        }.sorted {
+            let lhs = linkedMissionIDs.firstIndex(of: $0.missionID) ?? .max
+            let rhs = linkedMissionIDs.firstIndex(of: $1.missionID) ?? .max
+            return lhs < rhs
+        }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("This conversation")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(linkedMissions.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if linkedMissions.isEmpty {
+                emptyPanelState(
+                    "No Missions linked to this conversation",
+                    symbol: "bubble.left.and.exclamationmark.bubble.right"
+                )
             } else {
-                ForEach((store.snapshot?.missions ?? []).prefix(8)) { mission in
+                ForEach(linkedMissions.prefix(8)) { mission in
                     Button {
-                        store.openMission(mission.missionID)
-                        fullGovernancePresentation = .workbench
+                        Task {
+                            if await store.openMissionAndActivate(mission.missionID) {
+                                fullGovernancePresentation = .workbench
+                            }
+                        }
                     } label: {
                         inspectorRow(
                             title: mission.title,
@@ -2041,6 +2425,9 @@ public struct LoomWorkspaceShell: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .loomActionTarget()
+                    .accessibilityLabel("Open Mission \(mission.title)")
+                    .help("Open the current Mission timeline")
                 }
             }
             Divider()
@@ -2048,10 +2435,11 @@ public struct LoomWorkspaceShell: View {
                 store.showMissionBoard()
                 fullGovernancePresentation = .workbench
             } label: {
-                Label("Open full Mission Board", systemImage: "arrow.up.left.and.arrow.down.right")
+                Label("All Missions", systemImage: "list.bullet")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.bordered)
+            .loomActionTarget()
         }
     }
 
@@ -2066,6 +2454,30 @@ public struct LoomWorkspaceShell: View {
 
     private var confirmedTeamsPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let confirmation = store.lastConfirmation,
+               confirmation.teamInstanceCreated {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Agent Team ready", systemImage: "checkmark.seal.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.green)
+                    Text("The Team is available for a Mission. Start from here without losing the work you just described.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        pendingMissionObjective = ""
+                        fullGovernancePresentation = .newMission
+                    } label: {
+                        Label("Start Mission with this Team", systemImage: "flag.checkered")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .loomActionTarget()
+                }
+                .padding(12)
+                .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.bottom, 12)
+            }
             if let recoveryMessage = store.builderRecoveryMessage {
                 Label(recoveryMessage, systemImage: "arrow.clockwise")
                     .font(.caption)
@@ -2074,19 +2486,63 @@ public struct LoomWorkspaceShell: View {
                     .padding(.bottom, 12)
                     .accessibilityLabel("Agent Team draft expired. \(recoveryMessage)")
             }
-            if (store.snapshot?.teams ?? []).isEmpty {
+            let teams = currentTeamConfigurations(store.snapshot?.teams ?? [])
+            if teams.isEmpty {
                 emptyPanelState("No Agent Teams yet", symbol: "person.3")
             } else {
-                ForEach(store.snapshot?.teams ?? []) { team in
-                    inspectorRow(
-                        title: LocalProductExperience.visibleName(
-                            team.displayName,
-                            internalID: team.teamInstanceID,
-                            fallback: "Agent Team"
-                        ),
-                        detail: humanized(team.state),
-                        symbol: "person.3"
-                    )
+                ForEach(teams) { team in
+                    HStack(spacing: 10) {
+                        Button {
+                            openTeamGovernance(team)
+                        } label: {
+                            inspectorRow(
+                                title: LocalProductExperience.visibleName(
+                                    team.displayName,
+                                    internalID: team.teamInstanceID,
+                                    fallback: "Agent Team"
+                                ),
+                                detail: teamInspectorDetail(team),
+                                symbol: "person.3"
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .loomActionTarget()
+                        .accessibilityLabel(
+                            "Open Agent Team \(team.displayName) governance"
+                        )
+                        .help("Open Team governance")
+
+                        if team.confirmed && team.executable && !team.readOnly {
+                            Button {
+                                if teamMission(for: team) == nil {
+                                    startMission(for: team)
+                                } else {
+                                    openTeamGovernance(team)
+                                }
+                            } label: {
+                                Label(
+                                    teamMission(for: team) == nil
+                                        ? "Start Mission" : "Open Mission",
+                                    systemImage: teamMission(for: team) == nil
+                                        ? "flag.checkered" : "arrow.up.right.square"
+                                )
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .loomActionTarget()
+                            .accessibilityLabel(
+                                teamMission(for: team) == nil
+                                    ? "Start Mission with \(team.displayName)"
+                                    : "Open the existing Mission for \(team.displayName)"
+                            )
+                            .help(
+                                teamMission(for: team) == nil
+                                    ? "Start a governed Mission with this Team"
+                                    : "Review the existing Mission before starting another"
+                            )
+                        }
+                    }
                 }
             }
             Button {
@@ -2097,6 +2553,37 @@ public struct LoomWorkspaceShell: View {
             }
             .buttonStyle(.bordered)
             .padding(.top, 14)
+            .loomActionTarget()
+        }
+    }
+
+    private func openTeamGovernance(_ team: LocalProductTeamSummary) {
+        store.selectTeam(team)
+        store.showMissionTeams()
+        fullGovernancePresentation = .workbench
+    }
+
+    private func startMission(for team: LocalProductTeamSummary) {
+        store.selectTeam(team)
+        pendingMissionObjective = ""
+        fullGovernancePresentation = .newMission
+    }
+
+    private func teamInspectorDetail(_ team: LocalProductTeamSummary) -> String {
+        let state = humanized(team.state)
+        if team.readOnly { return "Read-only · \(state)" }
+        if let mission = teamMission(for: team) {
+            return "Mission · \(humanized(mission.status)) · \(state)"
+        }
+        if team.confirmed && team.executable { return "Ready for a Mission · \(state)" }
+        return state
+    }
+
+    private func teamMission(
+        for team: LocalProductTeamSummary
+    ) -> LocalProductMissionSummary? {
+        store.snapshot?.missions.first {
+            $0.teamInstanceID == team.teamInstanceID
         }
     }
 
@@ -2222,6 +2709,8 @@ public struct LoomWorkspaceShell: View {
             }
             .font(.caption)
 
+            runtimeAvailabilityPanel
+
 			ForEach(session.preview.roles) { role in
 				builderRoleEditor(role, session: session)
 			}
@@ -2255,6 +2744,75 @@ public struct LoomWorkspaceShell: View {
                     .accessibilityLabel("Updating Agent Team draft")
             }
 
+        }
+    }
+
+    private var runtimeAvailabilityPanel: some View {
+        let runtimes = store.setupSnapshot?.runtimes ?? []
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Available Harnesses", systemImage: "cpu")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("Choose per Agent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if runtimes.isEmpty {
+                Label(
+                    "No Harness runtime has been detected yet. Refresh Runtime & Providers before confirming this Team.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(LoomGraphite.statusWarning)
+                .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(runtimes) { runtime in
+                    let ready = ["online", "ready", "running", "available"].contains(runtime.status)
+                    HStack(spacing: 8) {
+                        Image(systemName: ready ? "checkmark.circle.fill" : "circle.slash")
+                            .foregroundStyle(ready ? Color.green : LoomGraphite.statusWarning)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(LocalProductExperience.visibleName(
+                                runtime.displayName,
+                                internalID: runtime.runtimeInstanceID,
+                                fallback: runtime.adapterType
+                            ))
+                            .font(.caption.weight(.semibold))
+                            Text(
+                                runtimeAvailabilityDetail(
+                                    modelCount: runtime.modelIDs.count,
+                                    status: runtime.status,
+                                    ready: ready
+                                )
+                            )
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(builderHarnessLabel(runtime.adapterType))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        runtimeAvailabilityAccessibilityLabel(
+                            displayName: runtime.displayName,
+                            ready: ready
+                        )
+                    )
+                }
+            }
+            Text("OpenCode is supported as a native Harness when its executable is detected. It uses native authentication and is separate from OpenAI/Codex credentials.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(LoomGraphite.canvas, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(LoomGraphite.separator, lineWidth: 1)
         }
     }
 
@@ -2820,10 +3378,11 @@ public struct LoomWorkspaceShell: View {
 	private func builderRoleChoiceLabel(
 		_ choice: LocalProductRoleOptionChoice
 	) -> String {
+		let harness = builderHarnessLabel(choice.harness)
 		let account = choice.providerAccount.isEmpty
 			? choice.provider
 			: choice.providerAccount
-		return [choice.responsibility, account, choice.model]
+		return [choice.responsibility, harness, account, choice.model]
 			.filter { !$0.isEmpty }
 			.joined(separator: " · ")
 	}
@@ -2851,12 +3410,24 @@ public struct LoomWorkspaceShell: View {
 	private func builderProviderAccountChoiceLabel(
 		_ choice: LocalProductRoleOptionChoice
 	) -> String {
+		let harness = builderHarnessLabel(choice.harness)
 		let account = choice.providerAccount.isEmpty
 			? choice.provider
 			: "\(choice.provider) / \(choice.providerAccount)"
-		return [account, choice.credential, choice.model]
+		return [harness, account, choice.credential, choice.model]
 			.filter { !$0.isEmpty }
 			.joined(separator: " · ")
+	}
+
+	private func builderHarnessLabel(_ value: String) -> String {
+		switch value.lowercased() {
+		case "codex": return "Codex"
+		case "claude-code", "claude code": return "Claude Code"
+		case "loom-native", "loom native": return "Loom Native"
+		case "opencode", "open code": return "OpenCode"
+		case "pi": return "Pi"
+		default: return value
+		}
 	}
 
 	private func uniqueBuilderRouteChoices(
@@ -3221,10 +3792,11 @@ public struct LoomWorkspaceShell: View {
     }
 
     private var sendButtonEnabled: Bool {
-        !store.isSendingChatMessage
-            && !store.workspace.selectedContinuity.composerDraft
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty
+        LocalProductStore.canSubmitChatMessage(
+            content: store.workspace.selectedContinuity.composerDraft,
+            isSending: store.isSendingChatMessage,
+            profileID: store.selectedConversationProfileID
+        )
     }
 
     private var stripBackground: Color {
@@ -3283,7 +3855,7 @@ public struct LoomWorkspaceShell: View {
                 url.stopAccessingSecurityScopedResource()
             }
         }
-        store.selectWorkspaceFolderDisplayName(url.lastPathComponent)
+        store.selectWorkspaceFolder(url)
     }
 }
 
@@ -3295,7 +3867,7 @@ public struct LoomWorkspaceShell: View {
 func missionBoardDetailText(lane: String, status: String) -> String {
     let humanizedStatus = status.isEmpty
         ? ""
-        : status.prefix(1).uppercased() + status.dropFirst()
+        : missionHumanStatus(status)
     if lane == "Complete" {
         return humanizedStatus.isEmpty ? "Complete" : humanizedStatus
     }
@@ -3306,6 +3878,29 @@ func missionBoardDetailText(lane: String, status: String) -> String {
         return lane
     }
     return "\(lane) · \(humanizedStatus)"
+}
+
+func runtimeAvailabilityDetail(
+    modelCount: Int,
+    status: String,
+    ready: Bool
+) -> String {
+    let count = max(modelCount, 0)
+    let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines)
+    if ready {
+        return "\(count) model\(count == 1 ? "" : "s") · \(normalizedStatus)"
+    }
+    return normalizedStatus.isEmpty
+        ? "Unavailable · reopen Loom after fixing the executable"
+        : "\(normalizedStatus) · reopen Loom after fixing the executable"
+}
+
+func runtimeAvailabilityAccessibilityLabel(
+    displayName: String,
+    ready: Bool
+) -> String {
+    let safeName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return "\(safeName.isEmpty ? "Harness" : safeName), \(ready ? "available" : "unavailable")"
 }
 
 /// Builds a copyable transcript of a conversation: one "Speaker: content" line

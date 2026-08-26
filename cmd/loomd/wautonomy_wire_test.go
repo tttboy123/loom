@@ -65,9 +65,7 @@ func TestWAutonomyHandlerWiredThroughComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, standingOrderAPI,
-	)
+	handler := newProductRouteHandler(productRouteServices{standingOrder: standingOrderAPI})
 	journey := "88888888-8888-4888-8888-888888888888"
 
 	define := func(action string, input any) localipc.Response {

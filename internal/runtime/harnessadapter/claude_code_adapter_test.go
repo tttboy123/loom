@@ -166,6 +166,7 @@ func TestClaudeCodeAdapterConsumesOnlyItsFrozenAnthropicAccount(t *testing.T) {
 		runner.request.HomePath != request.HomePath ||
 		runner.request.TempPath != request.TempPath ||
 		runner.request.ModelID != ClaudeCodeModelID ||
+		!runner.request.RequiresCredential ||
 		!bytes.Equal(runner.request.Prompt, []byte("Implement the bounded change")) ||
 		!strings.Contains(runner.request.SystemPrompt, "provider=anthropic") ||
 		!strings.Contains(runner.request.SystemPrompt, "model="+ClaudeCodeModelID) ||

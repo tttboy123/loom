@@ -354,6 +354,28 @@ func TestContextCapsuleStoreMarksLegacyDispatchOnlyRecords(t *testing.T) {
 	clearBytes(stored.DispatchPayload)
 }
 
+func TestContextCapsuleStoreMapsMissingCapsuleToBoundedRetrievalResult(t *testing.T) {
+	store, _, _ := newContextCapsuleStoreFixture(t)
+	defer store.Close()
+	capsule, _ := testStoredContextCapsule(
+		t, "mission:mission/team-instance-missing", "authoritative goal",
+	)
+	disclosed := capsule.Disclosed()[0]
+	_, err := store.RetrieveContextItem(
+		context.Background(),
+		contextcapsule.RetrievalRequest{
+			Authority: capsule.AuthorityRecord(), ItemID: disclosed.ItemID,
+			ContentDigest:    disclosed.ContentDigest,
+			RequesterAgentID: capsule.Target().AgentID,
+			RequesterRoleID:  capsule.Target().RoleID,
+		},
+	)
+	if !errors.Is(err, contextcapsule.ErrContextItemNotRetrievable) ||
+		!errors.Is(err, ErrContextCapsuleNotFound) {
+		t.Fatalf("missing Capsule retrieval error = %v", err)
+	}
+}
+
 func TestContextCapsuleStoreUpgradesMatchingLegacyRecordAtomically(t *testing.T) {
 	store, _, _ := newContextCapsuleStoreFixture(t)
 	defer store.Close()

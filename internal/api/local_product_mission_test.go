@@ -143,6 +143,27 @@ func TestLocalProductMissionBlockReasonSurfacesTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestMissionStatusKeepsRecoveryVisibleInsteadOfFlashingFailed(t *testing.T) {
+	retryAt := time.Now().Add(time.Minute)
+	execution := projection.TeamExecution{
+		TeamInstanceID: "team-recovery-visible",
+		Status:         "failed",
+		Nodes: []projection.TeamExecutionNode{{
+			LogicalNodeID: "main", Status: "awaiting_recovery",
+			CurrentAttempt: 1, RetryAt: retryAt,
+		}},
+	}
+	if got := missionStatus(execution); got != "awaiting_recovery" {
+		t.Fatalf("mission status = %q, want awaiting_recovery", got)
+	}
+	if got := reconciledMissionStatus(projection.GlobalReadView{}, execution); got != "awaiting_recovery" {
+		t.Fatalf("reconciled mission status = %q, want awaiting_recovery", got)
+	}
+	if got := missionPulseState("awaiting_recovery"); got != "working" {
+		t.Fatalf("recovery pulse = %q, want working", got)
+	}
+}
+
 func TestMissionLifecycleNeverCreatesAttentionLanes(t *testing.T) {
 	for status, want := range map[string]MissionLane{
 		"planned":             MissionLaneProposed,

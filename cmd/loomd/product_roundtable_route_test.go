@@ -230,6 +230,46 @@ func TestProductRoundtableRouteFullLifecycle(t *testing.T) {
 	}
 }
 
+func TestProductRoundtableRouteRejoinsRetiredSeatBeforeRound(t *testing.T) {
+	fixture := newProductRoundtableRouteFixture(t)
+	const sessionID = "session-route-rejoin"
+	const seatID = "agent-reviewer"
+
+	fixture.decodeView(t, fixture.call(t, "roundtable_session_create", productRoundtableSessionCreateParams{
+		SchemaVersion: 1, SessionID: sessionID, ModeratorSeat: "seat-moderator",
+		Title: "Rejoin Agent", CorrelationID: roundtableRouteCorrelation,
+	}))
+	add := productRoundtableAddSeatParams{
+		SchemaVersion: 1, SessionID: sessionID, SeatID: seatID,
+		DisplayName: "Reviewer", CorrelationID: roundtableRouteCorrelation,
+	}
+	fixture.decodeView(t, fixture.call(t, "roundtable_add_seat", add))
+	retired := fixture.decodeView(t, fixture.call(t, "roundtable_retire_seat", productRoundtableRetireSeatParams{
+		SchemaVersion: 1, SessionID: sessionID, SeatID: seatID,
+		ModeratorSeat: "seat-moderator", CorrelationID: roundtableRouteCorrelation,
+	}))
+	if retired.Seats[seatID].Available {
+		t.Fatalf("retired seat remained active: %#v", retired.Seats[seatID])
+	}
+	rejoined := fixture.decodeView(t, fixture.call(t, "roundtable_add_seat", add))
+	if !rejoined.Seats[seatID].Available || len(rejoined.Rounds) != 0 {
+		t.Fatalf("rejoined view = %#v", rejoined)
+	}
+	// Add is shared by the workbench button and drop destination. A retry must
+	// return the same authoritative view without appending another fact.
+	retried := fixture.decodeView(t, fixture.call(t, "roundtable_add_seat", add))
+	if retried.Digest != rejoined.Digest {
+		t.Fatalf("retry digest = %q, want %q", retried.Digest, rejoined.Digest)
+	}
+	events, err := fixture.journal.ReadStream(context.Background(), "roundtable/session/"+sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 || events[3].Type != roundtable.FactSeatRejoined {
+		t.Fatalf("route facts = %#v", events)
+	}
+}
+
 func TestProductRoundtableRouteNilServiceIsStateUnavailable(t *testing.T) {
 	handler := newProductRouteHandler(productRouteServices{})
 	params, err := json.Marshal(productRoundtableSnapshotParams{

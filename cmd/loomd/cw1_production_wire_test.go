@@ -66,9 +66,7 @@ func TestCw1ProductionHandlerWiredThroughComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := localProductHandlerWithComposition(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, productionAPI, nil, nil,
-	)
+	handler := newProductRouteHandler(productRouteServices{production: productionAPI})
 	journey := "77777777-7777-4777-8777-777777777777"
 	response := handler(context.Background(), localipc.Request{
 		Version: 1, RequestID: "req-prod-1", JourneyID: journey,

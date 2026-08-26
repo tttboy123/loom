@@ -1,8 +1,8 @@
 # G6 — Accounting and governance UI (installed-live)
 
-Status: `PASS` (installed-live, real paid calls)
+Status: `SOURCE COMPLETE / PARTIAL INSTALLED LIVE MATRIX`
 
-Date: 2026-08-16
+Date: 2026-08-23
 
 ## What was executed
 
@@ -39,6 +39,56 @@ The MiniMax account completed one real attempt with exact token usage
 (input/output/cache) and a `rate_card_estimate` USD cost; the policy revision
 and concurrency/budget ceilings are projected into the board; failed attempts
 explicitly carry zero accounting coverage (accounting-incomplete state).
+
+Build 111 completes the account-row presentation contract: input, output,
+non-zero cache read/write and total Tokens are distinct; zero cache fields are
+omitted; usage coverage remains explicit. The same row renders exact error
+rate and rate-limited count, accounting coverage, cost source, policy revision,
+concurrency, dispatch and budget ceilings, and incomplete accounting. Focused
+view tests and the full macOS suite pass.
+
+Installed visual review confirms the Mission list opens one workflow, the Team
+inspector remains separate, every Mission rail destination has a distinct
+VoiceOver label, and the Team workspace shows only the latest same-source
+visible configuration while preserving older executions in Mission history.
+The four-Provider visual and an approved fallback accounting event remain open
+because the installed directory currently has only DeepSeek and MiniMax
+verified broker accounts plus OpenCode native execution.
+
+Build 112 now projects explicit fallback consumption and Attempt 2 scheduling.
+The fallback did not complete because the available Provider returned
+`provider_http`, so a successful fallback cost/token row remains open rather
+than being synthesized from the recovery event.
+
+Build 113 repeated that installed lineage after the result-commit hardening:
+Attempt 1 terminalized, approval version 1 was consumed and Attempt 2 was
+account-local. MiniMax again ended at `provider_http`, so no successful token or
+cost row is inferred. Native visual review of the new Context inspector could
+not run while macOS was locked and remains explicitly open.
+
+Build 115 completes a fresh installed 4-Agent / 2-Provider Team after the
+COMP2-E route-module migration. All four nodes succeeded. DeepSeek carried two
+accounted attempts, 8,208 total tokens, two usage rows and two cost rows;
+MiniMax independently carried two accounted attempts, 5,480 total tokens, two
+usage rows and two cost rows. Both account rows reported zero failed and
+rate-limited attempts. A brokered OpenCode + DeepSeek Team and a native-auth
+OpenCode Team also completed successfully. The four-distinct-Provider matrix
+remains open.
+
+Build 117 closes the native Mission/Team visual gate. A slash-qualified
+`opencode/big-pickle` binding now passes the same strict model-ID contract as
+setup and execution. Installed Mission Team Pulse renders both native OpenCode
+Agents with status, Attempt, route, limits, Context and Incident. Teams renders
+current configuration rows for OpenCode, DeepSeek and MiniMax without
+collapsing historical execution into the configuration directory.
+
+Build 117 also closes the approved fallback accounting event. During a real
+installed MCP call, the OpenCode source Attempt failed after exact Enrollment
+revocation. The approved Loom Native + DeepSeek Attempt 2 succeeded with 2,792
+total tokens and a `rate_card_estimate` cost row; the unaffected Loom Native
+peer independently succeeded with 3,359 tokens and its own accounting row. The
+Team terminal state was `succeeded`. Only the four-distinct-Provider visual and
+account matrix remain open.
 
 ## Fixes that unblocked this gate (V34)
 
