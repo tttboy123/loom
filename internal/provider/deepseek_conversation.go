@@ -544,6 +544,20 @@ func classifyConversationHTTPFailure(
 	}
 }
 
+// ClassifyOpenAICompatibleHTTPFailure exposes the same privacy-safe HTTP
+// classification used by conversation dispatch to Agent adapters. The body is
+// inspected only for a bounded provider code; messages and response content are
+// never returned.
+func ClassifyOpenAICompatibleHTTPFailure(
+	status int,
+	header http.Header,
+	body []byte,
+) ConversationFailureInfo {
+	err := classifyConversationHTTPFailure(status, header, body)
+	info, _ := ConversationFailureDetails(err)
+	return info
+}
+
 func conversationProviderErrorCode(body []byte) string {
 	var envelope struct {
 		Error struct {

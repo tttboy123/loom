@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,101 @@ import (
 	"testing"
 	"time"
 )
+
+func TestOpenAICompatibleConversationRunsBoundedControlToolLoop(t *testing.T) {
+	calls := 0
+	doer := deepSeekConversationDoerFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		payload := string(body)
+		if !strings.Contains(payload, `"name":"loom_missions_create_preview"`) ||
+			!strings.Contains(payload, "Frozen Loom conversation control tools") ||
+			strings.Contains(payload, "private-test-key") {
+			t.Fatalf("control request[%d] = %s", calls, payload)
+		}
+		responseBody := `{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"Preparing the review.","tool_calls":[{"id":"call-1","type":"function","function":{"name":"loom_missions_create_preview","arguments":"{\"objective\":\"Ship the governed release\"}"}}]},"finish_reason":"tool_calls"}]}`
+		if calls == 2 {
+			if !strings.Contains(payload, `"role":"tool"`) ||
+				!strings.Contains(payload, `"tool_call_id":"call-1"`) ||
+				!strings.Contains(payload, `\"requires_confirmation\":true`) ||
+				strings.Contains(payload, "Preparing the review.") {
+				t.Fatalf("tool result was not returned to Provider: %s", payload)
+			}
+			responseBody = `{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"Mission proposal prepared."},"finish_reason":"stop"}]}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(responseBody)),
+			Request: request,
+		}, nil
+	})
+	client, err := NewDeepSeekConversationClient(DeepSeekConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 16 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolName string
+	var arguments json.RawMessage
+	response, err := client.RespondConfiguredWithTools(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: "Create a Mission."}},
+		[]byte("private-test-key"), DeepSeekConversationModelID, "",
+		[]ConversationControlTool{{
+			Name: "loom_missions_create_preview", Description: "Prepare Mission review.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"objective":{"type":"string"}},"required":["objective"]}`),
+		}},
+		func(_ context.Context, name string, input json.RawMessage) (json.RawMessage, error) {
+			toolName = name
+			arguments = append(json.RawMessage(nil), input...)
+			return json.RawMessage(`{"requires_confirmation":true}`), nil
+		},
+	)
+	if err != nil || response != "Mission proposal prepared." || calls != 2 ||
+		toolName != "loom_missions_create_preview" ||
+		string(arguments) != `{"objective":"Ship the governed release"}` {
+		t.Fatalf("response=%q calls=%d tool=%q args=%s error=%v", response, calls, toolName, arguments, err)
+	}
+}
+
+func TestOpenAICompatibleConversationClassifiesToolCallFinishReasonDrift(t *testing.T) {
+	doer := deepSeekConversationDoerFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"loom_missions_create_preview","arguments":"{\"objective\":\"Ship\"}"}}]},"finish_reason":"stop"}]}`,
+			)),
+			Request: request,
+		}, nil
+	})
+	client, err := NewDeepSeekConversationClient(DeepSeekConversationConfig{
+		Client: doer, Timeout: time.Second, MaxResponseBytes: 16 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed := false
+	_, err = client.RespondConfiguredWithTools(
+		context.Background(),
+		[]ConversationMessage{{Role: "user", Content: "Create a Mission."}},
+		[]byte("private-test-key"), DeepSeekConversationModelID, "",
+		[]ConversationControlTool{{
+			Name: "loom_missions_create_preview", Description: "Prepare Mission review.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"objective":{"type":"string"}},"required":["objective"]}`),
+		}},
+		func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+			executed = true
+			return json.RawMessage(`{"requires_confirmation":true}`), nil
+		},
+	)
+	failure, ok := ConversationFailureDetails(err)
+	if !ok || executed || failure.Code != "invalid_response" ||
+		failure.ProviderCode != "response_tool_calls_finish_reason" {
+		t.Fatalf("failure=%#v ok=%t executed=%t error=%v", failure, ok, executed, err)
+	}
+}
 
 type deepSeekConversationDoer struct {
 	request       *http.Request

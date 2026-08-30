@@ -74,6 +74,16 @@ func missionExecutionConflictAt(stage string) error {
 	return errors.Join(ErrMissionExecutionConflict, missionExecutionConflictStage{stage: stage})
 }
 
+func classifyMissionExecutionConflict(err error, stage string) error {
+	if err == nil || !errors.Is(err, ErrMissionExecutionConflict) {
+		return err
+	}
+	if _, classified := MissionExecutionConflictStage(err); classified {
+		return err
+	}
+	return errors.Join(err, missionExecutionConflictStage{stage: stage})
+}
+
 type MissionExecutionCommand struct {
 	SchemaVersion        int      `json:"schema_version"`
 	Operation            string   `json:"operation"`
@@ -385,7 +395,7 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 	anchor, ok := view.TeamTimelineAnchor(teamInstanceID)
 	if !ok || anchor.Kind != "saved_team" || !anchor.Confirmed ||
 		!anchor.Executable || anchor.ReadOnly {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("team_anchor")
 	}
 	team, ok := view.Team(teamInstanceID)
 	if !ok || team.ID != teamInstanceID || team.SourceKind != "saved_team" ||
@@ -393,7 +403,7 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		team.AgentInstanceCount != 1 || team.ActiveSubAgentCount != 0 ||
 		!validSHA256(team.SourcePlanDigest) ||
 		!validSHA256(team.SourceRecordSetDigest) {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("team_projection")
 	}
 	snapshot := source.projection.Snapshot()
 	mainAgents := make([]projection.AgentInstance, 0, 1)
@@ -403,7 +413,7 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		}
 	}
 	if len(mainAgents) != 1 {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("main_agent_projection")
 	}
 	agent := mainAgents[0]
 	definition, definitionAvailable := view.TeamDefinition(team.TeamDefinitionID)
@@ -413,13 +423,14 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		definition.DefinitionDigest == team.TeamDefinitionDigest
 	if exactDefinition {
 		if missionExecutionDefinitionHasCompleteProfiles(definition) {
-			return resolveConfiguredMissionExecutionBinding(
+			binding, err := resolveConfiguredMissionExecutionBinding(
 				view, team, agent, definition, recovery,
 			)
+			return binding, classifyMissionExecutionConflict(err, "configured_binding")
 		}
 		if len(definition.Configuration.RoleBindings) > 1 ||
 			len(team.DormantSubAgents) > 0 {
-			return MissionExecutionBinding{}, ErrMissionExecutionConflict
+			return MissionExecutionBinding{}, missionExecutionConflictAt("legacy_team_shape")
 		}
 	}
 	if agent.ID == "" || agent.State != "created" ||
@@ -431,7 +442,7 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		agent.SourcePlanDigest != team.SourcePlanDigest ||
 		agent.SourceRecordSetDigest != team.SourceRecordSetDigest ||
 		!validSHA256(agent.RuntimeDiscoveryDigest) {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("legacy_agent_binding")
 	}
 	projectedRuntime, ok := view.RuntimeInstance(agent.RuntimeInstanceID)
 	if !ok || projectedRuntime.ID != agent.RuntimeInstanceID ||
@@ -440,13 +451,13 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		projectedRuntime.Capacity < 1 ||
 		projectedRuntime.DiscoveryDigest != agent.RuntimeDiscoveryDigest ||
 		len(projectedRuntime.ModelIDs) != 1 {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("runtime_binding")
 	}
 	providerID, adapterModelID, ok := parseLockedLocalPiModelIdentity(
 		projectedRuntime.ModelIDs[0],
 	)
 	if !ok {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("model_identity")
 	}
 	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
 		ID:                   agent.RuntimeProfileID,
@@ -458,7 +469,7 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		Timeout:              5 * time.Minute,
 	})
 	if err != nil {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("profile_materialization")
 	}
 	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
 		ID:                projectedRuntime.ID,
@@ -474,7 +485,7 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		Capacity: projectedRuntime.Capacity,
 	})
 	if err != nil {
-		return MissionExecutionBinding{}, ErrMissionExecutionConflict
+		return MissionExecutionBinding{}, missionExecutionConflictAt("runtime_materialization")
 	}
 	available := instance.Capacity - view.ActiveRunCount(instance.ID)
 	if available < 1 {
@@ -491,7 +502,9 @@ func (source *ProjectionMissionExecutionBindingSource) resolveMissionExecutionBi
 		view, team, agent,
 	)
 	if err != nil {
-		return MissionExecutionBinding{}, err
+		return MissionExecutionBinding{}, classifyMissionExecutionConflict(
+			err, "asset_binding",
+		)
 	}
 	return MissionExecutionBinding{
 		ViewVersion: view.Version(), TeamInstanceID: teamInstanceID,
@@ -1302,11 +1315,14 @@ func (compiler *BuiltInMissionExecutionCompiler) CompileMissionExecution(
 		command.TeamInstanceID,
 	)
 	if err != nil {
-		return MissionExecutionCompilation{}, err
+		return MissionExecutionCompilation{}, classifyMissionExecutionConflict(
+			err, "binding_resolution",
+		)
 	}
-	return compiler.compileMissionExecution(
+	compilation, err := compiler.compileMissionExecution(
 		ctx, command, binding, command.Operation == missionExecutionStart,
 	)
+	return compilation, classifyMissionExecutionConflict(err, "mission_compilation")
 }
 
 func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecutionGeneration(
@@ -1331,7 +1347,9 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecutionGenerati
 		command.TeamInstanceID,
 	)
 	if err != nil {
-		return MissionExecutionCompilation{}, err
+		return MissionExecutionCompilation{}, classifyMissionExecutionConflict(
+			err, "binding_resolution",
+		)
 	}
 	compilation, err := compiler.compileMissionExecutionWithGeneration(
 		ctx,
@@ -1341,7 +1359,9 @@ func (compiler *BuiltInMissionExecutionCompiler) compileMissionExecutionGenerati
 		projected.ExecutionGenerationID,
 	)
 	if err != nil {
-		return MissionExecutionCompilation{}, err
+		return MissionExecutionCompilation{}, classifyMissionExecutionConflict(
+			err, "mission_compilation",
+		)
 	}
 	semanticErr := appValidateProjectedSemantics(compilation.Request, projected)
 	if compilation.Plan.Digest() != projected.PlanDigest || semanticErr != nil {
@@ -2890,6 +2910,7 @@ func (backend *AuthoritativeMissionExecutionBackend) ResumeProjectedMissions(
 		return err
 	}
 	afterTeamID := ""
+	seenCursors := map[string]struct{}{"": {}}
 	for {
 		executions, hasMore := recoveryState.TeamExecutions(
 			afterTeamID,
@@ -2968,9 +2989,13 @@ func (backend *AuthoritativeMissionExecutionBackend) ResumeProjectedMissions(
 			return nil
 		}
 		nextAfterTeamID := executions[len(executions)-1].TeamInstanceID
-		if nextAfterTeamID <= afterTeamID {
+		if nextAfterTeamID == "" {
 			return ErrMissionExecutionConflict
 		}
+		if _, exists := seenCursors[nextAfterTeamID]; exists {
+			return ErrMissionExecutionConflict
+		}
+		seenCursors[nextAfterTeamID] = struct{}{}
 		afterTeamID = nextAfterTeamID
 	}
 }

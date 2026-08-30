@@ -497,7 +497,7 @@ final class LocalOperationalDiagnostics: @unchecked Sendable {
     private static func validOperation(_ operation: String) -> Bool {
         switch operation {
         case "credential_configure", "credential_verify", "credential_replace", "credential_revoke",
-             "provider_account_policy_configure":
+             "provider_account_policy_configure", "claude_code_cancel", "claude_code_connect":
             return true
         default:
             return false

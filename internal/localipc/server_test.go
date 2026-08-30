@@ -589,7 +589,7 @@ func TestServerUsesExtendedDeadlineOnlyForLongOperations(t *testing.T) {
 		method    string
 		remaining time.Duration
 	}
-	observations := make(chan observation, 4)
+	observations := make(chan observation, 5)
 	server, err := NewServer(ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
@@ -625,6 +625,7 @@ func TestServerUsesExtendedDeadlineOnlyForLongOperations(t *testing.T) {
 	}
 	for _, method := range []string{
 		"snapshot", "credential_verify", "mission_execution", "chat_message",
+		"roundtable_steer_seat",
 	} {
 		var result map[string]any
 		if err := client.Call(
@@ -636,8 +637,8 @@ func TestServerUsesExtendedDeadlineOnlyForLongOperations(t *testing.T) {
 			t.Fatalf("Call(%s) error = %v", method, err)
 		}
 	}
-	byMethod := make(map[string]time.Duration, 4)
-	for range 4 {
+	byMethod := make(map[string]time.Duration, 5)
+	for range 5 {
 		observed := <-observations
 		byMethod[observed.method] = observed.remaining
 	}
@@ -660,6 +661,10 @@ func TestServerUsesExtendedDeadlineOnlyForLongOperations(t *testing.T) {
 	if got := byMethod["chat_message"]; got <= 1804*time.Second ||
 		got > 1805*time.Second {
 		t.Fatalf("chat_message deadline remaining = %s, want (1804s, 1805s]", got)
+	}
+	if got := byMethod["roundtable_steer_seat"]; got <= 124*time.Second ||
+		got > 125*time.Second {
+		t.Fatalf("roundtable_steer_seat deadline remaining = %s, want (124s, 125s]", got)
 	}
 }
 
@@ -687,6 +692,12 @@ func TestServerSeparatesHandlerAndResponseDeadlinesForLongOperations(t *testing.
 	}
 	if got := responseDeadline("agent_attempt_recovery"); got != 52*time.Second {
 		t.Fatalf("agent_attempt_recovery response deadline = %s, want 52s", got)
+	}
+	if got := requestDeadline("roundtable_steer_seat"); got != 125*time.Second {
+		t.Fatalf("roundtable_steer_seat handler deadline = %s, want 125s", got)
+	}
+	if got := responseDeadline("roundtable_steer_seat"); got != 127*time.Second {
+		t.Fatalf("roundtable_steer_seat response deadline = %s, want 127s", got)
 	}
 	if got := requestDeadline("snapshot"); got != 5*time.Second {
 		t.Fatalf("snapshot handler deadline = %s, want 5s", got)

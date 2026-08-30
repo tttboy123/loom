@@ -537,6 +537,9 @@ type NodeBoardRow struct {
 	LatestTestScope                    string   `json:"latest_test_scope"`
 	LatestTestOutcome                  string   `json:"latest_test_outcome"`
 	LatestTestReportDigest             string   `json:"latest_test_report_digest"`
+	FinalOutputAvailable               bool     `json:"final_output_available"`
+	FinalOutputText                    string   `json:"final_output_text"`
+	FinalOutputDigest                  string   `json:"final_output_digest"`
 	AccountingAvailable                bool     `json:"accounting_available"`
 	UsageObserved                      bool     `json:"usage_observed"`
 	InputTokens                        int64    `json:"input_tokens"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,12 +30,42 @@ func TestClientUsesExtendedTimeoutOnlyForLongOperations(t *testing.T) {
 	if got := client.timeoutForMethod("agent_attempt_recovery"); got != 55*time.Second {
 		t.Fatalf("timeoutForMethod(agent_attempt_recovery) = %s, want 55s", got)
 	}
+	if got := client.timeoutForMethod("roundtable_steer_seat"); got != 130*time.Second {
+		t.Fatalf("timeoutForMethod(roundtable_steer_seat) = %s, want 130s", got)
+	}
 	for _, method := range []string{
 		"ping", "snapshot", "timeline_page", "chat_thread", "chat_context_disclosure",
 	} {
 		if got := client.timeoutForMethod(method); got != 5*time.Second {
 			t.Fatalf("timeoutForMethod(%q) = %s, want 5s", method, got)
 		}
+	}
+}
+
+func TestNewClientsUseDistinctBoundedRequestIDNamespaces(t *testing.T) {
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	first, err := NewClient(ClientConfig{SocketPath: socketPath, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewClient(ClientConfig{SocketPath: socketPath, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.requestIDPrefix == second.requestIDPrefix ||
+		!validRequestID(first.requestIDPrefix+"-1") ||
+		!validRequestID(second.requestIDPrefix+"-1") ||
+		len(first.requestIDPrefix+"-18446744073709551615") > 64 {
+		t.Fatalf(
+			"request ID namespaces = %q, %q",
+			first.requestIDPrefix, second.requestIDPrefix,
+		)
 	}
 }
 
@@ -264,6 +295,7 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 	}
 	root := shortPrivateSocketRoot(t)
 	socketPath := filepath.Join(root, "loomd.sock")
+	remoteRequestIDs := make(chan string, 1)
 	server, err := NewServer(ServerConfig{
 		SocketPath:   socketPath,
 		EffectiveUID: os.Geteuid(),
@@ -274,12 +306,15 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 		) Response {
 			switch request.Method {
 			case "snapshot":
+				remoteRequestIDs <- request.RequestID
+				protocolError := safeProtocolError(
+					"state_unavailable",
+					errors.New("private path"),
+				)
+				protocolError.Stage = "daemon_admission"
 				return Response{
-					OK: false,
-					Error: safeProtocolError(
-						"state_unavailable",
-						errors.New("private path"),
-					),
+					OK:    false,
+					Error: protocolError,
 				}
 			case "timeline_page", "chat_message":
 				time.Sleep(250 * time.Millisecond)
@@ -332,8 +367,13 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 		&result,
 	)
 	var remote *RemoteError
+	wantIncidentID := <-remoteRequestIDs
 	if !errors.As(err, &remote) ||
 		remote.Code != "state_unavailable" ||
+		remote.Stage != "daemon_admission" ||
+		!remote.Recoverable ||
+		remote.IncidentID != wantIncidentID ||
+		!validRequestID(remote.IncidentID) ||
 		remote.Error() !=
 			"local product request failed: state_unavailable" {
 		t.Fatalf("remote error = %#v, %v", remote, err)
@@ -397,4 +437,119 @@ func TestClientValidatesInputMapsRemoteErrorAndBoundsTimeout(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestClientRejectsRemoteErrorWithMissingOrMalformedRequestID(t *testing.T) {
+	tests := []struct {
+		name      string
+		requestID func(Request) (string, bool)
+	}{
+		{
+			name: "missing",
+			requestID: func(Request) (string, bool) {
+				return "", false
+			},
+		},
+		{
+			name: "malformed",
+			requestID: func(request Request) (string, bool) {
+				return request.RequestID + "/private", true
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			socketPath, done := startRawClientResponseServer(
+				t,
+				func(request Request) map[string]any {
+					response := map[string]any{
+						"version": protocolVersion,
+						"ok":      false,
+						"result":  nil,
+						"error": map[string]any{
+							"code":        "state_unavailable",
+							"message":     "state unavailable",
+							"recoverable": true,
+							"stage":       "daemon_admission",
+						},
+					}
+					if requestID, ok := test.requestID(request); ok {
+						response["request_id"] = requestID
+					}
+					return response
+				},
+			)
+			client, err := NewClient(ClientConfig{
+				SocketPath: socketPath,
+				Timeout:    time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result map[string]any
+			err = client.Call(
+				context.Background(),
+				"snapshot",
+				struct{}{},
+				&result,
+			)
+			if !errors.Is(err, ErrInvalidProtocol) {
+				t.Fatalf("Call() error = %v, want invalid protocol", err)
+			}
+			var remote *RemoteError
+			if errors.As(err, &remote) {
+				t.Fatalf("Call() exposed untrusted remote error = %#v", remote)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func startRawClientResponseServer(
+	t *testing.T,
+	response func(Request) map[string]any,
+) (string, <-chan error) {
+	t.Helper()
+	root := shortPrivateSocketRoot(t)
+	socketPath := filepath.Join(root, "loomd.sock")
+	listener, err := net.ListenUnix(
+		"unix",
+		&net.UnixAddr{Name: socketPath, Net: "unix"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	done := make(chan error, 1)
+	go func() {
+		connection, err := listener.AcceptUnix()
+		if err != nil {
+			done <- err
+			return
+		}
+		_ = listener.Close()
+		defer connection.Close()
+		_ = connection.SetDeadline(time.Now().Add(time.Second))
+		body, err := readSingleFrame(connection, maxRequestBodyBytes)
+		if err != nil {
+			done <- err
+			return
+		}
+		request, err := decodeRequest(body)
+		if err != nil {
+			done <- err
+			return
+		}
+		responseBody, err := json.Marshal(response(request))
+		if err == nil {
+			err = writeFrame(connection, responseBody, maxResponseBodyBytes)
+		}
+		if err == nil {
+			err = connection.CloseWrite()
+		}
+		done <- err
+	}()
+	return socketPath, done
 }

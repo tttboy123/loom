@@ -48,6 +48,26 @@ func TestOpenCodeRuntimeProviderMappingKeepsLoomAccountIdentity(t *testing.T) {
 	}
 }
 
+func TestOpenCodeBrokeredModelCompatibilityFailsClosedForMiniMax(t *testing.T) {
+	if !OpenCodeBrokeredModelSupported("deepseek", "deepseek/deepseek-chat") {
+		t.Fatal("verified OpenCode + DeepSeek route was rejected")
+	}
+	for _, test := range []struct {
+		provider string
+		model    string
+	}{
+		{provider: "minimax", model: "minimax-cn/MiniMax-M3"},
+		{provider: "minimax", model: "minimax-cn/MiniMax-M2.7"},
+		{provider: "deepseek", model: "minimax-cn/MiniMax-M3"},
+		{provider: "opencode", model: "opencode/big-pickle"},
+		{provider: "", model: ""},
+	} {
+		if OpenCodeBrokeredModelSupported(test.provider, test.model) {
+			t.Fatalf("unsupported brokered route was accepted: %#v", test)
+		}
+	}
+}
+
 func TestOpenCodeModelIdentityAlreadyQualified(t *testing.T) {
 	got, err := OpenCodeModelIdentity("deepseek", "deepseek/deepseek-chat")
 	if err != nil || got != "deepseek/deepseek-chat" {

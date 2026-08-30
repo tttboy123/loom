@@ -489,6 +489,7 @@ func TestPiRPCBridgeConsumesAgentInputInSameManagedProcess(t *testing.T) {
 		secondPrompt,
 		piRPCSystemPrompt,
 		secondMessageID,
+		false,
 	)
 	const bodyMarker = "read request || exit 42\n"
 	_, secondBody, found := strings.Cut(secondScript, bodyMarker)
@@ -1416,6 +1417,7 @@ func piRPCFixtureScript(mode string) string {
 		piRPCFixturePrompt,
 		piRPCSystemPrompt,
 		"10000000-0000-4000-8000-000000000001",
+		false,
 	)
 }
 
@@ -1424,6 +1426,7 @@ func piRPCFixtureScriptFor(
 	prompt string,
 	systemPrompt string,
 	responseID string,
+	noBuiltinTools bool,
 ) string {
 	expectedArguments := []string{
 		"--mode", "rpc",
@@ -1439,6 +1442,9 @@ func piRPCFixtureScriptFor(
 		"--model", "loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m",
 		"--thinking", "off",
 		"--system-prompt", systemPrompt,
+	}
+	if noBuiltinTools {
+		expectedArguments = append(expectedArguments, "--no-builtin-tools")
 	}
 	header := "#!/bin/sh\n" +
 		"[ -z \"${SHOULD_NOT_LEAK+x}\" ] || exit 41\n" +

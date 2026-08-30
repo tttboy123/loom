@@ -38,6 +38,7 @@ func TestProductOperationalDiagnosticsAcceptsClosedVaultStages(t *testing.T) {
 		credentials.CredentialStageMigrationCleanup,
 		productAgentInputStage,
 		"agent_attempt_reconcile",
+		"dispatch_projection_semantics",
 	}
 	for _, stage := range stages {
 		if !productOperationalDiagnosticStage(stage) {
@@ -431,6 +432,78 @@ func TestProductOperationalDiagnosticsRecordsSafeProviderAccountPolicyEvent(t *t
 	}
 }
 
+func TestProductOperationalIncidentDiagnosticsReturnsExactSafeEvents(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newProductOperationalDiagnosticStore(
+		filepath.Join(stateDir, "loom.db"),
+		16<<10,
+		func() time.Time { return time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []productOperationalDiagnosticRecord{
+		{
+			SchemaVersion: 1, OccurredAt: "2026-08-28T12:00:00Z",
+			IncidentID: "incident-visible-1", Operation: "agent_attempt",
+			ProviderID: "deepseek", ProviderAccountID: "deepseek.primary",
+			ModelID:  "deepseek-chat",
+			ThreadID: "thread-alpha", ProfileID: "profile-alpha",
+			Stage: "provider_http", ElapsedMS: 81, Result: "failed",
+			ErrorCode: "rate_limited", HTTPStatus: 429,
+			ProviderErrorCode: "rate_limit", RetryAfterSeconds: 5, Retryable: true,
+		},
+		{
+			SchemaVersion: 1, OccurredAt: "2026-08-28T12:00:01Z",
+			IncidentID: "incident-other-1", Operation: "chat_message",
+			Stage: "conversation_dispatch", ElapsedMS: 2, Result: "succeeded",
+		},
+	} {
+		if err := store.append(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	events, err := store.IncidentDiagnostics(context.Background(), "incident-visible-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	event := events[0]
+	if event.IncidentID != "incident-visible-1" || event.Operation != "agent_attempt" ||
+		event.ProviderID != "deepseek" || event.ProviderAccountID != "deepseek.primary" ||
+		event.CredentialRevision != 0 || event.ModelID != "deepseek-chat" ||
+		event.ThreadID != "thread-alpha" || event.ProfileID != "profile-alpha" ||
+		event.Stage != "provider_http" || event.Result != "failed" ||
+		event.ErrorCode != "rate_limited" || event.HTTPStatus != 429 ||
+		event.ProviderErrorCode != "rate_limit" || event.RetryAfterSeconds != 5 ||
+		!event.Retryable {
+		t.Fatalf("event = %#v", event)
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"credential_reference", "endpoint_fingerprint", "authorization",
+		"prompt", "response_body", "ciphertext", "nonce",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("incident event disclosed %q: %s", forbidden, encoded)
+		}
+	}
+
+	if _, err := store.IncidentDiagnostics(context.Background(), "../operational.jsonl"); err == nil {
+		t.Fatal("invalid incident identity should fail closed")
+	}
+}
+
 func TestProductOperationalDiagnosticsRecordsSafeRemoteToolEnrollmentEvent(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")
@@ -545,6 +618,58 @@ func TestProductOperationalDiagnosticsRecordsSafeConversationConflict(t *testing
 		record.Stage != "conversation_dispatch" ||
 		record.Result != "failed" || record.ErrorCode != "conflict" ||
 		!record.Retryable {
+		t.Fatalf("record = %#v", record)
+	}
+}
+
+func TestProductOperationalDiagnosticsRecordsContentFreeControlDecision(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newProductOperationalDiagnosticStore(
+		filepath.Join(stateDir, "loom.db"),
+		4<<10,
+		func() time.Time { return time.Date(2026, 8, 28, 17, 30, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := store.wrap(localipc.HandlerFunc(func(
+		context.Context,
+		localipc.Request,
+	) localipc.Response {
+		return localipc.Response{OK: true, Result: json.RawMessage(`{"thread_id":"thread-control"}`)}
+	}))
+	const incidentID = "loom-control-11111111-1111-4111-8111-111111111111"
+	handler.Handle(context.Background(), localipc.Request{
+		RequestID: incidentID,
+		Method:    "chat_control_decision",
+		Params: json.RawMessage(
+			`{"thread_id":"thread-control","proposal_id":"private-proposal-id","proposal_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","decision":"confirm"}`,
+		),
+	})
+	contents, err := os.ReadFile(filepath.Join(root, "diagnostics", "operational.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"private-proposal-id", "proposal_digest", "aaaaaaaaaaaaaaaa", `"decision":`,
+		`"confirm"`,
+		"prompt", "provider_response", "credential_reference", "api_key", "authorization",
+	} {
+		if strings.Contains(strings.ToLower(string(contents)), forbidden) {
+			t.Fatalf("control decision diagnostic contains %q: %s", forbidden, contents)
+		}
+	}
+	var record productOperationalDiagnosticRecord
+	if err := json.Unmarshal(contents, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Operation != "chat_control_decision" || record.IncidentID != incidentID ||
+		record.ThreadID != "thread-control" || record.Stage != "control_proposal_confirm" ||
+		record.Result != "succeeded" || record.ProviderID != "" || record.ProfileID != "" {
 		t.Fatalf("record = %#v", record)
 	}
 }
@@ -806,7 +931,8 @@ func TestProductOperationalDiagnosticsRecordsSafeAgentAttempt(t *testing.T) {
 			ContextCapsuleDigest:   strings.Repeat("b", 64),
 			Stage:                  "context_delivery_reconcile",
 			Elapsed:                125 * time.Millisecond, Result: "failed",
-			ErrorCode: "attempt_payload_unavailable", Retryable: true,
+			ErrorCode: "provider_rate_limit", HTTPStatus: 429,
+			ProviderErrorCode: "rate_limit", RetryAfterSeconds: 12, Retryable: true,
 		},
 	)
 	if err != nil {
@@ -835,7 +961,8 @@ func TestProductOperationalDiagnosticsRecordsSafeAgentAttempt(t *testing.T) {
 		record.ExecutionBindingDigest != strings.Repeat("a", 64) ||
 		record.CapsuleDigest != strings.Repeat("b", 64) ||
 		record.Stage != "context_delivery_reconcile" ||
-		record.ErrorCode != "attempt_payload_unavailable" ||
+		record.ErrorCode != "provider_rate_limit" || record.HTTPStatus != 429 ||
+		record.ProviderErrorCode != "rate_limit" || record.RetryAfterSeconds != 12 ||
 		record.ElapsedMS != 125 || !record.Retryable {
 		t.Fatalf("record = %#v", record)
 	}

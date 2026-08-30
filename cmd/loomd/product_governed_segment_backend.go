@@ -105,6 +105,16 @@ func (session *productGovernedSegmentSession) Respond(
 	if err != nil {
 		return harnessgateway.Response{}, err
 	}
+	// This compatibility backend has no authenticated, turn-scoped control
+	// channel. It must never accept model-asserted tool activity or proposals.
+	if len(response.CompletedControlTools) != 0 ||
+		len(response.ControlProposals) != 0 || len(response.ActionProposals) != 0 {
+		return harnessgateway.Response{}, errors.Join(
+			harnessgateway.ErrSessionUnhealthy,
+			api.ErrLocalProductChatUnavailable,
+		)
+	}
+	response = productHarnessGatewayResponseWithProposalFallback(response)
 	if !validProductHarnessGatewayResponse(response) {
 		return harnessgateway.Response{}, errors.Join(
 			harnessgateway.ErrSessionUnhealthy,

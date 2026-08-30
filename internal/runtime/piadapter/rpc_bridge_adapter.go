@@ -1051,6 +1051,25 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 	if !ok {
 		return ErrPiRPCProtocol
 	}
+	state.contextRecordType = recordType
+	state.contextRecordRole = ""
+	state.contextRecordEvent = ""
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	state.contextRecordKeys = strings.Join(keys, ",")
+	if message, present := fields["message"]; present {
+		if messageFields, messageErr := piRPCObject(message); messageErr == nil {
+			state.contextRecordRole, _ = piRPCString(messageFields, "role")
+		}
+	}
+	if rawEvent, present := fields["assistantMessageEvent"]; present {
+		if eventFields, eventErr := piRPCObject(rawEvent); eventErr == nil {
+			state.contextRecordEvent, _ = piRPCString(eventFields, "type")
+		}
+	}
 	if state.toolMode && state.contextMode {
 		return adapter.acceptHybridRPCRecord(ctx, request, state, fields, recordType)
 	}
@@ -1058,23 +1077,6 @@ func (adapter *piRPCBridgeAdapter) acceptRPCLine(
 		return adapter.acceptToolRPCRecord(ctx, request, state, fields, recordType)
 	}
 	if state.contextMode {
-		state.contextRecordType = recordType
-		if message, present := fields["message"]; present {
-			if messageFields, messageErr := piRPCObject(message); messageErr == nil {
-				state.contextRecordRole, _ = piRPCString(messageFields, "role")
-				keys := make([]string, 0, len(messageFields))
-				for key := range messageFields {
-					keys = append(keys, key)
-				}
-				sort.Strings(keys)
-				state.contextRecordKeys = strings.Join(keys, ",")
-			}
-		}
-		if rawEvent, present := fields["assistantMessageEvent"]; present {
-			if eventFields, eventErr := piRPCObject(rawEvent); eventErr == nil {
-				state.contextRecordEvent, _ = piRPCString(eventFields, "type")
-			}
-		}
 		return adapter.acceptContextRPCRecord(ctx, request, state, fields, recordType)
 	}
 	switch recordType {
@@ -3093,19 +3095,8 @@ func piRPCMicrounits(raw json.RawMessage) (int64, bool) {
 }
 
 func piRPCDebugState(state piRPCState) string {
-	if !state.contextMode {
-		return fmt.Sprintf(
-			"response=%t agent=%t turns=%d message=%t done=%t settled=%t",
-			state.responseSeen,
-			state.agentStarted,
-			state.turnCount,
-			state.assistantSeen,
-			state.doneSeen,
-			state.settled,
-		)
-	}
 	return fmt.Sprintf(
-		"response=%t agent=%t turns=%d message=%t done=%t settled=%t context_stage=%d record=%s role=%s event=%s keys=%s reject=%s",
+		"response=%t agent=%t turns=%d message=%t done=%t settled=%t context_stage=%d record=%s role=%s kind=%s keys=%s reject=%s",
 		state.responseSeen,
 		state.agentStarted,
 		state.turnCount,

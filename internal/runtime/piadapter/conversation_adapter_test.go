@@ -79,6 +79,20 @@ func TestPiRPCConversationAdapterRejectsToolCalls(t *testing.T) {
 	if !errors.Is(err, ErrPiRPCProtocol) || response.Content != "" {
 		t.Fatalf("Respond() = %#v, %v; want closed protocol rejection", response, err)
 	}
+	diagnostic := err.Error()
+	for _, required := range []string{
+		"record=message_update",
+		"role=assistant",
+		"kind=toolcall_start",
+		"keys=assistantMessageEvent,message,type",
+	} {
+		if !strings.Contains(diagnostic, required) {
+			t.Fatalf("safe protocol diagnostic missing %q: %s", required, diagnostic)
+		}
+	}
+	if strings.Contains(diagnostic, request.Messages[0].Content) {
+		t.Fatalf("safe protocol diagnostic disclosed conversation content: %s", diagnostic)
+	}
 }
 
 func TestPiRPCConversationPromptDropsOldestHistoryFirst(t *testing.T) {
@@ -123,6 +137,10 @@ func TestPiRPCConversationAdapterCancellationReapsProcess(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || response.Content != "" {
 		t.Fatalf("Respond() = %#v, %v; want cancellation", response, err)
 	}
+	if !strings.Contains(err.Error(), "response=false agent=false turns=0") ||
+		strings.Contains(err.Error(), request.Messages[0].Content) {
+		t.Fatalf("cancellation diagnostic is incomplete or disclosed content: %v", err)
+	}
 	entries, readErr := os.ReadDir(fixture.privateRoot)
 	if readErr != nil || len(entries) != 0 {
 		t.Fatalf("cancel cleanup entries=%#v error=%v", entries, readErr)
@@ -148,6 +166,7 @@ func newPiRPCConversationFixture(
 		prompt,
 		piRPCConversationSystemPrompt,
 		piRPCConversationFixtureID,
+		true,
 	)
 	if err := os.WriteFile(executablePath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

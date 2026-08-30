@@ -810,6 +810,31 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(client.setupRequestCount, 2)
   }
 
+  func testSetupSnapshotWritesStayBehindTheSingleAdmissionGate() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let source = try String(
+      contentsOf: packageRoot.appendingPathComponent(
+        "Sources/LoomLocalAppCore/LocalProductStore.swift"
+      ),
+      encoding: .utf8
+    )
+    let assignments = source.split(separator: "\n").map(String.init).filter {
+      $0.trimmingCharacters(in: .whitespaces).hasPrefix("setupSnapshot =")
+    }
+
+    XCTAssertEqual(
+      assignments,
+      [
+        "    setupSnapshot = initialSetupSnapshot",
+        "    setupSnapshot = snapshot",
+      ]
+    )
+    XCTAssertTrue(source.contains("private func admitSetupSnapshot("))
+  }
+
   func testReconnectMonitorProbesSilentDaemonDeathAndRecovers() async throws {
     // The daemon can exit without the app ever issuing a request, so the
     // monitor must proactively probe the socket while it believes it is
@@ -1128,6 +1153,11 @@ final class LocalProductStoreTests: XCTestCase {
 
     XCTAssertEqual(store.timelineState, .unavailable)
     XCTAssertNil(store.timeline)
+    XCTAssertEqual(
+      store.connectionState,
+      .online,
+      "a scoped timeline failure must not mark the loaded workspace offline"
+    )
   }
 
   func testTimelineLoadsEveryBoundedPageBeforePublishingAuthoritativeHistory() async throws {
@@ -1815,6 +1845,62 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.timelineRequestCount, 2)
   }
 
+  func testVisibleMissionRefreshReplacesTentativeTextWithRestartSafeEvidenceOutput()
+    async throws
+  {
+    let running = try missionActivitySnapshot(status: "running", lane: "Orchestrating")
+    let terminal = try missionActivitySnapshot(status: "succeeded", lane: "Complete")
+    let teamID = try XCTUnwrap(running.missions.first?.teamInstanceID)
+    let tentative = timelineRecord(
+      deliveryID: "visible-output-tentative",
+      kind: "node_output_delta",
+      teamID: teamID,
+      authority: "tentative",
+      logicalNodeID: "main",
+      attemptNumber: 1,
+      sourceSequence: 1,
+      textDelta: "partial"
+    )
+    let final = timelineRecord(
+      deliveryID: "visible-output-evidence",
+      kind: "evidence_available",
+      teamID: teamID,
+      status: "succeeded",
+      authority: "journal",
+      logicalNodeID: "main",
+      attemptNumber: 1,
+      sourceSequence: 2,
+      textDelta: "Complete restart-safe result."
+    )
+    let client = MissionActivityRefreshStubClient(
+      snapshots: [running, terminal],
+      pages: [
+        try timelinePage(
+          teamID: teamID, boardStatus: "running", hasMore: false,
+          records: [tentative]
+        ),
+        try timelinePage(
+          teamID: teamID, boardStatus: "succeeded", hasMore: false,
+          records: [final]
+        ),
+      ]
+    )
+    let store = LocalProductStore(client: client)
+
+    await store.refresh()
+    let opened = await store.openMissionAndActivate("mission/team-1")
+    let refreshed = await store.refreshVisibleMissionActivity("mission/team-1")
+    XCTAssertTrue(opened)
+    XCTAssertTrue(refreshed)
+
+    XCTAssertEqual(store.timeline?.records.count, 1)
+    XCTAssertEqual(store.timeline?.records.first?.deliveryID, "visible-output-evidence")
+    XCTAssertEqual(
+      store.timeline?.records.first?.payload.textDelta,
+      "Complete restart-safe result."
+    )
+  }
+
   func testVisibleMissionFollowSurvivesTransientTimelineFailure() async throws {
     let running = try missionActivitySnapshot(
       status: "running", lane: "Orchestrating"
@@ -1837,6 +1923,7 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.snapshotRequestCount, 3)
     XCTAssertGreaterThanOrEqual(client.timelineRequestCount, 1)
     XCTAssertEqual(store.workbench.route, .mission("mission/team-1"))
+    XCTAssertEqual(store.connectionState, .online)
   }
 
   func testVisibleMissionRefreshKeepsLastActivityDuringCursorConflict() async throws {
@@ -2008,6 +2095,201 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.connectRequestCount, 1)
     XCTAssertEqual(store.setupSnapshot?.codex.status, "not_logged_in")
     XCTAssertEqual(store.setupState, .ready)
+  }
+
+  func testConnectClaudeCodePublishesNativeRouteWithoutDaemonRestart() async throws {
+    let client = try ProviderSetupStubClient(claudeEnabled: true)
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+
+    XCTAssertEqual(store.setupSnapshot?.runtimes.first?.adapterType, "claude-code")
+    XCTAssertFalse(store.setupSnapshot?.conversationProfiles.contains {
+      $0.harnessAdapter == "claude-code"
+    } ?? true)
+
+    await store.connectClaudeCode()
+
+    XCTAssertEqual(client.claudeConnectRequestCount, 1)
+    XCTAssertTrue(store.setupSnapshot?.conversationProfiles.contains {
+      $0.harnessAdapter == "claude-code"
+    } ?? false)
+    XCTAssertEqual(store.providerOperationStatus["claude-code"], "Ready")
+    XCTAssertEqual(store.setupState, .ready)
+  }
+
+  func testConnectClaudeCodeDoesNotReplaceKnownSetupWithEmptyPoll() async throws {
+    let client = try ProviderSetupStubClient(
+      claudeEnabled: true,
+      emptyClaudeSetupSnapshotsAfterConnect: 1
+    )
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+    let providerCount = try XCTUnwrap(store.setupSnapshot?.providers.count)
+    let runtimeCount = try XCTUnwrap(store.setupSnapshot?.runtimes.count)
+
+    await store.connectClaudeCode(
+      maxPollAttempts: 1,
+      pollNanoseconds: 1_000_000
+    )
+
+    XCTAssertEqual(store.setupSnapshot?.providers.count, providerCount)
+    XCTAssertEqual(store.setupSnapshot?.runtimes.count, runtimeCount)
+    XCTAssertEqual(store.setupState, .unavailable(reason: "empty_setup"))
+    XCTAssertEqual(
+      store.providerOperationStatus["claude-code"],
+      "Sign-in timed out"
+    )
+  }
+
+  func testConnectClaudeCodeTimeoutKeepsIncidentAndRecoveryMetadata() async throws {
+    let client = try ProviderSetupStubClient(
+      claudeEnabled: true,
+      claudeProfilePublishesAfterConnect: false
+    )
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+
+    await store.connectClaudeCode(
+      maxPollAttempts: 1,
+      pollNanoseconds: 1_000_000
+    )
+
+    let incidentID = try XCTUnwrap(
+      store.providerOperationIncidentID["claude-code"]
+    )
+    XCTAssertEqual(client.claudeConnectIncidentIDs, [incidentID])
+    XCTAssertTrue(incidentID.hasPrefix("loom-swift-"))
+    XCTAssertEqual(
+      store.providerOperationStage["claude-code"],
+      "Conversation profile publish"
+    )
+    XCTAssertEqual(store.providerOperationRetryable["claude-code"], true)
+  }
+
+  func testConnectClaudeCodeLocalFailureKeepsTransportIncident() async throws {
+    let client = try ProviderSetupStubClient(claudeEnabled: false)
+    let store = LocalProductStore(client: client)
+
+    await store.connectClaudeCode(
+      maxPollAttempts: 1,
+      pollNanoseconds: 1_000_000
+    )
+
+    let incidentID = try XCTUnwrap(
+      store.providerOperationIncidentID["claude-code"]
+    )
+    XCTAssertEqual(client.claudeConnectIncidentIDs, [incidentID])
+    XCTAssertEqual(
+      store.providerOperationStage["claude-code"],
+      "Local service transport"
+    )
+    XCTAssertEqual(store.providerOperationRetryable["claude-code"], true)
+  }
+
+  func testConnectClaudeCodeCanBeCancelledWithoutInventingFailure() async throws {
+    let client = try ProviderSetupStubClient(
+      claudeEnabled: true,
+      claudeProfilePublishesAfterConnect: false
+    )
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+
+    let connection = Task {
+      await store.connectClaudeCode(
+        maxPollAttempts: 600,
+        pollNanoseconds: 1_000_000_000
+      )
+    }
+    for _ in 0..<100 where !store.providersInFlight.contains("claude-code") {
+      await Task.yield()
+    }
+    connection.cancel()
+    await connection.value
+
+    XCTAssertFalse(store.providersInFlight.contains("claude-code"))
+    XCTAssertNil(store.providerOperationStatus["claude-code"])
+    XCTAssertNil(store.providerOperationDetail["claude-code"])
+    XCTAssertNil(store.providerOperationIncidentID["claude-code"])
+  }
+
+  func testCancelClaudeCodeStopsNativeLoginWithExactIncident() async throws {
+    let client = try ProviderSetupStubClient(
+      claudeEnabled: true,
+      claudeProfilePublishesAfterConnect: false
+    )
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+
+    store.startClaudeCodeSignIn()
+    for _ in 0..<100 where !store.providersInFlight.contains("claude-code") {
+      await Task.yield()
+    }
+    let incidentID = try XCTUnwrap(
+      store.providerOperationIncidentID["claude-code"]
+    )
+    await store.cancelClaudeCodeSignIn()
+
+    XCTAssertEqual(client.claudeCancelRequestCount, 1)
+    XCTAssertEqual(client.claudeCancelIncidentIDs, [incidentID])
+    XCTAssertEqual(
+      store.providerOperationStatus["claude-code"],
+      "Sign-in cancelled"
+    )
+    XCTAssertEqual(
+      store.providerOperationDetail["claude-code"],
+      "Claude Code sign-in was stopped. Choose Sign In to try again."
+    )
+    XCTAssertEqual(
+      store.providerOperationIncidentID["claude-code"],
+      incidentID
+    )
+  }
+
+  func testCancelClaudeCodeReachesDaemonBeforeBlockedSetupPollCompletes()
+    async throws
+  {
+    let setupGate = ClaudeSetupSnapshotGate()
+    let client = try ProviderSetupStubClient(
+      claudeEnabled: true,
+      claudeProfilePublishesAfterConnect: false,
+      claudeSetupSnapshotGate: setupGate
+    )
+    let store = LocalProductStore(client: client)
+    await store.refreshSetup()
+
+    store.startClaudeCodeSignIn()
+    var setupPollBlocked = false
+    for _ in 0..<200 {
+      if await setupGate.isWaiting() {
+        setupPollBlocked = true
+        break
+      }
+      try await Task<Never, Never>.sleep(nanoseconds: 5_000_000)
+    }
+    XCTAssertTrue(setupPollBlocked)
+    let incidentID = try XCTUnwrap(
+      store.providerOperationIncidentID["claude-code"]
+    )
+
+    let cancellation = Task { @MainActor in
+      await store.cancelClaudeCodeSignIn()
+    }
+    var cancelCountBeforeManualRelease = 0
+    for _ in 0..<100 {
+      cancelCountBeforeManualRelease = client.claudeCancelRequestCount
+      if cancelCountBeforeManualRelease > 0 { break }
+      try await Task<Never, Never>.sleep(nanoseconds: 5_000_000)
+    }
+    await setupGate.release()
+    await cancellation.value
+
+    XCTAssertEqual(cancelCountBeforeManualRelease, 1)
+    XCTAssertEqual(client.claudeCancelIncidentIDs, [incidentID])
+    XCTAssertFalse(store.providersInFlight.contains("claude-code"))
+    XCTAssertEqual(
+      store.providerOperationStatus["claude-code"],
+      "Sign-in cancelled"
+    )
   }
 
   func testVerifyMiniMaxPresentsReturnedTerminalRevisionAndRefreshes() async throws {
@@ -2561,6 +2843,103 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(client.commands[2].expectedViewVersion, store.snapshot?.viewVersion)
   }
 
+  func testStartMissionMaterializesFreshTeamInsteadOfReusingHistoricalMission() async throws {
+    let definitionDigest = String(repeating: "f", count: 64)
+    func productSnapshot(teamIDs: [String]) throws -> LocalProductSnapshot {
+      var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: Data(MissionOrchestrationTests.snapshotJSON.utf8)
+        ) as? [String: Any]
+      )
+      object["view_version"] = String(repeating: "b", count: 64)
+      object["teams"] = teamIDs.map { teamID in
+        [
+          "team_instance_id": teamID,
+          "team_definition_id": "team-definition-1",
+          "team_definition_version": 3,
+          "display_name": "Reusable Coding Team",
+          "source_kind": "saved_team",
+          "state": "created",
+          "confirmed": true,
+          "executable": true,
+          "read_only": false,
+          "agents": [],
+        ] as [String: Any]
+      }
+      return try LocalProductWire.decodeSnapshot(
+        JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+      )
+    }
+
+    let historical = try productSnapshot(teamIDs: ["team-1"])
+    let materialized = try productSnapshot(teamIDs: ["team-1", "team-fresh"])
+    let execution = ExecutionStubClient(snapshot: historical)
+    let confirmation = try LocalProductSetupWire.decodeBuilderConfirmation(
+      Data(
+        """
+        {"team_definition_id":"team-definition-1","team_definition_version":3,
+         "team_definition_digest":"\(definitionDigest)","status":"active",
+         "team_instance_id":"team-fresh","team_instance_created":true,
+         "run_created":false}
+        """.utf8
+      )
+    )
+    let setup = try ProviderSetupStubClient(
+      teamMaterializationResult: confirmation,
+      onTeamMaterialize: { execution.replaceSnapshot(materialized) }
+    )
+    let baseSetupSnapshot = try await setup.setupSnapshot()
+    var setupObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(baseSetupSnapshot)
+      ) as? [String: Any]
+    )
+    setupObject["saved_teams"] = [[
+      "id": "team-definition-1", "version": 3,
+      "name": "Reusable Coding Team", "status": "active",
+      "definition_digest": definitionDigest, "stream_head": 7,
+    ]]
+    let setupSnapshot = try LocalProductSetupWire.decodeSnapshot(
+      JSONSerialization.data(withJSONObject: setupObject, options: [.sortedKeys])
+    )
+    let store = LocalProductStore(
+      client: execution,
+      setupClient: setup,
+      initialSetupSnapshot: setupSnapshot
+    )
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Start a distinct bounded Mission",
+      team: historical.teams[0],
+      workPackage: .coding,
+      newAttempt: false
+    )
+
+    XCTAssertEqual(setup.teamMaterializeRequests.count, 1)
+    XCTAssertEqual(setup.teamMaterializeRequests[0].id, "team-definition-1")
+    XCTAssertEqual(setup.teamMaterializeRequests[0].version, 3)
+    XCTAssertEqual(setup.teamMaterializeRequests[0].digest, definitionDigest)
+    XCTAssertEqual(store.executionState, .ready)
+    XCTAssertEqual(store.executionPreflight?.teamInstanceID, "team-fresh")
+    XCTAssertEqual(execution.commands.map(\.teamInstanceID), ["team-fresh"])
+    XCTAssertEqual(execution.commands.map(\.missionID), ["mission/team-fresh"])
+    XCTAssertEqual(execution.commands.map(\.newAttempt), [false])
+    XCTAssertTrue(historical.missions.contains { $0.missionID == "mission/team-1" })
+
+    store.invalidateMissionPreflight()
+    await store.preflightMission(
+      objective: "Review the edited distinct Mission",
+      team: historical.teams[0],
+      workPackage: .coding,
+      newAttempt: false
+    )
+
+    XCTAssertEqual(setup.teamMaterializeRequests.count, 1)
+    XCTAssertEqual(execution.commands.map(\.teamInstanceID), ["team-fresh", "team-fresh"])
+    XCTAssertEqual(execution.commands.map(\.newAttempt), [false, false])
+  }
+
   func testMissionStartReachesSucceededAndOpensMissionRoom() async throws {
     let json = LocalProductModelsTests.snapshotJSON.replacingOccurrences(
       of: "\"teams\":[]",
@@ -2658,6 +3037,56 @@ final class LocalProductStoreTests: XCTestCase {
     await store.startPreflightedMission()
 
     XCTAssertEqual(store.executionState, .failed(reason: "unavailable"))
+  }
+
+  func testMissionPreflightKeepsStructuredTransportFailureAndRequestIncident()
+    async throws
+  {
+    let snapshot = try executableMissionSnapshot()
+    let client = ExecutionStubClient(
+      snapshot: snapshot,
+      preflightError: LocalProductClientError.invalidSocket
+    )
+    let store = LocalProductStore(client: client)
+    await store.refresh()
+
+    await store.preflightMission(
+      objective: "Implement the bounded change",
+      team: snapshot.teams[0],
+      workPackage: .coding
+    )
+
+    XCTAssertEqual(store.executionState, .failed(reason: "invalid_socket"))
+    XCTAssertEqual(store.missionOperationFailure?.code, "invalid_socket")
+    XCTAssertEqual(store.missionOperationFailure?.stage, .udsTransport)
+    XCTAssertFalse(store.missionOperationFailure?.recoverable ?? true)
+    XCTAssertEqual(
+      store.missionOperationFailure?.incidentID,
+      client.commands.first?.correlationID
+    )
+    XCTAssertTrue(
+      store.missionOperationFailure?.recoveryAction.contains("Restart Loom") ?? false
+    )
+  }
+
+  func testMissionFailureKeepsRemoteStageAndIncidentForGovernedRecovery() {
+    let failure = LocalProductStore.missionOperationFailure(
+      LocalIPCRemoteError(
+        code: .conflict,
+        recoverable: true,
+        stage: .preflightDigest,
+        incidentID: "mission-preflight-digest-1",
+        safeMessage: "preflight changed"
+      ),
+      fallbackIncidentID: "mission-fallback"
+    )
+
+    XCTAssertEqual(failure.code, "conflict")
+    XCTAssertEqual(failure.stage, .preflightDigest)
+    XCTAssertTrue(failure.recoverable)
+    XCTAssertEqual(failure.incidentID, "mission-preflight-digest-1")
+    XCTAssertTrue(failure.title.contains("Preflight"), failure.title)
+    XCTAssertTrue(failure.recoveryAction.contains("Review preflight"))
   }
 
   func testMissionContextEditInvalidatesReadyPreflightBeforeStart() async throws {
@@ -2874,6 +3303,277 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertNil(store.builderSession)
     XCTAssertNil(store.snapshot)
     XCTAssertFalse(client.setupStarted)
+  }
+
+  func testConfirmedConversationActionRequiresExactDecisionReceiptToExecute() async throws {
+    let setup = try conversationProfileSetupSnapshot()
+    let client = ChatRecordingClient()
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    let threadID = store.currentChatThreadID()
+    let proposalDigest = String(repeating: "a", count: 64)
+    let bindingDigest = String(repeating: "b", count: 64)
+    let capsuleDigest = String(repeating: "c", count: 64)
+    let workspaceDigest = String(repeating: "d", count: 64)
+    let registryDigest = String(repeating: "e", count: 64)
+    let receiptDigest = String(repeating: "f", count: 64)
+    let proposal = try JSONDecoder().decode(
+      LocalProductConversationActionProposal.self,
+      from: Data(
+        """
+        {
+          "schema_version":2,"proposal_id":"proposal-route-receipt-1",
+          "tool_id":"loom.conversation.route.change.preview","tool_version":2,
+          "confirmation":"user","action":"route","argument":"",
+          "payload":{"profile_id":"conversation-openai-codex-default-v1"},
+          "route":{"harness_adapter":"codex","provider_id":"openai",
+            "credential_revision":0,"model_id":"codex-default",
+            "execution_binding_digest":"\(bindingDigest)",
+            "context_capsule_digest":"\(capsuleDigest)"},
+          "workspace":{"workspace_id":"workspace-primary",
+            "workspace_digest":"\(workspaceDigest)"},
+          "registry_digest":"\(registryDigest)",
+          "incident_id":"incident-route-receipt-1",
+          "target_conversation_id":"\(threadID)",
+          "target_content_digest":"\(proposalDigest)",
+          "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"msg-1",
+          "status":"confirmed","created_at":"2026-08-29T10:00:00Z",
+          "expires_at":"2026-08-29T10:05:00Z",
+          "proposal_digest":"\(proposalDigest)"
+        }
+        """.utf8
+      )
+    )
+    let receipt = try JSONDecoder().decode(
+      LocalProductConversationProposalDecisionReceipt.self,
+      from: Data(
+        """
+        {
+          "schema_version":1,"proposal_id":"proposal-route-receipt-1",
+          "proposal_digest":"\(proposalDigest)",
+          "tool_id":"loom.conversation.route.change.preview","decision":"confirm",
+          "decision_incident_id":"incident-route-confirm-1",
+          "target_conversation_id":"\(threadID)",
+          "segment_id":"segment-1","attempt_id":"attempt-1",
+          "registry_digest":"\(registryDigest)",
+          "workspace_digest":"\(workspaceDigest)",
+          "execution_binding_digest":"\(bindingDigest)",
+          "context_capsule_digest":"\(capsuleDigest)",
+          "decided_at":"2026-08-29T10:01:00Z",
+          "receipt_digest":"\(receiptDigest)"
+        }
+        """.utf8
+      )
+    )
+    let binding = LocalProductConversationExecutionBinding(
+      schemaVersion: 4,
+      harnessAdapter: "codex",
+      providerID: "openai",
+      credentialRevision: 0,
+      modelID: "codex-default"
+    )
+    let segment = LocalProductConversationSegment(
+      segmentID: "segment-1",
+      profileID: "conversation-openai-codex-default-v1",
+      contextMode: .startClean,
+      contextCapsuleDigest: String(repeating: "0", count: 64),
+      executionBinding: binding,
+      bindingDigest: bindingDigest,
+      modelID: "codex-default"
+    )
+    let attempt = LocalProductConversationAttempt(
+      attemptID: "attempt-1",
+      segmentID: "segment-1",
+      profileID: "conversation-openai-codex-default-v1",
+      modelID: "codex-default",
+      contextMode: .startClean,
+      contextCapsuleDigest: capsuleDigest,
+      executionBinding: binding,
+      bindingDigest: String(repeating: "1", count: 64),
+      incidentID: "incident-route-receipt-1",
+      status: "succeeded",
+      failureCode: ""
+    )
+    func thread(
+      receipts: [LocalProductConversationProposalDecisionReceipt]
+    ) -> LocalProductChatThread {
+      LocalProductChatThread(
+        threadID: threadID,
+        profileID: "conversation-openai-codex-default-v1",
+        controlWorkspace: proposal.workspace,
+        segments: [segment],
+        attempts: [attempt],
+        messages: [],
+        actionProposals: [proposal],
+        proposalDecisionReceipts: receipts,
+        canReply: true,
+        requiresConfirmation: false
+      )
+    }
+
+    client.replaceRecordedThread(thread(receipts: []))
+    await store.loadChatThread()
+    XCTAssertFalse(store.canExecuteConversationActionProposal(proposal))
+
+    client.replaceRecordedThread(thread(receipts: [receipt]))
+    await store.loadChatThread()
+    XCTAssertTrue(store.canExecuteConversationActionProposal(proposal))
+  }
+
+  func testLegacyAlignmentCannotConfirmButCanCancel() async throws {
+    let setup = try conversationProfileSetupSnapshot()
+    let client = ChatRecordingClient()
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    let threadID = store.currentChatThreadID()
+    let digest = String(repeating: "a", count: 64)
+    let sourceDigest = String(repeating: "b", count: 64)
+    let proposal = try JSONDecoder().decode(
+      LocalProductConversationControlProposal.self,
+      from: Data(
+        """
+        {
+          "schema_version":1,"proposal_id":"proposal-align-legacy-store",
+          "tool_id":"loom.sessions.align.preview","tool_version":1,
+          "confirmation":"user","target_conversation_id":"\(threadID)",
+          "target_content_digest":"\(digest)","sources":[{
+            "conversation_id":"source-1","title":"Source",
+            "content_digest":"\(sourceDigest)","message_count":1
+          }],"context_mode":"summary_only","catalog_digest":"\(digest)",
+          "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"msg-1",
+          "status":"pending","created_at":"2026-08-28T12:00:00Z",
+          "expires_at":"2026-08-28T12:05:00Z","proposal_digest":"\(digest)"
+        }
+        """.utf8
+      )
+    )
+    client.replaceRecordedThread(
+      LocalProductChatThread(
+        threadID: threadID,
+        messages: [],
+        controlProposals: [proposal],
+        canReply: true,
+        requiresConfirmation: true
+      )
+    )
+    await store.loadChatThread()
+
+    XCTAssertFalse(store.canConfirmConversationControlProposal(proposal))
+    await store.decideConversationControlProposal(proposal, decision: .confirm)
+    XCTAssertEqual(client.decisionCallCount, 0)
+
+    await store.decideConversationControlProposal(proposal, decision: .cancel)
+    XCTAssertEqual(client.decisionCallCount, 1)
+  }
+
+  func testProposalDecisionConflictRequiresExplicitRefreshWithoutResendingDraft() async throws {
+    let setup = try conversationProfileSetupSnapshot()
+    let proposalDigest = String(repeating: "a", count: 64)
+    let bindingDigest = String(repeating: "b", count: 64)
+    let capsuleDigest = String(repeating: "c", count: 64)
+    let workspaceDigest = String(repeating: "d", count: 64)
+    let registryDigest = String(repeating: "e", count: 64)
+    let client = ChatRecordingClient(
+      decisionError: LocalIPCRemoteError(
+        code: .conflict,
+        recoverable: true,
+        stage: .controlProposalConfirm,
+        incidentID: "loom-chat-proposal-conflict",
+        safeMessage: "conflict"
+      )
+    )
+    let store = LocalProductStore(client: client, initialSetupSnapshot: setup)
+    let threadID = store.currentChatThreadID()
+    let proposal = try JSONDecoder().decode(
+      LocalProductConversationActionProposal.self,
+      from: Data(
+        """
+        {
+          "schema_version":2,"proposal_id":"proposal-refresh-1",
+          "tool_id":"loom.conversation.route.change.preview","tool_version":2,
+          "confirmation":"user","action":"route","argument":"",
+          "payload":{"profile_id":"conversation-openai-codex-default-v1"},
+          "route":{"harness_adapter":"codex","provider_id":"openai",
+            "credential_revision":0,"model_id":"codex-default",
+            "execution_binding_digest":"\(bindingDigest)",
+            "context_capsule_digest":"\(capsuleDigest)"},
+          "workspace":{"workspace_id":"workspace-primary",
+            "workspace_digest":"\(workspaceDigest)"},
+          "registry_digest":"\(registryDigest)",
+          "incident_id":"incident-proposal-refresh-1",
+          "target_conversation_id":"\(threadID)",
+          "target_content_digest":"\(proposalDigest)",
+          "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"msg-1",
+          "status":"pending","created_at":"2099-08-29T10:00:00Z",
+          "expires_at":"2099-08-29T10:05:00Z",
+          "proposal_digest":"\(proposalDigest)"
+        }
+        """.utf8
+      )
+    )
+    client.replaceRecordedThread(
+      LocalProductChatThread(
+        threadID: threadID,
+        profileID: "conversation-openai-codex-default-v1",
+        messages: [],
+        actionProposals: [proposal],
+        canReply: true,
+        requiresConfirmation: false
+      )
+    )
+    await store.loadChatThread()
+
+    let accepted = await store.decideConversationActionProposal(
+      proposal,
+      decision: .confirm
+    )
+
+    XCTAssertFalse(accepted)
+    XCTAssertEqual(client.decisionCallCount, 1)
+    XCTAssertEqual(client.sendCallCount, 0)
+    XCTAssertEqual(store.chatOperationFailure?.code, .conflict)
+    XCTAssertEqual(store.chatOperationFailure?.stage, .controlProposalConfirm)
+    XCTAssertEqual(store.chatOperationFailure?.title, "Proposal changed")
+    XCTAssertTrue(
+      store.chatOperationFailure?.detail.contains("Refresh it") ?? false
+    )
+    XCTAssertFalse(store.chatOperationFailure?.detail.contains("conflict") ?? true)
+    XCTAssertTrue(
+      store.chatOperationFailure?.isProposalDecisionRecoveryAvailable ?? false
+    )
+
+    await store.loadChatThread()
+
+    XCTAssertNil(store.chatOperationFailure)
+    XCTAssertEqual(client.sendCallCount, 0)
+  }
+
+  func testChatSendPublishesConversationCatalogWithoutTranscriptContent() async throws {
+    let client = ChatRecordingClient()
+    let registryURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathComponent("chat-sessions.json")
+    let store = LocalProductStore(
+      client: client,
+      initialSetupSnapshot: try conversationProfileSetupSnapshot(),
+      chatSessionsFileURL: registryURL
+    )
+    let firstID = store.currentChatThreadID()
+    store.renameChatSession(firstID, title: "Architecture notes")
+    store.newConversation()
+    let secondID = store.currentChatThreadID()
+    store.renameChatSession(secondID, title: "Implementation")
+
+    await store.sendChatMessage("private user content")
+
+    XCTAssertEqual(Set(client.recordedSessionCatalog.map(\.conversationID)), Set([firstID, secondID]))
+    XCTAssertEqual(
+      Set(client.recordedSessionCatalog.map(\.title)),
+      Set(["Architecture notes", "Implementation"])
+    )
+    let encoded = String(
+      decoding: try JSONEncoder().encode(client.recordedSessionCatalog),
+      as: UTF8.self
+    )
+    XCTAssertFalse(encoded.contains("private user content"))
   }
 
   func testConversationContextDisclosureLoadsExactSegmentMetadata() async throws {
@@ -4566,7 +5266,10 @@ final class LocalProductStoreTests: XCTestCase {
       LocalProductConversationExecutionBinding?
     private(set) var recordedTrustBoundaryAcknowledgement:
       LocalProductTrustBoundaryAcknowledgement?
+    private(set) var recordedSessionCatalog:
+      [LocalProductConversationSessionReference] = []
     private(set) var sendCallCount = 0
+    private(set) var decisionCallCount = 0
     private(set) var setupStarted = false
     private(set) var recordedDisclosureSegmentIDs: [String] = []
     private(set) var recordedCancelThreadID = ""
@@ -4577,6 +5280,7 @@ final class LocalProductStoreTests: XCTestCase {
     private let sendError: Error?
     private let cancelError: Error?
     private let deleteError: Error?
+    private let decisionError: Error?
     var failNextSend: Error?
     private let attemptFailureCode: String?
     private let responseAttemptStatus: String?
@@ -4610,6 +5314,7 @@ final class LocalProductStoreTests: XCTestCase {
       sendError: Error? = nil,
       cancelError: Error? = nil,
       deleteError: Error? = nil,
+      decisionError: Error? = nil,
       attemptFailureCode: String? = nil,
       responseAttemptStatus: String? = nil,
       attemptFailureStage: String? = nil,
@@ -4628,6 +5333,7 @@ final class LocalProductStoreTests: XCTestCase {
       self.sendError = sendError
       self.cancelError = cancelError
       self.deleteError = deleteError
+      self.decisionError = decisionError
       self.attemptFailureCode = attemptFailureCode
       self.responseAttemptStatus = responseAttemptStatus
       self.attemptFailureStage = attemptFailureStage
@@ -4775,6 +5481,21 @@ final class LocalProductStoreTests: XCTestCase {
       if recordedThread?.threadID == threadID {
         recordedThread = nil
       }
+    }
+
+    func decideChatControlProposal(
+      _ request: LocalProductChatControlDecisionRequest,
+      incidentID: String
+    ) async throws -> LocalProductChatThread {
+      decisionCallCount += 1
+      if let decisionError { throw decisionError }
+      return recordedThread
+        ?? LocalProductChatThread(
+          threadID: request.threadID,
+          messages: [],
+          canReply: true,
+          requiresConfirmation: false
+        )
     }
 
     func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
@@ -4950,6 +5671,32 @@ final class LocalProductStoreTests: XCTestCase {
       )
       recordedThread = thread
       return thread
+    }
+
+    func sendChatMessage(
+      threadID: String,
+      content: String,
+      profileID: String,
+      modelID: String,
+      reasoningEffort: String,
+      contextMode: LocalProductConversationContextMode?,
+      expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+      trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+      sessionCatalog: [LocalProductConversationSessionReference],
+      incidentID: String
+    ) async throws -> LocalProductChatThread {
+      recordedSessionCatalog = sessionCatalog
+      return try await sendChatMessage(
+        threadID: threadID,
+        content: content,
+        profileID: profileID,
+        modelID: modelID,
+        reasoningEffort: reasoningEffort,
+        contextMode: contextMode,
+        expectedExecutionBinding: expectedExecutionBinding,
+        trustBoundaryAcknowledgement: trustBoundaryAcknowledgement,
+        incidentID: incidentID
+      )
     }
 
     func setupSnapshot() async throws -> LocalProductSetupSnapshot {
@@ -5226,6 +5973,47 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(openCodeStore.effectiveConversationReasoningEffort, "")
   }
 
+  func testConfiguredPiConversationProfileKeepsItsExecutableLocalModel() throws {
+    let snapshot = try LocalProductSetupWire.decodeSnapshot(
+      Data(
+        #"""
+        {
+          "schema_version":1,
+          "view_version":"view-pi-local",
+          "codex":{"provider_id":"codex","auth_mode":"native_auth","credential_reference":"","revision":0,"status":"unavailable","reason":"not_authenticated"},
+          "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"","revision":0,"status":"unconfigured","reason":""},
+          "providers":[],
+          "conversation_profiles":[
+            {"profile_id":"conversation-loom-local-pi-default-v1","harness_adapter":"pi","provider_id":"loom-local","provider_account_id":"","display_name":"Local model","protocol":"pi_rpc","model_id":"qwen2.5-coder-1.5b-instruct-q4-k-m","auth_mode":"native_auth","credential_revision":0}
+          ],
+          "runtimes":[
+            {"runtime_instance_id":"runtime.pi.local","display_name":"Pi 0.82.1","adapter_type":"pi-cli","executable_version":"0.82.1","status":"online","capacity":1,"model_ids":["loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m"],"observed_capabilities":[],"source_probe_id":"probe.pi.local"}
+          ],
+          "saved_teams":[],"templates":[],"role_options":[],
+          "skills":[],"permissions":[],"resources":[]
+        }
+        """#.utf8
+      )
+    )
+    let store = LocalProductStore(
+      client: ChatRecordingClient(), initialSetupSnapshot: snapshot
+    )
+
+    XCTAssertEqual(store.selectedConversationProfile?.harnessAdapter, "pi")
+    XCTAssertEqual(store.selectedConversationProfile?.providerID, "loom-local")
+    XCTAssertEqual(
+      store.effectiveConversationModelID,
+      "qwen2.5-coder-1.5b-instruct-q4-k-m"
+    )
+    XCTAssertTrue(
+      store.isConversationModelAvailable(
+        profile: store.selectedConversationProfile,
+        modelID: "qwen2.5-coder-1.5b-instruct-q4-k-m"
+      )
+    )
+    XCTAssertEqual(store.effectiveConversationReasoningEffort, "")
+  }
+
   func testModelAndReasoningSelectionForceExplicitConversationSegment() async throws {
     let client = ChatRecordingClient(responseExecutionBinding:
       LocalProductConversationExecutionBinding(
@@ -5489,6 +6277,122 @@ final class LocalProductStoreTests: XCTestCase {
       80
     )
     XCTAssertFalse(String(decoding: sessionsData, as: UTF8.self).contains(fullMessage))
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testRoundtableMissionSessionRegistrySurvivesRestartWithOpaqueMetadataOnly()
+    async throws
+  {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-roundtable-registry-\(UUID().uuidString)")
+    let sessionsURL = directory.appendingPathComponent("chat-sessions.json")
+    let roundtablesURL = directory.appendingPathComponent("roundtable-sessions.json")
+    let first = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: sessionsURL,
+      roundtableSessionsFileURL: roundtablesURL
+    )
+    first.rememberRoundtableSession(
+      missionID: "mission/restart-safe",
+      sessionID: "rt-restart-safe"
+    )
+    first.rememberRoundtableSession(
+      missionID: " mission/invalid",
+      sessionID: "rt-must-not-persist"
+    )
+
+    let mode = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: roundtablesURL.path)[.posixPermissions]
+        as? NSNumber
+    ).intValue
+    XCTAssertEqual(mode & 0o777, 0o600)
+    let persisted = try Data(contentsOf: roundtablesURL)
+    let payload = String(decoding: persisted, as: UTF8.self)
+    let root = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: persisted) as? [String: Any]
+    )
+    let entries = try XCTUnwrap(root["sessions"] as? [[String: Any]])
+    XCTAssertEqual(entries.count, 1)
+    XCTAssertEqual(entries.first?["missionID"] as? String, "mission/restart-safe")
+    XCTAssertEqual(entries.first?["sessionID"] as? String, "rt-restart-safe")
+    XCTAssertFalse(payload.contains("rt-must-not-persist"))
+    XCTAssertFalse(payload.contains("private transcript content"))
+    XCTAssertFalse(payload.localizedCaseInsensitiveContains("api_key"))
+
+    let restarted = LocalProductStore(
+      client: ChatRecordingClient(),
+      chatSessionsFileURL: sessionsURL,
+      roundtableSessionsFileURL: roundtablesURL
+    )
+    XCTAssertEqual(
+      restarted.roundtableSessionID(forMissionID: "mission/restart-safe"),
+      "rt-restart-safe"
+    )
+    XCTAssertNil(restarted.roundtableSessionID(forMissionID: " mission/invalid"))
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testRoundtableExportUsesOwnerOnlyAtomicStorageInUserSelectedDirectory()
+    throws
+  {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-roundtable-export-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o755]
+    )
+    let exportURL = directory.appendingPathComponent("session.loom-roundtable")
+    let contents = Data(#"{"schema_version":1,"session_id":"session-1"}"#.utf8)
+
+    try writeLocalRoundtableExport(contents, to: exportURL)
+
+    XCTAssertEqual(try Data(contentsOf: exportURL), contents)
+    let mode = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: exportURL.path)[.posixPermissions]
+        as? NSNumber
+    ).intValue
+    XCTAssertEqual(mode & 0o777, 0o600)
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted(),
+      ["session.loom-roundtable"]
+    )
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testRoundtableExportRejectsSymlinkDestination() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-roundtable-export-symlink-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    let target = directory.appendingPathComponent("target.loom-roundtable")
+    let exportURL = directory.appendingPathComponent("linked.loom-roundtable")
+    try Data("protected".utf8).write(to: target)
+    XCTAssertEqual(chmod(target.path, 0o600), 0)
+    try FileManager.default.createSymbolicLink(at: exportURL, withDestinationURL: target)
+
+    XCTAssertThrowsError(
+      try writeLocalRoundtableExport(Data("replacement".utf8), to: exportURL)
+    )
+    XCTAssertEqual(try Data(contentsOf: target), Data("protected".utf8))
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  func testRoundtableExportAtomicallyReplacesSafeOwnerOnlyFile() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("loom-roundtable-export-replace-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    let exportURL = directory.appendingPathComponent("session.loom-roundtable")
+    try Data("old".utf8).write(to: exportURL)
+    XCTAssertEqual(chmod(exportURL.path, 0o600), 0)
+
+    try writeLocalRoundtableExport(Data("new".utf8), to: exportURL)
+
+    XCTAssertEqual(try Data(contentsOf: exportURL), Data("new".utf8))
+    let mode = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: exportURL.path)[.posixPermissions]
+        as? NSNumber
+    ).intValue
+    XCTAssertEqual(mode & 0o777, 0o600)
     try? FileManager.default.removeItem(at: directory)
   }
 
@@ -5908,6 +6812,292 @@ final class LocalProductStoreTests: XCTestCase {
     XCTAssertEqual(store.missionIDsLinkedToConversation("thread-missing"), [])
     try? FileManager.default.removeItem(at: directory)
   }
+
+  func testRoundtableErrorsExposeRecoveryStageAndIncident() {
+    let message = LocalProductStore.roundtableErrorMessage(
+      LocalIPCRemoteError(
+        code: .invalidRequest, recoverable: false,
+        stage: .daemonAdmission, incidentID: "roundtable-request-1",
+        safeMessage: "invalid request"
+      )
+    )
+    XCTAssertTrue(message.contains("Mission or Team link"), message)
+    XCTAssertTrue(message.contains("daemon_admission"), message)
+    XCTAssertTrue(message.contains("roundtable-request-1"), message)
+  }
+
+  @MainActor
+  func testRoundtableModelProposalInterventionsPreserveStableID() async {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString,
+      isDirectory: true
+    )
+    try? FileManager.default.createDirectory(
+      at: root,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let client = RoundtableInterventionRecordingClient()
+    let store = LocalProductStore(
+      client: client,
+      chatSessionsFileURL: root.appendingPathComponent("chat.json"),
+      missionPresentationsFileURL: root.appendingPathComponent("missions.json"),
+      roundtableSessionsFileURL: root.appendingPathComponent("roundtables.json")
+    )
+    let interventionID = "control-proposal-roundtable-1"
+
+    _ = await store.roundtablePauseRound(
+      sessionID: "session-1",
+      roundID: "round-1",
+      interventionID: interventionID
+    )
+    _ = await store.roundtableSteerSeat(
+      sessionID: "session-1",
+      roundID: "round-1",
+      seatID: "seat-1",
+      attemptID: "attempt-1",
+      guidance: "Keep the exact accepted scope.",
+      interventionID: interventionID
+    )
+    _ = await store.roundtableRetrySeat(
+      sessionID: "session-1",
+      roundID: "round-1",
+      seatID: "seat-1",
+      attemptID: "attempt-1",
+      guidance: "Retry with the accepted constraints.",
+      expectedMembershipRevision: 7,
+      expectedSeatBindingDigest: String(repeating: "b", count: 64),
+      interventionID: interventionID
+    )
+    _ = await store.roundtableSkipSeat(
+      sessionID: "session-1",
+      roundID: "round-1",
+      seatID: "seat-1",
+      expectedMembershipRevision: 7,
+      expectedSeatBindingDigest: String(repeating: "a", count: 64),
+      interventionID: interventionID
+    )
+
+    XCTAssertEqual(client.interventionIDs, Array(repeating: interventionID, count: 4))
+    XCTAssertEqual(client.retryRequests.first?.expectedMembershipRevision, 7)
+    XCTAssertEqual(
+      client.retryRequests.first?.expectedSeatBindingDigest,
+      String(repeating: "b", count: 64)
+    )
+    XCTAssertEqual(client.skipRequests.first?.expectedMembershipRevision, 7)
+    XCTAssertEqual(
+      client.skipRequests.first?.expectedSeatBindingDigest,
+      String(repeating: "a", count: 64)
+    )
+    let priorCount = client.interventionIDs.count
+    _ = await store.roundtablePauseRound(
+      sessionID: "session-1",
+      roundID: "round-1",
+      interventionID: "../../not-an-intervention"
+    )
+    XCTAssertEqual(client.interventionIDs.count, priorCount)
+  }
+
+  func testRoundtableFailureKeepsStructuredRemoteRecoveryEvidence() {
+    let failure = LocalProductStore.roundtableOperationFailure(
+      LocalIPCRemoteError(
+        code: .invalidRequest, recoverable: false,
+        stage: .daemonAdmission, incidentID: "roundtable-structured-1",
+        safeMessage: "invalid request"
+      ),
+      fallbackIncidentID: "roundtable-fallback"
+    )
+
+    XCTAssertEqual(failure.code, "invalid_request")
+    XCTAssertEqual(failure.stage, .daemonAdmission)
+    XCTAssertFalse(failure.recoverable)
+    XCTAssertEqual(failure.incidentID, "roundtable-structured-1")
+    XCTAssertTrue(failure.detail.contains("Mission or Team link"), failure.detail)
+    XCTAssertTrue(failure.recoveryAction.contains("Refresh Missions"))
+  }
+
+  func testRoundtableTransportFailureUsesRequestCorrelationAndRetryAction() {
+    let failure = LocalProductStore.roundtableOperationFailure(
+      LocalProductClientError.timeout,
+      fallbackIncidentID: "roundtable-request-correlation"
+    )
+
+    XCTAssertEqual(failure.code, "timeout")
+    XCTAssertEqual(failure.stage, .udsTransport)
+    XCTAssertTrue(failure.recoverable)
+    XCTAssertEqual(failure.incidentID, "roundtable-request-correlation")
+    XCTAssertTrue(failure.title.contains("Agent Team"), failure.title)
+    XCTAssertTrue(failure.recoveryAction.contains("retry automatically"))
+  }
+
+  func testRoundtableAgentInputCapabilityGapExplainsRetryRecovery() {
+    let message = LocalProductStore.roundtableErrorMessage(
+      LocalIPCRemoteError(
+        code: .capabilityGap, recoverable: false,
+        stage: .agentInputAdmission, incidentID: "roundtable-steer-unsupported",
+        safeMessage: "capability gap"
+      )
+    )
+    XCTAssertTrue(message.contains("cannot accept guidance while it is running"), message)
+    XCTAssertTrue(message.contains("Retry with guidance"), message)
+    XCTAssertTrue(message.contains("roundtable-steer-unsupported"), message)
+  }
+
+  func testRoundtableInitializingRuntimeIsPresentedAsAutomaticRecovery() {
+    let failure = LocalIPCRemoteError(
+      code: .stateUnavailable, recoverable: true,
+      stage: .agentRuntimeInitialization,
+      incidentID: "roundtable-runtime-starting"
+    )
+
+    XCTAssertTrue(LocalProductStore.roundtablePreparing(failure))
+    let message = LocalProductStore.roundtableErrorMessage(failure)
+    XCTAssertTrue(message.contains("still getting ready"), message)
+    XCTAssertTrue(message.contains("retry automatically"), message)
+    XCTAssertTrue(message.contains("agent_runtime_initialization"), message)
+    XCTAssertTrue(message.contains("roundtable-runtime-starting"), message)
+
+    XCTAssertFalse(
+      LocalProductStore.roundtablePreparing(
+        LocalIPCRemoteError(
+          code: .stateUnavailable, recoverable: true,
+          stage: .daemonAdmission, incidentID: "runtime-permanent"
+        )
+      )
+    )
+
+    for clientError in [
+      LocalProductClientError.unavailable,
+      LocalProductClientError.timeout,
+    ] {
+      XCTAssertTrue(LocalProductStore.roundtablePreparing(clientError))
+      let clientMessage = LocalProductStore.roundtableErrorMessage(clientError)
+      XCTAssertTrue(clientMessage.contains("still getting ready"), clientMessage)
+      XCTAssertTrue(clientMessage.contains("retry automatically"), clientMessage)
+      XCTAssertFalse(clientMessage.contains("error 4"), clientMessage)
+    }
+
+    XCTAssertFalse(
+      LocalProductStore.roundtablePreparing(LocalProductClientError.invalidResponse)
+    )
+    XCTAssertTrue(
+      LocalProductStore.roundtableErrorMessage(
+        LocalProductClientError.invalidResponse
+      )
+        .contains("unreadable discussion response")
+    )
+  }
+}
+
+private final class RoundtableInterventionRecordingClient:
+  LocalProductClientProtocol,
+  LocalRoundtableClientProtocol
+{
+  private(set) var interventionIDs: [String] = []
+  private(set) var retryRequests: [LocalRoundtableRetrySeatRequest] = []
+  private(set) var skipRequests: [LocalRoundtableSkipSeatRequest] = []
+
+  func snapshot(limit: Int) async throws -> LocalProductSnapshot {
+    .empty(viewVersion: String(repeating: "f", count: 64))
+  }
+
+  func timeline(
+    teamInstanceID: String,
+    cursor: String,
+    limit: Int
+  ) async throws -> LocalProductTimelinePage {
+    throw LocalProductClientError.notFound
+  }
+
+  func roundtablePauseRound(
+    _ request: LocalRoundtablePauseRoundRequest
+  ) async throws -> LocalRoundtableView {
+    interventionIDs.append(request.interventionID)
+    throw LocalProductClientError.unavailable
+  }
+
+  func roundtableSteerSeat(
+    _ request: LocalRoundtableSteerSeatRequest
+  ) async throws -> LocalRoundtableView {
+    interventionIDs.append(request.interventionID)
+    throw LocalProductClientError.unavailable
+  }
+
+  func roundtableRetrySeat(
+    _ request: LocalRoundtableRetrySeatRequest
+  ) async throws -> LocalRoundtableView {
+    interventionIDs.append(request.interventionID)
+    retryRequests.append(request)
+    throw LocalProductClientError.unavailable
+  }
+
+  func roundtableSkipSeat(
+    _ request: LocalRoundtableSkipSeatRequest
+  ) async throws -> LocalRoundtableView {
+    interventionIDs.append(request.interventionID)
+    skipRequests.append(request)
+    throw LocalProductClientError.unavailable
+  }
+
+  private func unsupported<Result>() throws -> Result {
+    throw LocalProductClientError.unavailable
+  }
+
+  func roundtableCreateSession(
+    _ request: LocalRoundtableSessionCreateRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableAddSeat(
+    _ request: LocalRoundtableAddSeatRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableRetireSeat(
+    _ request: LocalRoundtableRetireSeatRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableOpenRound(
+    _ request: LocalRoundtableOpenRoundRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableReplaceSeat(
+    _ request: LocalRoundtableReplaceSeatRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableExport(
+    _ request: LocalRoundtableExportRequest
+  ) async throws -> LocalRoundtableExportDocument { try unsupported() }
+
+  func roundtableImport(
+    _ request: LocalRoundtableImportRequest
+  ) async throws -> LocalRoundtableImportResult { try unsupported() }
+
+  func roundtableProposeMessage(
+    _ request: LocalRoundtableProposeMessageRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableRelayMessage(
+    _ request: LocalRoundtableRelayMessageRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableAckMessage(
+    _ request: LocalRoundtableAckMessageRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableInsertMessage(
+    _ request: LocalRoundtableInsertMessageRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableDropMessage(
+    _ request: LocalRoundtableDropMessageRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableConclude(
+    _ request: LocalRoundtableConcludeRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
+
+  func roundtableSnapshot(
+    _ request: LocalRoundtableSnapshotRequest
+  ) async throws -> LocalRoundtableView { try unsupported() }
 }
 
 private final class ToolRecoveryStubClient:
@@ -6465,6 +7655,7 @@ func timelinePage(
   hasMore: Bool,
   gap: Bool = false,
   records: [String],
+  nodes: [String] = [],
   attention: [String] = []
 ) throws -> LocalProductTimelinePage {
   let gapJSON =
@@ -6483,7 +7674,7 @@ func timelinePage(
      "has_more":\(hasMore),"gap":\(gapJSON),"records":[\(records.joined(separator: ","))],
      "board":{"schema_version":\(boardSchemaVersion),"team_instance_id":"\(boardTeamID ?? teamID)",
       "plan_digest":"","status":"\(boardStatus)",
-      "view_version":"\(boardViewVersion ?? viewVersion)","nodes":[],
+      "view_version":"\(boardViewVersion ?? viewVersion)","nodes":[\(nodes.joined(separator: ","))],
       "cost":{"observed":false,"amount_microunits":null,"currency":""}},
      "attention":[\(attention.joined(separator: ","))]}
     """
@@ -6532,6 +7723,7 @@ private final class ExecutionStubClient:
   private let additionalPreflightNodeStatus: String?
   private let suspendPreflight: Bool
   private let startResultStatus: String
+  private let preflightError: Error?
   private let startError: Error?
   private var snapshotAfterPreflight: LocalProductSnapshot?
   private var preflightStarted = false
@@ -6543,6 +7735,7 @@ private final class ExecutionStubClient:
     additionalPreflightNodeStatus: String? = nil,
     suspendPreflight: Bool = false,
     startResultStatus: String = "running",
+    preflightError: Error? = nil,
     startError: Error? = nil
   ) {
     fixedSnapshot = snapshot
@@ -6550,6 +7743,7 @@ private final class ExecutionStubClient:
     self.additionalPreflightNodeStatus = additionalPreflightNodeStatus
     self.suspendPreflight = suspendPreflight
     self.startResultStatus = startResultStatus
+    self.preflightError = preflightError
     self.startError = startError
   }
 
@@ -6608,6 +7802,7 @@ private final class ExecutionStubClient:
     commands.append(command)
     let body: String
     if command.operation == "preflight" {
+      if let preflightError { throw preflightError }
       preflightStarted = true
       if suspendPreflight {
         await withCheckedContinuation { continuation in
@@ -6715,6 +7910,7 @@ private final class ExecutionStubClient:
     }
     return try LocalProductExecutionWire.decodeEnvelope(Data(body.utf8))
   }
+
 }
 
 final class StubLocalProductClient: LocalProductClientProtocol {
@@ -6929,6 +8125,29 @@ private final class DecisionStubClient:
   }
 }
 
+actor ClaudeSetupSnapshotGate {
+  private var continuation: CheckedContinuation<Void, Never>?
+  private var released = false
+
+  func wait() async {
+    guard !released else { return }
+    await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func isWaiting() -> Bool {
+    continuation != nil
+  }
+
+  func release() {
+    released = true
+    let pending = continuation
+    continuation = nil
+    pending?.resume()
+  }
+}
+
 final class ProviderSetupStubClient:
   LocalProductClientProtocol,
   LocalProductSetupClientProtocol
@@ -6946,6 +8165,9 @@ final class ProviderSetupStubClient:
   private let materializesTeam: Bool
   private let builderConfirmError: LocalIPCRemoteError?
   private let deepSeekEnabled: Bool
+  private let claudeEnabled: Bool
+  private let claudeProfilePublishesAfterConnect: Bool
+  private let claudeSetupSnapshotGate: ClaudeSetupSnapshotGate?
   private let deepSeekConfigureError: LocalIPCRemoteError?
   private let vaultRotationError: LocalIPCRemoteError?
   private let vaultLockError: LocalIPCRemoteError?
@@ -6955,7 +8177,11 @@ final class ProviderSetupStubClient:
   private let providerPolicyError: LocalIPCRemoteError?
   private let providerRateCardError: LocalIPCRemoteError?
   private let remoteToolConfigureError: LocalIPCRemoteError?
+  private let teamMaterializationResult: LocalProductBuilderConfirmation?
+  private let onTeamMaterialize: (() -> Void)?
   private var deepSeekNeedsMigration: Bool
+  private var claudeConnected = false
+  private var emptyClaudeSetupSnapshotsAfterConnect: Int
   private var builderConfirmed = false
   private var deepSeekRevision: Int64 = 0
   private var deepSeekAccountID = "deepseek.primary"
@@ -6974,8 +8200,13 @@ final class ProviderSetupStubClient:
   private(set) var setupRequestCount = 0
   private(set) var productSnapshotRequestCount = 0
   private(set) var connectRequestCount = 0
+  private(set) var claudeConnectRequestCount = 0
+  private(set) var claudeConnectIncidentIDs: [String] = []
+  private(set) var claudeCancelRequestCount = 0
+  private(set) var claudeCancelIncidentIDs: [String] = []
   private(set) var verifyRequestCount = 0
   private(set) var builderConfirmRequestCount = 0
+  private(set) var teamMaterializeRequests: [(id: String, version: Int, digest: String)] = []
   private(set) var builderEdits: [(field: String, value: String)] = []
   private(set) var targetedBuilderEdits: [(
     field: String,
@@ -7032,6 +8263,10 @@ final class ProviderSetupStubClient:
     materializesTeam: Bool = false,
     builderConfirmError: LocalIPCRemoteError? = nil,
     deepSeekEnabled: Bool = false,
+    claudeEnabled: Bool = false,
+    claudeProfilePublishesAfterConnect: Bool = true,
+    emptyClaudeSetupSnapshotsAfterConnect: Int = 0,
+    claudeSetupSnapshotGate: ClaudeSetupSnapshotGate? = nil,
     deepSeekConfigureError: LocalIPCRemoteError? = nil,
     deepSeekMigrationRequired: Bool = false,
     vaultRotationError: LocalIPCRemoteError? = nil,
@@ -7042,7 +8277,9 @@ final class ProviderSetupStubClient:
     providerPolicyError: LocalIPCRemoteError? = nil,
     providerRateCardError: LocalIPCRemoteError? = nil,
     remoteToolEnrollmentConfigured: Bool = false,
-    remoteToolConfigureError: LocalIPCRemoteError? = nil
+    remoteToolConfigureError: LocalIPCRemoteError? = nil,
+    teamMaterializationResult: LocalProductBuilderConfirmation? = nil,
+    onTeamMaterialize: (() -> Void)? = nil
   ) throws {
     disconnected = try Self.snapshot(
       codexStatus: "not_logged_in",
@@ -7065,6 +8302,11 @@ final class ProviderSetupStubClient:
     self.materializesTeam = materializesTeam
     self.builderConfirmError = builderConfirmError
     self.deepSeekEnabled = deepSeekEnabled
+    self.claudeEnabled = claudeEnabled
+    self.claudeProfilePublishesAfterConnect = claudeProfilePublishesAfterConnect
+    self.claudeSetupSnapshotGate = claudeSetupSnapshotGate
+    self.emptyClaudeSetupSnapshotsAfterConnect =
+      emptyClaudeSetupSnapshotsAfterConnect
     self.deepSeekConfigureError = deepSeekConfigureError
     self.vaultRotationError = vaultRotationError
     self.vaultLockError = vaultLockError
@@ -7074,6 +8316,8 @@ final class ProviderSetupStubClient:
     self.providerPolicyError = providerPolicyError
     self.providerRateCardError = providerRateCardError
     self.remoteToolConfigureError = remoteToolConfigureError
+    self.teamMaterializationResult = teamMaterializationResult
+    self.onTeamMaterialize = onTeamMaterialize
     remoteToolEnrollmentRevision = remoteToolEnrollmentConfigured ? 1 : 0
     remoteToolEnrollmentStatus = remoteToolEnrollmentConfigured ? "active" : ""
     if remoteToolEnrollmentConfigured {
@@ -7125,6 +8369,20 @@ final class ProviderSetupStubClient:
     if emptySetupSnapshotsRemaining > 0 {
       emptySetupSnapshotsRemaining -= 1
       return try Self.emptySnapshot()
+    }
+    if claudeConnectRequestCount > 0, let claudeSetupSnapshotGate {
+      await claudeSetupSnapshotGate.wait()
+    }
+    if claudeConnected && emptyClaudeSetupSnapshotsAfterConnect > 0 {
+      emptyClaudeSetupSnapshotsAfterConnect -= 1
+      return try Self.emptySnapshot()
+    }
+    if claudeEnabled {
+      return try Self.snapshot(
+        codexStatus: "not_logged_in",
+        includeClaudeRuntime: true,
+        includeClaudeRoute: claudeConnected
+      )
     }
     if deepSeekEnabled {
       return try Self.snapshot(
@@ -7336,6 +8594,27 @@ final class ProviderSetupStubClient:
     return .fixture(status: "started")
   }
 
+  func connectClaudeCode(
+    incidentID: String
+  ) async throws -> LocalProductProviderConnectResult {
+    claudeConnectRequestCount += 1
+    claudeConnectIncidentIDs.append(incidentID)
+    guard claudeEnabled else { throw LocalProductClientError.unavailable }
+    claudeConnected = claudeProfilePublishesAfterConnect
+    return .fixture(providerID: "claude-code", status: "started")
+  }
+
+  func cancelClaudeCode(
+    incidentID: String
+  ) async throws -> LocalProductProviderConnectResult {
+    claudeCancelRequestCount += 1
+    claudeCancelIncidentIDs.append(incidentID)
+    await claudeSetupSnapshotGate?.release()
+    guard claudeEnabled else { throw LocalProductClientError.unavailable }
+    claudeConnected = false
+    return .fixture(providerID: "claude-code", status: "cancelled")
+  }
+
   func startBuilder(
     source: String,
     sourceID: String,
@@ -7419,6 +8698,21 @@ final class ProviderSetupStubClient:
         """.utf8
       )
     )
+  }
+
+  func materializeTeam(
+    teamDefinitionID: String,
+    teamDefinitionVersion: Int,
+    teamDefinitionDigest: String
+  ) async throws -> LocalProductBuilderConfirmation {
+    teamMaterializeRequests.append(
+      (teamDefinitionID, teamDefinitionVersion, teamDefinitionDigest)
+    )
+    guard let teamMaterializationResult else {
+      throw LocalProductClientError.unavailable
+    }
+    onTeamMaterialize?()
+    return teamMaterializationResult
   }
 
   func archiveTeam(
@@ -7649,7 +8943,9 @@ final class ProviderSetupStubClient:
     providerRateCardCacheRead: Int64 = 0,
     providerRateCardCacheWrite: Int64 = 0,
     remoteToolEnrollmentRevision: Int64 = 0,
-    remoteToolEnrollmentStatus: String = ""
+    remoteToolEnrollmentStatus: String = "",
+    includeClaudeRuntime: Bool = false,
+    includeClaudeRoute: Bool = false
   ) throws -> LocalProductSetupSnapshot {
     let rateCardsJSON = providerRateCardRevision > 0
       ? """
@@ -7664,6 +8960,16 @@ final class ProviderSetupStubClient:
     let providerAccountsJSON = deepSeekRevision > 0
       ? """
         [{"provider_id":"deepseek","provider_account_id":"\(deepSeekAccountID)","auth_mode":"brokered","credential_reference":"credential-ref-deepseek-1","revision":\(deepSeekRevision),"status":"\(deepSeekStatus ?? (deepSeekRevision == 1 ? "configured" : "verified"))","reason":"\(deepSeekStatus == "migration_required" ? "vault_entry_missing" : "")","policy_available":\(providerPolicyRevision > 0),"policy_version":\(providerPolicyRevision > 0 ? 2 : 0),"policy_revision":\(providerPolicyRevision),"policy_digest":"\(providerPolicyRevision > 0 ? String(repeating: "b", count: 64) : "")","maximum_concurrent_attempts":\(providerPolicyRevision > 0 ? 4 : 0),"dispatch_window_seconds":\(providerPolicyRevision > 0 ? 60 : 0),"maximum_dispatch_starts":\(providerPolicyRevision > 0 ? 20 : 0),"maximum_assigned_budget_units":\(providerPolicyRevision > 0 ? 12000 : 0),"trust_domain":"\(providerPolicyTrustDomain)","retention_mode":"\(providerPolicyRetentionMode)","data_region":"\(providerPolicyDataRegion)","rate_cards":\(rateCardsJSON),"remote_tool_backends":\(remoteToolsJSON)}]
+        """
+      : "[]"
+    let conversationProfilesJSON = includeClaudeRoute
+      ? """
+        [{"profile_id":"conversation-anthropic-claude-code-default-v1","harness_adapter":"claude-code","provider_id":"anthropic","provider_account_id":"","display_name":"Anthropic","protocol":"claude_code_agent","model_id":"claude-sonnet-5","auth_mode":"native_auth","credential_revision":0}]
+        """
+      : "[]"
+    let runtimesJSON = includeClaudeRuntime
+      ? """
+        [{"runtime_instance_id":"runtime.claude-code.local","display_name":"Claude Code","adapter_type":"claude-code","executable_version":"2.1.196","status":"online","capacity":3,"model_id":"claude-sonnet-5","model_ids":["claude-sonnet-5"],"observed_capabilities":["agent","native_auth"],"source_probe_id":"probe.claude-code"}]
         """
       : "[]"
     return try LocalProductSetupWire.decodeSnapshot(
@@ -7700,8 +9006,8 @@ final class ProviderSetupStubClient:
             }
           ],
           "provider_accounts": \(providerAccountsJSON),
-          "conversation_profiles": [],
-          "runtimes": [],
+          "conversation_profiles": \(conversationProfilesJSON),
+          "runtimes": \(runtimesJSON),
           "saved_teams": [],
           "templates": [],
           "role_options": [],
@@ -7730,6 +9036,7 @@ final class ProviderSetupStubClient:
     let data = try JSONSerialization.data(withJSONObject: object)
     return try LocalProductSetupWire.decodeSnapshot(data)
   }
+
 }
 
 private extension LocalProductRemoteToolBackendEnrollmentCommand {
@@ -7757,12 +9064,15 @@ private extension LocalProductRemoteToolBackendEnrollmentCommand {
 }
 
 extension LocalProductProviderConnectResult {
-  fileprivate static func fixture(status: String) -> Self {
+  fileprivate static func fixture(
+    providerID: String = "codex",
+    status: String
+  ) -> Self {
     try! LocalProductSetupWire.decodeProviderConnectResult(
       Data(
         """
         {
-          "provider_id": "codex",
+          "provider_id": "\(providerID)",
           "auth_mode": "native_auth",
           "status": "\(status)"
         }

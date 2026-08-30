@@ -25,6 +25,7 @@ import (
 )
 
 const (
+	ClaudeCodeRuntimeInstanceID   = "runtime.claude-code.local"
 	ClaudeCodeAdapterType         = "claude-code"
 	ClaudeCodeProviderID          = "anthropic"
 	ClaudeCodeModelID             = "claude-sonnet-5"
@@ -59,6 +60,7 @@ type HarnessProcessRequest struct {
 	Timeout         time.Duration
 	MaxOutputBytes  int
 	ContextMCP      HarnessContextMCPLease
+	ControlMCP      HarnessControlMCPLease
 	// NativeSessionID is a non-secret, frozen Harness-native conversation ID.
 	// ResumeNativeSession selects an existing ID; an ID without resume creates
 	// the first turn. Empty preserves the one-shot, non-persistent contract.

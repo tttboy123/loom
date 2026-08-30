@@ -8,8 +8,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"loom-pi-rebuild/internal/runtime/harnessadapter"
+	"loom-pi-rebuild/internal/runtime/piadapter"
 )
 
 const localAppServiceFlag = "--local-app-service"
@@ -249,7 +251,7 @@ func expandLocalAppServiceArgs(
 		"--device-id", "device.local",
 		"--display-name", "Pi "+version,
 		"--interval", "10s",
-		"--process-timeout", "10s",
+		"--process-timeout", "30s",
 		"--socket", filepath.Join(appSupport, "run", "loomd.sock"),
 	)
 	if codexExecutable != "" {
@@ -277,6 +279,9 @@ func expandLocalAppServiceArgs(
 		}
 		expanded = append(expanded, "--claude-executable", claudeExecutable)
 	}
+	expanded = appendLocalAppPiModelArgs(
+		expanded, home, piadapter.InspectPiLocalModelServerBinding,
+	)
 	credentialImportPath := filepath.Join(home, ".cc-switch", "cc-switch.db")
 	if _, err := os.Lstat(credentialImportPath); err == nil {
 		expanded = append(
@@ -285,6 +290,48 @@ func expandLocalAppServiceArgs(
 		)
 	}
 	return expanded, nil
+}
+
+type localAppPiModelInspector func(
+	piadapter.PiLocalModelServerConfig,
+) (piadapter.PiLocalModelServerBinding, error)
+
+func appendLocalAppPiModelArgs(
+	args []string,
+	home string,
+	inspect localAppPiModelInspector,
+) []string {
+	result := append([]string(nil), args...)
+	if inspect == nil || !filepath.IsAbs(home) || filepath.Clean(home) != home {
+		return result
+	}
+	root := filepath.Join(
+		home, "Library", "Application Support", "Loom", "phase1-live",
+	)
+	config := piadapter.PiLocalModelServerConfig{
+		PrivateRoot: root,
+		RuntimeArchivePath: filepath.Join(
+			root, "sources", "llama-b10107-bin-macos-arm64.tar.gz",
+		),
+		ExecutablePath: filepath.Join(
+			root, "runtime", "llama-b10107", "llama-server",
+		),
+		ModelPath: filepath.Join(
+			root, "models", "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+		),
+		Host: "127.0.0.1", Port: 18427,
+		StartupTimeout: 60 * time.Second, CancelGrace: 3 * time.Second,
+	}
+	if _, err := inspect(config); err != nil {
+		return result
+	}
+	return append(
+		result,
+		"--local-model-private-root", config.PrivateRoot,
+		"--local-model-runtime-archive", config.RuntimeArchivePath,
+		"--local-model-executable", config.ExecutablePath,
+		"--local-model-path", config.ModelPath,
+	)
 }
 
 func localAppRuntimeVersion(home, runtimeDir string) (string, bool) {

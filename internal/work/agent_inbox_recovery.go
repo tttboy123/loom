@@ -226,17 +226,12 @@ func (authority *AttemptLoopAuthority) restartSnapshots(
 		if !found {
 			return nil, ErrAttemptLoopConflict
 		}
-		if current.ClaimGeneration() > frozen.ClaimGeneration {
-			// A previous generation remains immutable history, not a resumable
-			// process in the new daemon generation.
-			continue
+		needsRecovery, err := attemptLoopNeedsRestartRecovery(loop, current)
+		if err != nil {
+			return nil, err
 		}
-		if current.ClaimGeneration() != frozen.ClaimGeneration ||
-			current.ClaimID() != frozen.ClaimID ||
-			current.RuntimeInstanceID() != frozen.RuntimeInstanceID ||
-			current.AgentInstanceID() != frozen.AgentInstanceID ||
-			current.ExecutionBinding().BindingDigest != frozen.ExecutionBindingDigest {
-			return nil, ErrAttemptLoopConflict
+		if !needsRecovery {
+			continue
 		}
 		run, err := authority.payloads.exactRun(ctx, loop.Binding.PayloadAuthority)
 		if err != nil {
@@ -245,14 +240,36 @@ func (authority *AttemptLoopAuthority) restartSnapshots(
 		if err := validateAttemptLoopBindingRun(loop.Binding, run); err != nil {
 			return nil, err
 		}
-		if current.Phase() != "running" {
-			continue
-		}
 		results = append(results, restartAttemptLoopSnapshot{
 			loop: loop, execution: run.ExecutionBinding(),
 		})
 	}
 	return results, nil
+}
+
+func attemptLoopNeedsRestartRecovery(
+	loop AttemptLoopSnapshot,
+	current RunRecord,
+) (bool, error) {
+	frozen := loop.Binding.PayloadAuthority
+	if current.ClaimGeneration() > frozen.ClaimGeneration {
+		// A previous generation remains immutable history, not a resumable
+		// process in the new daemon generation.
+		return false, nil
+	}
+	if current.ClaimGeneration() != frozen.ClaimGeneration ||
+		current.ClaimID() != frozen.ClaimID ||
+		current.RuntimeInstanceID() != frozen.RuntimeInstanceID ||
+		current.AgentInstanceID() != frozen.AgentInstanceID ||
+		current.ExecutionBinding().BindingDigest != frozen.ExecutionBindingDigest {
+		return false, ErrAttemptLoopConflict
+	}
+	// Terminal history is not a restart candidate, but its frozen binding must
+	// still match the authoritative snapshot before it is skipped.
+	if err := validateAttemptLoopBindingRun(loop.Binding, current); err != nil {
+		return false, err
+	}
+	return current.Phase() == "running", nil
 }
 
 func replayFrozenAttemptLoop(events []journal.Event) (AttemptLoopSnapshot, error) {

@@ -676,6 +676,7 @@ type productSetupRuntimeConfig struct {
 	CodexExecutable              string
 	ClaudeExecutable             string
 	OpenCodeExecutable           string
+	StatePath                    string
 	SocketPath                   string
 	UseCredentialVault           bool
 	CredentialStore              credentials.SecretStore
@@ -692,6 +693,24 @@ type productSetupRuntimeConfig struct {
 	ProviderAccountPolicies      app.ProviderAccountPolicyAuthority
 	ProviderModelRateCards       app.ProviderModelRateCardAuthority
 	RemoteToolBackendEnrollments app.RemoteToolBackendEnrollmentAuthority
+	ClaudeCodeNativeAuth         bool
+}
+
+func productPiConversationRouteEnabled(config productSetupRuntimeConfig) bool {
+	if responder, ok := config.ConversationResponder.(*productPiConversationResponder); ok {
+		return responder != nil
+	}
+	return nilProductAssetPort(config.ConversationResponder) &&
+		config.Execution != nil && config.Execution.LocalModelCatalog != nil
+}
+
+func productSetupConversationRouteCapabilities(
+	config productSetupRuntimeConfig,
+) app.SetupConversationRouteCapabilities {
+	return app.SetupConversationRouteCapabilities{
+		PiLocal:          productPiConversationRouteEnabled(config),
+		ClaudeCodeNative: config.ClaudeCodeNativeAuth,
+	}
 }
 
 type productCredentialAvailability interface {
@@ -710,6 +729,7 @@ type productMissionExecutionRuntimeConfig struct {
 	CodexExecutable         string
 	ClaudeExecutable        string
 	OpenCodeExecutable      string
+	HarnessRuntimeRefresh   func(context.Context) error
 	LocalModelCatalog       *piadapter.PiLocalModelCatalogConfig
 	CredentialStore         credentials.SecretStore
 	CredentialLeases        productCredentialLeaseAccess
@@ -763,6 +783,8 @@ func newProductSharedLocalModel(
 ) (*productSharedLocalModel, error) {
 	if !filepath.IsAbs(config.PrivateRoot) ||
 		filepath.Clean(config.PrivateRoot) != config.PrivateRoot ||
+		!filepath.IsAbs(config.RuntimeArchivePath) ||
+		filepath.Clean(config.RuntimeArchivePath) != config.RuntimeArchivePath ||
 		!filepath.IsAbs(config.ExecutablePath) ||
 		filepath.Clean(config.ExecutablePath) != config.ExecutablePath ||
 		!filepath.IsAbs(config.ModelPath) ||
@@ -791,13 +813,14 @@ func (runtime *productSharedLocalModel) BaseURL(ctx context.Context) (string, er
 	}
 	if runtime.server == nil {
 		server, err := runtime.start(ctx, piadapter.PiLocalModelServerConfig{
-			PrivateRoot:    runtime.config.PrivateRoot,
-			ExecutablePath: runtime.config.ExecutablePath,
-			ModelPath:      runtime.config.ModelPath,
-			Host:           "127.0.0.1",
-			Port:           18427,
-			StartupTimeout: 60 * time.Second,
-			CancelGrace:    3 * time.Second,
+			PrivateRoot:        runtime.config.PrivateRoot,
+			RuntimeArchivePath: runtime.config.RuntimeArchivePath,
+			ExecutablePath:     runtime.config.ExecutablePath,
+			ModelPath:          runtime.config.ModelPath,
+			Host:               "127.0.0.1",
+			Port:               18427,
+			StartupTimeout:     60 * time.Second,
+			CancelGrace:        3 * time.Second,
 		})
 		if err != nil {
 			return "", err
@@ -971,6 +994,17 @@ func (responder *productOpenCodeConversationResponder) RespondBound(
 }
 
 func productOpenCodeConversationFailure(err error) error {
+	if failure, ok := provider.ConversationFailureDetails(err); ok {
+		return api.NewLocalProductConversationDispatchErrorWithDetails(
+			api.LocalProductConversationDispatchFailureInfo{
+				Code: failure.Code, Stage: failure.Stage,
+				HTTPStatus: failure.HTTPStatus, ProviderCode: failure.ProviderCode,
+				UserMessage: failure.UserMessage, Retryable: failure.Retryable,
+				RetryAfterSeconds: failure.RetryAfterSeconds,
+			},
+			err,
+		)
+	}
 	info := api.LocalProductConversationDispatchFailureInfo{}
 	switch {
 	case errors.Is(err, provider.ErrOpenCodeConversationAuth):
@@ -1114,6 +1148,22 @@ func (responder *productPiConversationResponder) Respond(
 	ctx context.Context,
 	request api.LocalProductConversationRequest,
 ) (api.LocalProductConversationResponse, error) {
+	return responder.respond(ctx, request, nil)
+}
+
+func (responder *productPiConversationResponder) respondWithControl(
+	ctx context.Context,
+	request api.LocalProductConversationRequest,
+	control piadapter.PiRPCConversationControlConfig,
+) (api.LocalProductConversationResponse, error) {
+	return responder.respond(ctx, request, &control)
+}
+
+func (responder *productPiConversationResponder) respond(
+	ctx context.Context,
+	request api.LocalProductConversationRequest,
+	control *piadapter.PiRPCConversationControlConfig,
+) (api.LocalProductConversationResponse, error) {
 	if responder == nil || responder.runtime == nil || ctx == nil {
 		return api.LocalProductConversationResponse{}, app.ErrInvalidMissionExecution
 	}
@@ -1148,6 +1198,7 @@ func (responder *productPiConversationResponder) Respond(
 			BaseURL:           baseURL,
 			PrivateRoot:       responder.privateRoot,
 			MaxAssistantBytes: 4_096,
+			Control:           control,
 		},
 	)
 	if err != nil {
@@ -2031,6 +2082,7 @@ type productDaemonRunner struct {
 	journey      io.Closer
 	composition  *productCompatibilityComposition
 	health       *productRuntimeObservationHealth
+	afterReady   func(context.Context) error
 
 	mu           sync.Mutex
 	running      bool
@@ -2056,17 +2108,31 @@ func (health *productRuntimeObservationHealth) RuntimeObservationHealth() (
 	return health.reason, health.reason != ""
 }
 
-func (health *productRuntimeObservationHealth) recordTimeout(err error) {
+func (health *productRuntimeObservationHealth) recordObservationFailure(err error) {
 	if health == nil {
 		return
 	}
 	reason := observerFailureReason(err)
-	if reason != "observer_version_timeout" &&
-		reason != "observer_models_timeout" {
+	health.mu.Lock()
+	if reason == "observer_version_timeout" ||
+		reason == "observer_models_timeout" {
+		health.reason = reason
+	} else {
+		health.reason = ""
+	}
+	health.mu.Unlock()
+}
+
+func (health *productRuntimeObservationHealth) RuntimeObservationFailed(err error) {
+	health.recordObservationFailure(err)
+}
+
+func (health *productRuntimeObservationHealth) RuntimeObservationRecovered() {
+	if health == nil {
 		return
 	}
 	health.mu.Lock()
-	health.reason = reason
+	health.reason = ""
 	health.mu.Unlock()
 }
 
@@ -2154,6 +2220,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		}
 	}
 	setupConfig.SocketPath = socketPath
+	setupConfig.StatePath = statePath
 	coreRouteSlot := &productCoreRouteSlot{}
 	scopeRouteSlot := &productCapabilityScopeSlot{}
 	setupConfig.ConversationScopes = scopeRouteSlot
@@ -2238,9 +2305,6 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	}
 	coreRouteFactory := newProductCoreRouteFactory(productCoreConstructionConfig{
 		StatePath: statePath, Prepared: prepared,
-		ClaudeExecutable:   setupConfig.ClaudeExecutable,
-		CodexExecutable:    setupConfig.CodexExecutable,
-		OpenCodeExecutable: setupConfig.OpenCodeExecutable,
 	})
 	operationalDiagnostics, err := newProductOperationalDiagnosticBootstrap(
 		statePath,
@@ -2259,13 +2323,32 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	); err != nil {
 		return nil, newDaemonBuildFailure("build_diagnostics", err)
 	}
+	harnessRuntimeRefresher := newProductHarnessRuntimeRefresher(
+		coreRouteSlot,
+		setupConfig.ClaudeExecutable,
+		setupConfig.CodexExecutable,
+		setupConfig.OpenCodeExecutable,
+	)
+	if setupConfig.Execution != nil && harnessRuntimeRefresher != nil {
+		setupConfig.Execution.HarnessRuntimeRefresh = harnessRuntimeRefresher.Refresh
+	}
 	observabilityRouteSlot := &productObservabilityRouteSlot{}
 	observabilityRouteFactory := newProductObservabilityConstructionFactory(
 		operationalDiagnostics,
 	)
+	readRouteSlot := &productReadRouteSlot{}
+	setupRouteSlot := &productSetupRouteSlot{}
+	var agentRuntimeSlot *productAgentRuntimeRouteSlot
+	if setupConfig.Execution != nil {
+		agentRuntimeSlot = &productAgentRuntimeRouteSlot{}
+	}
 	conversationRouteSlot := &productConversationRouteSlot{}
 	conversationRouteFactory := newProductConversationConstructionFactoryFromCore(
 		statePath, setupConfig, coreRouteSlot, vaultRouteSlot, operationalDiagnostics,
+		productConversationControlMetadataSources{
+			Read: readRouteSlot, Setup: setupRouteSlot,
+			Roundtable: agentRuntimeSlot, Incidents: operationalDiagnostics,
+		},
 	)
 	governanceRouteSlot := &productGovernanceRouteSlot{}
 	var proposalStore toolproposal.Store
@@ -2279,12 +2362,17 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	setupConfig.ProviderModelRateCards = governanceRouteSlot
 	setupConfig.RemoteToolBackendEnrollments = governanceRouteSlot
 	runtimeHealth := &productRuntimeObservationHealth{}
-	readRouteSlot := &productReadRouteSlot{}
+	if configurable, ok := observer.(interface {
+		SetRuntimeObservationHealthReporter(app.RuntimeObservationHealthReporter) error
+	}); ok {
+		if err := configurable.SetRuntimeObservationHealthReporter(runtimeHealth); err != nil {
+			return nil, newDaemonBuildFailure("build_observer", err)
+		}
+	}
 	readRouteFactory := newProductReadRouteFactoryFromCore(
 		coreRouteSlot, governanceRouteSlot, runtimeHealth,
 		conversationRouteSlot, observabilityRouteSlot,
 	)
-	setupRouteSlot := &productSetupRouteSlot{}
 	setupRouteFactory := newProductSetupRouteFactoryFromCore(
 		coreRouteSlot, setupConfig,
 	)
@@ -2318,7 +2406,6 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	var agentInputRoute productAgentInputRoute
 	var handoffRoute productHandoffRoute
 	var savedTeamMaterializer productSavedTeamMaterializer
-	var agentRuntimeSlot *productAgentRuntimeRouteSlot
 	var agentRuntimeFactory func(context.Context) (productAgentRuntimeRoutes, error)
 	if setupConfig.Execution != nil {
 		setupConfig.Execution.Decisions = governanceRouteSlot
@@ -2347,7 +2434,6 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			}
 		}
 		setupConfig.Execution.Diagnostics = observabilityRouteSlot
-		agentRuntimeSlot = &productAgentRuntimeRouteSlot{}
 		agentRuntimeFactory = newProductAgentRuntimeFactoryFromCore(
 			coreRouteSlot, readRouteSlot, statePath, *setupConfig.Execution,
 			assetRouteSlot, workRouteSlot, conversationRouteSlot,
@@ -2370,6 +2456,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	localIPCFactory := newProductLocalIPCHandlerFactory(productRouteServices{
 		read: readRouteSlot, setup: setupRouteSlot, decision: governanceRouteSlot,
 		chatCancel:       conversationRouteSlot,
+		chatControl:      conversationRouteSlot,
 		missionExecution: missionExecutionRoute, roundtable: agentRuntimeSlot,
 		agentRecovery: agentRecoveryRoute, agentInput: agentInputRoute,
 		toolRecovery:          workRouteSlot,
@@ -2413,7 +2500,8 @@ func newProductDaemonRunnerWithPreparedDecisions(
 			assetSlot: assetRouteSlot, assetFactory: assetRouteFactory,
 			workSlot: workRouteSlot, workFactory: workRouteFactory,
 			agentRuntimeSlot: agentRuntimeSlot, agentRuntimeFactory: agentRuntimeFactory,
-			setupSlot: setupRouteSlot, setupFactory: setupRouteFactory,
+			deferAgentRuntime: agentRuntimeSlot != nil,
+			setupSlot:         setupRouteSlot, setupFactory: setupRouteFactory,
 			localIPCSlot: localIPCSlot, localIPCFactory: localIPCFactory,
 			diagnostics: operationalDiagnostics,
 		},
@@ -2438,6 +2526,22 @@ func newProductDaemonRunnerWithPreparedDecisions(
 	if err != nil {
 		return nil, newDaemonBuildFailure("build_ipc", err)
 	}
+	var afterReady func(context.Context) error
+	if harnessRuntimeRefresher != nil {
+		snapshotDigest := compositionRuntime.Snapshot().Digest
+		afterReady = func(ctx context.Context) error {
+			startedAt := time.Now()
+			refreshErr := harnessRuntimeRefresher.RefreshAfterReady(ctx)
+			diagnosticErr := recordProductHarnessRuntimeRefreshOutcome(
+				operationalDiagnostics,
+				refreshErr,
+				composition.ProfileDesktop,
+				snapshotDigest,
+				time.Since(startedAt),
+			)
+			return errors.Join(refreshErr, diagnosticErr)
+		}
+	}
 	return &productDaemonRunner{
 		observer:     observer,
 		server:       server,
@@ -2450,6 +2554,7 @@ func newProductDaemonRunnerWithPreparedDecisions(
 		journey:      journeyHarness,
 		composition:  compositionRuntime,
 		health:       runtimeHealth,
+		afterReady:   afterReady,
 	}, nil
 }
 
@@ -2708,18 +2813,19 @@ func productAgentDefinitionDigest(definition agents.AgentDefinition) (string, er
 }
 
 type productMissionExecutionBundle struct {
-	backend            *app.AuthoritativeMissionExecutionBackend
-	evidence           *evidence.Store
-	observers          productReadRoute
-	roundtable         productRoundtableRoute
-	handoff            *api.LocalProductHandoffAPI
-	agentInput         *productAgentInputIngress
-	handoffService     *app.LocalProductHandoffService
-	workAuthority      *work.Authority
-	recoveryTerminal   *productAttemptRecoveryTerminalReconciler
-	recoveryAuthority  *work.AgentAttemptRecoveryAuthority
-	recoveryCompletion *productAgentAttemptRecoveryCompletion
-	agentRecovery      *productAgentAttemptRecoveryService
+	backend             *app.AuthoritativeMissionExecutionBackend
+	evidence            *evidence.Store
+	observers           productReadRoute
+	roundtable          productRoundtableRoute
+	roundtableExecution *productRoundtableExecution
+	handoff             *api.LocalProductHandoffAPI
+	agentInput          *productAgentInputIngress
+	handoffService      *app.LocalProductHandoffService
+	workAuthority       *work.Authority
+	recoveryTerminal    *productAttemptRecoveryTerminalReconciler
+	recoveryAuthority   *work.AgentAttemptRecoveryAuthority
+	recoveryCompletion  *productAgentAttemptRecoveryCompletion
+	agentRecovery       *productAgentAttemptRecoveryService
 
 	mu     sync.Mutex
 	closed bool
@@ -2737,6 +2843,10 @@ func (bundle *productMissionExecutionBundle) Close() error {
 	bundle.closed = true
 	bundle.mu.Unlock()
 	var backendErr error
+	var roundtableErr error
+	if bundle.roundtableExecution != nil {
+		roundtableErr = bundle.roundtableExecution.Close()
+	}
 	if bundle.backend != nil {
 		backendErr = bundle.backend.Close()
 	}
@@ -2748,7 +2858,7 @@ func (bundle *productMissionExecutionBundle) Close() error {
 	if bundle.observers != nil {
 		observerErr = bundle.observers.CloseMissionExecutionObservers()
 	}
-	return errors.Join(backendErr, observerErr, evidenceErr)
+	return errors.Join(roundtableErr, backendErr, observerErr, evidenceErr)
 }
 
 type productMissionExecutionRunner struct {
@@ -2934,6 +3044,10 @@ func (adapter *productPiRuntimeAdapter) RuntimeInstanceID() string {
 		return ""
 	}
 	return adapter.delegate.RuntimeInstanceID()
+}
+
+func (adapter *productPiRuntimeAdapter) AcceptsAgentInputs() bool {
+	return adapter != nil && productRuntimeAcceptsAgentInputs(adapter.delegate)
 }
 
 func (adapter *productPiRuntimeAdapter) Execute(
@@ -3719,10 +3833,11 @@ func (adapter *productDeferredPiRuntimeAdapter) load(
 		server, err = piadapter.StartPiLocalModelServer(
 			ctx,
 			piadapter.PiLocalModelServerConfig{
-				PrivateRoot:    adapter.config.LocalModelCatalog.PrivateRoot,
-				ExecutablePath: adapter.config.LocalModelCatalog.ExecutablePath,
-				ModelPath:      adapter.config.LocalModelCatalog.ModelPath,
-				Host:           "127.0.0.1", Port: 18427,
+				PrivateRoot:        adapter.config.LocalModelCatalog.PrivateRoot,
+				RuntimeArchivePath: adapter.config.LocalModelCatalog.RuntimeArchivePath,
+				ExecutablePath:     adapter.config.LocalModelCatalog.ExecutablePath,
+				ModelPath:          adapter.config.LocalModelCatalog.ModelPath,
+				Host:               "127.0.0.1", Port: 18427,
 				StartupTimeout: 60 * time.Second,
 				CancelGrace:    3 * time.Second,
 			},
@@ -3827,6 +3942,34 @@ func resolveProductPiExecutable(searchPaths []string) (string, error) {
 	return "", app.ErrInvalidMissionExecution
 }
 
+func ensureProductMissionRuntimeProjection(
+	ctx context.Context,
+	store *journal.Store,
+	readModel *projection.Projection,
+	now func() time.Time,
+	config productMissionExecutionRuntimeConfig,
+) error {
+	if config.HarnessRuntimeRefresh != nil {
+		return config.HarnessRuntimeRefresh(ctx)
+	}
+	if now == nil {
+		return app.ErrInvalidMissionExecution
+	}
+	if err := ensureProductVerifiedNativeAgentRuntimes(
+		ctx, store, readModel, now(),
+	); err != nil {
+		return err
+	}
+	if err := ensureProductVerifiedClaudeCodeAgentRuntime(
+		ctx, store, readModel, now(), config.ClaudeExecutable,
+	); err != nil {
+		return err
+	}
+	return ensureProductVerifiedCodexAgentRuntime(
+		ctx, store, readModel, now(), config.CodexExecutable,
+	)
+}
+
 func buildProductMissionExecutionAPI(
 	ctx context.Context,
 	store *journal.Store,
@@ -3883,21 +4026,8 @@ func buildProductMissionExecutionAPI(
 			return nil, nil, app.ErrInvalidMissionExecution
 		}
 		failureStage = "runtime_projection"
-		if err := ensureProductVerifiedNativeAgentRuntimes(
-			ctx,
-			store,
-			readModel,
-			now(),
-		); err != nil {
-			return nil, nil, err
-		}
-		if err := ensureProductVerifiedClaudeCodeAgentRuntime(
-			ctx, store, readModel, now(), config.ClaudeExecutable,
-		); err != nil {
-			return nil, nil, err
-		}
-		if err := ensureProductVerifiedCodexAgentRuntime(
-			ctx, store, readModel, now(), config.CodexExecutable,
+		if err := ensureProductMissionRuntimeProjection(
+			ctx, store, readModel, now, config,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -3936,6 +4066,15 @@ func buildProductMissionExecutionAPI(
 			_ = evidenceStore.Close()
 		}
 	}()
+	missionOutputs, err := newProductMissionAttemptOutputSource(
+		evidenceStore, readModel, now,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := readService.SetMissionAttemptOutputSource(missionOutputs); err != nil {
+		return nil, nil, err
+	}
 	failureStage = "work_authority"
 	workAuthority, err := work.NewAuthority(store, now, rand.Reader)
 	if err != nil {
@@ -3950,8 +4089,16 @@ func buildProductMissionExecutionAPI(
 	if err != nil {
 		return nil, nil, err
 	}
+	failureStage = "roundtable_attempt_reconcile"
+	if _, err := roundtableAuthority.ReconcileInterruptedAttempts(
+		ctx,
+		productDeterministicUUID("roundtable-attempt-reconcile", now().UTC().Format(time.RFC3339Nano)),
+	); err != nil {
+		return nil, nil, err
+	}
 	roundtableController, err := newProductRoundtableController(
 		roundtableAuthority, now,
+		newProductProjectedRoundtableBindingResolver(readModel),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -4192,6 +4339,22 @@ func buildProductMissionExecutionAPI(
 		config:         config,
 		workspaceRoot:  workspaceRoot,
 	}
+	var roundtableExecution *productRoundtableExecution
+	if config.ContextCapsules != nil && config.AttemptPayloadStore != nil {
+		var executionErr error
+		roundtableExecution, executionErr = newProductRoundtableExecution(
+			roundtableAuthority, productRoundtableMissionRunner{delegate: runner},
+			config.ContextCapsules,
+			config.AttemptPayloadStore, activeAttempts,
+			newProductProjectedRoundtableMissionContextSource(readModel), sourcePath, now,
+		)
+		if executionErr != nil {
+			return nil, nil, executionErr
+		}
+		if executionErr = roundtableController.SetExecution(roundtableExecution); executionErr != nil {
+			return nil, nil, executionErr
+		}
+	}
 	parentGate, err := app.NewProjectionParentContinuationGate(readModel)
 	if err != nil {
 		return nil, nil, err
@@ -4210,15 +4373,16 @@ func buildProductMissionExecutionAPI(
 		return nil, nil, err
 	}
 	bundle := &productMissionExecutionBundle{
-		backend:            backend,
-		evidence:           evidenceStore,
-		observers:          readService,
-		roundtable:         roundtableController,
-		workAuthority:      workAuthority,
-		recoveryTerminal:   recoveryTerminal,
-		recoveryAuthority:  recoveryServices.authority,
-		recoveryCompletion: recoveryServices.completion,
-		agentRecovery:      agentRecovery,
+		backend:             backend,
+		evidence:            evidenceStore,
+		observers:           readService,
+		roundtable:          roundtableController,
+		roundtableExecution: roundtableExecution,
+		workAuthority:       workAuthority,
+		recoveryTerminal:    recoveryTerminal,
+		recoveryAuthority:   recoveryServices.authority,
+		recoveryCompletion:  recoveryServices.completion,
+		agentRecovery:       agentRecovery,
 	}
 	if agentInboxCoordinator != nil {
 		bundle.agentInput, err = newProductAgentInputIngress(
@@ -4228,12 +4392,19 @@ func buildProductMissionExecutionAPI(
 			_ = bundle.Close()
 			return nil, nil, err
 		}
+		if roundtableExecution != nil {
+			if err = roundtableController.SetAgentInput(bundle.agentInput); err != nil {
+				_ = bundle.Close()
+				return nil, nil, err
+			}
+		}
 	}
 	failureStage = "mission_resume"
 	if err := backend.ResumeProjectedMissions(ctx); err != nil {
 		_ = bundle.Close()
 		return nil, nil, err
 	}
+	failureStage = "handoff_services"
 	sideBindings, err := app.NewProjectionSideTaskExecutionBindingSource(bindings)
 	if err != nil {
 		_ = bundle.Close()
@@ -5047,6 +5218,90 @@ func (observer productNativeAuthObserver) ObserveNativeAuth(
 
 type productNativeAuthConnector struct {
 	controller provider.CodexLoginController
+	observer   *provider.CodexNativeAuthObserver
+	snapshot   *productNativeAuthSnapshotObserver
+}
+
+type productClaudeCodeNativeAuthObserver struct {
+	executablePath string
+	homePath       string
+	tempPath       string
+	commands       harnessadapter.HarnessCommandRunner
+	timeout        time.Duration
+}
+
+func (observer productClaudeCodeNativeAuthObserver) ObserveNativeAuth(
+	ctx context.Context,
+) (app.NativeAuthObservation, error) {
+	ready, err := harnessadapter.ObserveClaudeCodeNativeAuth(
+		ctx, observer.executablePath, observer.homePath, observer.tempPath,
+		observer.commands, observer.timeout,
+	)
+	if err != nil {
+		return app.NativeAuthObservation{}, err
+	}
+	if ready {
+		return app.NativeAuthObservation{Status: "available", AuthMode: "native_auth"}, nil
+	}
+	return app.NativeAuthObservation{
+		Status: "not_logged_in", AuthMode: "native_auth", Reason: "not_logged_in",
+	}, nil
+}
+
+type productClaudeCodeNativeAuthConnector struct {
+	controller harnessadapter.ClaudeCodeLoginController
+	snapshot   *productNativeAuthSnapshotObserver
+}
+
+func (connector productClaudeCodeNativeAuthConnector) StartNativeAuth(
+	ctx context.Context,
+) error {
+	if connector.controller == nil {
+		return app.ErrNativeAuthConnectUnavailable
+	}
+	if connector.snapshot != nil {
+		connector.snapshot.Invalidate()
+	}
+	err := connector.controller.Start(ctx)
+	if connector.snapshot != nil {
+		connector.snapshot.Invalidate()
+	}
+	switch {
+	case errors.Is(err, harnessadapter.ErrClaudeCodeLoginBusy):
+		return app.ErrNativeAuthConnectBusy
+	case errors.Is(err, harnessadapter.ErrClaudeCodeLoginUnavailable),
+		errors.Is(err, harnessadapter.ErrClaudeCodeExecutableIdentityChanged),
+		errors.Is(err, harnessadapter.ErrInvalidClaudeCodeLoginController):
+		return app.ErrNativeAuthConnectUnavailable
+	default:
+		return err
+	}
+}
+
+func (connector productClaudeCodeNativeAuthConnector) CancelNativeAuth(
+	ctx context.Context,
+) error {
+	if connector.controller == nil || ctx == nil || ctx.Err() != nil {
+		return app.ErrNativeAuthConnectUnavailable
+	}
+	err := connector.controller.Cancel()
+	if connector.snapshot != nil {
+		connector.snapshot.Invalidate()
+	}
+	switch {
+	case errors.Is(err, harnessadapter.ErrClaudeCodeLoginUnavailable),
+		errors.Is(err, harnessadapter.ErrInvalidClaudeCodeLoginController):
+		return app.ErrNativeAuthConnectUnavailable
+	default:
+		return err
+	}
+}
+
+func (connector productClaudeCodeNativeAuthConnector) Close() error {
+	if connector.controller == nil {
+		return nil
+	}
+	return connector.controller.Close()
 }
 
 func (connector productNativeAuthConnector) StartNativeAuth(
@@ -5055,7 +5310,19 @@ func (connector productNativeAuthConnector) StartNativeAuth(
 	if connector.controller == nil {
 		return app.ErrNativeAuthConnectUnavailable
 	}
+	if connector.observer != nil {
+		connector.observer.Invalidate()
+	}
+	if connector.snapshot != nil {
+		connector.snapshot.Invalidate()
+	}
 	result, err := connector.controller.Start(ctx)
+	if connector.observer != nil {
+		connector.observer.Invalidate()
+	}
+	if connector.snapshot != nil {
+		connector.snapshot.Invalidate()
+	}
 	switch {
 	case errors.Is(err, provider.ErrCodexLoginBusy):
 		return app.ErrNativeAuthConnectBusy
@@ -5432,8 +5699,12 @@ func buildProductSetupService(
 		}
 	}
 	var (
-		native          *provider.CodexNativeAuthObserver
-		nativeConnector app.NativeAuthConnector
+		native               *provider.CodexNativeAuthObserver
+		nativeSnapshot       app.NativeAuthObserver
+		nativeConnector      app.NativeAuthConnector
+		claudeNative         app.NativeAuthObserver
+		claudeNativeSnapshot app.NativeAuthObserver
+		claudeConnector      app.NativeAuthConnector
 	)
 	if config.CodexExecutable != "" {
 		resolvedCodexExecutable, resolveErr := provider.ResolveCodexNativeExecutable(
@@ -5446,8 +5717,8 @@ func buildProductSetupService(
 			provider.CodexNativeAuthConfig{
 				ExecutablePath: resolvedCodexExecutable,
 				Timeout:        5 * time.Second,
-				MaxOutputBytes: 4096,
-				Runner:         provider.NewSystemCodexStatusRunner(),
+				MaxOutputBytes: 64 * 1024,
+				Runner:         provider.NewSystemCodexNativeAuthProbeRunner(),
 			},
 		)
 		if err != nil {
@@ -5462,8 +5733,57 @@ func buildProductSetupService(
 		if controllerErr != nil {
 			return nil, newDaemonBuildFailure("build_setup_native_auth", controllerErr)
 		}
+		snapshot, snapshotErr := newProductNativeAuthSnapshotObserver(
+			productNativeAuthObserver{observer: native},
+			app.NativeAuthObservation{
+				Status: "unavailable", AuthMode: "native_auth", Reason: "unavailable",
+			},
+			6*time.Second, 30*time.Second, 2*time.Second,
+		)
+		if snapshotErr != nil {
+			return nil, newDaemonBuildFailure("build_setup_native_auth_snapshot", snapshotErr)
+		}
+		nativeSnapshot = snapshot
+		snapshot.Warm()
 		nativeConnector = productNativeAuthConnector{
-			controller: controller,
+			controller: controller, observer: native, snapshot: snapshot,
+		}
+	}
+	if config.ClaudeExecutable != "" && filepath.IsAbs(config.StatePath) {
+		homePath, homeErr := os.UserHomeDir()
+		tempPath := filepath.Dir(config.StatePath)
+		if homeErr == nil && filepath.IsAbs(homePath) && filepath.IsAbs(tempPath) {
+			claudeObserver := productClaudeCodeNativeAuthObserver{
+				executablePath: config.ClaudeExecutable,
+				homePath:       homePath, tempPath: tempPath,
+				commands: harnessadapter.NewSystemHarnessCommandRunner(),
+				timeout:  10 * time.Second,
+			}
+			claudeNative = claudeObserver
+			snapshot, snapshotErr := newProductNativeAuthSnapshotObserver(
+				claudeObserver,
+				app.NativeAuthObservation{
+					Status: "unavailable", AuthMode: "native_auth", Reason: "unavailable",
+				},
+				11*time.Second, 30*time.Second, 2*time.Second,
+			)
+			if snapshotErr != nil {
+				return nil, newDaemonBuildFailure("build_setup_claude_auth_snapshot", snapshotErr)
+			}
+			claudeNativeSnapshot = snapshot
+			snapshot.Warm()
+			controller, controllerErr := harnessadapter.NewSystemClaudeCodeLoginController(
+				harnessadapter.ClaudeCodeLoginControllerConfig{
+					ExecutablePath: config.ClaudeExecutable,
+					HomePath:       homePath, TempPath: tempPath,
+					Timeout: 10 * time.Minute,
+				},
+			)
+			if controllerErr == nil {
+				claudeConnector = productClaudeCodeNativeAuthConnector{
+					controller: controller, snapshot: snapshot,
+				}
+			}
 		}
 	}
 	credentialStatus := productCredentialStatusSource{
@@ -5477,21 +5797,26 @@ func buildProductSetupService(
 	}
 	setup, err := app.NewLocalProductSetupService(
 		app.LocalProductSetupConfig{
-			Journal:                      store,
-			Projection:                   readModel,
-			Writer:                       writer,
-			Catalog:                      catalog,
-			CatalogSource:                productSetupCatalogSource{},
-			Identity:                     productSetupIdentity{},
-			Now:                          func() time.Time { return time.Now().UTC() },
-			NativeAuth:                   productNativeAuthObserver{observer: native},
-			NativeAuthConnector:          nativeConnector,
-			Credentials:                  credentialStatus,
-			CredentialVault:              credentialVault,
-			CredentialImports:            config.CredentialImports,
-			ProviderAccountPolicies:      config.ProviderAccountPolicies,
-			ProviderModelRateCards:       config.ProviderModelRateCards,
-			RemoteToolBackendEnrollments: config.RemoteToolBackendEnrollments,
+			Journal:                       store,
+			Projection:                    readModel,
+			Writer:                        writer,
+			Catalog:                       catalog,
+			CatalogSource:                 productSetupCatalogSource{},
+			Identity:                      productSetupIdentity{},
+			Now:                           func() time.Time { return time.Now().UTC() },
+			NativeAuth:                    productNativeAuthObserver{observer: native},
+			NativeAuthSnapshot:            nativeSnapshot,
+			NativeAuthConnector:           nativeConnector,
+			ClaudeCodeNativeAuth:          claudeNative,
+			ClaudeCodeNativeAuthSnapshot:  claudeNativeSnapshot,
+			ClaudeCodeNativeAuthConnector: claudeConnector,
+			Credentials:                   credentialStatus,
+			CredentialVault:               credentialVault,
+			CredentialImports:             config.CredentialImports,
+			ProviderAccountPolicies:       config.ProviderAccountPolicies,
+			ProviderModelRateCards:        config.ProviderModelRateCards,
+			RemoteToolBackendEnrollments:  config.RemoteToolBackendEnrollments,
+			ConversationRoutes:            productSetupConversationRouteCapabilities(config),
 			CredentialMutator: &productCredentialMutator{
 				status:   credentialStatus,
 				delegate: credentialDelegate,
@@ -5584,7 +5909,9 @@ func productSetupCatalogForView(
 				identity, adaptErr := provider.OpenCodeModelIdentity(
 					definition.ProviderID, definition.ModelID,
 				)
-				if adaptErr != nil || productAgentContainsString(modelIDs, identity) {
+				if adaptErr != nil ||
+					!provider.OpenCodeBrokeredModelSupported(definition.ProviderID, identity) ||
+					productAgentContainsString(modelIDs, identity) {
 					continue
 				}
 				modelIDs = append(modelIDs, identity)
@@ -5996,7 +6323,8 @@ func productSetupCatalogForView(
 			modelIdentity, err := provider.OpenCodeModelIdentity(
 				definition.ProviderID, definition.ModelID,
 			)
-			if err != nil {
+			if err != nil ||
+				!provider.OpenCodeBrokeredModelSupported(definition.ProviderID, modelIdentity) {
 				continue
 			}
 			if !productAgentContainsString(copy.ModelIDs, modelIdentity) {
@@ -6436,6 +6764,7 @@ func (materializer *productSavedTeamMaterialization) MaterializeConfirmedTeam(
 	if err := materializer.projection.Rebuild(ctx); err != nil {
 		return app.BuilderConfirmation{}, app.ErrInvalidLocalProductSetup
 	}
+	confirmation.TeamInstanceID = identity.TeamInstanceID
 	confirmation.TeamInstanceCreated = true
 	return confirmation, nil
 }
@@ -6674,6 +7003,18 @@ func (runner *productDaemonRunner) Run(
 		}
 		return app.LocalRuntimeObservationDaemonResult{}, ctx.Err()
 	}
+	var afterReadyDone chan struct{}
+	if runner.afterReady != nil {
+		afterReadyDone = make(chan struct{})
+		go func() {
+			defer close(afterReadyDone)
+			_ = runner.afterReady(runContext)
+		}()
+		defer func() {
+			cancel()
+			<-afterReadyDone
+		}()
+	}
 
 	type observerOutcome struct {
 		result app.LocalRuntimeObservationDaemonResult
@@ -6688,7 +7029,7 @@ func (runner *productDaemonRunner) Run(
 	select {
 	case outcome := <-observerDone:
 		if containableProductObserverTimeout(outcome.err) {
-			runner.health.recordTimeout(outcome.err)
+			runner.health.recordObservationFailure(outcome.err)
 			select {
 			case serverErr := <-serverDone:
 				return outcome.result, classifyProductDaemonFailure(
@@ -6906,11 +7247,14 @@ func productSetupMethod(method string) bool {
 		"remote_tool_backend_enrollment_configure",
 		"remote_tool_backend_enrollment_revoke",
 		"codex_connect",
+		"claude_code_cancel",
+		"claude_code_connect",
 		"builder_start",
 		"builder_answer",
 		"builder_edit",
 		"builder_validate",
 		"builder_confirm",
+		"team_materialize",
 		"team_archive",
 		"team_restore",
 		"credential_configure",
@@ -7108,6 +7452,9 @@ func productJourneyServiceError(journeyID string, err error) localipc.Response {
 }
 
 func productServiceError(err error) localipc.Response {
+	if response, ok := productAgentRuntimeServiceError(err); ok {
+		return response
+	}
 	switch {
 	case errors.Is(err, api.ErrInvalidLocalProductRequest),
 		errors.Is(err, api.ErrInvalidLocalProductChatRequest),
@@ -7245,6 +7592,22 @@ func productServiceError(err error) localipc.Response {
 	}
 }
 
+func productAgentRuntimeServiceError(err error) (localipc.Response, bool) {
+	var unavailable *productAgentRuntimeUnavailableError
+	if !errors.As(err, &unavailable) || unavailable == nil {
+		return localipc.Response{}, false
+	}
+	response := productErrorResponse("state_unavailable", err)
+	if response.Error != nil {
+		response.Error.Stage = productDiagnosticStageDaemonAdmission
+		response.Error.Recoverable = true
+		if unavailable.stage == "construction" {
+			response.Error.Stage = productAgentRuntimeInitializationStage
+		}
+	}
+	return response, true
+}
+
 func sideTaskServiceError(err error) localipc.Response {
 	response := productServiceError(err)
 	if response.Error == nil {
@@ -7287,6 +7650,14 @@ func productConversationServiceError(err error) localipc.Response {
 	}
 	response := productServiceError(err)
 	return productConversationResponseStage(response, "conversation_dispatch")
+}
+
+func productSetupServiceError(err error) localipc.Response {
+	response := productServiceError(err)
+	if response.Error != nil && response.Error.Stage == "" {
+		response.Error.Stage = "daemon_admission"
+	}
+	return response
 }
 
 func productConversationResponseStage(
@@ -7454,16 +7825,23 @@ func localipcSafeError(code string, cause error) *localipc.ProtocolError {
 			"workspace publication failed",
 			true,
 		},
-		"degraded":          {"production state degraded; writes blocked", true},
-		"timeout":           {"request timed out", true},
-		"not_moderator":     {"roundtable seat is not the moderator", false},
-		"seat_unavailable":  {"roundtable seat unavailable", false},
-		"concluded":         {"roundtable session already concluded", false},
-		"invalid_body":      {"roundtable message body exceeds the bounded limit", false},
-		"invalid_digest":    {"roundtable digest is not a valid SHA-256", false},
-		"too_many_messages": {"roundtable round has too many messages", false},
-		"too_many_seats":    {"roundtable session has too many seats", false},
-		"internal":          {"internal error", true},
+		"degraded":              {"production state degraded; writes blocked", true},
+		"timeout":               {"request timed out", true},
+		"not_moderator":         {"roundtable seat is not the moderator", false},
+		"seat_unavailable":      {"roundtable seat unavailable", false},
+		"concluded":             {"roundtable session already concluded", false},
+		"invalid_body":          {"roundtable message body exceeds the bounded limit", false},
+		"invalid_digest":        {"roundtable digest is not a valid SHA-256", false},
+		"too_many_messages":     {"roundtable round has too many messages", false},
+		"too_many_seats":        {"roundtable session has too many seats", false},
+		"seat_count_invalid":    {"roundtable requires two to six Agent seats", false},
+		"binding_invalid":       {"roundtable Agent route binding is invalid", false},
+		"attempt_invalid":       {"roundtable Agent attempt could not start", true},
+		"intervention_invalid":  {"roundtable intervention is invalid", false},
+		"intervention_conflict": {"roundtable intervention conflicts with current state", true},
+		"intervention_required": {"resolve, retry, replace, or skip blocked Agents before accepting", true},
+		"export_invalid":        {"roundtable file is invalid, expired, or was changed", false},
+		"internal":              {"internal error", true},
 	}
 	definition, ok := messages[code]
 	if !ok {

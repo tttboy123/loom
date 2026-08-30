@@ -23,5 +23,7 @@
 | [0019](0019-per-agent-execution-profiles-and-provider-accounts.md) | Per-Agent execution profiles and Provider Accounts | accepted | 2026-08-09 |
 | [0020](0020-loom-owned-credential-vault.md) | Loom-owned Credential Vault | accepted | 2026-08-10 |
 | [0021](0021-governed-composition-kernel-and-daemon-strangler.md) | Governed composition kernel and daemon strangler migration | accepted | 2026-08-14 |
+| [0022](0022-harness-gateway-and-segment-session.md) | Harness Gateway and Segment Session | accepted | 2026-08-24 |
+| [0023](0023-model-driven-loom-control-tools.md) | Model-driven Loom control tools and governed proposals | accepted | 2026-08-28 |
 
 New decisions use [template.md](template.md). Superseded decisions remain in this index and link to their replacement.

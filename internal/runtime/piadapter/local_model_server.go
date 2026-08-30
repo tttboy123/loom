@@ -1,7 +1,9 @@
 package piadapter
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,8 +15,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,9 +34,14 @@ var (
 )
 
 const (
+	piLocalLlamaArchiveSHA256       = "b9554ab4c9f6e91199f48387cb4ab27466fb1d724881f81463ef03f6370cfa32"
+	piLocalLlamaExecutableSHA256    = "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b"
 	piLocalModelSHA256              = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
 	maxPiLocalModelSize             = int64(4 << 30)
 	maxPiLocalBinarySize            = int64(1 << 30)
+	maxPiLocalRuntimeArchiveSize    = int64(64 << 20)
+	maxPiLocalRuntimeTreeSize       = int64(1 << 30)
+	maxPiLocalRuntimeEntries        = 512
 	maxPiLocalHealthBody            = 4096
 	piLocalStableHealthObservations = 3
 	piLocalExitClassificationGrace  = 25 * time.Millisecond
@@ -41,13 +50,14 @@ const (
 )
 
 type PiLocalModelServerConfig struct {
-	PrivateRoot    string
-	ExecutablePath string
-	ModelPath      string
-	Host           string
-	Port           int
-	StartupTimeout time.Duration
-	CancelGrace    time.Duration
+	PrivateRoot        string
+	RuntimeArchivePath string
+	ExecutablePath     string
+	ModelPath          string
+	Host               string
+	Port               int
+	StartupTimeout     time.Duration
+	CancelGrace        time.Duration
 }
 
 type PiLocalModelServer interface {
@@ -56,8 +66,10 @@ type PiLocalModelServer interface {
 }
 
 type PiLocalModelServerBinding struct {
-	ExecutableSHA256 string
-	ModelSHA256      string
+	RuntimeArchiveSHA256 string
+	RuntimeTreeSHA256    string
+	ExecutableSHA256     string
+	ModelSHA256          string
 }
 
 type piLocalDirectoryBinding struct {
@@ -76,11 +88,23 @@ type piLocalFileBinding struct {
 }
 
 type piLocalServerBinding struct {
-	public      PiLocalModelServerBinding
-	root        string
-	directories []piLocalDirectoryBinding
-	executable  piLocalFileBinding
-	model       piLocalFileBinding
+	public             PiLocalModelServerBinding
+	root               string
+	directories        []piLocalDirectoryBinding
+	runtimeDirectories []piLocalDirectoryBinding
+	runtimeFiles       []piLocalFileBinding
+	archive            piLocalFileBinding
+	executable         piLocalFileBinding
+	model              piLocalFileBinding
+}
+
+type piLocalRuntimeArchiveEntry struct {
+	path       string
+	digest     string
+	size       int64
+	executable bool
+	target     string
+	directory  bool
 }
 
 type piLocalModelServer struct {
@@ -97,13 +121,25 @@ func StartPiLocalModelServer(
 	ctx context.Context,
 	config PiLocalModelServerConfig,
 ) (PiLocalModelServer, error) {
-	return startPiLocalModelServer(ctx, config, piLocalModelSHA256)
+	return startPiLocalModelServerWithArtifactDigests(
+		ctx,
+		config,
+		piLocalLlamaArchiveSHA256,
+		piLocalLlamaExecutableSHA256,
+		piLocalModelSHA256,
+		nil,
+	)
 }
 
 func InspectPiLocalModelServerBinding(
 	config PiLocalModelServerConfig,
 ) (PiLocalModelServerBinding, error) {
-	binding, err := inspectPiLocalModelServerBinding(config, piLocalModelSHA256)
+	binding, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		piLocalLlamaArchiveSHA256,
+		piLocalLlamaExecutableSHA256,
+		piLocalModelSHA256,
+	)
 	if err != nil {
 		return PiLocalModelServerBinding{}, err
 	}
@@ -115,9 +151,10 @@ func startPiLocalModelServer(
 	config PiLocalModelServerConfig,
 	expectedModelDigest string,
 ) (PiLocalModelServer, error) {
-	return startPiLocalModelServerWithPortGate(
+	return startPiLocalModelServerWithDigests(
 		ctx,
 		config,
+		"",
 		expectedModelDigest,
 		nil,
 	)
@@ -126,6 +163,40 @@ func startPiLocalModelServer(
 func startPiLocalModelServerWithPortGate(
 	ctx context.Context,
 	config PiLocalModelServerConfig,
+	expectedModelDigest string,
+	afterFirstPortCheck func() error,
+) (PiLocalModelServer, error) {
+	return startPiLocalModelServerWithDigests(
+		ctx,
+		config,
+		"",
+		expectedModelDigest,
+		afterFirstPortCheck,
+	)
+}
+
+func startPiLocalModelServerWithDigests(
+	ctx context.Context,
+	config PiLocalModelServerConfig,
+	expectedExecutableDigest string,
+	expectedModelDigest string,
+	afterFirstPortCheck func() error,
+) (PiLocalModelServer, error) {
+	return startPiLocalModelServerWithArtifactDigests(
+		ctx,
+		config,
+		"",
+		expectedExecutableDigest,
+		expectedModelDigest,
+		afterFirstPortCheck,
+	)
+}
+
+func startPiLocalModelServerWithArtifactDigests(
+	ctx context.Context,
+	config PiLocalModelServerConfig,
+	expectedArchiveDigest string,
+	expectedExecutableDigest string,
 	expectedModelDigest string,
 	afterFirstPortCheck func() error,
 ) (PiLocalModelServer, error) {
@@ -147,7 +218,12 @@ func startPiLocalModelServerWithPortGate(
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(ErrPiLocalModelProcess, err)
 	}
-	binding, err := inspectPiLocalModelServerBinding(config, expectedModelDigest)
+	binding, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		expectedArchiveDigest,
+		expectedExecutableDigest,
+		expectedModelDigest,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +378,32 @@ func inspectPiLocalModelServerBinding(
 	config PiLocalModelServerConfig,
 	expectedModelDigest string,
 ) (piLocalServerBinding, error) {
+	return inspectPiLocalModelServerBindingWithDigests(
+		config,
+		"",
+		expectedModelDigest,
+	)
+}
+
+func inspectPiLocalModelServerBindingWithDigests(
+	config PiLocalModelServerConfig,
+	expectedExecutableDigest string,
+	expectedModelDigest string,
+) (piLocalServerBinding, error) {
+	return inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		"",
+		expectedExecutableDigest,
+		expectedModelDigest,
+	)
+}
+
+func inspectPiLocalModelServerBindingWithArtifactDigests(
+	config PiLocalModelServerConfig,
+	expectedArchiveDigest string,
+	expectedExecutableDigest string,
+	expectedModelDigest string,
+) (piLocalServerBinding, error) {
 	if runtime.GOOS == "windows" ||
 		config.PrivateRoot == "" ||
 		!filepath.IsAbs(config.PrivateRoot) ||
@@ -313,6 +415,13 @@ func inspectPiLocalModelServerBinding(
 		!filepath.IsAbs(config.ModelPath) ||
 		filepath.Clean(config.ModelPath) != config.ModelPath ||
 		config.ExecutablePath == config.ModelPath ||
+		(expectedArchiveDigest != "" &&
+			(config.RuntimeArchivePath == "" ||
+				!filepath.IsAbs(config.RuntimeArchivePath) ||
+				filepath.Clean(config.RuntimeArchivePath) != config.RuntimeArchivePath ||
+				config.RuntimeArchivePath == config.ExecutablePath ||
+				config.RuntimeArchivePath == config.ModelPath)) ||
+		(expectedArchiveDigest == "" && config.RuntimeArchivePath != "") ||
 		config.Host != "127.0.0.1" ||
 		config.Port < 1024 ||
 		config.Port > 65535 ||
@@ -323,16 +432,36 @@ func inspectPiLocalModelServerBinding(
 		len(expectedModelDigest) != sha256.Size*2 {
 		return piLocalServerBinding{}, ErrInvalidPiLocalModel
 	}
+	if expectedArchiveDigest != "" &&
+		(len(expectedArchiveDigest) != sha256.Size*2 ||
+			strings.ToLower(expectedArchiveDigest) != expectedArchiveDigest) {
+		return piLocalServerBinding{}, ErrInvalidPiLocalModel
+	}
+	if expectedArchiveDigest != "" {
+		if _, err := hex.DecodeString(expectedArchiveDigest); err != nil {
+			return piLocalServerBinding{}, ErrInvalidPiLocalModel
+		}
+	}
+	if expectedExecutableDigest != "" &&
+		(len(expectedExecutableDigest) != sha256.Size*2 ||
+			strings.ToLower(expectedExecutableDigest) != expectedExecutableDigest) {
+		return piLocalServerBinding{}, ErrInvalidPiLocalModel
+	}
+	if expectedExecutableDigest != "" {
+		if _, err := hex.DecodeString(expectedExecutableDigest); err != nil {
+			return piLocalServerBinding{}, ErrInvalidPiLocalModel
+		}
+	}
 	if _, err := hex.DecodeString(expectedModelDigest); err != nil ||
 		strings.ToLower(expectedModelDigest) != expectedModelDigest {
 		return piLocalServerBinding{}, ErrInvalidPiLocalModel
 	}
 
-	directories, err := bindPiLocalDirectoryChains(
-		config.PrivateRoot,
-		config.ExecutablePath,
-		config.ModelPath,
-	)
+	leaves := []string{config.ExecutablePath, config.ModelPath}
+	if config.RuntimeArchivePath != "" {
+		leaves = append(leaves, config.RuntimeArchivePath)
+	}
+	directories, err := bindPiLocalDirectoryChains(config.PrivateRoot, leaves...)
 	if err != nil {
 		return piLocalServerBinding{}, err
 	}
@@ -340,7 +469,7 @@ func inspectPiLocalModelServerBinding(
 		config.ExecutablePath,
 		maxPiLocalBinarySize,
 		true,
-		"",
+		expectedExecutableDigest,
 	)
 	if err != nil {
 		return piLocalServerBinding{}, err
@@ -354,15 +483,50 @@ func inspectPiLocalModelServerBinding(
 	if err != nil {
 		return piLocalServerBinding{}, err
 	}
+	var archive piLocalFileBinding
+	var runtimeDirectories []piLocalDirectoryBinding
+	var runtimeFiles []piLocalFileBinding
+	var runtimeTreeDigest string
+	if expectedArchiveDigest != "" {
+		archive, err = bindPiLocalFile(
+			config.RuntimeArchivePath,
+			maxPiLocalRuntimeArchiveSize,
+			false,
+			expectedArchiveDigest,
+		)
+		if err != nil {
+			return piLocalServerBinding{}, err
+		}
+		runtimeDirectories, runtimeFiles, runtimeTreeDigest, err =
+			bindPiLocalRuntimeArchiveTree(archive, config, expectedExecutableDigest)
+		if err != nil {
+			return piLocalServerBinding{}, err
+		}
+		matchedExecutable := false
+		for _, file := range runtimeFiles {
+			if samePiLocalFileBinding(file, executable) {
+				matchedExecutable = true
+				break
+			}
+		}
+		if !matchedExecutable {
+			return piLocalServerBinding{}, ErrInvalidPiLocalModel
+		}
+	}
 	return piLocalServerBinding{
 		public: PiLocalModelServerBinding{
-			ExecutableSHA256: executable.digest,
-			ModelSHA256:      model.digest,
+			RuntimeArchiveSHA256: archive.digest,
+			RuntimeTreeSHA256:    runtimeTreeDigest,
+			ExecutableSHA256:     executable.digest,
+			ModelSHA256:          model.digest,
 		},
-		root:        config.PrivateRoot,
-		directories: directories,
-		executable:  executable,
-		model:       model,
+		root:               config.PrivateRoot,
+		directories:        directories,
+		runtimeDirectories: runtimeDirectories,
+		runtimeFiles:       runtimeFiles,
+		archive:            archive,
+		executable:         executable,
+		model:              model,
 	}, nil
 }
 
@@ -371,7 +535,12 @@ func revalidatePiLocalServerBinding(
 	config PiLocalModelServerConfig,
 	expectedModelDigest string,
 ) error {
-	current, err := inspectPiLocalModelServerBinding(config, expectedModelDigest)
+	current, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		expected.archive.digest,
+		expected.executable.digest,
+		expectedModelDigest,
+	)
 	if err != nil || !samePiLocalServerBinding(expected, current) {
 		return errors.Join(ErrPiLocalModelBindingChanged, err)
 	}
@@ -385,6 +554,9 @@ func samePiLocalServerBinding(
 	if expected.root != current.root ||
 		expected.public != current.public ||
 		len(expected.directories) != len(current.directories) ||
+		len(expected.runtimeDirectories) != len(current.runtimeDirectories) ||
+		len(expected.runtimeFiles) != len(current.runtimeFiles) ||
+		!sameOptionalPiLocalFileBinding(expected.archive, current.archive) ||
 		!samePiLocalFileBinding(expected.executable, current.executable) ||
 		!samePiLocalFileBinding(expected.model, current.model) {
 		return false
@@ -399,7 +571,35 @@ func samePiLocalServerBinding(
 			return false
 		}
 	}
+	for index := range expected.runtimeDirectories {
+		first := expected.runtimeDirectories[index]
+		second := current.runtimeDirectories[index]
+		if first.path != second.path ||
+			first.mode != second.mode ||
+			first.uid != second.uid ||
+			!os.SameFile(first.info, second.info) {
+			return false
+		}
+	}
+	for index := range expected.runtimeFiles {
+		if !samePiLocalFileBinding(
+			expected.runtimeFiles[index],
+			current.runtimeFiles[index],
+		) {
+			return false
+		}
+	}
 	return true
+}
+
+func sameOptionalPiLocalFileBinding(
+	expected piLocalFileBinding,
+	current piLocalFileBinding,
+) bool {
+	if expected.path == "" || current.path == "" {
+		return expected.path == current.path
+	}
+	return samePiLocalFileBinding(expected, current)
 }
 
 func samePiLocalFileBinding(
@@ -411,6 +611,385 @@ func samePiLocalFileBinding(
 		expected.size == current.size &&
 		expected.digest == current.digest &&
 		os.SameFile(expected.info, current.info)
+}
+
+func bindPiLocalRuntimeArchiveTree(
+	archive piLocalFileBinding,
+	config PiLocalModelServerConfig,
+	expectedExecutableDigest string,
+) ([]piLocalDirectoryBinding, []piLocalFileBinding, string, error) {
+	content, err := readPiLocalBoundFile(archive, maxPiLocalRuntimeArchiveSize)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	entries, err := parsePiLocalRuntimeArchive(content)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	runtimeRoot := filepath.Dir(config.ExecutablePath)
+	if runtimeRoot == config.PrivateRoot ||
+		!piLocalPathWithin(config.PrivateRoot, runtimeRoot) ||
+		piLocalPathWithin(runtimeRoot, config.RuntimeArchivePath) {
+		return nil, nil, "", ErrInvalidPiLocalModel
+	}
+	executableRelative, err := filepath.Rel(runtimeRoot, config.ExecutablePath)
+	if err != nil || executableRelative == "." || filepath.IsAbs(executableRelative) ||
+		strings.HasPrefix(executableRelative, ".."+string(filepath.Separator)) {
+		return nil, nil, "", ErrInvalidPiLocalModel
+	}
+	executableEntry, ok := entries[filepath.ToSlash(executableRelative)]
+	if !ok || executableEntry.directory ||
+		executableEntry.digest != expectedExecutableDigest ||
+		!executableEntry.executable {
+		return nil, nil, "", ErrInvalidPiLocalModel
+	}
+
+	expectedDirectories := make(map[string]struct{})
+	expectedFiles := make(map[string]piLocalRuntimeArchiveEntry)
+	for relative, entry := range entries {
+		if entry.directory {
+			if relative != "." {
+				expectedDirectories[relative] = struct{}{}
+			}
+			continue
+		}
+		expectedFiles[relative] = entry
+		for parent := pathpkg.Dir(relative); parent != "."; parent = pathpkg.Dir(parent) {
+			expectedDirectories[parent] = struct{}{}
+		}
+	}
+
+	var directoryBindings []piLocalDirectoryBinding
+	var fileBindings []piLocalFileBinding
+	seenDirectories := make(map[string]struct{})
+	seenFiles := make(map[string]struct{})
+	walkErr := filepath.WalkDir(runtimeRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return ErrInvalidPiLocalModel
+		}
+		relative, err := filepath.Rel(runtimeRoot, path)
+		if err != nil || filepath.IsAbs(relative) ||
+			strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return ErrInvalidPiLocalModel
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return ErrInvalidPiLocalModel
+		}
+		if relative == "." {
+			binding, err := bindPiLocalDirectory(path, true)
+			if err != nil {
+				return err
+			}
+			directoryBindings = append(directoryBindings, binding)
+			return nil
+		}
+		canonical := filepath.ToSlash(relative)
+		if entry.IsDir() {
+			if _, ok := expectedDirectories[canonical]; !ok {
+				return ErrInvalidPiLocalModel
+			}
+			binding, err := bindPiLocalDirectory(path, true)
+			if err != nil {
+				return err
+			}
+			seenDirectories[canonical] = struct{}{}
+			directoryBindings = append(directoryBindings, binding)
+			return nil
+		}
+		expected, ok := expectedFiles[canonical]
+		if !ok || !entry.Type().IsRegular() {
+			return ErrInvalidPiLocalModel
+		}
+		binding, err := bindPiLocalFile(
+			path,
+			maxPiLocalRuntimeTreeSize,
+			expected.executable,
+			expected.digest,
+		)
+		if err != nil || binding.size != expected.size {
+			return ErrInvalidPiLocalModel
+		}
+		seenFiles[canonical] = struct{}{}
+		fileBindings = append(fileBindings, binding)
+		return nil
+	})
+	if walkErr != nil ||
+		len(seenDirectories) != len(expectedDirectories) ||
+		len(seenFiles) != len(expectedFiles) {
+		return nil, nil, "", ErrInvalidPiLocalModel
+	}
+	sort.Slice(directoryBindings, func(first, second int) bool {
+		return directoryBindings[first].path < directoryBindings[second].path
+	})
+	sort.Slice(fileBindings, func(first, second int) bool {
+		return fileBindings[first].path < fileBindings[second].path
+	})
+	treeDigest, err := piLocalRuntimeTreeDigest(entries)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return directoryBindings, fileBindings, treeDigest, nil
+}
+
+func readPiLocalBoundFile(
+	binding piLocalFileBinding,
+	maxSize int64,
+) ([]byte, error) {
+	if binding.path == "" || binding.size <= 0 || binding.size > maxSize {
+		return nil, ErrInvalidPiLocalModel
+	}
+	file, err := os.OpenFile(binding.path, os.O_RDONLY|piNoFollowFlag(), 0)
+	if err != nil {
+		return nil, ErrInvalidPiLocalModel
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(opened, binding.info) ||
+		opened.Mode() != binding.mode || opened.Size() != binding.size {
+		_ = file.Close()
+		return nil, ErrInvalidPiLocalModel
+	}
+	content, readErr := io.ReadAll(io.LimitReader(file, maxSize+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || int64(len(content)) != binding.size {
+		return nil, ErrInvalidPiLocalModel
+	}
+	digest := sha256.Sum256(content)
+	if hex.EncodeToString(digest[:]) != binding.digest {
+		return nil, ErrInvalidPiLocalModel
+	}
+	current, err := bindPiLocalFile(
+		binding.path,
+		maxSize,
+		false,
+		binding.digest,
+	)
+	if err != nil || !samePiLocalFileBinding(binding, current) {
+		return nil, ErrInvalidPiLocalModel
+	}
+	return content, nil
+}
+
+func parsePiLocalRuntimeArchive(
+	content []byte,
+) (map[string]piLocalRuntimeArchiveEntry, error) {
+	if len(content) == 0 || int64(len(content)) > maxPiLocalRuntimeArchiveSize {
+		return nil, ErrInvalidPiLocalModel
+	}
+	gzipReader, err := gzip.NewReader(bytes.NewReader(content))
+	if err != nil {
+		return nil, ErrInvalidPiLocalModel
+	}
+	defer gzipReader.Close()
+	tarReader := tar.NewReader(gzipReader)
+	raw := make(map[string]piLocalRuntimeArchiveEntry)
+	var totalSize int64
+	for len(raw) <= maxPiLocalRuntimeEntries {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil || header == nil {
+			return nil, ErrInvalidPiLocalModel
+		}
+		name, ok := canonicalPiLocalArchivePath(header.Name)
+		if !ok {
+			return nil, ErrInvalidPiLocalModel
+		}
+		if _, exists := raw[name]; exists {
+			return nil, ErrInvalidPiLocalModel
+		}
+		entry := piLocalRuntimeArchiveEntry{path: name}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			entry.directory = true
+		case tar.TypeReg, tar.TypeRegA:
+			if header.Size <= 0 || header.Size > maxPiLocalRuntimeTreeSize ||
+				totalSize > maxPiLocalRuntimeTreeSize-header.Size {
+				return nil, ErrInvalidPiLocalModel
+			}
+			hash := sha256.New()
+			written, copyErr := io.Copy(hash, io.LimitReader(tarReader, header.Size+1))
+			if copyErr != nil || written != header.Size {
+				return nil, ErrInvalidPiLocalModel
+			}
+			entry.digest = hex.EncodeToString(hash.Sum(nil))
+			entry.size = header.Size
+			entry.executable = header.Mode&0o111 != 0
+			totalSize += header.Size
+		case tar.TypeSymlink:
+			if header.Linkname == "" || pathpkg.IsAbs(header.Linkname) ||
+				strings.Contains(header.Linkname, "\\") ||
+				strings.ContainsRune(header.Linkname, 0) {
+				return nil, ErrInvalidPiLocalModel
+			}
+			target, ok := canonicalPiLocalArchivePath(
+				pathpkg.Join(pathpkg.Dir(name), header.Linkname),
+			)
+			if !ok {
+				return nil, ErrInvalidPiLocalModel
+			}
+			entry.target = target
+		case tar.TypeLink:
+			target, ok := canonicalPiLocalArchivePath(header.Linkname)
+			if !ok {
+				return nil, ErrInvalidPiLocalModel
+			}
+			entry.target = target
+		default:
+			return nil, ErrInvalidPiLocalModel
+		}
+		raw[name] = entry
+	}
+	if len(raw) == 0 || len(raw) > maxPiLocalRuntimeEntries {
+		return nil, ErrInvalidPiLocalModel
+	}
+	prefix := piLocalArchiveCommonPrefix(raw)
+	normalized := make(map[string]piLocalRuntimeArchiveEntry, len(raw))
+	for name, entry := range raw {
+		name = trimPiLocalArchivePrefix(name, prefix)
+		if name == "." {
+			continue
+		}
+		if entry.target != "" {
+			entry.target = trimPiLocalArchivePrefix(entry.target, prefix)
+			if entry.target == "." {
+				return nil, ErrInvalidPiLocalModel
+			}
+		}
+		entry.path = name
+		if _, exists := normalized[name]; exists {
+			return nil, ErrInvalidPiLocalModel
+		}
+		normalized[name] = entry
+	}
+	resolved := make(map[string]piLocalRuntimeArchiveEntry, len(normalized))
+	for name := range normalized {
+		entry, err := resolvePiLocalArchiveEntry(name, normalized, nil)
+		if err != nil {
+			return nil, err
+		}
+		resolved[name] = entry
+	}
+	return resolved, nil
+}
+
+func canonicalPiLocalArchivePath(value string) (string, bool) {
+	if value == "" || strings.Contains(value, "\\") || strings.ContainsRune(value, 0) ||
+		pathpkg.IsAbs(value) {
+		return "", false
+	}
+	clean := pathpkg.Clean(value)
+	if clean == "." {
+		return clean, true
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
+}
+
+func piLocalArchiveCommonPrefix(
+	entries map[string]piLocalRuntimeArchiveEntry,
+) string {
+	prefix := ""
+	for name, entry := range entries {
+		if entry.directory {
+			continue
+		}
+		first, _, found := strings.Cut(name, "/")
+		if !found {
+			return ""
+		}
+		if prefix == "" {
+			prefix = first
+		} else if first != prefix {
+			return ""
+		}
+	}
+	return prefix
+}
+
+func trimPiLocalArchivePrefix(value string, prefix string) string {
+	if prefix == "" {
+		return value
+	}
+	if value == prefix {
+		return "."
+	}
+	return strings.TrimPrefix(value, prefix+"/")
+}
+
+func resolvePiLocalArchiveEntry(
+	name string,
+	entries map[string]piLocalRuntimeArchiveEntry,
+	visiting map[string]struct{},
+) (piLocalRuntimeArchiveEntry, error) {
+	entry, ok := entries[name]
+	if !ok {
+		return piLocalRuntimeArchiveEntry{}, ErrInvalidPiLocalModel
+	}
+	if entry.directory || entry.target == "" {
+		return entry, nil
+	}
+	if visiting == nil {
+		visiting = make(map[string]struct{})
+	}
+	if _, exists := visiting[name]; exists || len(visiting) >= maxPiLocalRuntimeEntries {
+		return piLocalRuntimeArchiveEntry{}, ErrInvalidPiLocalModel
+	}
+	visiting[name] = struct{}{}
+	target, err := resolvePiLocalArchiveEntry(entry.target, entries, visiting)
+	delete(visiting, name)
+	if err != nil || target.directory || target.digest == "" {
+		return piLocalRuntimeArchiveEntry{}, ErrInvalidPiLocalModel
+	}
+	entry.digest = target.digest
+	entry.size = target.size
+	entry.executable = target.executable
+	entry.target = ""
+	return entry, nil
+}
+
+func piLocalRuntimeTreeDigest(
+	entries map[string]piLocalRuntimeArchiveEntry,
+) (string, error) {
+	type canonicalEntry struct {
+		Path       string `json:"path"`
+		Kind       string `json:"kind"`
+		SHA256     string `json:"sha256,omitempty"`
+		Bytes      int64  `json:"bytes,omitempty"`
+		Executable bool   `json:"executable,omitempty"`
+	}
+	paths := make([]string, 0, len(entries))
+	for path := range entries {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	canonical := make([]canonicalEntry, 0, len(paths))
+	for _, path := range paths {
+		entry := entries[path]
+		kind := "file"
+		if entry.directory {
+			kind = "directory"
+		}
+		canonical = append(canonical, canonicalEntry{
+			Path: path, Kind: kind, SHA256: entry.digest,
+			Bytes: entry.size, Executable: entry.executable,
+		})
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return "", ErrInvalidPiLocalModel
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func piLocalPathWithin(parent string, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != "." && !filepath.IsAbs(relative) &&
+		relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func bindPiLocalDirectoryChains(
@@ -583,6 +1162,7 @@ func bindPiLocalFile(
 		info.Size() <= 0 ||
 		info.Size() > maxSize ||
 		!piLocalCurrentUserOwns(info) ||
+		!piLocalFileHasSingleLink(info) ||
 		(executable && info.Mode().Perm() != 0o700) ||
 		(!executable && info.Mode().Perm() != 0o600) {
 		return piLocalFileBinding{}, ErrInvalidPiLocalModel
@@ -596,7 +1176,8 @@ func bindPiLocalFile(
 		!os.SameFile(info, opened) ||
 		opened.Mode() != info.Mode() ||
 		opened.Size() != info.Size() ||
-		!piLocalCurrentUserOwns(opened) {
+		!piLocalCurrentUserOwns(opened) ||
+		!piLocalFileHasSingleLink(opened) {
 		_ = file.Close()
 		return piLocalFileBinding{}, ErrInvalidPiLocalModel
 	}
@@ -611,7 +1192,8 @@ func bindPiLocalFile(
 		!os.SameFile(opened, after) ||
 		after.Mode() != opened.Mode() ||
 		after.Size() != opened.Size() ||
-		!piLocalCurrentUserOwns(after) {
+		!piLocalCurrentUserOwns(after) ||
+		!piLocalFileHasSingleLink(after) {
 		return piLocalFileBinding{}, ErrInvalidPiLocalModel
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))

@@ -77,7 +77,7 @@ func NewCodexConversationClient(
 	if _, err := codexExecutableIdentity(config.ExecutablePath); err != nil {
 		return nil, ErrInvalidCodexConversationConfig
 	}
-	if err := ensureCodexConversationDirectory(config.PrivateRoot); err != nil {
+	if err := preparePrivateConversationScratchRoot(config.PrivateRoot); err != nil {
 		return nil, ErrInvalidCodexConversationConfig
 	}
 	return &CodexConversationClient{
@@ -173,7 +173,7 @@ func NewSystemCodexConversationRunner() SystemCodexConversationRunner {
 func (SystemCodexConversationRunner) RunCodexConversation(
 	ctx context.Context,
 	request CodexConversationProcessRequest,
-) ([]byte, error) {
+) (responseBytes []byte, resultErr error) {
 	if ctx == nil || request.Prompt == "" ||
 		len(request.Prompt) > maxCodexConversationPromptBytes ||
 		request.MaxOutputBytes < 64 || request.MaxOutputBytes > 64*1024 ||
@@ -188,6 +188,15 @@ func (SystemCodexConversationRunner) RunCodexConversation(
 	if err := ensureCodexConversationDirectory(request.PrivateRoot); err != nil {
 		return nil, ErrCodexConversationUnavailable
 	}
+	processTemp, cleanupProcessTemp, err := preparePrivateConversationProcessTemp(
+		request.PrivateRoot,
+	)
+	if err != nil {
+		return nil, ErrCodexConversationUnavailable
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, cleanupProcessTemp())
+	}()
 	output, err := os.CreateTemp(request.PrivateRoot, "response-*.txt")
 	if err != nil {
 		return nil, ErrCodexConversationUnavailable
@@ -209,7 +218,7 @@ func (SystemCodexConversationRunner) RunCodexConversation(
 	command.Dir = request.PrivateRoot
 	command.Env = []string{
 		"HOME=" + request.HomePath,
-		"TMPDIR=" + request.PrivateRoot,
+		"TMPDIR=" + processTemp,
 		"PATH=" + filepath.Dir(request.ExecutablePath) + ":/usr/bin:/bin",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
@@ -335,6 +344,79 @@ func ensureCodexConversationDirectory(path string) error {
 		return ErrInvalidCodexConversationConfig
 	}
 	return nil
+}
+
+func preparePrivateConversationScratchRoot(path string) error {
+	if err := ensureCodexConversationDirectory(path); err != nil {
+		return err
+	}
+	return filepath.Walk(path, func(entryPath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || info == nil || info.Mode()&os.ModeSymlink != 0 {
+			return ErrInvalidCodexConversationConfig
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Geteuid()) {
+			return ErrInvalidCodexConversationConfig
+		}
+		mode := os.FileMode(0o600)
+		if info.IsDir() {
+			mode = 0o700
+		} else if !info.Mode().IsRegular() || stat.Nlink != 1 {
+			return ErrInvalidCodexConversationConfig
+		}
+		if err := os.Chmod(entryPath, mode); err != nil {
+			return ErrInvalidCodexConversationConfig
+		}
+		after, err := os.Lstat(entryPath)
+		if err != nil || !os.SameFile(info, after) || after.Mode().Perm() != mode {
+			return ErrInvalidCodexConversationConfig
+		}
+		return nil
+	})
+}
+
+func preparePrivateConversationProcessTemp(
+	privateRoot string,
+) (string, func() error, error) {
+	if err := ensureCodexConversationDirectory(privateRoot); err != nil {
+		return "", nil, err
+	}
+	path, err := os.MkdirTemp(privateRoot, "process-")
+	if err != nil {
+		return "", nil, err
+	}
+	canonicalRoot, rootErr := filepath.EvalSymlinks(privateRoot)
+	canonicalPath, pathErr := filepath.EvalSymlinks(path)
+	if rootErr != nil || pathErr != nil || filepath.Dir(canonicalPath) != canonicalRoot {
+		_ = os.RemoveAll(path)
+		return "", nil, ErrInvalidCodexConversationConfig
+	}
+	path = canonicalPath
+	cleanup := func() error {
+		info, statErr := os.Lstat(path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		}
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(path)
+			return ErrCodexConversationUnavailable
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return ErrCodexConversationUnavailable
+		}
+		return nil
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		_ = cleanup()
+		return "", nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o700 {
+		_ = cleanup()
+		return "", nil, ErrInvalidCodexConversationConfig
+	}
+	return path, cleanup, nil
 }
 
 // classifyCodexConversationFailure reports whether the Codex CLI stderr shows a

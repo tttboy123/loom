@@ -108,6 +108,51 @@ final class LocalProductExperienceViewTests: XCTestCase {
         )
     }
 
+    func testMissionActivityRestoresAcceptedOutputFromTerminalBoardNode() throws {
+        let finalText = "Restart-safe accepted Agent output."
+        let digest = SHA256.hash(data: Data(finalText.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let page = try timelinePage(
+            teamID: "team-restored",
+            hasMore: false,
+            records: [],
+            nodes: [
+                """
+                {"logical_node_id":"main","status":"succeeded",
+                 "dependency_satisfied":true,"current_attempt":1,
+                 "work_item_id":"work-1","run_id":"run-1",
+                 "runtime_instance_id":"runtime-1","agent_instance_id":"agent-1",
+                 "verification_status":"accepted","recovery_action":"","retry_at":"",
+                 "final_output_available":true,"final_output_text":"\(finalText)",
+                 "final_output_digest":"\(digest)"}
+                """,
+            ]
+        )
+
+        let entries = missionActivityEntries(mission: nil, timeline: page)
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].status, "succeeded")
+        XCTAssertEqual(entries[0].text, finalText)
+        XCTAssertFalse(entries[0].isTentative)
+        XCTAssertEqual(
+            missionActivityAuthorityMessage(entries),
+            "Accepted output restored from terminal Evidence."
+        )
+        XCTAssertEqual(
+            missionActivityAuthorityMessage([
+                MissionActivityEntry(
+                    id: "main:2", logicalNodeID: "main", attemptNumber: 2,
+                    title: "Coordinator", route: "MiniMax", status: "running",
+                    text: "Working", isTentative: true, isTruncated: false
+                ),
+            ]),
+            "Live output remains tentative until terminal Evidence is accepted."
+        )
+        XCTAssertNil(missionActivityAuthorityMessage([]))
+    }
+
     func testMissionResultPresentationOpensWebEntryPointBeforeWorkspaceFolder() throws {
         let workspace = FileManager.default.temporaryDirectory
             .appendingPathComponent("loom-mission-result-\(UUID().uuidString)")
@@ -259,6 +304,26 @@ final class LocalProductExperienceViewTests: XCTestCase {
         XCTAssertEqual(teamAgentTitle(agents[1]), "Subagent")
         XCTAssertEqual(
             missionDisplayTitle(
+                candidate: "team-first",
+                missionID: "mission/team-first",
+                teamInstanceID: "team-first",
+                teams: snapshot.teams
+            ),
+            "Release Team"
+        )
+        XCTAssertEqual(
+            missionPresentationTitle(
+                presentationTitle: "Build 225 Mission continuity",
+                candidate: "Release Team",
+                missionID: "mission/team-first",
+                teamInstanceID: "team-first",
+                teams: snapshot.teams
+            ),
+            "Build 225 Mission continuity"
+        )
+        XCTAssertEqual(
+            missionPresentationTitle(
+                presentationTitle: "   ",
                 candidate: "team-first",
                 missionID: "mission/team-first",
                 teamInstanceID: "team-first",

@@ -436,6 +436,40 @@ func TestAgentInboxCoordinatorMarksOpenModelRequestUncertainAndSkipsTerminalRun(
 	}
 }
 
+func TestAgentInboxRestartSkipsTerminalOnlyAfterFrozenBindingValidation(t *testing.T) {
+	ctx, _, loops, _, binding, budget := agentInboxFixture(
+		t, "coordinator-terminal-fast-path",
+	)
+	startAgentInboxTurn(t, ctx, loops, binding, budget, "turn-1", 1)
+	loop, err := loops.Snapshot(ctx, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := loops.payloads.exactRun(ctx, binding.PayloadAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, terminal, err := loops.runs.CommitTerminal(ctx, RunTerminalInput{
+		RunGenerationInput: generationInput(run),
+		Status:             "failed", Reason: "daemon_restart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	needsRecovery, err := attemptLoopNeedsRestartRecovery(loop, terminal)
+	if err != nil || needsRecovery {
+		t.Fatalf("terminal recovery = %t, %v", needsRecovery, err)
+	}
+
+	drifted := loop
+	drifted.Binding.CapabilitySetDigest = strings.Repeat("f", 64)
+	if _, err := attemptLoopNeedsRestartRecovery(drifted, terminal); !errors.Is(
+		err, ErrInvalidAttemptLoop,
+	) {
+		t.Fatalf("terminal binding drift = %v", err)
+	}
+}
+
 func TestAgentInboxCoordinatorIsolatesMissingRestartPayloadToAffectedAttempt(t *testing.T) {
 	ctx, journalStore, loops, authority, binding, budget := agentInboxFixture(t, "coordinator-restart-isolation")
 	startAgentInboxTurn(t, ctx, loops, binding, budget, "turn-1", 1)

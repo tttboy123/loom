@@ -517,7 +517,8 @@ func TestPhase2DRouteTransitionFreezesApprovedBindingThroughAuthenticatedIPC(
 				attempt.RouteTransitionReviewDigest != acknowledgement.ReviewDigest ||
 				attempt.ExecutionBinding == nil ||
 				*attempt.ExecutionBinding != targetBinding ||
-				attempt.IncidentID != "loom-client-2" ||
+				!validProductRouteTransitionClientIncidentID(attempt.IncidentID) ||
+				attempt.IncidentID == before.Attempts[len(before.Attempts)-1].IncidentID ||
 				attempt.Status != "succeeded" {
 				t.Fatalf("frozen target attempt = %#v", attempt)
 			}
@@ -669,7 +670,7 @@ func TestPhase2DRouteTransitionFreezesProviderAndAccountChangesThroughAuthentica
 				t.Fatal(err)
 			}
 			assertProductRouteTransitionSuccess(
-				t, before, after, test.binding, api.ContextModeSummaryOnly, "", "loom-client-2",
+				t, before, after, test.binding, api.ContextModeSummaryOnly, "",
 			)
 		})
 	}
@@ -722,7 +723,7 @@ func TestPhase2DRouteTransitionRequiresIndependentTrustDimensionReviewThroughAut
 				t.Fatal(err)
 			}
 			assertProductRouteTransitionSuccess(
-				t, before, after, target, api.ContextModeSummaryOnly, "", "loom-client-4",
+				t, before, after, target, api.ContextModeSummaryOnly, "",
 			)
 			segment := after.Segments[len(after.Segments)-1]
 			if segment.RouteTransitionReviewDigest != acknowledgement.ReviewDigest {
@@ -912,7 +913,6 @@ func assertProductRouteTransitionSuccess(
 	binding api.LocalProductConversationExecutionBinding,
 	mode api.LocalProductContextMode,
 	reasoningEffort string,
-	incidentID string,
 ) {
 	t.Helper()
 	if after.ThreadID != before.ThreadID ||
@@ -934,8 +934,14 @@ func assertProductRouteTransitionSuccess(
 		!validProductHex(segment.BindingDigest, 64) ||
 		attempt.RouteTransitionReviewDigest != segment.RouteTransitionReviewDigest ||
 		!validProductHex(segment.RouteTransitionReviewDigest, 64) ||
-		attempt.IncidentID != incidentID || attempt.Status != "succeeded" {
+		!validProductRouteTransitionClientIncidentID(attempt.IncidentID) ||
+		attempt.Status != "succeeded" {
 		t.Fatalf("frozen segment=%#v attempt=%#v", segment, attempt)
+	}
+	for _, previous := range before.Attempts {
+		if previous.IncidentID == attempt.IncidentID {
+			t.Fatalf("route transition reused Incident ID %q", attempt.IncidentID)
+		}
 	}
 	privacySafe, err := json.Marshal(struct {
 		Segment api.LocalProductConversationSegment `json:"segment"`
@@ -945,6 +951,27 @@ func assertProductRouteTransitionSuccess(
 		t.Fatal(err)
 	}
 	assertProductRouteTransitionPrivacySafe(t, privacySafe)
+}
+
+func validProductRouteTransitionClientIncidentID(value string) bool {
+	const prefix = "loom-client-"
+	if !strings.HasPrefix(value, prefix) || len(value) > 64 {
+		return false
+	}
+	remainder := strings.TrimPrefix(value, prefix)
+	separator := strings.LastIndexByte(remainder, '-')
+	if separator != 16 || separator == len(remainder)-1 {
+		return false
+	}
+	if decoded, err := hex.DecodeString(remainder[:separator]); err != nil || len(decoded) != 8 {
+		return false
+	}
+	for _, character := range remainder[separator+1:] {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func assertProductRouteTransitionPrivacySafe(t *testing.T, payload []byte) {

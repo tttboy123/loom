@@ -35,6 +35,9 @@ const (
 	lockedPiNodeExecutable        = "/Users/lune/Documents/Codex/devtools/node-v24.16.0-darwin-arm64/bin/node"
 	lockedPiNodeSHA256            = "1ee75375e33b94fc34b3b19aede049e11dae90efb63b374dc96d6bdace70c4b8"
 	lockedPiNodeSize              = int64(120573328)
+	lockedPiLlamaArchive          = "/Users/lune/Library/Application Support/Loom/phase1-live/sources/llama-b10107-bin-macos-arm64.tar.gz"
+	lockedPiLlamaArchiveSHA256    = "b9554ab4c9f6e91199f48387cb4ab27466fb1d724881f81463ef03f6370cfa32"
+	lockedPiLlamaArchiveSize      = int64(10804162)
 	lockedPiLlamaExecutable       = "/Users/lune/Library/Application Support/Loom/phase1-live/runtime/llama-b10107/llama-server"
 	lockedPiLlamaSHA256           = "a4998768a70ba2be02617ec9d8773accc2952516f4f5a8f38f621ece54cbf04b"
 	lockedPiLlamaSize             = int64(33472)
@@ -59,6 +62,7 @@ type lockedPiComponentManifest struct {
 	PiSearchEntry         lockedPiManifestResolvedFile `json:"pi_search_entry"`
 	NodeExecutable        lockedPiManifestFile         `json:"node_executable"`
 	RuntimeSearchPaths    []string                     `json:"runtime_search_paths"`
+	LlamaArchive          lockedPiManifestFile         `json:"llama_archive"`
 	LlamaExecutable       lockedPiManifestFile         `json:"llama_executable"`
 	Model                 lockedPiManifestModel        `json:"model"`
 	Timeout               string                       `json:"timeout"`
@@ -135,9 +139,10 @@ func TestLockedPiComponent(t *testing.T) {
 			RuntimeSearchPaths: append([]string(nil), manifest.RuntimeSearchPaths...),
 			Timeout:            timeout,
 			LocalModelCatalog: &PiLocalModelCatalogConfig{
-				PrivateRoot:    manifest.LocalModelPrivateRoot,
-				ExecutablePath: manifest.LlamaExecutable.Path,
-				ModelPath:      manifest.Model.Path,
+				PrivateRoot:        manifest.LocalModelPrivateRoot,
+				RuntimeArchivePath: manifest.LlamaArchive.Path,
+				ExecutablePath:     manifest.LlamaExecutable.Path,
+				ModelPath:          manifest.Model.Path,
 			},
 		},
 	)
@@ -324,6 +329,13 @@ func validateLockedPiComponentGate() (
 			reason:     "component_node_identity",
 		},
 		{
+			path:   manifest.LlamaArchive.Path,
+			mode:   0o600,
+			size:   lockedPiLlamaArchiveSize,
+			digest: manifest.LlamaArchive.SHA256,
+			reason: "component_llama_archive_identity",
+		},
+		{
 			path:       manifest.LlamaExecutable.Path,
 			mode:       0o700,
 			size:       lockedPiLlamaSize,
@@ -416,6 +428,10 @@ func expectedLockedPiManifest() lockedPiComponentManifest {
 			[]string(nil),
 			lockedPiRuntimeSearchPaths...,
 		),
+		LlamaArchive: lockedPiManifestFile{
+			Path:   lockedPiLlamaArchive,
+			SHA256: lockedPiLlamaArchiveSHA256,
+		},
 		LlamaExecutable: lockedPiManifestFile{
 			Path:   lockedPiLlamaExecutable,
 			SHA256: lockedPiLlamaSHA256,

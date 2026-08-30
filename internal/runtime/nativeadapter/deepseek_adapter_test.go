@@ -1010,6 +1010,27 @@ func TestDecodeProviderContextToolRejectsDuplicateOuterKeys(t *testing.T) {
 	}
 }
 
+func TestDecodeProviderResponseAcceptsRoundtableSizedVisibleContent(t *testing.T) {
+	content := strings.Repeat("A", 8<<10)
+	body := []byte(fmt.Sprintf(
+		`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","content":%q}}]}`,
+		content,
+	))
+	response, err := decodeDeepSeekAgentResponse(body, MiniMaxAgentModelID)
+	if err != nil || response.content != content {
+		t.Fatalf("bounded RoundTable response length=%d error=%v", len(response.content), err)
+	}
+
+	oversized := strings.Repeat("B", deepSeekAgentMaxContentBytes+1)
+	body = []byte(fmt.Sprintf(
+		`{"model":"MiniMax-M3","choices":[{"message":{"role":"assistant","content":%q}}]}`,
+		oversized,
+	))
+	if _, err := decodeDeepSeekAgentResponse(body, MiniMaxAgentModelID); err == nil {
+		t.Fatal("oversized Provider response content was accepted")
+	}
+}
+
 func TestDecodeProviderContextToolRejectsUnknownToolCallFields(t *testing.T) {
 	body := []byte(`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"loom_read_context","arguments":"{\"item_id\":\"x\",\"content_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"},"provider_extension":true}]}}]}`)
 	if _, err := decodeDeepSeekAgentResponse(body, DeepSeekAgentModelID); err == nil {
@@ -1382,14 +1403,17 @@ func TestDeepSeekAgentAdapterRequiresFrozenCapabilityAndBrokerTogether(t *testin
 
 func TestDeepSeekAgentAdapterProjectsCredentialAndProviderFailuresToThisAttempt(t *testing.T) {
 	tests := []struct {
-		name       string
-		accessErr  error
-		doerErr    error
-		body       io.ReadCloser
-		statusCode int
-		reason     string
-		stage      string
-		retryable  bool
+		name              string
+		accessErr         error
+		doerErr           error
+		body              io.ReadCloser
+		bodyText          string
+		statusCode        int
+		reason            string
+		stage             string
+		retryable         bool
+		providerCode      string
+		retryAfterSeconds int64
 	}{
 		{
 			name: "credential revision unavailable", accessErr: ErrAgentCredentialUnavailable,
@@ -1404,10 +1428,28 @@ func TestDeepSeekAgentAdapterProjectsCredentialAndProviderFailuresToThisAttempt(
 			reason: "credential_unavailable",
 			stage:  credentials.CredentialStageVaultAADValidation,
 		},
-		{name: "provider rejected credential", statusCode: http.StatusUnauthorized, reason: "provider_auth"},
+		{
+			name: "provider rejected credential", statusCode: http.StatusUnauthorized,
+			reason: "provider_auth", bodyText: `{"error":{"code":"invalid_api_key","message":"must never escape"}}`,
+			providerCode: "invalid_api_key",
+		},
+		{
+			name: "provider account has insufficient balance", statusCode: http.StatusPaymentRequired,
+			reason:       "provider_insufficient_balance",
+			bodyText:     `{"error":{"code":"insufficient_balance","message":"must never escape"}}`,
+			providerCode: "insufficient_balance",
+		},
+		{
+			name: "provider rejected request parameters", statusCode: http.StatusUnprocessableEntity,
+			reason:       "provider_invalid_request",
+			bodyText:     `{"error":{"code":"invalid_parameter","message":"must never escape"}}`,
+			providerCode: "invalid_parameter",
+		},
 		{
 			name: "provider rate limited account", statusCode: http.StatusTooManyRequests,
 			reason: "provider_rate_limit", retryable: true,
+			providerCode: "rate_limit", retryAfterSeconds: 12,
+			bodyText: `{"error":{"code":"rate_limit","message":"must never escape"}}`,
 		},
 		{
 			name: "provider unavailable", statusCode: http.StatusServiceUnavailable,
@@ -1421,6 +1463,11 @@ func TestDeepSeekAgentAdapterProjectsCredentialAndProviderFailuresToThisAttempt(
 			name: "Provider response body timed out", body: agentTimeoutBodyFixture{},
 			statusCode: http.StatusOK, reason: "timeout", stage: "provider_http", retryable: true,
 		},
+		{
+			name: "Provider returned an invalid success envelope", statusCode: http.StatusOK,
+			reason: "invalid_response", stage: "provider_http",
+			bodyText: `{"model":"MiniMax-M3","choices":[]}`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1432,13 +1479,21 @@ func TestDeepSeekAgentAdapterProjectsCredentialAndProviderFailuresToThisAttempt(
 			if test.statusCode != 0 {
 				body := test.body
 				if body == nil {
+					bodyText := test.bodyText
+					if bodyText == "" {
+						bodyText = `{"error":{"message":"must never escape"}}`
+					}
 					body = io.NopCloser(strings.NewReader(
-						`{"error":{"message":"must never escape"}}`,
+						bodyText,
 					))
 				}
 				doer.response = &http.Response{
 					StatusCode: test.statusCode,
 					Body:       body,
+					Header:     make(http.Header),
+				}
+				if test.retryAfterSeconds > 0 {
+					doer.response.Header.Set("Retry-After", "12")
 				}
 			}
 			adapter, err := NewDeepSeekAgentAdapter(DeepSeekAgentAdapterConfig{
@@ -1481,7 +1536,10 @@ func TestDeepSeekAgentAdapterProjectsCredentialAndProviderFailuresToThisAttempt(
 			if len(diagnostics.records) != 1 ||
 				diagnostics.records[0].ErrorCode != test.reason ||
 				diagnostics.records[0].Stage != wantStage ||
-				diagnostics.records[0].Retryable != test.retryable {
+				diagnostics.records[0].Retryable != test.retryable ||
+				diagnostics.records[0].HTTPStatus != test.statusCode ||
+				diagnostics.records[0].ProviderErrorCode != test.providerCode ||
+				diagnostics.records[0].RetryAfterSeconds != test.retryAfterSeconds {
 				t.Fatalf("diagnostics = %#v", diagnostics.records)
 			}
 		})

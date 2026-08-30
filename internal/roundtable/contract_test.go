@@ -152,6 +152,28 @@ func TestExportContractValidateImportRejectsExpiredTamperedForeign(t *testing.T)
 	if err := ValidateImportContract(badSession, now); err == nil {
 		t.Fatal("malformed session accepted")
 	}
+
+	for name, mutate := range map[string]func(ExportContract) ExportContract{
+		"session identity": func(contract ExportContract) ExportContract {
+			contract.SessionID = "session-different"
+			return contract
+		},
+		"moderator identity": func(contract ExportContract) ExportContract {
+			contract.ModeratorSeat = "seat-different"
+			return contract
+		},
+		"conclusion time": func(contract ExportContract) ExportContract {
+			contract.ConcludedAt = contract.ConcludedAt.Add(time.Second)
+			return contract
+		},
+	} {
+		t.Run("mismatched "+name, func(t *testing.T) {
+			mismatched := recontractDigest(t, mutate(valid))
+			if err := ValidateImportContract(mismatched, now); err == nil {
+				t.Fatalf("mismatched %s accepted", name)
+			}
+		})
+	}
 }
 
 func TestExportContractBuildRejectsUnconcludedOrBadDigest(t *testing.T) {

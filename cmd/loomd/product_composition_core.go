@@ -15,11 +15,8 @@ import (
 )
 
 type productCoreConstructionConfig struct {
-	StatePath          string
-	Prepared           app.PreparedMissionDecisions
-	ClaudeExecutable   string
-	CodexExecutable    string
-	OpenCodeExecutable string
+	StatePath string
+	Prepared  app.PreparedMissionDecisions
 }
 
 type productCoreResources struct {
@@ -132,21 +129,6 @@ func newProductCoreRouteFactory(
 		now := time.Now().UTC()
 		if err := ensureProductVerifiedNativeAgentRuntimes(
 			ctx, store, readModel, now,
-		); err != nil {
-			return productCoreResources{}, newDaemonBuildFailure("build_execution", err)
-		}
-		if err := ensureProductVerifiedClaudeCodeAgentRuntime(
-			ctx, store, readModel, now, config.ClaudeExecutable,
-		); err != nil {
-			return productCoreResources{}, newDaemonBuildFailure("build_execution", err)
-		}
-		if err := ensureProductVerifiedCodexAgentRuntime(
-			ctx, store, readModel, now, config.CodexExecutable,
-		); err != nil {
-			return productCoreResources{}, newDaemonBuildFailure("build_execution", err)
-		}
-		if err := ensureProductVerifiedOpenCodeAgentRuntime(
-			ctx, store, readModel, now, config.OpenCodeExecutable,
 		); err != nil {
 			return productCoreResources{}, newDaemonBuildFailure("build_execution", err)
 		}

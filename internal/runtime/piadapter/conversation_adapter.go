@@ -57,11 +57,21 @@ type PiRPCConversationAdapterConfig struct {
 	BaseURL           string
 	PrivateRoot       string
 	MaxAssistantBytes int
+	Control           *PiRPCConversationControlConfig
 }
 
 type PiRPCConversationAdapter struct {
-	bridge      *piRPCBridgeAdapter
-	privateRoot string
+	bridge       *piRPCBridgeAdapter
+	privateRoot  string
+	systemPrompt string
+	control      *PiRPCConversationControlConfig
+	domains      *PiRPCConversationControlConfig
+}
+
+type piRPCConversationRunStage struct {
+	systemPrompt string
+	selection    *PiRPCConversationControlConfig
+	arguments    *PiRPCConversationControlTool
 }
 
 func NewPiRPCConversationAdapter(
@@ -77,6 +87,30 @@ func NewPiRPCConversationAdapter(
 		filepath.Clean(config.PrivateRoot) != config.PrivateRoot ||
 		len(piRPCConversationSystemPrompt) > piRPCMaxSystemPromptBytes {
 		return nil, ErrInvalidPiRPCBridgeAdapter
+	}
+	systemPrompt := piRPCConversationSystemPrompt
+	var control *PiRPCConversationControlConfig
+	var domains *PiRPCConversationControlConfig
+	if config.Control != nil {
+		prepared, prepareErr := preparePiConversationControlConfig(*config.Control)
+		if prepareErr != nil {
+			return nil, errors.Join(ErrInvalidPiRPCBridgeAdapter, ErrPiConversationControl)
+		}
+		var err error
+		if len(prepared.Tools) > piConversationControlFlatSelectionTools {
+			preparedDomains, domainErr := preparePiConversationControlDomains(prepared)
+			if domainErr != nil {
+				return nil, errors.Join(ErrInvalidPiRPCBridgeAdapter, domainErr)
+			}
+			systemPrompt, err = buildPiRPCConversationDomainSystemPrompt(preparedDomains)
+			domains = &preparedDomains
+		} else {
+			systemPrompt, err = buildPiRPCConversationControlSystemPrompt(prepared.Tools)
+		}
+		if err != nil || len(systemPrompt) > piRPCMaxSystemPromptBytes {
+			return nil, errors.Join(ErrInvalidPiRPCBridgeAdapter, err)
+		}
+		control = &prepared
 	}
 	if err := ensurePiRPCPrivateDirectory(config.PrivateRoot); err != nil {
 		return nil, errors.Join(ErrInvalidPiRPCBridgeAdapter, err)
@@ -97,7 +131,8 @@ func NewPiRPCConversationAdapter(
 			baseURL:           config.BaseURL,
 			maxAssistantBytes: config.MaxAssistantBytes,
 		},
-		privateRoot: config.PrivateRoot,
+		privateRoot: config.PrivateRoot, systemPrompt: systemPrompt,
+		control: control, domains: domains,
 	}, nil
 }
 
@@ -119,17 +154,122 @@ func (adapter *PiRPCConversationAdapter) Respond(
 	if err := adapter.bridge.execution.revalidateBindings(); err != nil {
 		return PiRPCConversationResponse{}, errors.Join(ErrPiRPCProtocol, err)
 	}
+	if adapter.control == nil {
+		content, err := adapter.runConversationStage(ctx, prompt, piRPCConversationRunStage{
+			systemPrompt: adapter.systemPrompt,
+		})
+		if err != nil {
+			return PiRPCConversationResponse{}, err
+		}
+		return PiRPCConversationResponse{Content: content}, nil
+	}
+	selectionPrompt, err := buildPiRPCConversationSelectionPrompt(
+		request.ContextPrompt, request.Messages,
+	)
+	if err != nil {
+		return PiRPCConversationResponse{}, err
+	}
+	selectionControl := adapter.control
+	selectionSystemPrompt := adapter.systemPrompt
+	if adapter.domains != nil {
+		domainSelection, domainErr := adapter.runConversationStage(
+			ctx, selectionPrompt, piRPCConversationRunStage{
+				systemPrompt: adapter.systemPrompt,
+				selection:    adapter.domains,
+			},
+		)
+		if domainErr != nil {
+			return PiRPCConversationResponse{}, domainErr
+		}
+		domain, domainErr := adapter.resolveConversationControlSelection(
+			domainSelection, adapter.domains,
+		)
+		if domainErr != nil {
+			return PiRPCConversationResponse{}, domainErr
+		}
+		domainControl, domainErr := piConversationControlToolsForDomain(
+			*adapter.control, domain.Name,
+		)
+		if domainErr != nil {
+			return PiRPCConversationResponse{}, domainErr
+		}
+		selectionSystemPrompt, domainErr =
+			buildPiRPCConversationControlSystemPrompt(domainControl.Tools)
+		if domainErr != nil || len(selectionSystemPrompt) > piRPCMaxSystemPromptBytes {
+			return PiRPCConversationResponse{}, ErrPiConversationControl
+		}
+		selectionControl = &domainControl
+	}
+	selection, err := adapter.runConversationStage(ctx, selectionPrompt, piRPCConversationRunStage{
+		systemPrompt: selectionSystemPrompt,
+		selection:    selectionControl,
+	})
+	if err != nil {
+		return PiRPCConversationResponse{}, err
+	}
+	tool, err := adapter.resolveConversationControlSelection(selection, selectionControl)
+	if err != nil {
+		return PiRPCConversationResponse{}, err
+	}
+	if tool.Name == prompting.ControlToolConversationReply {
+		content, err := adapter.runConversationStage(ctx, prompt, piRPCConversationRunStage{
+			systemPrompt: piRPCConversationSystemPrompt,
+		})
+		if err != nil {
+			return PiRPCConversationResponse{}, err
+		}
+		return PiRPCConversationResponse{Content: content}, nil
+	}
+	boundArgumentTool, explicitTargets, err :=
+		bindPiConversationExplicitArgumentTargets(
+			tool, request.Messages[len(request.Messages)-1].Content,
+		)
+	if err != nil {
+		return PiRPCConversationResponse{}, err
+	}
+	argumentPrompt, err := buildPiRPCConversationArgumentSystemPrompt(boundArgumentTool)
+	if err != nil || len(argumentPrompt) > piRPCMaxSystemPromptBytes {
+		return PiRPCConversationResponse{}, ErrPiConversationControl
+	}
+	argumentRequest, err := buildPiRPCConversationArgumentRequest(
+		request.ContextPrompt, request.Messages,
+	)
+	if err != nil {
+		return PiRPCConversationResponse{}, err
+	}
+	arguments, err := adapter.runConversationStage(ctx, argumentRequest, piRPCConversationRunStage{
+		systemPrompt: argumentPrompt,
+		arguments:    &boundArgumentTool,
+	})
+	if err != nil {
+		return PiRPCConversationResponse{}, err
+	}
+	return adapter.resolveConversationControlArguments(
+		ctx, tool, arguments, explicitTargets,
+	)
+}
+
+func (adapter *PiRPCConversationAdapter) runConversationStage(
+	ctx context.Context,
+	prompt string,
+	stage piRPCConversationRunStage,
+) (content string, resultErr error) {
+	if adapter == nil || adapter.bridge == nil || ctx == nil ||
+		stage.systemPrompt == "" || len(stage.systemPrompt) > piRPCMaxSystemPromptBytes ||
+		stage.selection != nil && stage.arguments != nil {
+		return "", ErrPiRPCProtocol
+	}
 	invocationRoot, err := os.MkdirTemp(adapter.privateRoot, ".conversation-")
 	if err != nil {
-		return PiRPCConversationResponse{}, ErrPiRPCProtocol
+		return "", ErrPiRPCProtocol
 	}
 	if err := os.Chmod(invocationRoot, 0o700); err != nil {
 		_ = os.RemoveAll(invocationRoot)
-		return PiRPCConversationResponse{}, ErrPiRPCProtocol
+		return "", ErrPiRPCProtocol
 	}
 	defer func() {
 		if cleanupErr := removePiRPCConversationRoot(invocationRoot); cleanupErr != nil {
-			response = PiRPCConversationResponse{}
+			content = ""
 			resultErr = errors.Join(resultErr, ErrPiRPCCleanup, cleanupErr)
 		}
 	}()
@@ -138,25 +278,16 @@ func (adapter *PiRPCConversationAdapter) Respond(
 	tempPath := filepath.Join(invocationRoot, "tmp")
 	for _, path := range []string{workspacePath, homePath, tempPath} {
 		if err := ensurePiRPCPrivateDirectory(path); err != nil {
-			return PiRPCConversationResponse{}, err
+			return "", err
 		}
 	}
 	messageID, err := adapter.bridge.execution.randomUUID()
 	if err != nil {
-		return PiRPCConversationResponse{}, errors.Join(ErrPiRPCProtocol, err)
+		return "", errors.Join(ErrPiRPCProtocol, err)
 	}
-	content, err := adapter.run(
-		ctx,
-		messageID,
-		prompt,
-		workspacePath,
-		homePath,
-		tempPath,
+	return adapter.run(
+		ctx, messageID, prompt, workspacePath, homePath, tempPath, stage,
 	)
-	if err != nil {
-		return PiRPCConversationResponse{}, err
-	}
-	return PiRPCConversationResponse{Content: content}, nil
 }
 
 func (adapter *PiRPCConversationAdapter) run(
@@ -166,10 +297,31 @@ func (adapter *PiRPCConversationAdapter) run(
 	workspacePath string,
 	homePath string,
 	tempPath string,
+	stage piRPCConversationRunStage,
 ) (string, error) {
 	agentPath, sessionPath, err := adapter.bridge.preparePrivatePiHome(homePath)
 	if err != nil {
 		return "", err
+	}
+	var controlExtension *piConversationControlExtension
+	if stage.selection != nil || stage.arguments != nil {
+		extensionID, idErr := adapter.bridge.execution.randomUUID()
+		if idErr != nil {
+			return "", errors.Join(ErrPiRPCProtocol, idErr)
+		}
+		if stage.selection != nil {
+			controlExtension, err = newPiConversationControlExtension(
+				homePath, extensionID, *stage.selection,
+			)
+		} else {
+			controlExtension, err = newPiConversationArgumentExtension(
+				homePath, extensionID, *stage.arguments,
+			)
+		}
+		if err != nil {
+			return "", errors.Join(ErrPiRPCProtocol, err)
+		}
+		defer controlExtension.Close()
 	}
 	arguments := []string{
 		"--mode", "rpc",
@@ -184,7 +336,14 @@ func (adapter *PiRPCConversationAdapter) run(
 		"--provider", adapter.bridge.providerID,
 		"--model", adapter.bridge.providerID + "/" + adapter.bridge.modelID,
 		"--thinking", "off",
-		"--system-prompt", piRPCConversationSystemPrompt,
+		"--system-prompt", stage.systemPrompt,
+		"--no-builtin-tools",
+	}
+	if controlExtension != nil {
+		arguments = append(
+			arguments,
+			"--extension", controlExtension.extensionPath,
+		)
 	}
 	command := exec.Command(adapter.bridge.execution.executable.path, arguments...)
 	command.Dir = workspacePath
@@ -271,6 +430,7 @@ func (adapter *PiRPCConversationAdapter) run(
 		nextSequence: 2,
 		prompt:       []byte(prompt),
 	}
+	defer clearPiRPCState(&state)
 	for !state.settled {
 		select {
 		case <-ctx.Done():
@@ -279,7 +439,7 @@ func (adapter *PiRPCConversationAdapter) run(
 				wait,
 				stdin,
 				lines,
-				ctx.Err(),
+				errors.Join(ctx.Err(), errors.New(piRPCDebugState(state))),
 			)
 		case lineResult := <-lines:
 			if lineResult.err != nil {
@@ -314,7 +474,11 @@ func (adapter *PiRPCConversationAdapter) run(
 				command,
 				wait,
 				nil,
-				errors.Join(ErrPiRPCProtocol, ctx.Err()),
+				errors.Join(
+					ErrPiRPCProtocol,
+					ctx.Err(),
+					errors.New(piRPCDebugState(state)),
+				),
 			)
 		case lineResult := <-lines:
 			if errors.Is(lineResult.err, io.EOF) {
@@ -363,8 +527,17 @@ func buildPiRPCConversationPrompt(
 	contextPrompt string,
 	messages []PiRPCConversationMessage,
 ) (string, error) {
+	return buildPiRPCConversationPromptWithCandidates(contextPrompt, messages, nil)
+}
+
+func buildPiRPCConversationPromptWithCandidates(
+	contextPrompt string,
+	messages []PiRPCConversationMessage,
+	latestUserArgumentCandidates []string,
+) (string, error) {
 	if len(messages) == 0 || len(messages) > piRPCConversationMaxMessages ||
-		messages[len(messages)-1].Role != "user" {
+		messages[len(messages)-1].Role != "user" ||
+		len(latestUserArgumentCandidates) > piConversationArgumentCandidateMaxCount {
 		return "", ErrPiRPCProtocol
 	}
 	for _, message := range messages {
@@ -375,13 +548,22 @@ func buildPiRPCConversationPrompt(
 			return "", ErrPiRPCProtocol
 		}
 	}
+	candidateBytes := 0
+	for _, candidate := range latestUserArgumentCandidates {
+		candidateBytes += len(candidate)
+		if candidate == "" || candidateBytes > piConversationArgumentCandidateMaxBytes ||
+			!validPiRPCConversationText(candidate) {
+			return "", ErrPiRPCProtocol
+		}
+	}
 	for first := 0; first < len(messages); first++ {
 		payload, err := json.Marshal(struct {
-			LoomContext string                     `json:"loom_context,omitempty"`
-			Messages    []PiRPCConversationMessage `json:"messages"`
+			LoomContext                  string                     `json:"loom_context,omitempty"`
+			Messages                     []PiRPCConversationMessage `json:"messages"`
+			LatestUserArgumentCandidates []string                   `json:"latest_user_argument_candidates,omitempty"`
 		}{
-			LoomContext: strings.TrimSpace(contextPrompt),
-			Messages:    messages[first:],
+			LoomContext: strings.TrimSpace(contextPrompt), Messages: messages[first:],
+			LatestUserArgumentCandidates: latestUserArgumentCandidates,
 		})
 		if err != nil {
 			return "", ErrPiRPCProtocol

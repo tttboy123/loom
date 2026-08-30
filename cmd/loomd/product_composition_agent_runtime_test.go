@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,6 +85,126 @@ func TestCOMP2CAgentRuntimeConstructsAfterAssetsAndRevokesRoutes(t *testing.T) {
 		t.Fatalf(
 			"events=%v workReady=%t runtimeReady=%t",
 			events, workSlot.Ready(), runtimeSlot.Ready(),
+		)
+	}
+}
+
+func TestCOMP2CDeferredAgentRuntimeDoesNotBlockProductComposition(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	runtimeSlot := &productAgentRuntimeRouteSlot{}
+	facade, err := activateProductCompatibilityComposition(
+		context.Background(), composition.ProfileTest,
+		localipc.HandlerFunc(func(context.Context, localipc.Request) localipc.Response {
+			return localipc.Response{OK: true}
+		}), "incident-comp2c-deferred-agent-runtime", nil,
+		productCompatibilityConstruction{
+			assetSlot: &productAssetRouteSlot{},
+			assetFactory: func(context.Context) (productAssetBundle, error) {
+				return productAssetBundleFixture(nil), nil
+			},
+			workSlot: &productWorkRouteSlot{},
+			workFactory: func(context.Context) (productWorkRoutes, error) {
+				return productWorkRoutesFixture(), nil
+			},
+			agentRuntimeSlot: runtimeSlot,
+			agentRuntimeFactory: func(context.Context) (productAgentRuntimeRoutes, error) {
+				close(started)
+				<-release
+				return productAgentRuntimeRoutes{
+					mission:      productMissionExecutionRouteFixture{},
+					handoff:      productHandoffRouteFixture{},
+					roundtable:   productRoundtableRouteFixture{},
+					materializer: productSavedTeamMaterializerFixture{},
+					close:        func() error { return nil },
+				}, nil
+			},
+			deferAgentRuntime: true,
+		},
+	)
+	if err != nil || facade == nil {
+		t.Fatalf("facade=%#v err=%v", facade, err)
+	}
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		if closeErr := facade.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("deferred Agent Runtime did not start")
+	}
+	if runtimeSlot.Ready() || !runtimeSlot.compositionReady() {
+		t.Fatalf(
+			"runtime ready=%t compositionReady=%t",
+			runtimeSlot.Ready(), runtimeSlot.compositionReady(),
+		)
+	}
+	reason := runtimeSlot.UnavailableReason()
+	if reason == nil || reason.Error() != "agent runtime unavailable: construction" {
+		t.Fatalf("initializing reason = %v", reason)
+	}
+	releaseOnce.Do(func() { close(release) })
+	deadline := time.Now().Add(time.Second)
+	for !runtimeSlot.Ready() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !runtimeSlot.Ready() || runtimeSlot.UnavailableReason() != nil {
+		t.Fatalf("runtime ready=%t reason=%v", runtimeSlot.Ready(), runtimeSlot.UnavailableReason())
+	}
+}
+
+func TestCOMP2CDeferredAgentRuntimeCloseCancelsAndJoinsInitialization(t *testing.T) {
+	started := make(chan struct{})
+	exited := make(chan struct{})
+	runtimeSlot := &productAgentRuntimeRouteSlot{}
+	facade, err := activateProductCompatibilityComposition(
+		context.Background(), composition.ProfileTest,
+		localipc.HandlerFunc(func(context.Context, localipc.Request) localipc.Response {
+			return localipc.Response{OK: true}
+		}), "incident-comp2c-deferred-agent-runtime-close", nil,
+		productCompatibilityConstruction{
+			assetSlot: &productAssetRouteSlot{},
+			assetFactory: func(context.Context) (productAssetBundle, error) {
+				return productAssetBundleFixture(nil), nil
+			},
+			workSlot: &productWorkRouteSlot{},
+			workFactory: func(context.Context) (productWorkRoutes, error) {
+				return productWorkRoutesFixture(), nil
+			},
+			agentRuntimeSlot: runtimeSlot,
+			agentRuntimeFactory: func(ctx context.Context) (productAgentRuntimeRoutes, error) {
+				close(started)
+				<-ctx.Done()
+				close(exited)
+				return productDegradedAgentRuntimeRoutes(productUnavailableAgentRuntime{}), ctx.Err()
+			},
+			deferAgentRuntime: true,
+		},
+	)
+	if err != nil || facade == nil {
+		t.Fatalf("facade=%#v err=%v", facade, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("deferred Agent Runtime did not start")
+	}
+	if err := facade.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("Agent Runtime initialization outlived composition close")
+	}
+	if runtimeSlot.compositionReady() || runtimeSlot.Ready() {
+		t.Fatalf(
+			"closed runtime ready=%t compositionReady=%t",
+			runtimeSlot.Ready(), runtimeSlot.compositionReady(),
 		)
 	}
 }
@@ -289,6 +410,28 @@ func TestCOMP2CDegradedAgentRuntimeRecordsSafeBuildStage(t *testing.T) {
 	}
 }
 
+func TestCOMP2CDeferredAgentRuntimeRecordsSafeCompletionDuration(t *testing.T) {
+	diagnostics := &productAgentRuntimeBuildDiagnosticFixture{}
+	if err := recordProductAgentRuntimeBuildOutcome(
+		diagnostics, nil, composition.ProfileTest,
+		strings.Repeat("c", 64), 45*time.Second,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics.records) != 1 {
+		t.Fatalf("diagnostics=%#v", diagnostics.records)
+	}
+	record := diagnostics.records[0]
+	if record.Operation != "composition" || record.BundleID != "loom-agent-runtime" ||
+		record.Stage != "bundle_start" || record.Result != "succeeded" ||
+		record.ErrorCode != "" || record.Retryable || record.ElapsedMS != 45_000 {
+		t.Fatalf("diagnostic = %#v", record)
+	}
+	if !validProductOperationalDiagnosticRecord(record) {
+		t.Fatalf("diagnostic is not accepted by the installed store: %#v", record)
+	}
+}
+
 type productAgentRuntimeBuildDiagnosticFixture struct {
 	records     []productOperationalDiagnosticRecord
 	appendErr   error
@@ -400,6 +543,41 @@ func (productRoundtableRouteFixture) OpenRound(
 	context.Context, roundtable.OpenRoundCommand,
 ) (roundtable.View, error) {
 	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) PauseRound(
+	context.Context, roundtable.PauseRoundCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) SteerSeat(
+	context.Context, productRoundtableSteerSeatCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) RetrySeat(
+	context.Context, productRoundtableRetrySeatCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) SkipSeat(
+	context.Context, roundtable.SkipSeatCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) ReplaceSeat(
+	context.Context, productRoundtableReplaceSeatCommand,
+) (roundtable.View, error) {
+	return roundtable.View{}, nil
+}
+func (productRoundtableRouteFixture) ExportSession(
+	context.Context, productRoundtableExportCommand,
+) (roundtable.ExportDocumentResult, error) {
+	return roundtable.ExportDocumentResult{}, nil
+}
+func (productRoundtableRouteFixture) ImportSession(
+	context.Context, productRoundtableImportCommand,
+) (roundtable.ImportResult, error) {
+	return roundtable.ImportResult{}, nil
 }
 func (productRoundtableRouteFixture) ProposeMessage(
 	context.Context, roundtable.ProposeMessageCommand,

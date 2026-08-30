@@ -25,6 +25,7 @@ type productReadRoute interface {
 	SetAgentAttemptDiagnosticSource(api.AgentAttemptDiagnosticSource) error
 	SetGovernedTestReportSource(api.GovernedTestReportSource) error
 	SetSideTaskSnapshotSource(api.SideTaskSnapshotSource) error
+	SetMissionAttemptOutputSource(api.MissionAttemptOutputSource) error
 	MissionExecutionObserver(context.Context, string) (app.NodeOutputObserver, error)
 	CloseMissionExecutionObservers() error
 }
@@ -242,6 +243,14 @@ func (slot *productReadRouteSlot) SetSideTaskSnapshotSource(
 ) error {
 	return slot.configure(func(route productReadRoute) error {
 		return route.SetSideTaskSnapshotSource(source)
+	})
+}
+
+func (slot *productReadRouteSlot) SetMissionAttemptOutputSource(
+	source api.MissionAttemptOutputSource,
+) error {
+	return slot.configure(func(route productReadRoute) error {
+		return route.SetMissionAttemptOutputSource(source)
 	})
 }
 

@@ -23,6 +23,7 @@ import (
 	"loom-pi-rebuild/internal/provider"
 	"loom-pi-rebuild/internal/providerendpoint"
 	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/runtime/harnessadapter"
 	"loom-pi-rebuild/internal/state"
 	"loom-pi-rebuild/internal/teams"
 	"loom-pi-rebuild/internal/work"
@@ -68,6 +69,10 @@ type NativeAuthObserver interface {
 type NativeAuthConnector interface {
 	StartNativeAuth(context.Context) error
 	Close() error
+}
+
+type NativeAuthCanceller interface {
+	CancelNativeAuth(context.Context) error
 }
 
 type CredentialStatusSource interface {
@@ -193,21 +198,34 @@ type LocalProductSetupConfig struct {
 		Rebuild(context.Context) error
 		GlobalReadView() projection.GlobalReadView
 	}
-	Writer                       *state.LocalProductSetupWriter
-	Catalog                      LocalProductSetupCatalog
-	CatalogSource                SetupCatalogSource
-	Identity                     SetupIdentitySource
-	Now                          func() time.Time
-	NativeAuth                   NativeAuthObserver
-	NativeAuthConnector          NativeAuthConnector
-	Credentials                  CredentialStatusSource
-	CredentialMutator            CredentialMutator
-	CredentialVault              CredentialVaultStatusSource
-	CredentialImports            credentials.ImportSource
-	EndpointResolver             providerendpoint.Resolver
-	ProviderAccountPolicies      ProviderAccountPolicyAuthority
-	ProviderModelRateCards       ProviderModelRateCardAuthority
-	RemoteToolBackendEnrollments RemoteToolBackendEnrollmentAuthority
+	Writer                        *state.LocalProductSetupWriter
+	Catalog                       LocalProductSetupCatalog
+	CatalogSource                 SetupCatalogSource
+	Identity                      SetupIdentitySource
+	Now                           func() time.Time
+	NativeAuth                    NativeAuthObserver
+	NativeAuthSnapshot            NativeAuthObserver
+	NativeAuthConnector           NativeAuthConnector
+	ClaudeCodeNativeAuth          NativeAuthObserver
+	ClaudeCodeNativeAuthSnapshot  NativeAuthObserver
+	ClaudeCodeNativeAuthConnector NativeAuthConnector
+	Credentials                   CredentialStatusSource
+	CredentialMutator             CredentialMutator
+	CredentialVault               CredentialVaultStatusSource
+	CredentialImports             credentials.ImportSource
+	EndpointResolver              providerendpoint.Resolver
+	ProviderAccountPolicies       ProviderAccountPolicyAuthority
+	ProviderModelRateCards        ProviderModelRateCardAuthority
+	RemoteToolBackendEnrollments  RemoteToolBackendEnrollmentAuthority
+	ConversationRoutes            SetupConversationRouteCapabilities
+}
+
+// SetupConversationRouteCapabilities contains only executable, daemon-owned
+// Conversation routes. Runtime discovery alone is not sufficient to publish a
+// route because a Harness process may be online while its model backend is not.
+type SetupConversationRouteCapabilities struct {
+	PiLocal          bool
+	ClaudeCodeNative bool
 }
 
 type ProviderSetupStatus struct {
@@ -538,8 +556,15 @@ type BuilderConfirmation struct {
 	TeamDefinitionVersion int    `json:"team_definition_version"`
 	TeamDefinitionDigest  string `json:"team_definition_digest"`
 	Status                string `json:"status"`
+	TeamInstanceID        string `json:"team_instance_id,omitempty"`
 	TeamInstanceCreated   bool   `json:"team_instance_created"`
 	RunCreated            bool   `json:"run_created"`
+}
+
+type TeamMaterializeCommand struct {
+	TeamDefinitionID      string `json:"team_definition_id"`
+	TeamDefinitionVersion int    `json:"team_definition_version"`
+	TeamDefinitionDigest  string `json:"team_definition_digest"`
 }
 
 type TeamStatusCommand struct {
@@ -608,22 +633,27 @@ type LocalProductSetupService struct {
 		Rebuild(context.Context) error
 		GlobalReadView() projection.GlobalReadView
 	}
-	writer                       *state.LocalProductSetupWriter
-	catalog                      LocalProductSetupCatalog
-	domainCatalog                teams.TeamDraftCatalogSnapshot
-	catalogSource                SetupCatalogSource
-	identity                     SetupIdentitySource
-	now                          func() time.Time
-	nativeAuth                   NativeAuthObserver
-	nativeAuthConnector          NativeAuthConnector
-	credentials                  CredentialStatusSource
-	credentialMutator            CredentialMutator
-	credentialVault              CredentialVaultStatusSource
-	credentialImports            credentials.ImportSource
-	endpointResolver             providerendpoint.Resolver
-	providerAccountPolicies      ProviderAccountPolicyAuthority
-	providerModelRateCards       ProviderModelRateCardAuthority
-	remoteToolBackendEnrollments RemoteToolBackendEnrollmentAuthority
+	writer                        *state.LocalProductSetupWriter
+	catalog                       LocalProductSetupCatalog
+	domainCatalog                 teams.TeamDraftCatalogSnapshot
+	catalogSource                 SetupCatalogSource
+	identity                      SetupIdentitySource
+	now                           func() time.Time
+	nativeAuth                    NativeAuthObserver
+	nativeAuthSnapshot            NativeAuthObserver
+	nativeAuthConnector           NativeAuthConnector
+	claudeCodeNativeAuth          NativeAuthObserver
+	claudeCodeNativeAuthSnapshot  NativeAuthObserver
+	claudeCodeNativeAuthConnector NativeAuthConnector
+	credentials                   CredentialStatusSource
+	credentialMutator             CredentialMutator
+	credentialVault               CredentialVaultStatusSource
+	credentialImports             credentials.ImportSource
+	endpointResolver              providerendpoint.Resolver
+	providerAccountPolicies       ProviderAccountPolicyAuthority
+	providerModelRateCards        ProviderModelRateCardAuthority
+	remoteToolBackendEnrollments  RemoteToolBackendEnrollmentAuthority
+	conversationRoutes            SetupConversationRouteCapabilities
 
 	mu       sync.Mutex
 	sessions map[string]*localProductBuilderSession
@@ -650,25 +680,30 @@ func NewLocalProductSetupService(
 		return nil, err
 	}
 	return &LocalProductSetupService{
-		journal:                      config.Journal,
-		projection:                   config.Projection,
-		writer:                       config.Writer,
-		catalog:                      cloneSetupCatalog(config.Catalog),
-		domainCatalog:                domainCatalog,
-		catalogSource:                config.CatalogSource,
-		identity:                     config.Identity,
-		now:                          config.Now,
-		nativeAuth:                   config.NativeAuth,
-		nativeAuthConnector:          config.NativeAuthConnector,
-		credentials:                  config.Credentials,
-		credentialMutator:            config.CredentialMutator,
-		credentialVault:              config.CredentialVault,
-		credentialImports:            config.CredentialImports,
-		endpointResolver:             config.EndpointResolver,
-		providerAccountPolicies:      config.ProviderAccountPolicies,
-		providerModelRateCards:       config.ProviderModelRateCards,
-		remoteToolBackendEnrollments: config.RemoteToolBackendEnrollments,
-		sessions:                     make(map[string]*localProductBuilderSession),
+		journal:                       config.Journal,
+		projection:                    config.Projection,
+		writer:                        config.Writer,
+		catalog:                       cloneSetupCatalog(config.Catalog),
+		domainCatalog:                 domainCatalog,
+		catalogSource:                 config.CatalogSource,
+		identity:                      config.Identity,
+		now:                           config.Now,
+		nativeAuth:                    config.NativeAuth,
+		nativeAuthSnapshot:            config.NativeAuthSnapshot,
+		nativeAuthConnector:           config.NativeAuthConnector,
+		claudeCodeNativeAuth:          config.ClaudeCodeNativeAuth,
+		claudeCodeNativeAuthSnapshot:  config.ClaudeCodeNativeAuthSnapshot,
+		claudeCodeNativeAuthConnector: config.ClaudeCodeNativeAuthConnector,
+		credentials:                   config.Credentials,
+		credentialMutator:             config.CredentialMutator,
+		credentialVault:               config.CredentialVault,
+		credentialImports:             config.CredentialImports,
+		endpointResolver:              config.EndpointResolver,
+		providerAccountPolicies:       config.ProviderAccountPolicies,
+		providerModelRateCards:        config.ProviderModelRateCards,
+		remoteToolBackendEnrollments:  config.RemoteToolBackendEnrollments,
+		conversationRoutes:            config.ConversationRoutes,
+		sessions:                      make(map[string]*localProductBuilderSession),
 	}, nil
 }
 
@@ -705,14 +740,69 @@ func (service *LocalProductSetupService) ConnectCodex(
 	}, nil
 }
 
+func (service *LocalProductSetupService) ConnectClaudeCode(
+	ctx context.Context,
+) (ProviderConnectResult, error) {
+	if service == nil || ctx == nil || service.claudeCodeNativeAuth == nil {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	observation, err := service.claudeCodeNativeAuth.ObserveNativeAuth(ctx)
+	if err != nil || observation.AuthMode != "native_auth" {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	if observation.Status == "available" {
+		return ProviderConnectResult{
+			ProviderID: "claude-code", AuthMode: "native_auth", Status: "already_connected",
+		}, nil
+	}
+	if observation.Status != "not_logged_in" ||
+		service.claudeCodeNativeAuthConnector == nil {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	if err := service.claudeCodeNativeAuthConnector.StartNativeAuth(ctx); err != nil {
+		return ProviderConnectResult{}, err
+	}
+	return ProviderConnectResult{
+		ProviderID: "claude-code", AuthMode: "native_auth", Status: "started",
+	}, nil
+}
+
+func (service *LocalProductSetupService) CancelClaudeCode(
+	ctx context.Context,
+) (ProviderConnectResult, error) {
+	if service == nil || ctx == nil || service.claudeCodeNativeAuthConnector == nil {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	canceller, ok := service.claudeCodeNativeAuthConnector.(NativeAuthCanceller)
+	if !ok {
+		return ProviderConnectResult{}, ErrNativeAuthConnectUnavailable
+	}
+	if err := canceller.CancelNativeAuth(ctx); err != nil {
+		return ProviderConnectResult{}, err
+	}
+	return ProviderConnectResult{
+		ProviderID: "claude-code", AuthMode: "native_auth", Status: "cancelled",
+	}, nil
+}
+
 func (service *LocalProductSetupService) Close() error {
 	if service == nil {
 		return ErrInvalidLocalProductSetup
 	}
-	if service.nativeAuthConnector != nil {
-		return service.nativeAuthConnector.Close()
+	var result error
+	if closer, ok := service.nativeAuthSnapshot.(interface{ Close() error }); ok {
+		result = errors.Join(result, closer.Close())
 	}
-	return nil
+	if closer, ok := service.claudeCodeNativeAuthSnapshot.(interface{ Close() error }); ok {
+		result = errors.Join(result, closer.Close())
+	}
+	if service.nativeAuthConnector != nil {
+		result = errors.Join(result, service.nativeAuthConnector.Close())
+	}
+	if service.claudeCodeNativeAuthConnector != nil {
+		result = errors.Join(result, service.claudeCodeNativeAuthConnector.Close())
+	}
+	return result
 }
 
 func (service *LocalProductSetupService) currentCatalog(
@@ -770,7 +860,11 @@ func (service *LocalProductSetupService) SetupSnapshot(
 			ErrInvalidLocalProductSetup,
 		)
 	}
-	auth, err := service.nativeAuth.ObserveNativeAuth(ctx)
+	nativeAuthSnapshot := service.nativeAuthSnapshot
+	if nativeAuthSnapshot == nil {
+		nativeAuthSnapshot = service.nativeAuth
+	}
+	auth, err := nativeAuthSnapshot.ObserveNativeAuth(ctx)
 	if err != nil {
 		auth = NativeAuthObservation{
 			Status:   "unavailable",
@@ -837,6 +931,17 @@ func (service *LocalProductSetupService) SetupSnapshot(
 		})
 	}
 	runtimes := setupRuntimePreviews(catalog)
+	conversationRoutes := service.conversationRoutes
+	claudeCodeNativeAuthSnapshot := service.claudeCodeNativeAuthSnapshot
+	if claudeCodeNativeAuthSnapshot == nil {
+		claudeCodeNativeAuthSnapshot = service.claudeCodeNativeAuth
+	}
+	if claudeCodeNativeAuthSnapshot != nil {
+		claudeAuth, claudeErr := claudeCodeNativeAuthSnapshot.ObserveNativeAuth(ctx)
+		conversationRoutes.ClaudeCodeNative = claudeErr == nil &&
+			claudeAuth.AuthMode == "native_auth" && claudeAuth.Status == "available" &&
+			claudeAuth.Reason == ""
+	}
 	providers := service.providerDirectory(ctx, auth, runtimes, credentialDirectory)
 	providerAccounts := setupProviderAccountDirectory(
 		ctx, view, service.credentials, credentialDirectory,
@@ -881,8 +986,8 @@ func (service *LocalProductSetupService) SetupSnapshot(
 		CredentialVault:   credentialVault,
 		CredentialImports: credentialImports,
 		EndpointReviews:   endpointReviews,
-		ConversationProfiles: setupConversationProfiles(
-			auth, providers, providerAccounts, runtimes,
+		ConversationProfiles: setupConversationProfilesWithCapabilities(
+			auth, providers, providerAccounts, conversationRoutes, runtimes,
 		),
 		Runtimes:    runtimes,
 		SavedTeams:  saved,
@@ -1043,9 +1148,22 @@ func setupConversationProfiles(
 	providerAccounts []ProviderAccountDirectoryEntry,
 	runtimeCatalogs ...[]SetupRuntimePreview,
 ) []ConversationProviderProfile {
+	return setupConversationProfilesWithCapabilities(
+		auth, providers, providerAccounts, SetupConversationRouteCapabilities{},
+		runtimeCatalogs...,
+	)
+}
+
+func setupConversationProfilesWithCapabilities(
+	auth NativeAuthObservation,
+	providers []ProviderDirectoryEntry,
+	providerAccounts []ProviderAccountDirectoryEntry,
+	capabilities SetupConversationRouteCapabilities,
+	runtimeCatalogs ...[]SetupRuntimePreview,
+) []ConversationProviderProfile {
 	openCodeModels := setupOpenCodeRuntimeModels(runtimeCatalogs...)
 	openCodeAvailable := setupRuntimeAvailable("opencode", runtimeCatalogs...)
-	claudeCodeAvailable := setupRuntimeAvailable("claude-code", runtimeCatalogs...)
+	claudeCodeAvailable := setupClaudeCodeConversationRuntimeAvailable(runtimeCatalogs...)
 	accounts := make(map[string]ProviderAccountDirectoryEntry, len(providerAccounts))
 	for _, entry := range providerAccounts {
 		if entry.Status != "verified" || entry.Reason != "" || entry.Revision <= 0 ||
@@ -1173,6 +1291,14 @@ func setupConversationProfiles(
 			})
 		}
 	}
+	if capabilities.PiLocal && setupRuntimeAvailable("pi-cli", runtimeCatalogs...) {
+		profiles = append(profiles, ConversationProviderProfile{
+			ProfileID:      provider.PiConversationProfileID,
+			HarnessAdapter: "pi", ProviderID: "loom-local",
+			DisplayName: "Local model", Protocol: "pi_rpc",
+			ModelID: provider.PiConversationModelID, AuthMode: "native_auth",
+		})
+	}
 	if openCodeAvailable {
 		modelID := openCodeConversationDefaultModel()
 		if len(runtimeCatalogs) == 1 {
@@ -1198,7 +1324,7 @@ func setupConversationProfiles(
 			})
 		}
 	}
-	if claudeCodeAvailable {
+	if claudeCodeAvailable && capabilities.ClaudeCodeNative {
 		profiles = append(profiles, ConversationProviderProfile{
 			ProfileID:      provider.ClaudeCodeConversationProfileID,
 			HarnessAdapter: "claude-code", ProviderID: "anthropic",
@@ -1246,6 +1372,24 @@ func setupRuntimeAvailable(
 	return false
 }
 
+func setupClaudeCodeConversationRuntimeAvailable(
+	runtimeCatalogs ...[]SetupRuntimePreview,
+) bool {
+	if len(runtimeCatalogs) != 1 {
+		return false
+	}
+	for _, runtime := range runtimeCatalogs[0] {
+		if runtime.RuntimeInstanceID == harnessadapter.ClaudeCodeRuntimeInstanceID &&
+			runtime.AdapterType == harnessadapter.ClaudeCodeAdapterType &&
+			runtime.Status == "online" && runtime.Capacity > 0 &&
+			containsSetupString(runtime.ModelIDs, harnessadapter.ClaudeCodeModelID) &&
+			containsSetupString(runtime.ObservedCapabilities, "workspace_edit") {
+			return true
+		}
+	}
+	return false
+}
+
 func setupOpenCodeRuntimeModels(
 	runtimeCatalogs ...[]SetupRuntimePreview,
 ) map[string][]string {
@@ -1268,6 +1412,9 @@ func setupOpenCodeRuntimeModels(
 			if !mapped {
 				loomProviderID = runtimeProviderID
 			}
+			if !provider.OpenCodeBrokeredModelSupported(loomProviderID, modelID) {
+				continue
+			}
 			if _, known := provider.OpenCodeCredentialEnv(runtimeProviderID); !known {
 				continue
 			}
@@ -1288,6 +1435,9 @@ func setupOpenCodeRuntimeModels(
 }
 
 func setupProviderDisplayName(providerID string) string {
+	if providerID == "loom-local" {
+		return "Local model"
+	}
 	for _, descriptor := range provider.Catalog() {
 		if descriptor.ID == providerID {
 			return descriptor.DisplayName

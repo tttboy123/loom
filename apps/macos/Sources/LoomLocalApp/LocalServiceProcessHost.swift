@@ -19,6 +19,7 @@ final class LocalServiceProcessHost: ObservableObject {
     private var process: Process?
     private var consoleHandle: FileHandle?
     private var restartTask: Task<Void, Never>?
+    private var adoptedSocketMonitorTask: Task<Void, Never>?
     private var keepsBundledServiceAlive = true
 
     func start() async -> Bool {
@@ -27,6 +28,7 @@ final class LocalServiceProcessHost: ObservableObject {
             return true
         }
         if await Self.probeSocketOffMain(at: defaultSocketPath) {
+            scheduleAdoptedServiceMonitor()
             logger.info("bundled service already available")
             return true
         }
@@ -108,6 +110,7 @@ final class LocalServiceProcessHost: ObservableObject {
     deinit {
         keepsBundledServiceAlive = false
         restartTask?.cancel()
+        adoptedSocketMonitorTask?.cancel()
         if process?.isRunning == true {
             process?.terminate()
         }
@@ -134,6 +137,35 @@ final class LocalServiceProcessHost: ObservableObject {
                 self.logger.notice("bundled service restarted after unexpected termination")
             } else {
                 self.logger.error("bundled service restart failed")
+            }
+        }
+    }
+
+    /// A rapid App restart can briefly observe the previous managed daemon's
+    /// still-live socket. Keep watching that adopted service until it either
+    /// remains available or disappears, then start this App's bundled daemon.
+    private func scheduleAdoptedServiceMonitor() {
+        guard process?.isRunning != true, adoptedSocketMonitorTask == nil else {
+            return
+        }
+        adoptedSocketMonitorTask = Task { @MainActor [weak self] in
+            defer { self?.adoptedSocketMonitorTask = nil }
+            while let self, self.keepsBundledServiceAlive, !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 750_000_000)
+                } catch {
+                    return
+                }
+                guard self.process?.isRunning != true else { return }
+                let socketIsReachable = await Self.probeSocketOffMain(
+                    at: self.defaultSocketPath
+                )
+                guard !socketIsReachable else { continue }
+                self.logger.notice(
+                    "adopted local service disappeared; starting bundled service"
+                )
+                _ = await self.start()
+                if self.process?.isRunning == true { return }
             }
         }
     }

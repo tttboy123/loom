@@ -3,6 +3,9 @@
 package piadapter
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +28,195 @@ func TestPiLocalModelConfigRequiresExplicitPrivateRoot(t *testing.T) {
 	field, ok := reflect.TypeOf(PiLocalModelServerConfig{}).FieldByName("PrivateRoot")
 	if !ok || field.Type.Kind() != reflect.String {
 		t.Fatal("PiLocalModelServerConfig must expose an explicit string PrivateRoot")
+	}
+	archiveField, ok := reflect.TypeOf(PiLocalModelServerConfig{}).FieldByName("RuntimeArchivePath")
+	if !ok || archiveField.Type.Kind() != reflect.String {
+		t.Fatal("PiLocalModelServerConfig must expose an explicit string RuntimeArchivePath")
+	}
+}
+
+func TestPiLocalRuntimeArchiveBindsCompleteTree(t *testing.T) {
+	root := piLocalModelPrivateRoot(t, "local-model-runtime-archive")
+	runtimeDirectory := piPrivateDirectoryAt(t, root, "runtime")
+	sourceDirectory := piPrivateDirectoryAt(t, root, "sources")
+	modelDirectory := piPrivateDirectoryAt(t, root, "models")
+	executablePath := filepath.Join(runtimeDirectory, "llama-server")
+	dependencyPath := filepath.Join(runtimeDirectory, "libllama.dylib")
+	readmePath := filepath.Join(runtimeDirectory, "README.md")
+	archivePath := filepath.Join(sourceDirectory, "llama-runtime.tar.gz")
+	modelPath := filepath.Join(modelDirectory, "model.gguf")
+
+	executable := []byte("#!/bin/sh\nexit 0\n")
+	dependency := []byte("bounded-runtime-dependency")
+	readme := []byte("bounded-runtime-metadata")
+	model := []byte("bounded-runtime-model")
+	for _, fixture := range []struct {
+		path string
+		body []byte
+		mode os.FileMode
+	}{
+		{executablePath, executable, 0o700},
+		{dependencyPath, dependency, 0o700},
+		{readmePath, readme, 0o600},
+		{modelPath, model, 0o600},
+	} {
+		if err := os.WriteFile(fixture.path, fixture.body, fixture.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive := piLocalRuntimeArchiveFixture(t, []piLocalRuntimeArchiveFixtureEntry{
+		{name: "llama-server", body: executable, mode: 0o755},
+		{name: "libllama.dylib", body: dependency, mode: 0o755},
+		{name: "README.md", body: readme, mode: 0o644},
+	})
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := sha256.Sum256(archive)
+	executableDigest := sha256.Sum256(executable)
+	modelDigest := sha256.Sum256(model)
+	config := PiLocalModelServerConfig{
+		PrivateRoot: root, RuntimeArchivePath: archivePath,
+		ExecutablePath: executablePath, ModelPath: modelPath,
+		Host: "127.0.0.1", Port: availablePiLocalModelPort(t),
+		StartupTimeout: time.Second, CancelGrace: 100 * time.Millisecond,
+	}
+
+	binding, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		hex.EncodeToString(archiveDigest[:]),
+		hex.EncodeToString(executableDigest[:]),
+		hex.EncodeToString(modelDigest[:]),
+	)
+	if err != nil {
+		t.Fatalf("inspectPiLocalModelServerBindingWithArtifactDigests() error = %v", err)
+	}
+	if binding.public.RuntimeArchiveSHA256 != hex.EncodeToString(archiveDigest[:]) ||
+		len(binding.public.RuntimeTreeSHA256) != sha256.Size*2 ||
+		len(binding.runtimeFiles) != 3 {
+		t.Fatalf("runtime binding = %#v files=%d", binding.public, len(binding.runtimeFiles))
+	}
+
+	if err := os.WriteFile(dependencyPath, []byte("changed-runtime-dependency"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		hex.EncodeToString(archiveDigest[:]),
+		hex.EncodeToString(executableDigest[:]),
+		hex.EncodeToString(modelDigest[:]),
+	); !errors.Is(err, ErrInvalidPiLocalModel) {
+		t.Fatalf("changed dependency error = %v, want invalid local model", err)
+	}
+	if err := os.WriteFile(dependencyPath, dependency, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	extraPath := filepath.Join(runtimeDirectory, "unbound.dylib")
+	if err := os.WriteFile(extraPath, []byte("extra"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		hex.EncodeToString(archiveDigest[:]),
+		hex.EncodeToString(executableDigest[:]),
+		hex.EncodeToString(modelDigest[:]),
+	); !errors.Is(err, ErrInvalidPiLocalModel) {
+		t.Fatalf("extra runtime file error = %v, want invalid local model", err)
+	}
+}
+
+func TestPiLocalRuntimeArchiveParserFailsClosed(t *testing.T) {
+	t.Run("safe common root and link resolve deterministically", func(t *testing.T) {
+		executable := []byte("llama-server")
+		dependency := []byte("libllama")
+		archive := piLocalRuntimeArchiveFixture(t, []piLocalRuntimeArchiveFixtureEntry{
+			{name: "package/llama-server", body: executable, mode: 0o755},
+			{name: "package/libllama.dylib", body: dependency, mode: 0o755},
+			{
+				name: "package/libllama.1.dylib", mode: 0o777,
+				typeflag: tar.TypeSymlink, linkname: "libllama.dylib",
+			},
+		})
+		first, err := parsePiLocalRuntimeArchive(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := parsePiLocalRuntimeArchive(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dependencyDigest := sha256.Sum256(dependency)
+		alias := first["libllama.1.dylib"]
+		if alias.digest != hex.EncodeToString(dependencyDigest[:]) ||
+			alias.size != int64(len(dependency)) || !alias.executable {
+			t.Fatalf("resolved alias = %#v", alias)
+		}
+		firstDigest, err := piLocalRuntimeTreeDigest(first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondDigest, err := piLocalRuntimeTreeDigest(second)
+		if err != nil || firstDigest != secondDigest {
+			t.Fatalf("tree digests = %q %q err=%v", firstDigest, secondDigest, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		entries []piLocalRuntimeArchiveFixtureEntry
+	}{
+		{
+			name: "path escape",
+			entries: []piLocalRuntimeArchiveFixtureEntry{
+				{name: "../escape", body: []byte("escape"), mode: 0o644},
+			},
+		},
+		{
+			name: "absolute path",
+			entries: []piLocalRuntimeArchiveFixtureEntry{
+				{name: "/escape", body: []byte("escape"), mode: 0o644},
+			},
+		},
+		{
+			name: "duplicate path",
+			entries: []piLocalRuntimeArchiveFixtureEntry{
+				{name: "same", body: []byte("first"), mode: 0o644},
+				{name: "same", body: []byte("second"), mode: 0o644},
+			},
+		},
+		{
+			name: "link escape",
+			entries: []piLocalRuntimeArchiveFixtureEntry{
+				{name: "package/target", body: []byte("target"), mode: 0o644},
+				{
+					name: "package/nested/link", mode: 0o777,
+					typeflag: tar.TypeSymlink, linkname: "../../../escape",
+				},
+			},
+		},
+		{
+			name: "absolute link",
+			entries: []piLocalRuntimeArchiveFixtureEntry{
+				{name: "package/target", body: []byte("target"), mode: 0o644},
+				{
+					name: "package/link", mode: 0o777,
+					typeflag: tar.TypeSymlink, linkname: "/package/target",
+				},
+			},
+		},
+		{
+			name: "unsupported object",
+			entries: []piLocalRuntimeArchiveFixtureEntry{
+				{name: "device", mode: 0o600, typeflag: tar.TypeChar},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			archive := piLocalRuntimeArchiveFixture(t, test.entries)
+			if _, err := parsePiLocalRuntimeArchive(archive); !errors.Is(err, ErrInvalidPiLocalModel) {
+				t.Fatalf("parse error = %v, want invalid local model", err)
+			}
+		})
 	}
 }
 
@@ -533,6 +725,21 @@ func TestPiLocalModelBindingInspectorIsReadOnlyAndFailClosed(t *testing.T) {
 		internal.public.ModelSHA256 != hex.EncodeToString(expectedModel[:]) {
 		t.Fatalf("binding = %#v", internal.public)
 	}
+	strict, err := inspectPiLocalModelServerBindingWithDigests(
+		config,
+		hex.EncodeToString(executableDigest[:]),
+		hex.EncodeToString(expectedModel[:]),
+	)
+	if err != nil || strict.public != internal.public {
+		t.Fatalf("strict binding = %#v, %v", strict.public, err)
+	}
+	if _, err := inspectPiLocalModelServerBindingWithDigests(
+		config,
+		strings.Repeat("f", sha256.Size*2),
+		hex.EncodeToString(expectedModel[:]),
+	); !errors.Is(err, ErrInvalidPiLocalModel) {
+		t.Fatalf("changed executable digest error = %v", err)
+	}
 	for _, unexpected := range []string{
 		filepath.Join(root, ".llama-home"),
 		filepath.Join(root, ".llama-tmp"),
@@ -695,6 +902,18 @@ func TestPiLocalModelBindingInspectorRejectsUnsafePathChainsAndModes(t *testing.
 			t.Fatalf("inspect model mode error = %v", err)
 		}
 	})
+
+	t.Run("hard-linked executable", func(t *testing.T) {
+		root := piLocalModelPrivateRoot(t, "local-model-executable-hardlink")
+		config, digest := piLocalModelInspectorFixture(t, root)
+		alias := filepath.Join(root, "llama-server-alias")
+		if err := os.Link(config.ExecutablePath, alias); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := inspectPiLocalModelServerBinding(config, digest); !errors.Is(err, ErrInvalidPiLocalModel) {
+			t.Fatalf("inspect hard-linked executable error = %v", err)
+		}
+	})
 }
 
 func piLocalModelInspectorFixture(
@@ -723,6 +942,47 @@ func piLocalModelInspectorFixture(
 		StartupTimeout: time.Second,
 		CancelGrace:    100 * time.Millisecond,
 	}, hex.EncodeToString(digest[:])
+}
+
+type piLocalRuntimeArchiveFixtureEntry struct {
+	name     string
+	body     []byte
+	mode     int64
+	typeflag byte
+	linkname string
+}
+
+func piLocalRuntimeArchiveFixture(
+	t testing.TB,
+	entries []piLocalRuntimeArchiveFixtureEntry,
+) []byte {
+	t.Helper()
+	var content bytes.Buffer
+	gzipWriter := gzip.NewWriter(&content)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, entry := range entries {
+		typeflag := entry.typeflag
+		if typeflag == 0 {
+			typeflag = tar.TypeReg
+		}
+		header := &tar.Header{
+			Name: entry.name, Mode: entry.mode, Size: int64(len(entry.body)),
+			Typeflag: typeflag, Linkname: entry.linkname,
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(entry.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return content.Bytes()
 }
 
 func piLocalModelPrivateRoot(t testing.TB, name string) string {

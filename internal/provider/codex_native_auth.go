@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -89,7 +91,16 @@ var (
 	ErrInvalidCodexLoginController    = errors.New("invalid Codex login controller")
 	ErrCodexLoginBusy                 = errors.New("Codex login already running")
 	ErrCodexLoginUnavailable          = errors.New("Codex login unavailable")
-	errCodexStatusOutputLimit         = errors.New("Codex status output limit")
+	errCodexAuthProbeOutputLimit      = errors.New("Codex auth probe output limit")
+	errCodexAuthProbeProtocol         = errors.New("Codex auth probe protocol failure")
+)
+
+const (
+	codexAuthProbeInitializeID = "loom-auth-initialize-v1"
+	codexAuthProbeAccountID    = "loom-auth-account-read-v1"
+	codexAuthProbeMaximumLines = 256
+	codexAuthAvailableCacheTTL = 30 * time.Second
+	codexAuthRetryCacheTTL     = 2 * time.Second
 )
 
 type CodexNativeAuthStatus string
@@ -112,31 +123,30 @@ const (
 	CodexNativeAuthReasonUnavailable     CodexNativeAuthReason = "unavailable"
 )
 
-type CodexStatusProcessRequest struct {
+type CodexNativeAuthProbeRequest struct {
 	ExecutablePath string
-	Arguments      []string
-	Environment    []string
 	MaxOutputBytes int
 }
 
-type CodexStatusProcessResult struct {
-	Stdout   []byte
-	Stderr   []byte
-	ExitCode int
+type CodexNativeAuthProbeResult struct {
+	Authenticated bool
+	// RequiresOpenAIAuth describes the active model Provider. It is true for
+	// an authenticated ChatGPT/OpenAI account, not a missing-auth signal.
+	RequiresOpenAIAuth bool
 }
 
-type CodexStatusRunner interface {
-	RunCodexStatus(
+type CodexNativeAuthProbeRunner interface {
+	ProbeCodexNativeAuth(
 		context.Context,
-		CodexStatusProcessRequest,
-	) (CodexStatusProcessResult, error)
+		CodexNativeAuthProbeRequest,
+	) (CodexNativeAuthProbeResult, error)
 }
 
 type CodexNativeAuthConfig struct {
 	ExecutablePath string
 	Timeout        time.Duration
 	MaxOutputBytes int
-	Runner         CodexStatusRunner
+	Runner         CodexNativeAuthProbeRunner
 }
 
 type CodexNativeAuthObservation struct {
@@ -179,7 +189,12 @@ type CodexNativeAuthObserver struct {
 	executablePath string
 	timeout        time.Duration
 	maxOutputBytes int
-	runner         CodexStatusRunner
+	runner         CodexNativeAuthProbeRunner
+
+	mu          sync.Mutex
+	cached      CodexNativeAuthObservation
+	cacheUntil  time.Time
+	cacheExists bool
 }
 
 func NewCodexNativeAuthObserver(
@@ -207,17 +222,51 @@ func NewCodexNativeAuthObserver(
 func (observer *CodexNativeAuthObserver) Observe(
 	ctx context.Context,
 ) (CodexNativeAuthObservation, error) {
-	if observer == nil || ctx == nil {
+	if observer == nil || ctx == nil || ctx.Err() != nil {
 		return CodexNativeAuthObservation{}, ErrInvalidCodexNativeAuthConfig
 	}
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if ctx.Err() != nil {
+		return CodexNativeAuthObservation{}, ctx.Err()
+	}
+	if observer.cacheExists && time.Now().Before(observer.cacheUntil) {
+		return observer.cached, nil
+	}
+	result, err := observer.observeUncached(ctx)
+	if err != nil {
+		return CodexNativeAuthObservation{}, err
+	}
+	ttl := codexAuthRetryCacheTTL
+	if result.Status == CodexNativeAuthAvailable || result.Status == CodexNativeAuthUnsupported {
+		ttl = codexAuthAvailableCacheTTL
+	}
+	observer.cached = result
+	observer.cacheUntil = time.Now().Add(ttl)
+	observer.cacheExists = true
+	return result, nil
+}
+
+func (observer *CodexNativeAuthObserver) Invalidate() {
+	if observer == nil {
+		return
+	}
+	observer.mu.Lock()
+	observer.cached = CodexNativeAuthObservation{}
+	observer.cacheUntil = time.Time{}
+	observer.cacheExists = false
+	observer.mu.Unlock()
+}
+
+func (observer *CodexNativeAuthObserver) observeUncached(
+	ctx context.Context,
+) (CodexNativeAuthObservation, error) {
 	runContext, cancel := context.WithTimeout(ctx, observer.timeout)
 	defer cancel()
-	result, err := observer.runner.RunCodexStatus(
+	result, err := observer.runner.ProbeCodexNativeAuth(
 		runContext,
-		CodexStatusProcessRequest{
+		CodexNativeAuthProbeRequest{
 			ExecutablePath: observer.executablePath,
-			Arguments:      []string{"login", "status"},
-			Environment:    []string{},
 			MaxOutputBytes: observer.maxOutputBytes,
 		},
 	)
@@ -239,16 +288,13 @@ func (observer *CodexNativeAuthObserver) Observe(
 			CodexNativeAuthReasonUnavailable,
 		), nil
 	}
-	output, completeLine := codexStatusOutput(result.Stdout, result.Stderr)
 	switch {
-	case completeLine &&
-		result.ExitCode == 0 &&
-		output == "Logged in using ChatGPT":
+	case result.Authenticated && result.RequiresOpenAIAuth:
 		return codexObservation(
 			CodexNativeAuthAvailable,
 			CodexNativeAuthReasonNone,
 		), nil
-	case completeLine && output == "Not logged in":
+	case !result.Authenticated && result.RequiresOpenAIAuth:
 		return codexObservation(
 			CodexNativeAuthNotLoggedIn,
 			CodexNativeAuthReasonNotLoggedIn,
@@ -259,33 +305,6 @@ func (observer *CodexNativeAuthObserver) Observe(
 			CodexNativeAuthReasonUnknownOutput,
 		), nil
 	}
-}
-
-func codexStatusOutput(stdout, stderr []byte) (string, bool) {
-	switch {
-	case len(stdout) != 0 && len(stderr) == 0:
-		return codexStatusLine(stdout)
-	case len(stderr) != 0 && len(stdout) == 0:
-		return codexStatusLine(stderr)
-	default:
-		return "", false
-	}
-}
-
-func codexStatusLine(output []byte) (string, bool) {
-	if !utf8.Valid(output) || len(output) == 0 {
-		return "", false
-	}
-	if bytes.HasSuffix(output, []byte("\r\n")) {
-		output = output[:len(output)-2]
-	} else if bytes.HasSuffix(output, []byte("\n")) {
-		output = output[:len(output)-1]
-	}
-	if len(output) == 0 ||
-		bytes.ContainsAny(output, "\r\n") {
-		return "", false
-	}
-	return string(output), true
 }
 
 func codexObservation(
@@ -427,31 +446,30 @@ func (controller *SystemCodexLoginController) Close() error {
 	return nil
 }
 
-type SystemCodexStatusRunner struct{}
+type SystemCodexNativeAuthProbeRunner struct{}
 
-func NewSystemCodexStatusRunner() SystemCodexStatusRunner {
-	return SystemCodexStatusRunner{}
+func NewSystemCodexNativeAuthProbeRunner() SystemCodexNativeAuthProbeRunner {
+	return SystemCodexNativeAuthProbeRunner{}
 }
 
-func (SystemCodexStatusRunner) RunCodexStatus(
+func (SystemCodexNativeAuthProbeRunner) ProbeCodexNativeAuth(
 	ctx context.Context,
-	request CodexStatusProcessRequest,
-) (CodexStatusProcessResult, error) {
+	request CodexNativeAuthProbeRequest,
+) (CodexNativeAuthProbeResult, error) {
+	if ctx == nil || ctx.Err() != nil {
+		return CodexNativeAuthProbeResult{}, ErrInvalidCodexNativeAuthConfig
+	}
 	before, err := codexExecutableIdentity(request.ExecutablePath)
 	if err != nil {
-		return CodexStatusProcessResult{}, ErrCodexExecutableIdentityChanged
+		return CodexNativeAuthProbeResult{}, ErrCodexExecutableIdentityChanged
 	}
-	if len(request.Arguments) != 2 ||
-		request.Arguments[0] != "login" ||
-		request.Arguments[1] != "status" ||
-		len(request.Environment) != 0 ||
-		request.MaxOutputBytes < 64 {
-		return CodexStatusProcessResult{}, ErrInvalidCodexNativeAuthConfig
+	if request.MaxOutputBytes < 64 || request.MaxOutputBytes > 65_536 {
+		return CodexNativeAuthProbeResult{}, ErrInvalidCodexNativeAuthConfig
 	}
 	command := exec.CommandContext(
 		ctx,
 		request.ExecutablePath,
-		request.Arguments...,
+		"-c", "mcp_servers={}", "app-server", "--stdio",
 	)
 	command.Env = []string{}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -466,9 +484,15 @@ func (SystemCodexStatusRunner) RunCodexStatus(
 		return err
 	}
 	command.WaitDelay = 2 * time.Second
-	stdout := &boundedCodexBuffer{maximum: request.MaxOutputBytes}
-	stderr := &boundedCodexBuffer{maximum: request.MaxOutputBytes}
-	command.Stdout = stdout
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	stderr := &boundedCodexDiscard{maximum: request.MaxOutputBytes}
 	command.Stderr = stderr
 	launchIdentity, identityErr := codexExecutableIdentity(
 		request.ExecutablePath,
@@ -477,34 +501,196 @@ func (SystemCodexStatusRunner) RunCodexStatus(
 		before,
 		launchIdentity,
 	) {
-		return CodexStatusProcessResult{}, ErrCodexExecutableIdentityChanged
+		return CodexNativeAuthProbeResult{}, ErrCodexExecutableIdentityChanged
 	}
-	runErr := command.Run()
+	if err := command.Start(); err != nil {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	waited := false
+	defer func() {
+		if waited {
+			return
+		}
+		_ = stdin.Close()
+		if command.Process != nil {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		}
+		_ = command.Wait()
+	}()
+	startedIdentity, identityErr := codexExecutableIdentity(request.ExecutablePath)
+	if identityErr != nil || !sameCodexExecutableIdentity(before, startedIdentity) {
+		return CodexNativeAuthProbeResult{}, ErrCodexExecutableIdentityChanged
+	}
+	reader := bufio.NewReaderSize(stdout, request.MaxOutputBytes+1)
+	consumed := 0
+	if err := writeCodexAuthProbeRequest(stdin, map[string]any{
+		"id": codexAuthProbeInitializeID, "method": "initialize",
+		"params": map[string]any{
+			"clientInfo":   map[string]string{"name": "loom", "version": "phase7-auth-v1"},
+			"capabilities": map[string]bool{"experimentalApi": true},
+		},
+	}); err != nil {
+		return CodexNativeAuthProbeResult{}, err
+	}
+	initialize, err := readCodexAuthProbeResponse(
+		ctx, reader, codexAuthProbeInitializeID, request.MaxOutputBytes, &consumed,
+	)
+	if err != nil {
+		return CodexNativeAuthProbeResult{}, err
+	}
+	defer zeroCodexAuthProbeBytes(initialize)
+	var initialized struct {
+		UserAgent      string `json:"userAgent"`
+		CodexHome      string `json:"codexHome"`
+		PlatformFamily string `json:"platformFamily"`
+		PlatformOS     string `json:"platformOs"`
+	}
+	if json.Unmarshal(initialize, &initialized) != nil ||
+		!strings.Contains(initialized.UserAgent, "0.144.1") ||
+		initialized.CodexHome == "" || initialized.PlatformFamily == "" ||
+		initialized.PlatformOS == "" {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	if err := writeCodexAuthProbeRequest(stdin, map[string]any{
+		"id": codexAuthProbeAccountID, "method": "account/read",
+		"params": map[string]bool{"refreshToken": true},
+	}); err != nil {
+		return CodexNativeAuthProbeResult{}, err
+	}
+	accountResult, err := readCodexAuthProbeResponse(
+		ctx, reader, codexAuthProbeAccountID, request.MaxOutputBytes, &consumed,
+	)
+	if err != nil {
+		return CodexNativeAuthProbeResult{}, err
+	}
+	defer zeroCodexAuthProbeBytes(accountResult)
+	var account struct {
+		Account            json.RawMessage `json:"account"`
+		RequiresOpenAIAuth *bool           `json:"requiresOpenaiAuth"`
+	}
+	if json.Unmarshal(accountResult, &account) != nil || account.RequiresOpenAIAuth == nil {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	defer zeroCodexAuthProbeBytes(account.Account)
+	trimmedAccount := bytes.TrimSpace(account.Account)
+	authenticated := len(trimmedAccount) >= 2 && !bytes.Equal(trimmedAccount, []byte("null"))
+	if authenticated && (trimmedAccount[0] != '{' ||
+		trimmedAccount[len(trimmedAccount)-1] != '}' || !json.Valid(trimmedAccount)) {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	if err := stdin.Close(); err != nil {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
+	}
+	runErr := command.Wait()
+	waited = true
 	after, identityErr := codexExecutableIdentity(request.ExecutablePath)
 	if identityErr != nil || !sameCodexExecutableIdentity(before, after) {
-		return CodexStatusProcessResult{}, ErrCodexExecutableIdentityChanged
+		return CodexNativeAuthProbeResult{}, ErrCodexExecutableIdentityChanged
 	}
-	if errors.Is(stdout.err, errCodexStatusOutputLimit) ||
-		errors.Is(stderr.err, errCodexStatusOutputLimit) {
-		return CodexStatusProcessResult{}, errCodexStatusOutputLimit
+	if errors.Is(stderr.err, errCodexAuthProbeOutputLimit) {
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeOutputLimit
 	}
-	exitCode := 0
 	if runErr != nil {
 		if ctx.Err() != nil {
-			return CodexStatusProcessResult{}, ctx.Err()
+			return CodexNativeAuthProbeResult{}, ctx.Err()
 		}
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return CodexStatusProcessResult{}, runErr
-		}
+		return CodexNativeAuthProbeResult{}, errCodexAuthProbeProtocol
 	}
-	return CodexStatusProcessResult{
-		Stdout:   append([]byte(nil), stdout.Bytes()...),
-		Stderr:   append([]byte(nil), stderr.Bytes()...),
-		ExitCode: exitCode,
+	return CodexNativeAuthProbeResult{
+		Authenticated:      authenticated,
+		RequiresOpenAIAuth: *account.RequiresOpenAIAuth,
 	}, nil
+}
+
+func writeCodexAuthProbeRequest(writer io.Writer, request any) error {
+	payload, err := json.Marshal(request)
+	if err != nil || len(payload) == 0 || len(payload) > 4_096 {
+		zeroCodexAuthProbeBytes(payload)
+		return errCodexAuthProbeProtocol
+	}
+	payload = append(payload, '\n')
+	defer zeroCodexAuthProbeBytes(payload)
+	if _, err := writer.Write(payload); err != nil {
+		return errCodexAuthProbeProtocol
+	}
+	return nil
+}
+
+func readCodexAuthProbeResponse(
+	ctx context.Context,
+	reader *bufio.Reader,
+	expectedID string,
+	maximum int,
+	consumed *int,
+) (json.RawMessage, error) {
+	if ctx == nil || reader == nil || expectedID == "" || maximum < 64 || consumed == nil {
+		return nil, ErrInvalidCodexNativeAuthConfig
+	}
+	for count := 0; count < codexAuthProbeMaximumLines; count++ {
+		line, err := reader.ReadSlice('\n')
+		if err != nil {
+			zeroCodexAuthProbeBytes(line)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if errors.Is(err, bufio.ErrBufferFull) || *consumed+len(line) > maximum {
+				return nil, errCodexAuthProbeOutputLimit
+			}
+			return nil, errCodexAuthProbeProtocol
+		}
+		*consumed += len(line)
+		if *consumed > maximum {
+			zeroCodexAuthProbeBytes(line)
+			return nil, errCodexAuthProbeOutputLimit
+		}
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(line) == 0 || !utf8.Valid(line) || bytes.IndexByte(line, 0) >= 0 {
+			zeroCodexAuthProbeBytes(line)
+			return nil, errCodexAuthProbeProtocol
+		}
+		var envelope struct {
+			ID     string          `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+			Result json.RawMessage `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		decodeErr := json.Unmarshal(line, &envelope)
+		zeroCodexAuthProbeBytes(line)
+		if decodeErr != nil {
+			zeroCodexAuthProbeBytes(envelope.Params)
+			zeroCodexAuthProbeBytes(envelope.Result)
+			zeroCodexAuthProbeBytes(envelope.Error)
+			return nil, errCodexAuthProbeProtocol
+		}
+		if envelope.ID == expectedID {
+			if envelope.Method != "" || len(envelope.Params) != 0 ||
+				len(envelope.Error) != 0 || len(envelope.Result) == 0 {
+				zeroCodexAuthProbeBytes(envelope.Params)
+				zeroCodexAuthProbeBytes(envelope.Result)
+				zeroCodexAuthProbeBytes(envelope.Error)
+				return nil, errCodexAuthProbeProtocol
+			}
+			result := append(json.RawMessage(nil), envelope.Result...)
+			zeroCodexAuthProbeBytes(envelope.Result)
+			return result, nil
+		}
+		zeroCodexAuthProbeBytes(envelope.Result)
+		zeroCodexAuthProbeBytes(envelope.Error)
+		if envelope.ID != "" || envelope.Method == "" || len(envelope.Params) == 0 {
+			zeroCodexAuthProbeBytes(envelope.Params)
+			return nil, errCodexAuthProbeProtocol
+		}
+		zeroCodexAuthProbeBytes(envelope.Params)
+	}
+	return nil, errCodexAuthProbeOutputLimit
+}
+
+func zeroCodexAuthProbeBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
 }
 
 type codexFileIdentity struct {
@@ -554,6 +740,25 @@ func sameCodexExecutableIdentity(
 		left.directory.Mode() == right.directory.Mode()
 }
 
+type boundedCodexDiscard struct {
+	written int
+	maximum int
+	err     error
+}
+
+func (writer *boundedCodexDiscard) Write(data []byte) (int, error) {
+	if writer.err != nil {
+		return 0, writer.err
+	}
+	remaining := writer.maximum - writer.written
+	if remaining <= 0 || len(data) > remaining {
+		writer.err = errCodexAuthProbeOutputLimit
+		return 0, writer.err
+	}
+	writer.written += len(data)
+	return len(data), nil
+}
+
 type boundedCodexBuffer struct {
 	buffer  bytes.Buffer
 	maximum int
@@ -566,7 +771,7 @@ func (buffer *boundedCodexBuffer) Write(data []byte) (int, error) {
 	}
 	remaining := buffer.maximum - buffer.buffer.Len()
 	if remaining <= 0 || len(data) > remaining {
-		buffer.err = errCodexStatusOutputLimit
+		buffer.err = errCodexAuthProbeOutputLimit
 		return 0, buffer.err
 	}
 	return buffer.buffer.Write(data)

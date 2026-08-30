@@ -105,26 +105,7 @@ func claudeCodeStreamArguments(
 	if request.ReasoningEffort != "" {
 		arguments = append(arguments, "--effort", request.ReasoningEffort)
 	}
-	tools := ""
-	mcpConfig := `{"mcpServers":{}}`
-	if request.ContextMCP.URL != "" {
-		prefixedTools := make([]string, 0, 3)
-		for _, name := range harnessMCPToolNames(request.ContextMCP) {
-			prefixedTools = append(prefixedTools, "mcp__loom_context__"+name)
-		}
-		tools = strings.Join(prefixedTools, ",")
-		encoded, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
-			"loom_context": map[string]any{
-				"type": "http", "url": request.ContextMCP.URL,
-				"headers": map[string]string{
-					"Authorization": "Bearer ${" + harnessContextMCPTokenEnv + "}",
-				},
-			},
-		}})
-		if err == nil {
-			mcpConfig = string(encoded)
-		}
-	}
+	tools, mcpConfig := claudeCodeMCPConfiguration(request)
 	return append(arguments,
 		"--permission-mode", "dontAsk",
 		"--tools", tools,

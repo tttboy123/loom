@@ -186,6 +186,7 @@ func TestCOMP2CProductionBuilderDoesNotConstructProtectedCoreOutsideBundle(t *te
 		"newProductVaultRouteFactoryFromCore":               true,
 		"newProductLegacyCredentialLeaseFactory":            true,
 		"newProductCoreRouteFactory":                        true,
+		"newProductHarnessRuntimeRefresher":                 true,
 		"newProductOperationalDiagnosticBootstrap":          true,
 		"newProductObservabilityConstructionFactory":        true,
 		"newProductConversationConstructionFactoryFromCore": true,
@@ -236,5 +237,46 @@ func TestCOMP2CProductionBuilderDoesNotConstructProtectedCoreOutsideBundle(t *te
 	}
 	if !foundCoreFactory {
 		t.Fatal("production does not delegate protected core construction to loom-core")
+	}
+}
+
+func TestPhase5CoreStartupDoesNotDiscoverExternalHarnessRuntimes(t *testing.T) {
+	parsed, err := parser.ParseFile(
+		token.NewFileSet(), "product_composition_core.go", nil, 0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forbidden := map[string]bool{
+		"ensureProductVerifiedClaudeCodeAgentRuntime": true,
+		"ensureProductVerifiedCodexAgentRuntime":      true,
+		"ensureProductVerifiedOpenCodeAgentRuntime":   true,
+	}
+	foundNative := false
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "newProductCoreRouteFactory" {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			identifier, ok := call.Fun.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if forbidden[identifier.Name] {
+				t.Errorf("core startup discovers external Harness through %s", identifier.Name)
+			}
+			if identifier.Name == "ensureProductVerifiedNativeAgentRuntimes" {
+				foundNative = true
+			}
+			return true
+		})
+	}
+	if !foundNative {
+		t.Fatal("core startup no longer publishes the immediate Loom Native runtime")
 	}
 }

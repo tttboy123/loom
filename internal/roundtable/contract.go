@@ -113,6 +113,12 @@ func ValidateImportContract(contract ExportContract, now time.Time) error {
 		contract.NotBefore.IsZero() || contract.ExpiresAt.IsZero() {
 		return ErrInvalidExportContract
 	}
+	if contract.Summary.SchemaVersion != SchemaVersion ||
+		contract.Summary.SessionID != contract.SessionID ||
+		contract.Summary.ModeratorSeat != contract.ModeratorSeat ||
+		!contract.Summary.ConcludedAt.Equal(contract.ConcludedAt) {
+		return ErrInvalidExportContract
+	}
 	if now.Before(contract.NotBefore) {
 		return ErrExportContractNotYet
 	}

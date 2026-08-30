@@ -610,6 +610,75 @@ func TestClaudeCodeProcessInjectsOnlyAttemptContextMCPLease(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeProcessInjectsContextAndRegistryScopedControlMCPs(t *testing.T) {
+	gateway := &attemptGatewayFixture{lease: AttemptGatewayLease{
+		BaseURL: "http://127.0.0.1:43123", Token: "provider-attempt-token",
+	}}
+	commands := &commandRunnerFixture{result: HarnessCommandResult{
+		Stdout: []byte(`{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}`),
+	}}
+	runner, err := NewClaudeCodeProcessRunner(ClaudeCodeProcessRunnerConfig{
+		Gateway: gateway, Commands: commands,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := HarnessProcessRequest{
+		ExecutablePath: "/opt/loom/bin/claude", WorkspacePath: "/private/tmp/workspace",
+		HomePath: "/private/tmp/home", TempPath: t.TempDir(), ModelID: ClaudeCodeModelID,
+		Prompt:       []byte("align the sessions, then prepare a Mission"),
+		SystemPrompt: "Loom governed conversation policy", Timeout: time.Minute,
+		MaxOutputBytes: 4096,
+		ContextMCP: HarnessContextMCPLease{
+			URL: "http://127.0.0.1:43130/mcp", Token: strings.Repeat("b", 64),
+		},
+		ControlMCP: HarnessControlMCPLease{
+			URL: "http://127.0.0.1:43131/mcp", Token: strings.Repeat("c", 64),
+			ToolNames: []string{
+				"loom_sessions_search", "loom_sessions_align_preview",
+				"loom_missions_create_preview", "loom_missions_continue_preview",
+				"loom_teams_create_preview", "loom_roundtables_open_preview",
+			},
+		},
+		RequiresCredential: true,
+	}
+	if _, err := runner.RunHarness(
+		context.Background(), request, []byte("provider-secret"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gateway.policy.AllowedLoomTools, []string{"loom_read_context"}) {
+		t.Fatalf("Provider gateway policy = %#v", gateway.policy)
+	}
+	arguments := strings.Join(commands.request.Arguments, "\n")
+	environment := strings.Join(commands.request.Environment, "\n")
+	for _, expected := range []string{
+		`"loom_context"`, `"url":"http://127.0.0.1:43130/mcp"`,
+		`Bearer ${LOOM_CONTEXT_ATTEMPT_TOKEN}`,
+		`"loom_control"`, `"url":"http://127.0.0.1:43131/mcp"`,
+		`Bearer ${LOOM_CONTROL_TURN_TOKEN}`,
+		"mcp__loom_context__loom_read_context",
+		"mcp__loom_control__loom_sessions_search",
+		"mcp__loom_control__loom_sessions_align_preview",
+		"mcp__loom_control__loom_missions_create_preview",
+		"mcp__loom_control__loom_missions_continue_preview",
+		"mcp__loom_control__loom_teams_create_preview",
+		"mcp__loom_control__loom_roundtables_open_preview",
+		"--disallowedTools", claudeCodeDisallowedNativeTools,
+	} {
+		if !strings.Contains(arguments, expected) {
+			t.Fatalf("Claude arguments missing %q: %s", expected, arguments)
+		}
+	}
+	if strings.Contains(arguments, request.ContextMCP.Token) ||
+		strings.Contains(arguments, request.ControlMCP.Token) ||
+		!strings.Contains(environment, harnessContextMCPTokenEnv+"="+request.ContextMCP.Token) ||
+		!strings.Contains(environment, harnessControlMCPTokenEnv+"="+request.ControlMCP.Token) ||
+		strings.Contains(environment, "provider-secret") {
+		t.Fatalf("unsafe Claude MCP args=%s env=%s", arguments, environment)
+	}
+}
+
 func TestClaudeCodeProcessInjectsGovernedAttemptMCPTools(t *testing.T) {
 	gateway := &attemptGatewayFixture{lease: AttemptGatewayLease{
 		BaseURL: "http://127.0.0.1:43123", Token: "provider-attempt-token",
@@ -677,6 +746,26 @@ func TestClaudeCodeProcessClassifiesClosedFailures(t *testing.T) {
 		{name: "rate limit", gatewayErr: ErrHarnessProviderRateLimit, want: ErrHarnessProviderRateLimit},
 		{name: "process unavailable", commandErr: errors.New("raw process error"), want: ErrHarnessProcessUnavailable},
 		{name: "nonzero exit", command: HarnessCommandResult{ExitCode: 1}, want: ErrHarnessProcessUnavailable},
+		{
+			name: "native login required",
+			command: HarnessCommandResult{
+				ExitCode: 1,
+				Stdout: []byte(
+					`{"type":"result","subtype":"success","is_error":true,"result":"Not logged in. Please run /login."}`,
+				),
+			},
+			want: ErrHarnessProviderAuth,
+		},
+		{
+			name: "native rate limit",
+			command: HarnessCommandResult{
+				ExitCode: 1,
+				Stdout: []byte(
+					`{"type":"result","subtype":"success","is_error":true,"result":"Rate limit reached."}`,
+				),
+			},
+			want: ErrHarnessProviderRateLimit,
+		},
 		{name: "invalid output", command: HarnessCommandResult{ExitCode: 0, Stdout: []byte(`{"type":"result","is_error":false}`)}, want: ErrHarnessProtocol},
 	}
 	for _, test := range tests {
@@ -703,6 +792,63 @@ func TestClaudeCodeProcessClassifiesClosedFailures(t *testing.T) {
 			}, []byte("private-anthropic-key"))
 			if !errors.Is(err, test.want) {
 				t.Fatalf("RunHarness() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestObserveClaudeCodeNativeAuthUsesClosedStatusContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    HarnessCommandResult
+		wantReady bool
+		wantErr   error
+	}{
+		{
+			name: "logged in",
+			result: HarnessCommandResult{Stdout: []byte(
+				`{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}`,
+			)},
+			wantReady: true,
+		},
+		{
+			name: "logged out",
+			result: HarnessCommandResult{ExitCode: 1, Stdout: []byte(
+				`{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}`,
+			)},
+		},
+		{
+			name:    "unknown output",
+			result:  HarnessCommandResult{Stdout: []byte(`{"authMethod":"none"}`)},
+			wantErr: ErrHarnessProtocol,
+		},
+		{
+			name:    "process unavailable",
+			wantErr: ErrHarnessProcessUnavailable,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			commands := &commandRunnerFixture{result: test.result}
+			if test.name == "process unavailable" {
+				commands.err = errors.New("private process failure")
+			}
+			ready, err := ObserveClaudeCodeNativeAuth(
+				context.Background(), "/opt/loom/bin/claude",
+				"/private/tmp/loom/home", "/private/tmp/loom/temp",
+				commands, 5*time.Second,
+			)
+			if ready != test.wantReady || !errors.Is(err, test.wantErr) {
+				t.Fatalf("ObserveClaudeCodeNativeAuth() = %t, %v", ready, err)
+			}
+			if commands.runs != 1 || !reflect.DeepEqual(
+				commands.request.Arguments, []string{"auth", "status", "--json"},
+			) || commands.request.Directory != "/private/tmp/loom/home" ||
+				commands.request.Timeout != 5*time.Second ||
+				commands.request.MaxOutputBytes != 4096 ||
+				strings.Contains(strings.Join(commands.request.Environment, "\n"), "TOKEN=") ||
+				strings.Contains(strings.Join(commands.request.Environment, "\n"), "API_KEY=") {
+				t.Fatalf("native auth request = %#v", commands.request)
 			}
 		})
 	}

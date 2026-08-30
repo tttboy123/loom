@@ -128,8 +128,34 @@ enum LocalPrivateRegistryStorage {
   }
 
   static func write(_ data: Data, to url: URL) throws {
-    guard data.count <= maximumFileBytes else { throw StorageError.oversized }
-    try withDirectoryDescriptor(for: url) { directoryDescriptor, fileName in
+    try write(
+      data,
+      to: url,
+      maximumBytes: maximumFileBytes,
+      requireOwnerOnlyDirectory: true
+    )
+  }
+
+  static func writeExternalExport(_ data: Data, to url: URL) throws {
+    try write(
+      data,
+      to: url,
+      maximumBytes: 1_048_576,
+      requireOwnerOnlyDirectory: false
+    )
+  }
+
+  private static func write(
+    _ data: Data,
+    to url: URL,
+    maximumBytes: Int,
+    requireOwnerOnlyDirectory: Bool
+  ) throws {
+    guard data.count <= maximumBytes else { throw StorageError.oversized }
+    try withDirectoryDescriptor(
+      for: url,
+      requireOwnerOnlyDirectory: requireOwnerOnlyDirectory
+    ) { directoryDescriptor, fileName in
       let originalIdentity = try existingFileIdentity(
         directoryDescriptor: directoryDescriptor,
         fileName: fileName
@@ -219,6 +245,7 @@ enum LocalPrivateRegistryStorage {
 
   private static func withDirectoryDescriptor<T>(
     for url: URL,
+    requireOwnerOnlyDirectory: Bool = true,
     _ operation: (Int32, String) throws -> T
   ) throws -> T {
     guard url.isFileURL else { throw StorageError.unsafePath }
@@ -246,13 +273,21 @@ enum LocalPrivateRegistryStorage {
     defer { Darwin.close(directoryDescriptor) }
     guard fstat(directoryDescriptor, &directoryStatus) == 0,
       directoryStatus.st_mode & S_IFMT == S_IFDIR,
-      directoryStatus.st_mode & mode_t(0o777) == directoryPermissions,
       directoryStatus.st_uid == geteuid()
     else {
       throw StorageError.unsafePath
     }
+    let directoryMode = directoryStatus.st_mode & mode_t(0o777)
+    guard requireOwnerOnlyDirectory
+      ? directoryMode == directoryPermissions
+      : directoryMode & mode_t(S_IWGRP | S_IWOTH) == 0
+    else { throw StorageError.unsafePath }
     return try operation(directoryDescriptor, fileName)
   }
+}
+
+public func writeLocalRoundtableExport(_ data: Data, to url: URL) throws {
+  try LocalPrivateRegistryStorage.writeExternalExport(data, to: url)
 }
 
 public enum LocalProductWorkspaceTaskKind: String, Equatable, Sendable {
@@ -683,6 +718,10 @@ public struct LocalProductChatOperationFailure: Equatable, Sendable {
     }
   }
 
+  public var isProposalDecisionRecoveryAvailable: Bool {
+    recoverable && stage == .controlProposalConfirm
+  }
+
   public init(
     code: LocalIPCRemoteError.Code,
     stage: LocalIPCRemoteError.Stage,
@@ -703,6 +742,66 @@ public struct LocalProductChatOperationFailure: Equatable, Sendable {
 	self.retryAfterSeconds = retryAfterSeconds
     self.title = title
     self.detail = detail
+  }
+}
+
+public struct LocalProductRoundtableOperationFailure: Equatable, Sendable {
+  public let code: String
+  public let stage: LocalIPCRemoteError.Stage
+  public let recoverable: Bool
+  public let incidentID: String
+  public let title: String
+  public let detail: String
+  public let recoveryAction: String
+
+  public var message: String {
+    "RoundTable \(code): \(title). \(detail) \(recoveryAction) · Stage \(stage.rawValue) · Incident \(incidentID)"
+  }
+
+  public init(
+    code: String,
+    stage: LocalIPCRemoteError.Stage,
+    recoverable: Bool,
+    incidentID: String,
+    title: String,
+    detail: String,
+    recoveryAction: String
+  ) {
+    self.code = code
+    self.stage = stage
+    self.recoverable = recoverable
+    self.incidentID = incidentID
+    self.title = title
+    self.detail = detail
+    self.recoveryAction = recoveryAction
+  }
+}
+
+public struct LocalProductMissionOperationFailure: Equatable, Sendable {
+  public let code: String
+  public let stage: LocalIPCRemoteError.Stage
+  public let recoverable: Bool
+  public let incidentID: String
+  public let title: String
+  public let detail: String
+  public let recoveryAction: String
+
+  public init(
+    code: String,
+    stage: LocalIPCRemoteError.Stage,
+    recoverable: Bool,
+    incidentID: String,
+    title: String,
+    detail: String,
+    recoveryAction: String
+  ) {
+    self.code = code
+    self.stage = stage
+    self.recoverable = recoverable
+    self.incidentID = incidentID
+    self.title = title
+    self.detail = detail
+    self.recoveryAction = recoveryAction
   }
 }
 
@@ -735,6 +834,10 @@ public protocol LocalProductClientProtocol {
     incidentID: String
   ) async throws
   func deleteChatThread(threadID: String) async throws
+  func decideChatControlProposal(
+    _ request: LocalProductChatControlDecisionRequest,
+    incidentID: String
+  ) async throws -> LocalProductChatThread
   func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread
   func sendChatMessage(
     threadID: String,
@@ -781,6 +884,18 @@ public protocol LocalProductClientProtocol {
     reasoningEffort: String,
     contextMode: LocalProductConversationContextMode?,
     expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+    trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+    sessionCatalog: [LocalProductConversationSessionReference],
+    incidentID: String
+  ) async throws -> LocalProductChatThread
+  func sendChatMessage(
+    threadID: String,
+    content: String,
+    profileID: String,
+    modelID: String,
+    reasoningEffort: String,
+    contextMode: LocalProductConversationContextMode?,
+    expectedExecutionBinding: LocalProductConversationExecutionBinding?,
     incidentID: String
   ) async throws -> LocalProductChatThread
 }
@@ -812,6 +927,38 @@ extension LocalProductClientProtocol {
 
   public func deleteChatThread(threadID: String) async throws {
     throw LocalProductClientError.unavailable
+  }
+
+  public func decideChatControlProposal(
+    _ request: LocalProductChatControlDecisionRequest,
+    incidentID: String
+  ) async throws -> LocalProductChatThread {
+    throw LocalProductClientError.unavailable
+  }
+
+  public func sendChatMessage(
+    threadID: String,
+    content: String,
+    profileID: String,
+    modelID: String,
+    reasoningEffort: String,
+    contextMode: LocalProductConversationContextMode?,
+    expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+    trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+    sessionCatalog: [LocalProductConversationSessionReference],
+    incidentID: String
+  ) async throws -> LocalProductChatThread {
+    try await sendChatMessage(
+      threadID: threadID,
+      content: content,
+      profileID: profileID,
+      modelID: modelID,
+      reasoningEffort: reasoningEffort,
+      contextMode: contextMode,
+      expectedExecutionBinding: expectedExecutionBinding,
+      trustBoundaryAcknowledgement: trustBoundaryAcknowledgement,
+      incidentID: incidentID
+    )
   }
 
   public func sendChatMessage(threadID: String, content: String) async throws
@@ -956,6 +1103,27 @@ public protocol LocalRoundtableClientProtocol {
   func roundtableOpenRound(
     _ request: LocalRoundtableOpenRoundRequest
   ) async throws -> LocalRoundtableView
+  func roundtablePauseRound(
+    _ request: LocalRoundtablePauseRoundRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableSteerSeat(
+    _ request: LocalRoundtableSteerSeatRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableRetrySeat(
+    _ request: LocalRoundtableRetrySeatRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableSkipSeat(
+    _ request: LocalRoundtableSkipSeatRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableReplaceSeat(
+    _ request: LocalRoundtableReplaceSeatRequest
+  ) async throws -> LocalRoundtableView
+  func roundtableExport(
+    _ request: LocalRoundtableExportRequest
+  ) async throws -> LocalRoundtableExportDocument
+  func roundtableImport(
+    _ request: LocalRoundtableImportRequest
+  ) async throws -> LocalRoundtableImportResult
   func roundtableProposeMessage(
     _ request: LocalRoundtableProposeMessageRequest
   ) async throws -> LocalRoundtableView
@@ -1012,6 +1180,12 @@ public protocol LocalProductSetupClientProtocol {
     _ command: LocalProductRemoteToolBackendEnrollmentRevokeCommand
   ) async throws -> LocalProductRemoteToolBackendEnrollmentResult
   func connectCodex() async throws -> LocalProductProviderConnectResult
+  func connectClaudeCode(
+    incidentID: String
+  ) async throws -> LocalProductProviderConnectResult
+  func cancelClaudeCode(
+    incidentID: String
+  ) async throws -> LocalProductProviderConnectResult
   func startBuilder(
     source: String,
     sourceID: String,
@@ -1039,6 +1213,11 @@ public protocol LocalProductSetupClientProtocol {
   func confirmBuilder(
     session: LocalProductBuilderSession,
     definitionID: String
+  ) async throws -> LocalProductBuilderConfirmation
+  func materializeTeam(
+    teamDefinitionID: String,
+    teamDefinitionVersion: Int,
+    teamDefinitionDigest: String
   ) async throws -> LocalProductBuilderConfirmation
   func archiveTeam(
     definitionID: String,
@@ -1138,6 +1317,14 @@ public protocol LocalProductSetupClientProtocol {
 }
 
 extension LocalProductSetupClientProtocol {
+  public func materializeTeam(
+    teamDefinitionID: String,
+    teamDefinitionVersion: Int,
+    teamDefinitionDigest: String
+  ) async throws -> LocalProductBuilderConfirmation {
+    throw LocalProductClientError.unavailable
+  }
+
   public func editBuilder(
     session: LocalProductBuilderSession,
     field: String,
@@ -1410,6 +1597,7 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var selectedChatSessionID: String = ""
   @Published public private(set) var activeChatResponsesByThreadID: [String: String] = [:]
   @Published public private(set) var cancellingChatResponseThreadIDs: Set<String> = []
+  @Published public private(set) var controlProposalDecisionsInFlight: Set<String> = []
   public var isSendingChatMessage: Bool {
     activeChatResponsesByThreadID[currentChatThreadID()] != nil
   }
@@ -1435,6 +1623,8 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var executionState: LocalProductExecutionState = .idle
   @Published public private(set) var executionPreflight: LocalProductExecutionPreflight?
   @Published public private(set) var executionResult: LocalProductExecutionResult?
+  @Published public private(set) var missionOperationFailure:
+    LocalProductMissionOperationFailure?
   @Published public private(set) var agentInputsInFlight: Set<String> = []
   @Published public private(set) var agentInputReceipts: [String: LocalProductAgentInputReceipt] = [:]
   @Published public private(set) var agentInputFailures: [String: LocalProductChatOperationFailure] = [:]
@@ -1459,6 +1649,9 @@ public final class LocalProductStore: ObservableObject {
   @Published public private(set) var executionSnapshot: ExecutionSnapshot?
   @Published public private(set) var productionSnapshot: ProductionSnapshot?
   @Published public private(set) var roundtableError: String?
+  @Published public private(set) var roundtableOperationFailure:
+    LocalProductRoundtableOperationFailure?
+  @Published public private(set) var roundtableIsPreparing = false
   @Published public private(set) var roundtableLastSessionID: String?
   @Published public var selectedSection: LocalProductSection = .home
   @Published public var selectedTeamID: String?
@@ -1487,6 +1680,8 @@ public final class LocalProductStore: ObservableObject {
   private var timelineLoadGeneration: UInt64 = 0
   private var chatGeneration: UInt64 = 0
   private var conversationRouteTransitionGeneration: UInt64 = 0
+  private var claudeCodeSignInGeneration: UInt64 = 0
+  private var claudeCodeSignInTask: Task<Void, Never>?
   private var hasPendingConversationRoute = false
   private var conversationRouteSourceProfileID = ""
   private var forceNewConversationSegment = false
@@ -1506,12 +1701,16 @@ public final class LocalProductStore: ObservableObject {
 
   private let chatSessionsFileURL: URL
   private let missionPresentationsFileURL: URL
+  private let roundtableSessionsFileURL: URL
+  private var roundtableMissionSessions: [String: String] = [:]
 
   public init(
     client: LocalProductClientProtocol,
+    setupClient explicitSetupClient: LocalProductSetupClientProtocol? = nil,
     initialSetupSnapshot: LocalProductSetupSnapshot? = nil,
     chatSessionsFileURL: URL? = nil,
-    missionPresentationsFileURL: URL? = nil
+    missionPresentationsFileURL: URL? = nil,
+    roundtableSessionsFileURL: URL? = nil
   ) {
     if let chatSessionsFileURL {
       self.chatSessionsFileURL = chatSessionsFileURL
@@ -1527,9 +1726,16 @@ public final class LocalProductStore: ObservableObject {
         .deletingLastPathComponent()
         .appendingPathComponent("mission-presentations.json")
     }
+    if let roundtableSessionsFileURL {
+      self.roundtableSessionsFileURL = roundtableSessionsFileURL
+    } else {
+      self.roundtableSessionsFileURL = self.chatSessionsFileURL
+        .deletingLastPathComponent()
+        .appendingPathComponent("roundtable-sessions.json")
+    }
     self.client = client
     setupSnapshot = initialSetupSnapshot
-    setupClient = client as? LocalProductSetupClientProtocol
+    setupClient = explicitSetupClient ?? (client as? LocalProductSetupClientProtocol)
     decisionClient = client as? LocalProductDecisionClientProtocol
     executionClient = client as? LocalProductExecutionClientProtocol
     agentInputClient = client as? LocalProductAgentInputClientProtocol
@@ -1543,6 +1749,7 @@ public final class LocalProductStore: ObservableObject {
     productionSnapshotClient = client as? LocalProductProductionSnapshotClientProtocol
     let restoredEmptyChatRegistry = loadPersistedChatSessions()
     loadPersistedMissionPresentations()
+    loadPersistedRoundtableSessions()
     if chatSessions.isEmpty {
       let initialThreadID = restoredEmptyChatRegistry
         ? "thread-" + UUID().uuidString.lowercased()
@@ -1888,51 +2095,210 @@ public final class LocalProductStore: ObservableObject {
     UUID().uuidString.lowercased()
   }
 
-  private func runRoundtable(
-    _ operation: () async throws -> LocalRoundtableView
-  ) async -> LocalRoundtableView? {
+  private func runRoundtable<Result>(
+    _ operation: (String) async throws -> Result
+  ) async -> Result? {
+    let incidentID = roundtableCorrelationID()
     do {
-      let view = try await operation()
+      let result = try await operation(incidentID)
       roundtableError = nil
-      return view
+      roundtableOperationFailure = nil
+      roundtableIsPreparing = false
+      return result
     } catch {
-      roundtableError = Self.roundtableErrorMessage(error)
+      let failure = Self.roundtableOperationFailure(
+        error,
+        fallbackIncidentID: incidentID
+      )
+      roundtableOperationFailure = failure
+      roundtableError = failure.message
+      roundtableIsPreparing = Self.roundtablePreparing(error)
       return nil
     }
   }
 
-  static func roundtableErrorMessage(_ error: Error) -> String {
-    if let remote = error as? LocalIPCRemoteError {
-      var suffix = ""
-      if let stage = remote.stage, stage != .conversationDispatch {
-        suffix = " (stage: \(stage.rawValue))"
-      }
-      return "Roundtable \(remote.code): \(remote.safeMessage)\(suffix)"
+  private func rejectRoundtableInput(
+    _ detail: String,
+    code: String = LocalProductClientError.invalidRequest.rawValue
+  ) {
+    let failure = LocalProductRoundtableOperationFailure(
+      code: code,
+      stage: .inputAdmission,
+      recoverable: false,
+      incidentID: roundtableCorrelationID(),
+      title: "Review this RoundTable action",
+      detail: detail,
+      recoveryAction: "Correct the highlighted information and try again."
+    )
+    roundtableOperationFailure = failure
+    roundtableError = failure.message
+    roundtableIsPreparing = false
+  }
+
+  static func roundtablePreparing(_ error: Error) -> Bool {
+    if let client = error as? LocalProductClientError {
+      return client == .unavailable || client == .timeout
     }
-    return "Roundtable unavailable: \(error.localizedDescription)"
+    guard let remote = error as? LocalIPCRemoteError else { return false }
+    return remote.code == .stateUnavailable
+      && remote.stage == .agentRuntimeInitialization
+      && remote.recoverable
+  }
+
+  static func roundtableOperationFailure(
+    _ error: Error,
+    fallbackIncidentID: String
+  ) -> LocalProductRoundtableOperationFailure {
+    if let remote = error as? LocalIPCRemoteError {
+      let title: String
+      let detail: String
+      let recoveryAction: String
+      switch (remote.code, remote.stage) {
+      case (.invalidRequest, .inputAdmission):
+        title = "Review this discussion request"
+        detail = "The discussion request is invalid."
+        recoveryAction = "Reopen the Mission and try again."
+      case (.invalidRequest, .daemonAdmission):
+        title = "Mission link needs attention"
+        detail = "The Mission or Team link could not be admitted."
+        recoveryAction = "Refresh Missions and try again."
+      case (.stateUnavailable, .agentRuntimeInitialization):
+        title = "Agent Team is still getting ready"
+        detail = "Loom is restoring the governed Agent Runtime."
+        recoveryAction = "Loom will retry automatically when the Agent Team is ready."
+      case (.bindingInvalid, _):
+        title = "Agent route changed"
+        detail = "The frozen Agent route no longer matches this discussion."
+        recoveryAction = "Refresh the Team, then add the Agent again."
+      case (.capabilityGap, .agentInputAdmission):
+        title = "Live guidance is unavailable"
+        detail = "This Agent cannot accept guidance while it is running."
+        recoveryAction = "Pause or wait for it to finish, then Retry with guidance."
+      case (.stateUnavailable, _):
+        title = "RoundTable is temporarily unavailable"
+        detail = "The discussion state could not be read safely."
+        recoveryAction = "Retry after Loom reconnects."
+      default:
+        title = "RoundTable action did not complete"
+        detail = remote.safeMessage.isEmpty
+          ? "The governed discussion action could not be completed."
+          : remote.safeMessage
+        recoveryAction = remote.recoverable
+          ? "Retry this action."
+          : "Review the discussion and its frozen Agent routes before continuing."
+      }
+      return LocalProductRoundtableOperationFailure(
+        code: remote.code.rawValue,
+        stage: remote.stage ?? .daemonAdmission,
+        recoverable: remote.recoverable,
+        incidentID: remote.incidentID ?? fallbackIncidentID,
+        title: title,
+        detail: detail,
+        recoveryAction: recoveryAction
+      )
+    }
+
+    if let client = error as? LocalProductClientError {
+      switch client {
+      case .unavailable, .timeout:
+        return LocalProductRoundtableOperationFailure(
+          code: client.rawValue,
+          stage: .udsTransport,
+          recoverable: true,
+          incidentID: fallbackIncidentID,
+          title: "Agent Team is still getting ready",
+          detail: "Loom could not reach the local Agent Runtime yet.",
+          recoveryAction: "Loom will retry automatically when the local service is ready."
+        )
+      case .invalidSocket:
+        return LocalProductRoundtableOperationFailure(
+          code: client.rawValue,
+          stage: .udsTransport,
+          recoverable: false,
+          incidentID: fallbackIncidentID,
+          title: "Local service identity could not be verified",
+          detail: "Loom rejected the local service connection.",
+          recoveryAction: "Restart Loom, then reopen this Mission."
+        )
+      case .invalidRequest:
+        return LocalProductRoundtableOperationFailure(
+          code: client.rawValue,
+          stage: .inputAdmission,
+          recoverable: false,
+          incidentID: fallbackIncidentID,
+          title: "Review this discussion request",
+          detail: "The discussion request is invalid.",
+          recoveryAction: "Reopen the Mission and try again."
+        )
+      case .invalidResponse:
+        return LocalProductRoundtableOperationFailure(
+          code: client.rawValue,
+          stage: .udsTransport,
+          recoverable: true,
+          incidentID: fallbackIncidentID,
+          title: "Discussion response could not be read",
+          detail: "Loom received an unreadable discussion response from the local service.",
+          recoveryAction: "Retry, then view diagnostics if it continues."
+        )
+      case .notFound:
+        return LocalProductRoundtableOperationFailure(
+          code: client.rawValue,
+          stage: .daemonAdmission,
+          recoverable: false,
+          incidentID: fallbackIncidentID,
+          title: "Discussion not found",
+          detail: "This discussion is no longer available at this identity.",
+          recoveryAction: "Reopen it from the linked Mission."
+        )
+      }
+    }
+
+    return LocalProductRoundtableOperationFailure(
+      code: LocalProductClientError.unavailable.rawValue,
+      stage: .udsTransport,
+      recoverable: true,
+      incidentID: fallbackIncidentID,
+      title: "RoundTable could not be restored",
+      detail: "The governed discussion action did not complete.",
+      recoveryAction: "Retry, then view diagnostics if it continues."
+    )
+  }
+
+  static func roundtableErrorMessage(_ error: Error) -> String {
+    roundtableOperationFailure(
+      error,
+      fallbackIncidentID: "roundtable-\(UUID().uuidString.lowercased())"
+    ).message
   }
 
   public func roundtableCreateSession(
     sessionID: String,
     title: String,
-    moderatorSeat: String = "seat-moderator"
+    moderatorSeat: String = "seat-moderator",
+    link: LocalRoundtableSessionLinkRequest? = nil
   ) async -> LocalRoundtableView? {
     let boundedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let roundtableClient,
           !sessionID.isEmpty, !boundedTitle.isEmpty, !moderatorSeat.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session, title and moderator seat are required"
+      rejectRoundtableInput("Session, title and moderator Agent are required.")
       return nil
     }
-    let created = await runRoundtable {
+    let created = await runRoundtable { correlationID in
       try await roundtableClient.roundtableCreateSession(
         LocalRoundtableSessionCreateRequest(
           schemaVersion: 1, sessionID: sessionID, moderatorSeat: moderatorSeat,
-          title: boundedTitle, correlationID: roundtableCorrelationID()
+          title: boundedTitle, link: link, correlationID: correlationID
         )
       )
     }
-    if created != nil {
-      roundtableLastSessionID = created?.session.id ?? sessionID
+    if let created {
+      roundtableLastSessionID = created.session.id
+      if let context = created.session.context {
+        rememberRoundtableSession(
+          missionID: context.missionID,
+          sessionID: created.session.id
+        )
+      }
     }
     return created
   }
@@ -1944,18 +2310,24 @@ public final class LocalProductStore: ObservableObject {
   ) async -> LocalRoundtableView? {
     let bounded = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let roundtableClient, !bounded.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session is required"
+      rejectRoundtableInput("Choose a discussion to reopen.")
       return nil
     }
-    let view = await runRoundtable {
+    let view = await runRoundtable { _ in
       try await roundtableClient.roundtableSnapshot(
         LocalRoundtableSnapshotRequest(
           schemaVersion: 1, sessionID: bounded
         )
       )
     }
-    if view != nil {
+    if let view {
       roundtableLastSessionID = bounded
+      if let context = view.session.context {
+        rememberRoundtableSession(
+          missionID: context.missionID,
+          sessionID: view.session.id
+        )
+      }
     }
     return view
   }
@@ -1963,18 +2335,20 @@ public final class LocalProductStore: ObservableObject {
   public func roundtableAddSeat(
     sessionID: String,
     seatID: String,
-    displayName: String
+    displayName: String,
+    selection: LocalRoundtableSeatBindingRequest? = nil
   ) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty, !seatID.isEmpty,
           !displayName.isEmpty else {
-      roundtableError = "Roundtable invalid_request: seat identity and display name are required"
+      rejectRoundtableInput("Choose an Agent with a valid seat identity and display name.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableAddSeat(
         LocalRoundtableAddSeatRequest(
           schemaVersion: 1, sessionID: sessionID, seatID: seatID,
-          displayName: displayName, correlationID: roundtableCorrelationID()
+          displayName: displayName, selection: selection,
+          correlationID: correlationID
         )
       )
     }
@@ -1987,15 +2361,15 @@ public final class LocalProductStore: ObservableObject {
   ) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty, !seatID.isEmpty,
           !moderatorSeat.isEmpty, seatID != moderatorSeat else {
-      roundtableError = "Roundtable invalid_request: a non-moderator seat is required"
+      rejectRoundtableInput("Choose a non-moderator Agent to remove.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableRetireSeat(
         LocalRoundtableRetireSeatRequest(
           schemaVersion: 1, sessionID: sessionID, seatID: seatID,
           moderatorSeat: moderatorSeat,
-          correlationID: roundtableCorrelationID()
+          correlationID: correlationID
         )
       )
     }
@@ -2004,18 +2378,237 @@ public final class LocalProductStore: ObservableObject {
   public func roundtableOpenRound(
     sessionID: String,
     roundID: String,
+    prompt: String = "",
     moderatorSeat: String = "seat-moderator"
   ) async -> LocalRoundtableView? {
+    let boundedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
-          !moderatorSeat.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session, round and moderator seat are required"
-      return nil
-    }
-    return await runRoundtable {
+	          !moderatorSeat.isEmpty,
+	          boundedPrompt.utf8.count <= 4_096,
+	          !boundedPrompt.contains("\0"), !boundedPrompt.contains("\r") else {
+	      rejectRoundtableInput("Enter a discussion prompt up to 4,096 bytes.")
+	      return nil
+	    }
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableOpenRound(
         LocalRoundtableOpenRoundRequest(
           schemaVersion: 1, sessionID: sessionID, roundID: roundID,
-          moderatorSeat: moderatorSeat, correlationID: roundtableCorrelationID()
+	          moderatorSeat: moderatorSeat, prompt: boundedPrompt,
+          correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtablePauseRound(
+    sessionID: String,
+    roundID: String,
+    moderatorSeat: String = "seat-moderator",
+    interventionID: String? = nil
+  ) async -> LocalRoundtableView? {
+    let resolvedInterventionID = interventionID
+      ?? "intervention-\(UUID().uuidString.lowercased())"
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !moderatorSeat.isEmpty,
+          LocalIPCClient.validIdentifier(resolvedInterventionID) else {
+      rejectRoundtableInput("Choose an active discussion round to pause.")
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtablePauseRound(
+        LocalRoundtablePauseRoundRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          interventionID: resolvedInterventionID,
+          moderatorSeat: moderatorSeat, correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtableSteerSeat(
+    sessionID: String,
+    roundID: String,
+    seatID: String,
+    attemptID: String,
+    guidance: String,
+    moderatorSeat: String = "seat-moderator",
+    interventionID: String? = nil
+  ) async -> LocalRoundtableView? {
+    let bounded = guidance.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedInterventionID = interventionID
+      ?? "intervention-\(UUID().uuidString.lowercased())"
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !seatID.isEmpty, !attemptID.isEmpty, !moderatorSeat.isEmpty,
+          !bounded.isEmpty, bounded.utf8.count <= 4_096,
+          !bounded.contains("\0"), !bounded.contains("\r"),
+          LocalIPCClient.validIdentifier(resolvedInterventionID) else {
+      rejectRoundtableInput("Enter guidance up to 4,096 bytes.")
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtableSteerSeat(
+        LocalRoundtableSteerSeatRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          interventionID: resolvedInterventionID,
+          moderatorSeat: moderatorSeat, seatID: seatID, attemptID: attemptID,
+          guidance: Data(bounded.utf8), correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtableRetrySeat(
+    sessionID: String,
+    roundID: String,
+    seatID: String,
+    attemptID: String,
+    guidance: String,
+    expectedMembershipRevision: Int? = nil,
+    expectedSeatBindingDigest: String? = nil,
+    moderatorSeat: String = "seat-moderator",
+    interventionID: String? = nil
+  ) async -> LocalRoundtableView? {
+    let bounded = guidance.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedInterventionID = interventionID
+      ?? "intervention-\(UUID().uuidString.lowercased())"
+    let frozenBindingValid: Bool
+    switch (expectedMembershipRevision, expectedSeatBindingDigest) {
+    case (nil, nil):
+      frozenBindingValid = true
+    case let (.some(revision), .some(digest)):
+      frozenBindingValid = revision > 0
+        && digest.utf8.count == 64
+        && digest == digest.lowercased()
+        && digest.allSatisfy(\.isHexDigit)
+    default:
+      frozenBindingValid = false
+    }
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !seatID.isEmpty, !attemptID.isEmpty, !moderatorSeat.isEmpty,
+          !bounded.isEmpty, bounded.utf8.count <= 4_096,
+          !bounded.contains("\0"), !bounded.contains("\r"),
+          LocalIPCClient.validIdentifier(resolvedInterventionID),
+          frozenBindingValid else {
+      rejectRoundtableInput(
+        "Choose the failed Agent again and enter retry guidance up to 4,096 bytes."
+      )
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtableRetrySeat(
+        LocalRoundtableRetrySeatRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          interventionID: resolvedInterventionID,
+          moderatorSeat: moderatorSeat, seatID: seatID, attemptID: attemptID,
+          expectedMembershipRevision: expectedMembershipRevision,
+          expectedSeatBindingDigest: expectedSeatBindingDigest,
+          guidance: bounded, correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtableSkipSeat(
+    sessionID: String,
+    roundID: String,
+    seatID: String,
+    expectedMembershipRevision: Int? = nil,
+    expectedSeatBindingDigest: String? = nil,
+    moderatorSeat: String = "seat-moderator",
+    interventionID: String? = nil
+  ) async -> LocalRoundtableView? {
+    let resolvedInterventionID = interventionID
+      ?? "intervention-\(UUID().uuidString.lowercased())"
+    let frozenBindingValid: Bool
+    switch (expectedMembershipRevision, expectedSeatBindingDigest) {
+    case (nil, nil):
+      frozenBindingValid = true
+    case let (.some(revision), .some(digest)):
+      frozenBindingValid = revision > 0
+        && digest.utf8.count == 64
+        && digest == digest.lowercased()
+        && digest.allSatisfy(\.isHexDigit)
+    default:
+      frozenBindingValid = false
+    }
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !seatID.isEmpty, !moderatorSeat.isEmpty,
+          LocalIPCClient.validIdentifier(resolvedInterventionID),
+          frozenBindingValid else {
+      rejectRoundtableInput("Choose an Agent in the active discussion round.")
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtableSkipSeat(
+        LocalRoundtableSkipSeatRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          interventionID: resolvedInterventionID,
+          moderatorSeat: moderatorSeat, seatID: seatID,
+          expectedMembershipRevision: expectedMembershipRevision,
+          expectedSeatBindingDigest: expectedSeatBindingDigest,
+          correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtableReplaceSeat(
+    sessionID: String,
+    roundID: String,
+    seatID: String,
+    displayName: String,
+    selection: LocalRoundtableSeatBindingRequest,
+    moderatorSeat: String = "seat-moderator"
+  ) async -> LocalRoundtableView? {
+    guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
+          !seatID.isEmpty, !displayName.isEmpty, !moderatorSeat.isEmpty else {
+      rejectRoundtableInput("Choose a replacement Agent and route.")
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtableReplaceSeat(
+        LocalRoundtableReplaceSeatRequest(
+          schemaVersion: 1, sessionID: sessionID, roundID: roundID,
+          interventionID: "intervention-\(UUID().uuidString.lowercased())",
+          moderatorSeat: moderatorSeat, seatID: seatID, displayName: displayName,
+          selection: selection, correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtableExport(
+    sessionID: String
+  ) async -> LocalRoundtableExportDocument? {
+    guard let roundtableClient, !sessionID.isEmpty else {
+      rejectRoundtableInput("Choose a concluded discussion to export.")
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtableExport(
+        LocalRoundtableExportRequest(
+          schemaVersion: 1, sessionID: sessionID,
+          correlationID: correlationID
+        )
+      )
+    }
+  }
+
+  public func roundtableImport(
+    document: Data
+  ) async -> LocalRoundtableImportResult? {
+    guard let roundtableClient, !document.isEmpty, document.count <= 1_048_576 else {
+      rejectRoundtableInput(
+        "Choose a Loom RoundTable archive up to 1 MB.",
+        code: LocalIPCRemoteError.Code.exportInvalid.rawValue
+      )
+      return nil
+    }
+    return await runRoundtable { correlationID in
+      try await roundtableClient.roundtableImport(
+        LocalRoundtableImportRequest(
+          schemaVersion: 1, document: document,
+          correlationID: correlationID
         )
       )
     }
@@ -2033,16 +2626,19 @@ public final class LocalProductStore: ObservableObject {
     guard let roundtableClient, !sessionID.isEmpty, !roundID.isEmpty,
           !messageID.isEmpty, !boundedBody.isEmpty, !writerSeat.isEmpty,
           !targetSeat.isEmpty, boundedBody.utf8.count <= 8_192 else {
-      roundtableError = "Roundtable invalid_body: message body must be 1...8192 bytes"
+      rejectRoundtableInput(
+        "Enter a message between 1 and 8,192 bytes.",
+        code: LocalIPCRemoteError.Code.invalidBody.rawValue
+      )
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableProposeMessage(
         LocalRoundtableProposeMessageRequest(
           schemaVersion: 1, sessionID: sessionID, roundID: roundID,
           messageID: messageID, writerSeat: writerSeat, targetSeat: targetSeat,
           body: boundedBody, artifactRefs: [],
-          correlationID: roundtableCorrelationID()
+          correlationID: correlationID
         )
       )
     }
@@ -2055,14 +2651,14 @@ public final class LocalProductStore: ObservableObject {
   ) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty, !messageID.isEmpty,
           !moderatorSeat.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session, message and moderator seat are required"
+      rejectRoundtableInput("Choose a discussion message to relay.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableRelayMessage(
         LocalRoundtableRelayMessageRequest(
           schemaVersion: 1, sessionID: sessionID, messageID: messageID,
-          moderatorSeat: moderatorSeat, correlationID: roundtableCorrelationID()
+          moderatorSeat: moderatorSeat, correlationID: correlationID
         )
       )
     }
@@ -2075,14 +2671,14 @@ public final class LocalProductStore: ObservableObject {
   ) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty, !messageID.isEmpty,
           !seatID.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session, message and seat are required"
+      rejectRoundtableInput("Choose the Agent acknowledging this message.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableAckMessage(
         LocalRoundtableAckMessageRequest(
           schemaVersion: 1, sessionID: sessionID, messageID: messageID,
-          seatID: seatID, correlationID: roundtableCorrelationID()
+          seatID: seatID, correlationID: correlationID
         )
       )
     }
@@ -2095,14 +2691,14 @@ public final class LocalProductStore: ObservableObject {
   ) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty, !messageID.isEmpty,
           !moderatorSeat.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session, message and moderator seat are required"
+      rejectRoundtableInput("Choose an acknowledged message to insert.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableInsertMessage(
         LocalRoundtableInsertMessageRequest(
           schemaVersion: 1, sessionID: sessionID, messageID: messageID,
-          moderatorSeat: moderatorSeat, correlationID: roundtableCorrelationID()
+          moderatorSeat: moderatorSeat, correlationID: correlationID
         )
       )
     }
@@ -2113,14 +2709,14 @@ public final class LocalProductStore: ObservableObject {
     moderatorSeat: String = "seat-moderator"
   ) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty, !moderatorSeat.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session and moderator seat are required"
+      rejectRoundtableInput("Choose an active discussion to conclude.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { correlationID in
       try await roundtableClient.roundtableConclude(
         LocalRoundtableConcludeRequest(
           schemaVersion: 1, sessionID: sessionID, moderatorSeat: moderatorSeat,
-          correlationID: roundtableCorrelationID()
+          correlationID: correlationID
         )
       )
     }
@@ -2128,10 +2724,10 @@ public final class LocalProductStore: ObservableObject {
 
   public func roundtableSnapshot(sessionID: String) async -> LocalRoundtableView? {
     guard let roundtableClient, !sessionID.isEmpty else {
-      roundtableError = "Roundtable invalid_request: session id is required"
+      rejectRoundtableInput("Choose a discussion to refresh.")
       return nil
     }
-    return await runRoundtable {
+    return await runRoundtable { _ in
       try await roundtableClient.roundtableSnapshot(
         LocalRoundtableSnapshotRequest(schemaVersion: 1, sessionID: sessionID)
       )
@@ -2388,9 +2984,11 @@ public final class LocalProductStore: ObservableObject {
     newAttempt: Bool = false
   ) async {
     let workspacePath = selectedConversationWorkspacePath
+    let incidentID = UUID().uuidString.lowercased()
     executionPreflightGeneration &+= 1
     let generation = executionPreflightGeneration
     executionState = .preflighting
+    missionOperationFailure = nil
     executionPreflight = nil
     executionResult = nil
     executionObjective = ""
@@ -2401,28 +2999,119 @@ public final class LocalProductStore: ObservableObject {
     let bounded = objective.trimmingCharacters(in: .whitespacesAndNewlines)
     let constraints = canonicalMissionContextValues(confirmedConstraints)
     let decisions = canonicalMissionContextValues(acceptedDecisions)
-    await refresh()
-    guard generation == executionPreflightGeneration else { return }
     guard let executionClient,
-      let snapshot,
-      connectionState == .online,
       team.confirmed, team.executable, !team.readOnly,
-      snapshot.teams.contains(where: {
-        $0.teamInstanceID == team.teamInstanceID && $0.confirmed && $0.executable
-          && !$0.readOnly
-      }),
       (1...4_096).contains(bounded.utf8.count),
       let constraints, let decisions,
       Set(constraints + decisions).count == constraints.count + decisions.count,
       workPackage == .coding || workPackage == .knowledge
     else {
-      executionState = .failed(reason: "preflight_unavailable")
+      recordMissionFailure(
+        LocalProductClientError.invalidRequest,
+        incidentID: incidentID,
+        stateReason: "preflight_unavailable"
+      )
       return
     }
-    let missionID = "mission/\(team.teamInstanceID)"
+    await refresh()
+    guard generation == executionPreflightGeneration else { return }
+    guard connectionState == .online else {
+      recordMissionFailure(
+        missionConnectionError(),
+        incidentID: incidentID,
+        stateReason: "preflight_unavailable"
+      )
+      return
+    }
+    var executionTeam = team
+    if !newAttempt,
+      snapshot?.missions.contains(where: {
+        $0.teamInstanceID == team.teamInstanceID
+      }) == true
+    {
+      if let freshTeam = snapshot?.teams.first(where: { candidate in
+        candidate.teamInstanceID != team.teamInstanceID &&
+          candidate.teamDefinitionID == team.teamDefinitionID &&
+          candidate.teamDefinitionVersion == team.teamDefinitionVersion &&
+          candidate.confirmed && candidate.executable && !candidate.readOnly &&
+          snapshot?.missions.contains(where: {
+            $0.teamInstanceID == candidate.teamInstanceID
+          }) != true
+      }) {
+        executionTeam = freshTeam
+      } else {
+        guard let setupClient,
+          !team.teamDefinitionID.isEmpty,
+          team.teamDefinitionVersion > 0,
+          let savedTeam = setupSnapshot?.savedTeams.first(where: {
+            $0.id == team.teamDefinitionID &&
+              $0.version == team.teamDefinitionVersion &&
+              $0.status == "active"
+          })
+        else {
+          recordMissionFailure(
+            LocalProductClientError.invalidRequest,
+            incidentID: incidentID,
+            stateReason: "team_materialization_unavailable"
+          )
+          return
+        }
+        do {
+          let confirmation = try await setupClient.materializeTeam(
+            teamDefinitionID: savedTeam.id,
+            teamDefinitionVersion: savedTeam.version,
+            teamDefinitionDigest: savedTeam.definitionDigest
+          )
+          guard generation == executionPreflightGeneration else { return }
+          await refresh()
+          guard generation == executionPreflightGeneration,
+            let freshTeam = snapshot?.teams.first(where: {
+              $0.teamInstanceID == confirmation.teamInstanceID &&
+                $0.teamDefinitionID == team.teamDefinitionID &&
+                $0.teamDefinitionVersion == team.teamDefinitionVersion &&
+                $0.confirmed && $0.executable && !$0.readOnly
+            })
+          else {
+            recordMissionFailure(
+              LocalProductClientError.invalidResponse,
+              incidentID: incidentID,
+              stateReason: "team_materialization_visibility_failed"
+            )
+            return
+          }
+          executionTeam = freshTeam
+        } catch let remote as LocalIPCRemoteError {
+          guard generation == executionPreflightGeneration else { return }
+          recordMissionFailure(
+            remote,
+            incidentID: incidentID,
+            stateReason: missionExecutionFailureReason(remote)
+          )
+          return
+        } catch {
+          guard generation == executionPreflightGeneration else { return }
+          recordMissionFailure(error, incidentID: incidentID)
+          return
+        }
+      }
+    }
+    guard let snapshot,
+      snapshot.teams.contains(where: {
+        $0.teamInstanceID == executionTeam.teamInstanceID && $0.confirmed &&
+          $0.executable && !$0.readOnly
+      })
+    else {
+      recordMissionFailure(
+        LocalProductClientError.invalidResponse,
+        incidentID: incidentID,
+        stateReason: "preflight_unavailable"
+      )
+      return
+    }
+    let missionID = "mission/\(executionTeam.teamInstanceID)"
     let command = LocalProductExecutionCommand.preflight(
       missionID: missionID,
-      teamInstanceID: team.teamInstanceID,
+      teamInstanceID: executionTeam.teamInstanceID,
       workPackageID: workPackage.id,
       workPackageDigest: workPackage.digest,
       objective: bounded,
@@ -2431,7 +3120,7 @@ public final class LocalProductStore: ObservableObject {
       acceptedDecisions: decisions,
       newAttempt: newAttempt,
       expectedViewVersion: snapshot.viewVersion,
-      correlationID: UUID().uuidString.lowercased()
+      correlationID: incidentID
     )
     do {
       let envelope = try await executionClient.executeMission(command)
@@ -2445,6 +3134,7 @@ public final class LocalProductStore: ObservableObject {
       executionConfirmedConstraints = constraints
       executionAcceptedDecisions = decisions
       executionPreflight = preflight
+      missionOperationFailure = nil
       executionState =
         preflight.nodes.contains { $0.status == "ready" }
         ? .ready
@@ -2452,10 +3142,14 @@ public final class LocalProductStore: ObservableObject {
       await refresh()
     } catch let remote as LocalIPCRemoteError {
       guard generation == executionPreflightGeneration else { return }
-      executionState = .failed(reason: missionExecutionFailureReason(remote))
+      recordMissionFailure(
+        remote,
+        incidentID: incidentID,
+        stateReason: missionExecutionFailureReason(remote)
+      )
     } catch {
       guard generation == executionPreflightGeneration else { return }
-      executionState = .failed(reason: closedClientReason(error))
+      recordMissionFailure(error, incidentID: incidentID)
     }
   }
 
@@ -2469,6 +3163,7 @@ public final class LocalProductStore: ObservableObject {
       executionNewAttempt = false
       executionConfirmedConstraints = []
       executionAcceptedDecisions = []
+      missionOperationFailure = nil
       if executionResult == nil {
         executionState = .idle
       }
@@ -2478,17 +3173,23 @@ public final class LocalProductStore: ObservableObject {
   }
 
   public func startPreflightedMission() async {
+    let incidentID = UUID().uuidString.lowercased()
     guard let executionClient,
       let preflight = executionPreflight,
       !executionObjective.isEmpty,
       preflight.nodes.contains(where: { $0.status == "ready" })
     else {
       if executionResult != nil { return }
-      executionState = .failed(reason: "preflight_required")
+      recordMissionFailure(
+        LocalProductClientError.invalidRequest,
+        incidentID: incidentID,
+        stateReason: "preflight_required"
+      )
       return
     }
 
     executionState = .starting
+    missionOperationFailure = nil
     do {
       let command = LocalProductExecutionCommand.start(
         preflight: preflight,
@@ -2497,7 +3198,7 @@ public final class LocalProductStore: ObservableObject {
         confirmedConstraints: executionConfirmedConstraints,
         acceptedDecisions: executionAcceptedDecisions,
         newAttempt: executionNewAttempt,
-        correlationID: UUID().uuidString.lowercased()
+        correlationID: incidentID
       )
       let envelope = try await executionClient.executeMission(command)
       guard let result = envelope.result else {
@@ -2505,6 +3206,7 @@ public final class LocalProductStore: ObservableObject {
       }
       executionPreflight = nil
       executionResult = result
+      missionOperationFailure = nil
       switch result.status {
       case "running": executionState = .running
       case "awaiting_recovery": executionState = .awaitingRecovery
@@ -2517,7 +3219,11 @@ public final class LocalProductStore: ObservableObject {
           $0.missionID == result.missionID && $0.teamInstanceID == result.teamInstanceID
         }) == true
       else {
-        executionState = .failed(reason: "projection_visibility_failed")
+        recordMissionFailure(
+          LocalProductClientError.invalidResponse,
+          incidentID: incidentID,
+          stateReason: "projection_visibility_failed"
+        )
         return
       }
       await openMissionAndActivate(result.missionID)
@@ -2529,9 +3235,13 @@ public final class LocalProductStore: ObservableObject {
       if remote.code == .conflict || remote.code == .staleView {
         await refresh()
       }
-      executionState = .failed(reason: missionExecutionFailureReason(remote))
+      recordMissionFailure(
+        remote,
+        incidentID: incidentID,
+        stateReason: missionExecutionFailureReason(remote)
+      )
     } catch {
-      executionState = .failed(reason: closedClientReason(error))
+      recordMissionFailure(error, incidentID: incidentID)
     }
   }
 
@@ -2554,6 +3264,159 @@ public final class LocalProductStore: ObservableObject {
       return remote.code.rawValue
     }
     return "conflict.\(stage.rawValue)"
+  }
+
+  private func missionConnectionError() -> LocalProductClientError {
+    let reason: String
+    switch connectionState {
+    case .offline(let value), .fatal(let value), .partial(let value), .stale(let value):
+      reason = value
+    case .loading, .online:
+      return .unavailable
+    }
+    return LocalProductClientError(rawValue: reason) ?? .unavailable
+  }
+
+  private func recordMissionFailure(
+    _ error: Error,
+    incidentID: String,
+    stateReason: String? = nil
+  ) {
+    let failure = Self.missionOperationFailure(
+      error,
+      fallbackIncidentID: incidentID
+    )
+    missionOperationFailure = failure
+    if let stateReason {
+      executionState = .failed(reason: stateReason)
+    } else if let remote = error as? LocalIPCRemoteError {
+      executionState = .failed(reason: missionExecutionFailureReason(remote))
+    } else {
+      executionState = .failed(reason: closedClientReason(error))
+    }
+  }
+
+  static func missionOperationFailure(
+    _ error: Error,
+    fallbackIncidentID: String
+  ) -> LocalProductMissionOperationFailure {
+    if let remote = error as? LocalIPCRemoteError {
+      let stage = remote.stage ?? .daemonAdmission
+      let presentation: (title: String, detail: String, recovery: String)
+      switch (remote.code, stage) {
+      case (.conflict, .preflightLease), (.conflict, .preflightDigest),
+        (.conflict, .viewDrift), (.staleView, _), (.staleGeneration, _):
+        presentation = (
+          "Preflight changed",
+          "The reviewed Mission plan is no longer current.",
+          "Review preflight again before starting."
+        )
+      case (.busy, _), (.conflict, .dispatchCapacity):
+        presentation = (
+          "Agent Team is busy",
+          "This Team cannot admit another governed Attempt yet.",
+          "Open Missions to follow current work, then retry preflight."
+        )
+      case (.stateUnavailable, _):
+        presentation = (
+          "Mission service is temporarily unavailable",
+          "Loom could not safely read or update Mission state.",
+          "Retry preflight after the local service reconnects."
+        )
+      case (.timeout, _):
+        presentation = (
+          "Mission request timed out",
+          "Loom could not confirm the governed Mission operation.",
+          "Refresh Missions and review preflight before trying again."
+        )
+      case (.invalidRequest, .inputAdmission):
+        presentation = (
+          "Review the Mission context",
+          "The title, objective, Team, or confirmed context is incomplete or invalid.",
+          "Correct the highlighted information, then review preflight again."
+        )
+      case (.invalidResponse, _):
+        presentation = (
+          "Mission response could not be read",
+          "Loom received an unreadable Mission response from the local service.",
+          "Retry preflight, then view diagnostics if it continues."
+        )
+      default:
+        presentation = (
+          "Mission action did not complete",
+          remote.safeMessage.isEmpty
+            ? "The governed Mission operation could not be completed."
+            : remote.safeMessage,
+          remote.recoverable
+            ? "Retry preflight after refreshing Missions."
+            : "Review the Team, Runtime, and current Mission state before continuing."
+        )
+      }
+      return LocalProductMissionOperationFailure(
+        code: remote.code.rawValue,
+        stage: stage,
+        recoverable: remote.recoverable,
+        incidentID: remote.incidentID ?? fallbackIncidentID,
+        title: presentation.title,
+        detail: presentation.detail,
+        recoveryAction: presentation.recovery
+      )
+    }
+
+    if let client = error as? LocalProductClientError {
+      switch client {
+      case .invalidRequest:
+        return LocalProductMissionOperationFailure(
+          code: client.rawValue, stage: .inputAdmission, recoverable: false,
+          incidentID: fallbackIncidentID,
+          title: "Review the Mission context",
+          detail: "The title, objective, Team, or confirmed context is incomplete or invalid.",
+          recoveryAction: "Correct the highlighted information, then review preflight again."
+        )
+      case .invalidSocket:
+        return LocalProductMissionOperationFailure(
+          code: client.rawValue, stage: .udsTransport, recoverable: false,
+          incidentID: fallbackIncidentID,
+          title: "Local service identity could not be verified",
+          detail: "Loom rejected the local Mission service connection before dispatch.",
+          recoveryAction: "Restart Loom, then reopen this Mission."
+        )
+      case .unavailable, .timeout:
+        return LocalProductMissionOperationFailure(
+          code: client.rawValue, stage: .udsTransport, recoverable: true,
+          incidentID: fallbackIncidentID,
+          title: "Local Mission service unavailable",
+          detail: "Loom could not reach the local execution service. No Agent work was started.",
+          recoveryAction: "Retry preflight after the local service reconnects."
+        )
+      case .invalidResponse:
+        return LocalProductMissionOperationFailure(
+          code: client.rawValue, stage: .udsTransport, recoverable: true,
+          incidentID: fallbackIncidentID,
+          title: "Mission response could not be read",
+          detail: "Loom received an unreadable response from the local Mission service.",
+          recoveryAction: "Retry preflight, then view diagnostics if it continues."
+        )
+      case .notFound:
+        return LocalProductMissionOperationFailure(
+          code: client.rawValue, stage: .daemonAdmission, recoverable: false,
+          incidentID: fallbackIncidentID,
+          title: "Mission not found",
+          detail: "This Mission or Team is no longer available at the selected identity.",
+          recoveryAction: "Refresh Missions and choose its current record."
+        )
+      }
+    }
+
+    return LocalProductMissionOperationFailure(
+      code: LocalProductClientError.unavailable.rawValue,
+      stage: .udsTransport,
+      recoverable: true,
+      incidentID: fallbackIncidentID,
+      title: "Mission service unavailable",
+      detail: "The governed Mission operation did not complete. No Agent work was started.",
+      recoveryAction: "Retry preflight, then view diagnostics if it continues."
+    )
   }
 
   public func cancelCurrentMission() async {
@@ -3178,13 +4041,17 @@ public final class LocalProductStore: ObservableObject {
         return
       }
       if remote.code == .cursorConflict || remote.code == .streamGap {
-        connectionState = .stale(reason: remote.code.rawValue)
+        if snapshot == nil {
+          connectionState = .stale(reason: remote.code.rawValue)
+        }
         timelineState = .unavailable
       } else if !remote.recoverable {
         connectionState = .fatal(reason: remote.code.rawValue)
         timelineState = .fatal
       } else {
-        connectionState = .offline(reason: remote.code.rawValue)
+        if snapshot == nil {
+          connectionState = .offline(reason: remote.code.rawValue)
+        }
         timelineState = .unavailable
       }
     } catch {
@@ -3207,7 +4074,9 @@ public final class LocalProductStore: ObservableObject {
           selection: selection
         )
       else { return }
-      connectionState = .offline(reason: closedClientReason(error))
+      if snapshot == nil {
+        connectionState = .offline(reason: closedClientReason(error))
+      }
       timelineState = .unavailable
     }
   }
@@ -3223,8 +4092,17 @@ public final class LocalProductStore: ObservableObject {
   ) -> [LocalProductTimelineRecord] {
     guard !observedTentative.isEmpty else { return current }
     var deliveryIDs = Set(current.map(\.deliveryID))
+    let finalOutputKeys = Set(
+      current.compactMap { record in
+        record.authority != "tentative" && !record.payload.textDelta.isEmpty
+          ? "\(record.logicalNodeID)\u{0}\(record.attemptNumber)"
+          : nil
+      }
+    )
     var result = current
     for record in observedTentative where result.count < maximumTimelineRecords {
+      let outputKey = "\(record.logicalNodeID)\u{0}\(record.attemptNumber)"
+      guard !finalOutputKeys.contains(outputKey) else { continue }
       guard deliveryIDs.insert(record.deliveryID).inserted else { continue }
       result.append(record)
     }
@@ -3317,18 +4195,7 @@ public final class LocalProductStore: ObservableObject {
     setupState = .loading
     do {
       let refreshed = try await setupClient.setupSnapshot()
-      // A transient daemon projection race can produce a structurally valid
-      // snapshot with every catalog empty. Treat it as recoverable rather
-      // than erasing a known-good provider/runtime directory.
-      guard hasUsableSetupInventory(refreshed) else {
-        setupState = .unavailable(reason: "empty_setup")
-        return
-      }
-      setupSnapshot = refreshed
-      reconcileWorkspace()
-      setupState = hasPendingConversationProjection(refreshed)
-        ? .unavailable(reason: "conversation_profiles_pending")
-        : .ready
+      admitSetupSnapshot(refreshed)
     } catch let remote as LocalIPCRemoteError {
       setupState =
         remote.recoverable
@@ -3351,6 +4218,25 @@ public final class LocalProductStore: ObservableObject {
       !snapshot.roleOptions.isEmpty ||
       !snapshot.skills.isEmpty ||
       !snapshot.resources.isEmpty
+  }
+
+  @discardableResult
+  private func admitSetupSnapshot(
+    _ snapshot: LocalProductSetupSnapshot
+  ) -> Bool {
+    // A transient daemon projection race can produce a structurally valid
+    // snapshot with every catalog empty. Every Setup path, including native
+    // login polling, must preserve the last known-good directory.
+    guard hasUsableSetupInventory(snapshot) else {
+      setupState = .unavailable(reason: "empty_setup")
+      return false
+    }
+    setupSnapshot = snapshot
+    reconcileWorkspace()
+    setupState = hasPendingConversationProjection(snapshot)
+      ? .unavailable(reason: "conversation_profiles_pending")
+      : .ready
+    return true
   }
 
   private func hasPendingConversationProjection(
@@ -3508,6 +4394,26 @@ public final class LocalProductStore: ObservableObject {
 
   public var selectedChatSession: LocalProductChatSession? {
     chatSessions.first { $0.threadID == selectedChatSessionID }
+  }
+
+  private func conversationSessionCatalog() -> [LocalProductConversationSessionReference] {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return chatSessions
+      .sorted { left, right in
+        if left.updatedAt != right.updatedAt { return left.updatedAt > right.updatedAt }
+        return left.threadID < right.threadID
+      }
+      .prefix(1_024)
+      .compactMap { session in
+        let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.utf8.count <= 256 else { return nil }
+        return LocalProductConversationSessionReference(
+          conversationID: session.threadID,
+          title: title,
+          updatedAt: formatter.string(from: session.updatedAt)
+        )
+      }
   }
 
   public func currentChatThreadID() -> String {
@@ -3770,6 +4676,81 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  private static let roundtableSessionsSchemaVersion = 1
+
+  private struct PersistedRoundtableSession: Codable {
+    var missionID: String
+    var sessionID: String
+  }
+
+  private struct PersistedRoundtableSessions: Codable {
+    var schemaVersion: Int
+    var sessions: [PersistedRoundtableSession]
+  }
+
+  private func loadPersistedRoundtableSessions() {
+    guard let data = try? LocalPrivateRegistryStorage.read(
+      from: roundtableSessionsFileURL
+    ),
+      let persisted = try? JSONDecoder().decode(
+        PersistedRoundtableSessions.self, from: data
+      ),
+      persisted.schemaVersion == Self.roundtableSessionsSchemaVersion,
+      persisted.sessions.count <= 512
+    else { return }
+    var loaded: [String: String] = [:]
+    for session in persisted.sessions {
+      guard Self.validRoundtableRegistryID(session.missionID),
+        Self.validRoundtableRegistryID(session.sessionID)
+      else { continue }
+      loaded[session.missionID] = session.sessionID
+    }
+    roundtableMissionSessions = loaded
+  }
+
+  private func persistRoundtableSessions() {
+    let sessions = roundtableMissionSessions.keys.sorted().prefix(512).compactMap {
+      missionID -> PersistedRoundtableSession? in
+      guard let sessionID = roundtableMissionSessions[missionID],
+        Self.validRoundtableRegistryID(missionID),
+        Self.validRoundtableRegistryID(sessionID)
+      else { return nil }
+      return PersistedRoundtableSession(missionID: missionID, sessionID: sessionID)
+    }
+    let persisted = PersistedRoundtableSessions(
+      schemaVersion: Self.roundtableSessionsSchemaVersion,
+      sessions: Array(sessions)
+    )
+    guard let data = try? JSONEncoder().encode(persisted) else { return }
+    do {
+      try LocalPrivateRegistryStorage.write(data, to: roundtableSessionsFileURL)
+    } catch {
+      // This index contains opaque navigation identities only. The daemon's
+      // RoundTable Journal remains authoritative when persistence is unavailable.
+    }
+  }
+
+  private static func validRoundtableRegistryID(_ value: String) -> Bool {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value == trimmed && !value.isEmpty && value.utf8.count <= 128
+      && value.unicodeScalars.allSatisfy { scalar in
+        scalar.value >= 0x21 && scalar.value <= 0x7e
+      }
+  }
+
+  func rememberRoundtableSession(missionID: String, sessionID: String) {
+    guard Self.validRoundtableRegistryID(missionID),
+      Self.validRoundtableRegistryID(sessionID)
+    else { return }
+    roundtableMissionSessions[missionID] = sessionID
+    persistRoundtableSessions()
+  }
+
+  public func roundtableSessionID(forMissionID missionID: String) -> String? {
+    guard Self.validRoundtableRegistryID(missionID) else { return nil }
+    return roundtableMissionSessions[missionID]
+  }
+
   private func unlinkMissionPresentations(from threadID: String) {
     let linkedMissionIDs = missionPresentations.values.compactMap { presentation in
       presentation.conversationThreadID == threadID ? presentation.missionID : nil
@@ -3824,7 +4805,12 @@ public final class LocalProductStore: ObservableObject {
           incidentID: failure.incidentID
         )
       } else if let stage = chatOperationFailure?.stage,
-        [.migrationRead, .migrationCommit, .migrationCleanup].contains(stage)
+        [
+          .migrationRead,
+          .migrationCommit,
+          .migrationCleanup,
+          .controlProposalConfirm,
+        ].contains(stage)
       {
         chatOperationFailure = nil
       }
@@ -4462,6 +5448,8 @@ public final class LocalProductStore: ObservableObject {
     chatThread = LocalProductChatThread(
       threadID: threadID,
       profileID: profileID,
+      segments: previousThread?.segments ?? [],
+      attempts: previousThread?.attempts ?? [],
       messages: currentMessages + [
         LocalProductChatMessage(
           messageID: "pending-\(UUID().uuidString.lowercased())",
@@ -4470,6 +5458,9 @@ public final class LocalProductStore: ObservableObject {
           tentative: false
         )
       ],
+      controlProposals: previousThread?.controlProposals ?? [],
+      actionProposals: previousThread?.actionProposals ?? [],
+      contextAlignments: previousThread?.contextAlignments ?? [],
       canReply: false,
       requiresConfirmation: false
     )
@@ -4493,6 +5484,7 @@ public final class LocalProductStore: ObservableObject {
         expectedExecutionBinding: confirmedConversationExecutionBinding,
         trustBoundaryAcknowledgement:
           confirmedConversationTrustBoundaryAcknowledgement,
+        sessionCatalog: conversationSessionCatalog(),
         incidentID: incidentID
       )
       guard generation == chatGeneration,
@@ -4578,6 +5570,141 @@ public final class LocalProductStore: ObservableObject {
     }
   }
 
+  public func canConfirmConversationControlProposal(
+    _ proposal: LocalProductConversationControlProposal
+  ) -> Bool {
+    guard proposal.isConfirmable,
+      proposal.targetConversationID == currentChatThreadID(),
+      let thread = chatThread,
+      let authoritative = thread.controlProposals.first(where: {
+        $0.proposalID == proposal.proposalID
+          && $0.proposalDigest == proposal.proposalDigest
+          && $0.status == .pending
+      })
+    else { return false }
+    return authoritative.matchesFrozenTurn(in: thread)
+  }
+
+  public func decideConversationControlProposal(
+    _ proposal: LocalProductConversationControlProposal,
+    decision: LocalProductChatControlDecision
+  ) async {
+    guard proposal.targetConversationID == currentChatThreadID(),
+      proposal.status == .pending,
+      decision != .confirm || canConfirmConversationControlProposal(proposal),
+      !controlProposalDecisionsInFlight.contains(proposal.proposalID)
+    else { return }
+    let incidentID = Self.newChatIncidentID()
+    controlProposalDecisionsInFlight.insert(proposal.proposalID)
+    defer { controlProposalDecisionsInFlight.remove(proposal.proposalID) }
+    do {
+      let thread = try await client.decideChatControlProposal(
+        LocalProductChatControlDecisionRequest(
+          threadID: proposal.targetConversationID,
+          proposalID: proposal.proposalID,
+          proposalDigest: proposal.proposalDigest,
+          decision: decision
+        ),
+        incidentID: incidentID
+      )
+      guard workspace.selectedContinuity.threadAnchor == thread.threadID else { return }
+      chatThread = thread
+      chatOperationFailure = nil
+    } catch {
+      chatOperationFailure = Self.chatFailure(error, incidentID: incidentID)
+    }
+  }
+
+  @discardableResult
+  public func decideConversationActionProposal(
+    _ proposal: LocalProductConversationActionProposal,
+    decision: LocalProductChatControlDecision
+  ) async -> Bool {
+    guard proposal.targetConversationID == currentChatThreadID(),
+      proposal.status == .pending,
+      decision != .confirm || proposal.isConfirmable,
+      !controlProposalDecisionsInFlight.contains(proposal.proposalID)
+    else { return false }
+    let incidentID = Self.newChatIncidentID()
+    controlProposalDecisionsInFlight.insert(proposal.proposalID)
+    defer { controlProposalDecisionsInFlight.remove(proposal.proposalID) }
+    do {
+      let thread = try await client.decideChatControlProposal(
+        LocalProductChatControlDecisionRequest(
+          threadID: proposal.targetConversationID,
+          proposalID: proposal.proposalID,
+          proposalDigest: proposal.proposalDigest,
+          decision: decision
+        ),
+        incidentID: incidentID
+      )
+      guard workspace.selectedContinuity.threadAnchor == thread.threadID else { return false }
+      chatThread = thread
+      chatOperationFailure = nil
+      return decision == .confirm && thread.actionProposals.contains {
+        $0.proposalID == proposal.proposalID && $0.status == .confirmed
+      }
+    } catch {
+      chatOperationFailure = Self.chatFailure(error, incidentID: incidentID)
+      return false
+    }
+  }
+
+  public func canExecuteConversationActionProposal(
+    _ proposal: LocalProductConversationActionProposal
+  ) -> Bool {
+    guard let thread = chatThread,
+      let authoritative = thread.actionProposals.first(where: {
+        $0.proposalID == proposal.proposalID
+          && $0.proposalDigest == proposal.proposalDigest
+          && $0.status == .confirmed
+      }),
+      thread.hasConfirmedDecisionReceipt(for: authoritative),
+      authoritative.matchesFrozenTurn(in: thread),
+      let route = authoritative.route
+    else { return false }
+
+    if selectedConversationRouteMatches(route) {
+      return true
+    }
+    guard let payload = authoritative.payload else { return false }
+    switch authoritative.action {
+    case .route:
+      return selectedConversationProfileID == payload.profileID
+    case .model:
+      return selectedConversationRouteBaseMatches(route)
+        && effectiveConversationModelID == payload.modelID
+    case .reasoning:
+      let selected = effectiveConversationReasoningEffort.isEmpty
+        ? "provider-default" : effectiveConversationReasoningEffort
+      return selectedConversationRouteBaseMatches(route)
+        && effectiveConversationModelID == route.modelID
+        && selected == payload.reasoningEffort
+    case .mission, .continueMission, .team, .roundTable, .workspace,
+      .teamEdit, .roundTablePause, .roundTableSteer, .roundTableRetry,
+      .roundTableSkip, .roundTableReplace:
+      return false
+    }
+  }
+
+  private func selectedConversationRouteMatches(
+    _ route: LocalProductConversationFrozenRouteReference
+  ) -> Bool {
+    selectedConversationRouteBaseMatches(route)
+      && effectiveConversationModelID == route.modelID
+      && effectiveConversationReasoningEffort == route.reasoningEffort
+  }
+
+  private func selectedConversationRouteBaseMatches(
+    _ route: LocalProductConversationFrozenRouteReference
+  ) -> Bool {
+    guard let profile = selectedConversationProfile else { return false }
+    return profile.harnessAdapter == route.harnessAdapter
+      && profile.providerID == route.providerID
+      && profile.providerAccountID == route.providerAccountID
+      && profile.credentialRevision == route.credentialRevision
+  }
+
   public func cancelActiveChatResponse() async {
     let threadID = currentChatThreadID()
     guard !cancellingChatResponseThreadIDs.contains(threadID),
@@ -4657,6 +5784,8 @@ public final class LocalProductStore: ObservableObject {
         reasoningEffort: effectiveConversationReasoningEffort,
         contextMode: contextMode,
         expectedExecutionBinding: confirmedConversationExecutionBinding,
+        trustBoundaryAcknowledgement: nil,
+        sessionCatalog: conversationSessionCatalog(),
         incidentID: incidentID
       )
       guard generation == chatGeneration else { return false }
@@ -4798,6 +5927,16 @@ public final class LocalProductStore: ObservableObject {
         "Conversation route changed",
         "Loom preserved this conversation and your draft. Retry to review the new Segment and choose what context to share."
       )
+    case (.conflict, .controlProposalConfirm):
+      presentation = (
+        "Proposal changed",
+        "This proposal expired, changed, or was already decided. Refresh it, then review the current state or ask Loom to prepare a new proposal."
+      )
+    case (_, .controlProposalConfirm):
+      presentation = (
+        "Proposal decision unavailable",
+        "Loom could not record this proposal decision. Refresh the proposal and review its current status before trying again."
+      )
     case (.invalidRequest, .inputAdmission):
       presentation = (
         "Message could not be sent",
@@ -4923,15 +6062,22 @@ public final class LocalProductStore: ObservableObject {
 	  providerCode: remote.providerCode,
 	  retryAfterSeconds: remote.retryAfterSeconds,
       title: presentation.0,
-	  detail: chatFailureDetail(remote, fallback: presentation.1)
+      detail: chatFailureDetail(
+        remote,
+        fallback: presentation.1,
+        preferFallback: stage == .controlProposalConfirm
+      )
     )
   }
 
 	private static func chatFailureDetail(
 	  _ remote: LocalIPCRemoteError,
-	  fallback: String
+	  fallback: String,
+	  preferFallback: Bool = false
 	) -> String {
-	  let message = remote.safeMessage.isEmpty ? fallback : remote.safeMessage
+	  let message = preferFallback || remote.safeMessage.isEmpty
+	    ? fallback
+	    : remote.safeMessage
 	  var metadata: [String] = []
 	  if remote.httpStatus > 0 {
 		metadata.append("HTTP \(remote.httpStatus)")
@@ -5622,10 +6768,7 @@ public final class LocalProductStore: ObservableObject {
       providerConnectionStatus = try await setupClient.connectCodex()
       for attempt in 0..<120 {
         let next = try await setupClient.setupSnapshot()
-        setupSnapshot = next
-        reconcileWorkspace()
-        if next.codex.status == "available" {
-          setupState = .ready
+        if admitSetupSnapshot(next), next.codex.status == "available" {
           return
         }
         if attempt < 119 {
@@ -5640,6 +6783,177 @@ public final class LocalProductStore: ObservableObject {
     } catch {
       handleSetupError(error)
     }
+  }
+
+  public func connectClaudeCode() async {
+    await connectClaudeCode(
+      maxPollAttempts: 600,
+      pollNanoseconds: 1_000_000_000,
+      taskGeneration: nil
+    )
+  }
+
+  public func startClaudeCodeSignIn() {
+    guard claudeCodeSignInTask == nil,
+      !providersInFlight.contains("claude-code")
+    else { return }
+    claudeCodeSignInGeneration &+= 1
+    let generation = claudeCodeSignInGeneration
+    claudeCodeSignInTask = Task { [weak self] in
+      guard let self else { return }
+      await connectClaudeCode(
+        maxPollAttempts: 600,
+        pollNanoseconds: 1_000_000_000,
+        taskGeneration: generation
+      )
+      if claudeCodeSignInGeneration == generation {
+        claudeCodeSignInTask = nil
+      }
+    }
+  }
+
+  public func cancelClaudeCodeSignIn() async {
+    guard let task = claudeCodeSignInTask else { return }
+    let operationKey = "claude-code"
+    let incidentID = providerOperationIncidentID[operationKey]
+      ?? "loom-swift-\(UUID().uuidString.lowercased())"
+    claudeCodeSignInGeneration &+= 1
+    claudeCodeSignInTask = nil
+    task.cancel()
+    providersInFlight.insert(operationKey)
+    providerOperationStatus[operationKey] = "Cancelling sign in"
+    providerOperationDetail[operationKey] =
+      "Stopping the Claude Code sign-in process."
+    clearProviderOperationDiagnostics(operationKey)
+    providerOperationIncidentID[operationKey] = incidentID
+    defer { providersInFlight.remove(operationKey) }
+    guard let setupClient else {
+      await task.value
+      providerOperationStatus[operationKey] = "Sign-in cancellation unavailable"
+      providerOperationDetail[operationKey] =
+        "Loom could not reach the local Claude Code sign-in service. Reopen Loom."
+      providerOperationStage[operationKey] = providerStageDisplayName(.udsTransport)
+      providerOperationIncidentID[operationKey] = incidentID
+      providerOperationRetryable[operationKey] = true
+      return
+    }
+    do {
+      let result = try await setupClient.cancelClaudeCode(
+        incidentID: incidentID
+      )
+      await task.value
+      providerConnectionStatus = result
+      providerOperationStatus[operationKey] = "Sign-in cancelled"
+      providerOperationDetail[operationKey] =
+        "Claude Code sign-in was stopped. Choose Sign In to try again."
+      clearProviderOperationDiagnostics(operationKey)
+      providerOperationIncidentID[operationKey] = incidentID
+    } catch {
+      await task.value
+      recordClaudeCodeConnectionError(
+        error,
+        operationKey: operationKey,
+        fallbackIncidentID: incidentID
+      )
+    }
+  }
+
+  func connectClaudeCode(
+    maxPollAttempts: Int,
+    pollNanoseconds: UInt64,
+    taskGeneration: UInt64? = nil
+  ) async {
+    let operationKey = "claude-code"
+    guard let setupClient, !providersInFlight.contains(operationKey) else {
+      if setupClient == nil {
+        setupState = .unavailable(reason: "setup_unavailable")
+      }
+      return
+    }
+    guard claudeCodeSignInGenerationIsCurrent(taskGeneration),
+      !Task.isCancelled
+    else { return }
+    let boundedAttempts = min(max(maxPollAttempts, 1), 600)
+    let boundedPoll = min(max(pollNanoseconds, 1_000_000), 1_000_000_000)
+    let incidentID = "loom-swift-\(UUID().uuidString.lowercased())"
+    providersInFlight.insert(operationKey)
+    providerOperationStatus[operationKey] = "Opening sign in"
+    providerOperationDetail[operationKey] = nil
+    clearProviderOperationDiagnostics(operationKey)
+    providerOperationIncidentID[operationKey] = incidentID
+    defer {
+      if claudeCodeSignInGenerationIsCurrent(taskGeneration) {
+        providersInFlight.remove(operationKey)
+      }
+    }
+    do {
+      let connection = try await setupClient.connectClaudeCode(
+        incidentID: incidentID
+      )
+      try Task.checkCancellation()
+      guard claudeCodeSignInGenerationIsCurrent(taskGeneration) else {
+        throw CancellationError()
+      }
+      providerConnectionStatus = connection
+      providerOperationStatus[operationKey] = "Waiting for sign in"
+      providerOperationDetail[operationKey] =
+        "Complete Claude Code sign-in in your browser. Keep Runtime & Providers open while Loom waits."
+      for attempt in 0..<boundedAttempts {
+        try Task.checkCancellation()
+        guard claudeCodeSignInGenerationIsCurrent(taskGeneration) else {
+          throw CancellationError()
+        }
+        let next = try await setupClient.setupSnapshot()
+        try Task.checkCancellation()
+        guard claudeCodeSignInGenerationIsCurrent(taskGeneration) else {
+          throw CancellationError()
+        }
+        let admitted = admitSetupSnapshot(next)
+        if admitted, next.conversationProfiles.contains(where: {
+          $0.harnessAdapter == "claude-code"
+        }) {
+          providerOperationStatus[operationKey] = "Ready"
+          providerOperationDetail[operationKey] = nil
+          clearProviderOperationDiagnostics(operationKey)
+          return
+        }
+        if attempt + 1 < boundedAttempts {
+          try await Task<Never, Never>.sleep(nanoseconds: boundedPoll)
+        }
+      }
+      try Task.checkCancellation()
+      guard claudeCodeSignInGenerationIsCurrent(taskGeneration) else {
+        throw CancellationError()
+      }
+      providerOperationStatus[operationKey] = "Sign-in timed out"
+      providerOperationDetail[operationKey] =
+        "Claude Code did not finish signing in. Choose Sign In to try again."
+      providerOperationStage[operationKey] = providerStageDisplayName(.profilePublish)
+      providerOperationIncidentID[operationKey] = incidentID
+      providerOperationRetryable[operationKey] = true
+    } catch is CancellationError {
+      if claudeCodeSignInGenerationIsCurrent(taskGeneration) {
+        providerOperationStatus[operationKey] = nil
+        providerOperationDetail[operationKey] = nil
+        clearProviderOperationDiagnostics(operationKey)
+      }
+    } catch {
+      guard claudeCodeSignInGenerationIsCurrent(taskGeneration) else { return }
+      recordClaudeCodeConnectionError(
+        error,
+        operationKey: operationKey,
+        fallbackIncidentID: incidentID
+      )
+      if setupSnapshot == nil {
+        handleSetupError(error)
+      }
+    }
+  }
+
+  private func claudeCodeSignInGenerationIsCurrent(
+    _ taskGeneration: UInt64?
+  ) -> Bool {
+    taskGeneration == nil || taskGeneration == claudeCodeSignInGeneration
   }
 
   public func startBlankBuilder() async {
@@ -5752,13 +7066,12 @@ public final class LocalProductStore: ObservableObject {
         definitionID: definitionID
       )
       self.builderSession = nil
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
+      let refreshed = try await setupClient.setupSnapshot()
+      guard admitSetupSnapshot(refreshed) else { return }
       if lastConfirmation?.teamInstanceCreated == true {
         await refresh()
       }
       builderRecoveryMessage = nil
-      setupState = .ready
     } catch let error as LocalIPCRemoteError
       where error.code == .conflict || error.code == .notFound
     {
@@ -5770,8 +7083,7 @@ public final class LocalProductStore: ObservableObject {
         ? "This Agent Team draft is no longer available. Review the latest Teams, then start a new draft."
         : "This Agent Team draft changed in another window. Review the latest Teams, then start a new draft."
       do {
-        setupSnapshot = try await setupClient.setupSnapshot()
-        reconcileWorkspace()
+        _ = admitSetupSnapshot(try await setupClient.setupSnapshot())
       } catch {
         // The stale draft remains discarded even when the refresh is unavailable.
       }
@@ -5950,8 +7262,12 @@ public final class LocalProductStore: ObservableObject {
     defer { isRotatingCredentialVault = false }
     do {
       try await setupClient.rotateCredentialVault()
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else {
+        credentialVaultOperationFailed = true
+        credentialVaultOperationDetail =
+          "Vault rotated, but the setup inventory is still rebuilding"
+        return
+      }
       credentialVaultOperationDetail = "Vault key rotated"
     } catch let failure as LocalIPCRemoteError {
       credentialVaultOperationFailed = true
@@ -5979,8 +7295,12 @@ public final class LocalProductStore: ObservableObject {
       } else {
         try await setupClient.unlockCredentialVault()
       }
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else {
+        credentialVaultOperationFailed = true
+        credentialVaultOperationDetail =
+          "Vault changed, but the setup inventory is still rebuilding"
+        return
+      }
       credentialVaultOperationDetail = locked ? "Vault locked" : "Vault unlocked"
     } catch let failure as LocalIPCRemoteError {
       credentialVaultOperationFailed = true
@@ -6007,8 +7327,12 @@ public final class LocalProductStore: ObservableObject {
     defer { isResettingCredentialVault = false }
     do {
       try await setupClient.resetCredentialVault()
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else {
+        credentialVaultOperationFailed = true
+        credentialVaultOperationDetail =
+          "Vault reset, but the setup inventory is still rebuilding"
+        return
+      }
       credentialVaultOperationDetail =
         "Vault reset complete · Re-enter each Provider Account key"
     } catch let failure as LocalIPCRemoteError {
@@ -6078,9 +7402,7 @@ public final class LocalProductStore: ObservableObject {
           expectedHead: team.streamHead
         )
       }
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
-      setupState = .ready
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else { return }
     } catch {
       handleSetupError(error)
     }
@@ -6096,9 +7418,7 @@ public final class LocalProductStore: ObservableObject {
       credentialStatus = try await setupClient.configureMiniMax(
         secret: secret
       )
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
-      setupState = .ready
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else { return }
     } catch {
       handleSetupError(error)
     }
@@ -6189,9 +7509,12 @@ public final class LocalProductStore: ObservableObject {
       else {
         throw LocalProductClientError.invalidResponse
       }
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        providerPolicyOperationDetail[providerAccountID] =
+          "Limits saved, but the setup inventory is still rebuilding"
+        return false
+      }
       providerPolicyOperationDetail[providerAccountID] = "Limits saved"
-      setupState = .ready
       return true
     } catch let remote as LocalIPCRemoteError {
       let incident = remote.incidentID.map {
@@ -6272,9 +7595,12 @@ public final class LocalProductStore: ObservableObject {
         rateCard.currency == result.currency,
         rateCard.inputTokenBasis == result.inputTokenBasis
       else { throw LocalProductClientError.invalidResponse }
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        providerRateCardOperationDetail[operationKey] =
+          "Rate card saved, but the setup inventory is still rebuilding"
+        return false
+      }
       providerRateCardOperationDetail[operationKey] = "Rate card saved"
-      setupState = .ready
       return true
     } catch let remote as LocalIPCRemoteError {
       let incident = remote.incidentID.map { $0.isEmpty ? "" : " · Incident \($0)" } ?? ""
@@ -6338,10 +7664,13 @@ public final class LocalProductStore: ObservableObject {
       }), remoteToolEnrollment(projected, matches: result),
         result.status == "active", result.policyCurrent
       else { throw LocalProductClientError.invalidResponse }
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        remoteToolEnrollmentOperationDetail[command.enrollmentID] =
+          "Remote tool saved, but the setup inventory is still rebuilding"
+        return false
+      }
       remoteToolEnrollmentOperationDetail[command.enrollmentID] = "Remote tool saved"
       clearRemoteToolEnrollmentDiagnostics(command.enrollmentID)
-      setupState = .ready
       return true
     } catch {
       recordRemoteToolEnrollmentDiagnostics(error, enrollmentID: command.enrollmentID)
@@ -6380,10 +7709,13 @@ public final class LocalProductStore: ObservableObject {
       }), remoteToolEnrollment(projected, matches: result),
         result.status == "revoked"
       else { throw LocalProductClientError.invalidResponse }
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        remoteToolEnrollmentOperationDetail[command.enrollmentID] =
+          "Remote tool revoked, but the setup inventory is still rebuilding"
+        return false
+      }
       remoteToolEnrollmentOperationDetail[command.enrollmentID] = "Remote tool revoked"
       clearRemoteToolEnrollmentDiagnostics(command.enrollmentID)
-      setupState = .ready
       return true
     } catch {
       recordRemoteToolEnrollmentDiagnostics(error, enrollmentID: command.enrollmentID)
@@ -6498,14 +7830,21 @@ public final class LocalProductStore: ObservableObject {
           secret: secret
         )
       }
-      setupSnapshot = try await setupClient.setupSnapshot()
+      let refreshed = try await setupClient.setupSnapshot()
       guard
         providerCredentialBinding(
+          in: refreshed,
           providerID: providerID,
           providerAccountID: providerAccountID
         ) != nil
       else {
         throw LocalProductClientError.invalidResponse
+      }
+      guard admitSetupSnapshot(refreshed) else {
+        providerOperationStatus[operationKey] = "Setup inventory rebuilding"
+        providerOperationDetail[operationKey] =
+          "The credential was stored, but Loom is waiting for the Provider directory. Refresh, then test the connection."
+        return
       }
       await verifyProvider(
         providerID: providerID,
@@ -6589,7 +7928,12 @@ public final class LocalProductStore: ObservableObject {
         throw LocalProductClientError.invalidResponse
       }
       credentialStatus = result
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        providerOperationStatus[operationKey] = "Setup inventory rebuilding"
+        providerOperationDetail[operationKey] =
+          "The credential was imported, but Loom is waiting for the Provider directory. Refresh, then test the connection."
+        return
+      }
       recordProviderTerminalStatus(operationKey: operationKey, result: result)
       if accountID == candidate.targetProviderID + ".primary",
         let profile = refreshed.conversationProfiles.first(where: {
@@ -6598,8 +7942,6 @@ public final class LocalProductStore: ObservableObject {
       {
         selectConversationProfile(profile.profileID)
       }
-      reconcileWorkspace()
-      setupState = .ready
     } catch {
       recordProviderOperationError(
         providerID: candidate.targetProviderID,
@@ -6796,7 +8138,12 @@ public final class LocalProductStore: ObservableObject {
         throw LocalProductClientError.invalidResponse
       }
       credentialStatus = result
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        providerOperationStatus[operationKey] = "Setup inventory rebuilding"
+        providerOperationDetail[operationKey] =
+          "Verification finished, but Loom is waiting for the Provider directory. Refresh to recover it."
+        return
+      }
       recordProviderTerminalStatus(
         operationKey: operationKey,
         result: result
@@ -6809,8 +8156,6 @@ public final class LocalProductStore: ObservableObject {
       {
         selectConversationProfile(profile.profileID)
       }
-      reconcileWorkspace()
-      setupState = .ready
     } catch {
       recordProviderOperationError(
         providerID: providerID,
@@ -6878,7 +8223,12 @@ public final class LocalProductStore: ObservableObject {
           secret: secret
         )
       }
-      setupSnapshot = try await setupClient.setupSnapshot()
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else {
+        providerOperationStatus[operationKey] = "Setup inventory rebuilding"
+        providerOperationDetail[operationKey] =
+          "The credential was replaced, but Loom is waiting for the Provider directory. Refresh, then test the connection."
+        return
+      }
       if migratingToVault {
         await verifyProvider(
           providerID: providerID,
@@ -6889,8 +8239,6 @@ public final class LocalProductStore: ObservableObject {
         return
       }
       providerOperationStatus[operationKey] = "Configured"
-      reconcileWorkspace()
-      setupState = .ready
     } catch {
       recordProviderOperationError(
         providerID: providerID,
@@ -6951,10 +8299,13 @@ public final class LocalProductStore: ObservableObject {
           revision: binding.revision
         )
       }
-      setupSnapshot = try await setupClient.setupSnapshot()
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else {
+        providerOperationStatus[operationKey] = "Setup inventory rebuilding"
+        providerOperationDetail[operationKey] =
+          "The credential was removed, but Loom is waiting for the Provider directory to refresh."
+        return
+      }
       providerOperationStatus[operationKey] = "Not connected"
-      reconcileWorkspace()
-      setupState = .ready
     } catch {
       recordProviderOperationError(
         providerID: providerID,
@@ -7066,6 +8417,8 @@ public final class LocalProductStore: ObservableObject {
           "The Loom App could not complete the secure request to its bundled service. Reopen Loom and try again."
         case .daemonAdmission:
           "The bundled service rejected the credential request. Review the input and try again."
+        case .agentRuntimeInitialization:
+          "The Agent Team runtime is still starting. Wait for Loom to finish preparing, then retry."
         case .helperValidation:
           "Loom rejected the local credential request before Keychain access. Reopen Loom and try again."
         case .helperStart:
@@ -7110,8 +8463,21 @@ public final class LocalProductStore: ObservableObject {
           "The credential was verified, but its conversation Profile could not be published. Try again."
 		case .toolRecovery:
 		  "The ToolCall recovery decision could not be recorded. Refresh the candidate before retrying."
+		case .contextRetrieval, .contextDeliveryReconcile:
+		  "Loom could not prepare or reconcile the governed Agent context. Refresh the Mission before retrying."
+		case .toolInputAdmission, .toolBindingValidation, .toolAuthorization,
+		  .toolApprovalWait, .toolSandboxPrepare, .toolDispatch,
+		  .toolResultValidation, .toolResultCommit, .toolPayloadCommit,
+		  .toolResultDelivery:
+		  "The Agent ToolCall stopped at the reported governed stage. Open the Mission to review its recovery action."
+		case .compositionCompile, .compositionValidate, .bundleRegister,
+		  .bundleStart, .bundleReady, .bundleStop, .bundleDispose,
+		  .routeCompile, .scopeOpen, .scopeClose:
+		  "The local Agent runtime stopped at the reported composition stage. Reopen Loom and review diagnostics before retrying."
         case .conversationDispatch:
           "The conversation could not be dispatched with the selected Profile. Try again."
+        case .controlProposalConfirm:
+          "The Loom proposal changed, expired, or was already decided. Ask Loom to prepare a fresh review."
         case .agentAttemptDispatch:
           "The Agent Attempt could not be dispatched with its frozen binding. Review the Agent configuration."
         case .agentAttemptReconcile:
@@ -7139,7 +8505,8 @@ public final class LocalProductStore: ObservableObject {
         case .parentContinuation, .flightConflict, .dispatchAdmission,
           .dispatchAttemptValidation, .dispatchViewConflict,
           .dispatchIdentityUnavailable, .dispatchValidation,
-          .dispatchContextValidation, .dispatchIncomplete:
+		  .dispatchContextValidation, .dispatchIncomplete,
+		  .dispatchProjectionSemantics:
           "The Mission could not be admitted at its reported governance stage. Open Missions to inspect the current Attempt."
         case nil:
           nil
@@ -7214,6 +8581,72 @@ public final class LocalProductStore: ObservableObject {
     providerOperationRetryable[providerID] = nil
   }
 
+  private func recordClaudeCodeConnectionError(
+    _ error: Error,
+    operationKey: String,
+    fallbackIncidentID: String
+  ) {
+    if let remote = error as? LocalIPCRemoteError {
+      switch remote.code {
+      case .busy:
+        providerOperationStatus[operationKey] = "Sign-in already open"
+        providerOperationDetail[operationKey] =
+          "Complete the existing Claude Code sign-in window, then choose Sign In again if needed."
+      case .stateUnavailable:
+        providerOperationStatus[operationKey] = "Sign-in unavailable"
+        providerOperationDetail[operationKey] =
+          "Claude Code could not be launched safely. Refresh Runtime & Providers, then try again."
+      case .timeout:
+        providerOperationStatus[operationKey] = "Sign-in timed out"
+        providerOperationDetail[operationKey] =
+          "Claude Code did not respond in time. Choose Sign In to retry."
+      default:
+        providerOperationStatus[operationKey] = "Sign-in failed"
+        providerOperationDetail[operationKey] =
+          "Claude Code sign-in did not complete. Review the incident, then retry."
+      }
+      providerOperationStage[operationKey] = providerStageDisplayName(remote.stage)
+      providerOperationIncidentID[operationKey] =
+        remote.incidentID ?? fallbackIncidentID
+      providerOperationRetryable[operationKey] = remote.recoverable
+      return
+    }
+    if let local = error as? LocalProductClientError {
+      switch local {
+      case .invalidRequest:
+        providerOperationStatus[operationKey] = "Sign-in request invalid"
+        providerOperationDetail[operationKey] =
+          "Refresh Runtime & Providers, then choose Sign In again."
+        providerOperationStage[operationKey] =
+          providerStageDisplayName(.inputAdmission)
+        providerOperationRetryable[operationKey] = false
+      case .timeout:
+        providerOperationStatus[operationKey] = "Local service timed out"
+        providerOperationDetail[operationKey] =
+          "The local sign-in service did not respond in time. Choose Sign In to retry."
+        providerOperationStage[operationKey] =
+          providerStageDisplayName(.udsTransport)
+        providerOperationRetryable[operationKey] = true
+      case .invalidSocket, .invalidResponse, .unavailable, .notFound:
+        providerOperationStatus[operationKey] = "Local service unavailable"
+        providerOperationDetail[operationKey] =
+          "Loom could not reach the local Claude Code sign-in service. Reopen Loom, then retry."
+        providerOperationStage[operationKey] =
+          providerStageDisplayName(.udsTransport)
+        providerOperationRetryable[operationKey] = true
+      }
+      providerOperationIncidentID[operationKey] = fallbackIncidentID
+      return
+    }
+    providerOperationStatus[operationKey] = "Sign-in unavailable"
+    providerOperationDetail[operationKey] =
+      "Loom could not reach the local Claude Code sign-in service. Try again after it reconnects."
+    providerOperationStage[operationKey] =
+      providerStageDisplayName(.udsTransport)
+    providerOperationIncidentID[operationKey] = fallbackIncidentID
+    providerOperationRetryable[operationKey] = true
+  }
+
   private func providerStageDisplayName(
     _ stage: LocalIPCRemoteError.Stage?
   ) -> String? {
@@ -7221,6 +8654,7 @@ public final class LocalProductStore: ObservableObject {
     case .inputAdmission: return "Input admission"
     case .udsTransport: return "Local service transport"
     case .daemonAdmission: return "Local service admission"
+    case .agentRuntimeInitialization: return "Agent Team initialization"
     case .helperValidation: return "Credential helper validation"
     case .helperStart: return "Credential helper start"
     case .helperAuthorization: return "Credential helper authorization"
@@ -7252,12 +8686,35 @@ public final class LocalProductStore: ObservableObject {
     case .providerHTTP: return "Provider response"
     case .providerAuth: return "Provider authentication"
     case .providerRateLimit: return "Provider rate limit"
-    case .profilePublish: return "Conversation profile publish"
-    case .conversationDispatch: return "Conversation dispatch"
-    case .agentAttemptDispatch: return "Agent attempt dispatch"
+	case .profilePublish: return "Conversation profile publish"
+	case .conversationDispatch: return "Conversation dispatch"
+	case .controlProposalConfirm: return "Proposal confirmation"
+	case .agentAttemptDispatch: return "Agent attempt dispatch"
     case .agentAttemptReconcile: return "Agent attempt recovery"
     case .agentInputAdmission: return "Agent input admission"
 	case .toolRecovery: return "Tool recovery"
+	case .contextRetrieval: return "Context retrieval"
+	case .contextDeliveryReconcile: return "Context delivery recovery"
+	case .toolInputAdmission: return "Tool input admission"
+	case .toolBindingValidation: return "Tool binding validation"
+	case .toolAuthorization: return "Tool authorization"
+	case .toolApprovalWait: return "Tool approval"
+	case .toolSandboxPrepare: return "Tool sandbox preparation"
+	case .toolDispatch: return "Tool dispatch"
+	case .toolResultValidation: return "Tool result validation"
+	case .toolResultCommit: return "Tool result commit"
+	case .toolPayloadCommit: return "Tool payload commit"
+	case .toolResultDelivery: return "Tool result delivery"
+	case .compositionCompile: return "Runtime composition"
+	case .compositionValidate: return "Runtime composition validation"
+	case .bundleRegister: return "Runtime bundle registration"
+	case .bundleStart: return "Runtime bundle start"
+	case .bundleReady: return "Runtime bundle readiness"
+	case .bundleStop: return "Runtime bundle stop"
+	case .bundleDispose: return "Runtime bundle disposal"
+	case .routeCompile: return "Runtime route compilation"
+	case .scopeOpen: return "Runtime scope open"
+	case .scopeClose: return "Runtime scope close"
     case .preflightLease: return "Mission preflight lease"
     case .viewDrift: return "Mission view drift"
     case .preflightDigest: return "Mission preflight digest"
@@ -7273,6 +8730,7 @@ public final class LocalProductStore: ObservableObject {
     case .dispatchValidation: return "Mission dispatch validation"
     case .dispatchContextValidation: return "Mission context validation"
     case .dispatchIncomplete: return "Mission dispatch visibility"
+	case .dispatchProjectionSemantics: return "Mission projection compatibility"
 	case .workspacePublication: return "Workspace publication"
 	case .workspacePublicationInputValidation: return "Workspace publication input"
 	case .workspacePublicationSourceSnapshot: return "Workspace source snapshot"
@@ -7330,10 +8788,11 @@ public final class LocalProductStore: ObservableObject {
         throw LocalProductClientError.invalidResponse
       }
       credentialStatus = result
-      setupSnapshot = refreshed
+      guard admitSetupSnapshot(refreshed) else {
+        miniMaxVerificationStatus = "Setup inventory rebuilding"
+        return
+      }
       miniMaxVerificationStatus = terminal
-      reconcileWorkspace()
-      setupState = .ready
     } catch {
       if let remote = error as? LocalIPCRemoteError,
         remote.code == .conflict
@@ -7377,9 +8836,7 @@ public final class LocalProductStore: ObservableObject {
         revision: provider.revision,
         secret: secret
       )
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
-      setupState = .ready
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else { return }
     } catch {
       handleSetupError(error)
     }
@@ -7400,9 +8857,7 @@ public final class LocalProductStore: ObservableObject {
         reference: provider.credentialReference,
         revision: provider.revision
       )
-      setupSnapshot = try await setupClient.setupSnapshot()
-      reconcileWorkspace()
-      setupState = .ready
+      guard admitSetupSnapshot(try await setupClient.setupSnapshot()) else { return }
     } catch {
       handleSetupError(error)
     }

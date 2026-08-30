@@ -41,6 +41,7 @@ type productActiveAttempt struct {
 	ExecutionBinding   loomruntime.FrozenExecutionBinding
 	CapsuleDigest      string
 	IncidentID         string
+	AcceptsAgentInputs bool
 }
 
 // productActiveAttemptRegistry is a revocable runtime projection, not an
@@ -106,9 +107,10 @@ func (registry *productActiveAttemptRegistry) Register(
 	}
 	attempt := productActiveAttempt{
 		Identity: identity, AttemptLoopBinding: binding, Budget: budget,
-		ExecutionBinding: executionBinding,
-		CapsuleDigest:    request.ContextCapsule.CapsuleDigest,
-		IncidentID:       request.IncidentID,
+		ExecutionBinding:   executionBinding,
+		CapsuleDigest:      request.ContextCapsule.CapsuleDigest,
+		IncidentID:         request.IncidentID,
+		AcceptsAgentInputs: request.AgentInputs != nil,
 	}
 	return registry.register(attempt)
 }
@@ -139,6 +141,7 @@ func (registry *productActiveAttemptRegistry) RegisterRecovered(
 		ExecutionBinding:   executionBinding,
 		CapsuleDigest:      authority.CapsuleDigest,
 		IncidentID:         grant.IncidentID(),
+		AcceptsAgentInputs: outcome.Budget.MaxTurns > 1 || outcome.Budget.MaxStepsPerTurn > 1,
 	}
 	if !validProductActiveAttemptQuery(attempt.Identity) || attempt.IncidentID == "" {
 		return nil, productActiveAttempt{}, errProductInvalidActiveAttempt

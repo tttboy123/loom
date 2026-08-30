@@ -22,8 +22,9 @@ const (
 )
 
 var (
-	errProductInvalidAgentInput  = errors.New("invalid Agent input")
-	errProductAgentInputConflict = errors.New("Agent input conflict")
+	errProductInvalidAgentInput     = errors.New("invalid Agent input")
+	errProductAgentInputConflict    = errors.New("Agent input conflict")
+	errProductAgentInputUnsupported = errors.New("Runtime does not support live Agent input")
 )
 
 type productAgentInputRequest struct {
@@ -108,6 +109,10 @@ func (ingress *productAgentInputIngress) AdmitAgentInput(
 	if err != nil {
 		ingress.record(ctx, startedAt, request, productActiveAttempt{}, "failed", agentInputErrorCode(err), agentInputRetryable(err))
 		return productAgentInputReceipt{}, err
+	}
+	if !active.AcceptsAgentInputs {
+		ingress.record(ctx, startedAt, request, active, "failed", "capability_gap", false)
+		return productAgentInputReceipt{}, errProductAgentInputUnsupported
 	}
 	state, err := ingress.inbox.Snapshot(ctx, active.AttemptLoopBinding)
 	if err != nil {
@@ -348,6 +353,8 @@ func agentInputErrorCode(err error) string {
 		return "invalid_request"
 	case errors.Is(err, errProductActiveAttemptNotFound):
 		return "stale_generation"
+	case errors.Is(err, errProductAgentInputUnsupported):
+		return "capability_gap"
 	case errors.Is(err, errProductAgentInputConflict), errors.Is(err, work.ErrAgentInboxConflict):
 		return "conflict"
 	default:
@@ -356,10 +363,11 @@ func agentInputErrorCode(err error) string {
 }
 
 func agentInputRetryable(err error) bool {
-	return errors.Is(err, errProductAgentInputConflict) ||
-		errors.Is(err, work.ErrAgentInboxConflict) ||
-		(!errors.Is(err, errProductInvalidAgentInput) &&
-			!errors.Is(err, errProductActiveAttemptNotFound))
+	return !errors.Is(err, errProductAgentInputUnsupported) &&
+		(errors.Is(err, errProductAgentInputConflict) ||
+			errors.Is(err, work.ErrAgentInboxConflict) ||
+			(!errors.Is(err, errProductInvalidAgentInput) &&
+				!errors.Is(err, errProductActiveAttemptNotFound)))
 }
 
 func clearProductAgentInput(content []byte) {

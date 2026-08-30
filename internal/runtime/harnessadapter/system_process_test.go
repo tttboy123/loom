@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+const (
+	// These tests exercise process identity, IO, and cleanup rather than
+	// startup latency. Keep their deadlines bounded without coupling them to a
+	// five-second scheduler window during repository-wide parallel runs.
+	harnessFixtureProcessTimeout  = 15 * time.Second
+	harnessFixtureShutdownTimeout = 5 * time.Second
+)
+
 func TestSystemHarnessSessionRunnerUsesOneExactProcessForJSONL(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "codex")
@@ -32,7 +40,7 @@ printf 'bounded stderr' >&2
 			Environment:    []string{"PATH=/usr/bin:/bin"},
 			Directory:      root,
 			MaxOutputBytes: 4096,
-			Timeout:        5 * time.Second,
+			Timeout:        harnessFixtureProcessTimeout,
 		},
 	)
 	if err != nil {
@@ -105,6 +113,7 @@ wait "$child"
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	session, err := NewSystemHarnessSessionRunner().StartSession(
 		ctx,
 		HarnessSessionRequest{
@@ -113,13 +122,16 @@ wait "$child"
 			Environment:    []string{"PATH=/usr/bin:/bin"},
 			Directory:      root,
 			MaxOutputBytes: 4096,
-			Timeout:        10 * time.Second,
+			// This test controls cancellation explicitly after the child publishes
+			// its PID; the session deadline only bounds a failed fixture startup.
+			Timeout: 30 * time.Second,
 		},
 	)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
+	defer session.Abort()
 	pidText := waitForHarnessPIDFile(t, pidPath)
 	cancel()
 	if _, err := session.Wait(context.Background()); !errors.Is(err, context.Canceled) {
@@ -145,7 +157,7 @@ func TestSystemHarnessSessionRunnerRejectsOversizedLine(t *testing.T) {
 			Environment:    []string{"PATH=/usr/bin:/bin"},
 			Directory:      root,
 			MaxOutputBytes: 1024,
-			Timeout:        5 * time.Second,
+			Timeout:        harnessFixtureProcessTimeout,
 		},
 	)
 	if err != nil {
@@ -175,7 +187,7 @@ func TestSystemHarnessSessionRunnerAllowsBoundedLinesBeyondCumulativeLimit(t *te
 			Environment:    []string{"PATH=/usr/bin:/bin"},
 			Directory:      root,
 			MaxOutputBytes: 1024,
-			Timeout:        5 * time.Second,
+			Timeout:        harnessFixtureProcessTimeout,
 		},
 	)
 	if err != nil {
@@ -195,15 +207,17 @@ func TestSystemHarnessSessionRunnerAllowsBoundedLinesBeyondCumulativeLimit(t *te
 
 func waitForHarnessPIDFile(t *testing.T, path string) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(harnessFixtureProcessTimeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		content, err := os.ReadFile(path)
 		if err == nil && strings.TrimSpace(string(content)) != "" {
 			return strings.TrimSpace(string(content))
 		}
+		lastErr = err
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("child process PID was not published")
+	t.Fatalf("child process PID was not published: %v", lastErr)
 	return ""
 }
 
@@ -213,7 +227,7 @@ func assertHarnessProcessGone(t *testing.T, pidText string) {
 	if err != nil || pid <= 1 {
 		t.Fatalf("child pid = %q error=%v", pidText, err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(harnessFixtureShutdownTimeout)
 	for {
 		killErr := syscall.Kill(pid, 0)
 		if errors.Is(killErr, syscall.ESRCH) {
@@ -246,7 +260,7 @@ printf 'bounded stderr' >&2
 		Directory:      root,
 		Stdin:          stdin,
 		MaxOutputBytes: 4096,
-		Timeout:        5 * time.Second,
+		Timeout:        harnessFixtureProcessTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -295,13 +309,13 @@ func TestSystemHarnessCommandRunnerRejectsIdentityDriftAndBoundsOutput(t *testin
 	}
 	if _, err := runner.RunCommand(context.Background(), HarnessCommandRequest{
 		ExecutablePath: oversized, Directory: root, Environment: []string{"PATH=/usr/bin:/bin"},
-		MaxOutputBytes: 1024, Timeout: 5 * time.Second,
+		MaxOutputBytes: 1024, Timeout: harnessFixtureProcessTimeout,
 	}); !errors.Is(err, ErrHarnessProcessUnavailable) {
 		t.Fatalf("oversized RunCommand() error = %v", err)
 	}
 }
 
-func TestSystemHarnessCommandRunnerKillsTimedOutProcessGroup(t *testing.T) {
+func TestSystemHarnessCommandRunnerKillsCanceledProcessGroup(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "claude")
 	pidPath := filepath.Join(root, "child.pid")
@@ -318,35 +332,38 @@ wait "$child"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	childPID := make(chan string, 1)
+	canceledAt := make(chan time.Time, 1)
 	go func() {
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(harnessFixtureProcessTimeout)
 		for time.Now().Before(deadline) {
 			pidBytes, err := os.ReadFile(pidPath)
 			if err == nil && strings.TrimSpace(string(pidBytes)) != "" {
 				childPID <- strings.TrimSpace(string(pidBytes))
+				canceledAt <- time.Now()
 				cancel()
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		childPID <- ""
+		canceledAt <- time.Now()
 		cancel()
 	}()
-	started := time.Now()
 	_, err := runner.RunCommand(ctx, HarnessCommandRequest{
 		ExecutablePath: executable, Arguments: []string{pidPath},
 		Directory: root, Environment: []string{"PATH=/usr/bin:/bin"},
-		MaxOutputBytes: 4096, Timeout: 10 * time.Second,
+		MaxOutputBytes: 4096, Timeout: 30 * time.Second,
 	})
-	if !errors.Is(err, context.Canceled) || time.Since(started) > 7*time.Second {
-		t.Fatalf("timed RunCommand() error = %v elapsed=%s", err, time.Since(started))
+	cancelTime := <-canceledAt
+	if !errors.Is(err, context.Canceled) || time.Since(cancelTime) > harnessFixtureShutdownTimeout {
+		t.Fatalf("canceled RunCommand() error = %v shutdown=%s", err, time.Since(cancelTime))
 	}
 	pidText := <-childPID
 	pid, parseErr := strconv.Atoi(pidText)
 	if parseErr != nil || pid <= 1 {
 		t.Fatalf("child pid = %q error=%v", pidText, parseErr)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(harnessFixtureShutdownTimeout)
 	for {
 		killErr := syscall.Kill(pid, 0)
 		if errors.Is(killErr, syscall.ESRCH) {

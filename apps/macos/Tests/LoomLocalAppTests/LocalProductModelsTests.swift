@@ -3,6 +3,71 @@ import XCTest
 @testable import LoomLocalAppCore
 
 final class LocalProductModelsTests: XCTestCase {
+    func testRoundTableActionProposalFreezesSeatBindingAndRejectsPartialPair() throws {
+        let digest = String(repeating: "a", count: 64)
+        func proposalJSON(payload: String) -> Data {
+            Data(
+                """
+                {
+                  "schema_version":2,"proposal_id":"proposal-skip-bound-1",
+                  "tool_id":"loom.roundtables.skip.preview","tool_version":2,
+                  "confirmation":"user","action":"roundtable_skip","argument":"",
+                  "payload":\(payload),
+                  "route":{"harness_adapter":"codex","provider_id":"openai",
+                    "credential_revision":0,"model_id":"codex-default",
+                    "execution_binding_digest":"\(digest)",
+                    "context_capsule_digest":"\(digest)"},
+                  "workspace":{"workspace_id":"workspace-primary",
+                    "workspace_digest":"\(digest)"},
+                  "registry_digest":"\(digest)","incident_id":"incident-skip-1",
+                  "target_conversation_id":"conversation-1",
+                  "target_content_digest":"\(digest)","segment_id":"segment-1",
+                  "attempt_id":"attempt-1","message_id":"message-1",
+                  "status":"pending","created_at":"2026-08-29T10:00:00Z",
+                  "expires_at":"2026-08-29T10:05:00Z","proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        }
+
+        let bound = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: proposalJSON(
+                payload: """
+                {"session_id":"session+本地","round_id":"round#评审","seat_id":"seat+c++/评审",\
+                "membership_revision":3,"seat_binding_digest":"\(digest)"}
+                """
+            )
+        )
+        XCTAssertTrue(bound.payload?.hasFrozenRoundTableSeatBinding == true)
+        XCTAssertEqual(bound.payload?.membershipRevision, 3)
+        XCTAssertEqual(bound.payload?.seatBindingDigest, digest)
+        XCTAssertEqual(bound.payload?.seatID, "seat+c++/评审")
+
+        let legacy = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: proposalJSON(
+                payload: #"{"session_id":"session-1","round_id":"round-1","seat_id":"seat-writer"}"#
+            )
+        )
+        XCTAssertFalse(legacy.payload?.hasFrozenRoundTableSeatBinding == true)
+
+        for partial in [
+            #"{"session_id":"session-1","round_id":"round-1","seat_id":"seat-writer","membership_revision":3}"#,
+            """
+            {"session_id":"session-1","round_id":"round-1","seat_id":"seat-writer",\
+            "seat_binding_digest":"\(digest)"}
+            """,
+        ] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(
+                    LocalProductConversationActionProposal.self,
+                    from: proposalJSON(payload: partial)
+                )
+            )
+        }
+    }
+
     func testSetupSnapshotDecodesProviderDirectory() throws {
         let data = Data(#"""
         {
@@ -312,6 +377,148 @@ final class LocalProductModelsTests: XCTestCase {
         XCTAssertTrue(attempt.retryable)
     }
 
+    func testConversationAttemptDecodesCompletedControlTools() throws {
+        let thread = try LocalProductWire.decodeChatThread(
+            Data(
+                Self.chatThreadWithCompletedTools(
+                    """
+                    [
+                      {"tool_id":"loom.runtimes.status","tool_version":1,"effect":"read"},
+                      {"tool_id":"loom.missions.create.preview","tool_version":2,"effect":"proposal"}
+                    ]
+                    """
+                ).utf8
+            )
+        )
+
+        let tools = try XCTUnwrap(thread.attempts.first?.completedControlTools)
+		XCTAssertEqual(thread.messages.first?.attemptID, "attempt-completed-tools")
+        XCTAssertEqual(
+            tools,
+            [
+                try LocalProductConversationCompletedTool(
+                    toolID: "loom.runtimes.status",
+                    toolVersion: 1,
+                    effect: "read"
+                ),
+                try LocalProductConversationCompletedTool(
+                    toolID: "loom.missions.create.preview",
+                    toolVersion: 2,
+                    effect: "proposal"
+                ),
+            ]
+        )
+    }
+
+    func testCompletedControlToolStrictlyRejectsUnknownAndPrivacyFields() {
+        for field in [
+            "\"unexpected\":true",
+            "\"arguments\":{\"mission\":\"private\"}",
+            "\"result\":\"private provider output\"",
+            "\"content\":\"private conversation content\"",
+        ] {
+            let tool = """
+                [{"tool_id":"loom.runtimes.status","tool_version":1,"effect":"read",\(field)}]
+                """
+            XCTAssertThrowsError(
+                try LocalProductWire.decodeChatThread(
+                    Data(Self.chatThreadWithCompletedTools(tool).utf8)
+                ),
+                "accepted forbidden completed Tool field: \(field)"
+            )
+        }
+    }
+
+    func testCompletedControlToolRejectsInvalidEffectVersionAndID() {
+        let invalidTools = [
+            "[{\"tool_id\":\"loom.runtimes.status\",\"tool_version\":1,\"effect\":\"execute\"}]",
+            "[{\"tool_id\":\"loom.runtimes.status\",\"tool_version\":0,\"effect\":\"read\"}]",
+            "[{\"tool_id\":\"loom.runtimes.status\",\"tool_version\":2,\"effect\":\"read\"}]",
+            "[{\"tool_id\":\"loom.runtimes.status\",\"tool_version\":1,\"effect\":\"proposal\"}]",
+            "[{\"tool_id\":\"loom.unknown.status\",\"tool_version\":1,\"effect\":\"read\"}]",
+            "[{\"tool_id\":\"Loom.Runtime.Status\",\"tool_version\":1,\"effect\":\"read\"}]",
+            "[{\"tool_id\":\"loom runtime status\",\"tool_version\":1,\"effect\":\"read\"}]",
+            "[{\"tool_id\":\"\",\"tool_version\":1,\"effect\":\"read\"}]",
+            "[{\"tool_id\":\"\(String(repeating: "a", count: 129))\",\"tool_version\":1,\"effect\":\"read\"}]",
+        ]
+
+        for tool in invalidTools {
+            XCTAssertThrowsError(
+                try LocalProductWire.decodeChatThread(
+                    Data(Self.chatThreadWithCompletedTools(tool).utf8)
+                ),
+                "accepted invalid completed Tool: \(tool)"
+            )
+        }
+    }
+
+    func testCompletedControlToolAdmitsExactlyTheBuiltinRegistrySurface() throws {
+        let admitted: [(String, Int, String)] = [
+            ("loom.sessions.search", 1, "read"),
+            ("loom.sessions.align.preview", 2, "proposal"),
+            ("loom.missions.create.preview", 2, "proposal"),
+            ("loom.missions.continue.preview", 2, "proposal"),
+            ("loom.teams.create.preview", 2, "proposal"),
+            ("loom.roundtables.open.preview", 2, "proposal"),
+            ("loom.missions.search", 1, "read"),
+            ("loom.missions.status", 1, "read"),
+            ("loom.teams.search", 1, "read"),
+            ("loom.teams.status", 1, "read"),
+            ("loom.roundtables.status", 1, "read"),
+            ("loom.governance.needs_you", 1, "read"),
+            ("loom.runtimes.status", 1, "read"),
+            ("loom.providers.status", 1, "read"),
+            ("loom.diagnostics.incident", 1, "read"),
+            ("loom.workspace.status", 1, "read"),
+            ("loom.conversation.route.status", 1, "read"),
+            ("loom.library.search", 1, "read"),
+            ("loom.conversation.route.change.preview", 2, "proposal"),
+            ("loom.conversation.model.change.preview", 2, "proposal"),
+            ("loom.conversation.reasoning.change.preview", 2, "proposal"),
+            ("loom.workspace.choose.preview", 2, "proposal"),
+            ("loom.teams.edit.preview", 2, "proposal"),
+            ("loom.roundtables.pause.preview", 2, "proposal"),
+            ("loom.roundtables.steer.preview", 2, "proposal"),
+            ("loom.roundtables.retry.preview", 2, "proposal"),
+            ("loom.roundtables.skip.preview", 2, "proposal"),
+            ("loom.roundtables.replace.preview", 2, "proposal"),
+        ]
+        XCTAssertEqual(admitted.count, 28)
+        for (toolID, version, effect) in admitted {
+            XCTAssertNoThrow(
+                try LocalProductConversationCompletedTool(
+                    toolID: toolID,
+                    toolVersion: version,
+                    effect: effect
+                )
+            )
+        }
+    }
+
+	func testConversationMessageRejectsInvalidAttemptIdentity() {
+		let invalid = Self.chatThreadWithCompletedTools("[]")
+			.replacingOccurrences(
+				of: "\"attempt_id\":\"attempt-completed-tools\"",
+				with: "\"attempt_id\":\"Attempt With Spaces\""
+			)
+		XCTAssertThrowsError(
+			try LocalProductWire.decodeChatThread(Data(invalid.utf8))
+		)
+	}
+
+    func testConversationAttemptRejectsMoreThanEightCompletedControlTools() {
+        let tool = """
+            {"tool_id":"loom.runtimes.status","tool_version":1,"effect":"read"}
+            """
+        let tools = "[" + Array(repeating: tool, count: 9).joined(separator: ",") + "]"
+
+        XCTAssertThrowsError(
+            try LocalProductWire.decodeChatThread(
+                Data(Self.chatThreadWithCompletedTools(tools).utf8)
+            )
+        )
+    }
+
     func testConversationContextDisclosureDecodesMetadataOnlyAndRejectsContent() throws {
         let source = """
         {
@@ -562,6 +769,7 @@ final class LocalProductModelsTests: XCTestCase {
         let attempt = try XCTUnwrap(thread.attempts.first)
         XCTAssertNil(attempt.modelID)
         XCTAssertNil(attempt.reasoningEffort)
+        XCTAssertTrue(attempt.completedControlTools.isEmpty)
     }
 
     func testConversationDisclosureDecodingKeepsLegacyCompatibilityAndRejectsDrift() throws {
@@ -1324,6 +1532,41 @@ final class LocalProductModelsTests: XCTestCase {
     }
     """
 
+    static func chatThreadWithCompletedTools(_ completedTools: String) -> String {
+        """
+        {
+          "thread_id":"thread-completed-tools",
+          "profile_id":"conversation-deepseek-deepseek-chat-r6",
+          "segments":[],
+          "attempts":[{
+            "attempt_id":"attempt-completed-tools",
+            "segment_id":"segment-completed-tools",
+            "profile_id":"conversation-deepseek-deepseek-chat-r6",
+            "context_mode":"start_clean",
+            "context_capsule_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "completed_control_tools":\(completedTools),
+            "binding_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "status":"succeeded",
+            "failure_code":"",
+            "retryable":false,
+            "started_at":"2026-08-29T00:00:00Z",
+            "completed_at":"2026-08-29T00:00:01Z"
+          }],
+          "messages":[{
+            "message_id":"message-completed-tools",
+            "segment_id":"segment-completed-tools",
+            "attempt_id":"attempt-completed-tools",
+            "role":"loom",
+            "content":"Status checked.",
+            "tentative":true,
+            "created_at":"2026-08-29T00:00:01Z"
+          }],
+          "can_reply":true,
+          "requires_confirmation":false
+        }
+        """
+    }
+
     static let snapshotV2JSON = """
     {
       "schema_version":2,
@@ -1446,6 +1689,14 @@ func testConversationModelCatalogCoversCodexAndThreeLayers() {
     XCTAssertTrue(
         localProductConversationReasoningEfforts(providerID: "deepseek", modelID: "deepseek-chat").isEmpty
     )
+	let localModels = localProductConversationModels(providerID: "loom-local")
+	XCTAssertEqual(localModels.count, 1)
+	XCTAssertEqual(
+		localModels.first?.modelID,
+		"qwen2.5-coder-1.5b-instruct-q4-k-m"
+	)
+	XCTAssertEqual(localModels.first?.displayName, "Qwen 2.5 Coder 1.5B (Local)")
+	XCTAssertTrue(localModels.first?.reasoningEfforts.isEmpty == true)
     XCTAssertEqual(
         localProductConversationModels(providerID: "deepseek")
             .first { $0.modelID == "deepseek-chat" }?.displayName,

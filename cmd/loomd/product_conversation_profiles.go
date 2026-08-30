@@ -40,6 +40,18 @@ type productProviderConversationClient interface {
 	) (string, error)
 }
 
+type productProviderControlConversationClient interface {
+	RespondConfiguredWithTools(
+		context.Context,
+		[]provider.ConversationMessage,
+		[]byte,
+		string,
+		string,
+		[]provider.ConversationControlTool,
+		provider.ConversationControlExecutor,
+	) (string, error)
+}
+
 const (
 	productConversationCapacityCounterID      = "loom-unicode-rune-quarter-estimate"
 	productConversationCapacityCounterVersion = "v1"
@@ -135,7 +147,7 @@ func (router *productConversationProfileRouter) ResolveConversationContextTarget
 				ConversationID: threadID, TeamID: "conversation:" + threadID,
 				AgentID: "conversation-agent", RoleID: segmentID,
 				ProviderID: "loom-local",
-				ModelID:    "qwen2.5-coder-1.5b-instruct-q4-k-m",
+				ModelID:    provider.PiConversationModelID,
 				AuthMode:   "native_auth", ContextAdapterID: "context:pi:v1",
 				DisclosurePolicyID:      "loom.local-conversation-disclosure",
 				DisclosurePolicyVersion: 1, TokenBudget: 8_192,
@@ -361,7 +373,7 @@ func (router *productConversationProfileRouter) ResolveConversationExecutionBind
 		}
 		return api.LocalProductConversationExecutionBinding{
 			SchemaVersion: 4, HarnessAdapter: "pi", ProviderID: "loom-local",
-			ModelID: "qwen2.5-coder-1.5b-instruct-q4-k-m",
+			ModelID: provider.PiConversationModelID,
 		}, nil
 	}
 	if profileID == provider.CodexConversationProfileID {
@@ -536,7 +548,8 @@ func openCodeModelMatchesProvider(modelID, loomProviderID string) bool {
 	if !mapped {
 		boundProviderID = runtimeProviderID
 	}
-	return boundProviderID == loomProviderID
+	return boundProviderID == loomProviderID &&
+		provider.OpenCodeBrokeredModelSupported(loomProviderID, modelID)
 }
 
 func (router *productConversationProfileRouter) Respond(
@@ -655,6 +668,20 @@ func (router *productConversationProfileRouter) Respond(
 		}
 		return api.LocalProductConversationResponse{}, api.ErrLocalProductChatUnavailable
 	}
+	return router.respondBrokeredWithControl(ctx, request, nil, nil)
+}
+
+func (router *productConversationProfileRouter) respondBrokeredWithControl(
+	ctx context.Context,
+	request api.LocalProductConversationRequest,
+	tools []provider.ConversationControlTool,
+	execute provider.ConversationControlExecutor,
+) (api.LocalProductConversationResponse, error) {
+	controlEnabled := len(tools) != 0 || execute != nil
+	if router == nil || ctx == nil || ctx.Err() != nil ||
+		controlEnabled && (len(tools) == 0 || execute == nil) {
+		return api.LocalProductConversationResponse{}, api.ErrLocalProductChatUnavailable
+	}
 	selected, record, found := router.resolveBrokeredProfile(request.ProfileID)
 	if !found {
 		return api.LocalProductConversationResponse{}, api.ErrLocalProductChatUnavailable
@@ -662,7 +689,7 @@ func (router *productConversationProfileRouter) Respond(
 	wantBinding, bindingErr := router.ResolveConversationExecutionBinding(
 		ctx, request.ProfileID, strings.TrimSpace(request.ModelID),
 	)
-	if router.requireExecutionBinding &&
+	if (router.requireExecutionBinding || controlEnabled) &&
 		(bindingErr != nil || request.ExecutionBinding == nil ||
 			*request.ExecutionBinding != wantBinding) {
 		return api.LocalProductConversationResponse{},
@@ -700,7 +727,15 @@ func (router *productConversationProfileRouter) Respond(
 		},
 		func(leaseContext context.Context, secret []byte) error {
 			var callErr error
-			if modelID != "" || reasoningEffort != "" {
+			if controlEnabled {
+				controlClient, ok := selected.client.(productProviderControlConversationClient)
+				if !ok {
+					return api.ErrLocalProductChatUnavailable
+				}
+				content, callErr = controlClient.RespondConfiguredWithTools(
+					leaseContext, messages, secret, modelID, reasoningEffort, tools, execute,
+				)
+			} else if modelID != "" || reasoningEffort != "" {
 				content, callErr = selected.client.RespondConfigured(
 					leaseContext, messages, secret, modelID, reasoningEffort,
 				)

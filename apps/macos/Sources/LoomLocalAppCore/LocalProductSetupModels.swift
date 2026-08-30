@@ -1242,9 +1242,9 @@ public struct LocalProductProviderConnectResult:
         providerID = try values.decode(String.self, forKey: .providerID)
         authMode = try values.decode(String.self, forKey: .authMode)
         status = try values.decode(String.self, forKey: .status)
-        guard providerID == "codex",
+        guard ["codex", "claude-code"].contains(providerID),
               authMode == "native_auth",
-              ["started", "already_connected"].contains(status) else {
+              ["started", "already_connected", "cancelled"].contains(status) else {
             throw LocalProductWireError.invalidJSON
         }
     }
@@ -2660,6 +2660,7 @@ public struct LocalProductBuilderConfirmation:
     public let teamDefinitionVersion: Int
     public let teamDefinitionDigest: String
     public let status: String
+    public let teamInstanceID: String
     public let teamInstanceCreated: Bool
     public let runCreated: Bool
 
@@ -2668,6 +2669,7 @@ public struct LocalProductBuilderConfirmation:
         case teamDefinitionVersion = "team_definition_version"
         case teamDefinitionDigest = "team_definition_digest"
         case status
+        case teamInstanceID = "team_instance_id"
         case teamInstanceCreated = "team_instance_created"
         case runCreated = "run_created"
     }
@@ -2675,7 +2677,8 @@ public struct LocalProductBuilderConfirmation:
     public init(from decoder: Decoder) throws {
         try rejectUnknownSetupKeys(decoder, allowed: [
             "team_definition_id", "team_definition_version",
-            "team_definition_digest", "status", "team_instance_created",
+            "team_definition_digest", "status", "team_instance_id",
+            "team_instance_created",
             "run_created",
         ])
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -2692,6 +2695,10 @@ public struct LocalProductBuilderConfirmation:
             forKey: .teamDefinitionDigest
         )
         status = try values.decode(String.self, forKey: .status)
+        teamInstanceID = try values.decodeIfPresent(
+            String.self,
+            forKey: .teamInstanceID
+        ) ?? ""
         teamInstanceCreated = try values.decode(
             Bool.self,
             forKey: .teamInstanceCreated

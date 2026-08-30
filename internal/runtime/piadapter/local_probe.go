@@ -45,11 +45,30 @@ type PiLocalRuntimeProbeFactory struct {
 func NewPiLocalRuntimeProbeFactory(
 	config PiLocalRuntimeProbeFactoryConfig,
 ) (*PiLocalRuntimeProbeFactory, error) {
-	return newPiLocalRuntimeProbeFactory(config, piLocalModelSHA256)
+	return newPiLocalRuntimeProbeFactoryWithArtifactDigests(
+		config,
+		piLocalLlamaArchiveSHA256,
+		piLocalLlamaExecutableSHA256,
+		piLocalModelSHA256,
+	)
 }
 
 func newPiLocalRuntimeProbeFactory(
 	config PiLocalRuntimeProbeFactoryConfig,
+	expectedModelDigest string,
+) (*PiLocalRuntimeProbeFactory, error) {
+	return newPiLocalRuntimeProbeFactoryWithArtifactDigests(
+		config,
+		"",
+		"",
+		expectedModelDigest,
+	)
+}
+
+func newPiLocalRuntimeProbeFactoryWithArtifactDigests(
+	config PiLocalRuntimeProbeFactoryConfig,
+	expectedArchiveDigest string,
+	expectedExecutableDigest string,
 	expectedModelDigest string,
 ) (*PiLocalRuntimeProbeFactory, error) {
 	if config.ProbeID == "" ||
@@ -72,8 +91,10 @@ func newPiLocalRuntimeProbeFactory(
 	}
 	var catalog *piLocalModelCatalog
 	if config.LocalModelCatalog != nil {
-		catalog, err = bindPiLocalModelCatalog(
+		catalog, err = bindPiLocalModelCatalogWithArtifactDigests(
 			*config.LocalModelCatalog,
+			expectedArchiveDigest,
+			expectedExecutableDigest,
 			expectedModelDigest,
 		)
 		if err != nil {

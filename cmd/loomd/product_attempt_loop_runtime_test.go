@@ -854,6 +854,85 @@ func TestProductAttemptLoopRuntimeConsumesSteerThenQueueWithoutDuplicateTerminal
 	}
 }
 
+func TestProductAttemptLoopRuntimeAdmitsSteerWhileInputCapableDelegateIsRunning(t *testing.T) {
+	ctx := context.Background()
+	runs, run, executionBinding, capsule, payloadStore, _ := productAttemptLoopFixture(t)
+	payloads, err := work.NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := work.NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxAuthority, err := work.NewAgentInboxAuthority(loops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxStore := newProductMemoryAgentInboxStore()
+	inbox, err := work.NewAgentInboxCoordinator(inboxAuthority, inboxStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := newProductActiveAttemptRegistry()
+	delegate := &productBlockingAgentInputAttemptLoopAdapterFixture{
+		entered: make(chan struct{}), consume: make(chan struct{}),
+	}
+	adapter, err := newProductAttemptLoopRuntimeAdapterWithGovernance(
+		delegate, loops, payloadStore, registry, inbox, nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	request.ContextRetriever = productAttemptLoopRetrieverFixture{content: []byte("unused")}
+	done := make(chan error, 1)
+	go func() {
+		_, executeErr := adapter.Execute(ctx, request)
+		done <- executeErr
+	}()
+	select {
+	case <-delegate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("input-capable delegate did not enter")
+	}
+
+	ingress, err := newProductAgentInputIngress(
+		registry, inbox, productNativeAgentInputDiagnostics{},
+		func() time.Time { return time.Date(2026, 8, 13, 10, 0, 1, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("use the admitted correction")
+	receipt, err := ingress.AdmitAgentInput(ctx, productAgentInputRequest{
+		SchemaVersion: productAgentInputSchemaVersion,
+		SegmentID:     request.RouteSegment.SegmentID, AgentInstanceID: run.AgentInstanceID(),
+		WorkItemID: run.WorkItemID(), RunID: run.ID(), ClaimGeneration: run.ClaimGeneration(),
+		Mode: agentinbox.ModeSteer, ContextScope: agentinbox.ScopeAgentPrivate,
+		Content: content, IncidentID: "agent-input-running-ingress",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.TargetStepSequence != 2 || receipt.TargetStepID == "" ||
+		!allProductAgentInputBytesZero(content) {
+		t.Fatalf("running receipt/zeroized = %#v / %v", receipt, allProductAgentInputBytesZero(content))
+	}
+	close(delegate.consume)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("input-capable delegate did not finish")
+	}
+	if delegate.consumed != "use the admitted correction" || !delegate.zeroized {
+		t.Fatalf("consumed/zeroized = %q / %v", delegate.consumed, delegate.zeroized)
+	}
+}
+
 func TestProductLoomNativeConsumesAuthoritativeInboxAcrossProviderRounds(t *testing.T) {
 	ctx := context.Background()
 	runs, run, executionBinding, capsule, payloadStore, journalStore := productAttemptLoopFixture(t)
@@ -1442,9 +1521,55 @@ type productAgentInputAttemptLoopAdapterFixture struct {
 	zeroized        bool
 }
 
+type productBlockingAgentInputAttemptLoopAdapterFixture struct {
+	entered  chan struct{}
+	consume  chan struct{}
+	consumed string
+	zeroized bool
+}
+
 func (*productAgentInputAttemptLoopAdapterFixture) AdapterType() string       { return "loom-native" }
 func (*productAgentInputAttemptLoopAdapterFixture) RuntimeInstanceID() string { return "runtime-1" }
 func (*productAgentInputAttemptLoopAdapterFixture) AcceptsAgentInputs() bool  { return true }
+
+func (*productBlockingAgentInputAttemptLoopAdapterFixture) AdapterType() string {
+	return nativeadapter.LoomNativeAgentAdapterType
+}
+
+func (*productBlockingAgentInputAttemptLoopAdapterFixture) RuntimeInstanceID() string {
+	return "runtime-1"
+}
+
+func (*productBlockingAgentInputAttemptLoopAdapterFixture) AcceptsAgentInputs() bool { return true }
+
+func (fixture *productBlockingAgentInputAttemptLoopAdapterFixture) Execute(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+) (supervisor.AdapterResult, error) {
+	if request.AgentInputs == nil {
+		return supervisor.AdapterResult{}, errors.New("Agent input source unavailable")
+	}
+	close(fixture.entered)
+	select {
+	case <-fixture.consume:
+	case <-ctx.Done():
+		return supervisor.AdapterResult{}, ctx.Err()
+	}
+	batch, ok, err := request.AgentInputs.NextAgentInput(ctx, runtime.AgentInputCheckpoint{
+		OutputDigest: strings.Repeat("a", 64),
+	})
+	if err != nil || !ok || len(batch.Inputs) != 1 {
+		batch.Close()
+		return supervisor.AdapterResult{}, errors.Join(errors.New("admitted Agent input unavailable"), err)
+	}
+	fixture.consumed = string(batch.Inputs[0].Content)
+	content := batch.Inputs[0].Content
+	batch.Close()
+	fixture.zeroized = allProductAgentInputBytesZero(content)
+	return supervisor.NewAdapterResult(supervisor.AdapterResultInput{
+		ExitCode: 0, DispatchAcknowledged: true, ResultAcknowledged: true,
+	})
+}
 
 func (fixture *productAgentInputAttemptLoopAdapterFixture) Execute(
 	ctx context.Context,

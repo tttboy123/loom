@@ -212,6 +212,99 @@ func TestCodexAppServerTurnStartAcceptsConfiguredConversationModelIDs(t *testing
 	}
 }
 
+func TestCodexAppServerClassifiesBoundUnauthorizedTurnWithoutLeakingMessage(
+	t *testing.T,
+) {
+	t.Parallel()
+	session := newCodexAppServerSessionFixture()
+	session.enqueue(map[string]any{
+		"method": "error",
+		"params": map[string]any{
+			"threadId":  "thread-locked-1",
+			"turnId":    "turn-1",
+			"willRetry": false,
+			"error": map[string]any{
+				"message":        "private upstream authentication response",
+				"codexErrorInfo": "unauthorized",
+			},
+		},
+	})
+	_, _, err := readCodexAppServerTurn(
+		context.Background(), session, "thread-locked-1", "turn-1", 1<<16,
+	)
+	if !errors.Is(err, ErrHarnessProviderAuth) {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "private upstream") {
+		t.Fatalf("private Provider message escaped: %v", err)
+	}
+}
+
+func TestCodexAppServerRejectsUnauthorizedTurnSubstitution(t *testing.T) {
+	t.Parallel()
+	session := newCodexAppServerSessionFixture()
+	session.enqueue(map[string]any{
+		"method": "error",
+		"params": map[string]any{
+			"threadId":  "thread-substituted",
+			"turnId":    "turn-1",
+			"willRetry": false,
+			"error": map[string]any{
+				"message":        "private upstream authentication response",
+				"codexErrorInfo": "unauthorized",
+			},
+		},
+	})
+	_, _, err := readCodexAppServerTurn(
+		context.Background(), session, "thread-locked-1", "turn-1", 1<<16,
+	)
+	if !errors.Is(err, ErrHarnessProtocol) || errors.Is(err, ErrHarnessProviderAuth) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCodexAppServerTurnFailureUsesClosedRetryAndProviderClasses(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		code      string
+		willRetry bool
+		want      error
+	}{
+		{name: "usage limit", code: "usageLimitExceeded", want: ErrHarnessProviderRateLimit},
+		{name: "terminal overload", code: "serverOverloaded", want: ErrHarnessProviderUnavailable},
+		{name: "retrying overload", code: "serverOverloaded", willRetry: true},
+		{name: "terminal unknown", code: "other", want: ErrHarnessProtocol},
+		{name: "retrying unknown", code: "other", willRetry: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			params, err := json.Marshal(map[string]any{
+				"threadId":  "thread-locked-1",
+				"turnId":    "turn-1",
+				"willRetry": test.willRetry,
+				"error": map[string]any{
+					"message":        "private Provider message",
+					"codexErrorInfo": test.code,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := codexAppServerTurnFailure(
+				params, "thread-locked-1", "turn-1",
+			)
+			zeroHarnessBytes(params)
+			if test.want == nil && got != nil || test.want != nil && !errors.Is(got, test.want) {
+				t.Fatalf("failure = %v, want %v", got, test.want)
+			}
+			if got != nil && strings.Contains(got.Error(), "private Provider") {
+				t.Fatalf("private Provider message escaped: %v", got)
+			}
+		})
+	}
+}
+
 func TestCodexAppServerLifecycleNotificationsRemainBoundAndClosed(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -294,16 +387,59 @@ func TestCodexAppServerLifecycleNotificationsRemainBoundAndClosed(t *testing.T) 
 	}
 }
 
+func TestCodexAppServerValidatesMCPToolCallProgressNotification(t *testing.T) {
+	valid := json.RawMessage(
+		`{"threadId":"thread-locked-1","turnId":"turn-1","itemId":"mcp-call-1","message":"bounded progress"}`,
+	)
+	if err := acceptCodexMCPToolCallProgressNotification(
+		valid, "thread-locked-1", "turn-1",
+	); err != nil {
+		t.Fatal(err)
+	}
+	for name, params := range map[string]json.RawMessage{
+		"thread substitution": json.RawMessage(
+			`{"threadId":"thread-substituted","turnId":"turn-1","itemId":"mcp-call-1","message":"bounded"}`,
+		),
+		"turn substitution": json.RawMessage(
+			`{"threadId":"thread-locked-1","turnId":"turn-substituted","itemId":"mcp-call-1","message":"bounded"}`,
+		),
+		"missing item": json.RawMessage(
+			`{"threadId":"thread-locked-1","turnId":"turn-1","message":"bounded"}`,
+		),
+		"control character": json.RawMessage(
+			"{\"threadId\":\"thread-locked-1\",\"turnId\":\"turn-1\",\"itemId\":\"mcp-call-1\",\"message\":\"bad\\u0000value\"}",
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := acceptCodexMCPToolCallProgressNotification(
+				params, "thread-locked-1", "turn-1",
+			); !errors.Is(err, ErrHarnessProtocol) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	completed := false
+	if err := acceptCodexInterruptNotification(
+		"item/mcpToolCall/progress", valid,
+		"thread-locked-1", "turn-1", &completed,
+	); err != nil || completed {
+		t.Fatalf("interrupt progress err=%v completed=%t", err, completed)
+	}
+}
+
 type codexAppServerRequestSnapshot struct {
-	Method         string
-	Model          string
-	ThreadID       string
-	TurnID         string
-	Text           string
-	CWD            string
-	ApprovalPolicy string
-	SandboxType    string
-	WritableRoots  []string
+	Method                string
+	Model                 string
+	ThreadID              string
+	TurnID                string
+	Text                  string
+	OutputSchema          json.RawMessage
+	AdditionalContextKind string
+	AdditionalContext     string
+	CWD                   string
+	ApprovalPolicy        string
+	SandboxType           string
+	WritableRoots         []string
 }
 
 type codexAppServerSessionFixture struct {
@@ -311,6 +447,8 @@ type codexAppServerSessionFixture struct {
 	lines                     chan []byte
 	requests                  []codexAppServerRequestSnapshot
 	turnSequence              int
+	turnContents              []string
+	emitMCPToolProgress       bool
 	substitution              string
 	turnStartedBeforeResponse bool
 	resolvedModel             string
@@ -360,6 +498,11 @@ func (session *codexAppServerSessionFixture) WriteLine(
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"input"`
+			OutputSchema      json.RawMessage `json:"outputSchema"`
+			AdditionalContext map[string]struct {
+				Kind  string `json:"kind"`
+				Value string `json:"value"`
+			} `json:"additionalContext"`
 		} `json:"params"`
 	}
 	if json.Unmarshal(payload, &request) != nil || request.ID == "" || request.Method == "" {
@@ -367,13 +510,18 @@ func (session *codexAppServerSessionFixture) WriteLine(
 	}
 	snapshot := codexAppServerRequestSnapshot{
 		Method: request.Method, Model: request.Params.Model,
-		ThreadID: request.Params.ThreadID,
-		TurnID:   request.Params.TurnID,
-		CWD:      request.Params.CWD, ApprovalPolicy: request.Params.ApprovalPolicy,
+		ThreadID:     request.Params.ThreadID,
+		TurnID:       request.Params.TurnID,
+		OutputSchema: append(json.RawMessage(nil), request.Params.OutputSchema...),
+		CWD:          request.Params.CWD, ApprovalPolicy: request.Params.ApprovalPolicy,
 		SandboxType: request.Params.Sandbox,
 	}
 	if len(request.Params.Input) == 1 {
 		snapshot.Text = request.Params.Input[0].Text
+	}
+	if contextEntry, found := request.Params.AdditionalContext[codexControlResultContextID]; found {
+		snapshot.AdditionalContextKind = contextEntry.Kind
+		snapshot.AdditionalContext = contextEntry.Value
 	}
 	session.mu.Lock()
 	session.requests = append(session.requests, snapshot)
@@ -480,6 +628,9 @@ func (session *codexAppServerSessionFixture) WriteLine(
 		if turnSequence == 2 {
 			content = "second reply"
 		}
+		if turnSequence <= len(session.turnContents) {
+			content = session.turnContents[turnSequence-1]
+		}
 		session.enqueue(map[string]any{
 			"method": "mcpServer/startupStatus/updated",
 			"params": map[string]any{
@@ -495,6 +646,17 @@ func (session *codexAppServerSessionFixture) WriteLine(
 				"itemId":   "reasoning-1", "summaryIndex": 0,
 			},
 		})
+		if session.emitMCPToolProgress {
+			session.enqueue(map[string]any{
+				"method": "item/mcpToolCall/progress",
+				"params": map[string]any{
+					"threadId": request.Params.ThreadID,
+					"turnId":   notificationTurnID,
+					"itemId":   "mcp-call-1",
+					"message":  "bounded progress",
+				},
+			})
+		}
 		session.enqueue(map[string]any{
 			"method": "item/completed",
 			"params": map[string]any{

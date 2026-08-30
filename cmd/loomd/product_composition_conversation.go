@@ -11,7 +11,9 @@ import (
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/composition"
+	"loom-pi-rebuild/internal/controltool"
 	"loom-pi-rebuild/internal/credentials"
+	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/provider"
 	"loom-pi-rebuild/internal/runtime/harnessadapter"
@@ -28,6 +30,13 @@ type productConversationRoutes struct {
 	route      api.LocalProductChatSource
 	localModel productLocalModelRuntime
 	close      func() error
+}
+
+type productChatControlRoute interface {
+	DecideControlProposal(
+		context.Context,
+		api.LocalProductChatControlDecisionRequest,
+	) (api.LocalProductChatThread, error)
 }
 
 func (slot *productConversationRouteSlot) LocalModelRuntime() (
@@ -150,6 +159,25 @@ func (slot *productConversationRouteSlot) CancelChatResponse(
 	return canceller.CancelChatResponse(ctx, request)
 }
 
+func (slot *productConversationRouteSlot) DecideControlProposal(
+	ctx context.Context,
+	request api.LocalProductChatControlDecisionRequest,
+) (api.LocalProductChatThread, error) {
+	if slot == nil {
+		return api.LocalProductChatThread{}, api.ErrLocalProductChatUnavailable
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return api.LocalProductChatThread{}, api.ErrLocalProductChatUnavailable
+	}
+	controller, ok := slot.routes.route.(productChatControlRoute)
+	if !ok || controller == nil {
+		return api.LocalProductChatThread{}, api.ErrLocalProductChatUnavailable
+	}
+	return controller.DecideControlProposal(ctx, request)
+}
+
 func (slot *productConversationRouteSlot) DeleteThread(
 	ctx context.Context,
 	threadID string,
@@ -200,13 +228,16 @@ func newProductConversationConstructionFactory(
 	readModel *projection.Projection,
 	vault *productVaultRouteSlot,
 	diagnostics productOperationalDiagnosticSink,
+	controlMetadata ...productConversationControlMetadataSources,
 ) func(context.Context) (productConversationRoutes, error) {
 	return func(ctx context.Context) (_ productConversationRoutes, resultErr error) {
 		if ctx == nil || ctx.Err() != nil || readModel == nil || nilProductAssetPort(diagnostics) ||
-			!filepath.IsAbs(statePath) || filepath.Clean(statePath) != statePath {
+			!filepath.IsAbs(statePath) || filepath.Clean(statePath) != statePath ||
+			len(controlMetadata) > 1 {
 			return productConversationRoutes{}, errProductConversationRouteUnavailable
 		}
 		conversationResponder := setup.ConversationResponder
+		var piControlResponder productPiControlConversationResponder
 		var leases productCredentialLeaseAccess
 		var localModel productLocalModelRuntime
 		var harnessGateway *productHarnessGatewayConversationResponder
@@ -236,7 +267,7 @@ func newProductConversationConstructionFactory(
 				}
 			}
 			if conversationResponder == nil {
-				conversationResponder = &productPiConversationResponder{
+				piResponder := &productPiConversationResponder{
 					runtime:            localModel,
 					runtimeSearchPaths: append([]string(nil), setup.Execution.RuntimeSearchPaths...),
 					runtimeInstanceID:  setup.Execution.RuntimeInstanceID,
@@ -245,9 +276,16 @@ func newProductConversationConstructionFactory(
 					),
 					now: setup.Execution.Now, random: setup.Execution.Random,
 				}
+				conversationResponder = piResponder
+				piControlResponder = piResponder
 			}
 		}
+		if piControlResponder == nil {
+			piControlResponder, _ = conversationResponder.(productPiControlConversationResponder)
+		}
 		var openCodeClient *provider.OpenCodeConversationClient
+		var openCodeExecutablePath string
+		var openCodeHomePath string
 		if setup.OpenCodeExecutable != "" {
 			resolved, err := provider.ResolveOpenCodeNativeExecutable(
 				setup.OpenCodeExecutable,
@@ -264,6 +302,8 @@ func newProductConversationConstructionFactory(
 					provider.ErrInvalidOpenCodeConversationConfig,
 				)
 			}
+			openCodeExecutablePath = resolved
+			openCodeHomePath = homePath
 			modelID := provider.OpenCodeConversationDefaultModel
 			if runtime, found := readModel.GlobalReadView().RuntimeInstance(
 				productOpenCodeRuntimeInstanceID,
@@ -290,6 +330,13 @@ func newProductConversationConstructionFactory(
 			}
 			openCodeClient = client
 		}
+		controlRegistry, registryErr := controltool.NewBuiltinRegistry()
+		if registryErr != nil {
+			return productConversationRoutes{}, errors.Join(
+				errProductConversationRouteUnavailable, registryErr,
+			)
+		}
+		conversationControlGateway := controltool.NewGatewaySlot()
 		var codexClient *provider.CodexConversationClient
 		var codexSegment *productCodexSegmentBackendConfig
 		if setup.CodexExecutable != "" {
@@ -333,7 +380,9 @@ func newProductConversationConstructionFactory(
 				ExecutablePath: resolved, HomePath: homePath,
 				PrivateRoot: segmentPrivateRoot,
 				Timeout:     8 * time.Hour, MaxOutputBytes: 64 << 10,
-				Sessions: harnessadapter.NewSystemHarnessSessionRunner(),
+				Sessions:        harnessadapter.NewSystemHarnessSessionRunner(),
+				ControlRegistry: controlRegistry,
+				ControlGateway:  conversationControlGateway,
 			}
 		}
 		var claudeCodeRunner harnessadapter.HarnessProcessRunner
@@ -434,7 +483,9 @@ func newProductConversationConstructionFactory(
 			}
 			claudeCodeResponder = configuredClaudeCodeResponder
 			claudeCodeSegment = &productClaudeCodeSegmentBackendConfig{
-				Responder: configuredClaudeCodeResponder,
+				Responder:       configuredClaudeCodeResponder,
+				ControlRegistry: controlRegistry,
+				ControlGateway:  conversationControlGateway,
 			}
 		}
 		if conversationResponder == nil && openCodeResponder != nil {
@@ -472,10 +523,66 @@ func newProductConversationConstructionFactory(
 			return productConversationRoutes{}, errors.Join(errProductConversationProviderConstruction, err)
 		}
 		router.claudeCodeResponder = claudeCodeResponder
+		var openCodeSegment *productOpenCodeSegmentBackendConfig
+		if openCodeClient != nil {
+			openCodeRunner, runnerErr := harnessadapter.NewOpenCodeProcessRunner(
+				harnessadapter.OpenCodeProcessRunnerConfig{
+					Commands: harnessadapter.NewSystemHarnessCommandRunner(),
+				},
+			)
+			if runnerErr != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationNativeAuthConstruction, runnerErr,
+				)
+			}
+			segmentPrivateRoot := filepath.Join(
+				filepath.Dir(statePath), "conversation-opencode-segments",
+			)
+			if err := prepareProductHarnessGatewayWorkspace(segmentPrivateRoot); err != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationNativeAuthConstruction, err,
+				)
+			}
+			openCodeSegment = &productOpenCodeSegmentBackendConfig{
+				ExecutablePath: openCodeExecutablePath, HomePath: openCodeHomePath,
+				PrivateRoot: segmentPrivateRoot, Timeout: 2 * time.Minute,
+				MaxOutputBytes: 32 * 1024, Runner: openCodeRunner,
+				CredentialLeases: leases,
+				ResolveCredential: func(
+					profileID string,
+				) (credentialvault.CredentialIdentity, bool) {
+					record, found := router.resolveOpenCodeProfile(profileID)
+					if !found {
+						return credentialvault.CredentialIdentity{}, false
+					}
+					return credentialvault.CredentialIdentity{
+						ProviderID:          record.ProviderID,
+						ProviderAccountID:   record.ProviderAccountID,
+						CredentialReference: record.CredentialReference,
+						CredentialRevision:  record.Revision,
+					}, true
+				},
+				ControlRegistry: controlRegistry,
+				ControlGateway:  conversationControlGateway,
+			}
+		}
+		var piSegment *productPiSegmentBackendConfig
+		if !nilProductAssetPort(piControlResponder) {
+			piSegment = &productPiSegmentBackendConfig{
+				Responder: piControlResponder, ControlRegistry: controlRegistry,
+				ControlGateway: conversationControlGateway,
+			}
+		}
+		loomNativeSegment := &productLoomNativeSegmentBackendConfig{
+			Responder: router, ControlRegistry: controlRegistry,
+			ControlGateway: conversationControlGateway,
+		}
 		harnessGateway, err = newProductHarnessGatewayConversationResponder(
 			productHarnessGatewayConversationConfig{
 				Executor: router, WorkspacePath: gatewayWorkspacePath,
 				CodexSegment: codexSegment, ClaudeCodeSegment: claudeCodeSegment,
+				OpenCodeSegment: openCodeSegment, PiSegment: piSegment,
+				LoomNativeSegment: loomNativeSegment,
 				Events: &productHarnessGatewayOperationalEventSink{
 					diagnostics: diagnostics,
 				},
@@ -521,6 +628,34 @@ func newProductConversationConstructionFactory(
 				func() time.Time { return time.Now().UTC() }, failure,
 			)
 		}
+		if err := chat.SetControlWorkspace(controltool.FrozenWorkspaceReference{
+			WorkspaceID:     harnessGateway.workspace.ID,
+			WorkspaceDigest: harnessGateway.workspace.Digest,
+		}); err != nil {
+			return productConversationRoutes{}, errors.Join(
+				errProductConversationRouteUnavailable, err,
+			)
+		}
+		if len(controlMetadata) == 1 {
+			metadataGateway, metadataErr := newProductConversationControlMetadataGateway(
+				controlMetadata[0],
+			)
+			if metadataErr != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationRouteUnavailable, metadataErr,
+				)
+			}
+			if metadataErr = chat.SetControlMetadataGateway(metadataGateway); metadataErr != nil {
+				return productConversationRoutes{}, errors.Join(
+					errProductConversationRouteUnavailable, metadataErr,
+				)
+			}
+		}
+		if err := conversationControlGateway.Bind(chat); err != nil {
+			return productConversationRoutes{}, errors.Join(
+				errProductConversationRouteUnavailable, err,
+			)
+		}
 		if err := chat.SetConversationExecutionBindingResolver(router); err != nil {
 			return productConversationRoutes{}, err
 		}
@@ -559,6 +694,7 @@ func newProductConversationConstructionFactoryFromCore(
 	core *productCoreRouteSlot,
 	vault *productVaultRouteSlot,
 	diagnostics productOperationalDiagnosticSink,
+	controlMetadata ...productConversationControlMetadataSources,
 ) func(context.Context) (productConversationRoutes, error) {
 	return func(ctx context.Context) (productConversationRoutes, error) {
 		resources, err := core.Resources()
@@ -567,6 +703,7 @@ func newProductConversationConstructionFactoryFromCore(
 		}
 		return newProductConversationConstructionFactory(
 			statePath, setup, resources.readModel, vault, diagnostics,
+			controlMetadata...,
 		)(ctx)
 	}
 }
@@ -607,3 +744,4 @@ var _ api.LocalProductChatSource = (*api.LocalProductChatAPI)(nil)
 var _ api.LocalProductChatSource = (*productConversationRouteSlot)(nil)
 var _ api.LocalProductChatContextDisclosureInspector = (*productConversationRouteSlot)(nil)
 var _ api.LocalProductConversationResponseCanceller = (*productConversationRouteSlot)(nil)
+var _ productChatControlRoute = (*productConversationRouteSlot)(nil)

@@ -138,6 +138,20 @@ private struct ProbeSetupRouteOutput: Encodable {
     let modelID: String
 }
 
+private struct ProbeClaudeCancellationOutput: Encodable {
+    let providerID: String
+    let authMode: String
+    let status: String
+    let setupCancelled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case authMode = "auth_mode"
+        case status
+        case setupCancelled = "setup_cancelled"
+    }
+}
+
 @main
 enum LoomLocalAppContractProbe {
     static func main() async {
@@ -148,6 +162,8 @@ enum LoomLocalAppContractProbe {
                 arguments[1] == "--socket",
                 arguments.count == 3 || arguments.count == 4 && arguments[3] == "--execution"
                     || arguments.count == 4 && arguments[3] == "--setup"
+                    || arguments.count == 5
+                        && arguments[3] == "--claude-cancel-after-blocked-setup"
                     || arguments[3] == "--team" || arguments[3] == "--team-all"
                     || arguments[3] == "--decision"
                     || arguments.count == 5 && arguments[3] == "--assets"
@@ -174,6 +190,47 @@ enum LoomLocalAppContractProbe {
             )
             guard try await client.ping() else {
                 throw LocalProductClientError.invalidResponse
+            }
+            if arguments.count == 5
+                && arguments[3] == "--claude-cancel-after-blocked-setup" {
+                let blockedSetup = Task {
+                    try await client.setupSnapshot()
+                }
+                let trigger = await Task<String?, Never>.detached {
+                    readLine()
+                }.value
+                guard trigger == "cancel" else {
+                    blockedSetup.cancel()
+                    throw LocalProductClientError.invalidRequest
+                }
+                blockedSetup.cancel()
+                do {
+                    _ = try await blockedSetup.value
+                    throw LocalProductClientError.invalidResponse
+                } catch is CancellationError {
+                    // The live UDS exchange must be interrupted before cancel can proceed.
+                }
+                let cancellation = try await client.cancelClaudeCode(
+                    incidentID: arguments[4]
+                )
+                guard cancellation.providerID == "claude-code",
+                      cancellation.authMode == "native_auth",
+                      cancellation.status == "cancelled" else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                let encoded = try JSONEncoder().encode(
+                    ProbeClaudeCancellationOutput(
+                        providerID: cancellation.providerID,
+                        authMode: cancellation.authMode,
+                        status: cancellation.status,
+                        setupCancelled: true
+                    )
+                )
+                guard let output = String(data: encoded, encoding: .utf8) else {
+                    throw LocalProductClientError.invalidResponse
+                }
+                print(output)
+                return
             }
             if arguments.count == 4 && arguments[3] == "--setup" {
                 let snapshot = try await client.setupSnapshot()

@@ -340,7 +340,8 @@ func (adapter *openCodeAdapter) validateRequest(request supervisor.AdapterReques
 	)
 	if adaptErr != nil || !validOpenCodeReasoningEffort(
 		modelIdentity, binding.ReasoningEffort,
-	) {
+	) || binding.AuthMode == loomruntime.AuthBrokered &&
+		!provider.OpenCodeBrokeredModelSupported(binding.ProviderID, modelIdentity) {
 		return ErrHarnessExecutionBindingChanged
 	}
 	if request.Dispatch.Type() != bridgev1.MessageDispatch ||

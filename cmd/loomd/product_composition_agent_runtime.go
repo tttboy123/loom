@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"time"
 
 	"loom-pi-rebuild/internal/api"
 	"loom-pi-rebuild/internal/app"
@@ -13,6 +14,8 @@ import (
 	"loom-pi-rebuild/internal/projection"
 	"loom-pi-rebuild/internal/roundtable"
 )
+
+const productAgentRuntimeInitializationStage = "agent_runtime_initialization"
 
 type productMissionExecutionRoute interface {
 	ExecuteMission(context.Context, app.MissionExecutionCommand) (api.MissionExecutionEnvelope, error)
@@ -39,7 +42,7 @@ type productAgentRuntimeRoutes struct {
 // optional execution dependency cannot be constructed. Conversation, setup,
 // diagnostics, and provider management remain usable; only execution paths
 // report the scoped capability failure.
-type productUnavailableAgentRuntime struct{}
+type productUnavailableAgentRuntime struct{ reason error }
 
 type productAgentRuntimeBuildError struct {
 	stage string
@@ -89,9 +92,10 @@ func validProductAgentRuntimeBuildStage(stage string) bool {
 	switch stage {
 	case "input_admission", "credential_runtime", "runtime_projection",
 		"execution_storage", "work_authority", "attempt_payload_reconcile",
-		"attempt_governance", "runtime_adapters", "agent_inbox_reconcile",
+		"roundtable_attempt_reconcile", "attempt_governance", "runtime_adapters", "agent_inbox_reconcile",
 		"authorization_authority", "recovery_reconcile", "projection_refresh",
-		"mission_services", "mission_resume", "handoff_reconcile", "construction":
+		"mission_services", "mission_resume", "handoff_services",
+		"handoff_reconcile", "construction":
 		return true
 	default:
 		return false
@@ -137,25 +141,46 @@ func recordProductAgentRuntimeBuildFailure(
 	profileID composition.ProfileID,
 	snapshotDigest string,
 ) error {
-	if nilProductAssetPort(diagnostics) || err == nil {
+	return recordProductAgentRuntimeBuildOutcome(
+		diagnostics, err, profileID, snapshotDigest, 0,
+	)
+}
+
+func recordProductAgentRuntimeBuildOutcome(
+	diagnostics productOperationalDiagnosticSink,
+	err error,
+	profileID composition.ProfileID,
+	snapshotDigest string,
+	elapsed time.Duration,
+) error {
+	if nilProductAssetPort(diagnostics) {
 		return nil
 	}
 	now := diagnostics.operationalNow().UTC()
-	stage := productAgentRuntimeBuildStage(err)
-	return diagnostics.append(productOperationalDiagnosticRecord{
+	record := productOperationalDiagnosticRecord{
 		SchemaVersion: 1, OccurredAt: now.Format("2006-01-02T15:04:05.999999999Z07:00"),
 		IncidentID: "loom-agent-runtime-" + productDeterministicUUID(
 			"agent-runtime-build", now.Format("2006-01-02T15:04:05.999999999Z07:00"),
+			snapshotDigest,
 		),
 		Operation: "composition", CredentialRuntime: diagnostics.credentialRuntimeValue(),
 		ProfileID: string(profileID), CompositionSnapshotDigest: snapshotDigest,
 		BundleID: "loom-agent-runtime", BundleVersion: "1.0.0",
-		Stage: "bundle_start", Result: "failed",
-		ErrorCode: "agent_runtime_" + stage, Retryable: true,
-	})
+		Stage: "bundle_start", ElapsedMS: max(elapsed.Milliseconds(), 0),
+		Result: "succeeded",
+	}
+	if err != nil {
+		record.Result = "failed"
+		record.ErrorCode = "agent_runtime_" + productAgentRuntimeBuildStage(err)
+		record.Retryable = true
+	}
+	return diagnostics.append(record)
 }
 
-func (productUnavailableAgentRuntime) roundtableUnavailable() (roundtable.View, error) {
+func (runtime productUnavailableAgentRuntime) roundtableUnavailable() (roundtable.View, error) {
+	if runtime.reason != nil {
+		return roundtable.View{}, runtime.reason
+	}
 	return roundtable.View{}, api.ErrInvalidLocalProductExecutionAPI
 }
 func (r productUnavailableAgentRuntime) CreateSession(context.Context, roundtable.CreateSessionCommand) (roundtable.View, error) {
@@ -169,6 +194,27 @@ func (r productUnavailableAgentRuntime) RetireSeat(context.Context, roundtable.R
 }
 func (r productUnavailableAgentRuntime) OpenRound(context.Context, roundtable.OpenRoundCommand) (roundtable.View, error) {
 	return r.roundtableUnavailable()
+}
+func (r productUnavailableAgentRuntime) PauseRound(context.Context, roundtable.PauseRoundCommand) (roundtable.View, error) {
+	return r.roundtableUnavailable()
+}
+func (r productUnavailableAgentRuntime) SteerSeat(context.Context, productRoundtableSteerSeatCommand) (roundtable.View, error) {
+	return r.roundtableUnavailable()
+}
+func (r productUnavailableAgentRuntime) RetrySeat(context.Context, productRoundtableRetrySeatCommand) (roundtable.View, error) {
+	return r.roundtableUnavailable()
+}
+func (r productUnavailableAgentRuntime) SkipSeat(context.Context, roundtable.SkipSeatCommand) (roundtable.View, error) {
+	return r.roundtableUnavailable()
+}
+func (r productUnavailableAgentRuntime) ReplaceSeat(context.Context, productRoundtableReplaceSeatCommand) (roundtable.View, error) {
+	return r.roundtableUnavailable()
+}
+func (r productUnavailableAgentRuntime) ExportSession(context.Context, productRoundtableExportCommand) (roundtable.ExportDocumentResult, error) {
+	return roundtable.ExportDocumentResult{}, api.ErrInvalidLocalProductExecutionAPI
+}
+func (r productUnavailableAgentRuntime) ImportSession(context.Context, productRoundtableImportCommand) (roundtable.ImportResult, error) {
+	return roundtable.ImportResult{}, api.ErrInvalidLocalProductExecutionAPI
 }
 func (r productUnavailableAgentRuntime) ProposeMessage(context.Context, roundtable.ProposeMessageCommand) (roundtable.View, error) {
 	return r.roundtableUnavailable()
@@ -219,9 +265,66 @@ func (slot *productAgentRuntimeRouteSlot) BindUnavailable(
 	if cause == nil {
 		return api.ErrInvalidLocalProductExecutionAPI
 	}
-	return slot.bind(routes, &productAgentRuntimeUnavailableError{
+	unavailable := &productAgentRuntimeUnavailableError{
 		stage: productAgentRuntimeBuildStage(cause),
-	})
+	}
+	routes.roundtable = productUnavailableAgentRuntime{reason: unavailable}
+	return slot.bind(routes, unavailable)
+}
+
+func (slot *productAgentRuntimeRouteSlot) BeginInitialization() error {
+	if slot == nil {
+		return api.ErrInvalidLocalProductExecutionAPI
+	}
+	reason := &productAgentRuntimeUnavailableError{stage: "construction"}
+	unavailable := productUnavailableAgentRuntime{reason: reason}
+	routes := productDegradedAgentRuntimeRoutes(unavailable)
+	routes.roundtable = unavailable
+	return slot.bind(routes, reason)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ResolveInitialization(
+	routes productAgentRuntimeRoutes,
+	cause error,
+) error {
+	if slot == nil || !routes.valid() {
+		if routes.close != nil {
+			_ = routes.close()
+		}
+		return api.ErrInvalidLocalProductExecutionAPI
+	}
+	var unavailable error
+	if cause != nil {
+		unavailable = &productAgentRuntimeUnavailableError{
+			stage: productAgentRuntimeBuildStage(cause),
+		}
+		routes.roundtable = productUnavailableAgentRuntime{reason: unavailable}
+	}
+	slot.mu.Lock()
+	if slot.closed {
+		slot.mu.Unlock()
+		_ = routes.close()
+		return composition.ErrCompositionNotReady
+	}
+	initializing := slot.bound && slot.unavailable != nil
+	var initializingFailure *productAgentRuntimeUnavailableError
+	if initializing {
+		initializing = errors.As(slot.unavailable, &initializingFailure) &&
+			initializingFailure.stage == "construction"
+	}
+	if !initializing {
+		slot.mu.Unlock()
+		_ = routes.close()
+		return composition.ErrCompositionConflict
+	}
+	previousClose := slot.routes.close
+	slot.routes = routes
+	slot.unavailable = unavailable
+	slot.mu.Unlock()
+	if previousClose != nil {
+		return previousClose()
+	}
+	return nil
 }
 
 func (slot *productAgentRuntimeRouteSlot) bind(
@@ -442,6 +545,111 @@ func (slot *productAgentRuntimeRouteSlot) OpenRound(
 		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
 	}
 	return slot.routes.roundtable.OpenRound(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) PauseRound(
+	ctx context.Context,
+	command roundtable.PauseRoundCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.PauseRound(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) SteerSeat(
+	ctx context.Context,
+	command productRoundtableSteerSeatCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.SteerSeat(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) RetrySeat(
+	ctx context.Context,
+	command productRoundtableRetrySeatCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.RetrySeat(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) SkipSeat(
+	ctx context.Context,
+	command roundtable.SkipSeatCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.SkipSeat(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ReplaceSeat(
+	ctx context.Context,
+	command productRoundtableReplaceSeatCommand,
+) (roundtable.View, error) {
+	if slot == nil {
+		return roundtable.View{}, roundtable.ErrInvalidRoundtableSession
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.View{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.ReplaceSeat(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ExportSession(
+	ctx context.Context,
+	command productRoundtableExportCommand,
+) (roundtable.ExportDocumentResult, error) {
+	if slot == nil {
+		return roundtable.ExportDocumentResult{}, roundtable.ErrInvalidExportContract
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.ExportDocumentResult{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.ExportSession(ctx, command)
+}
+
+func (slot *productAgentRuntimeRouteSlot) ImportSession(
+	ctx context.Context,
+	command productRoundtableImportCommand,
+) (roundtable.ImportResult, error) {
+	if slot == nil {
+		return roundtable.ImportResult{}, roundtable.ErrInvalidExportContract
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() || slot.routes.roundtable == nil {
+		return roundtable.ImportResult{}, roundtable.ErrRoundtableSessionNotFound
+	}
+	return slot.routes.roundtable.ImportSession(ctx, command)
 }
 
 func (slot *productAgentRuntimeRouteSlot) ProposeMessage(
@@ -682,12 +890,76 @@ func newProductAgentRuntimeFactoryFromCore(
 	}
 }
 
+type productDeferredAgentRuntime struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	slot   *productAgentRuntimeRouteSlot
+	close  sync.Once
+}
+
+func (runtime *productDeferredAgentRuntime) Close(ctx context.Context) error {
+	if runtime == nil || runtime.cancel == nil || runtime.done == nil || runtime.slot == nil || ctx == nil {
+		return composition.ErrInvalidComposition
+	}
+	runtime.close.Do(runtime.cancel)
+	select {
+	case <-runtime.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return runtime.slot.Close(ctx)
+}
+
+func (construction productCompatibilityConstruction) startDeferredAgentRuntime(
+	ctx context.Context,
+	capabilities *composition.BundleContext,
+) (composition.Effect, error) {
+	if err := construction.agentRuntimeSlot.BeginInitialization(); err != nil {
+		return nil, err
+	}
+	runtimeContext, cancel := context.WithCancel(ctx)
+	runtime := &productDeferredAgentRuntime{
+		cancel: cancel, done: make(chan struct{}), slot: construction.agentRuntimeSlot,
+	}
+	snapshotDigest := ""
+	if capabilities != nil {
+		snapshotDigest = capabilities.CompositionSnapshotDigest()
+	}
+	go func() {
+		defer close(runtime.done)
+		startedAt := time.Now()
+		routes, factoryErr := construction.agentRuntimeFactory(runtimeContext)
+		if runtimeContext.Err() != nil {
+			if routes.close != nil {
+				_ = routes.close()
+			}
+			return
+		}
+		if !routes.valid() {
+			if routes.close != nil {
+				_ = routes.close()
+			}
+			factoryErr = errors.Join(factoryErr, api.ErrInvalidLocalProductExecutionAPI)
+			routes = productDegradedAgentRuntimeRoutes(productUnavailableAgentRuntime{})
+		}
+		_ = recordProductAgentRuntimeBuildOutcome(
+			construction.diagnostics, factoryErr, construction.profileID,
+			snapshotDigest, time.Since(startedAt),
+		)
+		_ = construction.agentRuntimeSlot.ResolveInitialization(routes, factoryErr)
+	}()
+	return composition.NewEffect(runtime.Close), nil
+}
+
 func (construction productCompatibilityConstruction) startAgentRuntime(
 	ctx context.Context,
 	capabilities *composition.BundleContext,
 ) (composition.Effect, error) {
 	if !construction.valid() || construction.agentRuntimeSlot == nil || ctx == nil {
 		return nil, composition.ErrInvalidComposition
+	}
+	if construction.deferAgentRuntime {
+		return construction.startDeferredAgentRuntime(ctx, capabilities)
 	}
 	routes, factoryErr := construction.agentRuntimeFactory(ctx)
 	if !routes.valid() {

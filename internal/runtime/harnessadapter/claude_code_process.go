@@ -164,6 +164,9 @@ func (runner *claudeCodeProcessRunner) runClaudeCodeCommand(
 		}
 		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
 	}
+	if failure := closedClaudeCodeCommandFailure(commandResult); failure != nil {
+		return HarnessProcessResult{}, failure
+	}
 	if commandResult.ExitCode != 0 ||
 		len(commandResult.Stdout) > request.MaxOutputBytes ||
 		len(commandResult.Stderr) > request.MaxOutputBytes {
@@ -190,6 +193,110 @@ func (runner *claudeCodeProcessRunner) runClaudeCodeCommand(
 	return parsed, nil
 }
 
+// ObserveClaudeCodeNativeAuth asks the attested CLI for a closed boolean
+// status. Account metadata and raw CLI output are discarded in memory.
+func ObserveClaudeCodeNativeAuth(
+	ctx context.Context,
+	executablePath string,
+	homePath string,
+	tempPath string,
+	commands HarnessCommandRunner,
+	timeout time.Duration,
+) (ready bool, resultErr error) {
+	if ctx == nil || nilHarnessInterface(commands) ||
+		!cleanHarnessAbsolutePath(executablePath) ||
+		!cleanHarnessAbsolutePath(homePath) ||
+		!cleanHarnessAbsolutePath(tempPath) || timeout <= 0 || timeout > time.Minute {
+		return false, ErrHarnessProcessUnavailable
+	}
+	result, err := commands.RunCommand(ctx, HarnessCommandRequest{
+		ExecutablePath: executablePath,
+		Arguments:      []string{"auth", "status", "--json"},
+		Environment: claudeCodeBaseEnvironmentFor(
+			executablePath, homePath, tempPath,
+		),
+		Directory: homePath, MaxOutputBytes: 4096, Timeout: timeout,
+	})
+	defer func() {
+		zeroHarnessBytes(result.Stdout)
+		zeroHarnessBytes(result.Stderr)
+	}()
+	if err != nil {
+		return false, ErrHarnessProcessUnavailable
+	}
+	if len(result.Stdout) == 0 || len(result.Stdout) > 4096 ||
+		!utf8.Valid(result.Stdout) || bytes.IndexByte(result.Stdout, 0) >= 0 {
+		return false, ErrHarnessProtocol
+	}
+	decoder := json.NewDecoder(bytes.NewReader(result.Stdout))
+	var status struct {
+		LoggedIn *bool `json:"loggedIn"`
+	}
+	if decoder.Decode(&status) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		status.LoggedIn == nil {
+		return false, ErrHarnessProtocol
+	}
+	if *status.LoggedIn {
+		if result.ExitCode != 0 {
+			return false, ErrHarnessProtocol
+		}
+		return true, nil
+	}
+	if result.ExitCode != 0 && result.ExitCode != 1 {
+		return false, ErrHarnessProcessUnavailable
+	}
+	return false, nil
+}
+
+func closedClaudeCodeCommandFailure(result HarnessCommandResult) error {
+	if len(result.Stdout) > 0 && len(result.Stdout) <= 1<<20 &&
+		utf8.Valid(result.Stdout) && bytes.IndexByte(result.Stdout, 0) < 0 {
+		decoder := json.NewDecoder(bytes.NewReader(result.Stdout))
+		var decoded struct {
+			IsError        bool   `json:"is_error"`
+			Result         string `json:"result"`
+			APIErrorStatus string `json:"api_error_status"`
+		}
+		if decoder.Decode(&decoded) == nil && decoder.Decode(&struct{}{}) == io.EOF &&
+			decoded.IsError {
+			if failure := closedClaudeCodeFailureText(
+				decoded.Result + "\n" + decoded.APIErrorStatus,
+			); failure != nil {
+				return failure
+			}
+			return ErrHarnessProviderRejected
+		}
+	}
+	if result.ExitCode != 0 {
+		if failure := closedClaudeCodeFailureText(string(result.Stderr)); failure != nil {
+			return failure
+		}
+	}
+	return nil
+}
+
+func closedClaudeCodeFailureText(value string) error {
+	value = strings.ToLower(value)
+	switch {
+	case strings.Contains(value, "not logged in"),
+		strings.Contains(value, "run /login"),
+		strings.Contains(value, "authentication"),
+		strings.Contains(value, "unauthorized"),
+		strings.Contains(value, "invalid api key"),
+		strings.Contains(value, "oauth"):
+		return ErrHarnessProviderAuth
+	case strings.Contains(value, "rate limit"),
+		strings.Contains(value, "too many requests"):
+		return ErrHarnessProviderRateLimit
+	case strings.Contains(value, "model not found"),
+		strings.Contains(value, "invalid model"),
+		strings.Contains(value, "model is not available"):
+		return ErrHarnessProviderRejected
+	default:
+		return nil
+	}
+}
+
 func attemptProviderToolPolicy(lease HarnessContextMCPLease) AttemptProviderToolPolicy {
 	return AttemptProviderToolPolicy{AllowedLoomTools: harnessMCPToolNames(lease)}
 }
@@ -207,7 +314,15 @@ func validHarnessProcessRequest(request HarnessProcessRequest) bool {
 		strings.IndexByte(request.SystemPrompt, 0) < 0 && request.Timeout > 0 &&
 		request.Timeout <= 15*time.Minute && request.MaxOutputBytes >= 256 &&
 		request.MaxOutputBytes <= 1<<20 && validHarnessContextMCPLease(request.ContextMCP) &&
+		validOptionalHarnessControlMCPLease(request.ControlMCP) &&
 		validClaudeCodeNativeSessionRequest(request)
+}
+
+func validOptionalHarnessControlMCPLease(lease HarnessControlMCPLease) bool {
+	if lease.URL == "" && lease.Token == "" && len(lease.ToolNames) == 0 {
+		return true
+	}
+	return validHarnessControlMCPLease(lease)
 }
 
 func validClaudeCodeNativeSessionRequest(request HarnessProcessRequest) bool {
@@ -267,26 +382,7 @@ func claudeCodeArguments(request HarnessProcessRequest, systemPromptPath string)
 	if request.ReasoningEffort != "" {
 		arguments = append(arguments, "--effort", request.ReasoningEffort)
 	}
-	tools := ""
-	mcpConfig := `{"mcpServers":{}}`
-	if request.ContextMCP.URL != "" {
-		prefixedTools := make([]string, 0, 3)
-		for _, name := range harnessMCPToolNames(request.ContextMCP) {
-			prefixedTools = append(prefixedTools, "mcp__loom_context__"+name)
-		}
-		tools = strings.Join(prefixedTools, ",")
-		encoded, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
-			"loom_context": map[string]any{
-				"type": "http", "url": request.ContextMCP.URL,
-				"headers": map[string]string{
-					"Authorization": "Bearer ${" + harnessContextMCPTokenEnv + "}",
-				},
-			},
-		}})
-		if err == nil {
-			mcpConfig = string(encoded)
-		}
-	}
+	tools, mcpConfig := claudeCodeMCPConfiguration(request)
 	return append(arguments,
 		"--permission-mode", "dontAsk",
 		"--tools", tools,
@@ -308,20 +404,28 @@ func claudeCodeEnvironment(
 		"ANTHROPIC_API_KEY="+lease.Token,
 		"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1",
 	)
-	return appendClaudeCodeContextEnvironment(environment, request.ContextMCP)
+	return appendClaudeCodeMCPEnvironment(environment, request)
 }
 
 func claudeCodeNativeEnvironment(request HarnessProcessRequest) []string {
-	return appendClaudeCodeContextEnvironment(
-		claudeCodeBaseEnvironment(request), request.ContextMCP,
-	)
+	return appendClaudeCodeMCPEnvironment(claudeCodeBaseEnvironment(request), request)
 }
 
 func claudeCodeBaseEnvironment(request HarnessProcessRequest) []string {
+	return claudeCodeBaseEnvironmentFor(
+		request.ExecutablePath, request.HomePath, request.TempPath,
+	)
+}
+
+func claudeCodeBaseEnvironmentFor(
+	executablePath string,
+	homePath string,
+	tempPath string,
+) []string {
 	return []string{
-		"HOME=" + request.HomePath,
-		"TMPDIR=" + request.TempPath,
-		"PATH=" + filepath.Dir(request.ExecutablePath) + ":/usr/bin:/bin",
+		"HOME=" + homePath,
+		"TMPDIR=" + tempPath,
+		"PATH=" + filepath.Dir(executablePath) + ":/usr/bin:/bin",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 		"NO_COLOR=1",
@@ -332,14 +436,53 @@ func claudeCodeBaseEnvironment(request HarnessProcessRequest) []string {
 	}
 }
 
-func appendClaudeCodeContextEnvironment(
+func appendClaudeCodeMCPEnvironment(
 	environment []string,
-	lease HarnessContextMCPLease,
+	request HarnessProcessRequest,
 ) []string {
-	if lease.Token != "" {
-		environment = append(environment, harnessContextMCPTokenEnv+"="+lease.Token)
+	if request.ContextMCP.Token != "" {
+		environment = append(
+			environment, harnessContextMCPTokenEnv+"="+request.ContextMCP.Token,
+		)
+	}
+	if request.ControlMCP.Token != "" {
+		environment = append(
+			environment, harnessControlMCPTokenEnv+"="+request.ControlMCP.Token,
+		)
 	}
 	return environment
+}
+
+func claudeCodeMCPConfiguration(request HarnessProcessRequest) (string, string) {
+	servers := make(map[string]any, 2)
+	tools := make([]string, 0, len(harnessMCPToolNames(request.ContextMCP))+len(request.ControlMCP.ToolNames))
+	if request.ContextMCP.URL != "" {
+		for _, name := range harnessMCPToolNames(request.ContextMCP) {
+			tools = append(tools, "mcp__loom_context__"+name)
+		}
+		servers["loom_context"] = map[string]any{
+			"type": "http", "url": request.ContextMCP.URL,
+			"headers": map[string]string{
+				"Authorization": "Bearer ${" + harnessContextMCPTokenEnv + "}",
+			},
+		}
+	}
+	if request.ControlMCP.URL != "" {
+		for _, name := range request.ControlMCP.ToolNames {
+			tools = append(tools, "mcp__loom_control__"+name)
+		}
+		servers["loom_control"] = map[string]any{
+			"type": "http", "url": request.ControlMCP.URL,
+			"headers": map[string]string{
+				"Authorization": "Bearer ${" + harnessControlMCPTokenEnv + "}",
+			},
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		return "", `{"mcpServers":{}}`
+	}
+	return strings.Join(tools, ","), string(encoded)
 }
 
 func validHarnessContextMCPLease(lease HarnessContextMCPLease) bool {

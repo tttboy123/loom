@@ -22,7 +22,6 @@ const (
 	productHarnessGatewayCancelIPCThreadID = "conversation-codex-cancel-ipc"
 	productHarnessGatewayCancelIPCProfile  = "conversation-openai-codex-cancel-ipc"
 	productHarnessGatewayCancelIPCModel    = "gpt-5.6-codex"
-	productHarnessGatewayCancelIPCIncident = "loom-client-1"
 )
 
 func TestProductHarnessGatewayCancelIPCSourceAcceptance(t *testing.T) {
@@ -145,6 +144,17 @@ func TestProductHarnessGatewayCancelIPCSourceAcceptance(t *testing.T) {
 			observable, cancelledRead,
 		)
 	}
+	var inFlight api.LocalProductChatThread
+	if err := client.Call(context.Background(), "chat_thread", map[string]any{
+		"thread_id": productHarnessGatewayCancelIPCThreadID,
+	}, &inFlight); err != nil {
+		t.Fatal(err)
+	}
+	if len(inFlight.Attempts) != 1 || inFlight.Attempts[0].Status != "dispatching" ||
+		!validProductRouteTransitionClientIncidentID(inFlight.Attempts[0].IncidentID) {
+		t.Fatalf("in-flight cancellation authority = %#v", inFlight.Attempts)
+	}
+	incidentID := inFlight.Attempts[0].IncidentID
 
 	var peerThread api.LocalProductChatThread
 	if err := client.Call(context.Background(), "chat_message", map[string]any{
@@ -188,12 +198,12 @@ func TestProductHarnessGatewayCancelIPCSourceAcceptance(t *testing.T) {
 	}
 	if err := client.Call(context.Background(), "chat_response_cancel", map[string]any{
 		"thread_id":   productHarnessGatewayCancelIPCThreadID,
-		"incident_id": productHarnessGatewayCancelIPCIncident,
+		"incident_id": incidentID,
 	}, &acknowledgement); err != nil {
 		t.Fatal(err)
 	}
 	if !acknowledgement.Cancelled || acknowledgement.ThreadID != productHarnessGatewayCancelIPCThreadID ||
-		acknowledgement.IncidentID != productHarnessGatewayCancelIPCIncident {
+		acknowledgement.IncidentID != incidentID {
 		t.Fatalf("cancellation acknowledgement = %#v", acknowledgement)
 	}
 
@@ -202,7 +212,7 @@ func TestProductHarnessGatewayCancelIPCSourceAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProductHarnessGatewayCancelIPCAttempt(
-		t, cancelled, productHarnessGatewayCancelIPCIncident, "cancelled",
+		t, cancelled, incidentID, "cancelled",
 	)
 	if observable, cancelledRead := appServer.firstTurnResponseState(); !observable || !cancelledRead {
 		t.Fatalf(
@@ -211,7 +221,7 @@ func TestProductHarnessGatewayCancelIPCSourceAcceptance(t *testing.T) {
 		)
 	}
 	assertProductHarnessGatewayCancelIPCNativeInterrupt(t, appServer.snapshot())
-	assertProductHarnessGatewayCancelIPCEvent(t, events.snapshot())
+	assertProductHarnessGatewayCancelIPCEvent(t, events.snapshot(), incidentID)
 
 	restarted, err := api.NewPersistentLocalProductChatAPI(
 		storePath, time.Now, nil,
@@ -224,7 +234,7 @@ func TestProductHarnessGatewayCancelIPCSourceAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProductHarnessGatewayCancelIPCAttempt(
-		t, persisted, productHarnessGatewayCancelIPCIncident, "cancelled",
+		t, persisted, incidentID, "cancelled",
 	)
 
 	var continued api.LocalProductChatThread
@@ -307,12 +317,13 @@ func assertProductHarnessGatewayCancelIPCNativeInterrupt(
 func assertProductHarnessGatewayCancelIPCEvent(
 	t *testing.T,
 	events []harnessgateway.Event,
+	incidentID string,
 ) {
 	t.Helper()
 	cancelled, completed := 0, 0
 	for _, event := range events {
 		if event.ConversationID != productHarnessGatewayCancelIPCThreadID ||
-			event.IncidentID != productHarnessGatewayCancelIPCIncident {
+			event.IncidentID != incidentID {
 			continue
 		}
 		if event.ProviderAccountID != "" || event.CredentialRevision != 0 ||

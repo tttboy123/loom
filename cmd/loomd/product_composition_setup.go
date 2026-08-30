@@ -18,6 +18,8 @@ var errProductSetupRouteUnavailable = errors.New("product Setup route unavailabl
 type productSetupRoute interface {
 	SetupSnapshot(context.Context) (app.SetupSnapshot, error)
 	ConnectCodex(context.Context) (app.ProviderConnectResult, error)
+	ConnectClaudeCode(context.Context) (app.ProviderConnectResult, error)
+	CancelClaudeCode(context.Context) (app.ProviderConnectResult, error)
 	ConfigureProviderAccountPolicy(context.Context, app.ProviderAccountPolicyCommand) (app.ProviderAccountPolicyResult, error)
 	ConfigureProviderModelRateCard(context.Context, app.ProviderModelRateCardCommand) (app.ProviderModelRateCardResult, error)
 	ConfigureRemoteToolBackendEnrollment(context.Context, app.RemoteToolBackendEnrollmentCommand) (app.RemoteToolBackendEnrollmentResult, error)
@@ -183,6 +185,34 @@ func (slot *productSetupRouteSlot) ConnectCodex(ctx context.Context) (app.Provid
 		return app.ProviderConnectResult{}, api.ErrInvalidLocalProductSetupAPI
 	}
 	return slot.routes.route.ConnectCodex(ctx)
+}
+
+func (slot *productSetupRouteSlot) ConnectClaudeCode(
+	ctx context.Context,
+) (app.ProviderConnectResult, error) {
+	if slot == nil {
+		return app.ProviderConnectResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return app.ProviderConnectResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	return slot.routes.route.ConnectClaudeCode(ctx)
+}
+
+func (slot *productSetupRouteSlot) CancelClaudeCode(
+	ctx context.Context,
+) (app.ProviderConnectResult, error) {
+	if slot == nil {
+		return app.ProviderConnectResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	slot.mu.RLock()
+	defer slot.mu.RUnlock()
+	if slot.closed || !slot.bound || !slot.routes.valid() {
+		return app.ProviderConnectResult{}, api.ErrInvalidLocalProductSetupAPI
+	}
+	return slot.routes.route.CancelClaudeCode(ctx)
 }
 
 func (slot *productSetupRouteSlot) ConfigureProviderAccountPolicy(ctx context.Context, command app.ProviderAccountPolicyCommand) (app.ProviderAccountPolicyResult, error) {

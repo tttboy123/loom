@@ -48,7 +48,7 @@ const (
 
 	piVerifierPromptKind           = "pi_verifier_prompt"
 	deepSeekAgentMaxPromptBytes    = 64 * 1024
-	deepSeekAgentMaxContentBytes   = 4096
+	deepSeekAgentMaxContentBytes   = 30 << 10
 	contextToolMaxArgumentsBytes   = 2048
 	contextToolMaxResultBytes      = 32 << 10
 	contextToolMaxCallsPerExchange = 4
@@ -101,6 +101,9 @@ type AgentAttemptDiagnostic struct {
 	Elapsed                time.Duration
 	Result                 string
 	ErrorCode              string
+	HTTPStatus             int
+	ProviderErrorCode      string
+	RetryAfterSeconds      int64
 	Retryable              bool
 }
 
@@ -149,8 +152,12 @@ type deepSeekAgentDispatch struct {
 }
 
 type deepSeekAgentProviderFailure struct {
-	reason string
-	stage  string
+	reason            string
+	stage             string
+	httpStatus        int
+	providerErrorCode string
+	retryAfterSeconds int64
+	retryable         bool
 }
 
 func (failure *deepSeekAgentProviderFailure) Error() string {
@@ -394,8 +401,12 @@ func (adapter *deepSeekAgentAdapter) Execute(
 		if providerFailure != nil && providerFailure.stage != "" {
 			stage = providerFailure.stage
 		}
-		if err := adapter.recordDiagnostic(
+		if providerFailure != nil && providerFailure.retryable {
+			retryable = true
+		}
+		if err := adapter.recordDiagnosticDetails(
 			ctx, request, started, stage, "failed", reason, retryable,
+			providerFailure,
 		); err != nil {
 			return supervisor.AdapterResult{}, err
 		}
@@ -430,6 +441,21 @@ func (adapter *deepSeekAgentAdapter) recordDiagnostic(
 	errorCode string,
 	retryable bool,
 ) error {
+	return adapter.recordDiagnosticDetails(
+		ctx, request, started, stage, result, errorCode, retryable, nil,
+	)
+}
+
+func (adapter *deepSeekAgentAdapter) recordDiagnosticDetails(
+	ctx context.Context,
+	request supervisor.AdapterRequest,
+	started time.Time,
+	stage,
+	result,
+	errorCode string,
+	retryable bool,
+	failure *deepSeekAgentProviderFailure,
+) error {
 	if adapter == nil || nilInterface(adapter.diagnostics) {
 		return ErrAgentDiagnosticsUnavailable
 	}
@@ -441,20 +467,26 @@ func (adapter *deepSeekAgentAdapter) recordDiagnostic(
 	if elapsed < 0 {
 		elapsed = 0
 	}
+	diagnostic := AgentAttemptDiagnostic{
+		OccurredAt:        occurredAt,
+		IncidentID:        request.Dispatch.CorrelationID(),
+		ProviderID:        request.ExecutionBinding.ProviderID,
+		ProviderAccountID: request.ExecutionBinding.ProviderAccountID,
+		ModelID:           request.ExecutionBinding.ModelID,
+		Stage:             stage,
+		Elapsed:           elapsed,
+		Result:            result,
+		ErrorCode:         errorCode,
+		Retryable:         retryable,
+	}
+	if failure != nil {
+		diagnostic.HTTPStatus = failure.httpStatus
+		diagnostic.ProviderErrorCode = failure.providerErrorCode
+		diagnostic.RetryAfterSeconds = failure.retryAfterSeconds
+	}
 	if err := adapter.diagnostics.RecordAgentAttemptDiagnostic(
 		ctx,
-		AgentAttemptDiagnostic{
-			OccurredAt:        occurredAt,
-			IncidentID:        request.Dispatch.CorrelationID(),
-			ProviderID:        request.ExecutionBinding.ProviderID,
-			ProviderAccountID: request.ExecutionBinding.ProviderAccountID,
-			ModelID:           request.ExecutionBinding.ModelID,
-			Stage:             stage,
-			Elapsed:           elapsed,
-			Result:            result,
-			ErrorCode:         errorCode,
-			Retryable:         retryable,
-		},
+		diagnostic,
 	); err != nil {
 		return ErrAgentDiagnosticsUnavailable
 	}
@@ -935,7 +967,10 @@ func (adapter *deepSeekAgentAdapter) callProviderRound(
 		response.Request.URL,
 		adapter.provider.endpoint,
 	) {
-		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{
+			reason: "provider_rejected", stage: "provider_http",
+			httpStatus: response.StatusCode,
+		}
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, adapter.maxResponseBytes+1))
 	if readErr != nil {
@@ -945,19 +980,36 @@ func (adapter *deepSeekAgentAdapter) callProviderRound(
 		if transportTimeout(readErr) {
 			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{
 				reason: "timeout", stage: "provider_http",
+				httpStatus: response.StatusCode, retryable: true,
 			}
 		}
-		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
-	}
-	if int64(len(body)) > adapter.maxResponseBytes {
-		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{
-			reason: deepSeekAgentHTTPFailureReason(response.StatusCode),
+			reason: "provider_unavailable", stage: "provider_http",
+			httpStatus: response.StatusCode, retryable: true,
 		}
 	}
-	return decodeDeepSeekAgentResponse(body, adapter.provider.modelID)
+	if int64(len(body)) > adapter.maxResponseBytes {
+		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{
+			reason: "invalid_response", stage: "provider_http",
+			httpStatus: response.StatusCode,
+		}
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		failure := provider.ClassifyOpenAICompatibleHTTPFailure(
+			response.StatusCode, response.Header, body,
+		)
+		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{
+			reason: failure.Code, stage: failure.Stage,
+			httpStatus: response.StatusCode, providerErrorCode: failure.ProviderCode,
+			retryAfterSeconds: failure.RetryAfterSeconds, retryable: failure.Retryable,
+		}
+	}
+	decoded, decodeErr := decodeDeepSeekAgentResponse(body, adapter.provider.modelID)
+	var providerFailure *deepSeekAgentProviderFailure
+	if errors.As(decodeErr, &providerFailure) && providerFailure.httpStatus == 0 {
+		providerFailure.httpStatus = response.StatusCode
+	}
+	return decoded, decodeErr
 }
 
 func clearOpenAICompatibleMessages(messages []openAICompatibleMessage) {
@@ -1082,7 +1134,7 @@ func decodeDeepSeekAgentResponse(
 		!validNativeAgentResponseModel(decoded.Model) ||
 		len(decoded.Choices) != 1 ||
 		decoded.Choices[0].Message.Role != "assistant" {
-		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 	}
 	message := decoded.Choices[0].Message
 	rawContent := strings.TrimSpace(message.Content)
@@ -1104,20 +1156,20 @@ func decodeDeepSeekAgentResponse(
 		len(rawContent) > deepSeekAgentMaxContentBytes ||
 		!utf8.ValidString(rawContent) || strings.IndexByte(rawContent, 0) >= 0 ||
 		!visible {
-		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 	}
 	response := deepSeekAgentResponse{content: content}
 	response.toolCalls = make([]nativeAgentToolCall, 0, len(message.ToolCalls))
 	for _, raw := range message.ToolCalls {
 		wire, err := decodeContextToolCallWire(raw)
 		if err != nil {
-			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 		}
 		switch wire.Function.Name {
 		case "loom_read_context":
 			toolCall, decodeErr := decodeContextToolCall(wire)
 			if decodeErr != nil {
-				return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+				return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 			}
 			response.toolCalls = append(response.toolCalls, nativeAgentToolCall{
 				ID: wire.ID, Kind: permissions.ToolMCPTool, Context: &toolCall,
@@ -1125,13 +1177,13 @@ func decodeDeepSeekAgentResponse(
 		case "loom_web_search", "loom_web_fetch":
 			webCall, decodeErr := decodeWebToolCall(wire)
 			if decodeErr != nil {
-				return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+				return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 			}
 			response.toolCalls = append(response.toolCalls, nativeAgentToolCall{
 				ID: webCall.ID, Kind: webCall.Kind, Web: &webCall,
 			})
 		default:
-			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+			return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 		}
 	}
 	if decoded.Usage == nil {
@@ -1147,7 +1199,7 @@ func decodeDeepSeekAgentResponse(
 		accounting.CacheReadTokens = decoded.Usage.PromptTokenDetails.CachedTokens
 	}
 	if work.ValidateRunAccounting(accounting) != nil {
-		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "provider_http"}
+		return deepSeekAgentResponse{}, &deepSeekAgentProviderFailure{reason: "invalid_response", stage: "provider_http"}
 	}
 	response.accounting = &accounting
 	return response, nil
@@ -1857,6 +1909,9 @@ func deepSeekAgentDiagnosticFailure(reason string, err error) (string, bool) {
 		return "provider_auth", false
 	case "provider_rate_limit":
 		return "provider_rate_limit", true
+	case "provider_insufficient_balance", "provider_model_unavailable",
+		"provider_invalid_request", "provider_rejected", "invalid_response":
+		return "provider_http", false
 	case "provider_unavailable":
 		return "provider_http", true
 	case "timeout":

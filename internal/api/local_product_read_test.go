@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,20 @@ type controlledLocalProductViewSource struct {
 type controlledRuntimeObservationHealthSource struct {
 	reason  string
 	partial bool
+}
+
+type controlledMissionAttemptOutputSource struct {
+	outputs []MissionAttemptOutput
+	err     error
+	reads   []MissionAttemptOutputRequest
+}
+
+func (source *controlledMissionAttemptOutputSource) ReadMissionAttemptOutputs(
+	_ context.Context,
+	request MissionAttemptOutputRequest,
+) ([]MissionAttemptOutput, error) {
+	source.reads = append(source.reads, request)
+	return append([]MissionAttemptOutput(nil), source.outputs...), source.err
 }
 
 func (source *controlledRuntimeObservationHealthSource) RuntimeObservationHealth() (
@@ -695,6 +711,143 @@ func TestLocalProductReadServiceReplaysBoundedTentativeOutputWithoutDispatch(
 	}
 	if err := service.CloseMissionExecutionObservers(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLocalProductReadServiceReplacesTentativeOutputWithRestartSafeFinalOutput(
+	t *testing.T,
+) {
+	t.Parallel()
+	occurredAt := time.Date(2026, 8, 27, 11, 0, 0, 0, time.UTC)
+	source := &controlledMissionAttemptOutputSource{outputs: []MissionAttemptOutput{{
+		SourceID: "payload-final-1", Sequence: 1,
+		ContentDigest: strings.Repeat("a", 64),
+		Text:          "restart-safe final Agent output",
+		OccurredAt:    occurredAt,
+	}}}
+	service := &LocalProductReadService{
+		now:            func() time.Time { return occurredAt },
+		missionOutputs: source,
+	}
+	page := LocalProductTimelinePage{
+		SchemaVersion: 1, TeamInstanceID: "team-output", NextCursor: "cursor-final",
+		Records: []LocalProductTimelineRecord{{
+			SchemaVersion: 1, DeliveryID: strings.Repeat("b", 64),
+			Kind: "node_output_delta", Authority: "tentative",
+			TeamInstanceID: "team-output", LogicalNodeID: "main", AttemptNumber: 2,
+			SourceSequence: 1, SourceEventID: "frame-tentative-1",
+			OccurredAt: occurredAt.Format(time.RFC3339Nano),
+			Payload:    LocalProductTimelinePayload{TextDelta: "tentative duplicate"},
+		}, {
+			SchemaVersion: 1, DeliveryID: strings.Repeat("c", 64),
+			Kind: "evidence_available", Authority: "journal",
+			TeamInstanceID: "team-output", LogicalNodeID: "main", AttemptNumber: 2,
+			SourceSequence: 2, SourceEventID: "evidence-event-1",
+			OccurredAt: occurredAt.Format(time.RFC3339Nano),
+			Payload: LocalProductTimelinePayload{
+				EvidenceDigest: strings.Repeat("d", 64),
+			},
+		}},
+		Board: LocalProductTeamBoard{
+			TeamInstanceID: "team-output", Status: "failed",
+			Nodes: []NodeBoardRow{{
+				LogicalNodeID: "main", CurrentAttempt: 2, Status: "succeeded",
+				RunID: "run-output", WorkItemID: "work-output",
+			}},
+		},
+	}
+
+	service.mergeMissionAttemptOutputs(context.Background(), &page, 16)
+	if len(source.reads) != 1 || source.reads[0].TeamInstanceID != "team-output" ||
+		source.reads[0].LogicalNodeID != "main" || source.reads[0].AttemptNumber != 2 ||
+		source.reads[0].RunID != "run-output" || source.reads[0].MaximumBytes <= 0 {
+		t.Fatalf("output read requests = %#v", source.reads)
+	}
+	if len(page.Records) != 1 {
+		t.Fatalf("terminal output records = %#v", page.Records)
+	}
+	finalDigest := sha256.Sum256([]byte("restart-safe final Agent output"))
+	if !page.Board.Nodes[0].FinalOutputAvailable ||
+		page.Board.Nodes[0].FinalOutputText != "restart-safe final Agent output" ||
+		page.Board.Nodes[0].FinalOutputDigest != hex.EncodeToString(finalDigest[:]) {
+		t.Fatalf("terminal board output = %#v", page.Board.Nodes[0])
+	}
+	record := page.Records[0]
+	if record.Kind != "evidence_available" || record.Authority != "journal" ||
+		record.LogicalNodeID != "main" || record.AttemptNumber != 2 ||
+		record.Payload.Status != "succeeded" ||
+		record.Payload.TextDelta != "restart-safe final Agent output" ||
+		record.SourceEventID != "evidence-event-1" {
+		t.Fatalf("terminal output record = %#v", record)
+	}
+}
+
+func TestLocalProductReadServiceRestoresFinalOutputWithoutTimelineRecords(
+	t *testing.T,
+) {
+	t.Parallel()
+	source := &controlledMissionAttemptOutputSource{outputs: []MissionAttemptOutput{{
+		SourceID: "payload-final-1", Sequence: 1,
+		ContentDigest: strings.Repeat("a", 64),
+		Text:          "final Agent output",
+		OccurredAt:    time.Date(2026, 8, 27, 11, 0, 0, 0, time.UTC),
+	}}}
+	service := &LocalProductReadService{missionOutputs: source}
+	page := LocalProductTimelinePage{
+		TeamInstanceID: "team-output", HasMore: true,
+		Board: LocalProductTeamBoard{
+			TeamInstanceID: "team-output",
+			Nodes: []NodeBoardRow{{
+				LogicalNodeID: "main", CurrentAttempt: 1, Status: "succeeded",
+				RunID: "run-output", WorkItemID: "work-output",
+			}},
+		},
+	}
+
+	service.mergeMissionAttemptOutputs(context.Background(), &page, 16)
+	finalDigest := sha256.Sum256([]byte("final Agent output"))
+	if len(source.reads) != 1 || len(page.Records) != 0 ||
+		!page.Board.Nodes[0].FinalOutputAvailable ||
+		page.Board.Nodes[0].FinalOutputText != "final Agent output" ||
+		page.Board.Nodes[0].FinalOutputDigest != hex.EncodeToString(finalDigest[:]) {
+		t.Fatalf("restart-safe board output: reads=%#v board=%#v records=%#v",
+			source.reads, page.Board.Nodes, page.Records)
+	}
+}
+
+func TestLocalProductReadServiceKeepsTentativeOutputWhenFinalReadFails(t *testing.T) {
+	t.Parallel()
+	service := &LocalProductReadService{
+		missionOutputs: &controlledMissionAttemptOutputSource{
+			err: ErrLocalProductStateUnavailable,
+		},
+	}
+	page := LocalProductTimelinePage{
+		TeamInstanceID: "team-output",
+		Records: []LocalProductTimelineRecord{{
+			Kind: "node_output_delta", Authority: "tentative",
+			TeamInstanceID: "team-output", LogicalNodeID: "main", AttemptNumber: 1,
+			Payload: LocalProductTimelinePayload{TextDelta: "visible partial output"},
+		}, {
+			Kind: "evidence_available", Authority: "journal",
+			TeamInstanceID: "team-output", LogicalNodeID: "main", AttemptNumber: 1,
+		}},
+		Board: LocalProductTeamBoard{
+			TeamInstanceID: "team-output",
+			Nodes: []NodeBoardRow{{
+				LogicalNodeID: "main", CurrentAttempt: 1, Status: "succeeded",
+				RunID: "run-output", WorkItemID: "work-output",
+			}},
+		},
+	}
+
+	service.mergeMissionAttemptOutputs(context.Background(), &page, 16)
+	if len(page.Records) != 2 || page.Records[0].Payload.TextDelta != "visible partial output" ||
+		page.Records[1].Payload.TextDelta != "" || page.Records[1].Payload.Status != "" ||
+		page.Board.Nodes[0].FinalOutputAvailable ||
+		page.Board.Nodes[0].FinalOutputText != "" ||
+		page.Board.Nodes[0].FinalOutputDigest != "" {
+		t.Fatalf("failed final read changed visible output: %#v", page.Records)
 	}
 }
 

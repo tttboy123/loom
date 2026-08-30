@@ -115,6 +115,32 @@ func TestAgentAttemptRecoveryMethodIsStrictAndUsesProviderDeadline(t *testing.T)
 	}
 }
 
+func TestRoundtableGovernanceMethodsAreAdmittedByTheUDSProtocol(t *testing.T) {
+	for _, method := range []string{
+		"roundtable_pause_round",
+		"roundtable_steer_seat",
+		"roundtable_retry_seat",
+		"roundtable_skip_seat",
+		"roundtable_replace_seat",
+		"roundtable_export",
+		"roundtable_import",
+	} {
+		if !validMethod(method) {
+			t.Fatalf("validMethod(%q) = false", method)
+		}
+		if requiresJourney(method) {
+			t.Fatalf("requiresJourney(%q) = true", method)
+		}
+		request, err := decodeRequest([]byte(
+			`{"version":1,"request_id":"roundtable-governance-1","method":"` +
+				method + `","params":{"schema_version":1}}`,
+		))
+		if err != nil || request.Method != method {
+			t.Fatalf("decodeRequest(%q) = %+v, %v", method, request, err)
+		}
+	}
+}
+
 func TestToolRecoveryMethodIsStrictAndUsesExtendedDeadline(t *testing.T) {
 	method := "tool_recovery"
 	if !validMethod(method) {
@@ -365,6 +391,16 @@ func TestProtocolRejectsNestedDuplicatesAndInvalidResponses(t *testing.T) {
 		`{"version":1,"request_id":"request-connect","method":"codex_connect","params":{}}`,
 	)); err != nil {
 		t.Fatalf("valid codex_connect request error = %v", err)
+	}
+	if _, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"request-claude-connect","method":"claude_code_connect","params":{}}`,
+	)); err != nil {
+		t.Fatalf("valid claude_code_connect request error = %v", err)
+	}
+	if _, err := decodeRequest([]byte(
+		`{"version":1,"request_id":"request-claude-cancel","method":"claude_code_cancel","params":{}}`,
+	)); err != nil {
+		t.Fatalf("valid claude_code_cancel request error = %v", err)
 	}
 	if _, err := decodeRequest([]byte(
 		`{"version":1,"request_id":"request-1","method":"snapshot","params":{"items":[1,{"key":2}]}}`,

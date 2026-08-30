@@ -16,7 +16,7 @@ import (
 func TestCOMP2BRouteManifestFreezesEveryLegacyMethod(t *testing.T) {
 	want := []composition.RouteMethod{
 		"agent_attempt_recovery", "agent_input", "builder_answer", "builder_confirm", "builder_edit", "builder_start",
-		"builder_validate", "chat_context_disclosure", "chat_message", "chat_response_cancel", "chat_thread", "chat_thread_delete", "codex_connect",
+		"builder_validate", "chat_context_disclosure", "chat_control_decision", "chat_message", "chat_response_cancel", "chat_thread", "chat_thread_delete", "claude_code_cancel", "claude_code_connect", "codex_connect",
 		"credential_configure", "credential_import", "credential_replace", "credential_revoke",
 		"credential_vault_export", "credential_vault_lock", "credential_vault_reset",
 		"credential_vault_rotate", "credential_vault_unlock", "credential_verify",
@@ -30,10 +30,13 @@ func TestCOMP2BRouteManifestFreezesEveryLegacyMethod(t *testing.T) {
 		"remote_tool_backend_enrollment_configure", "remote_tool_backend_enrollment_revoke",
 		"roundtable_ack_message", "roundtable_add_seat", "roundtable_conclude",
 		"roundtable_drop_message", "roundtable_insert_message", "roundtable_open_round",
+		"roundtable_pause_round", "roundtable_replace_seat", "roundtable_retry_seat",
+		"roundtable_skip_seat", "roundtable_steer_seat",
+		"roundtable_export", "roundtable_import",
 		"roundtable_propose_message", "roundtable_relay_message", "roundtable_retire_seat",
 		"roundtable_session_create", "roundtable_snapshot",
 		"setup_snapshot", "side_task_handoff", "snapshot", "standing_order_command",
-		"standing_order_snapshot", "team_archive", "team_restore", "timeline_page",
+		"standing_order_snapshot", "team_archive", "team_materialize", "team_restore", "timeline_page",
 		"tool_recovery", "workers_command", "workers_snapshot",
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left] < want[right] })
@@ -56,7 +59,7 @@ func TestCOMP2BRouteManifestFreezesEveryLegacyMethod(t *testing.T) {
 	}
 	governance := composition.CapabilityApprovedToolInvoker.Ref()
 	for _, route := range manifest {
-		if route.Method == "chat_context_disclosure" &&
+		if (route.Method == "chat_context_disclosure" || route.Method == "chat_control_decision") &&
 			(route.OwnerBundle != "loom-conversation" ||
 				route.PrivacyClass != composition.PrivacyMetadataOnly) {
 			t.Fatalf("context disclosure route=%#v", route)

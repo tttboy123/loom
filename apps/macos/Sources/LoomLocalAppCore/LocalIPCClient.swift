@@ -1,6 +1,49 @@
 import Darwin
 import Foundation
 
+private final class LocalIPCExchangeCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var descriptor: Int32 = -1
+    private var cancelled = false
+
+    func install(_ descriptor: Int32) throws {
+        lock.lock()
+        self.descriptor = descriptor
+        if cancelled {
+            _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+            lock.unlock()
+            throw CancellationError()
+        }
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        if descriptor >= 0 {
+            _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+        }
+        lock.unlock()
+    }
+
+    func clear(_ descriptor: Int32) {
+        lock.lock()
+        if self.descriptor == descriptor {
+            self.descriptor = -1
+        }
+        lock.unlock()
+    }
+
+    func check() throws {
+        lock.lock()
+        let isCancelled = cancelled
+        lock.unlock()
+        if isCancelled || Task<Never, Never>.isCancelled {
+            throw CancellationError()
+        }
+    }
+}
+
 public enum LocalProductClientError: String, Error, Equatable, Sendable {
     case invalidRequest = "invalid_request"
     case invalidSocket = "invalid_socket"
@@ -38,7 +81,21 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
 		case providerInsufficientBalance = "provider_insufficient_balance"
 		case providerModelUnavailable = "provider_model_unavailable"
 		case providerInvalidRequest = "provider_invalid_request"
-		case providerUnavailable = "provider_unavailable"
+        case providerUnavailable = "provider_unavailable"
+        case notModerator = "not_moderator"
+        case seatUnavailable = "seat_unavailable"
+        case concluded
+        case invalidBody = "invalid_body"
+        case invalidDigest = "invalid_digest"
+        case tooManyMessages = "too_many_messages"
+        case tooManySeats = "too_many_seats"
+        case seatCountInvalid = "seat_count_invalid"
+        case bindingInvalid = "binding_invalid"
+        case attemptInvalid = "attempt_invalid"
+        case interventionInvalid = "intervention_invalid"
+        case interventionConflict = "intervention_conflict"
+        case interventionRequired = "intervention_required"
+        case exportInvalid = "export_invalid"
         case cursorConflict = "cursor_conflict"
         case streamGap = "stream_gap"
         case stateUnavailable = "state_unavailable"
@@ -52,6 +109,7 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case inputAdmission = "input_admission"
         case udsTransport = "uds_transport"
         case daemonAdmission = "daemon_admission"
+        case agentRuntimeInitialization = "agent_runtime_initialization"
         case helperValidation = "helper_validation"
         case helperStart = "helper_start"
         case helperAuthorization = "helper_authorization"
@@ -85,6 +143,7 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case providerRateLimit = "provider_rate_limit"
         case profilePublish = "profile_publish"
         case conversationDispatch = "conversation_dispatch"
+        case controlProposalConfirm = "control_proposal_confirm"
         case agentAttemptDispatch = "agent_attempt_dispatch"
         case preflightLease = "preflight_lease"
         case viewDrift = "view_drift"
@@ -101,6 +160,7 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
         case dispatchValidation = "dispatch_validation"
         case dispatchContextValidation = "dispatch_context_validation"
         case dispatchIncomplete = "dispatch_incomplete"
+		case dispatchProjectionSemantics = "dispatch_projection_semantics"
 		case workspacePublication = "workspace_publication"
 		case workspacePublicationInputValidation = "workspace_publication_input_validation"
 		case workspacePublicationSourceSnapshot = "workspace_publication_source_snapshot"
@@ -120,7 +180,29 @@ public struct LocalIPCRemoteError: Error, Equatable, Sendable {
 		case workspacePublicationCancelled = "workspace_publication_cancelled"
         case agentAttemptReconcile = "agent_attempt_reconcile"
         case agentInputAdmission = "agent_input_admission"
+		case contextRetrieval = "context_retrieval"
+		case contextDeliveryReconcile = "context_delivery_reconcile"
+		case toolInputAdmission = "tool_input_admission"
+		case toolBindingValidation = "tool_binding_validation"
+		case toolAuthorization = "tool_authorization"
+		case toolApprovalWait = "tool_approval_wait"
+		case toolSandboxPrepare = "tool_sandbox_prepare"
+		case toolDispatch = "tool_dispatch"
+		case toolResultValidation = "tool_result_validation"
+		case toolResultCommit = "tool_result_commit"
+		case toolPayloadCommit = "tool_payload_commit"
+		case toolResultDelivery = "tool_result_delivery"
 		case toolRecovery = "tool_recovery"
+		case compositionCompile = "composition_compile"
+		case compositionValidate = "composition_validate"
+		case bundleRegister = "bundle_register"
+		case bundleStart = "bundle_start"
+		case bundleReady = "bundle_ready"
+		case bundleStop = "bundle_stop"
+		case bundleDispose = "bundle_dispose"
+		case routeCompile = "route_compile"
+		case scopeOpen = "scope_open"
+		case scopeClose = "scope_close"
     }
 
     public let code: Code
@@ -333,7 +415,8 @@ public enum LocalIPCWire {
                 code: error.code,
                 recoverable: error.recoverable,
                 stage: error.stage,
-                incidentID: envelope.requestID
+                incidentID: envelope.requestID,
+                safeMessage: error.message
             )
         } catch let error as LocalIPCRemoteError {
             throw error
@@ -513,6 +596,18 @@ private struct BuilderConfirmParams: Encodable {
         case scope
         case projectID = "project_id"
         case confirm
+    }
+}
+
+struct TeamMaterializeParams: Encodable {
+    let teamDefinitionID: String
+    let teamDefinitionVersion: Int
+    let teamDefinitionDigest: String
+
+    enum CodingKeys: String, CodingKey {
+        case teamDefinitionID = "team_definition_id"
+        case teamDefinitionVersion = "team_definition_version"
+        case teamDefinitionDigest = "team_definition_digest"
     }
 }
 
@@ -792,6 +887,17 @@ public final class LocalIPCClient:
     LocalRoundtableClientProtocol,
     LocalProductAssetClientProtocol
 {
+    static let roundtableMethods: Set<String> = [
+        "roundtable_session_create", "roundtable_add_seat",
+        "roundtable_retire_seat", "roundtable_open_round",
+        "roundtable_pause_round", "roundtable_steer_seat",
+        "roundtable_retry_seat", "roundtable_skip_seat",
+        "roundtable_replace_seat", "roundtable_export",
+        "roundtable_import", "roundtable_propose_message",
+        "roundtable_relay_message", "roundtable_ack_message",
+        "roundtable_insert_message", "roundtable_drop_message",
+        "roundtable_conclude", "roundtable_snapshot",
+    ]
     public var supportsHeartbeatProbe: Bool { true }
 
     public static let requestMaximum = 65_536
@@ -1265,6 +1371,55 @@ public final class LocalIPCClient:
     ) async throws -> LocalRoundtableView {
         let result = try await call(method: "roundtable_open_round", params: request)
         return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtablePauseRound(
+        _ request: LocalRoundtablePauseRoundRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_pause_round", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableSteerSeat(
+        _ request: LocalRoundtableSteerSeatRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_steer_seat", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableRetrySeat(
+        _ request: LocalRoundtableRetrySeatRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_retry_seat", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableSkipSeat(
+        _ request: LocalRoundtableSkipSeatRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_skip_seat", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableReplaceSeat(
+        _ request: LocalRoundtableReplaceSeatRequest
+    ) async throws -> LocalRoundtableView {
+        let result = try await call(method: "roundtable_replace_seat", params: request)
+        return try LocalRoundtableWire.decodeView(result)
+    }
+
+    public func roundtableExport(
+        _ request: LocalRoundtableExportRequest
+    ) async throws -> LocalRoundtableExportDocument {
+        let result = try await call(method: "roundtable_export", params: request)
+        return try LocalRoundtableWire.decodeExport(result)
+    }
+
+    public func roundtableImport(
+        _ request: LocalRoundtableImportRequest
+    ) async throws -> LocalRoundtableImportResult {
+        let result = try await call(method: "roundtable_import", params: request)
+        return try LocalRoundtableWire.decodeImport(result)
     }
 
     public func roundtableProposeMessage(
@@ -1779,6 +1934,108 @@ public final class LocalIPCClient:
         return try LocalProductSetupWire.decodeProviderConnectResult(result)
     }
 
+    public func connectClaudeCode() async throws -> LocalProductProviderConnectResult {
+        try await connectClaudeCode(incidentID: requestID())
+    }
+
+    public func connectClaudeCode(
+        incidentID: String
+    ) async throws -> LocalProductProviderConnectResult {
+        let started = Date()
+        guard LocalIPCWire.validRequestID(incidentID) else {
+            throw LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: nil
+            )
+        }
+        do {
+            let result = try await call(
+                method: "claude_code_connect",
+                params: EmptyParams(),
+                incidentID: incidentID
+            )
+            let decoded = try LocalProductSetupWire.decodeProviderConnectResult(result)
+            if recordsInstalledDiagnostics {
+                try? operationalDiagnostics.recordCredential(
+                    incidentID: incidentID,
+                    operation: "claude_code_connect",
+                    providerID: "claude-code",
+                    stage: .daemonAdmission,
+                    result: "succeeded",
+                    errorCode: nil,
+                    retryable: false,
+                    elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+                )
+            }
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(
+                error,
+                incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: "claude_code_connect",
+                providerID: "claude-code",
+                providerAccountID: nil,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+    }
+
+    public func cancelClaudeCode(
+        incidentID: String
+    ) async throws -> LocalProductProviderConnectResult {
+        let started = Date()
+        guard LocalIPCWire.validRequestID(incidentID) else {
+            throw LocalIPCRemoteError(
+                code: .invalidRequest,
+                recoverable: false,
+                stage: .inputAdmission,
+                incidentID: nil
+            )
+        }
+        do {
+            let result = try await call(
+                method: "claude_code_cancel",
+                params: EmptyParams(),
+                incidentID: incidentID
+            )
+            let decoded = try LocalProductSetupWire.decodeProviderConnectResult(result)
+            if recordsInstalledDiagnostics {
+                try? operationalDiagnostics.recordCredential(
+                    incidentID: incidentID,
+                    operation: "claude_code_cancel",
+                    providerID: "claude-code",
+                    stage: .daemonAdmission,
+                    result: "succeeded",
+                    errorCode: nil,
+                    retryable: false,
+                    elapsedMilliseconds: Self.elapsedMilliseconds(since: started)
+                )
+            }
+            return decoded
+        } catch {
+            let failure = Self.credentialOperationError(
+                error,
+                incidentID: incidentID
+            )
+            recordCredentialFailure(
+                operation: "claude_code_cancel",
+                providerID: "claude-code",
+                providerAccountID: nil,
+                failure: failure,
+                incidentID: incidentID,
+                started: started
+            )
+            throw failure
+        }
+    }
+
     public func startBuilder(
         source: String = "blank",
         sourceID: String = "",
@@ -1906,6 +2163,37 @@ public final class LocalIPCClient:
             )
         )
         return try LocalProductSetupWire.decodeBuilderConfirmation(result)
+    }
+
+    public func materializeTeam(
+        teamDefinitionID: String,
+        teamDefinitionVersion: Int,
+        teamDefinitionDigest: String
+    ) async throws -> LocalProductBuilderConfirmation {
+        guard Self.validIdentifier(teamDefinitionID),
+              teamDefinitionVersion > 0,
+              Self.validDigest(teamDefinitionDigest) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "team_materialize",
+            params: TeamMaterializeParams(
+                teamDefinitionID: teamDefinitionID,
+                teamDefinitionVersion: teamDefinitionVersion,
+                teamDefinitionDigest: teamDefinitionDigest
+            )
+        )
+        let confirmation = try LocalProductSetupWire.decodeBuilderConfirmation(result)
+        guard confirmation.teamDefinitionID == teamDefinitionID,
+              confirmation.teamDefinitionVersion == teamDefinitionVersion,
+              confirmation.teamDefinitionDigest == teamDefinitionDigest,
+              confirmation.status == "active",
+              confirmation.teamInstanceCreated,
+              !confirmation.teamInstanceID.isEmpty,
+              !confirmation.runCreated else {
+            throw LocalProductClientError.invalidResponse
+        }
+        return confirmation
     }
 
     public func archiveTeam(
@@ -2401,6 +2689,24 @@ public final class LocalIPCClient:
         )
     }
 
+    public func decideChatControlProposal(
+        _ request: LocalProductChatControlDecisionRequest,
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
+        guard Self.validIdentifier(request.threadID),
+              Self.validIdentifier(request.proposalID),
+              Self.validDigest(request.proposalDigest),
+              LocalIPCWire.validRequestID(incidentID) else {
+            throw LocalProductClientError.invalidRequest
+        }
+        let result = try await call(
+            method: "chat_control_decision",
+            params: request,
+            incidentID: incidentID
+        )
+        return try Self.decodeChatThreadResponse(result)
+    }
+
     public func sendChatMessage(threadID: String, content: String) async throws -> LocalProductChatThread {
         try await sendChatMessage(
             threadID: threadID,
@@ -2508,11 +2814,44 @@ public final class LocalIPCClient:
         trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
         incidentID: String
     ) async throws -> LocalProductChatThread {
+        try await sendChatMessage(
+            threadID: threadID,
+            content: content,
+            profileID: profileID,
+            modelID: modelID,
+            reasoningEffort: reasoningEffort,
+            contextMode: contextMode,
+            expectedExecutionBinding: expectedExecutionBinding,
+            trustBoundaryAcknowledgement: trustBoundaryAcknowledgement,
+            sessionCatalog: [],
+            incidentID: incidentID
+        )
+    }
+
+    public func sendChatMessage(
+        threadID: String,
+        content: String,
+        profileID: String,
+        modelID: String,
+        reasoningEffort: String,
+        contextMode: LocalProductConversationContextMode?,
+        expectedExecutionBinding: LocalProductConversationExecutionBinding?,
+        trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?,
+        sessionCatalog: [LocalProductConversationSessionReference],
+        incidentID: String
+    ) async throws -> LocalProductChatThread {
         let started = Date()
         guard Self.validIdentifier(threadID),
               profileID.isEmpty || Self.validIdentifier(profileID),
               modelID.isEmpty || Self.validModelID(modelID),
               reasoningEffort.isEmpty || Self.validIdentifier(reasoningEffort),
+              sessionCatalog.count <= 1_024,
+              sessionCatalog.allSatisfy({
+                  Self.validIdentifier($0.conversationID) &&
+                  !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                  $0.title.utf8.count <= 256 && !$0.updatedAt.isEmpty
+              }),
+              Set(sessionCatalog.map(\.conversationID)).count == sessionCatalog.count,
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               LocalIPCWire.validRequestID(incidentID) else {
             let failure = LocalIPCRemoteError(
@@ -2541,7 +2880,8 @@ public final class LocalIPCClient:
                     reasoningEffort: reasoningEffort,
                     contextMode: contextMode,
                     expectedExecutionBinding: expectedExecutionBinding,
-                    trustBoundaryAcknowledgement: trustBoundaryAcknowledgement
+                    trustBoundaryAcknowledgement: trustBoundaryAcknowledgement,
+                    sessionCatalog: sessionCatalog
                 ),
                 incidentID: incidentID
             )
@@ -2641,6 +2981,9 @@ public final class LocalIPCClient:
             segments: thread.segments,
             attempts: restoredAttempts,
             messages: thread.messages,
+            controlProposals: thread.controlProposals,
+            actionProposals: thread.actionProposals,
+            contextAlignments: thread.contextAlignments,
             canReply: thread.canReply,
             requiresConfirmation: thread.requiresConfirmation,
             availabilityFailure: thread.availabilityFailure
@@ -2676,6 +3019,7 @@ public final class LocalIPCClient:
             contextCapacityContributions: attempt.contextCapacityContributions,
             executionBinding: attempt.executionBinding,
             routeTransitionReviewDigest: attempt.routeTransitionReviewDigest,
+            contextAlignmentDigest: attempt.contextAlignmentDigest,
             bindingDigest: attempt.bindingDigest,
             incidentID: attempt.incidentID,
             status: status,
@@ -2697,12 +3041,12 @@ public final class LocalIPCClient:
         let id = incidentID ?? requestID()
         let methods = Set([
             "ping", "agent_attempt_recovery", "tool_recovery", "agent_input", "snapshot", "timeline_page", "setup_snapshot",
-            "codex_connect", "provider_account_policy_configure",
+            "codex_connect", "claude_code_cancel", "claude_code_connect", "provider_account_policy_configure",
             "provider_model_rate_card_configure",
             "remote_tool_backend_enrollment_configure",
             "remote_tool_backend_enrollment_revoke",
             "builder_start", "builder_answer", "builder_edit",
-            "builder_validate", "builder_confirm", "team_archive",
+            "builder_validate", "builder_confirm", "team_materialize", "team_archive",
             "team_restore", "credential_configure", "credential_import",
             "provider_endpoint_review_approve", "credential_verify",
             "provider_failure_lab_run",
@@ -2714,6 +3058,7 @@ public final class LocalIPCClient:
             "side_task_handoff",
             "chat_thread",
             "chat_context_disclosure",
+            "chat_control_decision",
             "chat_response_cancel",
             "chat_thread_delete",
             "chat_message",
@@ -2729,7 +3074,8 @@ public final class LocalIPCClient:
             "roundtable_conclude",
             "roundtable_snapshot",
         ])
-        guard LocalIPCWire.validRequestID(id), methods.contains(method) else {
+        guard LocalIPCWire.validRequestID(id),
+              methods.contains(method) || Self.roundtableMethods.contains(method) else {
             throw LocalProductClientError.invalidRequest
         }
         let request = IPCRequest(
@@ -2744,13 +3090,11 @@ public final class LocalIPCClient:
             body,
             maximum: Self.requestMaximum
         )
-        let response = try await Task.detached {
-            try Self.exchange(
-                path: self.socketPath,
-                request: framed,
-                timeoutSeconds: Self.requestTimeoutSeconds(for: method)
-            )
-        }.value
+        let response = try await Self.exchangeAsync(
+            path: socketPath,
+            request: framed,
+            timeoutSeconds: Self.requestTimeoutSeconds(for: method)
+        )
         return try LocalIPCWire.decodeResponse(
             response,
             expectedRequestID: id
@@ -2777,13 +3121,11 @@ public final class LocalIPCClient:
             IPCRequest(requestID: id, journeyID: journeyID, method: method, params: params)
         )
         try StrictJSONScanner.validate(body)
-        let response = try await Task.detached {
-            try Self.exchange(
-                path: self.socketPath,
-                request: try LocalIPCWire.frame(body, maximum: Self.requestMaximum),
-                timeoutSeconds: Self.requestTimeoutSeconds(for: method)
-            )
-        }.value
+        let response = try await Self.exchangeAsync(
+            path: socketPath,
+            request: try LocalIPCWire.frame(body, maximum: Self.requestMaximum),
+            timeoutSeconds: Self.requestTimeoutSeconds(for: method)
+        )
         return try LocalIPCWire.decodeResponse(
             response,
             expectedRequestID: id,
@@ -2813,13 +3155,11 @@ public final class LocalIPCClient:
             "params": params,
         ])
         try StrictJSONScanner.validate(body)
-        let response = try await Task.detached {
-            try Self.exchange(
-                path: self.socketPath,
-                request: try LocalIPCWire.frame(body, maximum: Self.requestMaximum),
-                timeoutSeconds: Self.requestTimeoutSeconds(for: method)
-            )
-        }.value
+        let response = try await Self.exchangeAsync(
+            path: socketPath,
+            request: try LocalIPCWire.frame(body, maximum: Self.requestMaximum),
+            timeoutSeconds: Self.requestTimeoutSeconds(for: method)
+        )
         return try LocalIPCWire.decodeResponse(
             response,
             expectedRequestID: id,
@@ -2835,6 +3175,8 @@ public final class LocalIPCClient:
             return 2
         case "agent_attempt_recovery":
             return 55
+		case "roundtable_steer_seat":
+			return 130
         case "credential_verify", "credential_vault_rotate",
              "credential_vault_lock", "credential_vault_unlock", "credential_vault_reset",
              "credential_vault_export",
@@ -2854,11 +3196,35 @@ public final class LocalIPCClient:
         return "89ab".contains(variant)
     }
 
-    private static func exchange(
+    private static func exchangeAsync(
         path: String,
         request: Data,
         timeoutSeconds: Int
+    ) async throws -> Data {
+        let cancellation = LocalIPCExchangeCancellation()
+        let worker = Task.detached {
+            try exchange(
+                path: path,
+                request: request,
+                timeoutSeconds: timeoutSeconds,
+                cancellation: cancellation
+            )
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+            cancellation.cancel()
+        }
+    }
+
+    private static func exchange(
+        path: String,
+        request: Data,
+        timeoutSeconds: Int,
+        cancellation: LocalIPCExchangeCancellation
     ) throws -> Data {
+        try cancellation.check()
         guard isTrustedSocket(at: path) else {
             throw LocalProductClientError.invalidSocket
         }
@@ -2869,7 +3235,11 @@ public final class LocalIPCClient:
         guard descriptor >= 0 else {
             throw LocalProductClientError.unavailable
         }
-        defer { Darwin.close(descriptor) }
+        defer {
+            cancellation.clear(descriptor)
+            Darwin.close(descriptor)
+        }
+        try cancellation.install(descriptor)
 
         var timeout = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
         guard setsockopt(
@@ -2907,6 +3277,7 @@ public final class LocalIPCClient:
                 )
             }
         }
+        try cancellation.check()
         guard connected == 0 else {
             throw errno == EAGAIN || errno == ETIMEDOUT
                 ? LocalProductClientError.timeout
@@ -2915,12 +3286,14 @@ public final class LocalIPCClient:
         try request.withUnsafeBytes { bytes in
             var sent = 0
             while sent < bytes.count {
+                try cancellation.check()
                 let count = Darwin.send(
                     descriptor,
                     bytes.baseAddress!.advanced(by: sent),
                     bytes.count - sent,
                     0
                 )
+                try cancellation.check()
                 guard count > 0 else {
                     throw LocalProductClientError.unavailable
                 }
@@ -2934,7 +3307,9 @@ public final class LocalIPCClient:
         var received = Data()
         var buffer = [UInt8](repeating: 0, count: 8_192)
         while true {
+            try cancellation.check()
             let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+            try cancellation.check()
             if count == 0 { break }
             guard count > 0 else {
                 throw errno == EAGAIN || errno == ETIMEDOUT

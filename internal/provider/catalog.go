@@ -16,6 +16,7 @@ const (
 	MiniMaxConversationModelID      = "MiniMax-M3"
 	OpenCodeConversationProfileID   = "conversation-opencode-default-v1"
 	PiConversationProfileID         = "conversation-loom-local-pi-default-v1"
+	PiConversationModelID           = "qwen2.5-coder-1.5b-instruct-q4-k-m"
 )
 
 func AnthropicConversationProfileID(revision int64) string {

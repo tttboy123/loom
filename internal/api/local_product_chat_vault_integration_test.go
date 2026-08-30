@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"loom-pi-rebuild/internal/contextcapsule"
+	"loom-pi-rebuild/internal/controltool"
 	credentialvault "loom-pi-rebuild/internal/credentials/vault"
 )
 
@@ -19,6 +20,106 @@ type localProductChatVaultStore struct {
 
 var _ LocalProductChatDocumentStore = (*localProductChatVaultStore)(nil)
 var _ LocalProductConversationContextCapsuleStore = (*localProductChatVaultStore)(nil)
+
+func TestLocalProductChatVaultPersistsExpiredProposalWithNewRevision(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	privateDirectory := filepath.Join(root, "private")
+	stateDirectory := filepath.Join(root, "state")
+	for _, directory := range []string{privateDirectory, stateDirectory} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyPath := filepath.Join(privateDirectory, "vault.key")
+	databasePath := filepath.Join(stateDirectory, "credential-vault.db")
+	legacyChatPath := filepath.Join(stateDirectory, "chat-threads.json")
+	openVault := func() *localProductChatVaultStore {
+		material, err := (credentialvault.LocalKeyFile{Path: keyPath}).LoadOrCreate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := credentialvault.OpenStore(credentialvault.StoreConfig{
+			DatabasePath: databasePath, KeyMaterial: material,
+			Now: func() time.Time { return time.Unix(1_787_342_400, 0).UTC() },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &localProductChatVaultStore{VaultStore: store}
+	}
+
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	firstVault := openVault()
+	responder := &conversationActionControlResponder{}
+	chat, err := NewEncryptedPersistentLocalProductChatAPI(
+		ctx, legacyChatPath, firstVault, func() time.Time { return now }, responder,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responder.chat = chat
+	setPhase7ControlTestBindingResolver(chat)
+	if err := chat.SetControlWorkspace(phase7ControlTestWorkspace()); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := chat.SendMessage(ctx, LocalProductChatMessageRequest{
+		ThreadID: "vault-expired-action", Content: "Plan a governed Mission",
+		ProfileID: "codex", IncidentID: "incident-vault-expiry-create",
+	})
+	if err != nil || len(thread.ActionProposals) != 1 {
+		t.Fatalf("pending thread=%#v error=%v", thread, err)
+	}
+	before, err := firstVault.ConversationDocuments(ctx, localProductChatDocumentKind)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("before documents=%d error=%v", len(before), err)
+	}
+	beforeRevision := before[0].Revision
+	clearLocalProductChatVaultBytes(before[0].Payload)
+	now = now.Add(6 * time.Minute)
+	proposal := thread.ActionProposals[0]
+	decided, err := chat.DecideControlProposal(ctx, LocalProductChatControlDecisionRequest{
+		ThreadID: thread.ThreadID, ProposalID: proposal.ProposalID,
+		ProposalDigest: proposal.ProposalDigest, Decision: ControlDecisionConfirm,
+		IncidentID: "incident-vault-expiry-decision",
+	})
+	if err != nil || decided.ActionProposals[0].Status != controltool.ProposalExpired ||
+		len(decided.ProposalDecisionReceipts) != 1 ||
+		len(decided.Messages) != len(thread.Messages)+1 {
+		t.Fatalf("expired thread=%#v error=%v", decided, err)
+	}
+	after, err := firstVault.ConversationDocuments(ctx, localProductChatDocumentKind)
+	if err != nil || len(after) != 1 || after[0].Revision <= beforeRevision {
+		t.Fatalf(
+			"after documents=%d revision=%d before=%d error=%v",
+			len(after), func() int64 {
+				if len(after) == 0 {
+					return 0
+				}
+				return after[0].Revision
+			}(),
+			beforeRevision, err,
+		)
+	}
+	clearLocalProductChatVaultBytes(after[0].Payload)
+	if err := firstVault.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondVault := openVault()
+	defer secondVault.Close()
+	restarted, err := NewEncryptedPersistentLocalProductChatAPI(
+		ctx, legacyChatPath, secondVault, func() time.Time { return now }, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := restarted.ChatThread(ctx, thread.ThreadID)
+	if err != nil || restored.ActionProposals[0].Status != controltool.ProposalExpired ||
+		len(restored.ProposalDecisionReceipts) != 1 {
+		t.Fatalf("restored thread=%#v error=%v", restored, err)
+	}
+}
 
 func (store *localProductChatVaultStore) ConversationDocuments(
 	ctx context.Context,

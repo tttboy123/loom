@@ -3,14 +3,19 @@ package harnessadapter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"loom-pi-rebuild/internal/controltool"
+	"loom-pi-rebuild/internal/work"
 )
 
 type CodexSegmentSessionConfig struct {
@@ -24,20 +29,25 @@ type CodexSegmentSessionConfig struct {
 	Timeout         time.Duration
 	MaxOutputBytes  int
 	Sessions        HarnessSessionRunner
+	ControlRegistry *controltool.Registry
+	ControlGateway  controltool.Gateway
 }
 
 type CodexSegmentSession struct {
-	stream         HarnessStreamSession
-	threadID       string
-	modelID        string
-	reasoning      string
-	maximum        int
-	cleanupPrompt  func() error
-	cleanupHome    func() error
-	cancelLifetime context.CancelFunc
-	mu             sync.Mutex
-	turnSequence   int
-	closed         bool
+	stream                 HarnessStreamSession
+	threadID               string
+	modelID                string
+	reasoning              string
+	maximum                int
+	cleanupPrompt          func() error
+	cleanupHome            func() error
+	cancelLifetime         context.CancelFunc
+	controlMCP             *harnessControlMCP
+	controlSelectionSchema json.RawMessage
+	controlFinalSchema     json.RawMessage
+	mu                     sync.Mutex
+	turnSequence           int
+	closed                 bool
 }
 
 func OpenCodexSegmentSession(
@@ -55,11 +65,20 @@ func OpenCodexSegmentSession(
 		!utf8.ValidString(config.SystemPrompt) ||
 		strings.IndexByte(config.SystemPrompt, 0) >= 0 ||
 		config.Timeout <= 0 || config.Timeout > 24*time.Hour ||
-		config.MaxOutputBytes < 256 || config.MaxOutputBytes > 1<<20 {
+		config.MaxOutputBytes < 256 || config.MaxOutputBytes > 1<<20 ||
+		(config.ControlRegistry == nil) != nilHarnessInterface(config.ControlGateway) {
 		return nil, ErrInvalidCodexAdapter
 	}
+	systemPrompt := config.SystemPrompt
+	if config.ControlRegistry != nil {
+		var promptErr error
+		systemPrompt, promptErr = appendCodexControlArbitrationSystemPrompt(systemPrompt)
+		if promptErr != nil {
+			return nil, promptErr
+		}
+	}
 	systemPromptPath, cleanupPrompt, err := materializeHarnessSystemPrompt(
-		config.PrivateRoot, config.SystemPrompt,
+		config.PrivateRoot, systemPrompt,
 	)
 	if err != nil {
 		return nil, err
@@ -86,18 +105,53 @@ func OpenCodexSegmentSession(
 		WorkspacePath:  config.WorkspacePath,
 		HomePath:       config.HomePath, TempPath: config.PrivateRoot,
 		ModelID: config.ModelID, ReasoningEffort: config.ReasoningEffort,
-		SystemPrompt: config.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Timeout:      config.Timeout, MaxOutputBytes: config.MaxOutputBytes,
 	}
 	lifetimeContext, cancelLifetime := context.WithCancel(context.Background())
+	var controlMCP *harnessControlMCP
+	if config.ControlRegistry != nil {
+		controlMCP, err = newHarnessControlMCP(
+			lifetimeContext, config.ControlRegistry, config.ControlGateway,
+		)
+		if err != nil {
+			cancelLifetime()
+			return nil, err
+		}
+	}
+	defer func() {
+		if !cleaned && controlMCP != nil {
+			controlMCP.Close()
+		}
+	}()
+	controlLease := HarnessControlMCPLease{}
+	if controlMCP != nil {
+		controlLease = controlMCP.Lease()
+	}
+	var controlSelectionSchema json.RawMessage
+	var controlFinalSchema json.RawMessage
+	if controlMCP != nil {
+		controlSelectionSchema, err = codexControlSelectionOutputSchema(
+			config.ControlRegistry, controlLease.ToolNames,
+		)
+		if err == nil {
+			controlFinalSchema, err = codexControlFinalOutputSchema()
+		}
+		if err != nil {
+			cancelLifetime()
+			return nil, err
+		}
+	}
 	stream, err := config.Sessions.StartSession(
 		lifetimeContext,
 		HarnessSessionRequest{
 			ExecutablePath: config.ExecutablePath,
 			Arguments: codexNativeConversationAppServerArguments(
-				request, systemPromptPath,
+				request, systemPromptPath, controlLease,
 			),
-			Environment:    codexNativeConversationEnvironment(request, codexHome),
+			Environment: codexNativeConversationEnvironment(
+				request, codexHome, controlLease,
+			),
 			Directory:      config.WorkspacePath,
 			MaxOutputBytes: config.MaxOutputBytes, Timeout: config.Timeout,
 		},
@@ -124,11 +178,32 @@ func OpenCodexSegmentSession(
 		stream: stream, threadID: threadID, modelID: resolvedModelID,
 		reasoning: config.ReasoningEffort, maximum: config.MaxOutputBytes,
 		cleanupPrompt: cleanupPrompt, cleanupHome: cleanupHome,
-		cancelLifetime: cancelLifetime,
+		cancelLifetime: cancelLifetime, controlMCP: controlMCP,
+		controlSelectionSchema: controlSelectionSchema,
+		controlFinalSchema:     controlFinalSchema,
 	}
 	abort = false
 	cleaned = true
 	return segment, nil
+}
+
+func (session *CodexSegmentSession) BeginControlTurn(
+	turn controltool.TurnContext,
+) error {
+	if session == nil || session.controlMCP == nil {
+		return ErrHarnessControlMCP
+	}
+	return session.controlMCP.BeginTurn(turn)
+}
+
+func (session *CodexSegmentSession) EndControlTurn() (
+	controltool.ProposalBatch,
+	error,
+) {
+	if session == nil || session.controlMCP == nil {
+		return controltool.ProposalBatch{}, ErrHarnessControlMCP
+	}
+	return session.controlMCP.EndTurn()
 }
 
 func (session *CodexSegmentSession) Respond(
@@ -146,22 +221,111 @@ func (session *CodexSegmentSession) Respond(
 	if session.closed || session.stream == nil {
 		return HarnessProcessResult{}, ErrHarnessProcessUnavailable
 	}
-	session.turnSequence++
 	request := HarnessProcessRequest{
 		ModelID: session.modelID, ReasoningEffort: session.reasoning,
 		MaxOutputBytes: session.maximum,
 	}
-	content, accounting, err := codexAppServerTurn(
-		ctx, session.stream, session.threadID, session.turnSequence, request, prompt,
-	)
+	options := []codexAppServerTurnOptions(nil)
+	if session.controlMCP != nil {
+		options = append(options, codexAppServerTurnOptions{
+			OutputSchema: session.controlSelectionSchema,
+		})
+	}
+	content, accounting, err := session.respondTurnLocked(ctx, request, prompt, options...)
 	if err != nil {
 		if errors.Is(err, errCodexAppServerTurnInterrupted) {
 			return HarnessProcessResult{}, err
 		}
-		err = errors.Join(err, session.failLocked())
+		err = errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureFirstTurn, err),
+			session.failLocked(),
+		)
 		return HarnessProcessResult{}, err
 	}
-	return HarnessProcessResult{Content: content, Accounting: accounting}, nil
+	if session.controlMCP == nil {
+		return HarnessProcessResult{Content: content, Accounting: accounting}, nil
+	}
+	selection, err := decodeCodexControlSelection(
+		content, session.controlMCP.Lease().ToolNames,
+	)
+	if err != nil {
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureSelectionDecode, err),
+			session.failLocked(),
+		)
+	}
+	defer zeroHarnessBytes(selection.Arguments)
+	if selection.ToolName == codexControlNoTool {
+		return HarnessProcessResult{Content: selection.Response, Accounting: accounting}, nil
+	}
+	alreadyCompleted, err := session.controlMCP.selectedToolAlreadyCompleted(selection.ToolName)
+	if err != nil {
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureDirectMatch, err),
+			session.failLocked(),
+		)
+	}
+	if alreadyCompleted {
+		return HarnessProcessResult{Content: selection.Response, Accounting: accounting}, nil
+	}
+	result, err := CallHarnessControlTool(
+		ctx, session.controlMCP.Lease(), selection.ToolName, selection.Arguments,
+	)
+	if err != nil {
+		zeroHarnessBytes(result)
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlBrokerFailureStage(err), err),
+			session.failLocked(),
+		)
+	}
+	defer zeroHarnessBytes(result)
+	if err := session.controlMCP.suspendTurnCalls(); err != nil {
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureBrokerSuspend, err),
+			session.failLocked(),
+		)
+	}
+	finalContent, finalAccounting, err := session.respondTurnLocked(
+		ctx, request, []byte(codexControlResultFollowupPrompt),
+		codexAppServerTurnOptions{
+			OutputSchema:     session.controlFinalSchema,
+			UntrustedContext: result,
+		},
+	)
+	if err != nil {
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureResultSummary, err),
+			session.failLocked(),
+		)
+	}
+	accounting, err = combineHarnessAccounting(accounting, finalAccounting)
+	if err != nil {
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureAccounting, err),
+			session.failLocked(),
+		)
+	}
+	finalResponse, err := decodeCodexControlFinal(finalContent)
+	if err != nil {
+		return HarnessProcessResult{}, errors.Join(
+			newCodexControlArbitrationFailure(codexControlFailureResultDecode, err),
+			session.failLocked(),
+		)
+	}
+	return HarnessProcessResult{Content: finalResponse, Accounting: accounting}, nil
+}
+
+func (session *CodexSegmentSession) respondTurnLocked(
+	ctx context.Context,
+	request HarnessProcessRequest,
+	prompt []byte,
+	options ...codexAppServerTurnOptions,
+) (string, *work.RunAccounting, error) {
+	session.turnSequence++
+	return codexAppServerTurn(
+		ctx, session.stream, session.threadID, session.turnSequence, request, prompt,
+		options...,
+	)
 }
 
 func (session *CodexSegmentSession) Healthy() bool {
@@ -183,6 +347,10 @@ func (session *CodexSegmentSession) failLocked() error {
 	if session.cancelLifetime != nil {
 		session.cancelLifetime()
 		session.cancelLifetime = nil
+	}
+	if session.controlMCP != nil {
+		session.controlMCP.Close()
+		session.controlMCP = nil
 	}
 	if session.cleanupPrompt != nil {
 		result = errors.Join(result, session.cleanupPrompt())
@@ -231,12 +399,17 @@ func (session *CodexSegmentSession) Close(ctx context.Context) error {
 		result = errors.Join(result, session.cleanupHome())
 		session.cleanupHome = nil
 	}
+	if session.controlMCP != nil {
+		session.controlMCP.Close()
+		session.controlMCP = nil
+	}
 	return result
 }
 
 func codexNativeConversationAppServerArguments(
 	request HarnessProcessRequest,
 	systemPromptPath string,
+	control ...HarnessControlMCPLease,
 ) []string {
 	arguments := []string{
 		"-c", `model_instructions_file=` + fmt.Sprintf("%q", systemPromptPath),
@@ -253,6 +426,24 @@ func codexNativeConversationAppServerArguments(
 		"-c", `approval_policy="never"`,
 		"-c", `sandbox_mode="read-only"`,
 	}
+	if len(control) == 1 && validHarnessControlMCPLease(control[0]) {
+		enabledTools, _ := json.Marshal(control[0].ToolNames)
+		arguments = append(arguments,
+			"-c", `mcp_servers.loom_control.url=`+fmt.Sprintf("%q", control[0].URL),
+			"-c", `mcp_servers.loom_control.bearer_token_env_var="`+harnessControlMCPTokenEnv+`"`,
+			"-c", `mcp_servers.loom_control.enabled_tools=`+string(enabledTools),
+		)
+		for _, name := range control[0].ToolNames {
+			arguments = append(
+				arguments, "-c",
+				`mcp_servers.loom_control.tools.`+name+`.approval_mode="approve"`,
+			)
+		}
+		arguments = append(arguments,
+			"-c", `mcp_servers.loom_control.startup_timeout_sec=5`,
+			"-c", `mcp_servers.loom_control.tool_timeout_sec=15`,
+		)
+	}
 	if request.ReasoningEffort != "" {
 		arguments = append(
 			arguments, "-c",
@@ -265,8 +456,9 @@ func codexNativeConversationAppServerArguments(
 func codexNativeConversationEnvironment(
 	request HarnessProcessRequest,
 	codexHome string,
+	control ...HarnessControlMCPLease,
 ) []string {
-	return []string{
+	environment := []string{
 		"HOME=" + request.HomePath,
 		"CODEX_HOME=" + codexHome,
 		"TMPDIR=" + request.TempPath,
@@ -274,6 +466,44 @@ func codexNativeConversationEnvironment(
 		"LANG=C.UTF-8", "LC_ALL=C.UTF-8", "NO_COLOR=1",
 		"CODEX_MANAGED_BY_LOOM=1",
 	}
+	if len(control) == 1 && validHarnessControlMCPLease(control[0]) {
+		environment = append(
+			environment, harnessControlMCPTokenEnv+"="+control[0].Token,
+		)
+	}
+	return environment
+}
+
+func validHarnessControlMCPLease(lease HarnessControlMCPLease) bool {
+	endpoint, err := url.Parse(lease.URL)
+	if err != nil || !validHarnessControlLoopbackURL(endpoint) || len(lease.URL) > 256 ||
+		len(lease.Token) != 64 || strings.IndexFunc(lease.Token, func(char rune) bool {
+		return !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f')
+	}) >= 0 || len(lease.ToolNames) == 0 || len(lease.ToolNames) > 64 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(lease.ToolNames))
+	for _, name := range lease.ToolNames {
+		if !validHarnessControlToolName(name) {
+			return false
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return false
+		}
+		seen[name] = struct{}{}
+	}
+	return true
+}
+
+func validHarnessControlToolName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	// Tool names become exact CLI allow-list and configuration keys, so keep
+	// their alphabet closed to prevent argument or configuration injection.
+	return strings.IndexFunc(name, func(char rune) bool {
+		return !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '_')
+	}) < 0
 }
 
 func prepareCodexNativeConversationHome(

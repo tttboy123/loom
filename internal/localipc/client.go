@@ -3,6 +3,8 @@ package localipc
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,6 +24,7 @@ type Client struct {
 	socketPath      string
 	timeout         time.Duration
 	extendedTimeout time.Duration
+	requestIDPrefix string
 	nextID          atomic.Uint64
 }
 
@@ -37,11 +40,24 @@ func NewClient(config ClientConfig) (*Client, error) {
 		validateSocketPath(config.SocketPath, os.Geteuid()) != nil {
 		return nil, ErrInvalidSocketPath
 	}
+	requestIDPrefix, err := newClientRequestIDPrefix()
+	if err != nil {
+		return nil, err
+	}
 	return &Client{
 		socketPath:      config.SocketPath,
 		timeout:         config.Timeout,
 		extendedTimeout: config.ExtendedTimeout,
+		requestIDPrefix: requestIDPrefix,
 	}, nil
+}
+
+func newClientRequestIDPrefix() (string, error) {
+	var nonce [8]byte
+	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+		return "", ErrInvalidProtocol
+	}
+	return "loom-client-" + hex.EncodeToString(nonce[:]), nil
 }
 
 func (client *Client) Ping(ctx context.Context) (PingResult, error) {
@@ -84,7 +100,7 @@ func (client *Client) call(
 	}
 	request := Request{
 		Version: protocolVersion,
-		RequestID: "loom-client-" +
+		RequestID: client.requestIDPrefix + "-" +
 			decimalRequestID(client.nextID.Add(1)),
 		Method:    method,
 		Params:    paramsBytes,
@@ -158,6 +174,7 @@ func (client *Client) call(
 	if err := decoder.Decode(&response); err != nil ||
 		decoder.Decode(&struct{}{}) != io.EOF ||
 		response.Version != protocolVersion ||
+		!validRequestID(response.RequestID) ||
 		response.RequestID != request.RequestID ||
 		response.JourneyID != journeyID ||
 		response.OK == (response.Error != nil) {
@@ -168,6 +185,7 @@ func (client *Client) call(
 			Code:        response.Error.Code,
 			Recoverable: response.Error.Recoverable,
 			Stage:       response.Error.Stage,
+			IncidentID:  response.RequestID,
 		}
 	}
 	if len(response.Result) == 0 ||
@@ -186,6 +204,9 @@ func (client *Client) timeoutForMethod(method string) time.Duration {
 	}
 	if method == "agent_attempt_recovery" {
 		return agentRecoveryResponse + 3*time.Second
+	}
+	if method == "roundtable_steer_seat" {
+		return roundtableSteerResponse + 3*time.Second
 	}
 	if usesExtendedRequestDeadline(method) {
 		return client.extendedTimeout
@@ -212,6 +233,7 @@ type RemoteError struct {
 	Code        string
 	Recoverable bool
 	Stage       string
+	IncidentID  string
 }
 
 func (err *RemoteError) Error() string {

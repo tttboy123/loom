@@ -25,7 +25,7 @@ import (
 
 const productNativeAgentRuntimeInstanceID = "runtime.loom-native.local"
 
-const productClaudeCodeRuntimeInstanceID = "runtime.claude-code.local"
+const productClaudeCodeRuntimeInstanceID = harnessadapter.ClaudeCodeRuntimeInstanceID
 
 const productCodexRuntimeInstanceID = "runtime.codex.local"
 
@@ -41,6 +41,7 @@ const (
 type productNativeAgentRuntimeDefinition struct {
 	RuntimeInstanceID   string
 	ProbeID             string
+	DisplayName         string
 	ProviderID          string
 	ModelID             string
 	EndpointFingerprint string
@@ -144,6 +145,7 @@ var productNativeAgentRuntimeDefinitions = []productNativeAgentRuntimeDefinition
 	{
 		RuntimeInstanceID:   productNativeAgentRuntimeInstanceID,
 		ProbeID:             "probe.loom-native.local",
+		DisplayName:         "Loom Native (DeepSeek)",
 		ProviderID:          nativeadapter.DeepSeekAgentProviderID,
 		ModelID:             nativeadapter.DeepSeekAgentModelID,
 		EndpointFingerprint: nativeadapter.DeepSeekAgentEndpointFingerprint,
@@ -151,6 +153,7 @@ var productNativeAgentRuntimeDefinitions = []productNativeAgentRuntimeDefinition
 	{
 		RuntimeInstanceID:   productKimiAgentRuntimeInstanceID,
 		ProbeID:             "probe.loom-native.kimi",
+		DisplayName:         "Loom Native (Kimi)",
 		ProviderID:          nativeadapter.KimiAgentProviderID,
 		ModelID:             nativeadapter.KimiAgentModelID,
 		EndpointFingerprint: nativeadapter.KimiAgentEndpointFingerprint,
@@ -158,6 +161,7 @@ var productNativeAgentRuntimeDefinitions = []productNativeAgentRuntimeDefinition
 	{
 		RuntimeInstanceID:   productMiniMaxAgentRuntimeInstanceID,
 		ProbeID:             "probe.loom-native.minimax",
+		DisplayName:         "Loom Native (MiniMax)",
 		ProviderID:          nativeadapter.MiniMaxAgentProviderID,
 		ModelID:             nativeadapter.MiniMaxAgentModelID,
 		EndpointFingerprint: nativeadapter.MiniMaxAgentEndpointFingerprint,
@@ -183,7 +187,7 @@ func (probe productNativeAgentRuntimeProbe) ObserveRuntime(
 			ID:                   probe.definition.RuntimeInstanceID,
 			DeviceID:             "device.local",
 			AdapterType:          nativeadapter.LoomNativeAgentAdapterType,
-			DisplayName:          "Loom Native",
+			DisplayName:          probe.definition.DisplayName,
 			ExecutableVersion:    "v1",
 			Status:               loomruntime.RuntimeOnline,
 			ObservedCapabilities: []string{loomruntime.CapabilityContextRetrieval},
@@ -203,9 +207,12 @@ func ensureProductNativeAgentRuntime(
 		emittedAt.Location() != time.UTC {
 		return errors.New("native Agent runtime unavailable")
 	}
+	if err := readModel.Rebuild(ctx); err != nil {
+		return err
+	}
 	for _, definition := range productNativeAgentRuntimeDefinitions {
-		if err := ensureProductNativeAgentProviderRuntime(
-			ctx, store, readModel, emittedAt, definition.ProviderID,
+		if err := ensureProductNativeAgentProviderRuntimeFromProjection(
+			ctx, store, readModel, emittedAt, definition,
 		); err != nil {
 			return err
 		}
@@ -231,6 +238,18 @@ func ensureProductNativeAgentProviderRuntime(
 	if err := readModel.Rebuild(ctx); err != nil {
 		return err
 	}
+	return ensureProductNativeAgentProviderRuntimeFromProjection(
+		ctx, store, readModel, emittedAt, definition,
+	)
+}
+
+func ensureProductNativeAgentProviderRuntimeFromProjection(
+	ctx context.Context,
+	store *journal.Store,
+	readModel *projection.Projection,
+	emittedAt time.Time,
+	definition productNativeAgentRuntimeDefinition,
+) error {
 	current, found := readModel.GlobalReadView().RuntimeInstance(
 		definition.RuntimeInstanceID,
 	)
@@ -256,6 +275,9 @@ func ensureProductNativeAgentProviderRuntime(
 	if migratingHistoricalRuntime {
 		sequence = max(current.DiscoverySequence, current.StatusSequence) + 1
 		identitySuffix = "context-retrieval-v1"
+		if current.DisplayName != definition.DisplayName {
+			identitySuffix = "provider-display-name-v1"
+		}
 	}
 	commit, err := state.CommitRuntimeDiscoverySnapshot(
 		ctx,
@@ -636,8 +658,22 @@ func ensureProductOpenCodeAgentRuntime(
 	emittedAt time.Time,
 	executablePath string,
 ) error {
+	return ensureProductOpenCodeAgentRuntimeWithModelTimeout(
+		ctx, store, readModel, emittedAt, executablePath, 10*time.Second,
+	)
+}
+
+func ensureProductOpenCodeAgentRuntimeWithModelTimeout(
+	ctx context.Context,
+	store *journal.Store,
+	readModel *projection.Projection,
+	emittedAt time.Time,
+	executablePath string,
+	modelTimeout time.Duration,
+) error {
 	if ctx == nil || store == nil || readModel == nil || emittedAt.IsZero() ||
-		emittedAt.Location() != time.UTC {
+		emittedAt.Location() != time.UTC || modelTimeout <= 0 ||
+		modelTimeout > time.Minute {
 		return errors.New("OpenCode runtime unavailable")
 	}
 	resolved, err := harnessadapter.ResolveHarnessExecutable(executablePath)
@@ -659,7 +695,7 @@ func ensureProductOpenCodeAgentRuntime(
 		return errors.New("OpenCode runtime identity drift")
 	}
 	homePath, homeErr := os.UserHomeDir()
-	modelContext, cancelModels := context.WithTimeout(ctx, 10*time.Second)
+	modelContext, cancelModels := context.WithTimeout(ctx, modelTimeout)
 	modelIDs, modelErr := provider.DiscoverSystemOpenCodeModels(
 		modelContext, executablePath, homePath,
 	)
@@ -906,7 +942,8 @@ func validProductNativeAgentRuntime(
 ) bool {
 	return current.ID == definition.RuntimeInstanceID &&
 		current.AdapterType == nativeadapter.LoomNativeAgentAdapterType &&
-		current.DeviceID == "device.local" && current.DisplayName == "Loom Native" &&
+		current.DeviceID == "device.local" &&
+		current.DisplayName == definition.DisplayName &&
 		current.ExecutableVersion == "v1" &&
 		current.Status == string(loomruntime.RuntimeOnline) && current.Capacity == 3 &&
 		reflect.DeepEqual(
@@ -920,10 +957,16 @@ func validHistoricalProductNativeAgentRuntime(
 	current projection.RuntimeInstance,
 	definition productNativeAgentRuntimeDefinition,
 ) bool {
-	if len(current.ObservedCapabilities) != 0 {
+	switch current.DisplayName {
+	case "Loom Native":
+		current.DisplayName = definition.DisplayName
+	case definition.DisplayName:
+	default:
 		return false
 	}
-	current.ObservedCapabilities = []string{loomruntime.CapabilityContextRetrieval}
+	if len(current.ObservedCapabilities) == 0 {
+		current.ObservedCapabilities = []string{loomruntime.CapabilityContextRetrieval}
+	}
 	return validProductNativeAgentRuntime(current, definition)
 }
 

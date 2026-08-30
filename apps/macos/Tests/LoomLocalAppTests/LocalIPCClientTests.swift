@@ -73,6 +73,33 @@ final class LocalIPCClientTests: XCTestCase {
         }
     }
 
+    func testTeamMaterializeRequestUsesOnlySavedDefinitionIdentity() throws {
+        let digest = String(repeating: "f", count: 64)
+        let data = try JSONEncoder().encode(
+            TeamMaterializeParams(
+                teamDefinitionID: "team-definition-1",
+                teamDefinitionVersion: 3,
+                teamDefinitionDigest: digest
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(object.keys),
+            Set([
+                "team_definition_id", "team_definition_version",
+                "team_definition_digest",
+            ])
+        )
+        XCTAssertEqual(object["team_definition_id"] as? String, "team-definition-1")
+        XCTAssertEqual(object["team_definition_version"] as? Int, 3)
+        XCTAssertEqual(object["team_definition_digest"] as? String, digest)
+        XCTAssertNil(object["team_instance_id"])
+        XCTAssertNil(object["mission_id"])
+        XCTAssertNil(object["objective"])
+    }
+
     func testCredentialSecretNormalizationTrimsOnlyASCIIEdges() {
         XCTAssertEqual(
             LocalIPCClient.normalizedCredentialSecret(" \t\r\nsk-deepseek-test\r\n "),
@@ -182,7 +209,8 @@ final class LocalIPCClientTests: XCTestCase {
                     code: .credentialUnavailable,
                     recoverable: true,
                     stage: .helperAuthorization,
-                    incidentID: "request-1"
+                    incidentID: "request-1",
+                    safeMessage: "credential unavailable"
                 )
             )
         }
@@ -199,6 +227,54 @@ final class LocalIPCClientTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? LocalProductClientError, .invalidResponse)
         }
+    }
+
+    func testControlProposalConflictPreservesSafeDecisionStage() {
+        let body = """
+        {"version":1,"request_id":"request-control","ok":false,"result":null,"error":{"code":"conflict","message":"conflict","recoverable":true,"stage":"control_proposal_confirm"}}
+        """
+        XCTAssertThrowsError(
+            try LocalIPCWire.decodeResponse(
+                Data(body.utf8), expectedRequestID: "request-control"
+            )
+        ) { error in
+            let remote = error as? LocalIPCRemoteError
+            XCTAssertEqual(remote?.code, .conflict)
+            XCTAssertEqual(remote?.stage, .controlProposalConfirm)
+            XCTAssertEqual(remote?.incidentID, "request-control")
+            XCTAssertTrue(remote?.recoverable == true)
+        }
+    }
+
+    func testRoundtableRemoteErrorPreservesSafeActionableMessage() {
+        let body = """
+        {"version":1,"request_id":"request-roundtable","ok":false,"result":null,"error":{"code":"invalid_request","message":"invalid request","recoverable":false,"stage":"input_admission"}}
+        """
+        XCTAssertThrowsError(
+            try LocalIPCWire.decodeResponse(
+                Data(body.utf8), expectedRequestID: "request-roundtable"
+            )
+        ) { error in
+            let remote = error as? LocalIPCRemoteError
+            XCTAssertEqual(remote?.code, .invalidRequest)
+            XCTAssertEqual(remote?.stage, .inputAdmission)
+            XCTAssertEqual(remote?.safeMessage, "invalid request")
+            XCTAssertEqual(remote?.incidentID, "request-roundtable")
+        }
+    }
+
+    func testRoundtableClientAllowsEveryGovernedOperation() {
+        XCTAssertEqual(LocalIPCClient.roundtableMethods, Set([
+            "roundtable_session_create", "roundtable_add_seat",
+            "roundtable_retire_seat", "roundtable_open_round",
+            "roundtable_pause_round", "roundtable_steer_seat",
+            "roundtable_retry_seat", "roundtable_skip_seat",
+            "roundtable_replace_seat", "roundtable_export",
+            "roundtable_import", "roundtable_propose_message",
+            "roundtable_relay_message", "roundtable_ack_message",
+            "roundtable_insert_message", "roundtable_drop_message",
+            "roundtable_conclude", "roundtable_snapshot",
+        ]))
     }
 
     func testVaultCredentialStagesDecodeThroughClosedWireSet() throws {
@@ -236,6 +312,7 @@ final class LocalIPCClientTests: XCTestCase {
             .dispatchViewConflict, .dispatchIdentityUnavailable,
             .dispatchRecoveryRequired, .dispatchValidation,
 			.dispatchContextValidation, .dispatchIncomplete,
+			.dispatchProjectionSemantics,
 			.workspacePublication, .workspacePublicationInputValidation,
 			.workspacePublicationSourceSnapshot, .workspacePublicationSourceDrift,
 			.workspacePublicationStageCreate, .workspacePublicationChangeValidation,
@@ -258,6 +335,35 @@ final class LocalIPCClientTests: XCTestCase {
             ) { error in
                 XCTAssertEqual((error as? LocalIPCRemoteError)?.code, .conflict)
                 XCTAssertEqual((error as? LocalIPCRemoteError)?.stage, stage)
+            }
+        }
+    }
+
+    func testRuntimeOperationalStagesDecodeThroughClosedWireSet() throws {
+        let stages: [LocalIPCRemoteError.Stage] = [
+            .contextRetrieval, .contextDeliveryReconcile,
+            .toolInputAdmission, .toolBindingValidation, .toolAuthorization,
+            .toolApprovalWait, .toolSandboxPrepare, .toolDispatch,
+            .toolResultValidation, .toolResultCommit, .toolPayloadCommit,
+            .toolResultDelivery,
+            .compositionCompile, .compositionValidate,
+            .bundleRegister, .bundleStart, .bundleReady, .bundleStop,
+            .bundleDispose, .routeCompile, .scopeOpen, .scopeClose,
+        ]
+        for stage in stages {
+            let body = """
+            {"version":1,"request_id":"request-runtime","ok":false,"result":null,"error":{"code":"state_unavailable","message":"state unavailable","recoverable":true,"stage":"\(stage.rawValue)"}}
+            """
+            XCTAssertThrowsError(
+                try LocalIPCWire.decodeResponse(
+                    Data(body.utf8),
+                    expectedRequestID: "request-runtime"
+                )
+            ) { error in
+                XCTAssertEqual(
+                    (error as? LocalIPCRemoteError)?.stage,
+                    stage
+                )
             }
         }
     }
@@ -320,6 +426,20 @@ final class LocalIPCClientTests: XCTestCase {
 			"provider_model_unavailable",
 			"provider_invalid_request",
 			"provider_unavailable",
+            "not_moderator",
+            "seat_unavailable",
+            "concluded",
+            "invalid_body",
+            "invalid_digest",
+            "too_many_messages",
+            "too_many_seats",
+            "seat_count_invalid",
+            "binding_invalid",
+            "attempt_invalid",
+            "intervention_invalid",
+            "intervention_conflict",
+            "intervention_required",
+            "export_invalid",
             "state_unavailable",
 			"workspace_publish_failed",
             "timeout",
@@ -395,6 +515,10 @@ final class LocalIPCClientTests: XCTestCase {
             LocalIPCClient.requestTimeoutSeconds(for: "agent_attempt_recovery"),
             55
         )
+		XCTAssertEqual(
+			LocalIPCClient.requestTimeoutSeconds(for: "roundtable_steer_seat"),
+			130
+		)
         XCTAssertEqual(
             LocalIPCClient.requestTimeoutSeconds(for: "mission_execution"),
             185
@@ -405,9 +529,9 @@ final class LocalIPCClientTests: XCTestCase {
         )
         for method in [
             "ping", "snapshot", "timeline_page",
-            "codex_connect", "builder_start", "builder_answer",
+            "codex_connect", "claude_code_cancel", "claude_code_connect", "builder_start", "builder_answer",
             "builder_edit", "builder_validate", "builder_confirm",
-            "team_archive", "team_restore", "credential_configure",
+            "team_materialize", "team_archive", "team_restore", "credential_configure",
             "credential_replace", "credential_revoke",
             "provider_account_policy_configure",
             "provider_model_rate_card_configure", "chat_thread",
@@ -960,6 +1084,209 @@ final class LocalIPCClientTests: XCTestCase {
         try await responseTask.value
     }
 
+    func testClaudeCodeConnectUsesExactIncidentAndWritesSafeDiagnostic() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-claude-\(UUID().uuidString.prefix(8))")
+        let diagnosticsRoot = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-claude-diag-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: diagnosticsRoot)
+        }
+        let path = root.appendingPathComponent("loomd.sock").path
+        let server = try Self.makeListeningSocket(at: path, permissions: 0o600)
+        defer { Darwin.close(server) }
+        let diagnostics = try LocalOperationalDiagnostics(
+            directory: diagnosticsRoot,
+            maximumBytes: 4_096,
+            now: { Date(timeIntervalSince1970: 0) }
+        )
+        let client = try LocalIPCClient(
+            socketPath: path,
+            requestID: { "unused-request-id" },
+            operationalDiagnostics: diagnostics,
+            recordsInstalledDiagnostics: true
+        )
+        let incidentID = "loom-swift-11111111-1111-4111-8111-111111111111"
+        let responseTask = Task.detached {
+            try Self.serveClaudeCodeConnectOnce(server: server)
+        }
+
+        let result = try await client.connectClaudeCode(incidentID: incidentID)
+        let observed = try await responseTask.value
+
+        XCTAssertEqual(result.providerID, "claude-code")
+        XCTAssertEqual(result.status, "started")
+        XCTAssertEqual(observed.requestID, incidentID)
+        XCTAssertEqual(observed.method, "claude_code_connect")
+        let data = try Data(
+            contentsOf: diagnosticsRoot.appendingPathComponent("app-operational.jsonl")
+        )
+        let record = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(record["incident_id"] as? String, incidentID)
+        XCTAssertEqual(record["operation"] as? String, "claude_code_connect")
+        XCTAssertEqual(record["provider_id"] as? String, "claude-code")
+        XCTAssertEqual(record["stage"] as? String, "daemon_admission")
+        XCTAssertEqual(record["result"] as? String, "succeeded")
+        XCTAssertNil(record["secret"])
+        XCTAssertNil(record["authorization"])
+    }
+
+    func testClaudeCodeConnectMapsLocalTransportFailureToExactIncident() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-claude-\(UUID().uuidString.prefix(8))")
+        let diagnosticsRoot = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-claude-diag-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: diagnosticsRoot)
+        }
+        let client = try LocalIPCClient(
+            socketPath: root.appendingPathComponent("loomd.sock").path,
+            requestID: { "unused-request-id" },
+            operationalDiagnostics: LocalOperationalDiagnostics(
+                directory: diagnosticsRoot,
+                maximumBytes: 4_096,
+                now: { Date(timeIntervalSince1970: 0) }
+            ),
+            recordsInstalledDiagnostics: true
+        )
+        let incidentID = "loom-swift-22222222-2222-4222-8222-222222222222"
+
+        do {
+            _ = try await client.connectClaudeCode(incidentID: incidentID)
+            XCTFail("missing socket must fail closed")
+        } catch let remote as LocalIPCRemoteError {
+            XCTAssertEqual(remote.code, .stateUnavailable)
+            XCTAssertEqual(remote.stage, .udsTransport)
+            XCTAssertEqual(remote.incidentID, incidentID)
+            XCTAssertTrue(remote.recoverable)
+        }
+
+        let data = try Data(
+            contentsOf: diagnosticsRoot.appendingPathComponent("app-operational.jsonl")
+        )
+        let record = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(record["incident_id"] as? String, incidentID)
+        XCTAssertEqual(record["stage"] as? String, "uds_transport")
+        XCTAssertEqual(record["result"] as? String, "failed")
+        XCTAssertEqual(record["retryable"] as? Bool, true)
+    }
+
+    func testClaudeCodeCancelUsesExactIncidentAndWritesSafeDiagnostic() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-claude-cancel-\(UUID().uuidString.prefix(8))")
+        let diagnosticsRoot = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-claude-cancel-diag-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: diagnosticsRoot)
+        }
+        let path = root.appendingPathComponent("loomd.sock").path
+        let server = try Self.makeListeningSocket(at: path, permissions: 0o600)
+        defer { Darwin.close(server) }
+        let client = try LocalIPCClient(
+            socketPath: path,
+            requestID: { "unused-request-id" },
+            operationalDiagnostics: LocalOperationalDiagnostics(
+                directory: diagnosticsRoot,
+                maximumBytes: 4_096,
+                now: { Date(timeIntervalSince1970: 0) }
+            ),
+            recordsInstalledDiagnostics: true
+        )
+        let incidentID = "loom-swift-22222222-2222-4222-8222-222222222222"
+        let responseTask = Task.detached {
+            try Self.serveClaudeCodeConnectOnce(
+                server: server,
+                responseStatus: "cancelled"
+            )
+        }
+
+        let result = try await client.cancelClaudeCode(incidentID: incidentID)
+        let observed = try await responseTask.value
+
+        XCTAssertEqual(result.providerID, "claude-code")
+        XCTAssertEqual(result.status, "cancelled")
+        XCTAssertEqual(observed.requestID, incidentID)
+        XCTAssertEqual(observed.method, "claude_code_cancel")
+        let data = try Data(
+            contentsOf: diagnosticsRoot.appendingPathComponent("app-operational.jsonl")
+        )
+        let record = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(record["incident_id"] as? String, incidentID)
+        XCTAssertEqual(record["operation"] as? String, "claude_code_cancel")
+        XCTAssertEqual(record["provider_id"] as? String, "claude-code")
+        XCTAssertEqual(record["result"] as? String, "succeeded")
+        XCTAssertNil(record["secret"])
+        XCTAssertNil(record["authorization"])
+    }
+
+    func testCancelledSetupSnapshotInterruptsBlockedExchange() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent("loom-cancel-exchange-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("loomd.sock").path
+        let server = try Self.makeListeningSocket(at: path, permissions: 0o600)
+        defer { Darwin.close(server) }
+        let accepted = LocalIPCTestGate()
+        let release = LocalIPCTestGate()
+        let serverTask = Task.detached {
+            let connection = Darwin.accept(server, nil, nil)
+            guard connection >= 0 else {
+                throw LocalProductClientError.unavailable
+            }
+            defer { Darwin.close(connection) }
+            await accepted.open()
+            await release.wait()
+        }
+        let client = try LocalIPCClient(socketPath: path)
+        let call = Task { try await client.setupSnapshot() }
+        await accepted.wait()
+
+        let started = ContinuousClock.now
+        call.cancel()
+        try await Task.sleep(for: .milliseconds(100))
+        await release.open()
+        do {
+            _ = try await call.value
+            XCTFail("cancelled Setup exchange must not publish a response")
+        } catch is CancellationError {
+            // Expected: cancellation shuts down the blocked private UDS read.
+        } catch {
+            XCTFail("cancelled Setup exchange error = \(error)")
+        }
+        let elapsed = started.duration(to: .now)
+        XCTAssertLessThan(elapsed, .seconds(1))
+        try await serverTask.value
+    }
+
     func testReachableSameOwnerSocketWithMalformedModeIsNotTrusted() throws {
         let root = URL(fileURLWithPath: "/private/tmp")
             .appendingPathComponent("loom-swift-\(UUID().uuidString.prefix(8))")
@@ -1078,6 +1405,60 @@ final class LocalIPCClientTests: XCTestCase {
         }
     }
 
+    private static func serveClaudeCodeConnectOnce(
+        server: Int32,
+        responseStatus: String = "started"
+    ) throws -> (requestID: String, method: String) {
+        let connection = Darwin.accept(server, nil, nil)
+        guard connection >= 0 else { throw LocalProductClientError.unavailable }
+        defer { Darwin.close(connection) }
+        var request = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = Darwin.recv(connection, &buffer, buffer.count, 0)
+            if count == 0 { break }
+            guard count > 0 else { throw LocalProductClientError.unavailable }
+            request.append(buffer, count: count)
+        }
+        let body = try LocalIPCWire.unframe(
+            request,
+            maximum: LocalIPCClient.requestMaximum
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let requestID = try XCTUnwrap(object["request_id"] as? String)
+        let method = try XCTUnwrap(object["method"] as? String)
+        let response = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "request_id": requestID,
+            "ok": true,
+            "result": [
+                "provider_id": "claude-code",
+                "auth_mode": "native_auth",
+                "status": responseStatus,
+            ],
+        ])
+        let framed = try LocalIPCWire.frame(
+            response,
+            maximum: LocalIPCClient.responseMaximum
+        )
+        try framed.withUnsafeBytes { bytes in
+            var sent = 0
+            while sent < bytes.count {
+                let count = Darwin.send(
+                    connection,
+                    bytes.baseAddress!.advanced(by: sent),
+                    bytes.count - sent,
+                    0
+                )
+                guard count > 0 else { throw LocalProductClientError.unavailable }
+                sent += count
+            }
+        }
+        return (requestID, method)
+    }
+
     private static func makeClientBackedByPrivateSocket() throws -> LocalIPCClient {
         let root = URL(fileURLWithPath: "/private/tmp")
             .appendingPathComponent("loom-swift-\(UUID().uuidString.prefix(8))")
@@ -1110,6 +1491,28 @@ final class LocalIPCClientTests: XCTestCase {
         Darwin.close(descriptor)
         try FileManager.default.removeItem(at: root)
         return client
+    }
+}
+
+private actor LocalIPCTestGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !opened else { return }
+        opened = true
+        let pending = waiters
+        waiters.removeAll()
+        for continuation in pending {
+            continuation.resume()
+        }
     }
 }
 

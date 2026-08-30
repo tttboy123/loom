@@ -74,9 +74,19 @@ final class LoomGraphiteViewTests: XCTestCase {
             runtimeAgentAvailabilityDetail(
                 adapterType: "claude-code",
                 modelIDs: ["claude-sonnet"],
-                roleOptionCount: 0
+                roleOptionCount: 0,
+                hasConversationRoute: false
             ),
-            "Detected · Connect Anthropic in Model Providers to use with Agent Teams"
+            "Detected · Sign in to Claude Code for Conversation; connect Anthropic for Agent Teams"
+        )
+        XCTAssertEqual(
+            runtimeAgentAvailabilityDetail(
+                adapterType: "claude-code",
+                modelIDs: ["claude-sonnet"],
+                roleOptionCount: 2,
+                hasConversationRoute: false
+            ),
+            "Agent Teams ready · Sign in to Claude Code for Conversation"
         )
         XCTAssertEqual(
             runtimeAgentAvailabilityDetail(
@@ -85,6 +95,102 @@ final class LoomGraphiteViewTests: XCTestCase {
                 roleOptionCount: 2
             ),
             "deepseek/deepseek-chat · Available to Agent Teams"
+        )
+        XCTAssertEqual(
+            runtimeAgentAvailabilityDetail(
+                adapterType: "pi-cli",
+                modelIDs: ["loom-local/qwen2.5-coder-1.5b-instruct-q4-k-m"],
+                roleOptionCount: 1,
+                hasConversationRoute: false
+            ),
+            "Detected · Local model required for Conversation"
+        )
+        XCTAssertEqual(
+            runtimeNativeAuthActionTitle(
+                adapterType: "claude-code",
+                status: "online",
+                hasConversationRoute: false
+            ),
+            "Sign In"
+        )
+        XCTAssertNil(
+            runtimeNativeAuthActionTitle(
+                adapterType: "claude-code",
+                status: "online",
+                hasConversationRoute: true
+            )
+        )
+        XCTAssertNil(
+            runtimeNativeAuthActionTitle(
+                adapterType: "codex",
+                status: "online",
+                hasConversationRoute: false
+            )
+        )
+        XCTAssertEqual(
+            runtimeAvailabilityStatus(
+                adapterType: "claude-code",
+                status: "online",
+                hasConversationRoute: false
+            ),
+            "sign_in_required"
+        )
+        XCTAssertEqual(
+            runtimeAvailabilityStatus(
+                adapterType: "claude-code",
+                status: "online",
+                hasConversationRoute: true
+            ),
+            "online"
+        )
+        XCTAssertEqual(
+            runtimeAvailabilityStatus(
+                adapterType: "opencode",
+                status: "online",
+                hasConversationRoute: false
+            ),
+            "online"
+        )
+        XCTAssertEqual(
+            runtimeNativeAuthActivity(
+                adapterType: "claude-code",
+                inFlight: true,
+                operationStatus: "Waiting for sign in"
+            ),
+            .waiting
+        )
+        XCTAssertEqual(
+            runtimeNativeAuthActivity(
+                adapterType: "claude-code",
+                inFlight: true,
+                operationStatus: "Cancelling sign in"
+            ),
+            .cancelling
+        )
+        XCTAssertEqual(
+            runtimeNativeAuthActivity(
+                adapterType: "opencode",
+                inFlight: true,
+                operationStatus: "Waiting for sign in"
+            ),
+            .idle
+        )
+        XCTAssertEqual(
+            runtimeNativeAuthRecoveryDetail(
+                stage: "Conversation profile publish",
+                retryable: true
+            ),
+            "Stage: Conversation profile publish · Retry available"
+        )
+        XCTAssertEqual(
+            runtimeNativeAuthRecoveryDetail(
+                stage: "Local service admission",
+                retryable: false
+            ),
+            "Stage: Local service admission · Manual action required"
+        )
+        XCTAssertNil(
+            runtimeNativeAuthRecoveryDetail(stage: nil, retryable: nil)
         )
     }
 
@@ -115,6 +221,296 @@ final class LoomGraphiteViewTests: XCTestCase {
             stage: .providerConnect,
             recoverable: true
         ))
+    }
+
+    func testCompletedToolActivityUsesClosedReadableNamesAndEightItemLimit()
+        throws
+    {
+        let expectedNames = [
+            "loom.sessions.search": "Find conversations",
+            "loom.sessions.align.preview": "Align conversations",
+            "loom.missions.create.preview": "Create Mission",
+            "loom.missions.continue.preview": "Continue Mission",
+            "loom.teams.create.preview": "Create Agent Team",
+            "loom.roundtables.open.preview": "Open RoundTable",
+            "loom.missions.search": "Find Missions",
+            "loom.missions.status": "Mission status",
+            "loom.teams.search": "Find Agent Teams",
+            "loom.teams.status": "Agent Team status",
+            "loom.roundtables.status": "RoundTable status",
+            "loom.governance.needs_you": "Needs You",
+            "loom.runtimes.status": "Runtime status",
+            "loom.providers.status": "Provider status",
+            "loom.diagnostics.incident": "Incident diagnostics",
+            "loom.workspace.status": "Workspace status",
+            "loom.conversation.route.status": "Conversation route",
+            "loom.library.search": "Search library",
+            "loom.conversation.route.change.preview": "Change route",
+            "loom.conversation.model.change.preview": "Change model",
+            "loom.conversation.reasoning.change.preview": "Change reasoning",
+            "loom.workspace.choose.preview": "Choose workspace",
+            "loom.teams.edit.preview": "Edit Agent Team",
+            "loom.roundtables.pause.preview": "Pause RoundTable",
+            "loom.roundtables.steer.preview": "Guide RoundTable",
+            "loom.roundtables.retry.preview": "Retry RoundTable seat",
+            "loom.roundtables.skip.preview": "Skip RoundTable seat",
+            "loom.roundtables.replace.preview": "Replace RoundTable seat",
+        ]
+        XCTAssertEqual(expectedNames.count, 28)
+        for (toolID, expectedName) in expectedNames {
+            XCTAssertEqual(
+                conversationCompletedToolDisplayName(toolID),
+                expectedName
+            )
+        }
+        XCTAssertEqual(
+            conversationCompletedToolDisplayName("loom.unknown.tool"),
+            "Loom tool"
+        )
+
+        let nineToolIDs = [
+            "loom.sessions.search",
+            "loom.missions.search",
+            "loom.teams.search",
+            "loom.roundtables.status",
+            "loom.governance.needs_you",
+            "loom.runtimes.status",
+            "loom.providers.status",
+            "loom.workspace.status",
+            "loom.library.search",
+        ]
+        let activity = try XCTUnwrap(
+            conversationCompletedToolActivityText(nineToolIDs)
+        )
+        XCTAssertTrue(activity.hasPrefix("Used Loom tools: "))
+        XCTAssertTrue(activity.contains("Workspace status"))
+        XCTAssertFalse(activity.contains("Search library"))
+        XCTAssertNil(conversationCompletedToolActivityText([]))
+    }
+
+    func testCompletedToolActivityUsesExactReplyAttemptIdentity() throws {
+        let digest = String(repeating: "a", count: 64)
+        let attempt = LocalProductConversationAttempt(
+            attemptID: "attempt-tool-exact",
+            segmentID: "segment-tool-exact",
+            profileID: "conversation-codex",
+            contextMode: .startClean,
+            contextCapsuleDigest: digest,
+            completedControlTools: [
+                try LocalProductConversationCompletedTool(
+                    toolID: "loom.runtimes.status",
+                    toolVersion: 1,
+                    effect: "read"
+                ),
+            ],
+            bindingDigest: digest,
+            status: "succeeded",
+            failureCode: ""
+        )
+        let reply = LocalProductChatMessage(
+            messageID: "message-tool-exact",
+            segmentID: "segment-tool-exact",
+            attemptID: attempt.attemptID,
+            role: "loom",
+            content: "Runtime status checked.",
+            tentative: true
+        )
+        let thread = LocalProductChatThread(
+            threadID: "thread-tool-exact",
+            attempts: [attempt],
+            messages: [
+                LocalProductChatMessage(
+                    messageID: "message-explicit-user",
+                    segmentID: "segment-tool-exact",
+                    role: "user",
+                    content: "Use an Agent Team",
+                    tentative: false
+                ),
+                LocalProductChatMessage(
+                    messageID: "message-explicit-proposal",
+                    segmentID: "segment-tool-exact",
+                    role: "proposal",
+                    content: "Open Team review.",
+                    tentative: true
+                ),
+                reply,
+            ],
+            canReply: true,
+            requiresConfirmation: false
+        )
+
+        XCTAssertEqual(
+            conversationAttemptForMessage(reply, in: thread)?.attemptID,
+            attempt.attemptID
+        )
+        let drifted = LocalProductChatMessage(
+            messageID: reply.messageID,
+            segmentID: "segment-other",
+            attemptID: attempt.attemptID,
+            role: reply.role,
+            content: reply.content,
+            tentative: reply.tentative
+        )
+        XCTAssertNil(conversationAttemptForMessage(drifted, in: thread))
+
+        let confirmation = LocalProductChatMessage(
+            messageID: "message-confirmation",
+            segmentID: attempt.segmentID,
+            role: "confirmation",
+            content: "Loom action approved.",
+            tentative: false
+        )
+        XCTAssertNil(conversationAttemptForMessage(confirmation, in: thread))
+    }
+
+    func testCompletedToolActivityRendersAtCompactAndAccessibilitySizes()
+        throws
+    {
+        let toolIDs = [
+            "loom.sessions.align.preview",
+            "loom.missions.create.preview",
+            "loom.teams.create.preview",
+            "loom.roundtables.open.preview",
+            "loom.runtimes.status",
+            "loom.providers.status",
+            "loom.diagnostics.incident",
+            "loom.workspace.status",
+        ]
+        for (width, height, typeSize) in [
+            (560.0, 120.0, DynamicTypeSize.large),
+            (320.0, 260.0, DynamicTypeSize.accessibility2),
+        ] {
+            let size = NSSize(width: width, height: height)
+            let hosting = NSHostingView(
+                rootView: ConversationCompletedToolActivity(
+                    attemptID: "attempt-tools-1",
+                    toolIDs: toolIDs
+                )
+                .environment(\.dynamicTypeSize, typeSize)
+                .padding(12)
+                .frame(width: width, height: height, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            XCTAssertGreaterThan(imageData.count, 1_000)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.height, height)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE7_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent(
+                        "completed-tool-activity-\(Int(width)).png"
+                    )
+                )
+            }
+        }
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let activitySource = try XCTUnwrap(
+            source.components(separatedBy: "struct ConversationCompletedToolActivity")
+                .dropFirst()
+                .first?
+                .components(separatedBy: "public enum LoomRecentTaskActionLabel")
+                .first
+        )
+        XCTAssertTrue(activitySource.contains("wrench.and.screwdriver"))
+        XCTAssertTrue(activitySource.contains("loom.conversation.tool-activity."))
+        XCTAssertTrue(activitySource.contains(".accessibilityLabel(activityText)"))
+        XCTAssertFalse(activitySource.contains(".background("))
+        XCTAssertFalse(activitySource.contains(".overlay("))
+        XCTAssertFalse(activitySource.localizedCaseInsensitiveContains("arguments"))
+        XCTAssertFalse(activitySource.localizedCaseInsensitiveContains("result"))
+        XCTAssertFalse(activitySource.localizedCaseInsensitiveContains("prompt"))
+        XCTAssertTrue(source.contains("private func conversationAttempt("))
+        XCTAssertTrue(source.contains("let segmentAttempts = thread.attempts.filter"))
+        XCTAssertTrue(source.contains("attempt.completedControlTools.map(\\.toolID)"))
+    }
+
+    func testProposalDecisionFailureUsesRefreshInsteadOfResendingComposer() throws {
+        let failure = LocalProductChatOperationFailure(
+            code: .conflict,
+            stage: .controlProposalConfirm,
+            recoverable: true,
+            incidentID: "loom-chat-proposal-conflict",
+            title: "Proposal changed",
+            detail: "Refresh it."
+        )
+        XCTAssertTrue(failure.isProposalDecisionRecoveryAvailable)
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("if failure.isProposalDecisionRecoveryAvailable"))
+        XCTAssertTrue(source.contains("Label(\"Refresh proposal\", systemImage: \"arrow.clockwise\")"))
+        XCTAssertTrue(source.contains("Task { await store.loadChatThread() }"))
+    }
+
+    func testChatFailureActionsFitCompactAccessibilityWidth() throws {
+        let failure = LocalProductChatOperationFailure(
+            code: .providerUnavailable,
+            stage: .providerConnect,
+            recoverable: true,
+            incidentID: "loom-chat-compact-failure",
+            title: "Provider needs attention",
+            detail: "Unlock the Vault or switch to another configured Provider Account."
+        )
+        let width = 360.0
+        let height = 560.0
+        let size = NSSize(width: width, height: height)
+        let hosting = NSHostingView(
+            rootView: ConversationChatFailureBanner(
+                failure: failure,
+                vaultRecoveryAvailable: true,
+                routeRecoveryAvailable: true,
+                isSending: false,
+                isUpdatingVault: false,
+                onPrimaryRecovery: {},
+                onUnlockVault: {},
+                onOpenVault: {},
+                onSwitchProvider: {},
+                onDiagnostics: {},
+                onCopyIncident: {}
+            )
+            .dynamicTypeSize(.accessibility3)
+            .padding(12)
+            .frame(width: width, height: height, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor))
+        )
+        hosting.frame = NSRect(origin: .zero, size: size)
+        hosting.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(
+            hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+        )
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).count,
+            2_000
+        )
     }
 
     func testConversationProfileMenuLabelIncludesExactProviderAccount() throws {
@@ -285,9 +681,869 @@ final class LoomGraphiteViewTests: XCTestCase {
             .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("Text(\"New conversation\")"))
+        XCTAssertTrue(source.contains("Text(\"What are you working on?\")"))
+        XCTAssertTrue(source.contains("Text(\"New task\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Message Loom\")"))
+        XCTAssertTrue(source.contains(
+            ".accessibilityHint(\"Describe a task, ask a question, or type slash for commands\")"
+        ))
+        XCTAssertTrue(source.contains(
+            ".accessibilityIdentifier(\"loom.conversation.composer\")"
+        ))
         XCTAssertFalse(source.contains("teamReady ? \"Start Mission\" : \"Use Agent Team\""))
         XCTAssertFalse(source.contains("private var quickStartGuide"))
+    }
+
+    func testPhase5ShellUsesProgressiveConversationFirstNavigation() throws {
+        XCTAssertEqual(
+            LoomWorkspaceNavigationItem.primary,
+            [.home, .work, .attention]
+        )
+        XCTAssertEqual(
+            LoomWorkspaceNavigationItem.governance,
+            [.teams, .roundtable]
+        )
+        XCTAssertEqual(LoomWorkspaceNavigationItem.tools, [.library])
+        XCTAssertEqual(LoomWorkspaceNavigationItem.work.rawValue, "Missions")
+        XCTAssertEqual(LoomWorkspaceNavigationItem.attention.rawValue, "Needs You")
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(
+            "loomRailConversationLimit(compact: compact)"
+        ))
+        XCTAssertTrue(source.contains("if conversationLimit > 0"))
+        XCTAssertTrue(source.contains("Text(\"More conversations\")"))
+        XCTAssertTrue(source.contains(
+            "railSectionTitle(\"GOVERN\", compact: compact)"
+        ))
+        XCTAssertTrue(source.contains("case .work: return activeMissionCount"))
+        XCTAssertTrue(source.contains("case .attention: return activeAttentionCount"))
+        XCTAssertTrue(source.contains("case .teams: return store.snapshot?.teams.count ?? 0"))
+        XCTAssertTrue(source.contains(
+            "case .library: return store.snapshot?.evidence.count ?? 0"
+        ))
+        XCTAssertTrue(source.contains("navigationHasRecordedActivity(item)"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Recorded activity\")"))
+        XCTAssertTrue(source.contains(
+            "Label(\"Start Mission\", systemImage: \"flag.checkered\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "Label(\"Use Agent Team\", systemImage: \"person.3\")"
+        ))
+        XCTAssertFalse(source.contains(
+            "Text(\"Agent work requires review and confirmation.\")"
+        ))
+    }
+
+    func testPhase5WorkspaceShellRendersAtDesktopAndCompactWidths()
+        async throws
+    {
+        let snapshot = try ExperienceFixtures.populatedSnapshot()
+        XCTAssertEqual(snapshot.teams.count, 1)
+        XCTAssertEqual(snapshot.evidence.count, 2)
+        for width in [1_280.0, 720.0] {
+            let fixtureRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let store = LocalProductStore(
+                client: MissionWorkbenchStubClient(snapshot: snapshot),
+                chatSessionsFileURL: fixtureRoot.appendingPathComponent(
+                    "chat-sessions.json"
+                )
+            )
+            await store.refresh()
+
+            let size = NSSize(width: width, height: 760)
+            let hosting = NSHostingView(
+                rootView: LoomWorkspaceShell(store: store)
+                    .frame(width: width, height: size.height)
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            XCTAssertEqual(bitmap.size.width, width)
+            XCTAssertEqual(bitmap.size.height, size.height)
+            XCTAssertGreaterThanOrEqual(bitmap.pixelsWide, Int(width))
+            XCTAssertGreaterThanOrEqual(bitmap.pixelsHigh, Int(size.height))
+            XCTAssertGreaterThan(hosting.fittingSize.width, 500)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE5_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let imageData = try XCTUnwrap(
+                    bitmap.representation(using: .png, properties: [:])
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent("shell-\(Int(width)).png")
+                )
+            }
+        }
+    }
+
+    func testPhase6WorkspaceShellRendersSlashCommandsAtDesktopAndCompactWidths()
+        async throws
+    {
+        let snapshot = try ExperienceFixtures.populatedSnapshot()
+        for width in [1_280.0, 720.0] {
+            let fixtureRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let store = LocalProductStore(
+                client: MissionWorkbenchStubClient(snapshot: snapshot),
+                chatSessionsFileURL: fixtureRoot.appendingPathComponent(
+                    "chat-sessions.json"
+                )
+            )
+            await store.refresh()
+            store.updateComposerDraft("/")
+
+            let size = NSSize(width: width, height: 760)
+            let hosting = NSHostingView(
+                rootView: LoomWorkspaceShell(store: store)
+                    .frame(width: width, height: size.height)
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            XCTAssertEqual(bitmap.size.width, width)
+            XCTAssertEqual(bitmap.size.height, size.height)
+            XCTAssertGreaterThanOrEqual(bitmap.pixelsWide, Int(width))
+            XCTAssertGreaterThanOrEqual(bitmap.pixelsHigh, Int(size.height))
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE6_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let imageData = try XCTUnwrap(
+                    bitmap.representation(using: .png, properties: [:])
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent(
+                        "shell-commands-\(Int(width)).png"
+                    )
+                )
+            }
+        }
+    }
+
+    func testConversationControlProposalCardRendersAtCompactAndAccessibilitySizes()
+        throws
+    {
+        let digest = String(repeating: "a", count: 64)
+        let proposal = try JSONDecoder().decode(
+            LocalProductConversationControlProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,
+                  "proposal_id":"proposal-ui-1",
+                  "tool_id":"loom.sessions.align.preview",
+                  "tool_version":1,
+                  "confirmation":"user",
+                  "target_conversation_id":"session-current",
+                  "target_content_digest":"\(digest)",
+                  "sources":[
+                    {
+                      "conversation_id":"session-one",
+                      "title":"Planning and accepted constraints",
+                      "content_digest":"\(digest)",
+                      "message_count":4
+                    },
+                    {
+                      "conversation_id":"session-two",
+                      "title":"Implementation results and verification",
+                      "content_digest":"\(digest)",
+                      "message_count":6
+                    }
+                  ],
+                  "context_mode":"summary_only",
+                  "catalog_digest":"\(digest)",
+                  "segment_id":"segment-1",
+                  "attempt_id":"attempt-1",
+                  "message_id":"message-1",
+                  "status":"pending",
+                  "created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z",
+                  "proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        )
+        let fixtures: [(Double, Double, DynamicTypeSize)] = [
+            (560, 280, .large),
+            (360, 390, .accessibility2),
+        ]
+        for (width, height, typeSize) in fixtures {
+            var decision: LocalProductChatControlDecision?
+            let size = NSSize(width: width, height: height)
+            let hosting = NSHostingView(
+                rootView: ConversationControlProposalCard(
+                    proposal: proposal,
+                    alignment: nil,
+                    inFlight: false,
+                    onDecision: { decision = $0 }
+                )
+                .environment(\.dynamicTypeSize, typeSize)
+                .environment(\.colorScheme, .light)
+                .padding(12)
+                .frame(width: width, height: height, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            XCTAssertEqual(bitmap.size.width, width)
+            XCTAssertEqual(bitmap.size.height, height)
+            XCTAssertGreaterThan(imageData.count, 2_000)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+            XCTAssertNil(decision)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE7_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent(
+                        "control-proposal-\(Int(width)).png"
+                    )
+                )
+            }
+        }
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("loom.conversation.control-proposal.confirm"))
+        XCTAssertTrue(source.contains("loom.conversation.control-proposal.cancel"))
+        XCTAssertTrue(source.contains("Your next message starts the aligned segment."))
+    }
+
+    func testConversationActionProposalCardRendersAtCompactAndAccessibilitySizes()
+        throws
+    {
+        let digest = String(repeating: "a", count: 64)
+        let proposal = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,"proposal_id":"proposal-action-ui-1",
+                  "tool_id":"loom.teams.create.preview","tool_version":1,
+                  "confirmation":"user","action":"team",
+                  "argument":"Create a planner, implementer, and reviewer with independent Runtime bindings.",
+                  "target_conversation_id":"session-current","target_content_digest":"\(digest)",
+                  "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"message-1",
+                  "status":"pending","created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z","proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        )
+        for (width, height, typeSize) in [
+            (560.0, 260.0, DynamicTypeSize.large),
+            (360.0, 380.0, DynamicTypeSize.accessibility2),
+        ] {
+            var decision: LocalProductChatControlDecision?
+            let size = NSSize(width: width, height: height)
+            let hosting = NSHostingView(
+                rootView: ConversationActionProposalCard(
+                    proposal: proposal,
+                    inFlight: false,
+                    onDecision: { decision = $0 }
+                )
+                .environment(\.dynamicTypeSize, typeSize)
+                .padding(12)
+                .frame(width: width, height: height, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            XCTAssertGreaterThan(imageData.count, 2_000)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+            XCTAssertNil(decision)
+        }
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("loom.conversation.action-proposal.confirm"))
+        XCTAssertTrue(source.contains("Review every role, Runtime, Provider Account and model"))
+    }
+
+    func testTerminalProposalCardsExplainOutcomeAndRecoveryAtCompactSize() throws {
+        XCTAssertEqual(
+            conversationProposalRecoveryMessage(status: .cancelled, hasDecisionReceipt: true),
+            "Nothing changed. Ask Loom to prepare a fresh proposal when you want to try again."
+        )
+        XCTAssertEqual(
+            conversationProposalRecoveryMessage(status: .expired, hasDecisionReceipt: true),
+            "This proposal expired for safety. Nothing changed; ask Loom to prepare a fresh one."
+        )
+        XCTAssertEqual(
+            conversationProposalRecoveryMessage(status: .confirmed, hasDecisionReceipt: false),
+            "This historical approval is read-only. Ask Loom to prepare it again."
+        )
+
+        let digest = String(repeating: "a", count: 64)
+        let action = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,"proposal_id":"proposal-action-cancelled-ui-1",
+                  "tool_id":"loom.teams.create.preview","tool_version":1,
+                  "confirmation":"user","action":"team","argument":"Review the team",
+                  "target_conversation_id":"session-current","target_content_digest":"\(digest)",
+                  "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"message-1",
+                  "status":"cancelled","created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z","proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        )
+        let alignment = try JSONDecoder().decode(
+            LocalProductConversationControlProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,"proposal_id":"proposal-align-expired-ui-1",
+                  "tool_id":"loom.sessions.align.preview","tool_version":1,
+                  "confirmation":"user","target_conversation_id":"session-current",
+                  "target_content_digest":"\(digest)",
+                  "sources":[
+                    {"conversation_id":"session-one","title":"Planning",
+                     "content_digest":"\(digest)","message_count":2}
+                  ],
+                  "context_mode":"summary_only","catalog_digest":"\(digest)",
+                  "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"message-1",
+                  "status":"expired","created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z","proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        )
+        let width = 360.0
+        let height = 700.0
+        let size = NSSize(width: width, height: height)
+        let hosting = NSHostingView(
+            rootView: VStack(spacing: 12) {
+                ConversationActionProposalCard(
+                    proposal: action,
+                    inFlight: false,
+                    onDecision: { _ in }
+                )
+                ConversationControlProposalCard(
+                    proposal: alignment,
+                    alignment: nil,
+                    inFlight: false,
+                    onDecision: { _ in }
+                )
+            }
+            .dynamicTypeSize(.accessibility3)
+            .padding(12)
+            .frame(width: width, height: height, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor))
+        )
+        hosting.frame = NSRect(origin: .zero, size: size)
+        hosting.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(
+            hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+        )
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).count,
+            2_000
+        )
+    }
+
+    func testConfirmedModelToolCardRendersRestartRecoveryAtCompactSizes() throws {
+        let digest = String(repeating: "b", count: 64)
+        let proposal = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,"proposal_id":"proposal-route-ui-1",
+                  "tool_id":"loom.conversation.route.change.preview","tool_version":1,
+                  "confirmation":"user","action":"route","argument":"",
+                  "payload":{"profile_id":"conversation-deepseek-primary-r3"},
+                  "target_conversation_id":"session-current","target_content_digest":"\(digest)",
+                  "segment_id":"segment-1","attempt_id":"attempt-1","message_id":"message-1",
+                  "status":"confirmed","created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z","proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        )
+        for (width, height, typeSize) in [
+            (560.0, 250.0, DynamicTypeSize.large),
+            (360.0, 380.0, DynamicTypeSize.accessibility2),
+        ] {
+            var decision: LocalProductChatControlDecision?
+            let size = NSSize(width: width, height: height)
+            let hosting = NSHostingView(
+                rootView: ConversationActionProposalCard(
+                    proposal: proposal,
+                    inFlight: false,
+                    onDecision: { decision = $0 }
+                )
+                .environment(\.dynamicTypeSize, typeSize)
+                .padding(12)
+                .frame(width: width, height: height, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            XCTAssertGreaterThan(imageData.count, 2_000)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+            XCTAssertNil(decision)
+        }
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("loom.conversation.action-proposal.resume"))
+        XCTAssertTrue(source.contains("control-\\(proposal.proposalID)"))
+        XCTAssertTrue(source.contains("The model never receives its path."))
+        XCTAssertTrue(source.contains("canExecuteConversationActionProposal(proposal)"))
+        XCTAssertTrue(source.contains("inFlight || !proposal.isConfirmable"))
+        XCTAssertTrue(source.contains("Cancel this outdated proposal"))
+        XCTAssertTrue(source.contains("inFlight || !confirmable"))
+        XCTAssertTrue(source.contains("Cancel this outdated alignment"))
+        XCTAssertTrue(source.contains("proposal.payload?.missionID"))
+        XCTAssertTrue(source.contains("await openMissionContext(missionID)"))
+    }
+
+    func testConfirmedModelToolReceiptRendersIncidentAtCompactSizes() throws {
+        let proposalDigest = String(repeating: "a", count: 64)
+        let bindingDigest = String(repeating: "b", count: 64)
+        let capsuleDigest = String(repeating: "c", count: 64)
+        let workspaceDigest = String(repeating: "d", count: 64)
+        let registryDigest = String(repeating: "e", count: 64)
+        let receiptDigest = String(repeating: "f", count: 64)
+        let proposal = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":2,"proposal_id":"proposal-route-receipt-ui-1",
+                  "tool_id":"loom.conversation.route.change.preview","tool_version":2,
+                  "confirmation":"user","action":"route","argument":"",
+                  "payload":{"profile_id":"conversation-deepseek-primary-r3"},
+                  "route":{"harness_adapter":"codex","provider_id":"openai",
+                    "provider_account_id":"openai.primary","credential_revision":4,
+                    "model_id":"gpt-5.6-sol","reasoning_effort":"max",
+                    "execution_binding_digest":"\(bindingDigest)",
+                    "context_capsule_digest":"\(capsuleDigest)"},
+                  "workspace":{"workspace_id":"workspace-primary",
+                    "workspace_digest":"\(workspaceDigest)"},
+                  "registry_digest":"\(registryDigest)",
+                  "incident_id":"incident-route-proposal-1",
+                  "target_conversation_id":"session-current",
+                  "target_content_digest":"\(proposalDigest)",
+                  "segment_id":"segment-1","attempt_id":"attempt-2",
+                  "message_id":"message-2","status":"confirmed",
+                  "created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z",
+                  "proposal_digest":"\(proposalDigest)"
+                }
+                """.utf8
+            )
+        )
+        let receipt = try JSONDecoder().decode(
+            LocalProductConversationProposalDecisionReceipt.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,"proposal_id":"proposal-route-receipt-ui-1",
+                  "proposal_digest":"\(proposalDigest)",
+                  "tool_id":"loom.conversation.route.change.preview",
+                  "decision":"confirm","decision_incident_id":"incident-route-confirm-1",
+                  "target_conversation_id":"session-current",
+                  "segment_id":"segment-1","attempt_id":"attempt-2",
+                  "registry_digest":"\(registryDigest)",
+                  "workspace_digest":"\(workspaceDigest)",
+                  "execution_binding_digest":"\(bindingDigest)",
+                  "context_capsule_digest":"\(capsuleDigest)",
+                  "decided_at":"2026-08-28T12:01:00Z",
+                  "receipt_digest":"\(receiptDigest)"
+                }
+                """.utf8
+            )
+        )
+
+        for (width, height, typeSize) in [
+            (560.0, 300.0, DynamicTypeSize.large),
+            (360.0, 460.0, DynamicTypeSize.accessibility2),
+        ] {
+            let size = NSSize(width: width, height: height)
+            let hosting = NSHostingView(
+                rootView: ConversationActionProposalCard(
+                    proposal: proposal,
+                    inFlight: false,
+                    decisionReceipt: receipt,
+                    onDecision: { _ in }
+                )
+                .environment(\.dynamicTypeSize, typeSize)
+                .padding(12)
+                .frame(width: width, height: height, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            XCTAssertGreaterThan(imageData.count, 2_000)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE7_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent(
+                        "action-proposal-receipt-\(Int(width)).png"
+                    )
+                )
+            }
+        }
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("proposalDecisionIncidentRow"))
+        XCTAssertTrue(source.contains("Copy incident ID"))
+        XCTAssertTrue(source.contains("historical approval is read-only"))
+    }
+
+    func testV2MissionToolCardNamesTheExactTargetAtCompactSizes() throws {
+        let digest = String(repeating: "a", count: 64)
+        let bindingDigest = String(repeating: "b", count: 64)
+        let capsuleDigest = String(repeating: "c", count: 64)
+        let workspaceDigest = String(repeating: "d", count: 64)
+        let registryDigest = String(repeating: "e", count: 64)
+        let proposal = try JSONDecoder().decode(
+            LocalProductConversationActionProposal.self,
+            from: Data(
+                """
+                {
+                  "schema_version":2,"proposal_id":"proposal-mission-v2-ui-1",
+                  "tool_id":"loom.missions.continue.preview","tool_version":2,
+                  "confirmation":"user","action":"continue_mission",
+                  "argument":"Retry only the failed accessibility verification while preserving the accepted design constraints.",
+                  "payload":{"mission_id":"mission-release-7"},
+                  "route":{"harness_adapter":"codex","provider_id":"openai",
+                    "provider_account_id":"openai.primary","credential_revision":4,
+                    "model_id":"gpt-5.6-sol","reasoning_effort":"max",
+                    "execution_binding_digest":"\(bindingDigest)",
+                    "context_capsule_digest":"\(capsuleDigest)"},
+                  "workspace":{"workspace_id":"workspace-primary",
+                    "workspace_digest":"\(workspaceDigest)"},
+                  "registry_digest":"\(registryDigest)",
+                  "incident_id":"incident-mission-v2-ui-1",
+                  "target_conversation_id":"session-current",
+                  "target_content_digest":"\(digest)",
+                  "segment_id":"segment-1","attempt_id":"attempt-1",
+                  "message_id":"message-1","status":"pending",
+                  "created_at":"2026-08-28T12:00:00Z",
+                  "expires_at":"2026-08-28T12:05:00Z",
+                  "proposal_digest":"\(digest)"
+                }
+                """.utf8
+            )
+        )
+
+        for (width, height, typeSize) in [
+            (560.0, 300.0, DynamicTypeSize.large),
+            (360.0, 440.0, DynamicTypeSize.accessibility2),
+        ] {
+            var decision: LocalProductChatControlDecision?
+            let size = NSSize(width: width, height: height)
+            let hosting = NSHostingView(
+                rootView: ConversationActionProposalCard(
+                    proposal: proposal,
+                    inFlight: false,
+                    targetDisplayName: "Release accessibility pass",
+                    onDecision: { decision = $0 }
+                )
+                .environment(\.dynamicTypeSize, typeSize)
+                .environment(\.colorScheme, .light)
+                .padding(12)
+                .frame(width: width, height: height, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            XCTAssertGreaterThan(imageData.count, 2_000)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+            XCTAssertNil(decision)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE7_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent(
+                        "action-proposal-v2-mission-\(Int(width)).png"
+                    )
+                )
+            }
+        }
+    }
+
+    func testPhase5CompactMissionRendersAtLargestAccessibilityText()
+        async throws
+    {
+        let snapshot = try phase5MissionContextSnapshot()
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let store = LocalProductStore(
+            client: MissionWorkbenchStubClient(snapshot: snapshot),
+            chatSessionsFileURL: fixtureRoot.appendingPathComponent(
+                "chat-sessions.json"
+            )
+        )
+        await store.refresh()
+        let missionOpened = await store.openMissionAndActivate(
+            "mission/team-first"
+        )
+        XCTAssertTrue(missionOpened)
+
+        let size = NSSize(width: 900, height: 760)
+        let hosting = NSHostingView(
+            rootView: LoomWorkspaceShell(
+                store: store,
+                initialGovernanceDestination: .mission
+            )
+            .dynamicTypeSize(.accessibility5)
+            .frame(width: size.width, height: size.height)
+        )
+        hosting.frame = NSRect(origin: .zero, size: size)
+        hosting.layoutSubtreeIfNeeded()
+
+        let bitmap = try XCTUnwrap(
+            hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+        )
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        XCTAssertEqual(bitmap.size.width, size.width)
+        XCTAssertEqual(bitmap.size.height, size.height)
+        XCTAssertGreaterThanOrEqual(bitmap.pixelsWide, Int(size.width))
+        XCTAssertGreaterThanOrEqual(bitmap.pixelsHigh, Int(size.height))
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, size.width)
+
+        if let captureRoot = ProcessInfo.processInfo.environment[
+            "LOOM_PHASE5_SCREENSHOT_DIR"
+        ] {
+            let directory = URL(fileURLWithPath: captureRoot, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let imageData = try XCTUnwrap(
+                bitmap.representation(using: .png, properties: [:])
+            )
+            try imageData.write(
+                to: directory.appendingPathComponent(
+                    "shell-compact-largest-text.png"
+                )
+            )
+        }
+    }
+
+    func testPhase5MissionAndRoundTableContextsRenderBesideConversation()
+        async throws
+    {
+        let snapshot = try phase5MissionContextSnapshot()
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let store = LocalProductStore(
+            client: MissionWorkbenchStubClient(snapshot: snapshot),
+            chatSessionsFileURL: fixtureRoot.appendingPathComponent(
+                "chat-sessions.json"
+            )
+        )
+        await store.refresh()
+        let missionOpened = await store.openMissionAndActivate(
+            "mission/team-first"
+        )
+        XCTAssertTrue(missionOpened)
+
+        let cases: [(LoomGovernanceDestination, Double)] = [
+            (.mission, 1_280),
+            (.mission, 900),
+            (.roundtable, 1_280),
+            (.roundtable, 900),
+        ]
+        for (destination, width) in cases {
+            let size = NSSize(width: width, height: 760)
+            let hosting = NSHostingView(
+                rootView: LoomWorkspaceShell(
+                    store: store,
+                    initialGovernanceDestination: destination
+                )
+                .frame(width: width, height: size.height)
+            )
+            hosting.frame = NSRect(origin: .zero, size: size)
+            hosting.layoutSubtreeIfNeeded()
+
+            let bitmap = try XCTUnwrap(
+                hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds)
+            )
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            XCTAssertEqual(bitmap.size.width, width)
+            XCTAssertEqual(bitmap.size.height, size.height)
+            XCTAssertGreaterThan(hosting.fittingSize.width, 500)
+            XCTAssertLessThanOrEqual(hosting.fittingSize.width, width)
+
+            if let captureRoot = ProcessInfo.processInfo.environment[
+                "LOOM_PHASE5_SCREENSHOT_DIR"
+            ] {
+                let directory = URL(
+                    fileURLWithPath: captureRoot,
+                    isDirectory: true
+                )
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let imageData = try XCTUnwrap(
+                    bitmap.representation(using: .png, properties: [:])
+                )
+                try imageData.write(
+                    to: directory.appendingPathComponent(
+                        "\(destination.rawValue.lowercased())-\(Int(width)).png"
+                    )
+                )
+            }
+        }
+    }
+
+    private func phase5MissionContextSnapshot() throws
+        -> LocalProductSnapshot
+    {
+        let base = try ExperienceFixtures.populatedSnapshot()
+        let digest = String(repeating: "a", count: 64)
+        let mission = try JSONDecoder().decode(
+            LocalProductMissionSummary.self,
+            from: Data(
+                """
+                {
+                  "schema_version":1,
+                  "mission_id":"mission/team-first",
+                  "team_instance_id":"team-first",
+                  "title":"Restore provider access and verify the release workflow",
+                  "source_kind":"team_execution",
+                  "lane":"Review",
+                  "status":"blocked",
+                  "priority":"high",
+                  "plan_digest":"\(digest)",
+                  "simple":false,
+                  "node_count":2,
+                  "completed_node_count":1,
+                  "active_node_count":0,
+                  "review_node_count":0,
+                  "attention_count":1,
+                  "current_node_id":"review",
+                  "last_milestone":"The implementation completed, but provider verification needs user guidance.",
+                  "block_reason":"The selected Provider Account requires review before a new Attempt can run.",
+                  "team_pulse":[],
+                  "topology":[]
+                }
+                """.utf8
+            )
+        )
+        return LocalProductSnapshot(
+            schemaVersion: 2,
+            viewVersion: base.viewVersion,
+            health: base.health,
+            runtimes: base.runtimes,
+            teams: base.teams,
+            missions: [mission],
+            runs: base.runs,
+            evidence: base.evidence,
+            attention: base.attention
+        )
     }
 
     func testContentViewStartsSetupRecoveryAlongsideInitialRefreshes() throws {
@@ -313,6 +1569,34 @@ final class LoomGraphiteViewTests: XCTestCase {
         XCTAssertLessThan(refreshJoin.lowerBound, recoveryJoin.lowerBound)
     }
 
+    func testRegisteredServiceUsesBoundedStartupProbeBeforeBundledFallback() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalApp/LoomLocalApp.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("maxAttempts: 12"))
+        XCTAssertTrue(source.contains("delayNanoseconds: 250_000_000"))
+        XCTAssertTrue(source.contains("guard await serviceProcessHost.start()"))
+        XCTAssertTrue(source.contains("if await serviceProcessHost.waitForDefaultSocket()"))
+    }
+
+    func testAdoptedServiceSocketIsMonitoredAcrossRapidAppRestart() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalApp/LocalServiceProcessHost.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("adoptedSocketMonitorTask"))
+        XCTAssertTrue(source.contains("scheduleAdoptedServiceMonitor()"))
+        XCTAssertTrue(source.contains("guard !socketIsReachable else { continue }"))
+        XCTAssertTrue(source.contains("_ = await self.start()"))
+    }
+
     func testRoundtableSupportsDragDropAndSeatRemoval() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -326,9 +1610,98 @@ final class LoomGraphiteViewTests: XCTestCase {
         XCTAssertTrue(source.contains("addRoundtableAgents([candidate])"))
         XCTAssertTrue(source.contains("addRoundtableAgents(candidates)"))
         XCTAssertTrue(source.contains("RoundTable Agent drop zone"))
+        XCTAssertTrue(source.contains(".accessibilityElement(children: .contain)"))
+        XCTAssertTrue(source.contains("The original discussion prompt remains protected"))
         XCTAssertTrue(source.contains("retireRoundtableAgent(candidate)"))
         XCTAssertTrue(source.contains("store.roundtableRetireSeat("))
         XCTAssertTrue(source.contains("Seats are frozen after the round opens"))
+        XCTAssertTrue(source.contains("2 minimum · 6 maximum"))
+        XCTAssertTrue(source.contains("Lead"))
+        XCTAssertTrue(source.contains("Participant \\(index)"))
+        XCTAssertTrue(source.contains("RoundTable starts from a Mission"))
+        XCTAssertTrue(source.contains("onOpenMissions?()"))
+        XCTAssertTrue(source.contains("Start Mission discussion"))
+        XCTAssertTrue(source.contains("Imported archive · Read only"))
+        XCTAssertTrue(source.contains("This file is a read-only record."))
+        XCTAssertTrue(source.contains("if importedArchive"))
+        XCTAssertTrue(source.contains("view.session.concluded && !importedArchive"))
+        let concludedStatus = try XCTUnwrap(
+            source.range(of: "else if view?.session.concluded == true")
+        )
+        let inputNeededStatus = try XCTUnwrap(
+            source.range(of: "else if activeAttemptFingerprint.isEmpty && hasInterventionNeeded")
+        )
+        XCTAssertLessThan(concludedStatus.lowerBound, inputNeededStatus.lowerBound)
+        XCTAssertTrue(source.contains("Discussion concluded"))
+        XCTAssertTrue(source.contains("Explicit Retry is running"))
+        XCTAssertTrue(source.contains(".submitLabel(.send)"))
+        XCTAssertTrue(source.contains("Copy Agent incident ID"))
+        XCTAssertTrue(source.contains("Other Agents remain available"))
+        XCTAssertTrue(source.contains("Replace or skip this Agent"))
+        XCTAssertTrue(source.contains("Start synthesis round"))
+        XCTAssertTrue(source.contains("loom.roundtable.synthesis-prompt"))
+        XCTAssertTrue(source.contains(".onKeyPress(.return)"))
+        XCTAssertTrue(source.contains("submitRoundtableIntervention(candidate, attempt: attempt)"))
+		XCTAssertTrue(source.contains("roundtableLiveInputState"))
+		XCTAssertTrue(source.contains("Retry after completion"))
+		XCTAssertTrue(source.contains("Preparing live controls"))
+		XCTAssertTrue(source.contains("This Runtime cannot accept live guidance"))
+    }
+
+    func testStandaloneRoundtableRoutesIntoMissionInsteadOfLegacyLedgerCreation() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("RoundtableWorkbench("))
+        XCTAssertTrue(source.contains("missionLink: pendingRoundtableMissionLink"))
+        XCTAssertTrue(source.contains("selectNavigation(.work)"))
+        XCTAssertTrue(source.contains("Mission RoundTable"))
+    }
+
+    func testMissionRoundtableCandidatesUseExactTeamRolesBeforeRuntimeFallback() {
+        let candidates = [
+            LocalRoundtableAgentCandidate(
+                id: "main:a:p1", teamRoleID: "planner", seatID: "seat-planner",
+                displayName: "Planner", responsibility: "Plan", routeSummary: "Route A",
+                runtimeInstanceID: "runtime-shared"
+            ),
+            LocalRoundtableAgentCandidate(
+                id: "subagent:b:p2", teamRoleID: "reviewer", seatID: "seat-reviewer",
+                displayName: "Reviewer", responsibility: "Review", routeSummary: "Route B",
+                runtimeInstanceID: "runtime-shared"
+            ),
+            LocalRoundtableAgentCandidate(
+                id: "subagent:c:p3", teamRoleID: "other-team-role", seatID: "seat-other",
+                displayName: "Other Team", responsibility: "Other", routeSummary: "Route C",
+                runtimeInstanceID: "runtime-shared"
+            ),
+        ]
+        let link = LocalRoundtableMissionLink(
+            conversationID: "conversation-1", missionID: "mission/team-1",
+            teamInstanceID: "team-1", title: "Discuss",
+            teamRoleIDs: ["planner", "reviewer"], runtimeInstanceIDs: ["runtime-shared"]
+        )
+
+        XCTAssertEqual(
+            roundtableMissionAgentCandidates(candidates, link: link).map(\.teamRoleID),
+            ["planner", "reviewer"]
+        )
+
+        let topologyLink = LocalRoundtableMissionLink(
+            conversationID: "conversation-1", missionID: "mission/team-1",
+            teamInstanceID: "team-1", title: "Discuss",
+            teamRoleIDs: ["main", "mission-role-generated"],
+            runtimeInstanceIDs: ["runtime-shared"]
+        )
+        XCTAssertEqual(
+            roundtableMissionAgentCandidates(candidates, link: topologyLink)
+                .map(\.teamRoleID),
+            ["planner", "reviewer", "other-team-role"]
+        )
     }
 
     func testConversationContextMeterUsesFrozenSegmentBudget() throws {
@@ -431,11 +1804,251 @@ final class LoomGraphiteViewTests: XCTestCase {
             source[linkedMissionStart.lowerBound..<linkedMissionEnd.lowerBound]
         )
 
-        XCTAssertTrue(
-            linkedMissionSurface.contains("await store.openMissionAndActivate(mission.missionID)")
-        )
+        XCTAssertTrue(linkedMissionSurface.contains("await openMissionContext(mission)"))
         XCTAssertFalse(linkedMissionSurface.contains("store.openMission(mission.missionID)"))
+        XCTAssertFalse(
+            linkedMissionSurface.contains("fullGovernancePresentation = .workbench")
+        )
         XCTAssertTrue(linkedMissionSurface.contains(".loomActionTarget()"))
+        XCTAssertTrue(source.contains("await openMissionContext(mission.missionID)"))
+        XCTAssertTrue(source.contains("await store.openMissionAndActivate(missionID)"))
+        XCTAssertTrue(source.contains("governance.open(.mission)"))
+    }
+
+    func testPhase5MissionContextKeepsLiveOutputAndInterventionBesideConversation() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private var missionContextPanel: some View"))
+        XCTAssertTrue(source.contains("missionActivityEntries("))
+        XCTAssertTrue(source.contains("Blocked Mission intervention"))
+        XCTAssertTrue(source.contains("Tell the Team what to change or try next"))
+        XCTAssertTrue(source.contains(
+            ".accessibilityLabel(\"Mission continuation guidance\")"
+        ))
+        XCTAssertTrue(source.contains(
+            ".accessibilityIdentifier(\"loom.mission.continuation-guidance\")"
+        ))
+        XCTAssertTrue(source.contains("Open full Mission details"))
+        XCTAssertTrue(source.contains("startRoundTableFromMission"))
+        XCTAssertTrue(source.contains("alignConversationWithMission"))
+        XCTAssertTrue(source.contains("missionLink: pendingRoundtableMissionLink"))
+        XCTAssertTrue(source.contains("failureDiagnosticAvailable"))
+        XCTAssertTrue(source.contains("Copy Agent incident ID"))
+    }
+
+    func testPhase5RoundTableContextRestoresLiveProgressAndRecovery() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private var roundtableContextPanel: some View"))
+        XCTAssertTrue(source.contains("roundtableSessionID("))
+        XCTAssertTrue(source.contains("roundtableSnapshot("))
+        XCTAssertTrue(source.contains(
+            "if !store.roundtableIsPreparing, let loadError"
+        ))
+        XCTAssertTrue(source.contains("for attempt in 0..<90"))
+        XCTAssertTrue(source.contains(
+            "The discussion is taking longer to restore. Retry without leaving this Mission."
+        ))
+        XCTAssertTrue(source.contains("Agent discussion"))
+        XCTAssertTrue(source.contains("Copy incident ID"))
+        XCTAssertTrue(source.contains("roundtableOperationFailure"))
+        XCTAssertTrue(source.contains("View RoundTable diagnostics"))
+        XCTAssertTrue(source.contains("Copy RoundTable incident ID"))
+        XCTAssertTrue(source.contains("retryRoundtableContextSeat"))
+        XCTAssertTrue(source.contains("steerRoundtableContextSeat"))
+        XCTAssertTrue(source.contains(
+            ".accessibilityLabel(\"Guidance for \\(seat.displayName)\")"
+        ))
+        XCTAssertTrue(source.contains(
+            ".accessibilityLabel(\"Retry guidance for \\(seat.displayName)\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "loom.roundtable.live-guidance.\\(attempt.seatID)"
+        ))
+        XCTAssertTrue(source.contains(
+            "loom.roundtable.retry-guidance.\\(attempt.seatID)"
+        ))
+        XCTAssertTrue(source.contains("Open full discussion"))
+        XCTAssertTrue(source.contains("roundtableContextAttributedOutput"))
+        XCTAssertTrue(source.contains("Show full result"))
+        XCTAssertTrue(source.contains("Show less"))
+        XCTAssertTrue(source.contains("roundtableContextPreviewLimit"))
+        XCTAssertTrue(source.contains(
+            "Show full result from \\(seat.displayName)"
+        ))
+        XCTAssertTrue(source.contains("Agent result"))
+        XCTAssertTrue(source.contains("Synthesize Agent results"))
+        XCTAssertTrue(source.contains("Refine synthesis"))
+        XCTAssertTrue(source.contains("startRoundtableContextSynthesis"))
+        XCTAssertTrue(source.contains(
+            "loom.roundtable.context-synthesis-prompt"
+        ))
+        XCTAssertTrue(source.contains("Accept Lead result"))
+        XCTAssertTrue(source.contains("Accept Lead synthesis"))
+        XCTAssertTrue(source.contains("Follow-up round"))
+        XCTAssertFalse(source.contains("visible updates"))
+        XCTAssertTrue(source.contains("governance.open(.roundtable)"))
+        XCTAssertTrue(source.contains("Section(\"Current Mission\")"))
+        XCTAssertTrue(source.contains("Section(\"Workspace\")"))
+        XCTAssertFalse(
+            source.contains("ForEach(LoomGovernanceDestination.allCases)")
+        )
+    }
+
+    func testPhase5RoundTableContextKeepsActionsInTheKeyboardFocusChain() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(
+            "Button(resultExpanded ? \"Show less\" : \"Show full result\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "                    .buttonStyle(.plain)\n"
+                + "                    .font(.caption)\n"
+                + "                    .accessibilityLabel("
+        ))
+        XCTAssertTrue(source.contains(
+            "Label(\n"
+                + "                    \"Open full discussion\",\n"
+                + "                    systemImage: \"arrow.up.right.square\"\n"
+                + "                )\n"
+                + "            }\n"
+                + "            .buttonStyle(.plain)"
+        ))
+        XCTAssertFalse(source.contains(".focusable()"))
+    }
+
+    func testPhase5MissionListAndDetailsHaveVisibleKeyboardDestinations() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(
+            "Button {\n"
+                + "                store.showMissionBoard()\n"
+                + "                fullGovernancePresentation = .workbench\n"
+                + "                governance.open(.board)\n"
+                + "            } label: {\n"
+                + "                Label(\"All Missions\", systemImage: \"list.bullet\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "Label(\"Details\", systemImage: \"arrow.up.right.square\")\n"
+                + "                    }\n"
+                + "                    .buttonStyle(.plain)\n"
+                + "                    .accessibilityLabel(\"Open full Mission details\")"
+        ))
+    }
+
+    func testPhase5MissionFailureOffersRetryDiagnosticsAndIncidentActions() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/MissionWorkbench.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("store.missionOperationFailure"))
+        XCTAssertTrue(source.contains("Label(\"Retry preflight\", systemImage: \"arrow.clockwise\")"))
+        XCTAssertTrue(source.contains("Label(\"View diagnostics\", systemImage: \"doc.text.magnifyingglass\")"))
+        XCTAssertTrue(source.contains("Copy Mission incident ID"))
+        XCTAssertTrue(source.contains(".sheet(item: $missionDiagnosticPreview)"))
+        XCTAssertTrue(source.contains("prepareMissionDiagnosticPreview()"))
+        XCTAssertTrue(source.contains("if store.missionOperationFailure == nil"))
+    }
+
+    func testPhase5FullRoundTableUsesStructuredRecoverableErrors() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/RoundtableWorkbench.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("store.roundtableOperationFailure"))
+        XCTAssertTrue(source.contains("View RoundTable diagnostics"))
+        XCTAssertTrue(source.contains("Copy RoundTable incident ID"))
+        XCTAssertTrue(source.contains("failure.recoveryAction"))
+        XCTAssertTrue(source.contains("failure.recoverable"))
+    }
+
+    func testPhase5DiagnosticPreviewFailureStaysVisibleAndRecoverable() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("diagnosticPreparationError"))
+        XCTAssertTrue(source.contains("Diagnostics could not be prepared"))
+        XCTAssertTrue(source.contains("Open Runtime & Providers"))
+        XCTAssertTrue(source.contains("fullGovernancePresentation = .runtimeProviders"))
+        XCTAssertFalse(source.contains(
+            "} catch {\n                fullGovernancePresentation = .runtimeProviders"
+        ))
+    }
+
+    func testPhase5FolderSelectionFailureOffersInPlaceRetry() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("folderSelectionError"))
+        XCTAssertTrue(source.contains("Folder could not be opened"))
+        XCTAssertTrue(source.contains("Button(\"Try Again\")"))
+        XCTAssertTrue(source.contains("NSUserCancelledError"))
+        XCTAssertFalse(source.contains(
+            "guard case .success(let urls) = result, let url = urls.first else { return }"
+        ))
+    }
+
+    func testPhase5NewTaskCommandUsesTheConversationAction() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appSource = try String(
+            contentsOf: testsURL
+                .appendingPathComponent("Sources/LoomLocalApp/LoomLocalApp.swift"),
+            encoding: .utf8
+        )
+        let shellSource = try String(
+            contentsOf: testsURL
+                .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(appSource.contains("CommandGroup(replacing: .newItem)"))
+        XCTAssertTrue(appSource.contains("Button(\"New Task\")"))
+        XCTAssertTrue(appSource.contains(
+            ".keyboardShortcut(\"n\", modifiers: .command)"
+        ))
+        XCTAssertTrue(appSource.contains(".loomNewTaskRequested"))
+        XCTAssertTrue(shellSource.contains("startNewTask()"))
+        XCTAssertTrue(shellSource.contains(
+            "NotificationCenter.default.publisher(for: .loomNewTaskRequested)"
+        ))
+        XCTAssertTrue(shellSource.contains("composerFocused = true"))
     }
 
   func testWorkspaceShellConsumesAgentTeamBuilderSession() throws {
@@ -523,14 +2136,12 @@ final class LoomGraphiteViewTests: XCTestCase {
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     // Every entry path into the New Mission sheet uses the same preparation
-    // path. It selects an executable Team and decides whether completed work
-    // requires a fresh audited Attempt.
+    // path. A new Mission remains distinct from the explicit continuation path.
     XCTAssertTrue(
       source.contains("prepareNewMission()")
     )
-    XCTAssertTrue(
-      source.contains("newMissionStartsNewAttempt = missionShouldStartNewAttempt(")
-    )
+    XCTAssertTrue(source.contains("newMissionStartsNewAttempt = false"))
+    XCTAssertTrue(source.contains(".disabled(newMissionStartsNewAttempt)"))
     // The disabled Review-preflight action must explain what is missing.
     XCTAssertTrue(source.contains("missionReviewBlockedReason"))
     XCTAssertTrue(source.contains("Enter a Mission objective first."))
@@ -538,7 +2149,7 @@ final class LoomGraphiteViewTests: XCTestCase {
     XCTAssertTrue(source.contains("Confirm the Mission context to enable preflight review."))
   }
 
-  func testWorkspaceShellOffersNewMissionFromRailAndComposer() throws {
+  func testWorkspaceShellOffersMissionFromConversationContext() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -546,11 +2157,39 @@ final class LoomGraphiteViewTests: XCTestCase {
             .appendingPathComponent("Sources/LoomLocalAppUI/LoomWorkspaceShell.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertGreaterThanOrEqual(
-            source.components(separatedBy: "fullGovernancePresentation = .newMission").count - 1,
-            2
-        )
+        XCTAssertTrue(source.contains(
+            "Label(\"Start Mission\", systemImage: \"flag.checkered\")"
+        ))
+        XCTAssertTrue(source.contains("fullGovernancePresentation = .newMission"))
         XCTAssertTrue(source.contains("showNewMissionInitially: presentation == .newMission"))
+    }
+
+    func testMissionStartReturnsToExactConversationMissionContext() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI")
+        let workbench = try String(
+            contentsOf: sourceRoot.appendingPathComponent("MissionWorkbench.swift"),
+            encoding: .utf8
+        )
+        let shell = try String(
+            contentsOf: sourceRoot.appendingPathComponent("LoomWorkspaceShell.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(workbench.contains(
+            "onReturnToConversation: ((String) -> Void)? = nil"
+        ))
+        XCTAssertGreaterThanOrEqual(
+            workbench.components(separatedBy: "onReturnToConversation(missionID)").count - 1,
+            2,
+            "Both successful Mission start and Open conversation must carry the exact Mission ID"
+        )
+        XCTAssertTrue(shell.contains("onReturnToConversation: { missionID in"))
+        XCTAssertTrue(shell.contains("fullGovernancePresentation = nil"))
+        XCTAssertTrue(shell.contains("await openMissionContext(missionID)"))
     }
 
     func testConversationRouteSwitchUsesExplicitSegmentReview() throws {
@@ -767,17 +2406,16 @@ final class LoomGraphiteViewTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
         XCTAssertTrue(source.contains(".help(\"Try Again\")"))
-        XCTAssertGreaterThanOrEqual(
-            source.components(separatedBy: ".help(\"Choose folder\")").count - 1,
-            1
-        )
-        XCTAssertGreaterThanOrEqual(
-            source.components(separatedBy: ".help(\"Use Agent Team\")").count - 1,
-            1
-        )
-        XCTAssertTrue(
-            source.contains(".help(\"Start a governed Mission from this conversation\")")
-        )
+        XCTAssertTrue(source.contains(
+            "Label(\"Choose folder\", systemImage: \"folder\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "Label(\"Use Agent Team\", systemImage: \"person.3\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "Label(\"Start Mission\", systemImage: \"flag.checkered\")"
+        ))
+        XCTAssertTrue(source.contains(".help(\"Add folder, Agent Team, or Mission\")"))
         XCTAssertTrue(source.contains(".accessibilityLabel(actionLabel)"))
         XCTAssertTrue(source.contains(".help(actionLabel)"))
     }
@@ -880,6 +2518,76 @@ final class LoomGraphiteViewTests: XCTestCase {
 
         XCTAssertEqual(window.sheets.count, 1)
         retainedMissionWorkbenchWindows.append(window)
+    }
+
+    func testClaudeSignInRowRendersAtAccessibilitySizeAndCancellationIsWired()
+        async throws
+    {
+        let snapshot = try LocalProductWire.decodeSnapshot(
+            Data(MissionOrchestrationTests.snapshotJSON.utf8)
+        )
+        let client = MissionWorkbenchStubClient(
+            snapshot: snapshot,
+            includeClaudeRuntime: true
+        )
+        let store = LocalProductStore(client: client)
+        await store.refresh()
+        await store.refreshSetup()
+        store.startClaudeCodeSignIn()
+        for _ in 0..<100 where !store.providersInFlight.contains("claude-code") {
+            await Task.yield()
+        }
+        XCTAssertTrue(store.providersInFlight.contains("claude-code"))
+        XCTAssertNotNil(store.providerOperationIncidentID["claude-code"])
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_100, height: 760),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSHostingView(
+            rootView: MissionWorkbench(
+                store: store,
+                showProvidersInitially: true
+            )
+            .environment(\.dynamicTypeSize, .accessibility2)
+        )
+        window.makeKeyAndOrderFront(nil)
+        window.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+
+        let sheet = try XCTUnwrap(window.sheets.first)
+        sheet.layoutIfNeeded()
+        let content = try XCTUnwrap(sheet.contentView)
+        content.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(
+            content.bitmapImageRepForCachingDisplay(in: content.bounds)
+        )
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        let imageData = try XCTUnwrap(
+            bitmap.representation(using: .png, properties: [:])
+        )
+        XCTAssertGreaterThanOrEqual(sheet.contentLayoutRect.width, 720)
+        XCTAssertLessThanOrEqual(content.fittingSize.width, sheet.contentLayoutRect.width + 1)
+        XCTAssertGreaterThan(imageData.count, 5_000)
+
+        await store.cancelClaudeCodeSignIn()
+        XCTAssertEqual(client.claudeCancelRequestCount, 1)
+        XCTAssertFalse(store.providersInFlight.contains("claude-code"))
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/LoomLocalAppUI/MissionWorkbench.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("isPresented: $showProviders"))
+        XCTAssertTrue(source.contains("onDismiss:"))
+        XCTAssertTrue(source.contains("await store.cancelClaudeCodeSignIn()"))
+
+        window.endSheet(sheet)
+        window.contentView = nil
     }
 
     func testNewMissionContextRendersInNativeSheetAcrossAppearances()
@@ -1131,9 +2839,15 @@ private final class MissionWorkbenchStubClient:
     LocalProductExecutionClientProtocol
 {
     let snapshotValue: LocalProductSnapshot
+    let includeClaudeRuntime: Bool
+    private(set) var claudeCancelRequestCount = 0
 
-    init(snapshot: LocalProductSnapshot) {
+    init(
+        snapshot: LocalProductSnapshot,
+        includeClaudeRuntime: Bool = false
+    ) {
         snapshotValue = snapshot
+        self.includeClaudeRuntime = includeClaudeRuntime
     }
 
     func snapshot(limit: Int) async throws -> LocalProductSnapshot {
@@ -1155,7 +2869,22 @@ private final class MissionWorkbenchStubClient:
     }
 
     func setupSnapshot() async throws -> LocalProductSetupSnapshot {
-        try LocalProductSetupWire.decodeSnapshot(
+        let runtimes = includeClaudeRuntime
+            ? """
+              [{
+                "runtime_instance_id":"claude-code-system",
+                "display_name":"Claude Code",
+                "adapter_type":"claude-code",
+                "executable_version":"2.1.196",
+                "status":"online",
+                "capacity":3,
+                "model_ids":["claude-sonnet-4-6"],
+                "observed_capabilities":["conversation"],
+                "source_probe_id":"claude-code-system"
+              }]
+              """
+            : "[]"
+        return try LocalProductSetupWire.decodeSnapshot(
             Data(
                 """
                 {
@@ -1163,7 +2892,7 @@ private final class MissionWorkbenchStubClient:
                   "view_version":"view-setup",
                   "codex":{"provider_id":"codex","auth_mode":"native_auth","credential_reference":"","revision":0,"status":"available","reason":""},
                   "minimax":{"provider_id":"minimax","auth_mode":"brokered","credential_reference":"configured","revision":1,"status":"verified","reason":""},
-                  "runtimes":[],
+                  "runtimes":\(runtimes),
                   "saved_teams":[],
                   "templates":[],
                   "role_options":[],
@@ -1178,6 +2907,33 @@ private final class MissionWorkbenchStubClient:
 
     func connectCodex() async throws -> LocalProductProviderConnectResult {
         throw LocalProductClientError.unavailable
+    }
+
+    func connectClaudeCode(
+        incidentID: String
+    ) async throws -> LocalProductProviderConnectResult {
+        guard includeClaudeRuntime else {
+            throw LocalProductClientError.unavailable
+        }
+        return try LocalProductSetupWire.decodeProviderConnectResult(
+            Data(
+                #"{"provider_id":"claude-code","auth_mode":"native_auth","status":"started"}"#.utf8
+            )
+        )
+    }
+
+    func cancelClaudeCode(
+        incidentID: String
+    ) async throws -> LocalProductProviderConnectResult {
+        guard includeClaudeRuntime else {
+            throw LocalProductClientError.unavailable
+        }
+        claudeCancelRequestCount += 1
+        return try LocalProductSetupWire.decodeProviderConnectResult(
+            Data(
+                #"{"provider_id":"claude-code","auth_mode":"native_auth","status":"cancelled"}"#.utf8
+            )
+        )
     }
 
     func startBuilder(

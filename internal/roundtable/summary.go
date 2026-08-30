@@ -9,13 +9,26 @@ import (
 // Conclude. It is bounded (message bodies <= 8 KiB, artifact refs are
 // digest-only) and carries no credential, raw Grant or hidden reasoning.
 type AlignmentSummary struct {
-	SchemaVersion int            `json:"schema_version"`
-	SessionID     string         `json:"session_id"`
-	ModeratorSeat string         `json:"moderator_seat"`
-	Title         string         `json:"title"`
-	ConcludedAt   time.Time      `json:"concluded_at"`
-	Seats         []SummarySeat  `json:"seats"`
-	Rounds        []SummaryRound `json:"rounds"`
+	SchemaVersion int               `json:"schema_version"`
+	SessionID     string            `json:"session_id"`
+	ModeratorSeat string            `json:"moderator_seat"`
+	Title         string            `json:"title"`
+	ConcludedAt   time.Time         `json:"concluded_at"`
+	Seats         []SummarySeat     `json:"seats"`
+	Rounds        []SummaryRound    `json:"rounds"`
+	Context       *SessionContext   `json:"context,omitempty"`
+	Candidate     *SummaryCandidate `json:"candidate,omitempty"`
+}
+
+// SummaryCandidate binds the user-accepted Moderator candidate without
+// copying model output into the Journal or summary metadata.
+type SummaryCandidate struct {
+	AttemptID              string `json:"attempt_id"`
+	SeatID                 string `json:"seat_id"`
+	PayloadReference       string `json:"payload_reference"`
+	OutputDigest           string `json:"output_digest"`
+	ExecutionBindingDigest string `json:"execution_binding_digest"`
+	ContextCapsuleDigest   string `json:"context_capsule_digest"`
 }
 
 type SummarySeat struct {
@@ -73,5 +86,37 @@ func BuildAlignmentSummary(view View, concludedAt time.Time) AlignmentSummary {
 		ModeratorSeat: view.Session.ModeratorSeat, Title: view.Session.Title,
 		ConcludedAt: concludedAt,
 		Seats:       seats, Rounds: rounds,
+		Context:   cloneSessionContext(view.Session.Context),
+		Candidate: alignmentSummaryCandidate(view),
+	}
+}
+
+func alignmentSummaryCandidate(view View) *SummaryCandidate {
+	latestRound := ""
+	if len(view.Rounds) > 0 {
+		latestRound = view.Rounds[len(view.Rounds)-1].ID
+	}
+	var selected SeatAttempt
+	found := false
+	for _, attempt := range view.Attempts {
+		seat, seatFound := view.Seats[attempt.SeatID]
+		if attempt.RoundID != latestRound || !seatFound || seat.Binding == nil || seat.Binding.TeamRoleKind != "main" ||
+			attempt.Status != SeatAttemptSucceeded {
+			continue
+		}
+		if !found || attempt.AttemptNumber > selected.AttemptNumber ||
+			(attempt.AttemptNumber == selected.AttemptNumber && attempt.CompletedAt.After(selected.CompletedAt)) {
+			selected = attempt
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &SummaryCandidate{
+		AttemptID: selected.AttemptID, SeatID: selected.SeatID,
+		PayloadReference: selected.PayloadReference, OutputDigest: selected.OutputDigest,
+		ExecutionBindingDigest: selected.ExecutionBindingDigest,
+		ContextCapsuleDigest:   selected.ContextCapsuleDigest,
 	}
 }

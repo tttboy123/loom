@@ -38,15 +38,16 @@ type recordingMissionExecutionBackend struct {
 }
 
 type controlledMissionExecutionState struct {
-	mu         sync.Mutex
-	version    string
-	execution  projection.TeamExecution
-	byTeam     map[string]projection.TeamExecution
-	executions []projection.TeamExecution
-	runs       map[string]projection.Run
-	grants     map[string]projection.AgentGrant
-	visible    bool
-	refreshes  int
+	mu          sync.Mutex
+	version     string
+	execution   projection.TeamExecution
+	byTeam      map[string]projection.TeamExecution
+	executions  []projection.TeamExecution
+	runs        map[string]projection.Run
+	grants      map[string]projection.AgentGrant
+	visible     bool
+	refreshes   int
+	cursorOrder bool
 }
 
 func (state *controlledMissionExecutionState) TeamExecutions(
@@ -56,9 +57,19 @@ func (state *controlledMissionExecutionState) TeamExecutions(
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	start := 0
-	for start < len(state.executions) &&
-		state.executions[start].TeamInstanceID <= afterTeamID {
-		start++
+	if state.cursorOrder && afterTeamID != "" {
+		start = len(state.executions)
+		for index := range state.executions {
+			if state.executions[index].TeamInstanceID == afterTeamID {
+				start = index + 1
+				break
+			}
+		}
+	} else {
+		for start < len(state.executions) &&
+			state.executions[start].TeamInstanceID <= afterTeamID {
+			start++
+		}
 	}
 	end := min(start+limit, len(state.executions))
 	executions := make([]projection.TeamExecution, end-start)
@@ -481,6 +492,52 @@ type controlledMissionExecutionBindingSource struct {
 	binding MissionExecutionBinding
 	err     error
 	calls   int
+}
+
+func TestBuiltInMissionExecutionCompilerClassifiesConflictStage(t *testing.T) {
+	command := missionExecutionTestCommand(missionExecutionPreflight)
+	compiler := func(source *controlledMissionExecutionBindingSource) *BuiltInMissionExecutionCompiler {
+		t.Helper()
+		value, err := NewBuiltInMissionExecutionCompiler(
+			BuiltInMissionExecutionCompilerConfig{
+				Bindings: source, SourcePath: t.TempDir(),
+				Now: func() time.Time {
+					return time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC)
+				},
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+
+	_, bindingErr := compiler(&controlledMissionExecutionBindingSource{
+		err: ErrMissionExecutionConflict,
+	}).CompileMissionExecution(context.Background(), command)
+	if stage, ok := MissionExecutionConflictStage(bindingErr); !ok ||
+		stage != "binding_resolution" {
+		t.Fatalf("binding conflict stage = %q/%t, want binding_resolution", stage, ok)
+	}
+
+	_, preservedErr := compiler(&controlledMissionExecutionBindingSource{
+		err: missionExecutionConflictAt("runtime_binding"),
+	}).CompileMissionExecution(context.Background(), command)
+	if stage, ok := MissionExecutionConflictStage(preservedErr); !ok ||
+		stage != "runtime_binding" {
+		t.Fatalf("preserved conflict stage = %q/%t, want runtime_binding", stage, ok)
+	}
+
+	_, compilationErr := compiler(&controlledMissionExecutionBindingSource{
+		binding: MissionExecutionBinding{
+			ViewVersion:    command.ExpectedViewVersion,
+			TeamInstanceID: command.TeamInstanceID,
+		},
+	}).CompileMissionExecution(context.Background(), command)
+	if stage, ok := MissionExecutionConflictStage(compilationErr); !ok ||
+		stage != "mission_compilation" {
+		t.Fatalf("compilation conflict stage = %q/%t, want mission_compilation", stage, ok)
+	}
 }
 
 type recordedMissionContextCapsule struct {
@@ -1576,6 +1633,40 @@ func TestAuthoritativeMissionRestartPagesPastTerminalHistory(t *testing.T) {
 	}
 	if runner.Calls() != 1 {
 		t.Fatalf("paged restart runner calls = %d", runner.Calls())
+	}
+}
+
+func TestAuthoritativeMissionRestartAcceptsOpaqueCursorOrder(t *testing.T) {
+	now := time.Date(2026, 8, 26, 10, 30, 0, 0, time.UTC)
+	executions := make([]projection.TeamExecution, 0, 130)
+	for index := 0; index < 130; index++ {
+		executions = append(executions, projection.TeamExecution{
+			TeamInstanceID: fmt.Sprintf("team-%03d", 999-index),
+			PlanDigest:     strings.Repeat("a", 64),
+			Status:         "succeeded",
+		})
+	}
+	state := &controlledMissionExecutionState{
+		version: strings.Repeat("b", 64), executions: executions,
+		cursorOrder: true,
+	}
+	runner := &controlledTeamExecutionRunner{state: state}
+	backend, err := NewAuthoritativeMissionExecutionBackend(
+		AuthoritativeMissionExecutionConfig{
+			State: state, Compiler: &controlledMissionExecutionCompiler{},
+			Runner: runner, VisibilityTimeout: time.Second,
+			Now: func() time.Time { return now },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if err := backend.ResumeProjectedMissions(context.Background()); err != nil {
+		t.Fatalf("opaque cursor order must not brick startup: %v", err)
+	}
+	if runner.Calls() != 0 {
+		t.Fatalf("terminal history runner calls = %d", runner.Calls())
 	}
 }
 

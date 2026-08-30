@@ -103,6 +103,7 @@ type SegmentSessionBinding struct {
 	SegmentContextCapsuleDigest string
 	GovernancePolicyDigest      string
 	RouteTransitionReviewDigest string
+	ContextAlignmentDigest      string
 }
 
 func (binding SegmentSessionBinding) valid() bool {
@@ -118,6 +119,7 @@ func (binding SegmentSessionBinding) valid() bool {
 		validDigest(binding.SegmentContextCapsuleDigest) &&
 		optionalDigest(binding.GovernancePolicyDigest) &&
 		optionalDigest(binding.RouteTransitionReviewDigest) &&
+		optionalDigest(binding.ContextAlignmentDigest) &&
 		(binding.ProviderAccountID != "" || binding.GovernancePolicyDigest == "")
 }
 
@@ -151,6 +153,7 @@ func (binding SegmentSessionBinding) SessionID() string {
 		ContextCapsuleDigest     string    `json:"context_capsule_digest"`
 		GovernancePolicyDigest   string    `json:"governance_policy_digest"`
 		RouteTransitionDigest    string    `json:"route_transition_review_digest,omitempty"`
+		ContextAlignmentDigest   string    `json:"context_alignment_digest,omitempty"`
 	}{
 		binding.SchemaVersion, binding.ConfiguredHarnessID, binding.ConfiguredHarnessVersion,
 		binding.BackendID, binding.BackendVersion, binding.ConversationID, binding.SegmentID,
@@ -158,6 +161,7 @@ func (binding SegmentSessionBinding) SessionID() string {
 		binding.ProviderID, binding.ProviderAccountID, binding.CredentialRevision,
 		binding.ModelID, binding.ReasoningEffort, binding.SegmentContextCapsuleDigest,
 		binding.GovernancePolicyDigest, binding.RouteTransitionReviewDigest,
+		binding.ContextAlignmentDigest,
 	})
 	if err != nil {
 		return ""
@@ -188,6 +192,7 @@ type ResponseAuthority struct {
 	SegmentContextCapsuleDigest string
 	GovernancePolicyDigest      string
 	RouteTransitionReviewDigest string
+	ContextAlignmentDigest      string
 	ProviderID                  string
 	ProviderAccountID           string
 	CredentialRevision          int64
@@ -203,6 +208,7 @@ func (authority ResponseAuthority) validFor(binding SegmentSessionBinding) bool 
 		authority.ExecutionBindingDigest == binding.ExecutionBindingDigest &&
 		authority.GovernancePolicyDigest == binding.GovernancePolicyDigest &&
 		authority.RouteTransitionReviewDigest == binding.RouteTransitionReviewDigest &&
+		authority.ContextAlignmentDigest == binding.ContextAlignmentDigest &&
 		authority.ProviderID == binding.ProviderID &&
 		authority.ProviderAccountID == binding.ProviderAccountID &&
 		authority.CredentialRevision == binding.CredentialRevision &&

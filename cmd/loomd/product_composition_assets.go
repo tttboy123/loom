@@ -173,6 +173,7 @@ type productCompatibilityConstruction struct {
 	assetFactory            func(context.Context) (productAssetBundle, error)
 	agentRuntimeSlot        *productAgentRuntimeRouteSlot
 	agentRuntimeFactory     func(context.Context) (productAgentRuntimeRoutes, error)
+	deferAgentRuntime       bool
 	workSlot                *productWorkRouteSlot
 	workFactory             func(context.Context) (productWorkRoutes, error)
 	setupSlot               *productSetupRouteSlot

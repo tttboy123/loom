@@ -342,9 +342,10 @@ func TestPiRPCToolAttemptCancellationReapsProcessAndExtensionResources(t *testin
 	case <-hook.called:
 	case executeErr := <-answer:
 		t.Fatalf("Pi child exited before entering the governed Tool channel: %v", executeErr)
-	case <-time.After(2 * time.Second):
+	case <-time.After(piFixtureProcessStartupTimeout):
 		t.Fatal("Pi child did not enter the governed Tool channel")
 	}
+	waitForFixtureReady(marker)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("Pi child start marker: %v", err)
 	}

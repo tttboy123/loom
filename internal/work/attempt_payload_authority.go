@@ -215,10 +215,16 @@ func (authority *AttemptPayloadAuthority) ReconcileDelivered(
 	report := AttemptPayloadReconciliationReport{
 		Outcomes: make([]AttemptPayloadReconciliation, 0, len(facts)),
 	}
+	validatedRuns := make(map[attemptpayload.Authority]RunRecord)
 	for _, fact := range facts {
-		run, runErr := authority.exactRun(ctx, fact.authority)
-		if runErr != nil {
-			return AttemptPayloadReconciliationReport{}, runErr
+		run, validated := validatedRuns[fact.authority]
+		if !validated {
+			var runErr error
+			run, runErr = authority.exactRun(ctx, fact.authority)
+			if runErr != nil {
+				return AttemptPayloadReconciliationReport{}, runErr
+			}
+			validatedRuns[fact.authority] = run
 		}
 		outcome := AttemptPayloadReconciliation{
 			Authority: fact.authority, Binding: fact.state.binding,

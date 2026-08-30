@@ -2166,6 +2166,21 @@ func TestTeamCoordinatorRestartAuthorityEndsAfterTerminalReopen(t *testing.T) {
 			t.Fatalf("durable failed %s attempt did not authorize reopen", status)
 		}
 	}
+	partiallyDispatched := projection.TeamExecution{
+		Status: "running",
+		Nodes: []projection.TeamExecutionNode{
+			{Status: "pending"},
+			{
+				Status: "awaiting_recovery", CurrentAttempt: 1,
+				Attempts: []projection.TeamExecutionAttempt{{
+					AttemptNumber: 1, Status: "failed",
+				}},
+			},
+		},
+	}
+	if !restartTeamExecutionFromTerminal(request, partiallyDispatched) {
+		t.Fatal("explicit new Attempt could not replace a failed partial dispatch")
+	}
 	request.RestartTerminal = false
 	request.ExecutionGenerationID = generationID
 	if salt := appTeamAttemptIdentitySalt(request); len(salt) != 1 || salt[0] != generationID {

@@ -57,6 +57,7 @@ type productOperationalDiagnosticRecord struct {
 	SegmentContextCapsuleDigest     string `json:"segment_context_capsule_digest,omitempty"`
 	GovernancePolicyDigest          string `json:"governance_policy_digest,omitempty"`
 	RouteTransitionReviewDigest     string `json:"route_transition_review_digest,omitempty"`
+	ContextAlignmentDigest          string `json:"context_alignment_digest,omitempty"`
 	ResponseID                      string `json:"response_id,omitempty"`
 	WorkItemID                      string `json:"work_item_id,omitempty"`
 	RunID                           string `json:"run_id,omitempty"`
@@ -266,6 +267,23 @@ func (bootstrap *productOperationalDiagnosticBootstrap) append(
 	return nil
 }
 
+func (bootstrap *productOperationalDiagnosticBootstrap) IncidentDiagnostics(
+	ctx context.Context,
+	incidentID string,
+) ([]productIncidentDiagnosticEvent, error) {
+	if bootstrap == nil || ctx == nil {
+		return nil, errors.New("operational diagnostics unavailable")
+	}
+	bootstrap.mu.Lock()
+	store := bootstrap.store
+	failed := bootstrap.failed
+	bootstrap.mu.Unlock()
+	if failed || store == nil {
+		return nil, errors.New("operational diagnostics unavailable")
+	}
+	return store.IncidentDiagnostics(ctx, incidentID)
+}
+
 func (store *productOperationalDiagnosticStore) setCredentialRuntime(
 	value string,
 ) error {
@@ -389,7 +407,7 @@ func productIPCOperationalDiagnosticMethod(method string) bool {
 		method == "provider_model_rate_card_configure" ||
 		method == "remote_tool_backend_enrollment_configure" ||
 		method == "remote_tool_backend_enrollment_revoke" || method == "chat_message" ||
-		method == "chat_response_cancel" ||
+		method == "chat_response_cancel" || method == "chat_control_decision" ||
 		method == "agent_attempt_recovery" || method == "tool_recovery"
 }
 
@@ -588,6 +606,9 @@ func (store *productOperationalDiagnosticStore) RecordAgentAttemptDiagnostic(
 		ElapsedMS:              elapsed,
 		Result:                 diagnostic.Result,
 		ErrorCode:              diagnostic.ErrorCode,
+		HTTPStatus:             diagnostic.HTTPStatus,
+		ProviderErrorCode:      diagnostic.ProviderErrorCode,
+		RetryAfterSeconds:      diagnostic.RetryAfterSeconds,
 		Retryable:              diagnostic.Retryable,
 	})
 }
@@ -713,6 +734,68 @@ func (store *productOperationalDiagnosticStore) AgentAttemptDiagnostics(
 	return result, nil
 }
 
+func (store *productOperationalDiagnosticStore) IncidentDiagnostics(
+	ctx context.Context,
+	incidentID string,
+) ([]productIncidentDiagnosticEvent, error) {
+	if store == nil || ctx == nil || !validProductDiagnosticIncidentID(incidentID) {
+		return nil, errors.New("invalid operational diagnostic query")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	events := make([]productIncidentDiagnosticEvent, 0, 8)
+	for _, path := range []string{store.path + ".1", store.path} {
+		records, err := readProductOperationalDiagnosticFile(path, store.maximum)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if record.IncidentID != incidentID {
+				continue
+			}
+			events = append(events, productIncidentDiagnosticEventFor(record))
+		}
+	}
+	if len(events) > productConversationControlIncidentMaximumEvents {
+		events = append(
+			[]productIncidentDiagnosticEvent(nil),
+			events[len(events)-productConversationControlIncidentMaximumEvents:]...,
+		)
+	}
+	return events, nil
+}
+
+func productIncidentDiagnosticEventFor(
+	record productOperationalDiagnosticRecord,
+) productIncidentDiagnosticEvent {
+	return productIncidentDiagnosticEvent{
+		OccurredAt: record.OccurredAt, IncidentID: record.IncidentID,
+		Operation: record.Operation, ProviderID: record.ProviderID,
+		ProviderAccountID:  record.ProviderAccountID,
+		CredentialRevision: record.CredentialRevision, ModelID: record.ModelID,
+		ReasoningEffort: record.ReasoningEffort, ThreadID: record.ThreadID,
+		ProfileID: record.ProfileID, SessionID: record.SessionID,
+		HarnessID: record.HarnessID, BackendID: record.BackendID,
+		SegmentID: record.SegmentID, WorkspaceID: record.WorkspaceID,
+		ResponseID: record.ResponseID, WorkItemID: record.WorkItemID,
+		RunID: record.RunID, RuntimeInstanceID: record.RuntimeInstanceID,
+		AgentID: record.AgentID, RoleID: record.RoleID, Tool: record.Tool,
+		Stage: record.Stage, ElapsedMS: record.ElapsedMS, Result: record.Result,
+		ErrorCode: record.ErrorCode, HTTPStatus: record.HTTPStatus,
+		ProviderErrorCode: record.ProviderErrorCode,
+		RetryAfterSeconds: record.RetryAfterSeconds, Retryable: record.Retryable,
+	}
+}
+
+var _ productConversationControlIncidentSource = (*productOperationalDiagnosticStore)(nil)
+var _ productConversationControlIncidentSource = (*productOperationalDiagnosticBootstrap)(nil)
+
 func productAgentAttemptDiagnosticKey(
 	incidentID, providerID, providerAccountID, modelID string,
 ) string {
@@ -806,6 +889,10 @@ func productOperationalDiagnosticFromResponse(
 	if request.Method == "chat_response_cancel" {
 		record.ThreadID, _ = productDiagnosticConversationIdentity(request.Params)
 		record.Stage = "conversation_dispatch"
+	}
+	if request.Method == "chat_control_decision" {
+		record.ThreadID, _ = productDiagnosticConversationIdentity(request.Params)
+		record.Stage = "control_proposal_confirm"
 	}
 	if request.Method == "agent_attempt_recovery" {
 		record.Stage = "agent_attempt_reconcile"
@@ -916,6 +1003,7 @@ func validProductDiagnosticProviderID(value string) bool {
 func productOperationalDiagnosticStage(stage string) bool {
 	switch stage {
 	case "input_admission", "uds_transport", "daemon_admission",
+		"agent_runtime_initialization",
 		"helper_validation", "helper_start", "helper_authorization",
 		"helper_request", "helper_timeout", "helper_response", "helper_exit",
 		"keychain_access", "metadata_commit", "projection_refresh",
@@ -927,8 +1015,16 @@ func productOperationalDiagnosticStage(stage string) bool {
 		"migration_cleanup",
 		"provider_dns", "provider_tls", "provider_connect", "provider_http",
 		"provider_auth", "provider_rate_limit", "profile_publish",
-		"conversation_dispatch", "agent_attempt_dispatch", "agent_input_admission",
+		"conversation_dispatch", "control_proposal_confirm",
+		"agent_attempt_dispatch", "agent_input_admission",
 		"agent_attempt_reconcile",
+		"preflight_lease", "view_drift", "preflight_digest",
+		"parent_continuation", "flight_conflict", "dispatch_admission",
+		"dispatch_team_authority", "dispatch_capacity",
+		"dispatch_attempt_validation", "dispatch_view_conflict",
+		"dispatch_identity_unavailable", "dispatch_recovery_required",
+		"dispatch_validation", "dispatch_context_validation",
+		"dispatch_incomplete", "dispatch_projection_semantics",
 		"context_retrieval",
 		"context_delivery_reconcile",
 		"tool_input_admission", "tool_binding_validation", "tool_authorization",
@@ -1135,10 +1231,14 @@ func validProductHarnessGatewayDiagnostic(record productOperationalDiagnosticRec
 		record.GatewayInstanceID = "gateway-legacy-v2"
 		return validProductHarnessGatewayDiagnostic(record)
 	}
+	if record.GatewayEventSchemaVersion == 3 {
+		record.GatewayEventSchemaVersion = harnessgateway.EventSchemaVersion
+		return validProductHarnessGatewayDiagnostic(record)
+	}
 	if record.GatewayEventSchemaVersion != harnessgateway.EventSchemaVersion {
 		return false
 	}
-	if record.Operation != "chat_message" || record.Stage != "conversation_dispatch" ||
+	if record.Operation != "chat_message" || !productOperationalDiagnosticStage(record.Stage) ||
 		record.ProfileID != "" ||
 		!validProductDiagnosticIdentifier(record.GatewayInstanceID, 255) ||
 		!validProductDiagnosticProviderID(record.ProviderID) ||
@@ -1157,11 +1257,28 @@ func validProductHarnessGatewayDiagnostic(record productOperationalDiagnosticRec
 	}
 	eventType := harnessgateway.EventType(record.GatewayEventType)
 	incidentID := record.IncidentID
-	result, errorCode, retryable, ok := productHarnessGatewayDiagnosticOutcome(eventType)
-	if !ok || record.Result != result || record.ErrorCode != errorCode ||
-		record.Retryable != retryable || record.HTTPStatus != 0 ||
-		record.ProviderErrorCode != "" || record.RetryAfterSeconds != 0 {
-		return false
+	failure := harnessgateway.ResponseFailure{}
+	if eventType == harnessgateway.EventResponseFailed {
+		if record.Result != "failed" || !validProductDiagnosticErrorCode(record.ErrorCode) ||
+			(record.HTTPStatus != 0 && (record.HTTPStatus < 100 || record.HTTPStatus > 599)) ||
+			(record.ProviderErrorCode != "" &&
+				!validProductDiagnosticProviderErrorCode(record.ProviderErrorCode)) ||
+			record.RetryAfterSeconds < 0 || record.RetryAfterSeconds > 24*60*60 {
+			return false
+		}
+		failure = harnessgateway.ResponseFailure{
+			Code: record.ErrorCode, Stage: record.Stage,
+			HTTPStatus: record.HTTPStatus, ProviderCode: record.ProviderErrorCode,
+			RetryAfterSeconds: record.RetryAfterSeconds, Retryable: record.Retryable,
+		}
+	} else {
+		result, errorCode, retryable, ok := productHarnessGatewayDiagnosticOutcome(eventType)
+		if !ok || record.Stage != "conversation_dispatch" ||
+			record.Result != result || record.ErrorCode != errorCode ||
+			record.Retryable != retryable || record.HTTPStatus != 0 ||
+			record.ProviderErrorCode != "" || record.RetryAfterSeconds != 0 {
+			return false
+		}
 	}
 	switch eventType {
 	case harnessgateway.EventSessionOpening, harnessgateway.EventSessionReady,
@@ -1199,6 +1316,7 @@ func validProductHarnessGatewayDiagnostic(record productOperationalDiagnosticRec
 		RouteTransitionReviewDigest: record.RouteTransitionReviewDigest,
 		ResponseID:                  record.ResponseID,
 		IncidentID:                  incidentID,
+		Failure:                     failure,
 	}).Valid()
 }
 

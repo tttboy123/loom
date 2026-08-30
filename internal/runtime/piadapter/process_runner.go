@@ -65,11 +65,30 @@ type piMetadataDirectoryBinding struct {
 }
 
 func NewPiMetadataProcessRunner(config PiMetadataProcessRunnerConfig) (loomruntime.PiMetadataRunner, error) {
-	return newPiMetadataProcessRunner(config, piLocalModelSHA256)
+	return newPiMetadataProcessRunnerWithArtifactDigests(
+		config,
+		piLocalLlamaArchiveSHA256,
+		piLocalLlamaExecutableSHA256,
+		piLocalModelSHA256,
+	)
 }
 
 func newPiMetadataProcessRunner(
 	config PiMetadataProcessRunnerConfig,
+	expectedModelDigest string,
+) (loomruntime.PiMetadataRunner, error) {
+	return newPiMetadataProcessRunnerWithArtifactDigests(
+		config,
+		"",
+		"",
+		expectedModelDigest,
+	)
+}
+
+func newPiMetadataProcessRunnerWithArtifactDigests(
+	config PiMetadataProcessRunnerConfig,
+	expectedArchiveDigest string,
+	expectedExecutableDigest string,
 	expectedModelDigest string,
 ) (loomruntime.PiMetadataRunner, error) {
 	runner, err := bindPiMetadataProcessRunnerCore(config)
@@ -77,8 +96,10 @@ func newPiMetadataProcessRunner(
 		return nil, err
 	}
 	if config.LocalModelCatalog != nil {
-		runner.catalog, err = bindPiLocalModelCatalog(
+		runner.catalog, err = bindPiLocalModelCatalogWithArtifactDigests(
 			*config.LocalModelCatalog,
+			expectedArchiveDigest,
+			expectedExecutableDigest,
 			expectedModelDigest,
 		)
 		if err != nil {

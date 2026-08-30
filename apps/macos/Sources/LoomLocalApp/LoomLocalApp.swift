@@ -57,6 +57,15 @@ private struct LoomApplication: App {
         }
         .defaultSize(width: 1100, height: 720)
         .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Task") {
+                    NotificationCenter.default.post(
+                        name: .loomNewTaskRequested,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
             CommandGroup(after: .newItem) {
                 Button("Open Folder...") {
                     NotificationCenter.default.post(
@@ -74,7 +83,10 @@ private struct LoomApplication: App {
         serviceLogger.info("managed service registration evaluated")
         switch outcome {
         case .enabled, .registered:
-            if await serviceProcessHost.waitForDefaultSocket() {
+            if await serviceProcessHost.waitForDefaultSocket(
+                maxAttempts: 12,
+                delayNanoseconds: 250_000_000
+            ) {
                 serviceLogger.info("managed service socket available")
                 return outcome
             }

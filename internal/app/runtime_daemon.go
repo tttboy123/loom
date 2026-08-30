@@ -80,6 +80,14 @@ type RuntimeObservationIdentitySource interface {
 	NextRuntimeObservationIdentity(context.Context) (string, error)
 }
 
+// RuntimeObservationHealthReporter receives only typed runtime observation
+// lifecycle outcomes. Product surfaces use it to expose a transient Pi probe
+// failure without stopping the rest of the local service.
+type RuntimeObservationHealthReporter interface {
+	RuntimeObservationFailed(error)
+	RuntimeObservationRecovered()
+}
+
 type LocalRuntimeObservationFact struct {
 	RuntimeInstanceID string
 	ExecutableVersion string
@@ -101,6 +109,7 @@ type LocalRuntimeObservationDaemon struct {
 	mu        sync.Mutex
 	running   bool
 	closed    bool
+	health    RuntimeObservationHealthReporter
 	config    LocalRuntimeObservationDaemonConfig
 	clock     RuntimeObservationDaemonClock
 	readModel *projection.Projection
@@ -108,6 +117,21 @@ type LocalRuntimeObservationDaemon struct {
 	db        *sql.DB
 	stateFile *os.File
 	stateLock *runtimeDaemonStateLock
+}
+
+func (d *LocalRuntimeObservationDaemon) SetRuntimeObservationHealthReporter(
+	reporter RuntimeObservationHealthReporter,
+) error {
+	if d == nil || nilAppInterface(reporter) {
+		return ErrInvalidLocalRuntimeObservationDaemon
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.running || d.closed || d.health != nil {
+		return ErrInvalidLocalRuntimeObservationDaemon
+	}
+	d.health = reporter
+	return nil
 }
 
 type systemRuntimeObservationDaemonClock struct{}
@@ -308,9 +332,13 @@ func (d *LocalRuntimeObservationDaemon) Run(
 				errors.Is(err, context.DeadlineExceeded) {
 				return cloneLocalRuntimeObservationDaemonResult(result), err
 			}
+			if d.reportRetryableRuntimeObservationFailure(err) {
+				continue
+			}
 			return cloneLocalRuntimeObservationDaemonResult(result),
 				fmt.Errorf("%w: %w", ErrLocalRuntimeObservationDaemonCycle, err)
 		}
+		d.reportRuntimeObservationRecovered()
 
 		result.CompletedCycles++
 		switch plan.Kind() {
@@ -329,6 +357,70 @@ func (d *LocalRuntimeObservationDaemon) Run(
 		)
 	}
 	return cloneLocalRuntimeObservationDaemonResult(result), nil
+}
+
+func (d *LocalRuntimeObservationDaemon) reportRetryableRuntimeObservationFailure(
+	err error,
+) bool {
+	d.mu.Lock()
+	reporter := d.health
+	d.mu.Unlock()
+	if nilAppInterface(reporter) || !retryablePiMetadataTimeout(err) {
+		return false
+	}
+	reporter.RuntimeObservationFailed(err)
+	return true
+}
+
+func (d *LocalRuntimeObservationDaemon) reportRuntimeObservationRecovered() {
+	d.mu.Lock()
+	reporter := d.health
+	d.mu.Unlock()
+	if !nilAppInterface(reporter) {
+		reporter.RuntimeObservationRecovered()
+	}
+}
+
+func retryablePiMetadataTimeout(err error) bool {
+	if err == nil || !errors.Is(err, piadapter.ErrPiMetadataProcessTimeout) {
+		return false
+	}
+	if _, ok := loomruntime.PiMetadataFailureCommand(err); !ok {
+		return false
+	}
+	return runtimeObservationErrorLeavesMatch(
+		err,
+		piadapter.ErrPiMetadataProcessTimeout,
+		loomruntime.ErrRuntimeDiscoveryFailed,
+	)
+}
+
+func runtimeObservationErrorLeavesMatch(err error, allowed ...error) bool {
+	if err == nil || len(allowed) == 0 {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) != 0 {
+			for _, child := range children {
+				if !runtimeObservationErrorLeavesMatch(child, allowed...) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if child := wrapped.Unwrap(); child != nil {
+			return runtimeObservationErrorLeavesMatch(child, allowed...)
+		}
+	}
+	for _, target := range allowed {
+		if target != nil && errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *LocalRuntimeObservationDaemon) Close() error {

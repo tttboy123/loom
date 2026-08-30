@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/contextcapsule"
+	"loom-pi-rebuild/internal/controltool"
 )
 
 func TestChatAPIPlainMessageReportsMissingRuntimeWithoutEchoing(t *testing.T) {
@@ -729,6 +730,65 @@ func TestEncryptedPersistentChatAPIStoresAndRestoresPerThreadDocument(t *testing
 	}
 }
 
+func TestEncryptedPersistentChatAPIRestoresHistoricalCompletedToolVersion(t *testing.T) {
+	root := privateLocalProductChatTestRoot(t)
+	legacyPath := filepath.Join(root, "chat-threads.json")
+	documents := newMemoryLocalProductChatDocumentStore()
+	now := func() time.Time { return time.Unix(10, 0).UTC() }
+	first, err := NewEncryptedPersistentLocalProductChatAPI(
+		context.Background(), legacyPath, documents, now,
+		localProductConversationResponderFunc(func(
+			context.Context,
+			LocalProductConversationRequest,
+		) (LocalProductConversationResponse, error) {
+			return LocalProductConversationResponse{Content: "historical reply"}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.SendMessage(context.Background(), LocalProductChatMessageRequest{
+		ThreadID: "thread-historical-tool-version", Content: "historical request",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := documents.ConversationDocuments(
+		context.Background(), localProductChatDocumentKind,
+	)
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("stored documents = %#v, %v", stored, err)
+	}
+	decoded, err := decodeLocalProductChatThreadDocument(stored[0].Payload)
+	if err != nil || len(decoded.Thread.Attempts) != 1 {
+		t.Fatalf("decoded document = %#v, %v", decoded, err)
+	}
+	decoded.Thread.Attempts[0].CompletedControlTools = []controltool.CompletedCall{{
+		ToolID: controltool.ToolMissionsCreatePreview, ToolVersion: 1,
+		Effect: controltool.EffectProposal,
+	}}
+	stored[0].Payload, err = json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical := newMemoryLocalProductChatDocumentStore()
+	historical.documents[stored[0].ConversationID+"\x00"+stored[0].Kind] = stored[0]
+
+	restarted, err := NewEncryptedPersistentLocalProductChatAPI(
+		context.Background(), legacyPath, historical, now, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := restarted.ChatThread(
+		context.Background(), "thread-historical-tool-version",
+	)
+	if err != nil || len(thread.Attempts) != 1 ||
+		len(thread.Attempts[0].CompletedControlTools) != 1 ||
+		thread.Attempts[0].CompletedControlTools[0].ToolVersion != 1 {
+		t.Fatalf("restored historical audit = %#v, %v", thread, err)
+	}
+}
+
 func TestEncryptedPersistentChatAPIReconcilesDispatchingAttemptBeforeRestartReturns(t *testing.T) {
 	legacyPath, documents, dispatchRevision := encryptedDispatchingChatDocumentFixture(t)
 	recoveredAt := time.Unix(20, 0).UTC()
@@ -1238,21 +1298,37 @@ func privateLocalProductChatTestRoot(t *testing.T) string {
 	return root
 }
 
-func TestChatAPIExplicitAgentTriggerReturnsTentativeProposal(t *testing.T) {
+func TestChatAPIAgentTermsRemainModelDrivenConversationInput(t *testing.T) {
 	api := NewLocalProductChatAPI(func() time.Time { return time.Unix(0, 0).UTC() })
+	calls := 0
+	api.responder = localProductConversationResponderFunc(func(
+		context.Context,
+		LocalProductConversationRequest,
+	) (LocalProductConversationResponse, error) {
+		calls++
+		return LocalProductConversationResponse{
+			Content: "model-routed Loom capability response", Tentative: true,
+		}, nil
+	})
 	ctx := context.Background()
-	thread, err := api.SendMessage(ctx, LocalProductChatMessageRequest{ThreadID: "t2", Content: "use agent team for this mission"})
-	if err != nil {
-		t.Fatal(err)
+	for index, content := range []string{
+		"use agent team for this mission",
+		"为已阻塞 Mission team-instance-fixture 准备继续工作提案",
+	} {
+		thread, err := api.SendMessage(ctx, LocalProductChatMessageRequest{
+			ThreadID: "model-agent-terms-" + strconv.Itoa(index), Content: content,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(thread.Attempts) != 1 || thread.Attempts[0].Status != "succeeded" ||
+			thread.Messages[1].Role != string(ChatRoleLoom) ||
+			thread.Messages[1].Content != "model-routed Loom capability response" {
+			t.Fatalf("model-driven conversation result = %#v", thread)
+		}
 	}
-	if thread.Messages[1].Role != string(ChatRoleProposal) {
-		t.Fatalf("expected proposal role, got %s", thread.Messages[1].Role)
-	}
-	if !thread.Messages[1].Tentative {
-		t.Fatal("proposal must be marked tentative")
-	}
-	if !strings.Contains(thread.Messages[1].Content, "Agent Team") {
-		t.Fatalf("proposal should mention Agent Team: %s", thread.Messages[1].Content)
+	if calls != 2 {
+		t.Fatalf("model responder calls = %d, want 2", calls)
 	}
 }
 

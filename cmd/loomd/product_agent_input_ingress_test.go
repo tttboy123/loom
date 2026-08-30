@@ -121,6 +121,60 @@ func TestProductAgentInputIngressAdmitsExactActiveAttemptIdempotently(t *testing
 	}
 }
 
+func TestProductAgentInputIngressRejectsUnsupportedRuntimeWithoutReadinessRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	runs, run, executionBinding, capsule, _, _ := productAttemptLoopFixture(t)
+	payloads, err := work.NewAttemptPayloadAuthority(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := work.NewAttemptLoopAuthority(runs, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxAuthority, err := work.NewAgentInboxAuthority(loops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := work.NewAgentInboxCoordinator(inboxAuthority, newProductMemoryAgentInboxStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := newProductActiveAttemptRegistry()
+	request := productAttemptLoopRequest(t, run, executionBinding, capsule)
+	binding, budget, err := productAttemptLoopBinding(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, active, err := registry.Register(request, binding, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+	ingress, err := newProductAgentInputIngress(
+		registry, inbox, productNativeAgentInputDiagnostics{},
+		func() time.Time { return time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("unsupported live guidance")
+	_, err = ingress.AdmitAgentInput(ctx, productAgentInputRequest{
+		SchemaVersion: 1, SegmentID: active.Identity.SegmentID,
+		AgentInstanceID: active.Identity.AgentInstanceID,
+		WorkItemID:      active.Identity.WorkItemID, RunID: active.Identity.RunID,
+		ClaimGeneration: active.Identity.ClaimGeneration,
+		Mode:            agentinbox.ModeSteer, ContextScope: agentinbox.ScopeAgentPrivate,
+		Content: content, IncidentID: "agent-input-unsupported",
+	})
+	if !errors.Is(err, errProductAgentInputUnsupported) || agentInputErrorCode(err) != "capability_gap" ||
+		agentInputRetryable(err) || !allProductAgentInputBytesZero(content) {
+		t.Fatalf("unsupported error/code/retryable/zeroized = %v / %q / %v / %v",
+			err, agentInputErrorCode(err), agentInputRetryable(err), allProductAgentInputBytesZero(content))
+	}
+}
+
 func TestProductDaemonRoutesStrictAgentInputWithIncidentID(t *testing.T) {
 	t.Parallel()
 	stub := &productAgentInputRouteStub{}

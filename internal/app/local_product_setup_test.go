@@ -68,10 +68,24 @@ func (observer setupFixtureNativeAuth) ObserveNativeAuth(
 	return observer.result, nil
 }
 
-type setupFixtureNativeAuthConnector struct {
-	starts int
-	closed bool
+type setupMutableNativeAuth struct {
+	result NativeAuthObservation
 	err    error
+	calls  int
+}
+
+func (observer *setupMutableNativeAuth) ObserveNativeAuth(
+	context.Context,
+) (NativeAuthObservation, error) {
+	observer.calls++
+	return observer.result, observer.err
+}
+
+type setupFixtureNativeAuthConnector struct {
+	starts  int
+	cancels int
+	closed  bool
+	err     error
 }
 
 func (connector *setupFixtureNativeAuthConnector) StartNativeAuth(
@@ -83,6 +97,13 @@ func (connector *setupFixtureNativeAuthConnector) StartNativeAuth(
 
 func (connector *setupFixtureNativeAuthConnector) Close() error {
 	connector.closed = true
+	return connector.err
+}
+
+func (connector *setupFixtureNativeAuthConnector) CancelNativeAuth(
+	context.Context,
+) error {
+	connector.cancels++
 	return connector.err
 }
 
@@ -545,6 +566,106 @@ func TestLocalProductSetupConnectCodexDelegatesOnlyWhenDisconnected(
 	}
 }
 
+func TestLocalProductSetupRefreshesClaudeCodeNativeProfileWithoutRestart(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	observations := service.catalog.RuntimeDiscovery.Observations()
+	observations = append(observations, loomruntime.RuntimeObservation{
+		Instance: loomruntime.RuntimeInstance{
+			ID: "runtime.claude-code.local", DeviceID: "device.local",
+			AdapterType: "claude-code", DisplayName: "Claude Code",
+			ExecutableVersion: "2.1.196", Status: loomruntime.RuntimeOnline,
+			ObservedCapabilities: []string{"agent", "native_auth", "workspace_edit"}, Capacity: 3,
+		},
+		ModelIDs: []string{provider.AnthropicConversationModelID},
+	})
+	discovery, err := loomruntime.DiscoverRuntime(
+		context.Background(),
+		[]loomruntime.RuntimeProbe{setupFixtureProbe{observations: observations}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.catalog.RuntimeDiscovery = discovery
+	observer := &setupMutableNativeAuth{result: NativeAuthObservation{
+		Status: "not_logged_in", AuthMode: "native_auth", Reason: "not_logged_in",
+	}}
+	service.claudeCodeNativeAuth = observer
+	loggedOut, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range loggedOut.ConversationProfiles {
+		if profile.HarnessAdapter == "claude-code" {
+			t.Fatalf("logged-out Claude profile = %#v", profile)
+		}
+	}
+	observer.result = NativeAuthObservation{Status: "available", AuthMode: "native_auth"}
+	loggedIn, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, profile := range loggedIn.ConversationProfiles {
+		if profile.ProfileID == provider.ClaudeCodeConversationProfileID &&
+			profile.HarnessAdapter == "claude-code" {
+			found = true
+		}
+	}
+	if !found || observer.calls != 2 {
+		t.Fatalf("dynamic Claude profiles=%#v calls=%d", loggedIn.ConversationProfiles, observer.calls)
+	}
+	observer.err = errors.New("private auth observer failure")
+	failedClosed, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range failedClosed.ConversationProfiles {
+		if profile.HarnessAdapter == "claude-code" {
+			t.Fatalf("observer failure published Claude profile = %#v", profile)
+		}
+	}
+}
+
+func TestLocalProductSetupConnectClaudeCodeDelegatesOnlyWhenDisconnected(t *testing.T) {
+	service, _, _, _ := newSetupFixtureService(t)
+	observer := &setupMutableNativeAuth{result: NativeAuthObservation{
+		Status: "available", AuthMode: "native_auth",
+	}}
+	connector := &setupFixtureNativeAuthConnector{}
+	service.claudeCodeNativeAuth = observer
+	service.claudeCodeNativeAuthConnector = connector
+
+	connected, err := service.ConnectClaudeCode(context.Background())
+	if err != nil || connected.ProviderID != "claude-code" ||
+		connected.AuthMode != "native_auth" || connected.Status != "already_connected" ||
+		connector.starts != 0 {
+		t.Fatalf("connected result=%#v starts=%d error=%v", connected, connector.starts, err)
+	}
+	observer.result = NativeAuthObservation{
+		Status: "not_logged_in", AuthMode: "native_auth", Reason: "not_logged_in",
+	}
+	started, err := service.ConnectClaudeCode(context.Background())
+	if err != nil || started.ProviderID != "claude-code" ||
+		started.AuthMode != "native_auth" || started.Status != "started" ||
+		connector.starts != 1 {
+		t.Fatalf("started result=%#v starts=%d error=%v", started, connector.starts, err)
+	}
+	observer.result = NativeAuthObservation{
+		Status: "unsupported", AuthMode: "native_auth", Reason: "unknown_output",
+	}
+	if _, err := service.ConnectClaudeCode(context.Background()); !errors.Is(
+		err, ErrNativeAuthConnectUnavailable,
+	) {
+		t.Fatalf("unsupported ConnectClaudeCode() error = %v", err)
+	}
+	cancelled, err := service.CancelClaudeCode(context.Background())
+	if err != nil || cancelled.ProviderID != "claude-code" ||
+		cancelled.AuthMode != "native_auth" || cancelled.Status != "cancelled" ||
+		connector.cancels != 1 {
+		t.Fatalf("cancelled result=%#v cancels=%d error=%v", cancelled, connector.cancels, err)
+	}
+}
+
 func TestLocalProductSetupBuilderStaleEditTemplateAndSavedSources(t *testing.T) {
 	service, _, _, catalog := newSetupFixtureService(t)
 	template, err := service.StartBuilder(
@@ -840,6 +961,41 @@ func TestSetupSnapshotLoadsProviderCredentialDirectoryOnce(t *testing.T) {
 			"credential reads directory=%d individual=%d",
 			credentials.directoryCalls,
 			credentials.statusCalls,
+		)
+	}
+}
+
+func TestSetupSnapshotUsesNonblockingNativeAuthProjectionWhileConnectUsesLiveObserver(
+	t *testing.T,
+) {
+	service, _, _, _ := newSetupFixtureService(t)
+	live := &setupMutableNativeAuth{result: NativeAuthObservation{
+		Status: "available", AuthMode: "native_auth",
+	}}
+	projected := &setupMutableNativeAuth{result: NativeAuthObservation{
+		Status: "not_logged_in", AuthMode: "native_auth", Reason: "not_logged_in",
+	}}
+	service.nativeAuth = live
+	service.nativeAuthSnapshot = projected
+
+	snapshot, err := service.SetupSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Codex.Status != "not_logged_in" || projected.calls != 1 || live.calls != 0 {
+		t.Fatalf(
+			"snapshot Codex = %#v, projected calls = %d, live calls = %d",
+			snapshot.Codex, projected.calls, live.calls,
+		)
+	}
+	connected, err := service.ConnectCodex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connected.Status != "already_connected" || live.calls != 1 || projected.calls != 1 {
+		t.Fatalf(
+			"connect = %#v, live calls = %d, projected calls = %d",
+			connected, live.calls, projected.calls,
 		)
 	}
 }
@@ -2663,6 +2819,36 @@ func TestSetupConversationProfilesPublishAccountScopedOpenCodeRoutes(t *testing.
 	}
 }
 
+func TestSetupConversationProfilesExcludeIncompatibleOpenCodeMiniMaxRoute(t *testing.T) {
+	profiles := setupConversationProfiles(
+		NativeAuthObservation{},
+		nil,
+		[]ProviderAccountDirectoryEntry{
+			{ProviderID: "deepseek", ProviderAccountID: "deepseek.primary", AuthMode: "brokered", Revision: 2, Status: "verified"},
+			{ProviderID: "minimax", ProviderAccountID: "minimax.primary", AuthMode: "brokered", Revision: 23, Status: "verified"},
+		},
+		[]SetupRuntimePreview{{
+			RuntimeInstanceID: "runtime.opencode.local", AdapterType: "opencode",
+			Status: "online", ModelIDs: []string{
+				"deepseek/deepseek-chat", "minimax-cn/MiniMax-M3", "opencode/big-pickle",
+			},
+		}},
+	)
+	var loomMiniMax, openCodeDeepSeek bool
+	for _, profile := range profiles {
+		if profile.HarnessAdapter == "opencode" && profile.ProviderID == "minimax" {
+			t.Fatalf("incompatible OpenCode + MiniMax profile was published: %#v", profile)
+		}
+		loomMiniMax = loomMiniMax ||
+			profile.HarnessAdapter == "loom-native" && profile.ProviderID == "minimax"
+		openCodeDeepSeek = openCodeDeepSeek ||
+			profile.HarnessAdapter == "opencode" && profile.ProviderID == "deepseek"
+	}
+	if !loomMiniMax || !openCodeDeepSeek {
+		t.Fatalf("compatible profiles missing: %#v", profiles)
+	}
+}
+
 func TestNormalizeConversationProfileNamesRejectsHarnessProviderComposition(t *testing.T) {
 	profiles := normalizeConversationProfileNames([]ConversationProviderProfile{
 		{
@@ -2740,16 +2926,26 @@ func TestSetupConversationProfilesPublishesAnthropicMessagesAccount(t *testing.T
 	}
 }
 
-func TestSetupConversationProfilesPublishesNativeClaudeCodeRouteWhenRuntimeIsOnline(
+func TestSetupConversationProfilesPublishesNativeClaudeCodeRouteOnlyWhenAuthenticated(
 	t *testing.T,
 ) {
-	profiles := setupConversationProfiles(
+	runtimes := []SetupRuntimePreview{{
+		RuntimeInstanceID: "runtime.claude-code.local",
+		AdapterType:       "claude-code", Status: "online", Capacity: 3,
+		ModelIDs:             []string{provider.AnthropicConversationModelID},
+		ObservedCapabilities: []string{"native_auth", "workspace_edit"},
+	}}
+	withoutAuth := setupConversationProfilesWithCapabilities(
+		NativeAuthObservation{}, nil, nil, SetupConversationRouteCapabilities{},
+		runtimes,
+	)
+	if len(withoutAuth) != 0 {
+		t.Fatalf("logged-out Claude Code profiles = %#v", withoutAuth)
+	}
+	profiles := setupConversationProfilesWithCapabilities(
 		NativeAuthObservation{}, nil, nil,
-		[]SetupRuntimePreview{{
-			RuntimeInstanceID: "runtime.claude-code.local",
-			AdapterType:       "claude-code", Status: "online",
-			ModelIDs: []string{provider.AnthropicConversationModelID},
-		}},
+		SetupConversationRouteCapabilities{ClaudeCodeNative: true},
+		runtimes,
 	)
 	if len(profiles) != 1 ||
 		profiles[0].ProfileID != provider.ClaudeCodeConversationProfileID ||
@@ -2761,6 +2957,100 @@ func TestSetupConversationProfilesPublishesNativeClaudeCodeRouteWhenRuntimeIsOnl
 		profiles[0].AuthMode != "native_auth" ||
 		profiles[0].CredentialRevision != 0 {
 		t.Fatalf("Claude Code profiles = %#v", profiles)
+	}
+}
+
+func TestSetupConversationProfilesRejectsInexactClaudeCodeRuntime(t *testing.T) {
+	valid := SetupRuntimePreview{
+		RuntimeInstanceID: "runtime.claude-code.local",
+		AdapterType:       "claude-code", Status: "online", Capacity: 3,
+		ModelIDs:             []string{provider.AnthropicConversationModelID},
+		ObservedCapabilities: []string{"native_auth", "workspace_edit"},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*SetupRuntimePreview)
+	}{
+		{name: "foreign instance", mutate: func(runtime *SetupRuntimePreview) {
+			runtime.RuntimeInstanceID = "runtime.claude-code.foreign"
+		}},
+		{name: "no capacity", mutate: func(runtime *SetupRuntimePreview) {
+			runtime.Capacity = 0
+		}},
+		{name: "wrong model", mutate: func(runtime *SetupRuntimePreview) {
+			runtime.ModelIDs = []string{"claude-unknown"}
+		}},
+		{name: "missing workspace capability", mutate: func(runtime *SetupRuntimePreview) {
+			runtime.ObservedCapabilities = []string{"native_auth"}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := valid
+			runtime.ModelIDs = append([]string(nil), valid.ModelIDs...)
+			runtime.ObservedCapabilities = append(
+				[]string(nil), valid.ObservedCapabilities...,
+			)
+			test.mutate(&runtime)
+			profiles := setupConversationProfilesWithCapabilities(
+				NativeAuthObservation{}, nil, nil,
+				SetupConversationRouteCapabilities{ClaudeCodeNative: true},
+				[]SetupRuntimePreview{runtime},
+			)
+			if len(profiles) != 0 {
+				t.Fatalf("inexact Claude Runtime published profiles = %#v", profiles)
+			}
+		})
+	}
+}
+
+func TestSetupConversationProfilesDoesNotInferClaudeAuthFromRuntimeInventory(
+	t *testing.T,
+) {
+	profiles := setupConversationProfiles(
+		NativeAuthObservation{}, nil, nil,
+		[]SetupRuntimePreview{{
+			RuntimeInstanceID: "runtime.claude-code.local",
+			AdapterType:       "claude-code", Status: "online",
+			ModelIDs: []string{provider.AnthropicConversationModelID},
+		}},
+	)
+	if len(profiles) != 0 {
+		t.Fatalf("Runtime inventory inferred Claude auth = %#v", profiles)
+	}
+}
+
+func TestSetupConversationProfilesPublishesPiOnlyForConfiguredConversationBackend(
+	t *testing.T,
+) {
+	runtimes := []SetupRuntimePreview{{
+		RuntimeInstanceID: "runtime.pi.local", AdapterType: "pi-cli", Status: "online",
+		ModelIDs: []string{"loom-local/" + provider.PiConversationModelID},
+	}}
+	withoutBackend := setupConversationProfilesWithCapabilities(
+		NativeAuthObservation{}, nil, nil, SetupConversationRouteCapabilities{},
+		runtimes,
+	)
+	if len(withoutBackend) != 0 {
+		t.Fatalf("Pi runtime inventory published a non-executable profile = %#v", withoutBackend)
+	}
+
+	withBackend := setupConversationProfilesWithCapabilities(
+		NativeAuthObservation{}, nil, nil,
+		SetupConversationRouteCapabilities{PiLocal: true},
+		runtimes,
+	)
+	if len(withBackend) != 1 ||
+		withBackend[0].ProfileID != provider.PiConversationProfileID ||
+		withBackend[0].HarnessAdapter != "pi" ||
+		withBackend[0].ProviderID != "loom-local" ||
+		withBackend[0].ProviderAccountID != "" ||
+		withBackend[0].DisplayName != "Local model" ||
+		withBackend[0].Protocol != "pi_rpc" ||
+		withBackend[0].ModelID != provider.PiConversationModelID ||
+		withBackend[0].AuthMode != "native_auth" ||
+		withBackend[0].CredentialRevision != 0 {
+		t.Fatalf("configured Pi profile = %#v", withBackend)
 	}
 }
 

@@ -24,8 +24,17 @@ func missionRuntimeDisplayName(
 func runtimeAgentAvailabilityDetail(
   adapterType: String,
   modelIDs: [String],
-  roleOptionCount: Int
+  roleOptionCount: Int,
+  hasConversationRoute: Bool = true
 ) -> String {
+  if adapterType == "pi-cli" && !hasConversationRoute {
+    return "Detected · Local model required for Conversation"
+  }
+  if adapterType == "claude-code" && !hasConversationRoute {
+    return roleOptionCount > 0
+      ? "Agent Teams ready · Sign in to Claude Code for Conversation"
+      : "Detected · Sign in to Claude Code for Conversation; connect Anthropic for Agent Teams"
+  }
   if roleOptionCount > 0 {
     let models = modelIDs.joined(separator: ", ")
     return models.isEmpty
@@ -41,6 +50,57 @@ func runtimeAgentAvailabilityDetail(
     let models = modelIDs.joined(separator: ", ")
     return models.isEmpty ? "Detected" : models
   }
+}
+
+func runtimeNativeAuthActionTitle(
+  adapterType: String,
+  status: String,
+  hasConversationRoute: Bool
+) -> String? {
+  guard adapterType == "claude-code", status == "online", !hasConversationRoute else {
+    return nil
+  }
+  return "Sign In"
+}
+
+func runtimeAvailabilityStatus(
+  adapterType: String,
+  status: String,
+  hasConversationRoute: Bool
+) -> String {
+  if adapterType == "claude-code", status == "online", !hasConversationRoute {
+    return "sign_in_required"
+  }
+  return status
+}
+
+enum RuntimeNativeAuthActivity: Equatable {
+  case idle
+  case waiting
+  case cancelling
+}
+
+func runtimeNativeAuthActivity(
+  adapterType: String,
+  inFlight: Bool,
+  operationStatus: String?
+) -> RuntimeNativeAuthActivity {
+  guard adapterType == "claude-code", inFlight else { return .idle }
+  return operationStatus == "Cancelling sign in" ? .cancelling : .waiting
+}
+
+func runtimeNativeAuthRecoveryDetail(
+  stage: String?,
+  retryable: Bool?
+) -> String? {
+  var parts: [String] = []
+  if let stage, !stage.isEmpty {
+    parts.append("Stage: \(stage)")
+  }
+  if let retryable {
+    parts.append(retryable ? "Retry available" : "Manual action required")
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 func missionHistoryIncludesMission(
@@ -1736,6 +1796,28 @@ func missionDisplayTitle(
   )
 }
 
+func missionPresentationTitle(
+  presentationTitle: String?,
+  candidate: String,
+  missionID: String,
+  teamInstanceID: String,
+  teams: [LocalProductTeamSummary]
+) -> String {
+  let savedTitle = SafeText.sanitize(
+    presentationTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+    limit: 96
+  )
+  if !savedTitle.isEmpty {
+    return savedTitle
+  }
+  return missionDisplayTitle(
+    candidate: candidate,
+    missionID: missionID,
+    teamInstanceID: teamInstanceID,
+    teams: teams
+  )
+}
+
 func suggestedMissionTitle(from objective: String) -> String {
   let firstLine = objective
     .split(whereSeparator: { $0.isNewline })
@@ -1858,6 +1940,16 @@ func missionActivityVisibleText(
   return "…" + text.suffix(limit - 1)
 }
 
+func missionActivityAuthorityMessage(
+  _ entries: [MissionActivityEntry]
+) -> String? {
+  guard entries.contains(where: { !$0.text.isEmpty }) else { return nil }
+  if entries.contains(where: { $0.isTentative && !$0.text.isEmpty }) {
+    return "Live output remains tentative until terminal Evidence is accepted."
+  }
+  return "Accepted output restored from terminal Evidence."
+}
+
 func missionActivityEntries(
   mission: LocalProductMissionSummary?,
   timeline: LocalProductTimelinePage?
@@ -1903,7 +1995,12 @@ func missionActivityEntries(
       $0.logicalNodeID == key.logicalNodeID
         && ($0.currentAttempt == key.attemptNumber || key.attemptNumber == 0)
     })
-    let rawText = textByKey[key] ?? ""
+    let acceptedOutput = node?.finalOutputAvailable == true
+      ? node?.finalOutputText ?? ""
+      : ""
+    let rawText = acceptedOutput.isEmpty
+      ? textByKey[key] ?? ""
+      : acceptedOutput
     let textLimit = 24_000
     let truncated = rawText.count > textLimit
     let route = node.map { node in
@@ -1932,7 +2029,7 @@ func missionActivityEntries(
       route: route,
       status: projectedStatus,
       text: String(rawText.prefix(textLimit)),
-      isTentative: tentativeByKey[key] ?? false,
+      isTentative: acceptedOutput.isEmpty && (tentativeByKey[key] ?? false),
       isTruncated: truncated
     )
   }
@@ -2770,19 +2867,6 @@ func resolvedMissionTeamID(
   return executableTeamIDs.first ?? ""
 }
 
-func missionShouldStartNewAttempt(
-  teamInstanceID: String,
-  missions: [LocalProductMissionSummary]
-) -> Bool {
-  let matching = missions.filter { $0.teamInstanceID == teamInstanceID }
-  guard !matching.isEmpty else { return false }
-  let terminalStatuses: Set<String> = [
-    "succeeded", "failed", "cancelled", "degraded", "blocked",
-    "human_required", "ready_for_review",
-  ]
-  return matching.allSatisfy { terminalStatuses.contains($0.status) }
-}
-
 struct EndpointReviewPresentation: Equatable {
   let source: String
   let provider: String
@@ -3001,6 +3085,9 @@ public struct MissionWorkbench: View {
   @State private var vaultDiagnosticExporter: LocalDiagnosticBundleExporter?
   @State private var vaultDiagnosticError: String?
   @State private var preparingVaultDiagnostics = false
+  @State private var missionDiagnosticPreview: LocalDiagnosticBundlePreview?
+  @State private var missionDiagnosticExporter: LocalDiagnosticBundleExporter?
+  @State private var missionDiagnosticError: String?
   @State private var confirmVaultRecoveryReset = false
   @State private var showVaultExport = false
   @State private var showNewMission = false
@@ -3024,6 +3111,7 @@ public struct MissionWorkbench: View {
   @State private var expandedMissionActivityIDs = Set<String>()
   @State private var pendingAgentRecovery: LocalProductAgentRecoveryCandidate?
   @State private var pendingToolRecovery: PendingToolRecoveryDecision?
+  @State private var roundtableMissionLink: LocalRoundtableMissionLink?
   @State private var showCreateAsset = false
   @State private var assetDefinitionID = "skill.local"
   @State private var assetRevisionID = "revision.1"
@@ -3038,6 +3126,7 @@ public struct MissionWorkbench: View {
   private let initialMissionObjective: String?
   private let initialConversationThreadID: String?
   private let initialConversationTitle: String?
+  private let onReturnToConversation: ((String) -> Void)?
 
   public init(
     store: LocalProductStore,
@@ -3047,22 +3136,19 @@ public struct MissionWorkbench: View {
     initialMissionTeamID: String? = nil,
     initialMissionObjective: String? = nil,
     initialConversationThreadID: String? = nil,
-    initialConversationTitle: String? = nil
+    initialConversationTitle: String? = nil,
+    onReturnToConversation: ((String) -> Void)? = nil
   ) {
     self.store = store
     self.showRail = showRail
     self.initialMissionObjective = initialMissionObjective
     self.initialConversationThreadID = initialConversationThreadID
     self.initialConversationTitle = initialConversationTitle
+    self.onReturnToConversation = onReturnToConversation
     _showProviders = State(initialValue: showProvidersInitially)
     _showNewMission = State(initialValue: showNewMissionInitially)
     _newMissionTeamID = State(initialValue: initialMissionTeamID ?? "")
-    _newMissionStartsNewAttempt = State(
-      initialValue: missionShouldStartNewAttempt(
-        teamInstanceID: initialMissionTeamID ?? "",
-        missions: store.snapshot?.missions ?? []
-      )
-    )
+    _newMissionStartsNewAttempt = State(initialValue: false)
   }
 
   public var body: some View {
@@ -3094,9 +3180,18 @@ public struct MissionWorkbench: View {
       }
     }
     .background(LoomGraphite.canvas)
-    .sheet(isPresented: $showProviders) {
+    .sheet(
+      isPresented: $showProviders,
+      onDismiss: {
+        Task { await store.cancelClaudeCodeSignIn() }
+      }
+    ) {
       providerManagement
         .frame(minWidth: 720, minHeight: 620)
+    }
+    .sheet(item: $roundtableMissionLink) { link in
+      RoundtableWorkbench(store: store, missionLink: link)
+        .frame(minWidth: 860, minHeight: 620)
     }
     .sheet(item: $vaultDiagnosticPreview) { preview in
       if let vaultDiagnosticExporter {
@@ -3411,6 +3506,7 @@ public struct MissionWorkbench: View {
                 .tag(team.teamInstanceID)
               }
             }
+            .disabled(newMissionStartsNewAttempt)
 
             VStack(alignment: .leading, spacing: 7) {
               Text("Mission title")
@@ -3476,10 +3572,6 @@ public struct MissionWorkbench: View {
         preferred: newMissionTeamID,
         executableTeamIDs: executableTeams.map(\.teamInstanceID)
       )
-      newMissionStartsNewAttempt = missionShouldStartNewAttempt(
-        teamInstanceID: newMissionTeamID,
-        missions: store.snapshot?.missions ?? []
-      )
     }
     .onChange(of: newMissionObjective) { previous, current in
       if newMissionTitle.isEmpty ||
@@ -3492,16 +3584,33 @@ public struct MissionWorkbench: View {
     .onChange(of: newMissionTitle) { _, _ in missionContextDidChange() }
     .onChange(of: confirmedMissionConstraints) { _, _ in missionContextDidChange() }
     .onChange(of: acceptedMissionDecisions) { _, _ in missionContextDidChange() }
-    .onChange(of: newMissionTeamID) { _, teamInstanceID in
-      newMissionStartsNewAttempt = missionShouldStartNewAttempt(
-        teamInstanceID: teamInstanceID,
-        missions: store.snapshot?.missions ?? []
-      )
+    .onChange(of: newMissionTeamID) { _, _ in
       missionContextDidChange()
     }
     .onChange(of: newMissionWorkPackageID) { _, _ in missionContextDidChange() }
     .onChange(of: missionContextConfirmed) { _, confirmed in
       if !confirmed { store.invalidateMissionPreflight() }
+    }
+    .sheet(item: $missionDiagnosticPreview) { preview in
+      if let missionDiagnosticExporter {
+        DiagnosticBundlePreviewSheet(
+          preview: preview,
+          exporter: missionDiagnosticExporter
+        )
+      }
+    }
+    .alert(
+      "Diagnostics could not be prepared",
+      isPresented: Binding(
+        get: { missionDiagnosticError != nil },
+        set: { visible in
+          if !visible { missionDiagnosticError = nil }
+        }
+      )
+    ) {
+      Button("OK", role: .cancel) { missionDiagnosticError = nil }
+    } message: {
+      Text(missionDiagnosticError ?? "Try again after Loom reconnects.")
     }
   }
 
@@ -3636,11 +3745,17 @@ public struct MissionWorkbench: View {
   }
 
   private var newMissionCommandBar: some View {
-    HStack {
-        Text(executionStateLabel)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(2)
+    VStack(alignment: .leading, spacing: 10) {
+      if let failure = store.missionOperationFailure {
+        missionOperationFailureBanner(failure)
+      }
+      HStack {
+        if store.missionOperationFailure == nil {
+          Text(executionStateLabel)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+        }
         Spacer()
         if store.executionState == .ready {
           Button(newMissionStartsNewAttempt ? "Start new Attempt" : "Start Mission") {
@@ -3664,6 +3779,9 @@ public struct MissionWorkbench: View {
                   {
                     store.updateMissionComposerDraft("")
                   }
+                  if let onReturnToConversation {
+                    onReturnToConversation(missionID)
+                  }
                 }
                 showNewMission = false
               }
@@ -3673,21 +3791,7 @@ public struct MissionWorkbench: View {
           .disabled(!missionContextConfirmed || store.executionState == .starting)
         } else {
           Button("Review preflight") {
-            guard
-              let team = executableTeams.first(where: {
-                $0.teamInstanceID == newMissionTeamID
-              })
-            else { return }
-            Task {
-              await store.preflightMission(
-                objective: newMissionObjective,
-                team: team,
-                workPackage: selectedWorkPackage,
-                confirmedConstraints: confirmedMissionConstraints,
-                acceptedDecisions: acceptedMissionDecisions,
-                newAttempt: newMissionStartsNewAttempt
-              )
-            }
+            reviewMissionPreflight()
           }
           .buttonStyle(.borderedProminent)
           .disabled(missionReviewDisabled)
@@ -3715,6 +3819,123 @@ public struct MissionWorkbench: View {
             .accessibilityLabel("Open Missions to inspect the running Mission")
           }
         }
+      }
+    }
+  }
+
+  private func missionOperationFailureBanner(
+    _ failure: LocalProductMissionOperationFailure
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Label(failure.title, systemImage: "exclamationmark.triangle.fill")
+          .font(.callout.weight(.semibold))
+          .foregroundStyle(LoomGraphite.statusDanger)
+        Spacer(minLength: 8)
+        Text(missionStageLabel(failure.stage))
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+      Text(failure.detail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      Text(failure.recoveryAction)
+        .font(.caption.weight(.medium))
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        if failure.recoverable {
+          Button {
+            reviewMissionPreflight()
+          } label: {
+            Label("Retry preflight", systemImage: "arrow.clockwise")
+          }
+          .disabled(missionReviewDisabled)
+        }
+        Button {
+          prepareMissionDiagnosticPreview()
+        } label: {
+          Label("View diagnostics", systemImage: "doc.text.magnifyingglass")
+        }
+        Spacer(minLength: 8)
+        Text("Incident \(failure.incidentID)")
+          .font(.caption2.monospaced())
+          .foregroundStyle(.secondary)
+          .textSelection(.enabled)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        Button {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(failure.incidentID, forType: .string)
+        } label: {
+          Image(systemName: "doc.on.doc")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy Mission incident ID")
+        .help("Copy Mission incident ID")
+      }
+      .controlSize(.small)
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(LoomGraphite.statusDanger.opacity(0.08))
+    .overlay(alignment: .leading) {
+      Rectangle()
+        .fill(LoomGraphite.statusDanger)
+        .frame(width: 2)
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(
+      "\(failure.title). \(failure.detail). Incident \(failure.incidentID)"
+    )
+  }
+
+  private func missionStageLabel(_ stage: LocalIPCRemoteError.Stage) -> String {
+    switch stage {
+    case .inputAdmission: return "Input admission"
+    case .udsTransport: return "Local service transport"
+    case .daemonAdmission: return "Mission admission"
+    default:
+      return stage.rawValue.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+  }
+
+  private func prepareMissionDiagnosticPreview() {
+    let input = LocalDiagnosticBundleInput(
+      setupSnapshot: store.setupSnapshot,
+      board: store.timeline?.board
+    )
+    Task {
+      do {
+        let exporter = try LocalDiagnosticBundleExporter.installed()
+        let preview = try await Task.detached {
+          try exporter.preview(input: input)
+        }.value
+        missionDiagnosticExporter = exporter
+        missionDiagnosticPreview = preview
+        missionDiagnosticError = nil
+      } catch {
+        missionDiagnosticError =
+          "Loom could not prepare a privacy-safe diagnostic preview. Retry after the local service reconnects."
+      }
+    }
+  }
+
+  private func reviewMissionPreflight() {
+    guard
+      let team = executableTeams.first(where: {
+        $0.teamInstanceID == newMissionTeamID
+      })
+    else { return }
+    Task {
+      await store.preflightMission(
+        objective: newMissionObjective,
+        team: team,
+        workPackage: selectedWorkPackage,
+        confirmedConstraints: confirmedMissionConstraints,
+        acceptedDecisions: acceptedMissionDecisions,
+        newAttempt: newMissionStartsNewAttempt
+      )
     }
   }
 
@@ -3772,10 +3993,7 @@ public struct MissionWorkbench: View {
       preferred: preferredTeamID ?? newMissionTeamID,
       executableTeamIDs: executableTeams.map(\.teamInstanceID)
     )
-    newMissionStartsNewAttempt = missionShouldStartNewAttempt(
-      teamInstanceID: newMissionTeamID,
-      missions: store.snapshot?.missions ?? []
-    )
+    newMissionStartsNewAttempt = false
   }
 
   private var missionContextCanConfirm: Bool {
@@ -4230,10 +4448,8 @@ public struct MissionWorkbench: View {
     _ mission: MissionListItem,
     record: LocalProductMissionSummary?
   ) -> String {
-    if let title = store.missionPresentations[mission.id]?.title, !title.isEmpty {
-      return title
-    }
-    return missionDisplayTitle(
+    missionPresentationTitle(
+      presentationTitle: store.missionPresentations[mission.id]?.title,
       candidate: record?.title ?? mission.title,
       missionID: record?.missionID ?? mission.id,
       teamInstanceID: record?.teamInstanceID ?? "",
@@ -4460,6 +4676,40 @@ public struct MissionWorkbench: View {
         } ?? "Unavailable",
         backAction: { store.showMissionBoard() }
       )
+      if let record {
+        HStack(spacing: 10) {
+          Label("Agent Team discussion", systemImage: "person.2.wave.2")
+            .font(.caption.weight(.medium))
+          Text("2–6 Agents · routes freeze when seats join")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+          Spacer()
+          Button {
+            let visibleTitle = mission.map {
+              presentedMissionTitle($0, record: record)
+            } ?? record.title
+            roundtableMissionLink = LocalRoundtableMissionLink(
+              conversationID: linkedConversation?.threadID ?? "mission:\(id)",
+              missionID: record.missionID,
+              teamInstanceID: record.teamInstanceID,
+              title: "Discuss: \(visibleTitle)",
+              teamRoleIDs: Set(
+                record.topology.map(\.logicalNodeID).filter { !$0.isEmpty }
+              ),
+              runtimeInstanceIDs: Set(
+                record.topology.map(\.runtimeInstanceID).filter { !$0.isEmpty }
+              )
+            )
+          } label: {
+            Label("Start RoundTable", systemImage: "plus")
+          }
+          .buttonStyle(.borderless)
+          .help("Open a governed discussion with this Mission's Agent Team")
+        }
+        .padding(.horizontal, 18)
+        .frame(minHeight: 38)
+        .background(LoomGraphite.surface)
+      }
       if let linkedConversation {
         HStack(spacing: 10) {
           Label(
@@ -4471,8 +4721,13 @@ public struct MissionWorkbench: View {
           .lineLimit(1)
           Spacer()
           Button("Open conversation") {
-            store.selectChatSession(linkedConversation.threadID)
-            dismiss()
+            let missionID = id
+            if let onReturnToConversation {
+              onReturnToConversation(missionID)
+            } else {
+              store.selectChatSession(linkedConversation.threadID)
+              dismiss()
+            }
           }
           .buttonStyle(.borderless)
         }
@@ -7009,11 +7264,30 @@ public struct MissionWorkbench: View {
   private func setupRuntimeRow(
     _ runtime: LocalProductSetupRuntime
   ) -> some View {
-    HStack(spacing: 12) {
+    let harnessAdapter = runtime.adapterType == "pi-cli" ? "pi" : runtime.adapterType
+    let hasConversationRoute = store.setupSnapshot?.conversationProfiles.contains {
+      $0.harnessAdapter == harnessAdapter
+    } ?? false
+    let nativeAuthAction = runtimeNativeAuthActionTitle(
+      adapterType: runtime.adapterType,
+      status: runtime.status,
+      hasConversationRoute: hasConversationRoute
+    )
+    let availabilityStatus = runtimeAvailabilityStatus(
+      adapterType: runtime.adapterType,
+      status: runtime.status,
+      hasConversationRoute: hasConversationRoute
+    )
+    let nativeAuthActivity = runtimeNativeAuthActivity(
+      adapterType: runtime.adapterType,
+      inFlight: store.providersInFlight.contains("claude-code"),
+      operationStatus: store.providerOperationStatus["claude-code"]
+    )
+    return HStack(spacing: 12) {
       Image(systemName: "cpu")
-        .foregroundStyle(providerStatusColor(runtime.status))
+        .foregroundStyle(providerStatusColor(availabilityStatus))
         .frame(width: 32, height: 32)
-        .background(providerStatusColor(runtime.status).opacity(0.10))
+        .background(providerStatusColor(availabilityStatus).opacity(0.10))
         .clipShape(RoundedRectangle(cornerRadius: 6))
       VStack(alignment: .leading, spacing: 2) {
         Text(runtime.displayName)
@@ -7024,15 +7298,95 @@ public struct MissionWorkbench: View {
             modelIDs: runtime.modelIDs,
             roleOptionCount: store.setupSnapshot?.roleOptions.filter {
               $0.runtimeInstanceID == runtime.runtimeInstanceID
-            }.count ?? 0
+            }.count ?? 0,
+            hasConversationRoute: hasConversationRoute
           )
         )
         .font(.caption)
         .foregroundStyle(.secondary)
-        .lineLimit(1)
+        .lineLimit(2)
+        if runtime.adapterType == "claude-code",
+          let status = store.providerOperationStatus["claude-code"],
+          status != "Ready"
+        {
+          Text(status)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+        }
+        if runtime.adapterType == "claude-code",
+          let detail = store.providerOperationDetail["claude-code"]
+        {
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+        }
+        if runtime.adapterType == "claude-code",
+          let recovery = runtimeNativeAuthRecoveryDetail(
+            stage: store.providerOperationStage["claude-code"],
+            retryable: store.providerOperationRetryable["claude-code"]
+          )
+        {
+          Text(recovery)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+        }
+        if runtime.adapterType == "claude-code",
+          let incidentID = store.providerOperationIncidentID["claude-code"]
+        {
+          HStack(spacing: 6) {
+            Text("Incident \(incidentID)")
+              .font(.caption2.monospaced())
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+            Button {
+              NSPasteboard.general.clearContents()
+              NSPasteboard.general.setString(incidentID, forType: .string)
+            } label: {
+              Image(systemName: "doc.on.doc")
+            }
+            .buttonStyle(.plain)
+            .help("Copy incident ID")
+            .accessibilityLabel("Copy incident ID")
+          }
+        }
       }
-      Spacer()
-      providerStatusLabel(runtime.status)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .layoutPriority(1)
+      VStack(alignment: .trailing, spacing: 6) {
+        providerStatusLabel(availabilityStatus)
+        if nativeAuthActivity == .waiting {
+          HStack(spacing: 8) {
+            ProgressView()
+              .controlSize(.small)
+              .accessibilityLabel("Waiting for Claude Code sign in")
+            Button {
+              Task { await store.cancelClaudeCodeSignIn() }
+            } label: {
+              Image(systemName: "xmark.circle")
+            }
+            .buttonStyle(.plain)
+            .help("Cancel Claude Code sign in")
+            .accessibilityLabel("Cancel Claude Code sign in")
+            .loomActionTarget()
+          }
+        } else if nativeAuthActivity == .cancelling {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityLabel("Cancelling Claude Code sign in")
+        } else if let nativeAuthAction {
+          Button {
+            store.startClaudeCodeSignIn()
+          } label: {
+            Label(nativeAuthAction, systemImage: "key.fill")
+          }
+          .buttonStyle(.bordered)
+          .loomActionTarget()
+        }
+      }
+      .fixedSize(horizontal: true, vertical: false)
     }
     .padding(.leading, 44)
     .padding(.vertical, 5)
@@ -7388,7 +7742,7 @@ public struct MissionWorkbench: View {
     case "available", "verified", "unlocked":
       return LoomGraphite.statusSuccess
     case "connecting", "testing", "replacing", "removing", "configured",
-      "migration_required", "locked":
+      "migration_required", "locked", "sign_in_required":
       return LoomGraphite.statusWarning
     case "rejected", "unavailable", "recovery_required":
       return LoomGraphite.statusDanger

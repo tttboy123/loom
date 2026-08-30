@@ -14,10 +14,19 @@ intervention.
 [Architecture](./docs/ARCHITECTURE.md) ·
 [Development guide](./docs/DEVELOPMENT.md)
 
-> **Release candidate**
+> **Current installed acceptance**
 >
-> This branch prepares Loom `v0.5.3-rc.1` from the installed `0.5.3` Build 188
-> checkpoint. Phase 2D is accepted for its defined scope. The four-real-Provider
+> Loom `0.5.6` Build 324 is installed and completes Phase 7 for the Runtimes
+> available to this user. Source, deterministic packaging, strict bundle
+> identity, managed restart and the real-model control matrix pass for Codex,
+> OpenCode/DeepSeek, Pi and Loom Native/MiniMax. All 28 model-facing Loom Tools,
+> Proposal decisions, expiry, replay rejection, RoundTable governance, restart
+> restoration and the installed privacy scan pass across those four Runtimes.
+> Claude Code is discovered but has no executable Conversation Profile; its
+> installed login and paid live call are explicitly N/A by user choice, while
+> source parity, admission, cancellation and failure-isolation remain enforced.
+> Phase 2D, Phase 4, Phase 5 and Phase 6 are closed for their defined scopes.
+> The four-real-Provider
 > Team, real-account revoke/rate-limit matrix and custom-endpoint live loop are
 > explicitly deferred; see [Current status](./docs/CURRENT.md).
 
@@ -25,15 +34,20 @@ intervention.
 
 Open Loom and type in **Conversation**. The App starts and manages its bundled
 `loomd` service automatically; users do not need to launch a second process.
+Conversation becomes usable before Loom finishes discovering every external
+Harness and restoring governed Agent history. A Mission or RoundTable opened
+during that preparation remains in place and restores automatically.
 
 1. Start a conversation in the center workspace.
-2. Choose a route near the composer when you need a different Harness,
+2. Optionally type `/` or choose **Commands** to find a Loom action without
+   leaving the composer.
+3. Choose a route near the composer when you need a different Harness,
    Provider Account, model or reasoning level.
-3. Continue chatting for ordinary pairing work.
-4. Choose **Run as Mission** when the work needs a Team, workflow, governed
+4. Continue chatting for ordinary pairing work.
+5. Choose **Run as Mission** when the work needs a Team, workflow, governed
    execution or durable result.
-5. Review the proposed Team and execution bindings, then start the Mission.
-6. Follow each Agent's activity, output and status in Mission Room. If a Mission
+6. Review the proposed Team and execution bindings, then start the Mission.
+7. Follow each Agent's activity, output and status in Mission Room. If a Mission
    is blocked, add guidance through **Continue this Mission**.
 
 If no usable route is available, open **Runtime & Providers**. Loom separates
@@ -50,7 +64,7 @@ These five concepts are deliberately separate:
 | **Mission** | One titled, navigable workflow related to a Conversation. Opening it shows that workflow's objective, Team, Agent activity, output, evidence and recovery state. |
 | **Agent Team** | A reusable roster and orchestration definition. Every Agent can use a different Harness, Provider Account and model. |
 | **Runtime & Providers** | The setup and health surface for Harness runtimes, Provider Accounts, models, credentials and diagnostics. |
-| **RoundTable** | A governed collaboration and handoff surface. Seats can be added by drag and drop; it is not the default way to start work. |
+| **RoundTable** | A governed discussion node inside a Mission. Add 2–6 Team Agents by drag and drop, watch each contribution, intervene per seat and explicitly accept the conclusion. |
 
 The Mission Board is a projection of Missions, not a place where every internal
 object is flattened into cards. A Mission title is the entry point; Mission
@@ -69,6 +83,65 @@ governance stay available at the sides.
 - The current response can be stopped without deleting the Conversation.
 - A Conversation can be copied as a readable transcript.
 - A proposal can become a Mission without re-entering its objective.
+
+### Actions from Conversation
+
+Ordinary text remains ordinary chat. Type `/` or choose the command icon to
+open the same searchable action catalog; Up/Down changes selection, Return
+opens it and Escape closes it. Explicit Chinese and English requests such as
+"open RoundTable" resolve through the same typed actions, while questions and
+incidental mentions remain chat.
+
+| Group | Commands |
+|---|---|
+| **Conversation** | `/help`, `/new`, `/copy` |
+| **Work** | `/mission [objective]`, `/missions`, `/team [purpose]`, `/roundtable`, `/continue [guidance]` |
+| **Governance** | `/route`, `/model`, `/reasoning`, `/status`, `/diagnostics`, `/stop`, `/needs-you`, `/library` |
+| **Setup** | `/providers`, `/folder` |
+
+Unavailable actions remain visible with a concrete reason. Unknown Slash
+commands stay in the composer and never reach a Provider. Mission and Team
+commands create reviewable drafts; RoundTable opens its governed Mission
+context; route trust changes and stopping a response keep their confirmation
+boundaries. Credentials can only be managed in **Runtime & Providers** and are
+rejected as Conversation command arguments.
+
+The selected model can also choose Loom Harness tools from ordinary language;
+no exact trigger phrase is required. For example, "align s1 and s2 with this
+conversation", "continue the blocked accessibility Mission" or "show the
+Provider incident" can resolve to typed tools when the current Runtime supports
+the frozen Registry.
+
+| Model tool outcome | What Loom permits |
+|---|---|
+| **Read** | Search or inspect bounded Session, Mission, Team, RoundTable, Needs You, Runtime, Provider, Incident, Workspace, Route and Library metadata. |
+| **Prepare** | Show a reviewable Proposal for Session alignment; Mission create/continue; Team create/edit; RoundTable open/pause/steer/retry/skip/replace; Route, model, reasoning or workspace changes. |
+| **Never** | Confirm, cancel or execute its own Proposal; access credentials, Prompt history, Provider bodies, policy or Journal authority; invoke Stop. |
+
+If a model prepares a change, Loom displays the exact target and action in the
+Conversation. Nothing changes until you choose **Review** or **Confirm**. The
+existing governed review then applies the same confirmation, binding and audit
+rules as the visible commands. Session alignment starts a new immutable Segment
+with the approved Context Capsule on the next message.
+
+Every decision stores an immutable receipt for that exact Proposal and shows a
+copyable Incident ID. A restored historical approval without this receipt stays
+visible but cannot be applied. This prevents an old UI status from becoming new
+execution authority after a restart.
+
+Installed Build 324 exposes this model-driven surface through Codex,
+OpenCode/DeepSeek, Pi and Loom Native/MiniMax in real Conversation turns. The
+same Registry and authority contracts are source-green for Claude Code, but
+Loom does not advertise that Route until native authentication produces an
+executable Profile. Pi appears only when its source-pinned llama.cpp archive,
+complete Runtime tree, exact server and GGUF all agree; changed dependencies or
+model bytes fail closed.
+
+The installed matrix never chooses the first historical Mission or RoundTable
+that happens to look relevant. It binds an explicit acceptance Mission/Team,
+creates isolated current RoundTable state for each intervention and concludes
+that state after verification. A model cannot turn an old concluded Session
+back into writable authority.
 
 ### Switching routes
 
@@ -116,6 +189,39 @@ Blocked, Failed and Cancelled Missions keep a **Continue this Mission** composer
 Guidance opens a prefilled review for the same Team and starts a fresh Attempt
 only after explicit confirmation. The old Attempt, output, failure and Incident
 remain unchanged and auditable.
+
+## RoundTable
+
+Use RoundTable when a Mission needs several Agents to deliberate before the
+workflow continues. It stays related to the same Conversation, Mission and
+Team; it is not a separate project board and it does not flatten every internal
+object into one view.
+
+1. Open RoundTable from Mission Room.
+2. Drag two to six configured Team Agents into the seats. The first is the
+   Lead; the others are Participants.
+3. Start the discussion and follow each Agent's visible contribution and exact
+   Harness, Provider Account, model and status.
+4. Pause the round or Steer a running Agent when its Runtime supports live
+   guidance. Loom enables Steer only after the exact running Attempt reports
+   that capability; otherwise it prepares the controls or keeps guidance for
+   Retry after completion. For a failed or cancelled seat, Retry, Skip or
+   Replace that Agent without discarding healthy peer results. Retry keeps the
+   original discussion goal and adds the new guidance as a separate confirmed
+   constraint.
+5. When two or more Agent results are ready, start a synthesis round. The Lead
+   reconciles agreement, disagreement and the next action; Participants review
+   that synthesis independently. A later round is presented as **Refine
+   synthesis**, not as another unexplained first synthesis.
+6. Review the Lead's latest successful contribution as the conclusion
+   candidate. Loom publishes the Alignment Summary only after you explicitly
+   choose **Accept Lead result** or **Accept Lead synthesis**.
+
+Every seat Attempt freezes its own Execution Binding and Context Capsule.
+Restart recovery cancels interrupted Attempts instead of silently resuming
+Provider work. Export and Import are explicit local actions for a concluded,
+digest-verified RoundTable record; credentials, prompts, Provider bodies and
+hidden reasoning are not written to the RoundTable Journal.
 
 ## Agent Teams
 
@@ -192,9 +298,18 @@ Journal is execution authority; diagnostics help explain what happened.
 
 ## Current Release Boundary
 
-`v0.5.3-rc.1` includes the Phase 2D product boundary and later user-experience
-hardening through Build 188:
+`v0.5.6` includes the Phase 2D and Phase 4 product boundaries, the accepted
+Phase 5 Conversation-first experience, the Phase 6 unified action entry and
+the completed Phase 7 model-driven Harness surface through installed Build
+324:
 
+- a searchable 18-action Conversation command catalog with stable keyboard,
+  compact-layout and accessibility behavior;
+- conservative natural-language action routing through the same typed catalog;
+- contextual unavailable reasons, visible local feedback and privacy-safe
+  diagnostics directly from the composer;
+- governed Mission and Team drafts, Mission-linked RoundTable navigation and
+  reviewed Route transitions without direct execution authority from text;
 - App-managed bundled daemon startup;
 - Conversation Profiles, Route Segments and Context Capsules;
 - Loom Credential Vault and short-lived credential leases;
@@ -203,7 +318,40 @@ hardening through Build 188:
 - actionable blocked-Mission intervention;
 - Provider / Runtime / route separation, including OpenCode;
 - Incident diagnostics, controlled failure isolation, fallback and accounting;
-- governed RoundTable sessions and drag-and-drop seating.
+- governed RoundTable sessions, drag-and-drop seating, visible failure recovery,
+  restart-safe Agent output, prompt-preserving Retry and provenance-bound
+  multi-round synthesis;
+- Conversation-ready startup with external Harness discovery deferred behind
+  the local service boundary, plus automatic RoundTable restoration while the
+  governed Agent Runtime is still preparing;
+- bounded restart recovery that validates terminal Attempt bindings without
+  replaying each historical Run, and validates one frozen payload authority
+  only once per reconciliation pass;
+- compact RoundTable Agent result previews that preserve each conclusion's
+  beginning and latest action at complete rendered-word boundaries, with
+  explicit accessible full-result expansion;
+- structured RoundTable operation recovery in both the Conversation inspector
+  and full workbench, including stage, retryability, recovery action,
+  diagnostics and copyable Incident ID;
+- visible retry alerts when diagnostic preparation or folder selection fails,
+  instead of silent navigation or dismissal.
+- structured Mission preflight recovery with one correlation identity, safe
+  stage, retryability, diagnostics and copyable Incident ID;
+- complete installed keyboard traversal across Conversation, Mission and
+  RoundTable controls without focus traps;
+- automatic recovery when a rapid App restart briefly adopts the previous
+  managed daemon's Socket and that daemon then exits.
+- a versioned, Segment-scoped Codex tool registry with metadata-only
+  Conversation search and digest-bound alignment proposals;
+- user-only Confirm/Cancel review, followed by a new immutable Segment whose
+  binding freezes the alignment receipt and Context Capsule provenance;
+- one 28-tool Registry across Codex, OpenCode, Claude Code, Pi and Loom Native,
+  with 13 bounded metadata reads and 15 governed mutation previews;
+- installed ordinary-language Tool selection, Proposal governance, expiry,
+  replay rejection, managed restart and privacy acceptance for Codex,
+  OpenCode/DeepSeek, Pi and Loom Native/MiniMax;
+- distinct Loom Native Runtime labels for DeepSeek, Kimi and MiniMax instead of
+  three indistinguishable rows.
 
 Not claimed by this release candidate:
 
@@ -211,6 +359,9 @@ Not claimed by this release candidate:
   the same time;
 - a live revoke/rate-limit test against a user's real Provider Account;
 - a complete real Conversation through a newly imported custom endpoint;
+- a Claude Code installed login or paid live call on this machine; the user has
+  marked that Runtime N/A, while its source and fail-closed admission contracts
+  remain supported;
 - cloud sync, multi-user collaboration or unattended standing orders.
 
 ## Build And Install On macOS

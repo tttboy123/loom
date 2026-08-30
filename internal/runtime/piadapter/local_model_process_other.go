@@ -16,6 +16,10 @@ func piLocalFileUID(_ os.FileInfo) (uint32, bool) {
 	return 0, false
 }
 
+func piLocalFileHasSingleLink(_ os.FileInfo) bool {
+	return false
+}
+
 func configureLocalModelProcess(_ *exec.Cmd) error {
 	return ErrInvalidPiLocalModel
 }

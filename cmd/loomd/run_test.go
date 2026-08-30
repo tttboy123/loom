@@ -192,6 +192,7 @@ func TestRunAcceptsOptionalPrivateProductSocket(t *testing.T) {
 func TestRunAcceptsLocalModelCatalogOnlyAsCompleteTuple(t *testing.T) {
 	args := append(completeDaemonArgs(),
 		"--local-model-private-root", "/private/phase1-live",
+		"--local-model-runtime-archive", "/private/phase1-live/sources/llama-runtime.tar.gz",
 		"--local-model-executable", "/private/phase1-live/bin/llama-server",
 		"--local-model-path", "/private/phase1-live/models/model.gguf",
 	)
@@ -212,6 +213,7 @@ func TestRunAcceptsLocalModelCatalogOnlyAsCompleteTuple(t *testing.T) {
 	}
 	if captured.LocalModelCatalog == nil ||
 		captured.LocalModelCatalog.PrivateRoot != "/private/phase1-live" ||
+		captured.LocalModelCatalog.RuntimeArchivePath != "/private/phase1-live/sources/llama-runtime.tar.gz" ||
 		captured.LocalModelCatalog.ExecutablePath != "/private/phase1-live/bin/llama-server" ||
 		captured.LocalModelCatalog.ModelPath != "/private/phase1-live/models/model.gguf" {
 		t.Fatalf("captured local model catalog = %#v", captured.LocalModelCatalog)
@@ -219,11 +221,19 @@ func TestRunAcceptsLocalModelCatalogOnlyAsCompleteTuple(t *testing.T) {
 
 	for _, partial := range [][]string{
 		{"--local-model-private-root", "/private/phase1-live"},
+		{"--local-model-runtime-archive", "/private/phase1-live/sources/llama-runtime.tar.gz"},
 		{"--local-model-executable", "/private/phase1-live/bin/llama-server"},
 		{"--local-model-path", "/private/phase1-live/models/model.gguf"},
 		{
 			"--local-model-private-root", "/private/phase1-live",
+			"--local-model-runtime-archive", "/private/phase1-live/sources/llama-runtime.tar.gz",
 			"--local-model-executable", "/private/phase1-live/bin/llama-server",
+		},
+		{
+			"--local-model-private-root", "/private/phase1-live",
+			"--local-model-runtime-archive", "/private/phase1-live/sources/llama-runtime.tar.gz",
+			"--local-model-executable", "/private/phase1-live/bin/llama-server",
+			"--local-model-path", "",
 		},
 	} {
 		stdout.Reset()
@@ -527,7 +537,7 @@ func TestExpandLocalAppServiceArgsUsesStableUserPathsAndInstalledRuntime(t *test
 		"--device-id", "device.local",
 		"--display-name", "Pi 0.82.1",
 		"--interval", "10s",
-		"--process-timeout", "10s",
+		"--process-timeout", "30s",
 		"--socket", filepath.Join(home, "Library/Application Support/Loom/run/loomd.sock"),
 		"--codex-executable", "/usr/bin/codex",
 	}
@@ -564,6 +574,69 @@ func TestExpandLocalAppServiceArgsCarriesExistingCredentialImportSource(t *testi
 	if !slices.Contains(args, "--credential-import-source") ||
 		!slices.Contains(args, importPath) {
 		t.Fatalf("credential import source absent from canonical args: %#v", args)
+	}
+}
+
+func TestAppendLocalAppPiModelArgsUsesOnlyInspectedLockedCatalog(t *testing.T) {
+	home := t.TempDir()
+	base := []string{"--state", "/private/state.sqlite"}
+	wantRoot := filepath.Join(
+		home, "Library", "Application Support", "Loom", "phase1-live",
+	)
+	wantExecutable := filepath.Join(
+		wantRoot, "runtime", "llama-b10107", "llama-server",
+	)
+	wantArchive := filepath.Join(
+		wantRoot, "sources", "llama-b10107-bin-macos-arm64.tar.gz",
+	)
+	wantModel := filepath.Join(
+		wantRoot, "models", "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+	)
+	inspections := 0
+	args := appendLocalAppPiModelArgs(
+		base,
+		home,
+		func(config piadapter.PiLocalModelServerConfig) (
+			piadapter.PiLocalModelServerBinding,
+			error,
+		) {
+			inspections++
+			if config.PrivateRoot != wantRoot ||
+				config.RuntimeArchivePath != wantArchive ||
+				config.ExecutablePath != wantExecutable ||
+				config.ModelPath != wantModel || config.Host != "127.0.0.1" ||
+				config.Port != 18427 {
+				t.Fatalf("Pi local model inspection config = %#v", config)
+			}
+			return piadapter.PiLocalModelServerBinding{}, nil
+		},
+	)
+	want := append(append([]string(nil), base...),
+		"--local-model-private-root", wantRoot,
+		"--local-model-runtime-archive", wantArchive,
+		"--local-model-executable", wantExecutable,
+		"--local-model-path", wantModel,
+	)
+	if inspections != 1 || !reflect.DeepEqual(args, want) {
+		t.Fatalf("inspections=%d args=%#v want=%#v", inspections, args, want)
+	}
+	base[1] = "/changed"
+	if args[1] != "/private/state.sqlite" {
+		t.Fatalf("Pi model args alias caller storage = %#v", args)
+	}
+
+	rejected := appendLocalAppPiModelArgs(
+		[]string{"--state", "/private/state.sqlite"},
+		home,
+		func(piadapter.PiLocalModelServerConfig) (
+			piadapter.PiLocalModelServerBinding,
+			error,
+		) {
+			return piadapter.PiLocalModelServerBinding{}, piadapter.ErrInvalidPiLocalModel
+		},
+	)
+	if !reflect.DeepEqual(rejected, []string{"--state", "/private/state.sqlite"}) {
+		t.Fatalf("uninspected Pi model was published = %#v", rejected)
 	}
 }
 

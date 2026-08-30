@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/contextcapsule"
+	"loom-pi-rebuild/internal/controltool"
 )
 
 const (
@@ -27,6 +28,11 @@ const (
 	maxLocalProductChatMessages            = 256
 	maxLocalProductChatSegments            = 64
 	maxLocalProductChatAttempts            = 256
+	maxLocalProductChatControlProposals    = 64
+	maxLocalProductChatActionProposals     = 64
+	maxLocalProductCompletedControlTools   = 8
+	maxLocalProductChatDecisionReceipts    = 128
+	maxLocalProductChatContextAlignments   = 32
 	maxLocalProductChatContent             = 4_096
 	ToolShapedChatWarning                  = "The conversation runtime returned tool-shaped text. Loom did not execute it."
 	maxLocalProductChatStore               = 4 << 20
@@ -39,6 +45,7 @@ const (
 var (
 	ErrInvalidLocalProductChatRequest  = errors.New("invalid local product chat request")
 	ErrLocalProductChatProfileConflict = errors.New("local product chat profile conflict")
+	ErrLocalProductChatControlConflict = errors.New("local product chat control proposal conflict")
 	ErrLocalProductChatUnavailable     = errors.New("local product chat unavailable")
 )
 
@@ -54,6 +61,7 @@ const (
 type LocalProductChatMessage struct {
 	MessageID string    `json:"message_id"`
 	SegmentID string    `json:"segment_id"`
+	AttemptID string    `json:"attempt_id,omitempty"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	Tentative bool      `json:"tentative"`
@@ -101,6 +109,7 @@ type LocalProductConversationSegment struct {
 	ContextCapacityContributions    []LocalProductContextCapacityContribution `json:"context_capacity_contributions,omitempty"`
 	ExecutionBinding                *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
 	RouteTransitionReviewDigest     string                                    `json:"route_transition_review_digest,omitempty"`
+	ContextAlignmentDigest          string                                    `json:"context_alignment_digest,omitempty"`
 	BindingDigest                   string                                    `json:"binding_digest"`
 	CreatedAt                       time.Time                                 `json:"created_at"`
 }
@@ -130,6 +139,7 @@ type LocalProductConversationAttempt struct {
 	ContextCapacityContributions    []LocalProductContextCapacityContribution `json:"context_capacity_contributions,omitempty"`
 	ExecutionBinding                *LocalProductConversationExecutionBinding `json:"execution_binding,omitempty"`
 	RouteTransitionReviewDigest     string                                    `json:"route_transition_review_digest,omitempty"`
+	ContextAlignmentDigest          string                                    `json:"context_alignment_digest,omitempty"`
 	BindingDigest                   string                                    `json:"binding_digest"`
 	IncidentID                      string                                    `json:"incident_id,omitempty"`
 	Status                          string                                    `json:"status"`
@@ -140,6 +150,7 @@ type LocalProductConversationAttempt struct {
 	FailureMessage                  string                                    `json:"failure_message,omitempty"`
 	RetryAfterSeconds               int64                                     `json:"retry_after_seconds,omitempty"`
 	Retryable                       bool                                      `json:"retryable"`
+	CompletedControlTools           []controltool.CompletedCall               `json:"completed_control_tools,omitempty"`
 	StartedAt                       time.Time                                 `json:"started_at"`
 	CompletedAt                     time.Time                                 `json:"completed_at"`
 }
@@ -167,14 +178,19 @@ func (message LocalProductChatMessage) DisplayContent() string {
 }
 
 type LocalProductChatThread struct {
-	ThreadID             string                               `json:"thread_id"`
-	ProfileID            string                               `json:"profile_id"`
-	Segments             []LocalProductConversationSegment    `json:"segments"`
-	Attempts             []LocalProductConversationAttempt    `json:"attempts"`
-	Messages             []LocalProductChatMessage            `json:"messages"`
-	CanReply             bool                                 `json:"can_reply"`
-	RequiresConfirmation bool                                 `json:"requires_confirmation"`
-	AvailabilityFailure  *LocalProductChatAvailabilityFailure `json:"availability_failure,omitempty"`
+	ThreadID                 string                                   `json:"thread_id"`
+	ProfileID                string                                   `json:"profile_id"`
+	ControlWorkspace         *controltool.FrozenWorkspaceReference    `json:"control_workspace,omitempty"`
+	Segments                 []LocalProductConversationSegment        `json:"segments"`
+	Attempts                 []LocalProductConversationAttempt        `json:"attempts"`
+	Messages                 []LocalProductChatMessage                `json:"messages"`
+	ControlProposals         []controltool.SessionAlignmentProposal   `json:"control_proposals,omitempty"`
+	ActionProposals          []controltool.ConversationActionProposal `json:"action_proposals,omitempty"`
+	ProposalDecisionReceipts []controltool.ProposalDecisionReceipt    `json:"proposal_decision_receipts,omitempty"`
+	ContextAlignments        []LocalProductChatContextAlignment       `json:"context_alignments,omitempty"`
+	CanReply                 bool                                     `json:"can_reply"`
+	RequiresConfirmation     bool                                     `json:"requires_confirmation"`
+	AvailabilityFailure      *LocalProductChatAvailabilityFailure     `json:"availability_failure,omitempty"`
 }
 
 type LocalProductChatThreadRequest struct {
@@ -195,7 +211,37 @@ type LocalProductChatMessageRequest struct {
 	ContextMode                  LocalProductContextMode                   `json:"context_mode"`
 	ExpectedExecutionBinding     *LocalProductConversationExecutionBinding `json:"expected_execution_binding,omitempty"`
 	TrustBoundaryAcknowledgement *LocalProductTrustBoundaryAcknowledgement `json:"trust_boundary_acknowledgement,omitempty"`
+	SessionCatalog               []controltool.SessionReference            `json:"session_catalog,omitempty"`
 	IncidentID                   string                                    `json:"-"`
+}
+
+type LocalProductChatControlDecision string
+
+const (
+	ControlDecisionConfirm LocalProductChatControlDecision = "confirm"
+	ControlDecisionCancel  LocalProductChatControlDecision = "cancel"
+)
+
+type LocalProductChatControlDecisionRequest struct {
+	ThreadID       string                          `json:"thread_id"`
+	ProposalID     string                          `json:"proposal_id"`
+	ProposalDigest string                          `json:"proposal_digest"`
+	Decision       LocalProductChatControlDecision `json:"decision"`
+	IncidentID     string                          `json:"-"`
+}
+
+type LocalProductChatContextAlignment struct {
+	SchemaVersion          int                         `json:"schema_version"`
+	AlignmentID            string                      `json:"alignment_id"`
+	ProposalID             string                      `json:"proposal_id"`
+	ProposalDigest         string                      `json:"proposal_digest"`
+	TargetConversationID   string                      `json:"target_conversation_id"`
+	Sources                []controltool.SessionSource `json:"sources"`
+	ContextMode            controltool.ContextMode     `json:"context_mode"`
+	ReceiptDigest          string                      `json:"receipt_digest"`
+	ConfirmedAt            time.Time                   `json:"confirmed_at"`
+	ConfirmationIncidentID string                      `json:"confirmation_incident_id"`
+	AppliedSegmentID       string                      `json:"applied_segment_id,omitempty"`
 }
 
 type LocalProductTrustBoundaryAcknowledgement struct {
@@ -569,8 +615,11 @@ type LocalProductConversationRequest struct {
 	ContextCapacityContributions    []LocalProductContextCapacityContribution
 	ExecutionBinding                *LocalProductConversationExecutionBinding
 	RouteTransitionReviewDigest     string
+	ContextAlignmentDigest          string
 	SegmentBindingDigest            string
 	BindingDigest                   string
+	SessionCatalog                  []controltool.SessionReference
+	CatalogDigest                   string
 	// ContextPrompt is the policy-bound Context Capsule projection for the
 	// target adapter. It is model-visible but is not a user message and is
 	// never persisted in the transcript or Journal.
@@ -579,8 +628,11 @@ type LocalProductConversationRequest struct {
 }
 
 type LocalProductConversationResponse struct {
-	Content   string
-	Tentative bool
+	Content               string
+	Tentative             bool
+	ControlProposals      []controltool.SessionAlignmentProposal
+	ActionProposals       []controltool.ConversationActionProposal
+	CompletedControlTools []controltool.CompletedCall
 }
 
 type LocalProductChatDocument struct {
@@ -725,6 +777,28 @@ type LocalProductConversationScopeManager interface {
 	) (LocalProductConversationScopeLease, error)
 }
 
+type LocalProductConversationRoundTableTargetBinding struct {
+	MembershipRevision int
+	SeatBindingDigest  string
+}
+
+func (binding LocalProductConversationRoundTableTargetBinding) Valid() bool {
+	return binding.MembershipRevision > 0 && validLocalProductDigest(binding.SeatBindingDigest)
+}
+
+type LocalProductConversationActionTargetResolver interface {
+	ValidateRoundTableActionTarget(
+		context.Context,
+		controltool.ToolID,
+		controltool.ConversationActionPayload,
+	) error
+	ResolveRoundTableActionTarget(
+		context.Context,
+		controltool.ToolID,
+		controltool.ConversationActionPayload,
+	) (LocalProductConversationRoundTableTargetBinding, error)
+}
+
 type LocalProductChatAPI struct {
 	mu                   sync.Mutex
 	threadLockMu         sync.Mutex
@@ -738,6 +812,9 @@ type LocalProductChatAPI struct {
 	bindingResolver      LocalProductConversationBindingResolver
 	contextTarget        LocalProductConversationContextTargetResolver
 	contextCapsules      LocalProductConversationContextCapsuleStore
+	controlMetadata      controltool.Gateway
+	controlActionTargets LocalProductConversationActionTargetResolver
+	controlWorkspace     *controltool.FrozenWorkspaceReference
 	scopeManager         LocalProductConversationScopeManager
 	migrationDiagnostics LocalProductChatMigrationDiagnosticRecorder
 	availabilityFailure  *LocalProductChatAvailabilityFailure
@@ -797,6 +874,42 @@ func (api *LocalProductChatAPI) SetConversationScopeManager(
 		return ErrInvalidLocalProductChatRequest
 	}
 	api.scopeManager = manager
+	return nil
+}
+
+func (api *LocalProductChatAPI) SetControlMetadataGateway(
+	gateway controltool.Gateway,
+) error {
+	if api == nil || gateway == nil {
+		return ErrInvalidLocalProductChatRequest
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if api.controlMetadata != nil {
+		return ErrInvalidLocalProductChatRequest
+	}
+	api.controlMetadata = gateway
+	if resolver, ok := gateway.(LocalProductConversationActionTargetResolver); ok {
+		api.controlActionTargets = resolver
+	}
+	return nil
+}
+
+func (api *LocalProductChatAPI) SetControlWorkspace(
+	workspace controltool.FrozenWorkspaceReference,
+) error {
+	if api == nil || !workspace.Valid() {
+		return ErrInvalidLocalProductChatRequest
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if api.controlWorkspace != nil {
+		return ErrInvalidLocalProductChatRequest
+	}
+	api.controlWorkspace = cloneLocalProductControlWorkspace(&workspace)
+	for _, thread := range api.threads {
+		thread.ControlWorkspace = cloneLocalProductControlWorkspace(&workspace)
+	}
 	return nil
 }
 
@@ -939,7 +1052,9 @@ func (api *LocalProductChatAPI) ChatThread(
 	defer api.mu.Unlock()
 	thread, ok := api.threads[threadID]
 	if !ok {
-		return emptyLocalProductChatThread(threadID), nil
+		thread := emptyLocalProductChatThread(threadID)
+		thread.ControlWorkspace = cloneLocalProductControlWorkspace(api.controlWorkspace)
+		return thread, nil
 	}
 	return *cloneChatThread(thread), nil
 }
@@ -1095,6 +1210,7 @@ func (api *LocalProductChatAPI) SendMessage(
 	if !validLocalProductChatID(req.ThreadID) || content == "" ||
 		len(content) > maxLocalProductChatContent ||
 		req.ProfileID != "" && !validLocalProductChatID(req.ProfileID) ||
+		!validLocalProductSessionCatalog(req.SessionCatalog) ||
 		req.ContextMode != "" && req.ContextMode != ContextModeContinueWithContext &&
 			req.ContextMode != ContextModeSummaryOnly &&
 			req.ContextMode != ContextModeStartClean {
@@ -1129,9 +1245,15 @@ func (api *LocalProductChatAPI) SendMessage(
 			)
 		}
 		thread = pointerToChatThread(emptyLocalProductChatThread(req.ThreadID))
+		thread.ControlWorkspace = cloneLocalProductControlWorkspace(api.controlWorkspace)
 		api.threads[req.ThreadID] = thread
 	}
 	source := cloneChatThread(thread)
+	pendingAlignment, pendingAlignmentIndex := localProductPendingContextAlignment(thread)
+	if pendingAlignment != nil && !api.localProductContextAlignmentCurrent(*pendingAlignment) {
+		api.mu.Unlock()
+		return LocalProductChatThread{}, ErrLocalProductChatControlConflict
+	}
 	targetProfileID := req.ProfileID
 	if targetProfileID == "" {
 		targetProfileID = thread.ProfileID
@@ -1182,13 +1304,15 @@ func (api *LocalProductChatAPI) SendMessage(
 		thread.Segments[len(thread.Segments)-1].ModelID != modelID
 	reasoningChanged := len(thread.Segments) > 0 &&
 		thread.Segments[len(thread.Segments)-1].ReasoningEffort != reasoningEffort
+	routeChanged := switchingProfile || bindingUpgrade || bindingChanged ||
+		modelChanged || reasoningChanged
 	if api.bindingResolver != nil &&
-		(switchingProfile || bindingChanged || modelChanged || reasoningChanged) &&
+		routeChanged &&
 		req.ExpectedExecutionBinding == nil {
 		api.mu.Unlock()
 		return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
 	}
-	if (switchingProfile || bindingChanged || modelChanged || reasoningChanged) &&
+	if routeChanged &&
 		req.ContextMode == "" {
 		api.mu.Unlock()
 		return LocalProductChatThread{}, ErrLocalProductChatProfileConflict
@@ -1197,8 +1321,7 @@ func (api *LocalProductChatAPI) SendMessage(
 	// mode for the already-active profile is idempotent and continues its segment.
 
 	segmentMode := ContextModeContinueWithContext
-	newSegment := len(thread.Segments) == 0 || switchingProfile ||
-		bindingUpgrade || bindingChanged || modelChanged || reasoningChanged
+	newSegment := len(thread.Segments) == 0 || routeChanged || pendingAlignment != nil
 	var routeTransitionReviewDigest string
 	if len(source.Segments) == 0 {
 		if req.TrustBoundaryAcknowledgement != nil {
@@ -1207,7 +1330,7 @@ func (api *LocalProductChatAPI) SendMessage(
 		}
 	} else {
 		sourceSegment := source.Segments[len(source.Segments)-1]
-		reviewRequired := newSegment && api.bindingResolver != nil
+		reviewRequired := routeChanged && api.bindingResolver != nil
 		if reviewRequired {
 			if sourceSegment.ExecutionBinding == nil || resolvedBinding == nil {
 				api.mu.Unlock()
@@ -1233,6 +1356,9 @@ func (api *LocalProductChatAPI) SendMessage(
 	}
 	if newSegment {
 		segmentMode = req.ContextMode
+		if pendingAlignment != nil {
+			segmentMode = LocalProductContextMode(pendingAlignment.ContextMode)
+		}
 		if segmentMode == "" {
 			if bindingUpgrade {
 				segmentMode = ContextModeContinueWithContext
@@ -1253,8 +1379,18 @@ func (api *LocalProductChatAPI) SendMessage(
 			ContextMode:                 segmentMode,
 			ExecutionBinding:            resolvedBinding,
 			RouteTransitionReviewDigest: routeTransitionReviewDigest,
-			CreatedAt:                   api.now().UTC(),
+			ContextAlignmentDigest: func() string {
+				if pendingAlignment == nil {
+					return ""
+				}
+				return pendingAlignment.ReceiptDigest
+			}(),
+			CreatedAt: api.now().UTC(),
 		})
+		if pendingAlignment != nil {
+			thread.ContextAlignments[pendingAlignmentIndex].AppliedSegmentID =
+				thread.Segments[len(thread.Segments)-1].SegmentID
+		}
 	}
 	segment := &thread.Segments[len(thread.Segments)-1]
 	if segment.ProfileID != targetProfileID {
@@ -1266,22 +1402,23 @@ func (api *LocalProductChatAPI) SendMessage(
 	thread.Messages = appendBoundedChatMessage(thread.Messages, userMessage)
 	thread.RequiresConfirmation = false
 
-	dispatchMessages := conversationDispatchMessages(
+	dispatchMessages := conversationDispatchMessagesWithAlignment(
 		source,
 		userMessage,
 		segmentMode,
 		segment.SegmentID,
+		pendingAlignment,
+		api.threads,
 	)
 	disclosure := conversationContextDisclosure(
 		source, dispatchMessages, segmentMode, segment.SegmentID, targetProfileID,
 	)
 	var storedCapsuleAuthority contextcapsule.AuthorityRecord
 	var contextPrompt string
-	if api.contextTarget != nil && api.contextCapsules != nil &&
-		!isExplicitAgentTrigger(content) {
+	if api.contextTarget != nil && api.contextCapsules != nil {
 		capsule, payload, prompt, messages, capsuleErr := api.buildConversationContextCapsule(
 			ctx, source, userMessage, segmentMode, segment.SegmentID, targetProfileID,
-			segment.ModelID,
+			segment.ModelID, pendingAlignment,
 		)
 		if capsuleErr != nil {
 			api.rollbackChatThread(req.ThreadID, source, threadExisted)
@@ -1320,7 +1457,7 @@ func (api *LocalProductChatAPI) SendMessage(
 		}
 		storedCapsuleAuthority = record
 	}
-	bindingDigest := conversationExecutionBindingDigestWithRouteReview(
+	bindingDigest := conversationExecutionBindingDigestWithGovernance(
 		segment.SegmentID,
 		targetProfileID,
 		segment.ModelID,
@@ -1329,6 +1466,7 @@ func (api *LocalProductChatAPI) SendMessage(
 		disclosure,
 		segment.ExecutionBinding,
 		segment.RouteTransitionReviewDigest,
+		segment.ContextAlignmentDigest,
 	)
 	if newSegment {
 		segment.ContextCapsuleDigest = disclosure.CapsuleDigest
@@ -1355,7 +1493,10 @@ func (api *LocalProductChatAPI) SendMessage(
 	var attemptRetryAfterSeconds int64
 	var attemptRetryable bool
 	var attemptCompletedAt time.Time
-	if !isExplicitAgentTrigger(content) && api.responder != nil {
+	var controlProposals []controltool.SessionAlignmentProposal
+	var actionProposals []controltool.ConversationActionProposal
+	var completedControlTools []controltool.CompletedCall
+	if api.responder != nil {
 		if len(thread.Attempts) >= maxLocalProductChatAttempts {
 			api.rollbackChatThread(req.ThreadID, source, threadExisted)
 			cleanupErr := api.deleteConversationContextCapsule(
@@ -1393,6 +1534,7 @@ func (api *LocalProductChatAPI) SendMessage(
 			),
 			ExecutionBinding:            cloneLocalProductConversationExecutionBinding(segment.ExecutionBinding),
 			RouteTransitionReviewDigest: segment.RouteTransitionReviewDigest,
+			ContextAlignmentDigest:      segment.ContextAlignmentDigest,
 			BindingDigest:               bindingDigest,
 			IncidentID:                  req.IncidentID,
 			Status:                      "dispatching",
@@ -1462,11 +1604,7 @@ func (api *LocalProductChatAPI) SendMessage(
 	}
 	api.mu.Unlock()
 
-	if isExplicitAgentTrigger(content) {
-		role = ChatRoleProposal
-		reply = "This task looks like it needs an Agent Team. Open the governance inspector or press 'u' to start a Team Draft. Nothing is created until you confirm."
-		tentative = true
-	} else if attemptID != "" {
+	if attemptID != "" {
 		response, err := api.responder.Respond(dispatchContext, LocalProductConversationRequest{
 			ThreadID:                        req.ThreadID,
 			AttemptID:                       attemptID,
@@ -1497,10 +1635,15 @@ func (api *LocalProductChatAPI) SendMessage(
 			),
 			ExecutionBinding:            cloneLocalProductConversationExecutionBinding(segment.ExecutionBinding),
 			RouteTransitionReviewDigest: segment.RouteTransitionReviewDigest,
+			ContextAlignmentDigest:      segment.ContextAlignmentDigest,
 			SegmentBindingDigest:        segment.BindingDigest,
 			BindingDigest:               bindingDigest,
-			ContextPrompt:               contextPrompt,
-			Messages:                    append([]LocalProductChatMessage(nil), dispatchMessages...),
+			SessionCatalog: append(
+				[]controltool.SessionReference(nil), req.SessionCatalog...,
+			),
+			CatalogDigest: localProductSessionCatalogDigest(req.SessionCatalog),
+			ContextPrompt: contextPrompt,
+			Messages:      append([]LocalProductChatMessage(nil), dispatchMessages...),
 		})
 		if errors.Is(err, context.Canceled) {
 			reply = "Response stopped."
@@ -1526,7 +1669,8 @@ func (api *LocalProductChatAPI) SendMessage(
 			}
 		} else {
 			candidate := strings.TrimSpace(response.Content)
-			if candidate == "" || len(candidate) > maxLocalProductChatContent {
+			if candidate == "" || len(candidate) > maxLocalProductChatContent ||
+				!validLocalProductCompletedControlTools(response.CompletedControlTools) {
 				reply = "The conversation runtime returned an invalid response. Check Runtime & Providers, then try again."
 				attemptStatus = "failed"
 				attemptFailureCode = "invalid_response"
@@ -1535,6 +1679,15 @@ func (api *LocalProductChatAPI) SendMessage(
 				reply = candidate
 				tentative = response.Tentative
 				attemptStatus = "succeeded"
+				controlProposals = controltool.CloneSessionAlignmentProposals(
+					response.ControlProposals,
+				)
+				actionProposals = controltool.CloneConversationActionProposals(
+					response.ActionProposals,
+				)
+				completedControlTools = controltool.CloneCompletedCalls(
+					response.CompletedControlTools,
+				)
 				if tentative && toolShapedTentativeContent(candidate) {
 					reply = ToolShapedChatWarning
 				}
@@ -1546,6 +1699,30 @@ func (api *LocalProductChatAPI) SendMessage(
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	thread = api.threads[req.ThreadID]
+	if len(controlProposals) > 0 &&
+		!api.validLocalProductControlProposals(
+			thread, attemptID, segmentID, req.SessionCatalog, controlProposals,
+		) {
+		controlProposals = nil
+		reply = "The selected conversations changed before Loom could prepare the alignment. Review them and try again."
+		attemptStatus = "failed"
+		attemptFailureCode = "control_conflict"
+		attemptFailureStage = "control_proposal_prepare"
+		attemptRetryable = true
+		completedControlTools = nil
+	}
+	if len(actionProposals) > 0 &&
+		!api.validLocalProductActionProposals(
+			thread, attemptID, segmentID, actionProposals,
+		) {
+		actionProposals = nil
+		reply = "Loom could not prepare that governed action safely. Review the request and try again."
+		attemptStatus = "failed"
+		attemptFailureCode = "control_conflict"
+		attemptFailureStage = "control_proposal_prepare"
+		attemptRetryable = true
+		completedControlTools = nil
+	}
 	if attemptID != "" {
 		for index := range thread.Attempts {
 			if thread.Attempts[index].AttemptID == attemptID {
@@ -1557,20 +1734,44 @@ func (api *LocalProductChatAPI) SendMessage(
 				thread.Attempts[index].FailureMessage = attemptFailureMessage
 				thread.Attempts[index].RetryAfterSeconds = attemptRetryAfterSeconds
 				thread.Attempts[index].Retryable = attemptRetryable
+				thread.Attempts[index].CompletedControlTools =
+					controltool.CloneCompletedCalls(completedControlTools)
 				thread.Attempts[index].CompletedAt = attemptCompletedAt
 				break
 			}
 		}
 	}
-	thread.Messages = appendBoundedChatMessage(
-		thread.Messages,
-		func() LocalProductChatMessage {
-			message := api.newMessage(role, reply, tentative)
-			message.SegmentID = segmentID
-			return message
-		}(),
+	responseMessage := api.newMessage(role, reply, tentative)
+	responseMessage.SegmentID = segmentID
+	responseMessage.AttemptID = attemptID
+	thread.Messages = appendBoundedChatMessage(thread.Messages, responseMessage)
+	for index := range controlProposals {
+		controlProposals[index].MessageID = responseMessage.MessageID
+	}
+	for index := range actionProposals {
+		actionProposals[index].MessageID = responseMessage.MessageID
+	}
+	if len(controlProposals) > 0 || len(actionProposals) > 0 {
+		if err := cancelPendingLocalProductControlProposals(
+			thread, req.IncidentID, api.now().UTC(),
+		); err != nil {
+			api.rollbackChatThread(req.ThreadID, source, threadExisted)
+			cleanupErr := api.deleteConversationContextCapsule(ctx, storedCapsuleAuthority)
+			return LocalProductChatThread{}, NewLocalProductConversationDispatchError(
+				"control_conflict", "control_proposal_prepare", true,
+				errors.Join(ErrLocalProductChatControlConflict, err, cleanupErr),
+			)
+		}
+	}
+	thread.ControlProposals = appendBoundedLocalProductControlProposals(
+		thread.ControlProposals, controlProposals,
 	)
-	thread.RequiresConfirmation = role == ChatRoleProposal
+	thread.ActionProposals = appendBoundedLocalProductActionProposals(
+		thread.ActionProposals, actionProposals,
+	)
+	pruneLocalProductProposalDecisionReceipts(thread)
+	thread.RequiresConfirmation = role == ChatRoleProposal ||
+		localProductChatRequiresControlConfirmation(thread)
 	if err := api.persistThreadLocked(ctx, req.ThreadID); err != nil {
 		return LocalProductChatThread{}, err
 	}
@@ -1840,6 +2041,7 @@ func (api *LocalProductChatAPI) buildConversationContextCapsule(
 	segmentID string,
 	profileID string,
 	modelID string,
+	alignments ...*LocalProductChatContextAlignment,
 ) (contextcapsule.RoleContextCapsule, []byte, string, []LocalProductChatMessage, error) {
 	if api == nil || api.contextTarget == nil || api.contextCapsules == nil ||
 		ctx == nil || ctx.Err() != nil {
@@ -1862,7 +2064,18 @@ func (api *LocalProductChatAPI) buildConversationContextCapsule(
 	if err != nil {
 		return contextcapsule.RoleContextCapsule{}, nil, "", nil, err
 	}
-	items := make([]contextcapsule.ItemInput, 0, 17)
+	items := make([]contextcapsule.ItemInput, 0, 81)
+	if len(alignments) > 1 {
+		return contextcapsule.RoleContextCapsule{}, nil, "", nil,
+			ErrInvalidLocalProductChatRequest
+	}
+	if len(alignments) == 1 && alignments[0] != nil {
+		alignedItems, alignedErr := api.alignedConversationContextItems(*alignments[0])
+		if alignedErr != nil {
+			return contextcapsule.RoleContextCapsule{}, nil, "", nil, alignedErr
+		}
+		items = append(items, alignedItems...)
+	}
 	if source != nil {
 		start := len(source.Messages) - 16
 		if start < 0 {
@@ -2271,6 +2484,33 @@ func conversationExecutionBindingDigestWithRouteReview(
 		SchemaVersion: 7, BaseBindingDigest: base,
 		RouteTransitionReviewDigest: routeTransitionReviewDigest,
 	})
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest)
+}
+
+func conversationExecutionBindingDigestWithGovernance(
+	segmentID string,
+	profileID string,
+	modelID string,
+	reasoningEffort string,
+	mode LocalProductContextMode,
+	disclosure conversationContextDisclosureRecord,
+	executionBinding *LocalProductConversationExecutionBinding,
+	routeTransitionReviewDigest string,
+	contextAlignmentDigest string,
+) string {
+	base := conversationExecutionBindingDigestWithRouteReview(
+		segmentID, profileID, modelID, reasoningEffort, mode, disclosure,
+		executionBinding, routeTransitionReviewDigest,
+	)
+	if contextAlignmentDigest == "" {
+		return base
+	}
+	body, _ := json.Marshal(struct {
+		SchemaVersion          int    `json:"schema_version"`
+		BaseBindingDigest      string `json:"base_binding_digest"`
+		ContextAlignmentDigest string `json:"context_alignment_digest"`
+	}{8, base, contextAlignmentDigest})
 	digest := sha256.Sum256(body)
 	return fmt.Sprintf("%x", digest)
 }
@@ -3230,10 +3470,34 @@ func sameLocalProductCapacityConfiguration(
 func validateStoredChatThread(thread LocalProductChatThread) error {
 	if !validLocalProductChatID(thread.ThreadID) ||
 		thread.ProfileID != "" && !validLocalProductChatID(thread.ProfileID) ||
+		thread.ControlWorkspace != nil && !thread.ControlWorkspace.Valid() ||
 		thread.AvailabilityFailure != nil ||
 		len(thread.Messages) > maxLocalProductChatMessages ||
 		len(thread.Segments) > maxLocalProductChatSegments ||
-		len(thread.Attempts) > maxLocalProductChatAttempts {
+		len(thread.Attempts) > maxLocalProductChatAttempts ||
+		len(thread.ControlProposals) > maxLocalProductChatControlProposals ||
+		len(thread.ActionProposals) > maxLocalProductChatActionProposals ||
+		len(thread.ProposalDecisionReceipts) > maxLocalProductChatDecisionReceipts ||
+		len(thread.ContextAlignments) > maxLocalProductChatContextAlignments ||
+		localProductChatRequiresControlConfirmation(&thread) && !thread.RequiresConfirmation {
+		return ErrInvalidLocalProductChatRequest
+	}
+	alignments := make(map[string]LocalProductChatContextAlignment, len(thread.ContextAlignments))
+	pendingAlignments := 0
+	for _, alignment := range thread.ContextAlignments {
+		if !validLocalProductContextAlignment(alignment) ||
+			alignment.TargetConversationID != thread.ThreadID {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := alignments[alignment.ReceiptDigest]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		alignments[alignment.ReceiptDigest] = alignment
+		if alignment.AppliedSegmentID == "" {
+			pendingAlignments++
+		}
+	}
+	if pendingAlignments > 1 {
 		return ErrInvalidLocalProductChatRequest
 	}
 	segments := make(map[string]LocalProductConversationSegment, len(thread.Segments))
@@ -3262,12 +3526,19 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 				disclosure,
 				segment.ExecutionBinding,
 				segment.RouteTransitionReviewDigest,
+				segment.ContextAlignmentDigest,
 				segment.BindingDigest,
 			) || segment.CreatedAt.IsZero() {
 			return ErrInvalidLocalProductChatRequest
 		}
 		if index == 0 && segment.RouteTransitionReviewDigest != "" {
 			return ErrInvalidLocalProductChatRequest
+		}
+		if segment.ContextAlignmentDigest != "" {
+			alignment, found := alignments[segment.ContextAlignmentDigest]
+			if !found || alignment.AppliedSegmentID != segment.SegmentID {
+				return ErrInvalidLocalProductChatRequest
+			}
 		}
 		if segment.RouteTransitionReviewDigest != "" {
 			previous := thread.Segments[index-1]
@@ -3301,7 +3572,7 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 		thread.ProfileID != thread.Segments[len(thread.Segments)-1].ProfileID {
 		return ErrInvalidLocalProductChatRequest
 	}
-	attempts := make(map[string]struct{}, len(thread.Attempts))
+	attempts := make(map[string]string, len(thread.Attempts))
 	openingAttempts := make(map[string]struct{}, len(thread.Segments))
 	for _, attempt := range thread.Attempts {
 		segment, ok := segments[attempt.SegmentID]
@@ -3339,6 +3610,7 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 				disclosure,
 				attempt.ExecutionBinding,
 				attempt.RouteTransitionReviewDigest,
+				attempt.ContextAlignmentDigest,
 				attempt.BindingDigest,
 			) || !sameLocalProductCapacityConfiguration(
 			disclosure, segmentDisclosure,
@@ -3348,13 +3620,15 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 			!sameLocalProductConversationExecutionBinding(
 				attempt.ExecutionBinding, segment.ExecutionBinding,
 			) || attempt.RouteTransitionReviewDigest != segment.RouteTransitionReviewDigest ||
+			attempt.ContextAlignmentDigest != segment.ContextAlignmentDigest ||
+			!validStoredLocalProductCompletedControlTools(attempt.CompletedControlTools) ||
 			attempt.StartedAt.IsZero() || !validLocalProductAttemptStatus(attempt) {
 			return ErrInvalidLocalProductChatRequest
 		}
 		if _, duplicate := attempts[attempt.AttemptID]; duplicate {
 			return ErrInvalidLocalProductChatRequest
 		}
-		attempts[attempt.AttemptID] = struct{}{}
+		attempts[attempt.AttemptID] = attempt.SegmentID
 		openingAttempts[attempt.SegmentID] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(thread.Messages))
@@ -3367,12 +3641,107 @@ func validateStoredChatThread(thread LocalProductChatThread) error {
 		if _, ok := segments[message.SegmentID]; !ok {
 			return ErrInvalidLocalProductChatRequest
 		}
+		if message.AttemptID != "" {
+			attemptSegmentID, ok := attempts[message.AttemptID]
+			if !ok || attemptSegmentID != message.SegmentID || message.Role == string(ChatRoleUser) {
+				return ErrInvalidLocalProductChatRequest
+			}
+		}
 		if _, duplicate := seen[message.MessageID]; duplicate {
 			return ErrInvalidLocalProductChatRequest
 		}
 		seen[message.MessageID] = struct{}{}
 	}
+	proposalIDs := make(
+		map[string]struct{}, len(thread.ControlProposals)+len(thread.ActionProposals),
+	)
+	proposalDigests := make(
+		map[string]struct{}, len(thread.ControlProposals)+len(thread.ActionProposals),
+	)
+	for _, proposal := range thread.ControlProposals {
+		_, proposalMessageFound := seen[proposal.MessageID]
+		if !proposal.Valid() || proposal.TargetConversationID != thread.ThreadID ||
+			proposal.Status == controltool.ProposalPending &&
+				(proposal.MessageID == "" || !proposalMessageFound) {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := proposalIDs[proposal.ProposalID]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := proposalDigests[proposal.ProposalDigest]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		proposalIDs[proposal.ProposalID] = struct{}{}
+		proposalDigests[proposal.ProposalDigest] = struct{}{}
+	}
+	for _, proposal := range thread.ActionProposals {
+		_, proposalMessageFound := seen[proposal.MessageID]
+		if !proposal.Valid() || proposal.TargetConversationID != thread.ThreadID ||
+			proposal.Status == controltool.ProposalPending &&
+				(proposal.MessageID == "" || !proposalMessageFound) {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := proposalIDs[proposal.ProposalID]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := proposalDigests[proposal.ProposalDigest]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		proposalIDs[proposal.ProposalID] = struct{}{}
+		proposalDigests[proposal.ProposalDigest] = struct{}{}
+	}
+	receiptProposals := make(map[string]struct{}, len(thread.ProposalDecisionReceipts))
+	receiptDigests := make(map[string]struct{}, len(thread.ProposalDecisionReceipts))
+	for _, receipt := range thread.ProposalDecisionReceipts {
+		if !receipt.Valid() || receipt.TargetConversationID != thread.ThreadID {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := receiptProposals[receipt.ProposalID]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		if _, duplicate := receiptDigests[receipt.ReceiptDigest]; duplicate {
+			return ErrInvalidLocalProductChatRequest
+		}
+		matched := false
+		for _, proposal := range thread.ControlProposals {
+			if receipt.ProposalID == proposal.ProposalID {
+				matched = receipt.MatchesSessionAlignmentProposal(proposal) &&
+					localProductProposalDecisionMatchesStatus(receipt.Decision, proposal.Status)
+				break
+			}
+		}
+		if !matched {
+			for _, proposal := range thread.ActionProposals {
+				if receipt.ProposalID == proposal.ProposalID {
+					matched = receipt.MatchesConversationActionProposal(proposal) &&
+						localProductProposalDecisionMatchesStatus(receipt.Decision, proposal.Status)
+					break
+				}
+			}
+		}
+		if !matched {
+			return ErrInvalidLocalProductChatRequest
+		}
+		receiptProposals[receipt.ProposalID] = struct{}{}
+		receiptDigests[receipt.ReceiptDigest] = struct{}{}
+	}
 	return nil
+}
+
+func localProductProposalDecisionMatchesStatus(
+	decision controltool.ProposalDecision,
+	status controltool.ProposalStatus,
+) bool {
+	switch decision {
+	case controltool.ProposalDecisionConfirm:
+		return status == controltool.ProposalConfirmed
+	case controltool.ProposalDecisionCancel, controltool.ProposalDecisionSupersede:
+		return status == controltool.ProposalCancelled
+	case controltool.ProposalDecisionExpire:
+		return status == controltool.ProposalExpired
+	default:
+		return false
+	}
 }
 
 func migrateLocalProductChatThread(thread *LocalProductChatThread) {
@@ -3455,6 +3824,7 @@ func validLocalProductDisclosureBinding(
 	disclosure conversationContextDisclosureRecord,
 	executionBinding *LocalProductConversationExecutionBinding,
 	routeTransitionReviewDigest string,
+	contextAlignmentDigest string,
 	bindingDigest string,
 ) bool {
 	if !validLocalProductDigest(bindingDigest) {
@@ -3473,7 +3843,10 @@ func validLocalProductDisclosureBinding(
 	if routeTransitionReviewDigest != "" && !validLocalProductDigest(routeTransitionReviewDigest) {
 		return false
 	}
-	want := conversationExecutionBindingDigestWithRouteReview(
+	if contextAlignmentDigest != "" && !validLocalProductDigest(contextAlignmentDigest) {
+		return false
+	}
+	want := conversationExecutionBindingDigestWithGovernance(
 		segmentID,
 		profileID,
 		modelID,
@@ -3482,6 +3855,7 @@ func validLocalProductDisclosureBinding(
 		disclosure,
 		executionBinding,
 		routeTransitionReviewDigest,
+		contextAlignmentDigest,
 	)
 	return bindingDigest == want
 }
@@ -3638,6 +4012,39 @@ func validLocalProductAttemptStatus(attempt LocalProductConversationAttempt) boo
 	default:
 		return false
 	}
+}
+
+func validLocalProductCompletedControlTools(calls []controltool.CompletedCall) bool {
+	registry, err := controltool.NewBuiltinRegistry()
+	return err == nil && registry.ValidCompletedCalls(
+		calls, maxLocalProductCompletedControlTools,
+	)
+}
+
+// Persisted calls are immutable audit facts from the Registry version frozen
+// by their original Attempt. A later Registry upgrade must not make the whole
+// Conversation store unreadable; current model responses still use the exact
+// Registry validation above before they can be committed.
+func validStoredLocalProductCompletedControlTools(
+	calls []controltool.CompletedCall,
+) bool {
+	if len(calls) > maxLocalProductCompletedControlTools {
+		return false
+	}
+	registry, err := controltool.NewBuiltinRegistry()
+	if err != nil {
+		return false
+	}
+	for _, call := range calls {
+		if !call.Valid() {
+			return false
+		}
+		if definition, found := registry.Definition(call.ToolID); found &&
+			definition.Effect != call.Effect {
+			return false
+		}
+	}
+	return true
 }
 
 func validLocalProductAttemptFailureCode(value string) bool {
@@ -3810,8 +4217,12 @@ func requireLocalProductChatEOF(decoder *json.Decoder) error {
 func emptyLocalProductChatThread(threadID string) LocalProductChatThread {
 	return LocalProductChatThread{
 		ThreadID: threadID, Segments: []LocalProductConversationSegment{},
-		Attempts: []LocalProductConversationAttempt{},
-		Messages: []LocalProductChatMessage{}, CanReply: true,
+		Attempts:                 []LocalProductConversationAttempt{},
+		Messages:                 []LocalProductChatMessage{},
+		ControlProposals:         []controltool.SessionAlignmentProposal{},
+		ActionProposals:          []controltool.ConversationActionProposal{},
+		ProposalDecisionReceipts: []controltool.ProposalDecisionReceipt{},
+		ContextAlignments:        []LocalProductChatContextAlignment{}, CanReply: true,
 	}
 }
 
@@ -3835,6 +4246,7 @@ func cloneChatThread(thread *LocalProductChatThread) *LocalProductChatThread {
 		return nil
 	}
 	copied := *thread
+	copied.ControlWorkspace = cloneLocalProductControlWorkspace(thread.ControlWorkspace)
 	copied.Segments = append([]LocalProductConversationSegment(nil), thread.Segments...)
 	copied.Attempts = append([]LocalProductConversationAttempt(nil), thread.Attempts...)
 	for index := range copied.Segments {
@@ -3856,8 +4268,29 @@ func cloneChatThread(thread *LocalProductChatThread) *LocalProductChatThread {
 			cloneLocalProductContextCapacityContributions(
 				thread.Attempts[index].ContextCapacityContributions,
 			)
+		copied.Attempts[index].CompletedControlTools = controltool.CloneCompletedCalls(
+			thread.Attempts[index].CompletedControlTools,
+		)
 	}
 	copied.Messages = append([]LocalProductChatMessage(nil), thread.Messages...)
+	copied.ControlProposals = controltool.CloneSessionAlignmentProposals(
+		thread.ControlProposals,
+	)
+	copied.ActionProposals = controltool.CloneConversationActionProposals(
+		thread.ActionProposals,
+	)
+	copied.ProposalDecisionReceipts = append(
+		[]controltool.ProposalDecisionReceipt(nil),
+		thread.ProposalDecisionReceipts...,
+	)
+	copied.ContextAlignments = append(
+		[]LocalProductChatContextAlignment(nil), thread.ContextAlignments...,
+	)
+	for index := range copied.ContextAlignments {
+		copied.ContextAlignments[index].Sources = append(
+			[]controltool.SessionSource(nil), thread.ContextAlignments[index].Sources...,
+		)
+	}
 	if thread.AvailabilityFailure != nil {
 		failure := *thread.AvailabilityFailure
 		copied.AvailabilityFailure = &failure
@@ -3865,9 +4298,12 @@ func cloneChatThread(thread *LocalProductChatThread) *LocalProductChatThread {
 	return &copied
 }
 
-func isExplicitAgentTrigger(text string) bool {
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "use agent") ||
-		strings.Contains(lower, "agent team") ||
-		(strings.Contains(lower, "team") && strings.Contains(lower, "mission"))
+func cloneLocalProductControlWorkspace(
+	workspace *controltool.FrozenWorkspaceReference,
+) *controltool.FrozenWorkspaceReference {
+	if workspace == nil {
+		return nil
+	}
+	cloned := *workspace
+	return &cloned
 }

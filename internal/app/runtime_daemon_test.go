@@ -20,6 +20,7 @@ import (
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
 	loomruntime "loom-pi-rebuild/internal/runtime"
+	"loom-pi-rebuild/internal/runtime/piadapter"
 	"loom-pi-rebuild/internal/state"
 )
 
@@ -1059,9 +1060,151 @@ func daemonTestConfig(
 		DeviceID:            "device-1",
 		DisplayName:         "Local Pi",
 		ObservationInterval: 10 * time.Millisecond,
-		ProcessTimeout:      5 * time.Second,
-		MaxCycles:           2,
+		// These tests exercise daemon state and identity behavior, not the
+		// production probe deadline. Leave enough room for a real subprocess to
+		// be scheduled while the repository test suite is under parallel load.
+		ProcessTimeout: 15 * time.Second,
+		MaxCycles:      2,
 	}
+}
+
+func TestLocalRuntimeObservationDaemonRetriesTypedPiTimeoutAndClearsHealth(
+	t *testing.T,
+) {
+	config := daemonTestConfig(t, "0.82.1", "recovered-model")
+	config.MaxCycles = 1
+	config.ProcessTimeout = 500 * time.Millisecond
+	config.ObservationInterval = 10 * time.Millisecond
+	runtimeDir := config.RuntimeSearchPaths[0]
+	piPath := filepath.Join(runtimeDir, "pi")
+	script := `#!/bin/sh
+set -eu
+counter="${0%/*}/model-attempts"
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf '0.82.1\n'
+  exit 0
+fi
+if [ "$#" -eq 8 ] && [ "$8" = "--list-models" ]; then
+  count=0
+  if [ -f "$counter" ]; then count=$(/bin/cat "$counter"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$counter"
+  if [ "$count" -eq 1 ]; then
+    /bin/sleep 2
+    exit 0
+  fi
+  printf 'provider model context max-out thinking images\nprovider recovered-model 32K 256 no no\n'
+  exit 0
+fi
+exit 83
+`
+	if err := os.WriteFile(piPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	reporter := &daemonRuntimeObservationHealthReporter{}
+	daemon, err := NewLocalRuntimeObservationDaemon(
+		config,
+		NewSystemRuntimeObservationDaemonClock(),
+		NewCryptographicRuntimeObservationIdentitySource(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer daemon.Close()
+	if err := daemon.SetRuntimeObservationHealthReporter(reporter); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.SetRuntimeObservationHealthReporter(reporter); !errors.Is(
+		err,
+		ErrInvalidLocalRuntimeObservationDaemon,
+	) {
+		t.Fatalf("duplicate health reporter error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := daemon.Run(ctx)
+	if err != nil {
+		t.Fatalf("recovered daemon run: %v", err)
+	}
+	if result.CompletedCycles != 1 {
+		t.Fatalf("completed cycles = %d, want 1", result.CompletedCycles)
+	}
+	failures, modelFailures, recoveries := reporter.snapshot()
+	if failures < 1 || modelFailures < 1 || recoveries != 1 {
+		t.Fatalf(
+			"health lifecycle = failures:%d model_failures:%d recoveries:%d",
+			failures,
+			modelFailures,
+			recoveries,
+		)
+	}
+	contents, err := os.ReadFile(filepath.Join(runtimeDir, "model-attempts"))
+	if err != nil || string(contents) != "2" {
+		t.Fatalf("model attempts = %q, error = %v", contents, err)
+	}
+}
+
+type daemonRuntimeObservationHealthReporter struct {
+	mu            sync.Mutex
+	failures      int
+	modelFailures int
+	recoveries    int
+}
+
+type daemonTaggedPiMetadataFailure struct {
+	command loomruntime.PiMetadataCommand
+	cause   error
+}
+
+func (failure daemonTaggedPiMetadataFailure) Error() string { return "typed Pi metadata failure" }
+func (failure daemonTaggedPiMetadataFailure) Unwrap() error { return failure.cause }
+func (failure daemonTaggedPiMetadataFailure) PiMetadataFailureCommand() loomruntime.PiMetadataCommand {
+	return failure.command
+}
+
+func TestRetryablePiMetadataTimeoutRejectsMixedOrUntaggedFailures(t *testing.T) {
+	typed := daemonTaggedPiMetadataFailure{
+		command: loomruntime.PiMetadataListModels,
+		cause:   piadapter.ErrPiMetadataProcessTimeout,
+	}
+	wrapped := fmt.Errorf("%w: %w", loomruntime.ErrRuntimeDiscoveryFailed, typed)
+	if !retryablePiMetadataTimeout(wrapped) {
+		t.Fatal("exact typed Pi timeout was not retryable")
+	}
+	if retryablePiMetadataTimeout(errors.Join(wrapped, errors.New("unknown failure"))) {
+		t.Fatal("mixed Pi timeout was retryable")
+	}
+	if retryablePiMetadataTimeout(piadapter.ErrPiMetadataProcessTimeout) {
+		t.Fatal("untagged Pi timeout was retryable")
+	}
+}
+
+func (reporter *daemonRuntimeObservationHealthReporter) RuntimeObservationFailed(
+	err error,
+) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if errors.Is(err, piadapter.ErrPiMetadataProcessTimeout) {
+		reporter.failures++
+		if command, ok := loomruntime.PiMetadataFailureCommand(err); ok &&
+			command == loomruntime.PiMetadataListModels {
+			reporter.modelFailures++
+		}
+	}
+}
+
+func (reporter *daemonRuntimeObservationHealthReporter) RuntimeObservationRecovered() {
+	reporter.mu.Lock()
+	reporter.recoveries++
+	reporter.mu.Unlock()
+}
+
+func (reporter *daemonRuntimeObservationHealthReporter) snapshot() (int, int, int) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	return reporter.failures, reporter.modelFailures, reporter.recoveries
 }
 
 func writeDaemonTestPi(

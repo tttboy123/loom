@@ -35,6 +35,62 @@ type ImportResult struct {
 	View           View   `json:"view"`
 }
 
+const MaxExportDocumentBytes = 1 << 20
+
+type ExportDocumentResult struct {
+	SchemaVersion int          `json:"schema_version"`
+	Export        ExportResult `json:"export"`
+	Document      []byte       `json:"document"`
+}
+
+// ExportDocument returns the verified portable document after the authority
+// has published and journaled the export receipt.
+func (authority *Authority) ExportDocument(
+	ctx context.Context,
+	sessionID string,
+	expiresAt time.Time,
+	correlationID string,
+) (ExportDocumentResult, error) {
+	if !validCorrelationID(correlationID) {
+		return ExportDocumentResult{}, ErrInvalidExportContract
+	}
+	result, err := authority.exportSession(ctx, sessionID, expiresAt, correlationID)
+	if err != nil {
+		return ExportDocumentResult{}, err
+	}
+	encoded, err := authority.evidence.ReadArtifact(ctx, result.Digest, MaxExportDocumentBytes)
+	if err != nil {
+		return ExportDocumentResult{}, err
+	}
+	var contract ExportContract
+	if err := decodeExact(encoded, &contract); err != nil {
+		return ExportDocumentResult{}, ErrInvalidExportContract
+	}
+	contract.Digest = result.Digest
+	document, err := marshalContract(contract)
+	if err != nil || len(document) > MaxExportDocumentBytes {
+		return ExportDocumentResult{}, ErrInvalidExportContract
+	}
+	return ExportDocumentResult{
+		SchemaVersion: SchemaVersion, Export: result, Document: document,
+	}, nil
+}
+
+func (authority *Authority) ImportDocument(
+	ctx context.Context,
+	document []byte,
+	correlationID string,
+) (ImportResult, error) {
+	if len(document) == 0 || len(document) > MaxExportDocumentBytes {
+		return ImportResult{}, ErrInvalidExportContract
+	}
+	var contract ExportContract
+	if err := decodeExact(document, &contract); err != nil {
+		return ImportResult{}, ErrInvalidExportContract
+	}
+	return authority.ImportSession(ctx, contract, correlationID)
+}
+
 // ExportSession publishes a bounded export contract for a concluded session.
 // The contract is content-addressed (Digest = SHA-256 of the canonical JSON);
 // publishing is deliberately before the Journal CAS append so a committed
@@ -44,6 +100,15 @@ func (authority *Authority) ExportSession(
 	ctx context.Context,
 	sessionID string,
 	expiresAt time.Time,
+) (ExportResult, error) {
+	return authority.exportSession(ctx, sessionID, expiresAt, "")
+}
+
+func (authority *Authority) exportSession(
+	ctx context.Context,
+	sessionID string,
+	expiresAt time.Time,
+	correlationID string,
 ) (ExportResult, error) {
 	var result ExportResult
 	_, err := authority.apply(ctx, sessionID, func(state sessionState) (View, fact, error) {
@@ -98,7 +163,7 @@ func (authority *Authority) ExportSession(
 				authority.deterministicID("roundtable-session-exported", sessionID, exportID),
 				sessionStream(sessionID), state.head.Sequence+1,
 				"roundtable.export."+sessionID+"."+exportID,
-				FactSessionExported, now, "", state.head.EventID, payload,
+				FactSessionExported, now, correlationID, state.head.EventID, payload,
 			),
 			commandID: "export:" + sessionID + ":" + exportID,
 		}, nil
@@ -206,7 +271,7 @@ func importView(contract ExportContract) View {
 		Session: Session{
 			ID: contract.SessionID, ModeratorSeat: contract.ModeratorSeat,
 			Title: contract.Summary.Title, CreatedAt: contract.ConcludedAt,
-			Concluded: true,
+			Concluded: true, Context: cloneSessionContext(contract.Summary.Context),
 		},
 		Seats: seats, Rounds: rounds, Messages: messages,
 		Digest: contract.ViewDigest,

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -328,10 +329,11 @@ func codexAppServerTurn(
 	sequence int,
 	request HarnessProcessRequest,
 	prompt []byte,
+	options ...codexAppServerTurnOptions,
 ) (string, *work.RunAccounting, error) {
 	requestID := fmt.Sprintf("loom-turn-start-%d", sequence)
 	payload, err := marshalCodexTurnStart(
-		requestID, threadID, request.ModelID, request.ReasoningEffort, prompt,
+		requestID, threadID, request.ModelID, request.ReasoningEffort, prompt, options...,
 	)
 	if err != nil {
 		return "", nil, err
@@ -403,6 +405,11 @@ func codexAppServerTurn(
 	return "", nil, errors.Join(errCodexAppServerTurnInterrupted, ctx.Err())
 }
 
+type codexAppServerTurnOptions struct {
+	OutputSchema     json.RawMessage
+	UntrustedContext []byte
+}
+
 func acceptCodexTurnStartNotification(
 	method string,
 	params json.RawMessage,
@@ -463,11 +470,19 @@ func decodeCodexStartedTurn(response json.RawMessage, preStartedTurnID string) (
 func marshalCodexTurnStart(
 	requestID, threadID, modelID, effort string,
 	prompt []byte,
+	options ...codexAppServerTurnOptions,
 ) ([]byte, error) {
 	if !validHarnessProtocolID(requestID) || !validHarnessProtocolID(threadID) ||
 		!validHarnessProtocolID(modelID) || len(prompt) == 0 ||
 		len(prompt) > maxHarnessPromptBytes ||
-		!utf8.Valid(prompt) || bytes.IndexByte(prompt, 0) >= 0 {
+		!utf8.Valid(prompt) || bytes.IndexByte(prompt, 0) >= 0 || len(options) > 1 {
+		return nil, ErrHarnessProtocol
+	}
+	option := codexAppServerTurnOptions{}
+	if len(options) == 1 {
+		option = options[0]
+	}
+	if !validCodexAppServerTurnOptions(option) {
 		return nil, ErrHarnessProtocol
 	}
 	metadata, err := json.Marshal(struct {
@@ -488,8 +503,35 @@ func marshalCodexTurnStart(
 		payload = append(payload, `,"effort":`...)
 		payload = appendHarnessJSONString(payload, []byte(effort))
 	}
+	if len(option.OutputSchema) != 0 {
+		payload = append(payload, `,"outputSchema":`...)
+		payload = append(payload, option.OutputSchema...)
+	}
+	if len(option.UntrustedContext) != 0 {
+		payload = append(payload, `,"additionalContext":{"`...)
+		payload = append(payload, codexControlResultContextID...)
+		payload = append(payload, `":{"kind":"untrusted","value":`...)
+		payload = appendHarnessJSONString(payload, option.UntrustedContext)
+		payload = append(payload, "}}"...)
+	}
 	payload = append(payload, "}}"...)
 	return payload, nil
+}
+
+func validCodexAppServerTurnOptions(option codexAppServerTurnOptions) bool {
+	if len(option.OutputSchema) == 0 {
+		return len(option.UntrustedContext) == 0
+	}
+	if len(option.OutputSchema) > codexControlOutputSchemaMaximumBytes ||
+		!json.Valid(option.OutputSchema) || rejectHarnessDuplicateJSONKeys(option.OutputSchema) ||
+		len(option.UntrustedContext) > maxHarnessPromptBytes ||
+		!utf8.Valid(option.UntrustedContext) || bytes.IndexByte(option.UntrustedContext, 0) >= 0 {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(option.OutputSchema))
+	var object map[string]any
+	return decoder.Decode(&object) == nil && object != nil &&
+		decoder.Decode(&struct{}{}) == io.EOF
 }
 
 func interruptCodexAppServerTurn(
@@ -639,6 +681,10 @@ func acceptCodexInterruptNotification(
 			return ErrHarnessProtocol
 		}
 		return nil
+	case "item/mcpToolCall/progress":
+		return acceptCodexMCPToolCallProgressNotification(
+			params, threadID, turnID,
+		)
 	case "item/started", "item/completed", "turn/diff/updated",
 		"item/agentMessage/delta", "item/plan/delta",
 		"item/reasoning/summaryPartAdded", "item/reasoning/summaryTextDelta",
@@ -651,6 +697,31 @@ func acceptCodexInterruptNotification(
 	default:
 		return ErrHarnessProtocol
 	}
+}
+
+func acceptCodexMCPToolCallProgressNotification(
+	params json.RawMessage,
+	threadID string,
+	turnID string,
+) error {
+	if len(params) == 0 || len(params) > 64<<10 ||
+		!validHarnessProtocolID(threadID) || !validHarnessProtocolID(turnID) {
+		return ErrHarnessProtocol
+	}
+	var notification struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		ItemID   string `json:"itemId"`
+		Message  string `json:"message"`
+	}
+	if json.Unmarshal(params, &notification) != nil ||
+		notification.ThreadID != threadID || notification.TurnID != turnID ||
+		!validHarnessProtocolID(notification.ItemID) ||
+		len(notification.Message) > 16<<10 || !utf8.ValidString(notification.Message) ||
+		strings.IndexByte(notification.Message, 0) >= 0 {
+		return ErrHarnessProtocol
+	}
+	return nil
 }
 
 func appendHarnessJSONString(destination, content []byte) []byte {
@@ -898,12 +969,30 @@ func readCodexAppServerTurn(
 			zeroHarnessBytes(rawEnvelope.Params)
 			return "", nil, ErrHarnessProtocol
 		}
+		if notification.Method == "error" {
+			failure := codexAppServerTurnFailure(rawEnvelope.Params, threadID, turnID)
+			zeroHarnessBytes(rawEnvelope.Params)
+			if failure == nil {
+				continue
+			}
+			return "", nil, failure
+		}
 		if handled, lifecycleErr := acceptCodexAppServerLifecycleNotification(
 			notification.Method, rawEnvelope.Params, threadID,
 		); handled {
 			zeroHarnessBytes(rawEnvelope.Params)
 			if lifecycleErr != nil {
 				return "", nil, lifecycleErr
+			}
+			continue
+		}
+		if notification.Method == "item/mcpToolCall/progress" {
+			progressErr := acceptCodexMCPToolCallProgressNotification(
+				rawEnvelope.Params, threadID, turnID,
+			)
+			zeroHarnessBytes(rawEnvelope.Params)
+			if progressErr != nil {
+				return "", nil, progressErr
 			}
 			continue
 		}
@@ -984,6 +1073,48 @@ func readCodexAppServerTurn(
 		}
 	}
 	return "", nil, ErrHarnessProtocol
+}
+
+func codexAppServerTurnFailure(
+	params json.RawMessage,
+	threadID, turnID string,
+) error {
+	var notification struct {
+		ThreadID  string `json:"threadId"`
+		TurnID    string `json:"turnId"`
+		WillRetry *bool  `json:"willRetry"`
+		Error     struct {
+			Message        json.RawMessage `json:"message"`
+			CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(params, &notification) != nil ||
+		notification.ThreadID != threadID || notification.TurnID != turnID ||
+		notification.WillRetry == nil || len(notification.Error.Message) < 2 ||
+		len(notification.Error.Message) > 16*1024 || !json.Valid(notification.Error.Message) ||
+		notification.Error.Message[0] != '"' {
+		zeroHarnessBytes(notification.Error.Message)
+		zeroHarnessBytes(notification.Error.CodexErrorInfo)
+		return ErrHarnessProtocol
+	}
+	defer zeroHarnessBytes(notification.Error.Message)
+	defer zeroHarnessBytes(notification.Error.CodexErrorInfo)
+	switch string(bytes.TrimSpace(notification.Error.CodexErrorInfo)) {
+	case `"unauthorized"`:
+		return ErrHarnessProviderAuth
+	case `"usageLimitExceeded"`:
+		return ErrHarnessProviderRateLimit
+	case `"serverOverloaded"`, `"internalServerError"`:
+		if *notification.WillRetry {
+			return nil
+		}
+		return ErrHarnessProviderUnavailable
+	default:
+		if *notification.WillRetry {
+			return nil
+		}
+		return ErrHarnessProtocol
+	}
 }
 
 func writeHarnessJSONLine(

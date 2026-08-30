@@ -954,6 +954,9 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
     public let latestTestScope: String
     public let latestTestOutcome: String
     public let latestTestReportDigest: String
+    public let finalOutputAvailable: Bool
+    public let finalOutputText: String
+    public let finalOutputDigest: String
     public let accountingAvailable: Bool
     public let usageObserved: Bool
     public let inputTokens: Int64
@@ -1036,6 +1039,9 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
         case latestTestScope = "latest_test_scope"
         case latestTestOutcome = "latest_test_outcome"
         case latestTestReportDigest = "latest_test_report_digest"
+        case finalOutputAvailable = "final_output_available"
+        case finalOutputText = "final_output_text"
+        case finalOutputDigest = "final_output_digest"
         case accountingAvailable = "accounting_available"
         case usageObserved = "usage_observed"
         case inputTokens = "input_tokens"
@@ -1085,6 +1091,8 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
                 "test_report_set_digest", "latest_test_runner",
                 "latest_test_scope", "latest_test_outcome",
                 "latest_test_report_digest",
+                "final_output_available", "final_output_text",
+                "final_output_digest",
                 "accounting_available", "usage_observed",
                 "input_tokens", "output_tokens", "cache_read_tokens",
                 "cache_write_tokens", "total_tokens", "cost_observed",
@@ -1432,6 +1440,28 @@ public struct LocalProductNode: Codable, Equatable, Sendable, Identifiable {
                 && testReportFailedCount == 0 && testReportSetDigest.isEmpty
                 && latestTestRunner.isEmpty && latestTestScope.isEmpty
                 && latestTestOutcome.isEmpty && latestTestReportDigest.isEmpty
+        else {
+            throw LocalProductWireError.invalidJSON
+        }
+        finalOutputAvailable = try values.decodeIfPresent(
+            Bool.self, forKey: .finalOutputAvailable
+        ) ?? false
+        finalOutputText = try values.decodeIfPresent(
+            String.self, forKey: .finalOutputText
+        ) ?? ""
+        finalOutputDigest = try values.decodeIfPresent(
+            String.self, forKey: .finalOutputDigest
+        ) ?? ""
+        let computedFinalOutputDigest = SHA256.hash(
+            data: Data(finalOutputText.utf8)
+        ).map { String(format: "%02x", $0) }.joined()
+        guard finalOutputAvailable
+            ? status == "succeeded" && currentAttempt > 0
+                && !finalOutputText.isEmpty
+                && finalOutputText.utf8.count <= 30 << 10
+                && validContextDigest(finalOutputDigest)
+                && finalOutputDigest == computedFinalOutputDigest
+            : finalOutputText.isEmpty && finalOutputDigest.isEmpty
         else {
             throw LocalProductWireError.invalidJSON
         }
@@ -1975,11 +2005,18 @@ public enum LocalProductConversationContextMode:
     public var id: String { rawValue }
 }
 
+private func validLocalProductWireDigest(_ value: String) -> Bool {
+    value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+        (48...57).contains(byte) || (97...102).contains(byte)
+    }
+}
+
 public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
     public static let toolShapedWarning = "The conversation runtime returned tool-shaped text. Loom did not execute it."
 
     public let messageID: String
     public let segmentID: String
+    public let attemptID: String
     public let role: String
     public let content: String
     public let tentative: Bool
@@ -1987,18 +2024,21 @@ public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey, CaseIterable {
         case messageID = "message_id"
         case segmentID = "segment_id"
+        case attemptID = "attempt_id"
         case role, content, tentative
     }
 
     public init(
         messageID: String,
         segmentID: String = "",
+        attemptID: String = "",
         role: String,
         content: String,
         tentative: Bool
     ) {
         self.messageID = messageID
         self.segmentID = segmentID
+        self.attemptID = attemptID
         self.role = role
         self.content = content
         self.tentative = tentative
@@ -2015,9 +2055,16 @@ public struct LocalProductChatMessage: Codable, Equatable, Hashable, Sendable {
             String.self,
             forKey: .segmentID
         ) ?? ""
+        attemptID = try values.decodeIfPresent(
+            String.self,
+            forKey: .attemptID
+        ) ?? ""
         role = try values.decode(String.self, forKey: .role)
         content = try values.decode(String.self, forKey: .content)
         tentative = try values.decode(Bool.self, forKey: .tentative)
+        guard attemptID.isEmpty || LocalIPCClient.validIdentifier(attemptID) else {
+            throw LocalProductClientError.invalidResponse
+        }
     }
 
     public var displayContent: String {
@@ -2147,6 +2194,7 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
     public let contextCapacityContributions: [LocalProductContextCapacityContribution]
     public let executionBinding: LocalProductConversationExecutionBinding?
     public let routeTransitionReviewDigest: String
+    public let contextAlignmentDigest: String
     public let bindingDigest: String
 
     enum CodingKeys: String, CodingKey, CaseIterable {
@@ -2173,6 +2221,7 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
         case contextCapacityContributions = "context_capacity_contributions"
         case executionBinding = "execution_binding"
         case routeTransitionReviewDigest = "route_transition_review_digest"
+        case contextAlignmentDigest = "context_alignment_digest"
         case bindingDigest = "binding_digest"
     }
 
@@ -2198,6 +2247,7 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
         contextCapacityContributions: [LocalProductContextCapacityContribution] = [],
         executionBinding: LocalProductConversationExecutionBinding? = nil,
         routeTransitionReviewDigest: String = "",
+        contextAlignmentDigest: String = "",
         bindingDigest: String,
         modelID: String = "",
         reasoningEffort: String = ""
@@ -2225,6 +2275,7 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
         self.contextCapacityContributions = contextCapacityContributions
         self.executionBinding = executionBinding
         self.routeTransitionReviewDigest = routeTransitionReviewDigest
+        self.contextAlignmentDigest = contextAlignmentDigest
         self.bindingDigest = bindingDigest
     }
 
@@ -2303,6 +2354,10 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
             String.self,
             forKey: .routeTransitionReviewDigest
         ) ?? ""
+        contextAlignmentDigest = try values.decodeIfPresent(
+            String.self,
+            forKey: .contextAlignmentDigest
+        ) ?? ""
         bindingDigest = try values.decode(String.self, forKey: .bindingDigest)
         guard validConversationDisclosure(
             disclosureReceiptDigest,
@@ -2340,6 +2395,8 @@ public struct LocalProductConversationSegment: Codable, Equatable, Sendable {
             routeTransitionReviewDigest.utf8.allSatisfy {
                 ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
             }
+        ), contextAlignmentDigest.isEmpty || validLocalProductWireDigest(
+            contextAlignmentDigest
         ) else {
             throw LocalProductClientError.invalidResponse
         }
@@ -2596,6 +2653,87 @@ public struct LocalProductTrustBoundaryAcknowledgement: Encodable, Equatable, Se
     }
 }
 
+public struct LocalProductConversationCompletedTool: Codable, Equatable, Sendable {
+    public let toolID: String
+    public let toolVersion: Int
+    public let effect: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case toolID = "tool_id"
+        case toolVersion = "tool_version"
+        case effect
+    }
+
+    public init(toolID: String, toolVersion: Int, effect: String) throws {
+        guard Self.valid(toolID: toolID, toolVersion: toolVersion, effect: effect) else {
+            throw LocalProductClientError.invalidResponse
+        }
+        self.toolID = toolID
+        self.toolVersion = toolVersion
+        self.effect = effect
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(
+            decoder,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue))
+        )
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let toolID = try values.decode(String.self, forKey: .toolID)
+        let toolVersion = try values.decode(Int.self, forKey: .toolVersion)
+        let effect = try values.decode(String.self, forKey: .effect)
+        guard Self.valid(toolID: toolID, toolVersion: toolVersion, effect: effect) else {
+            throw LocalProductClientError.invalidResponse
+        }
+        self.toolID = toolID
+        self.toolVersion = toolVersion
+        self.effect = effect
+    }
+
+    private static func valid(
+        toolID: String,
+        toolVersion: Int,
+        effect: String
+    ) -> Bool {
+        guard let admitted = admittedDefinition(toolID) else { return false }
+        return admitted.0 == toolVersion && admitted.1 == effect
+    }
+
+    private static func admittedDefinition(_ toolID: String) -> (Int, String)? {
+        switch toolID {
+        case "loom.sessions.search": return (1, "read")
+        case "loom.sessions.align.preview": return (2, "proposal")
+        case "loom.missions.create.preview": return (2, "proposal")
+        case "loom.missions.continue.preview": return (2, "proposal")
+        case "loom.teams.create.preview": return (2, "proposal")
+        case "loom.roundtables.open.preview": return (2, "proposal")
+        case "loom.missions.search": return (1, "read")
+        case "loom.missions.status": return (1, "read")
+        case "loom.teams.search": return (1, "read")
+        case "loom.teams.status": return (1, "read")
+        case "loom.roundtables.status": return (1, "read")
+        case "loom.governance.needs_you": return (1, "read")
+        case "loom.runtimes.status": return (1, "read")
+        case "loom.providers.status": return (1, "read")
+        case "loom.diagnostics.incident": return (1, "read")
+        case "loom.workspace.status": return (1, "read")
+        case "loom.conversation.route.status": return (1, "read")
+        case "loom.library.search": return (1, "read")
+        case "loom.conversation.route.change.preview": return (2, "proposal")
+        case "loom.conversation.model.change.preview": return (2, "proposal")
+        case "loom.conversation.reasoning.change.preview": return (2, "proposal")
+        case "loom.workspace.choose.preview": return (2, "proposal")
+        case "loom.teams.edit.preview": return (2, "proposal")
+        case "loom.roundtables.pause.preview": return (2, "proposal")
+        case "loom.roundtables.steer.preview": return (2, "proposal")
+        case "loom.roundtables.retry.preview": return (2, "proposal")
+        case "loom.roundtables.skip.preview": return (2, "proposal")
+        case "loom.roundtables.replace.preview": return (2, "proposal")
+        default: return nil
+        }
+    }
+}
+
 public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
     public let attemptID: String
     public let segmentID: String
@@ -2621,6 +2759,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
     public let contextCapacityContributions: [LocalProductContextCapacityContribution]
     public let executionBinding: LocalProductConversationExecutionBinding?
     public let routeTransitionReviewDigest: String
+    public let contextAlignmentDigest: String
+    public let completedControlTools: [LocalProductConversationCompletedTool]
     public let bindingDigest: String
     public let incidentID: String
     public let status: String
@@ -2657,6 +2797,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         case contextCapacityContributions = "context_capacity_contributions"
         case executionBinding = "execution_binding"
         case routeTransitionReviewDigest = "route_transition_review_digest"
+        case contextAlignmentDigest = "context_alignment_digest"
+        case completedControlTools = "completed_control_tools"
         case bindingDigest = "binding_digest"
         case incidentID = "incident_id"
         case status
@@ -2694,6 +2836,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         contextCapacityContributions: [LocalProductContextCapacityContribution] = [],
         executionBinding: LocalProductConversationExecutionBinding? = nil,
         routeTransitionReviewDigest: String = "",
+        contextAlignmentDigest: String = "",
+        completedControlTools: [LocalProductConversationCompletedTool] = [],
         bindingDigest: String,
         incidentID: String = "",
         status: String,
@@ -2729,6 +2873,8 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
         self.contextCapacityContributions = contextCapacityContributions
         self.executionBinding = executionBinding
         self.routeTransitionReviewDigest = routeTransitionReviewDigest
+        self.contextAlignmentDigest = contextAlignmentDigest
+        self.completedControlTools = completedControlTools
         self.bindingDigest = bindingDigest
         self.incidentID = incidentID
         self.status = status
@@ -2816,6 +2962,14 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
             String.self,
             forKey: .routeTransitionReviewDigest
         ) ?? ""
+        contextAlignmentDigest = try values.decodeIfPresent(
+            String.self,
+            forKey: .contextAlignmentDigest
+        ) ?? ""
+        completedControlTools = try values.decodeIfPresent(
+            [LocalProductConversationCompletedTool].self,
+            forKey: .completedControlTools
+        ) ?? []
         bindingDigest = try values.decode(String.self, forKey: .bindingDigest)
         incidentID = try values.decodeIfPresent(
             String.self,
@@ -2876,6 +3030,10 @@ public struct LocalProductConversationAttempt: Codable, Equatable, Sendable {
                   ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
                 }
               ),
+              contextAlignmentDigest.isEmpty || validLocalProductWireDigest(
+                contextAlignmentDigest
+              ),
+              completedControlTools.count <= 8,
               incidentID.isEmpty || LocalIPCWire.validRequestID(incidentID),
               ["dispatching", "succeeded", "failed", "cancelled"].contains(status),
 			  Self.validFailure(
@@ -3210,12 +3368,967 @@ public struct LocalProductChatSession: Codable, Equatable, Identifiable, Sendabl
   }
 }
 
+public struct LocalProductConversationSessionReference: Encodable, Equatable, Sendable {
+    public let conversationID: String
+    public let title: String
+    public let updatedAt: String
+
+    public init(conversationID: String, title: String, updatedAt: String) {
+        self.conversationID = conversationID
+        self.title = title
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+        case title
+        case updatedAt = "updated_at"
+    }
+}
+
+public struct LocalProductConversationAlignmentSource: Codable, Equatable, Sendable {
+    public let conversationID: String
+    public let title: String
+    public let contentDigest: String
+    public let messageCount: Int
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case conversationID = "conversation_id"
+        case title
+        case contentDigest = "content_digest"
+        case messageCount = "message_count"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        conversationID = try values.decode(String.self, forKey: .conversationID)
+        title = try values.decode(String.self, forKey: .title)
+        contentDigest = try values.decode(String.self, forKey: .contentDigest)
+        messageCount = try values.decode(Int.self, forKey: .messageCount)
+        guard LocalIPCClient.validIdentifier(conversationID),
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              title.utf8.count <= 256,
+              validLocalProductWireDigest(contentDigest),
+              (0...256).contains(messageCount) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public enum LocalProductConversationControlProposalStatus: String, Codable, Sendable {
+    case pending
+    case confirmed
+    case cancelled
+    case expired
+}
+
+public struct LocalProductConversationFrozenRouteReference:
+    Codable, Equatable, Sendable
+{
+    public let harnessAdapter: String
+    public let providerID: String
+    public let providerAccountID: String
+    public let credentialRevision: Int64
+    public let modelID: String
+    public let reasoningEffort: String
+    public let executionBindingDigest: String
+    public let contextCapsuleDigest: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case harnessAdapter = "harness_adapter"
+        case providerID = "provider_id"
+        case providerAccountID = "provider_account_id"
+        case credentialRevision = "credential_revision"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
+        case executionBindingDigest = "execution_binding_digest"
+        case contextCapsuleDigest = "context_capsule_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        harnessAdapter = try values.decode(String.self, forKey: .harnessAdapter)
+        providerID = try values.decode(String.self, forKey: .providerID)
+        providerAccountID = try values.decodeIfPresent(
+            String.self, forKey: .providerAccountID
+        ) ?? ""
+        credentialRevision = try values.decode(
+            Int64.self, forKey: .credentialRevision
+        )
+        modelID = try values.decode(String.self, forKey: .modelID)
+        reasoningEffort = try values.decodeIfPresent(
+            String.self, forKey: .reasoningEffort
+        ) ?? ""
+        executionBindingDigest = try values.decode(
+            String.self, forKey: .executionBindingDigest
+        )
+        contextCapsuleDigest = try values.decode(
+            String.self, forKey: .contextCapsuleDigest
+        )
+        let validAccount = providerAccountID.isEmpty
+            ? credentialRevision == 0
+            : validLocalProductConversationActionIdentifier(
+                providerAccountID, limit: 128
+            ) && credentialRevision > 0
+        guard validLocalProductConversationActionIdentifier(
+            harnessAdapter, limit: 64
+        ), validLocalProductConversationActionIdentifier(providerID, limit: 64),
+              validLocalProductConversationActionIdentifier(modelID, limit: 256),
+              reasoningEffort.isEmpty || validLocalProductConversationActionIdentifier(
+                reasoningEffort, limit: 64
+              ), validAccount, validLocalProductWireDigest(executionBindingDigest),
+              validLocalProductWireDigest(contextCapsuleDigest) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public struct LocalProductConversationFrozenWorkspaceReference:
+    Codable, Equatable, Sendable
+{
+    public let workspaceID: String
+    public let workspaceDigest: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case workspaceID = "workspace_id"
+        case workspaceDigest = "workspace_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceID = try values.decode(String.self, forKey: .workspaceID)
+        workspaceDigest = try values.decode(String.self, forKey: .workspaceDigest)
+        guard validLocalProductConversationActionIdentifier(workspaceID, limit: 128),
+              validLocalProductWireDigest(workspaceDigest) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public struct LocalProductConversationControlProposal: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { proposalID }
+    public let schemaVersion: Int
+    public let proposalID: String
+    public let toolID: String
+    public let toolVersion: Int
+    public let confirmation: String
+    public let targetConversationID: String
+    public let targetContentDigest: String
+    public let sources: [LocalProductConversationAlignmentSource]
+    public let contextMode: LocalProductConversationContextMode
+    public let catalogDigest: String
+    public let route: LocalProductConversationFrozenRouteReference?
+    public let workspace: LocalProductConversationFrozenWorkspaceReference?
+    public let registryDigest: String
+    public let incidentID: String
+    public let segmentID: String
+    public let attemptID: String
+    public let messageID: String
+    public let status: LocalProductConversationControlProposalStatus
+    public let createdAt: String
+    public let expiresAt: String
+    public let proposalDigest: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case proposalID = "proposal_id"
+        case toolID = "tool_id"
+        case toolVersion = "tool_version"
+        case confirmation
+        case targetConversationID = "target_conversation_id"
+        case targetContentDigest = "target_content_digest"
+        case sources
+        case contextMode = "context_mode"
+        case catalogDigest = "catalog_digest"
+        case route, workspace
+        case registryDigest = "registry_digest"
+        case incidentID = "incident_id"
+        case segmentID = "segment_id"
+        case attemptID = "attempt_id"
+        case messageID = "message_id"
+        case status
+        case createdAt = "created_at"
+        case expiresAt = "expires_at"
+        case proposalDigest = "proposal_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        proposalID = try values.decode(String.self, forKey: .proposalID)
+        toolID = try values.decode(String.self, forKey: .toolID)
+        toolVersion = try values.decode(Int.self, forKey: .toolVersion)
+        confirmation = try values.decode(String.self, forKey: .confirmation)
+        targetConversationID = try values.decode(String.self, forKey: .targetConversationID)
+        targetContentDigest = try values.decode(String.self, forKey: .targetContentDigest)
+        sources = try values.decode([LocalProductConversationAlignmentSource].self, forKey: .sources)
+        contextMode = try values.decode(LocalProductConversationContextMode.self, forKey: .contextMode)
+        catalogDigest = try values.decode(String.self, forKey: .catalogDigest)
+        route = try values.decodeIfPresent(
+            LocalProductConversationFrozenRouteReference.self, forKey: .route
+        )
+        workspace = try values.decodeIfPresent(
+            LocalProductConversationFrozenWorkspaceReference.self, forKey: .workspace
+        )
+        registryDigest = try values.decodeIfPresent(
+            String.self, forKey: .registryDigest
+        ) ?? ""
+        incidentID = try values.decodeIfPresent(String.self, forKey: .incidentID) ?? ""
+        segmentID = try values.decode(String.self, forKey: .segmentID)
+        attemptID = try values.decode(String.self, forKey: .attemptID)
+        messageID = try values.decodeIfPresent(String.self, forKey: .messageID) ?? ""
+        status = try values.decode(LocalProductConversationControlProposalStatus.self, forKey: .status)
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        expiresAt = try values.decode(String.self, forKey: .expiresAt)
+        proposalDigest = try values.decode(String.self, forKey: .proposalDigest)
+        let legacyEnvelope = schemaVersion == 1 && toolVersion == 1
+            && route == nil && workspace == nil
+            && registryDigest.isEmpty && incidentID.isEmpty
+        let frozenEnvelope = schemaVersion == 2 && toolVersion == 2
+            && route != nil && workspace != nil
+            && validLocalProductWireDigest(registryDigest)
+            && LocalIPCClient.validIdentifier(incidentID)
+        guard legacyEnvelope || frozenEnvelope,
+              toolID == "loom.sessions.align.preview",
+              confirmation == "user", LocalIPCClient.validIdentifier(proposalID),
+              LocalIPCClient.validIdentifier(targetConversationID),
+              LocalIPCClient.validIdentifier(segmentID),
+              LocalIPCClient.validIdentifier(attemptID),
+              messageID.isEmpty || LocalIPCClient.validIdentifier(messageID),
+              validLocalProductWireDigest(targetContentDigest),
+              validLocalProductWireDigest(catalogDigest),
+              validLocalProductWireDigest(proposalDigest),
+              !sources.isEmpty, sources.count <= 8,
+              contextMode == .summaryOnly || contextMode == .continueWithContext,
+              !createdAt.isEmpty, !expiresAt.isEmpty else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+
+    public func matchesFrozenTurn(in thread: LocalProductChatThread) -> Bool {
+        guard schemaVersion == 2, let route, let workspace else { return false }
+        return localProductConversationProposalMatchesFrozenTurn(
+            thread: thread,
+            targetConversationID: targetConversationID,
+            segmentID: segmentID,
+            attemptID: attemptID,
+            incidentID: incidentID,
+            route: route,
+            workspace: workspace
+        )
+    }
+
+    public var isConfirmable: Bool {
+        schemaVersion == 2 && status == .pending && route != nil && workspace != nil
+    }
+}
+
+public enum LocalProductConversationAction: String, Codable, Sendable {
+    case mission
+    case continueMission = "continue_mission"
+    case team
+    case roundTable = "roundtable"
+    case route
+    case model
+    case reasoning
+    case workspace
+    case teamEdit = "team_edit"
+    case roundTablePause = "roundtable_pause"
+    case roundTableSteer = "roundtable_steer"
+    case roundTableRetry = "roundtable_retry"
+    case roundTableSkip = "roundtable_skip"
+    case roundTableReplace = "roundtable_replace"
+}
+
+public struct LocalProductConversationActionPayload: Codable, Equatable, Sendable {
+    public let missionID: String
+    public let profileID: String
+    public let modelID: String
+    public let reasoningEffort: String
+    public let teamInstanceID: String
+    public let instruction: String
+    public let sessionID: String
+    public let roundID: String
+    public let seatID: String
+    public let attemptID: String
+    public let guidance: String
+    public let membershipRevision: Int
+    public let seatBindingDigest: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case missionID = "mission_id"
+        case profileID = "profile_id"
+        case modelID = "model_id"
+        case reasoningEffort = "reasoning_effort"
+        case teamInstanceID = "team_instance_id"
+        case instruction
+        case sessionID = "session_id"
+        case roundID = "round_id"
+        case seatID = "seat_id"
+        case attemptID = "attempt_id"
+        case guidance
+        case membershipRevision = "membership_revision"
+        case seatBindingDigest = "seat_binding_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        missionID = try values.decodeIfPresent(String.self, forKey: .missionID) ?? ""
+        profileID = try values.decodeIfPresent(String.self, forKey: .profileID) ?? ""
+        modelID = try values.decodeIfPresent(String.self, forKey: .modelID) ?? ""
+        reasoningEffort = try values.decodeIfPresent(String.self, forKey: .reasoningEffort) ?? ""
+        teamInstanceID = try values.decodeIfPresent(String.self, forKey: .teamInstanceID) ?? ""
+        instruction = try values.decodeIfPresent(String.self, forKey: .instruction) ?? ""
+        sessionID = try values.decodeIfPresent(String.self, forKey: .sessionID) ?? ""
+        roundID = try values.decodeIfPresent(String.self, forKey: .roundID) ?? ""
+        seatID = try values.decodeIfPresent(String.self, forKey: .seatID) ?? ""
+        attemptID = try values.decodeIfPresent(String.self, forKey: .attemptID) ?? ""
+        guidance = try values.decodeIfPresent(String.self, forKey: .guidance) ?? ""
+        membershipRevision = try values.decodeIfPresent(
+            Int.self, forKey: .membershipRevision
+        ) ?? 0
+        seatBindingDigest = try values.decodeIfPresent(
+            String.self, forKey: .seatBindingDigest
+        ) ?? ""
+    }
+
+    fileprivate func isValid(
+        for action: LocalProductConversationAction,
+        schemaVersion: Int
+    ) -> Bool {
+        if schemaVersion == 2,
+           action == .continueMission || action == .roundTable {
+            return validLocalProductConversationActionIdentifier(missionID, limit: 128)
+                && only(\.missionID)
+        }
+        switch action {
+        case .route:
+            return validLocalProductConversationActionIdentifier(profileID, limit: 256)
+                && only(\.profileID)
+        case .model:
+            return validLocalProductConversationActionIdentifier(modelID, limit: 256)
+                && only(\.modelID)
+        case .reasoning:
+            return validLocalProductConversationActionIdentifier(reasoningEffort, limit: 64)
+                && only(\.reasoningEffort)
+        case .teamEdit:
+            return validLocalProductConversationActionIdentifier(teamInstanceID, limit: 128)
+                && validLocalProductConversationActionText(instruction, limit: 4_096)
+                && only(\.teamInstanceID, \.instruction)
+        case .roundTablePause:
+            return validRoundTableTarget(requiresAttempt: false)
+                && only(\.sessionID, \.roundID)
+        case .roundTableSteer, .roundTableRetry:
+            let targetValid = validRoundTableTarget(requiresAttempt: true)
+                && validLocalProductConversationActionText(guidance, limit: 4_096)
+            guard schemaVersion == 2 else {
+                return targetValid
+                    && only(\.sessionID, \.roundID, \.seatID, \.attemptID, \.guidance)
+            }
+            return targetValid && (
+                only(\.sessionID, \.roundID, \.seatID, \.attemptID, \.guidance)
+                    || hasFrozenRoundTableSeatBinding
+                    && onlyWithFrozenRoundTableSeatBinding(
+                        \.sessionID, \.roundID, \.seatID, \.attemptID, \.guidance
+                    )
+            )
+        case .roundTableSkip, .roundTableReplace:
+            let targetValid = validRoundTableTarget(requiresAttempt: false)
+                && validLocalProductConversationRoundTableIdentifier(
+                    seatID, limit: 128
+                )
+            guard schemaVersion == 2 else {
+                return targetValid && only(\.sessionID, \.roundID, \.seatID)
+            }
+            return targetValid && (
+                only(\.sessionID, \.roundID, \.seatID)
+                    || hasFrozenRoundTableSeatBinding
+                    && onlyWithFrozenRoundTableSeatBinding(
+                        \.sessionID, \.roundID, \.seatID
+                    )
+            )
+        case .mission, .continueMission, .team, .roundTable, .workspace:
+            return false
+        }
+    }
+
+    private func validRoundTableTarget(requiresAttempt: Bool) -> Bool {
+        guard validLocalProductConversationRoundTableIdentifier(sessionID, limit: 128),
+              validLocalProductConversationRoundTableIdentifier(roundID, limit: 128)
+        else { return false }
+        guard requiresAttempt else { return true }
+        return validLocalProductConversationRoundTableIdentifier(seatID, limit: 128)
+            && validLocalProductConversationRoundTableIdentifier(attemptID, limit: 128)
+    }
+
+    private func only(
+        _ allowed: KeyPath<LocalProductConversationActionPayload, String>...
+    ) -> Bool {
+        let all: [KeyPath<LocalProductConversationActionPayload, String>] = [
+            \.missionID, \.profileID, \.modelID, \.reasoningEffort, \.teamInstanceID,
+            \.instruction, \.sessionID, \.roundID, \.seatID, \.attemptID,
+            \.guidance, \.seatBindingDigest,
+        ]
+        return membershipRevision == 0 && all.allSatisfy { keyPath in
+            allowed.contains(keyPath) == !self[keyPath: keyPath].isEmpty
+        }
+    }
+
+    private func onlyWithFrozenRoundTableSeatBinding(
+        _ allowed: KeyPath<LocalProductConversationActionPayload, String>...
+    ) -> Bool {
+        let all: [KeyPath<LocalProductConversationActionPayload, String>] = [
+            \.missionID, \.profileID, \.modelID, \.reasoningEffort, \.teamInstanceID,
+            \.instruction, \.sessionID, \.roundID, \.seatID, \.attemptID,
+            \.guidance, \.seatBindingDigest,
+        ]
+        return hasFrozenRoundTableSeatBinding && all.allSatisfy { keyPath in
+            let expected = allowed.contains(keyPath) || keyPath == \.seatBindingDigest
+            return expected == !self[keyPath: keyPath].isEmpty
+        }
+    }
+
+    public var hasFrozenRoundTableSeatBinding: Bool {
+        membershipRevision > 0 && validLocalProductWireDigest(seatBindingDigest)
+    }
+
+    public func matchesFrozenRoundTableTarget(
+        in view: LocalRoundtableView,
+        requiresAttempt: Bool
+    ) -> Bool {
+        guard hasFrozenRoundTableSeatBinding,
+              view.session.id == sessionID,
+              view.rounds.contains(where: { $0.id == roundID }),
+              let binding = view.seats[seatID]?.binding,
+              binding.membershipRevision == membershipRevision,
+              binding.bindingDigest == seatBindingDigest else {
+            return false
+        }
+        guard requiresAttempt else { return true }
+        guard let attempt = view.attempts[attemptID] else { return false }
+        return attempt.roundID == roundID
+            && attempt.seatID == seatID
+            && attempt.membershipRevision == membershipRevision
+            && attempt.seatBindingDigest == seatBindingDigest
+    }
+}
+
+public struct LocalProductConversationActionProposal: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { proposalID }
+    public let schemaVersion: Int
+    public let proposalID: String
+    public let toolID: String
+    public let toolVersion: Int
+    public let confirmation: String
+    public let action: LocalProductConversationAction
+    public let argument: String
+    public let payload: LocalProductConversationActionPayload?
+    public let route: LocalProductConversationFrozenRouteReference?
+    public let workspace: LocalProductConversationFrozenWorkspaceReference?
+    public let registryDigest: String
+    public let incidentID: String
+    public let targetConversationID: String
+    public let targetContentDigest: String
+    public let segmentID: String
+    public let attemptID: String
+    public let messageID: String
+    public let status: LocalProductConversationControlProposalStatus
+    public let createdAt: String
+    public let expiresAt: String
+    public let proposalDigest: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case proposalID = "proposal_id"
+        case toolID = "tool_id"
+        case toolVersion = "tool_version"
+        case confirmation, action, argument, payload
+        case route, workspace
+        case registryDigest = "registry_digest"
+        case incidentID = "incident_id"
+        case targetConversationID = "target_conversation_id"
+        case targetContentDigest = "target_content_digest"
+        case segmentID = "segment_id"
+        case attemptID = "attempt_id"
+        case messageID = "message_id"
+        case status
+        case createdAt = "created_at"
+        case expiresAt = "expires_at"
+        case proposalDigest = "proposal_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        proposalID = try values.decode(String.self, forKey: .proposalID)
+        toolID = try values.decode(String.self, forKey: .toolID)
+        toolVersion = try values.decode(Int.self, forKey: .toolVersion)
+        confirmation = try values.decode(String.self, forKey: .confirmation)
+        action = try values.decode(LocalProductConversationAction.self, forKey: .action)
+        argument = try values.decodeIfPresent(String.self, forKey: .argument) ?? ""
+        payload = try values.decodeIfPresent(
+            LocalProductConversationActionPayload.self,
+            forKey: .payload
+        )
+        route = try values.decodeIfPresent(
+            LocalProductConversationFrozenRouteReference.self, forKey: .route
+        )
+        workspace = try values.decodeIfPresent(
+            LocalProductConversationFrozenWorkspaceReference.self, forKey: .workspace
+        )
+        registryDigest = try values.decodeIfPresent(
+            String.self, forKey: .registryDigest
+        ) ?? ""
+        incidentID = try values.decodeIfPresent(String.self, forKey: .incidentID) ?? ""
+        targetConversationID = try values.decode(String.self, forKey: .targetConversationID)
+        targetContentDigest = try values.decode(String.self, forKey: .targetContentDigest)
+        segmentID = try values.decode(String.self, forKey: .segmentID)
+        attemptID = try values.decode(String.self, forKey: .attemptID)
+        messageID = try values.decodeIfPresent(String.self, forKey: .messageID) ?? ""
+        status = try values.decode(LocalProductConversationControlProposalStatus.self, forKey: .status)
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        expiresAt = try values.decode(String.self, forKey: .expiresAt)
+        proposalDigest = try values.decode(String.self, forKey: .proposalDigest)
+        let expectedTool: String
+        switch action {
+        case .mission:
+            expectedTool = "loom.missions.create.preview"
+        case .continueMission:
+            expectedTool = "loom.missions.continue.preview"
+        case .team:
+            expectedTool = "loom.teams.create.preview"
+        case .roundTable:
+            expectedTool = "loom.roundtables.open.preview"
+        case .route:
+            expectedTool = "loom.conversation.route.change.preview"
+        case .model:
+            expectedTool = "loom.conversation.model.change.preview"
+        case .reasoning:
+            expectedTool = "loom.conversation.reasoning.change.preview"
+        case .workspace:
+            expectedTool = "loom.workspace.choose.preview"
+        case .teamEdit:
+            expectedTool = "loom.teams.edit.preview"
+        case .roundTablePause:
+            expectedTool = "loom.roundtables.pause.preview"
+        case .roundTableSteer:
+            expectedTool = "loom.roundtables.steer.preview"
+        case .roundTableRetry:
+            expectedTool = "loom.roundtables.retry.preview"
+        case .roundTableSkip:
+            expectedTool = "loom.roundtables.skip.preview"
+        case .roundTableReplace:
+            expectedTool = "loom.roundtables.replace.preview"
+        }
+        let trimmedArgument = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+        let argumentActions: Set<LocalProductConversationAction> = [
+            .mission, .continueMission, .team,
+        ]
+        let validArgument = argumentActions.contains(action)
+            ? !argument.isEmpty && argument == trimmedArgument
+                && argument.utf8.count <= 4_096
+                && !argument.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+                && !localProductConversationActionLooksLikeCredential(argument)
+            : argument.isEmpty
+        let typedPayloadActions: Set<LocalProductConversationAction> = [
+            .route, .model, .reasoning, .teamEdit, .roundTablePause,
+            .roundTableSteer, .roundTableRetry, .roundTableSkip,
+            .roundTableReplace,
+        ]
+        let missionTargetActions: Set<LocalProductConversationAction> = [
+            .continueMission, .roundTable,
+        ]
+        let validPayload: Bool
+        if typedPayloadActions.contains(action)
+            || schemaVersion == 2 && missionTargetActions.contains(action) {
+            validPayload = payload?.isValid(
+                for: action, schemaVersion: schemaVersion
+            ) == true
+        } else {
+            validPayload = payload == nil
+        }
+        let legacyEnvelope = schemaVersion == 1 && toolVersion == 1
+            && route == nil && workspace == nil
+            && registryDigest.isEmpty && incidentID.isEmpty
+        let frozenEnvelope = schemaVersion == 2 && toolVersion == 2
+            && route != nil && workspace != nil
+            && validLocalProductWireDigest(registryDigest)
+            && LocalIPCClient.validIdentifier(incidentID)
+        guard legacyEnvelope || frozenEnvelope,
+              toolID == expectedTool,
+              confirmation == "user", validArgument, validPayload,
+              LocalIPCClient.validIdentifier(proposalID),
+              LocalIPCClient.validIdentifier(targetConversationID),
+              LocalIPCClient.validIdentifier(segmentID),
+              LocalIPCClient.validIdentifier(attemptID),
+              messageID.isEmpty || LocalIPCClient.validIdentifier(messageID),
+              validLocalProductWireDigest(targetContentDigest),
+              validLocalProductWireDigest(proposalDigest),
+              !createdAt.isEmpty, !expiresAt.isEmpty else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+
+    public func matchesFrozenTurn(in thread: LocalProductChatThread) -> Bool {
+        guard schemaVersion == 2, let route, let workspace else { return false }
+        return localProductConversationProposalMatchesFrozenTurn(
+            thread: thread,
+            targetConversationID: targetConversationID,
+            segmentID: segmentID,
+            attemptID: attemptID,
+            incidentID: incidentID,
+            route: route,
+            workspace: workspace
+        )
+    }
+
+    public var isConfirmable: Bool {
+        guard schemaVersion == 2, status == .pending,
+              route != nil, workspace != nil else { return false }
+        switch action {
+        case .roundTableSteer, .roundTableRetry,
+                .roundTableSkip, .roundTableReplace:
+            return payload?.hasFrozenRoundTableSeatBinding == true
+        case .mission, .continueMission, .team, .roundTable,
+                .route, .model, .reasoning, .workspace,
+                .teamEdit, .roundTablePause:
+            return true
+        }
+    }
+
+}
+
+public enum LocalProductConversationProposalDecision: String, Codable, Sendable {
+    case confirm
+    case cancel
+    case expire
+    case supersede
+}
+
+public struct LocalProductConversationProposalDecisionReceipt:
+    Codable, Equatable, Sendable
+{
+    public let schemaVersion: Int
+    public let proposalID: String
+    public let proposalDigest: String
+    public let toolID: String
+    public let decision: LocalProductConversationProposalDecision
+    public let decisionIncidentID: String
+    public let targetConversationID: String
+    public let segmentID: String
+    public let attemptID: String
+    public let registryDigest: String
+    public let workspaceDigest: String
+    public let executionBindingDigest: String
+    public let contextCapsuleDigest: String
+    public let decidedAt: String
+    public let receiptDigest: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case proposalID = "proposal_id"
+        case proposalDigest = "proposal_digest"
+        case toolID = "tool_id"
+        case decision
+        case decisionIncidentID = "decision_incident_id"
+        case targetConversationID = "target_conversation_id"
+        case segmentID = "segment_id"
+        case attemptID = "attempt_id"
+        case registryDigest = "registry_digest"
+        case workspaceDigest = "workspace_digest"
+        case executionBindingDigest = "execution_binding_digest"
+        case contextCapsuleDigest = "context_capsule_digest"
+        case decidedAt = "decided_at"
+        case receiptDigest = "receipt_digest"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        proposalID = try values.decode(String.self, forKey: .proposalID)
+        proposalDigest = try values.decode(String.self, forKey: .proposalDigest)
+        toolID = try values.decode(String.self, forKey: .toolID)
+        decision = try values.decode(
+            LocalProductConversationProposalDecision.self,
+            forKey: .decision
+        )
+        decisionIncidentID = try values.decode(String.self, forKey: .decisionIncidentID)
+        targetConversationID = try values.decode(String.self, forKey: .targetConversationID)
+        segmentID = try values.decode(String.self, forKey: .segmentID)
+        attemptID = try values.decode(String.self, forKey: .attemptID)
+        registryDigest = try values.decode(String.self, forKey: .registryDigest)
+        workspaceDigest = try values.decode(String.self, forKey: .workspaceDigest)
+        executionBindingDigest = try values.decode(
+            String.self,
+            forKey: .executionBindingDigest
+        )
+        contextCapsuleDigest = try values.decode(String.self, forKey: .contextCapsuleDigest)
+        decidedAt = try values.decode(String.self, forKey: .decidedAt)
+        receiptDigest = try values.decode(String.self, forKey: .receiptDigest)
+        guard schemaVersion == 1,
+              LocalIPCClient.validIdentifier(proposalID),
+              validLocalProductWireDigest(proposalDigest),
+              LocalIPCClient.validIdentifier(toolID),
+              LocalIPCWire.validRequestID(decisionIncidentID),
+              LocalIPCClient.validIdentifier(targetConversationID),
+              LocalIPCClient.validIdentifier(segmentID),
+              LocalIPCClient.validIdentifier(attemptID),
+              validLocalProductWireDigest(registryDigest),
+              validLocalProductWireDigest(workspaceDigest),
+              validLocalProductWireDigest(executionBindingDigest),
+              validLocalProductWireDigest(contextCapsuleDigest),
+              !decidedAt.isEmpty,
+              validLocalProductWireDigest(receiptDigest) else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+
+    func matches(_ proposal: LocalProductConversationActionProposal) -> Bool {
+        guard proposal.schemaVersion == 2,
+              let route = proposal.route,
+              let workspace = proposal.workspace else { return false }
+        return proposalID == proposal.proposalID
+            && proposalDigest == proposal.proposalDigest
+            && toolID == proposal.toolID
+            && targetConversationID == proposal.targetConversationID
+            && segmentID == proposal.segmentID
+            && attemptID == proposal.attemptID
+            && registryDigest == proposal.registryDigest
+            && workspaceDigest == workspace.workspaceDigest
+            && executionBindingDigest == route.executionBindingDigest
+            && contextCapsuleDigest == route.contextCapsuleDigest
+            && matches(status: proposal.status)
+    }
+
+    func matches(_ proposal: LocalProductConversationControlProposal) -> Bool {
+        guard proposal.schemaVersion == 2,
+              let route = proposal.route,
+              let workspace = proposal.workspace else { return false }
+        return proposalID == proposal.proposalID
+            && proposalDigest == proposal.proposalDigest
+            && toolID == proposal.toolID
+            && targetConversationID == proposal.targetConversationID
+            && segmentID == proposal.segmentID
+            && attemptID == proposal.attemptID
+            && registryDigest == proposal.registryDigest
+            && workspaceDigest == workspace.workspaceDigest
+            && executionBindingDigest == route.executionBindingDigest
+            && contextCapsuleDigest == route.contextCapsuleDigest
+            && matches(status: proposal.status)
+    }
+
+    private func matches(status: LocalProductConversationControlProposalStatus) -> Bool {
+        switch decision {
+        case .confirm:
+            return status == .confirmed
+        case .cancel, .supersede:
+            return status == .cancelled
+        case .expire:
+            return status == .expired
+        }
+    }
+}
+
+private func localProductConversationProposalMatchesFrozenTurn(
+    thread: LocalProductChatThread,
+    targetConversationID: String,
+    segmentID: String,
+    attemptID: String,
+    incidentID: String,
+    route: LocalProductConversationFrozenRouteReference,
+    workspace: LocalProductConversationFrozenWorkspaceReference
+) -> Bool {
+    guard thread.threadID == targetConversationID,
+          thread.controlWorkspace == workspace,
+          let segment = thread.segments.first(where: { $0.segmentID == segmentID }),
+          let attempt = thread.attempts.first(where: { $0.attemptID == attemptID }),
+          attempt.segmentID == segmentID, attempt.incidentID == incidentID,
+          let segmentBinding = segment.executionBinding,
+          let attemptBinding = attempt.executionBinding,
+          segmentBinding == attemptBinding,
+          route.harnessAdapter == segmentBinding.harnessAdapter,
+          route.providerID == segmentBinding.providerID,
+          route.providerAccountID == segmentBinding.providerAccountID,
+          route.credentialRevision == segmentBinding.credentialRevision,
+          route.modelID == segmentBinding.modelID,
+          route.modelID == segment.modelID,
+          route.reasoningEffort == segment.reasoningEffort,
+          attempt.modelID == route.modelID,
+          (attempt.reasoningEffort ?? "") == route.reasoningEffort,
+          route.executionBindingDigest == segment.bindingDigest,
+          route.contextCapsuleDigest == attempt.contextCapsuleDigest
+    else { return false }
+    return true
+}
+
+private func validLocalProductConversationActionIdentifier(
+    _ value: String,
+    limit: Int
+) -> Bool {
+    guard !value.isEmpty, value.utf8.count <= limit,
+          value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+          !value.contains("\0") else { return false }
+    let lowered = value.lowercased()
+    guard !["sk-", "sk_", "api_key=", "api-key=", "apikey=", "bearer "]
+        .contains(where: lowered.hasPrefix) else { return false }
+    return value.unicodeScalars.allSatisfy { scalar in
+        CharacterSet.alphanumerics.contains(scalar)
+            || "-_.:/".unicodeScalars.contains(scalar)
+    }
+}
+
+private func validLocalProductConversationRoundTableIdentifier(
+    _ value: String,
+    limit: Int
+) -> Bool {
+    !value.isEmpty
+        && value.utf8.count <= limit
+        && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+        && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        && !localProductConversationActionLooksLikeCredential(value)
+}
+
+private func validLocalProductConversationActionText(
+    _ value: String,
+    limit: Int
+) -> Bool {
+    !value.isEmpty && value.utf8.count <= limit
+        && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+        && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        && !localProductConversationActionLooksLikeCredential(value)
+}
+
+private func localProductConversationActionLooksLikeCredential(_ input: String) -> Bool {
+    let markerPrefixes = [
+        "sk-", "sk_", "api_key=", "api-key=", "apikey=",
+        "--api-key=", "authorization:", "x-api-key:",
+    ]
+    for token in input.split(whereSeparator: { $0.isWhitespace }) {
+        let normalized = token.lowercased().trimmingCharacters(
+            in: CharacterSet(charactersIn: "\"'([{<")
+        )
+        if normalized == "bearer"
+            || markerPrefixes.contains(where: { normalized.hasPrefix($0) }) {
+            return true
+        }
+        guard token.count >= 40 else { continue }
+        if token.contains(where: { $0.isLetter })
+            && token.contains(where: { $0.isNumber })
+            && (token.contains("_") || token.contains("-")) {
+            return true
+        }
+    }
+    return false
+}
+
+public struct LocalProductConversationContextAlignment: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { alignmentID }
+    public let schemaVersion: Int
+    public let alignmentID: String
+    public let proposalID: String
+    public let proposalDigest: String
+    public let targetConversationID: String
+    public let sources: [LocalProductConversationAlignmentSource]
+    public let contextMode: LocalProductConversationContextMode
+    public let receiptDigest: String
+    public let confirmedAt: String
+    public let confirmationIncidentID: String
+    public let appliedSegmentID: String
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case alignmentID = "alignment_id"
+        case proposalID = "proposal_id"
+        case proposalDigest = "proposal_digest"
+        case targetConversationID = "target_conversation_id"
+        case sources
+        case contextMode = "context_mode"
+        case receiptDigest = "receipt_digest"
+        case confirmedAt = "confirmed_at"
+        case confirmationIncidentID = "confirmation_incident_id"
+        case appliedSegmentID = "applied_segment_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        alignmentID = try values.decode(String.self, forKey: .alignmentID)
+        proposalID = try values.decode(String.self, forKey: .proposalID)
+        proposalDigest = try values.decode(String.self, forKey: .proposalDigest)
+        targetConversationID = try values.decode(String.self, forKey: .targetConversationID)
+        sources = try values.decode([LocalProductConversationAlignmentSource].self, forKey: .sources)
+        contextMode = try values.decode(LocalProductConversationContextMode.self, forKey: .contextMode)
+        receiptDigest = try values.decode(String.self, forKey: .receiptDigest)
+        confirmedAt = try values.decode(String.self, forKey: .confirmedAt)
+        confirmationIncidentID = try values.decode(String.self, forKey: .confirmationIncidentID)
+        appliedSegmentID = try values.decodeIfPresent(String.self, forKey: .appliedSegmentID) ?? ""
+        guard schemaVersion == 1,
+              LocalIPCClient.validIdentifier(alignmentID),
+              LocalIPCClient.validIdentifier(proposalID),
+              LocalIPCClient.validIdentifier(targetConversationID),
+              validLocalProductWireDigest(proposalDigest),
+              validLocalProductWireDigest(receiptDigest),
+              LocalIPCWire.validRequestID(confirmationIncidentID),
+              appliedSegmentID.isEmpty || LocalIPCClient.validIdentifier(appliedSegmentID),
+              !sources.isEmpty, sources.count <= 8,
+              contextMode == .summaryOnly || contextMode == .continueWithContext,
+              !confirmedAt.isEmpty else {
+            throw LocalProductClientError.invalidResponse
+        }
+    }
+}
+
+public enum LocalProductChatControlDecision: String, Encodable, Sendable {
+    case confirm
+    case cancel
+}
+
+public struct LocalProductChatControlDecisionRequest: Encodable, Sendable {
+    public let threadID: String
+    public let proposalID: String
+    public let proposalDigest: String
+    public let decision: LocalProductChatControlDecision
+
+    public init(
+        threadID: String,
+        proposalID: String,
+        proposalDigest: String,
+        decision: LocalProductChatControlDecision
+    ) {
+        self.threadID = threadID
+        self.proposalID = proposalID
+        self.proposalDigest = proposalDigest
+        self.decision = decision
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case proposalID = "proposal_id"
+        case proposalDigest = "proposal_digest"
+        case decision
+    }
+}
+
 public struct LocalProductChatThread: Codable, Equatable, Sendable {
     public let threadID: String
     public let profileID: String
+    public let controlWorkspace: LocalProductConversationFrozenWorkspaceReference?
     public let segments: [LocalProductConversationSegment]
     public let attempts: [LocalProductConversationAttempt]
     public let messages: [LocalProductChatMessage]
+    public let controlProposals: [LocalProductConversationControlProposal]
+    public let actionProposals: [LocalProductConversationActionProposal]
+    public let proposalDecisionReceipts: [LocalProductConversationProposalDecisionReceipt]
+    public let contextAlignments: [LocalProductConversationContextAlignment]
     public let canReply: Bool
     public let requiresConfirmation: Bool
     public let availabilityFailure: LocalProductChatAvailabilityFailure?
@@ -3223,8 +4336,13 @@ public struct LocalProductChatThread: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case threadID = "thread_id"
         case profileID = "profile_id"
+        case controlWorkspace = "control_workspace"
         case segments, attempts
         case messages
+        case controlProposals = "control_proposals"
+        case actionProposals = "action_proposals"
+        case proposalDecisionReceipts = "proposal_decision_receipts"
+        case contextAlignments = "context_alignments"
         case canReply = "can_reply"
         case requiresConfirmation = "requires_confirmation"
         case availabilityFailure = "availability_failure"
@@ -3233,18 +4351,28 @@ public struct LocalProductChatThread: Codable, Equatable, Sendable {
     public init(
         threadID: String,
         profileID: String = "",
+        controlWorkspace: LocalProductConversationFrozenWorkspaceReference? = nil,
         segments: [LocalProductConversationSegment] = [],
         attempts: [LocalProductConversationAttempt] = [],
         messages: [LocalProductChatMessage],
+        controlProposals: [LocalProductConversationControlProposal] = [],
+        actionProposals: [LocalProductConversationActionProposal] = [],
+        proposalDecisionReceipts: [LocalProductConversationProposalDecisionReceipt] = [],
+        contextAlignments: [LocalProductConversationContextAlignment] = [],
         canReply: Bool,
         requiresConfirmation: Bool,
         availabilityFailure: LocalProductChatAvailabilityFailure? = nil
     ) {
         self.threadID = threadID
         self.profileID = profileID
+        self.controlWorkspace = controlWorkspace
         self.segments = segments
         self.attempts = attempts
         self.messages = messages
+        self.controlProposals = controlProposals
+        self.actionProposals = actionProposals
+        self.proposalDecisionReceipts = proposalDecisionReceipts
+        self.contextAlignments = contextAlignments
         self.canReply = canReply
         self.requiresConfirmation = requiresConfirmation
         self.availabilityFailure = availabilityFailure
@@ -3255,6 +4383,9 @@ public struct LocalProductChatThread: Codable, Equatable, Sendable {
             decoder,
             allowed: [
                 "thread_id", "profile_id", "segments", "attempts", "messages",
+                "control_workspace",
+                "control_proposals", "action_proposals", "proposal_decision_receipts",
+                "context_alignments",
                 "can_reply", "requires_confirmation", "availability_failure",
             ]
         )
@@ -3264,6 +4395,10 @@ public struct LocalProductChatThread: Codable, Equatable, Sendable {
             String.self,
             forKey: .profileID
         ) ?? ""
+        controlWorkspace = try values.decodeIfPresent(
+            LocalProductConversationFrozenWorkspaceReference.self,
+            forKey: .controlWorkspace
+        )
         segments = try values.decodeIfPresent(
             [LocalProductConversationSegment].self,
             forKey: .segments
@@ -3276,6 +4411,22 @@ public struct LocalProductChatThread: Codable, Equatable, Sendable {
             [LocalProductChatMessage].self,
             forKey: .messages
         )
+        controlProposals = try values.decodeIfPresent(
+            [LocalProductConversationControlProposal].self,
+            forKey: .controlProposals
+        ) ?? []
+        actionProposals = try values.decodeIfPresent(
+            [LocalProductConversationActionProposal].self,
+            forKey: .actionProposals
+        ) ?? []
+        proposalDecisionReceipts = try values.decodeIfPresent(
+            [LocalProductConversationProposalDecisionReceipt].self,
+            forKey: .proposalDecisionReceipts
+        ) ?? []
+        contextAlignments = try values.decodeIfPresent(
+            [LocalProductConversationContextAlignment].self,
+            forKey: .contextAlignments
+        ) ?? []
         canReply = try values.decode(Bool.self, forKey: .canReply)
         requiresConfirmation = try values.decode(
             Bool.self,
@@ -3285,9 +4436,53 @@ public struct LocalProductChatThread: Codable, Equatable, Sendable {
             LocalProductChatAvailabilityFailure.self,
             forKey: .availabilityFailure
         )
-        if availabilityFailure != nil && canReply {
+        if availabilityFailure != nil && canReply || controlProposals.count > 64 ||
+            actionProposals.count > 64 ||
+            proposalDecisionReceipts.count > 128 ||
+            contextAlignments.count > 32 ||
+            controlProposals.contains(where: { $0.targetConversationID != threadID }) ||
+            actionProposals.contains(where: { $0.targetConversationID != threadID }) ||
+            proposalDecisionReceipts.contains(where: {
+                $0.targetConversationID != threadID
+            }) ||
+            contextAlignments.contains(where: { $0.targetConversationID != threadID }) {
             throw LocalProductClientError.invalidResponse
         }
+        var proposalIDs = Set<String>()
+        var receiptDigests = Set<String>()
+        for receipt in proposalDecisionReceipts {
+            guard proposalIDs.insert(receipt.proposalID).inserted,
+                  receiptDigests.insert(receipt.receiptDigest).inserted,
+                  controlProposals.contains(where: receipt.matches)
+                    || actionProposals.contains(where: receipt.matches) else {
+                throw LocalProductClientError.invalidResponse
+            }
+        }
+    }
+
+    public func hasConfirmedDecisionReceipt(
+        for proposal: LocalProductConversationActionProposal
+    ) -> Bool {
+        decisionReceipt(for: proposal)?.decision == .confirm
+    }
+
+    public func confirmedDecisionReceipt(
+        for proposal: LocalProductConversationActionProposal
+    ) -> LocalProductConversationProposalDecisionReceipt? {
+        let receipt = decisionReceipt(for: proposal)
+        return receipt?.decision == .confirm ? receipt : nil
+    }
+
+    public func decisionReceipt(
+        for proposal: LocalProductConversationActionProposal
+    ) -> LocalProductConversationProposalDecisionReceipt? {
+        proposalDecisionReceipts.first { $0.matches(proposal) }
+    }
+
+    public func decisionReceipt(
+        for proposal: LocalProductConversationControlProposal
+    ) -> LocalProductConversationProposalDecisionReceipt? {
+        proposalDecisionReceipts.first { $0.matches(proposal) }
     }
 }
 
@@ -3574,6 +4769,7 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
     public let contextMode: LocalProductConversationContextMode?
     public let expectedExecutionBinding: LocalProductConversationExecutionBinding?
     public let trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement?
+    public let sessionCatalog: [LocalProductConversationSessionReference]
 
     public init(
         threadID: String,
@@ -3583,7 +4779,8 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
         reasoningEffort: String = "",
         contextMode: LocalProductConversationContextMode? = nil,
         expectedExecutionBinding: LocalProductConversationExecutionBinding? = nil,
-        trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement? = nil
+        trustBoundaryAcknowledgement: LocalProductTrustBoundaryAcknowledgement? = nil,
+        sessionCatalog: [LocalProductConversationSessionReference] = []
     ) {
         self.threadID = threadID
         self.content = content
@@ -3593,6 +4790,7 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
         self.contextMode = contextMode
         self.expectedExecutionBinding = expectedExecutionBinding
         self.trustBoundaryAcknowledgement = trustBoundaryAcknowledgement
+        self.sessionCatalog = sessionCatalog
     }
 
     enum CodingKeys: String, CodingKey {
@@ -3604,6 +4802,28 @@ public struct LocalProductChatMessageRequest: Encodable, Sendable {
         case contextMode = "context_mode"
         case expectedExecutionBinding = "expected_execution_binding"
         case trustBoundaryAcknowledgement = "trust_boundary_acknowledgement"
+        case sessionCatalog = "session_catalog"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(threadID, forKey: .threadID)
+        try values.encode(content, forKey: .content)
+        try values.encode(profileID, forKey: .profileID)
+        try values.encode(modelID, forKey: .modelID)
+        try values.encode(reasoningEffort, forKey: .reasoningEffort)
+        try values.encodeIfPresent(contextMode, forKey: .contextMode)
+        try values.encodeIfPresent(
+            expectedExecutionBinding,
+            forKey: .expectedExecutionBinding
+        )
+        try values.encodeIfPresent(
+            trustBoundaryAcknowledgement,
+            forKey: .trustBoundaryAcknowledgement
+        )
+        if !sessionCatalog.isEmpty {
+            try values.encode(sessionCatalog, forKey: .sessionCatalog)
+        }
     }
 }
 
@@ -3927,6 +5147,14 @@ public func localProductConversationModels(
                 displayName: "Big Pickle (OpenCode)",
                 reasoningEfforts: []
             ),
+        ]
+    case "loom-local":
+        return [
+            .init(
+                modelID: "qwen2.5-coder-1.5b-instruct-q4-k-m",
+                displayName: "Qwen 2.5 Coder 1.5B (Local)",
+                reasoningEfforts: []
+            )
         ]
     default:
         return []

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"loom-pi-rebuild/internal/controltool"
 )
 
 func TestCodexSegmentSessionReusesOneAppServerThreadAcrossResponses(t *testing.T) {
@@ -101,6 +103,21 @@ func TestCodexSegmentSessionReusesOneAppServerThreadAcrossResponses(t *testing.T
 	}
 }
 
+func TestCodexSegmentSessionAcceptsOfficialMCPToolProgressNotification(t *testing.T) {
+	stream := newCodexAppServerSessionFixture()
+	stream.emitMCPToolProgress = true
+	segment := openCodexSegmentSessionForTest(t, stream)
+	defer func() { _ = segment.Close(context.Background()) }()
+
+	result, err := segment.Respond(context.Background(), []byte("bounded tool turn"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "first reply" || result.Accounting == nil {
+		t.Fatalf("MCP progress response = %#v", result)
+	}
+}
+
 func TestCodexSegmentSessionRejectsExplicitThreadModelDrift(t *testing.T) {
 	session := newCodexAppServerSessionFixture()
 	session.modelDrift = true
@@ -165,6 +182,70 @@ func TestCodexNativeConversationAppServerArgumentsUseSupportedAppServerSurface(t
 			t.Fatalf("governed app-server arguments missing %q: %s", required, joined)
 		}
 	}
+}
+
+func TestCodexSegmentSessionExposesOnlyScopedLoomControlTools(t *testing.T) {
+	session := newCodexAppServerSessionFixture()
+	sessions := &codexContinuationSessionRunnerFixture{session: session}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	workspace := filepath.Join(root, "workspace")
+	privateRoot := filepath.Join(root, "private")
+	for _, directory := range []string{home, workspace, privateRoot} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepareCodexAuthFixture(t, home)
+	registry, err := controltool.NewBuiltinRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	segment, err := OpenCodexSegmentSession(
+		context.Background(),
+		CodexSegmentSessionConfig{
+			ExecutablePath: "/opt/loom/bin/codex", HomePath: home,
+			WorkspacePath: workspace, PrivateRoot: privateRoot,
+			ModelID: CodexModelID, SystemPrompt: "Loom governed conversation policy",
+			Timeout: time.Hour, MaxOutputBytes: 1 << 16, Sessions: sessions,
+			ControlRegistry: registry, ControlGateway: &controlMCPGatewayStub{},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = segment.Close(context.Background()) }()
+	joined := strings.Join(sessions.request.Arguments, "\n")
+	definitions := registry.Definitions()
+	enabledTools := make([]string, len(definitions))
+	for index, definition := range definitions {
+		enabledTools[index] = `"` + definition.MCPName + `"`
+	}
+	for _, required := range []string{
+		`mcp_servers.loom_control.url="http://127.0.0.1:`,
+		`mcp_servers.loom_control.bearer_token_env_var="LOOM_CONTROL_TURN_TOKEN"`,
+		`mcp_servers.loom_control.enabled_tools=[` + strings.Join(enabledTools, ",") + `]`,
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("control MCP argument missing %q: %s", required, joined)
+		}
+	}
+	for _, definition := range definitions {
+		required := `mcp_servers.loom_control.tools.` + definition.MCPName +
+			`.approval_mode="approve"`
+		if !strings.Contains(joined, required) {
+			t.Fatalf("control MCP approval missing %q: %s", required, joined)
+		}
+	}
+	for _, environment := range sessions.request.Environment {
+		if strings.HasPrefix(environment, harnessControlMCPTokenEnv+"=") {
+			if strings.Contains(joined, strings.TrimPrefix(environment, harnessControlMCPTokenEnv+"=")) {
+				t.Fatal("control token leaked into process arguments")
+			}
+			return
+		}
+	}
+	t.Fatal("scoped control token missing from Codex child environment")
 }
 
 func TestCodexSegmentSessionLifetimeDoesNotInheritOpeningResponseCancellation(t *testing.T) {

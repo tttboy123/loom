@@ -267,6 +267,7 @@ func run(
 	claudeExecutable := fs.String("claude-executable", "", "")
 	credentialImportSource := fs.String("credential-import-source", "", "")
 	localModelPrivateRoot := fs.String("local-model-private-root", "", "")
+	localModelRuntimeArchive := fs.String("local-model-runtime-archive", "", "")
 	localModelExecutable := fs.String("local-model-executable", "", "")
 	localModelPath := fs.String("local-model-path", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
@@ -286,6 +287,7 @@ func run(
 	localModelValues := 0
 	for _, value := range []string{
 		*localModelPrivateRoot,
+		*localModelRuntimeArchive,
 		*localModelExecutable,
 		*localModelPath,
 	} {
@@ -293,15 +295,16 @@ func run(
 			localModelValues++
 		}
 	}
-	if localModelValues != 0 && localModelValues != 3 {
+	if localModelValues != 0 && localModelValues != 4 {
 		return writeDaemonError(stderr, exitInvalidInput, "invalid input")
 	}
 	var localModelCatalog *piadapter.PiLocalModelCatalogConfig
-	if localModelValues == 3 {
+	if localModelValues == 4 {
 		localModelCatalog = &piadapter.PiLocalModelCatalogConfig{
-			PrivateRoot:    *localModelPrivateRoot,
-			ExecutablePath: *localModelExecutable,
-			ModelPath:      *localModelPath,
+			PrivateRoot:        *localModelPrivateRoot,
+			RuntimeArchivePath: *localModelRuntimeArchive,
+			ExecutablePath:     *localModelExecutable,
+			ModelPath:          *localModelPath,
 		}
 	}
 

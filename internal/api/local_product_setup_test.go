@@ -13,6 +13,8 @@ type setupAPIFixtureBackend struct {
 	snapshot      app.SetupSnapshot
 	session       app.BuilderSessionView
 	connect       app.ProviderConnectResult
+	claudeConnect app.ProviderConnectResult
+	claudeCancel  app.ProviderConnectResult
 	policy        app.ProviderAccountPolicyResult
 	policyCommand app.ProviderAccountPolicyCommand
 	editCommand   app.BuilderEditCommand
@@ -72,6 +74,18 @@ func (backend *setupAPIFixtureBackend) ConnectCodex(
 	return backend.connect, nil
 }
 
+func (backend *setupAPIFixtureBackend) ConnectClaudeCode(
+	context.Context,
+) (app.ProviderConnectResult, error) {
+	return backend.claudeConnect, nil
+}
+
+func (backend *setupAPIFixtureBackend) CancelClaudeCode(
+	context.Context,
+) (app.ProviderConnectResult, error) {
+	return backend.claudeCancel, nil
+}
+
 func (backend *setupAPIFixtureBackend) ConfigureProviderAccountPolicy(
 	_ context.Context,
 	command app.ProviderAccountPolicyCommand,
@@ -107,6 +121,34 @@ func TestLocalProductSetupAPIExposesStrictCodexConnectResult(t *testing.T) {
 	}
 	if !backend.closed {
 		t.Fatal("Close() did not propagate to the setup backend")
+	}
+}
+
+func TestLocalProductSetupAPIExposesStrictClaudeCodeConnectResult(t *testing.T) {
+	backend := &setupAPIFixtureBackend{claudeConnect: app.ProviderConnectResult{
+		ProviderID: "claude-code", AuthMode: "native_auth", Status: "started",
+	}}
+	service, err := NewLocalProductSetupAPI(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.ConnectClaudeCode(context.Background())
+	if err != nil || got != backend.claudeConnect {
+		t.Fatalf("ConnectClaudeCode() = %#v, %v", got, err)
+	}
+}
+
+func TestLocalProductSetupAPIExposesStrictClaudeCodeCancelResult(t *testing.T) {
+	backend := &setupAPIFixtureBackend{claudeCancel: app.ProviderConnectResult{
+		ProviderID: "claude-code", AuthMode: "native_auth", Status: "cancelled",
+	}}
+	service, err := NewLocalProductSetupAPI(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.CancelClaudeCode(context.Background())
+	if err != nil || got != backend.claudeCancel {
+		t.Fatalf("CancelClaudeCode() = %#v, %v", got, err)
 	}
 }
 

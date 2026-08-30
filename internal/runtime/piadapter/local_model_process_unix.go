@@ -22,6 +22,14 @@ func piLocalFileUID(info os.FileInfo) (uint32, bool) {
 	return stat.Uid, ok
 }
 
+func piLocalFileHasSingleLink(info os.FileInfo) bool {
+	if info == nil {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Nlink == 1
+}
+
 func configureLocalModelProcess(command *exec.Cmd) error {
 	return configureExecutionProcess(command)
 }

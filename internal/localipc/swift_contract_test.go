@@ -529,6 +529,12 @@ const swiftCodexConnectFixture = `{
   "status":"already_connected"
 }`
 
+const swiftClaudeCodeConnectFixture = `{
+  "provider_id":"claude-code",
+  "auth_mode":"native_auth",
+  "status":"started"
+}`
+
 const swiftDecisionFixture = `{
   "schema_version":1,
   "kind":"authorization",
@@ -1112,6 +1118,18 @@ func (handler *swiftFixtureHandler) Handle(
 		return Response{
 			OK:     true,
 			Result: json.RawMessage(swiftCodexConnectFixture),
+		}
+	case "claude_code_connect":
+		return Response{
+			OK:     true,
+			Result: json.RawMessage(swiftClaudeCodeConnectFixture),
+		}
+	case "claude_code_cancel":
+		return Response{
+			OK: true,
+			Result: json.RawMessage(
+				`{"provider_id":"claude-code","auth_mode":"native_auth","status":"cancelled"}`,
+			),
 		}
 	case "builder_start":
 		return Response{OK: true, Result: json.RawMessage(swiftBuilderFixture)}
@@ -2007,6 +2025,7 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 		MiniMaxMode   string `json:"minimax_auth_mode"`
 		RuntimeCount  int    `json:"runtime_count"`
 		ConnectStatus string `json:"connect_status"`
+		ClaudeStatus  string `json:"claude_status"`
 		DraftID       string `json:"draft_id"`
 		QuestionID    string `json:"question_id"`
 		CanConfirm    bool   `json:"can_confirm"`
@@ -2020,6 +2039,7 @@ func TestStrictSwiftClientReadsSetupAndStartsCandidateFromRealGoServer(
 		actual.MiniMaxMode != "brokered" ||
 		actual.RuntimeCount != 0 ||
 		actual.ConnectStatus != "already_connected" ||
+		actual.ClaudeStatus != "started" ||
 		actual.DraftID != "draft-swift-1" ||
 		actual.QuestionID != "team_name" ||
 		actual.CanConfirm {
@@ -2456,7 +2476,7 @@ func buildSwiftContractProbe(t *testing.T) string {
 		"--package-path",
 		packageRoot,
 		"-c",
-		"release",
+		"debug",
 		"--arch",
 		"arm64",
 		"--product",
@@ -2471,7 +2491,7 @@ func buildSwiftContractProbe(t *testing.T) string {
 		"--package-path",
 		packageRoot,
 		"-c",
-		"release",
+		"debug",
 		"--arch",
 		"arm64",
 		"--show-bin-path",
@@ -2660,6 +2680,7 @@ struct SetupContractProbe {
             let client = try LocalIPCClient(socketPath: arguments[2])
             let setup = try await client.setupSnapshot()
             let connection = try await client.connectCodex()
+            let claudeConnection = try await client.connectClaudeCode()
             let candidate = try await client.startBuilder()
             let firstVerification = try await client.verifyMiniMax(
                 reference: "credential-ref-1",
@@ -2675,6 +2696,7 @@ struct SetupContractProbe {
                 "minimax_auth_mode": setup.miniMax.authMode,
                 "runtime_count": setup.runtimes.count,
                 "connect_status": connection.status,
+                "claude_status": claudeConnection.status,
                 "draft_id": candidate.draftID,
                 "question_id": candidate.question.id,
                 "can_confirm": candidate.canConfirm,
@@ -2699,7 +2721,7 @@ struct SetupContractProbe {
 	probe := filepath.Join(buildRoot, "swift-setup-contract-probe")
 	command := exec.Command(
 		"/usr/bin/swiftc",
-		"-O",
+		"-Onone",
 		"-parse-as-library",
 		filepath.Join(sourceRoot, "LocalProductModels.swift"),
 		filepath.Join(sourceRoot, "LocalProductHandoffModels.swift"),

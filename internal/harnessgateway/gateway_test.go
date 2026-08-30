@@ -1244,6 +1244,77 @@ func TestGatewayEventsAreContentFreeAndMonotonic(t *testing.T) {
 	}
 }
 
+func TestGatewayResponseFailureEventUsesOnlyValidatedSafeClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		classifier ResponseFailureClassifier
+		want       ResponseFailure
+	}{
+		{
+			name: "exact safe failure",
+			classifier: func(error) (ResponseFailure, bool) {
+				return ResponseFailure{
+					Code: "provider_insufficient_balance", Stage: "provider_http",
+					HTTPStatus: 402, ProviderCode: "insufficient_balance",
+				}, true
+			},
+			want: ResponseFailure{
+				Code: "provider_insufficient_balance", Stage: "provider_http",
+				HTTPStatus: 402, ProviderCode: "insufficient_balance",
+			},
+		},
+		{
+			name: "invalid classification falls back",
+			classifier: func(error) (ResponseFailure, bool) {
+				return ResponseFailure{
+					Code: "provider_unavailable", Stage: "provider_http",
+					ProviderCode: "unsafe provider body\nleak", Retryable: true,
+				}, true
+			},
+			want: ResponseFailure{
+				Code: "provider_unavailable", Stage: "conversation_dispatch", Retryable: true,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newBackendFixture("backend.codex", 1)
+			backend.responseErr = errors.New("private backend failure")
+			events := &eventSinkFixture{}
+			registry := registryForSingleHarness(t, HarnessCodex, backend)
+			gateway, err := New(Config{
+				Registry: registry, Events: events, Now: fixedGatewayTime,
+				ClassifyFailure: test.classifier,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gateway.Close(context.Background())
+			binding := segmentBindingFixture(
+				HarnessCodex, "conversation-failure-event", "segment-1", "workspace-a",
+			)
+			if _, err := gateway.Respond(
+				context.Background(), binding, workspaceFixture("workspace-a"),
+				responseFixture(binding, "response-failure-event"),
+			); err == nil {
+				t.Fatal("failed response unexpectedly succeeded")
+			}
+			var terminal *Event
+			for _, event := range events.snapshot() {
+				if event.Type == EventResponseFailed {
+					candidate := event
+					terminal = &candidate
+					break
+				}
+			}
+			if terminal == nil || !terminal.Valid() || terminal.Failure != test.want ||
+				terminal.Content != "" || terminal.ProviderBody != "" {
+				t.Fatalf("terminal failure event = %#v, want %#v", terminal, test.want)
+			}
+		})
+	}
+}
+
 func TestGatewayConcurrentEventsReachSinkInSequenceOrder(t *testing.T) {
 	backend := newBackendFixture("backend.codex", 1)
 	events := newFirstEventBlockingSink()

@@ -100,6 +100,31 @@ func OpenCodeLoomProviderID(runtimeProviderID string) (string, bool) {
 	}
 }
 
+// OpenCodeBrokeredModelSupported is the single compatibility gate for a
+// Loom-owned Provider Account routed through OpenCode. MiniMax is intentionally
+// excluded: current OpenCode releases can complete HTTP 200 while dropping
+// MiniMax-M3 text and tool parts, so advertising that route would be a false
+// executable capability. MiniMax remains available through Loom Native.
+func OpenCodeBrokeredModelSupported(
+	loomProviderID string,
+	modelIdentity string,
+) bool {
+	if loomProviderID == "" || loomProviderID == "opencode" ||
+		loomProviderID == "minimax" || !ValidOpenCodeModelIdentity(modelIdentity) {
+		return false
+	}
+	runtimeProviderID, ok := OpenCodeRuntimeProviderID(loomProviderID)
+	if !ok {
+		return false
+	}
+	separator := strings.IndexByte(modelIdentity, '/')
+	if separator <= 0 || modelIdentity[:separator] != runtimeProviderID {
+		return false
+	}
+	_, credentialKnown := OpenCodeCredentialEnv(runtimeProviderID)
+	return credentialKnown
+}
+
 // OpenCodeModelIdentity maps a Loom Provider + Model pair to OpenCode's
 // "provider/model" identity.
 //

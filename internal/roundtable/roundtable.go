@@ -17,19 +17,46 @@ import (
 
 // Fact types written to the Roundtable Journal stream.
 const (
-	FactSessionCreated  = "RoundtableSessionCreated"
-	FactSeatAdded       = "RoundtableSeatAdded"
-	FactSeatRetired     = "RoundtableSeatRetired"
-	FactSeatRejoined    = "RoundtableSeatRejoined"
-	FactRoundOpened     = "RoundtableRoundOpened"
-	FactMessageProposed = "RoundtableMessageProposed"
-	FactMessageRelayed  = "RoundtableMessageRelayed"
-	FactMessageAck      = "RoundtableMessageAcknowledged"
-	FactMessageInserted = "RoundtableMessageInserted"
-	FactMessageDropped  = "RoundtableMessageDropped"
-	FactConcluded       = "RoundtableConcluded"
-	FactSessionExported = "RoundtableSessionExported"
-	FactSessionImported = "RoundtableSessionImported"
+	FactSessionCreated       = "RoundtableSessionCreated"
+	FactSeatAdded            = "RoundtableSeatAdded"
+	FactSeatRetired          = "RoundtableSeatRetired"
+	FactSeatRejoined         = "RoundtableSeatRejoined"
+	FactRoundOpened          = "RoundtableRoundOpened"
+	FactMessageProposed      = "RoundtableMessageProposed"
+	FactMessageRelayed       = "RoundtableMessageRelayed"
+	FactMessageAck           = "RoundtableMessageAcknowledged"
+	FactMessageInserted      = "RoundtableMessageInserted"
+	FactMessageDropped       = "RoundtableMessageDropped"
+	FactConcluded            = "RoundtableConcluded"
+	FactSessionExported      = "RoundtableSessionExported"
+	FactSessionImported      = "RoundtableSessionImported"
+	FactSeatAttemptStarted   = "RoundtableSeatAttemptStarted"
+	FactSeatAttemptSucceeded = "RoundtableSeatAttemptSucceeded"
+	FactSeatAttemptFailed    = "RoundtableSeatAttemptFailed"
+	FactSeatAttemptCancelled = "RoundtableSeatAttemptCancelled"
+	FactRoundPauseRequested  = "RoundtableRoundPauseRequested"
+	FactRoundSteered         = "RoundtableRoundSteered"
+	FactSeatRetryRequested   = "RoundtableSeatRetryRequested"
+	FactSeatSkipped          = "RoundtableSeatSkipped"
+	FactSeatReplaced         = "RoundtableSeatReplaced"
+	FactRoundDispatchFailed  = "RoundtableRoundDispatchFailed"
+)
+
+const (
+	SeatAttemptRunning   = "running"
+	SeatAttemptSucceeded = "succeeded"
+	SeatAttemptFailed    = "failed"
+	SeatAttemptCancelled = "cancelled"
+)
+
+const (
+	InterventionPauseRound           = "pause_round"
+	InterventionSteer                = "steer"
+	InterventionRetrySeat            = "retry_seat"
+	InterventionSkipSeat             = "skip_seat"
+	InterventionReplaceSeat          = "replace_seat"
+	InterventionCancelSeatAttempt    = "cancel_seat_attempt"
+	InterventionRoundDispatchFailure = "round_dispatch_failure"
 )
 
 // Message status lifecycle.
@@ -44,8 +71,11 @@ const (
 // Bounds.
 const (
 	MaxMessageBodyBytes  = 8 << 10 // 8 KiB per the product brief
+	MaxRoundPromptBytes  = 4096
 	MaxArtifactRefs      = 16
 	MaxSeats             = 16
+	MinAgentSeats        = 2
+	MaxAgentSeats        = 6
 	MaxRounds            = 256
 	MaxMessagesPerRound  = 1024
 	MaxSessionTitleBytes = 256
@@ -59,38 +89,47 @@ const (
 
 // Typed errors.
 var (
-	ErrInvalidRoundtableSession   = errors.New("invalid Roundtable session")
-	ErrInvalidRoundtableSeat      = errors.New("invalid Roundtable seat")
-	ErrInvalidRoundtableMessage   = errors.New("invalid Roundtable message")
-	ErrRoundtableSessionNotFound  = errors.New("Roundtable session not found")
-	ErrRoundtableSeatNotFound     = errors.New("Roundtable seat not found")
-	ErrRoundtableNotModerator     = errors.New("Roundtable seat is not the moderator")
-	ErrRoundtableSeatUnavailable  = errors.New("Roundtable seat unavailable")
-	ErrRoundtableAlreadyConcluded = errors.New("Roundtable session already concluded")
-	ErrRoundtableMessageNotFound  = errors.New("Roundtable message not found")
-	ErrRoundtableInvalidBody      = errors.New("Roundtable message body exceeds the bounded limit")
-	ErrRoundtableInvalidDigest    = errors.New("Roundtable digest is not a valid SHA-256")
-	ErrRoundtableDigestMismatch   = errors.New("Roundtable message digest mismatch")
-	ErrRoundtableConflict         = errors.New("Roundtable fact conflict")
-	ErrRoundtableRoundNotFound    = errors.New("Roundtable round not found")
-	ErrRoundtableTooManyMessages  = errors.New("Roundtable round has too many messages")
-	ErrRoundtableTooManySeats     = errors.New("Roundtable session has too many seats")
+	ErrInvalidRoundtableSession       = errors.New("invalid Roundtable session")
+	ErrInvalidRoundtableSeat          = errors.New("invalid Roundtable seat")
+	ErrInvalidRoundtableMessage       = errors.New("invalid Roundtable message")
+	ErrRoundtableSessionNotFound      = errors.New("Roundtable session not found")
+	ErrRoundtableSeatNotFound         = errors.New("Roundtable seat not found")
+	ErrRoundtableNotModerator         = errors.New("Roundtable seat is not the moderator")
+	ErrRoundtableSeatUnavailable      = errors.New("Roundtable seat unavailable")
+	ErrRoundtableAlreadyConcluded     = errors.New("Roundtable session already concluded")
+	ErrRoundtableMessageNotFound      = errors.New("Roundtable message not found")
+	ErrRoundtableInvalidBody          = errors.New("Roundtable message body exceeds the bounded limit")
+	ErrRoundtableInvalidDigest        = errors.New("Roundtable digest is not a valid SHA-256")
+	ErrRoundtableDigestMismatch       = errors.New("Roundtable message digest mismatch")
+	ErrRoundtableConflict             = errors.New("Roundtable fact conflict")
+	ErrRoundtableRoundNotFound        = errors.New("Roundtable round not found")
+	ErrRoundtableTooManyMessages      = errors.New("Roundtable round has too many messages")
+	ErrRoundtableTooManySeats         = errors.New("Roundtable session has too many seats")
+	ErrRoundtableAgentSeatCount       = errors.New("Roundtable requires two to six active Agent seats")
+	ErrInvalidRoundtableSeatBinding   = errors.New("invalid Roundtable frozen seat binding")
+	ErrInvalidRoundtableSeatAttempt   = errors.New("invalid Roundtable seat Attempt")
+	ErrRoundtableSeatAttemptConflict  = errors.New("Roundtable seat Attempt conflict")
+	ErrInvalidRoundtableIntervention  = errors.New("invalid Roundtable intervention")
+	ErrRoundtableInterventionConflict = errors.New("Roundtable intervention conflict")
+	ErrRoundtableInterventionRequired = errors.New("Roundtable requires user intervention before conclusion")
 )
 
 // Session is the moderator-hosted ledger identity.
 type Session struct {
-	ID            string    `json:"id"`
-	ModeratorSeat string    `json:"moderator_seat"`
-	Title         string    `json:"title"`
-	CreatedAt     time.Time `json:"created_at"`
-	Concluded     bool      `json:"concluded"`
+	ID            string          `json:"id"`
+	ModeratorSeat string          `json:"moderator_seat"`
+	Title         string          `json:"title"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Concluded     bool            `json:"concluded"`
+	Context       *SessionContext `json:"context,omitempty"`
 }
 
 // Seat is a participant identity.
 type Seat struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	Available   bool   `json:"available"`
+	ID          string             `json:"id"`
+	DisplayName string             `json:"display_name"`
+	Available   bool               `json:"available"`
+	Binding     *FrozenSeatBinding `json:"binding,omitempty"`
 }
 
 // Message is a bounded, digest-bound relayed unit.
@@ -110,19 +149,88 @@ type Message struct {
 
 // Round groups messages under one exchange.
 type Round struct {
-	ID           string    `json:"id"`
-	Sequence     int       `json:"sequence"`
-	MessageCount int       `json:"message_count"`
-	Messages     []Message `json:"messages"`
+	ID             string    `json:"id"`
+	Sequence       int       `json:"sequence"`
+	MessageCount   int       `json:"message_count"`
+	Messages       []Message `json:"messages"`
+	PauseRequested bool      `json:"pause_requested,omitempty"`
+}
+
+// SeatAttempt is the non-content execution projection for one Agent seat.
+// Model output is referenced by digest and encrypted payload identity only.
+type SeatAttempt struct {
+	AttemptID              string    `json:"attempt_id"`
+	RoundID                string    `json:"round_id"`
+	SeatID                 string    `json:"seat_id"`
+	AttemptNumber          int       `json:"attempt_number"`
+	ExecutionTeamID        string    `json:"execution_team_id"`
+	WorkItemID             string    `json:"work_item_id"`
+	RunID                  string    `json:"run_id"`
+	SegmentID              string    `json:"segment_id"`
+	ClaimGeneration        int64     `json:"claim_generation"`
+	RuntimeInstanceID      string    `json:"runtime_instance_id"`
+	AgentInstanceID        string    `json:"agent_instance_id"`
+	MembershipRevision     int       `json:"membership_revision"`
+	SeatBindingDigest      string    `json:"seat_binding_digest"`
+	ExecutionBindingDigest string    `json:"execution_binding_digest"`
+	ContextCapsuleDigest   string    `json:"context_capsule_digest"`
+	PayloadReference       string    `json:"payload_reference"`
+	Status                 string    `json:"status"`
+	OutputDigest           string    `json:"output_digest"`
+	IncidentID             string    `json:"incident_id"`
+	FailureCode            string    `json:"failure_code"`
+	FailureStage           string    `json:"failure_stage"`
+	Retryable              bool      `json:"retryable"`
+	StartedAt              time.Time `json:"started_at"`
+	CompletedAt            time.Time `json:"completed_at"`
+}
+
+// Intervention is a content-negative receipt for one governed control applied
+// to an open RoundTable round. ModeratorSeat is empty only for daemon-internal
+// Attempt cancellation.
+type Intervention struct {
+	ID                         string    `json:"id"`
+	Kind                       string    `json:"kind"`
+	RoundID                    string    `json:"round_id"`
+	ModeratorSeat              string    `json:"moderator_seat"`
+	SeatID                     string    `json:"seat_id,omitempty"`
+	AttemptID                  string    `json:"attempt_id,omitempty"`
+	InputID                    string    `json:"input_id,omitempty"`
+	ContentDigest              string    `json:"content_digest,omitempty"`
+	RequestedAttemptNumber     int       `json:"requested_attempt_number,omitempty"`
+	PreviousMembershipRevision int       `json:"previous_membership_revision,omitempty"`
+	MembershipRevision         int       `json:"membership_revision,omitempty"`
+	PreviousBindingDigest      string    `json:"previous_binding_digest,omitempty"`
+	SeatBindingDigest          string    `json:"seat_binding_digest,omitempty"`
+	IncidentID                 string    `json:"incident_id,omitempty"`
+	FailureCode                string    `json:"failure_code,omitempty"`
+	FailureStage               string    `json:"failure_stage,omitempty"`
+	Retryable                  bool      `json:"retryable,omitempty"`
+	RequestedAt                time.Time `json:"requested_at"`
+	Digest                     string    `json:"digest"`
+}
+
+// SeatDelivery is an ephemeral, bounded product projection of authorized
+// output. It is never part of the RoundTable Journal digest.
+type SeatDelivery struct {
+	AttemptID            string    `json:"attempt_id"`
+	SeatID               string    `json:"seat_id"`
+	Status               string    `json:"status"`
+	Body                 string    `json:"body"`
+	AgentInputCapability string    `json:"agent_input_capability,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // View is the rebuildable Roundtable session state.
 type View struct {
-	Session  Session            `json:"session"`
-	Seats    map[string]Seat    `json:"seats"`
-	Rounds   []Round            `json:"rounds"`
-	Messages map[string]Message `json:"messages"`
-	Digest   string             `json:"digest"`
+	Session       Session                 `json:"session"`
+	Seats         map[string]Seat         `json:"seats"`
+	Rounds        []Round                 `json:"rounds"`
+	Messages      map[string]Message      `json:"messages"`
+	Attempts      map[string]SeatAttempt  `json:"attempts,omitempty"`
+	Interventions map[string]Intervention `json:"interventions,omitempty"`
+	Deliveries    map[string]SeatDelivery `json:"deliveries,omitempty"`
+	Digest        string                  `json:"digest"`
 }
 
 // RoundsMessages returns the ordered messages of a round.
@@ -160,8 +268,10 @@ func roundByID(rounds []Round, roundID string) *Round {
 }
 
 func cloneView(view View) View {
+	view.Session.Context = cloneSessionContext(view.Session.Context)
 	seats := make(map[string]Seat, len(view.Seats))
 	for id, seat := range view.Seats {
+		seat.Binding = cloneFrozenSeatBindingPointer(seat.Binding)
 		seats[id] = seat
 	}
 	messages := make(map[string]Message, len(view.Messages))
@@ -175,6 +285,21 @@ func cloneView(view View) View {
 	}
 	view.Seats = seats
 	view.Messages = messages
+	attempts := make(map[string]SeatAttempt, len(view.Attempts))
+	for id, attempt := range view.Attempts {
+		attempts[id] = attempt
+	}
+	view.Attempts = attempts
+	interventions := make(map[string]Intervention, len(view.Interventions))
+	for id, intervention := range view.Interventions {
+		interventions[id] = intervention
+	}
+	view.Interventions = interventions
+	deliveries := make(map[string]SeatDelivery, len(view.Deliveries))
+	for id, delivery := range view.Deliveries {
+		deliveries[id] = delivery
+	}
+	view.Deliveries = deliveries
 	view.Rounds = rounds
 	return view
 }

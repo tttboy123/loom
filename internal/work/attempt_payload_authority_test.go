@@ -246,6 +246,49 @@ type attemptPayloadReconciliationStore struct {
 	readErr error
 }
 
+type cancellingAttemptPayloadReconciliationStore struct {
+	payloads map[attemptpayload.Binding]attemptpayload.Payload
+	cancel   context.CancelFunc
+	reads    int
+}
+
+func (*cancellingAttemptPayloadReconciliationStore) PutAttemptPayload(
+	context.Context,
+	attemptpayload.Payload,
+) error {
+	return errors.New("unexpected payload write")
+}
+
+func (store *cancellingAttemptPayloadReconciliationStore) ReadAttemptPayload(
+	_ context.Context,
+	binding attemptpayload.Binding,
+) (attemptpayload.Payload, error) {
+	payload, found := store.payloads[binding]
+	if !found {
+		return attemptpayload.Payload{}, attemptpayload.ErrPayloadNotFound
+	}
+	store.reads++
+	if store.reads == 1 {
+		store.cancel()
+	}
+	payload.Content = append([]byte(nil), payload.Content...)
+	return payload, nil
+}
+
+func (*cancellingAttemptPayloadReconciliationStore) ListPendingAttemptPayloads(
+	context.Context,
+	attemptpayload.Scope,
+) ([]attemptpayload.Payload, error) {
+	return nil, errors.New("unexpected pending payload list")
+}
+
+func (*cancellingAttemptPayloadReconciliationStore) MarkAttemptPayloadDelivered(
+	context.Context,
+	attemptpayload.Binding,
+) error {
+	return nil
+}
+
 func (*attemptPayloadReconciliationStore) PutAttemptPayload(
 	context.Context,
 	attemptpayload.Payload,
@@ -364,6 +407,76 @@ func TestAttemptPayloadAuthorityReconcilesDeliveredFactAfterRunTerminal(t *testi
 		report.Outcomes[0].Result != AttemptPayloadReconcileBlocked ||
 		report.Outcomes[0].ErrorCode != "attempt_payload_unavailable" {
 		t.Fatalf("isolated reconciliation failure = %#v err=%v", report, err)
+	}
+}
+
+func TestAttemptPayloadReconciliationValidatesOneFrozenAuthorityOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	journalStore := openAuthorityStore(t)
+	seedRuntime(t, journalStore, "runtime-a", "online", 1)
+	runAuthority := newAuthority(t, journalStore, &mutableClock{now: testNow}, 0x73)
+	input := assignment("work-reconcile-shared", "run-reconcile-shared")
+	input.ExecutionBinding = testFrozenExecutionBinding(
+		t, "profile.reconcile-shared", "deepseek", "deepseek.primary",
+		"deepseek-chat", "credential-ref-deepseek-primary", 4,
+	)
+	if _, _, err := runAuthority.CreateAndAssign(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := runAuthority.Claim(
+		ctx, claim("work-reconcile-shared", "run-reconcile-shared", "runtime-a"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err = runAuthority.Start(ctx, generationInput(run))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := NewAttemptPayloadAuthority(runAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := attemptPayloadAuthorityFixture(run, input.ExecutionBinding)
+	first := attemptPayloadBindingFixture(frozen)
+	second := first
+	second.PayloadID = "payload-journal-2"
+	second.CallID = "call-context-2"
+	second.Sequence = 2
+	second.ContentDigest = strings.Repeat("e", 64)
+	for _, binding := range []attemptpayload.Binding{first, second} {
+		if err := authority.Accept(ctx, frozen, binding); err != nil {
+			t.Fatal(err)
+		}
+		if err := authority.Deliver(
+			ctx, frozen, binding, attemptpayload.ProofProviderContinuation,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := runAuthority.CommitTerminal(ctx, RunTerminalInput{
+		RunGenerationInput: generationInput(run),
+		Status:             "cancelled",
+		Reason:             "operator_cancelled",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := &cancellingAttemptPayloadReconciliationStore{
+		payloads: map[attemptpayload.Binding]attemptpayload.Payload{
+			first:  {Binding: first, Status: attemptpayload.StatusDelivered},
+			second: {Binding: second, Status: attemptpayload.StatusDelivered},
+		},
+		cancel: cancel,
+	}
+	report, err := authority.ReconcileDelivered(ctx, store)
+	if err != nil || len(report.Outcomes) != 2 || store.reads != 2 {
+		t.Fatalf("shared-authority reconciliation = %#v reads=%d err=%v", report, store.reads, err)
+	}
+	for _, outcome := range report.Outcomes {
+		if outcome.Authority != frozen ||
+			outcome.Result != AttemptPayloadReconcileAlreadyDelivered {
+			t.Fatalf("shared-authority outcome = %#v", outcome)
+		}
 	}
 }
 

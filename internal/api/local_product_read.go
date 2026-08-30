@@ -22,6 +22,7 @@ const localProductSchemaVersion = 3
 const (
 	maxMissionExecutionObservers = 64
 	maxMissionTentativeRecords   = 64
+	maxMissionAttemptOutputBytes = 30 << 10
 )
 
 var (
@@ -32,15 +33,40 @@ var (
 )
 
 type LocalProductReadConfig struct {
-	Journal       *journal.Store
-	Projection    ViewSource
-	Now           func() time.Time
-	Decisions     MissionDecisionCommandSource
-	RuntimeHealth RuntimeObservationHealthSource
-	SideTasks     SideTaskSnapshotSource
-	Diagnostics   AgentAttemptDiagnosticSource
-	TestReports   GovernedTestReportSource
-	Chat          LocalProductChatSource
+	Journal        *journal.Store
+	Projection     ViewSource
+	Now            func() time.Time
+	Decisions      MissionDecisionCommandSource
+	RuntimeHealth  RuntimeObservationHealthSource
+	SideTasks      SideTaskSnapshotSource
+	Diagnostics    AgentAttemptDiagnosticSource
+	TestReports    GovernedTestReportSource
+	Chat           LocalProductChatSource
+	MissionOutputs MissionAttemptOutputSource
+}
+
+type MissionAttemptOutputRequest struct {
+	TeamInstanceID string
+	LogicalNodeID  string
+	AttemptNumber  int
+	WorkItemID     string
+	RunID          string
+	MaximumBytes   int
+}
+
+type MissionAttemptOutput struct {
+	SourceID      string
+	Sequence      int64
+	ContentDigest string
+	Text          string
+	OccurredAt    time.Time
+}
+
+type MissionAttemptOutputSource interface {
+	ReadMissionAttemptOutputs(
+		context.Context,
+		MissionAttemptOutputRequest,
+	) ([]MissionAttemptOutput, error)
 }
 
 type LocalProductChatSource interface {
@@ -50,14 +76,15 @@ type LocalProductChatSource interface {
 }
 
 type LocalProductReadService struct {
-	journal       *journal.Store
-	projection    ViewSource
-	now           func() time.Time
-	decisions     MissionDecisionCommandSource
-	runtimeHealth RuntimeObservationHealthSource
-	sideTasks     SideTaskSnapshotSource
-	diagnostics   AgentAttemptDiagnosticSource
-	testReports   GovernedTestReportSource
+	journal        *journal.Store
+	projection     ViewSource
+	now            func() time.Time
+	decisions      MissionDecisionCommandSource
+	runtimeHealth  RuntimeObservationHealthSource
+	sideTasks      SideTaskSnapshotSource
+	diagnostics    AgentAttemptDiagnosticSource
+	testReports    GovernedTestReportSource
+	missionOutputs MissionAttemptOutputSource
 
 	mu                    sync.Mutex
 	lastView              *projection.GlobalReadView
@@ -112,6 +139,7 @@ func NewLocalProductReadService(
 		diagnostics:        config.Diagnostics,
 		testReports:        config.TestReports,
 		chat:               config.Chat,
+		missionOutputs:     config.MissionOutputs,
 		executionObservers: make(map[string]*localProductMissionObserver),
 		tentativeRecords:   make(map[string][]LocalProductTimelineRecord),
 		tentativeGaps:      make(map[string]*LocalProductStreamGap),
@@ -158,6 +186,21 @@ func (service *LocalProductReadService) SetSideTaskSnapshotSource(source SideTas
 		return ErrInvalidLocalProductRequest
 	}
 	service.sideTasks = source
+	return nil
+}
+
+func (service *LocalProductReadService) SetMissionAttemptOutputSource(
+	source MissionAttemptOutputSource,
+) error {
+	if service == nil || source == nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.executionMu.Lock()
+	defer service.executionMu.Unlock()
+	if service.missionOutputs != nil {
+		return ErrInvalidLocalProductRequest
+	}
+	service.missionOutputs = source
 	return nil
 }
 
@@ -1082,10 +1125,6 @@ func (service *LocalProductReadService) mergeMissionExecutionTimeline(
 	if service == nil || result == nil || limit < 1 {
 		return
 	}
-	if terminalLocalProductTeamStatus(result.Board.Status) {
-		service.clearMissionExecutionState(result.TeamInstanceID)
-		return
-	}
 	service.executionMu.Lock()
 	records := append(
 		[]LocalProductTimelineRecord(nil),
@@ -1116,6 +1155,98 @@ func (service *LocalProductReadService) mergeMissionExecutionTimeline(
 	if result.Gap == nil && gap != nil {
 		result.Gap = gap
 	}
+}
+
+func (service *LocalProductReadService) mergeMissionAttemptOutputs(
+	ctx context.Context,
+	result *LocalProductTimelinePage,
+	limit int,
+) {
+	if service == nil || ctx == nil || result == nil || limit < 1 {
+		return
+	}
+	service.executionMu.Lock()
+	source := service.missionOutputs
+	service.executionMu.Unlock()
+	if source == nil {
+		return
+	}
+	for nodeIndex := range result.Board.Nodes {
+		node := &result.Board.Nodes[nodeIndex]
+		if node.CurrentAttempt <= 0 || node.RunID == "" || node.WorkItemID == "" ||
+			node.Status != "succeeded" {
+			continue
+		}
+		evidenceIndex := -1
+		for index := range result.Records {
+			record := result.Records[index]
+			if record.LogicalNodeID == node.LogicalNodeID &&
+				record.AttemptNumber == node.CurrentAttempt &&
+				record.Kind == "evidence_available" && record.Authority == "journal" {
+				evidenceIndex = index
+				break
+			}
+		}
+		outputs, err := source.ReadMissionAttemptOutputs(ctx, MissionAttemptOutputRequest{
+			TeamInstanceID: result.TeamInstanceID,
+			LogicalNodeID:  node.LogicalNodeID,
+			AttemptNumber:  node.CurrentAttempt,
+			WorkItemID:     node.WorkItemID,
+			RunID:          node.RunID,
+			MaximumBytes:   maxMissionAttemptOutputBytes,
+		})
+		if err != nil || len(outputs) == 0 {
+			continue
+		}
+		sort.Slice(outputs, func(left, right int) bool {
+			return outputs[left].Sequence < outputs[right].Sequence
+		})
+		seen := make(map[string]struct{}, len(outputs))
+		var text strings.Builder
+		valid := true
+		for _, output := range outputs {
+			if !validMissionAttemptOutput(output) {
+				valid = false
+				break
+			}
+			identity := output.SourceID + "\x00" + output.ContentDigest
+			if _, exists := seen[identity]; exists {
+				valid = false
+				break
+			}
+			seen[identity] = struct{}{}
+			text.WriteString(output.Text)
+		}
+		if !valid || text.Len() == 0 || text.Len() > maxMissionAttemptOutputBytes {
+			continue
+		}
+		finalText := text.String()
+		finalDigest := sha256.Sum256([]byte(finalText))
+		node.FinalOutputAvailable = true
+		node.FinalOutputText = finalText
+		node.FinalOutputDigest = hex.EncodeToString(finalDigest[:])
+		if evidenceIndex < 0 {
+			continue
+		}
+		result.Records[evidenceIndex].Payload.Status = node.Status
+		result.Records[evidenceIndex].Payload.TextDelta = finalText
+		filtered := result.Records[:0]
+		for _, record := range result.Records {
+			if record.LogicalNodeID == node.LogicalNodeID &&
+				record.AttemptNumber == node.CurrentAttempt &&
+				record.Kind == "node_output_delta" {
+				continue
+			}
+			filtered = append(filtered, record)
+		}
+		result.Records = filtered
+	}
+}
+
+func validMissionAttemptOutput(output MissionAttemptOutput) bool {
+	return validTimelineID(output.SourceID) && output.Sequence > 0 &&
+		validDigest(output.ContentDigest) && validTentativeDelta(output.Text) &&
+		!output.OccurredAt.IsZero() && output.OccurredAt.Location() == time.UTC
 }
 
 func terminalLocalProductTeamStatus(status string) bool {
@@ -1191,6 +1322,10 @@ func (service *LocalProductReadService) ReadLocalProductTimeline(
 		service.projection.GlobalReadView(),
 	)
 	service.mergeMissionExecutionTimeline(&result, request.Limit)
+	service.mergeMissionAttemptOutputs(ctx, &result, request.Limit)
+	if terminalLocalProductTeamStatus(result.Board.Status) {
+		service.clearMissionExecutionState(result.TeamInstanceID)
+	}
 	if readErr != nil {
 		return result, readErr
 	}

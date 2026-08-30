@@ -21,6 +21,8 @@ const (
 	chatResponseDeadline     = chatRequestDeadline + 2*time.Second
 	agentRecoveryDeadline    = 50 * time.Second
 	agentRecoveryResponse    = agentRecoveryDeadline + 2*time.Second
+	roundtableSteerDeadline  = 125 * time.Second
+	roundtableSteerResponse  = roundtableSteerDeadline + 2*time.Second
 	maxConnections           = 16
 )
 
@@ -322,6 +324,9 @@ func requestDeadline(method string) time.Duration {
 	if method == "mission_execution" {
 		return missionRequestDeadline
 	}
+	if method == "roundtable_steer_seat" {
+		return roundtableSteerDeadline
+	}
 	if usesExtendedRequestDeadline(method) {
 		return extendedRequestDeadline
 	}
@@ -337,6 +342,9 @@ func responseDeadline(method string) time.Duration {
 	}
 	if method == "mission_execution" {
 		return missionResponseDeadline
+	}
+	if method == "roundtable_steer_seat" {
+		return roundtableSteerResponse
 	}
 	if usesExtendedRequestDeadline(method) {
 		return extendedResponseDeadline

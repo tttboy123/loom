@@ -2,32 +2,34 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"syscall"
 	"testing"
 	"time"
 )
 
-type codexStatusFixtureRunner struct {
-	result  CodexStatusProcessResult
+type codexAuthProbeFixtureRunner struct {
+	result  CodexNativeAuthProbeResult
 	err     error
-	request CodexStatusProcessRequest
+	request CodexNativeAuthProbeRequest
+	calls   int
 }
 
-func (runner *codexStatusFixtureRunner) RunCodexStatus(
+func (runner *codexAuthProbeFixtureRunner) ProbeCodexNativeAuth(
 	_ context.Context,
-	request CodexStatusProcessRequest,
-) (CodexStatusProcessResult, error) {
+	request CodexNativeAuthProbeRequest,
+) (CodexNativeAuthProbeResult, error) {
+	runner.calls++
 	runner.request = request
 	return runner.result, runner.err
 }
 
-func TestCodexNativeAuthObserverUsesExactStatusCommandAndClosedMapping(
+func TestCodexNativeAuthObserverUsesActiveRefreshProbeAndClosedMapping(
 	t *testing.T,
 ) {
 	root := t.TempDir()
@@ -35,10 +37,10 @@ func TestCodexNativeAuthObserverUsesExactStatusCommandAndClosedMapping(
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := &codexStatusFixtureRunner{
-		result: CodexStatusProcessResult{
-			Stdout:   []byte("Logged in using ChatGPT\n"),
-			ExitCode: 0,
+	runner := &codexAuthProbeFixtureRunner{
+		result: CodexNativeAuthProbeResult{
+			Authenticated:      true,
+			RequiresOpenAIAuth: true,
 		},
 	}
 	observer, err := NewCodexNativeAuthObserver(CodexNativeAuthConfig{
@@ -60,14 +62,12 @@ func TestCodexNativeAuthObserverUsesExactStatusCommandAndClosedMapping(
 		t.Fatalf("Observe() = %#v", result)
 	}
 	if runner.request.ExecutablePath != executable ||
-		!reflect.DeepEqual(runner.request.Arguments, []string{"login", "status"}) ||
-		len(runner.request.Environment) != 0 ||
 		runner.request.MaxOutputBytes != 1024 {
 		t.Fatalf("request = %#v", runner.request)
 	}
 }
 
-func TestCodexNativeAuthObserverAcceptsExactStatusFromOneOutputChannel(
+func TestCodexNativeAuthObserverMapsClosedActiveProbeResults(
 	t *testing.T,
 ) {
 	root := t.TempDir()
@@ -77,57 +77,37 @@ func TestCodexNativeAuthObserverAcceptsExactStatusFromOneOutputChannel(
 	}
 	tests := []struct {
 		name   string
-		result CodexStatusProcessResult
+		result CodexNativeAuthProbeResult
 		status CodexNativeAuthStatus
 		reason CodexNativeAuthReason
 	}{
 		{
-			name: "codex 0.144.1 stderr success",
-			result: CodexStatusProcessResult{
-				Stderr:   []byte("Logged in using ChatGPT\n"),
-				ExitCode: 0,
+			name: "non OpenAI authenticated account",
+			result: CodexNativeAuthProbeResult{
+				Authenticated: true,
 			},
-			status: CodexNativeAuthAvailable,
-			reason: CodexNativeAuthReasonNone,
+			status: CodexNativeAuthUnsupported,
+			reason: CodexNativeAuthReasonUnknownOutput,
 		},
 		{
-			name: "stderr not logged in",
-			result: CodexStatusProcessResult{
-				Stderr:   []byte("Not logged in\n"),
-				ExitCode: 1,
+			name: "refresh requires login",
+			result: CodexNativeAuthProbeResult{
+				RequiresOpenAIAuth: true,
 			},
 			status: CodexNativeAuthNotLoggedIn,
 			reason: CodexNativeAuthReasonNotLoggedIn,
 		},
 		{
-			name: "both channels are ambiguous",
-			result: CodexStatusProcessResult{
-				Stdout:   []byte("Logged in using ChatGPT\n"),
-				Stderr:   []byte("Logged in using ChatGPT\n"),
-				ExitCode: 0,
+			name: "authenticated OpenAI account",
+			result: CodexNativeAuthProbeResult{
+				Authenticated: true, RequiresOpenAIAuth: true,
 			},
-			status: CodexNativeAuthUnsupported,
-			reason: CodexNativeAuthReasonUnknownOutput,
+			status: CodexNativeAuthAvailable,
+			reason: CodexNativeAuthReasonNone,
 		},
 		{
-			name: "stdout multiline is ambiguous",
-			result: CodexStatusProcessResult{
-				Stdout: []byte(
-					"Logged in using ChatGPT\nunreviewed diagnostic\n",
-				),
-				ExitCode: 0,
-			},
-			status: CodexNativeAuthUnsupported,
-			reason: CodexNativeAuthReasonUnknownOutput,
-		},
-		{
-			name: "stderr multiline is ambiguous",
-			result: CodexStatusProcessResult{
-				Stderr: []byte(
-					"Logged in using ChatGPT\nunreviewed diagnostic\n",
-				),
-				ExitCode: 0,
-			},
+			name:   "missing account result",
+			result: CodexNativeAuthProbeResult{},
 			status: CodexNativeAuthUnsupported,
 			reason: CodexNativeAuthReasonUnknownOutput,
 		},
@@ -138,7 +118,7 @@ func TestCodexNativeAuthObserverAcceptsExactStatusFromOneOutputChannel(
 				ExecutablePath: executable,
 				Timeout:        5 * time.Second,
 				MaxOutputBytes: 1024,
-				Runner: &codexStatusFixtureRunner{
+				Runner: &codexAuthProbeFixtureRunner{
 					result: test.result,
 				},
 			})
@@ -165,41 +145,19 @@ func TestCodexNativeAuthObserverRejectsUnknownOutputAndTimeout(t *testing.T) {
 	}
 	tests := []struct {
 		name   string
-		runner *codexStatusFixtureRunner
+		runner *codexAuthProbeFixtureRunner
 		status CodexNativeAuthStatus
 		reason CodexNativeAuthReason
 	}{
 		{
-			name: "unknown output",
-			runner: &codexStatusFixtureRunner{result: CodexStatusProcessResult{
-				Stdout:   []byte("unreviewed output\n"),
-				ExitCode: 0,
-			}},
-			status: CodexNativeAuthUnsupported,
-			reason: CodexNativeAuthReasonUnknownOutput,
-		},
-		{
-			name: "leading whitespace is not an exact line",
-			runner: &codexStatusFixtureRunner{result: CodexStatusProcessResult{
-				Stdout:   []byte(" Logged in using ChatGPT\n"),
-				ExitCode: 0,
-			}},
-			status: CodexNativeAuthUnsupported,
-			reason: CodexNativeAuthReasonUnknownOutput,
-		},
-		{
-			name: "stdout plus stderr diagnostic is ambiguous",
-			runner: &codexStatusFixtureRunner{result: CodexStatusProcessResult{
-				Stdout:   []byte("Logged in using ChatGPT\n"),
-				Stderr:   []byte("unreviewed diagnostic\n"),
-				ExitCode: 0,
-			}},
+			name:   "unknown result",
+			runner: &codexAuthProbeFixtureRunner{result: CodexNativeAuthProbeResult{}},
 			status: CodexNativeAuthUnsupported,
 			reason: CodexNativeAuthReasonUnknownOutput,
 		},
 		{
 			name: "timeout",
-			runner: &codexStatusFixtureRunner{
+			runner: &codexAuthProbeFixtureRunner{
 				err: context.DeadlineExceeded,
 			},
 			status: CodexNativeAuthUnavailable,
@@ -228,6 +186,42 @@ func TestCodexNativeAuthObserverRejectsUnknownOutputAndTimeout(t *testing.T) {
 				t.Fatalf("raw output escaped = %q", result.RawOutput)
 			}
 		})
+	}
+}
+
+func TestCodexNativeAuthObserverCachesAndExplicitlyInvalidatesClosedResult(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &codexAuthProbeFixtureRunner{result: CodexNativeAuthProbeResult{
+		Authenticated: true, RequiresOpenAIAuth: true,
+	}}
+	observer, err := NewCodexNativeAuthObserver(CodexNativeAuthConfig{
+		ExecutablePath: executable, Timeout: 5 * time.Second,
+		MaxOutputBytes: 1024, Runner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for count := 0; count < 2; count++ {
+		result, err := observer.Observe(context.Background())
+		if err != nil || result.Status != CodexNativeAuthAvailable {
+			t.Fatalf("cached observation %d = %#v, %v", count, result, err)
+		}
+	}
+	if runner.calls != 1 {
+		t.Fatalf("probe calls before invalidation = %d", runner.calls)
+	}
+	observer.Invalidate()
+	if _, err := observer.Observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("probe calls after invalidation = %d", runner.calls)
 	}
 }
 
@@ -265,7 +259,9 @@ func TestSystemCodexLoginControllerStartsExactSingletonAndJoinsOnClose(
 	) {
 		t.Fatalf("concurrent Start() error = %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// Process startup can contend with the repository's Swift contract build.
+	// Close below still has to join the already-started process immediately.
+	deadline := time.Now().Add(15 * time.Second)
 	pid := 0
 	var pidErr error
 	for {
@@ -350,7 +346,7 @@ func TestCodexNativeAuthObserverRejectsExecutableIdentityChange(t *testing.T) {
 	if err := os.WriteFile(executable, []byte("first"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := &codexStatusFixtureRunner{
+	runner := &codexAuthProbeFixtureRunner{
 		err: ErrCodexExecutableIdentityChanged,
 	}
 	observer, err := NewCodexNativeAuthObserver(CodexNativeAuthConfig{
@@ -373,7 +369,101 @@ func TestCodexNativeAuthObserverRejectsExecutableIdentityChange(t *testing.T) {
 	}
 }
 
-func TestSystemCodexStatusRunnerBoundsOutputAndCancelsProcessGroup(
+func TestSystemCodexNativeAuthProbeRunnerUsesRefreshProtocolAndReturnsClosedState(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	argumentsPath := filepath.Join(root, "arguments")
+	initializePath := filepath.Join(root, "initialize")
+	accountPath := filepath.Join(root, "account")
+	script := fmt.Sprintf(
+		"#!/bin/sh\nprintf '%%s' \"$*\" > %q\nIFS= read -r initialize\nprintf '%%s' \"$initialize\" > %q\nprintf '%%s\\n' '{\"id\":\"loom-auth-initialize-v1\",\"result\":{\"userAgent\":\"codex-cli 0.144.1\",\"codexHome\":\"/private/home\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\"}}'\nIFS= read -r account\nprintf '%%s' \"$account\" > %q\nprintf '%%s\\n' '{\"id\":\"loom-auth-account-read-v1\",\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"private@example.invalid\",\"planType\":\"plus\"},\"requiresOpenaiAuth\":false}}'\n",
+		argumentsPath, initializePath, accountPath,
+	)
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSystemCodexNativeAuthProbeRunner().ProbeCodexNativeAuth(
+		context.Background(),
+		CodexNativeAuthProbeRequest{
+			ExecutablePath: executable, MaxOutputBytes: 8 << 10,
+		},
+	)
+	if err != nil || !result.Authenticated || result.RequiresOpenAIAuth {
+		t.Fatalf("probe result = %#v, error = %v", result, err)
+	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil || string(arguments) != "-c mcp_servers={} app-server --stdio" {
+		t.Fatalf("arguments = %q, error = %v", arguments, err)
+	}
+	initialize, err := os.ReadFile(initializePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initializeRequest struct {
+		ID     string `json:"id"`
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(initialize, &initializeRequest) != nil ||
+		initializeRequest.ID != codexAuthProbeInitializeID ||
+		initializeRequest.Method != "initialize" {
+		t.Fatalf("initialize request = %s", initialize)
+	}
+	account, err := os.ReadFile(accountPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accountRequest struct {
+		ID     string `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			RefreshToken bool `json:"refreshToken"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(account, &accountRequest) != nil ||
+		accountRequest.ID != codexAuthProbeAccountID ||
+		accountRequest.Method != "account/read" || !accountRequest.Params.RefreshToken {
+		t.Fatalf("account request = %s", account)
+	}
+}
+
+func TestLiveSystemCodexNativeAuthProbeRunner(t *testing.T) {
+	executable := os.Getenv("LOOM_CODEX_AUTH_PROBE_EXECUTABLE")
+	expected := os.Getenv("LOOM_CODEX_AUTH_PROBE_EXPECTED")
+	if executable == "" || expected == "" {
+		t.Skip("live Codex auth probe requires executable and expected status")
+	}
+	resolved, err := ResolveCodexNativeExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result, err := NewSystemCodexNativeAuthProbeRunner().ProbeCodexNativeAuth(
+		ctx,
+		CodexNativeAuthProbeRequest{
+			ExecutablePath: resolved, MaxOutputBytes: 64 << 10,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch expected {
+	case "available":
+		if !result.Authenticated || !result.RequiresOpenAIAuth {
+			t.Fatalf("auth probe = %#v", result)
+		}
+	case "not_logged_in":
+		if result.Authenticated || !result.RequiresOpenAIAuth {
+			t.Fatalf("auth probe = %#v", result)
+		}
+	default:
+		t.Fatalf("invalid expected status %q", expected)
+	}
+}
+
+func TestSystemCodexNativeAuthProbeRunnerBoundsOutputAndCancelsProcessGroup(
 	t *testing.T,
 ) {
 	root := t.TempDir()
@@ -385,23 +475,16 @@ func TestSystemCodexStatusRunnerBoundsOutputAndCancelsProcessGroup(
 	); err != nil {
 		t.Fatal(err)
 	}
-	runner := NewSystemCodexStatusRunner()
-	outputResult, err := runner.RunCodexStatus(
+	runner := NewSystemCodexNativeAuthProbeRunner()
+	_, err := runner.ProbeCodexNativeAuth(
 		context.Background(),
-		CodexStatusProcessRequest{
+		CodexNativeAuthProbeRequest{
 			ExecutablePath: outputExecutable,
-			Arguments:      []string{"login", "status"},
-			Environment:    []string{},
 			MaxOutputBytes: 64,
 		},
 	)
-	if !errors.Is(err, errCodexStatusOutputLimit) {
-		t.Fatalf(
-			"output limit error = %v, stdout bytes = %d, exit = %d",
-			err,
-			len(outputResult.Stdout),
-			outputResult.ExitCode,
-		)
+	if !errors.Is(err, errCodexAuthProbeOutputLimit) {
+		t.Fatalf("output limit error = %v", err)
 	}
 
 	pidFile := filepath.Join(root, "child.pid")
@@ -419,12 +502,10 @@ func TestSystemCodexStatusRunnerBoundsOutputAndCancelsProcessGroup(
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
 	go func() {
-		_, runErr := runner.RunCodexStatus(
+		_, runErr := runner.ProbeCodexNativeAuth(
 			ctx,
-			CodexStatusProcessRequest{
+			CodexNativeAuthProbeRequest{
 				ExecutablePath: cancelExecutable,
-				Arguments:      []string{"login", "status"},
-				Environment:    []string{},
 				MaxOutputBytes: 1024,
 			},
 		)
@@ -473,14 +554,14 @@ func TestSystemCodexStatusRunnerBoundsOutputAndCancelsProcessGroup(
 	}
 }
 
-func TestSystemCodexStatusRunnerRevalidatesExecutableIdentityAfterRun(
+func TestSystemCodexNativeAuthProbeRunnerRevalidatesExecutableIdentityAfterRun(
 	t *testing.T,
 ) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "codex")
 	marker := filepath.Join(root, "started")
 	script := fmt.Sprintf(
-		"#!/bin/sh\n: > %q\n/bin/sleep 0.3\nprintf 'Logged in using ChatGPT\\n'\n",
+		"#!/bin/sh\nIFS= read -r initialize\n: > %q\n/bin/sleep 0.3\nprintf '%%s\\n' '{\"id\":\"loom-auth-initialize-v1\",\"result\":{\"userAgent\":\"codex-cli 0.144.1\",\"codexHome\":\"/private/home\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\"}}'\nIFS= read -r account\nprintf '%%s\\n' '{\"id\":\"loom-auth-account-read-v1\",\"result\":{\"account\":null,\"requiresOpenaiAuth\":true}}'\n",
 		marker,
 	)
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
@@ -509,12 +590,10 @@ func TestSystemCodexStatusRunnerRevalidatesExecutableIdentityAfterRun(
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
-	_, err := NewSystemCodexStatusRunner().RunCodexStatus(
+	_, err := NewSystemCodexNativeAuthProbeRunner().ProbeCodexNativeAuth(
 		context.Background(),
-		CodexStatusProcessRequest{
+		CodexNativeAuthProbeRequest{
 			ExecutablePath: executable,
-			Arguments:      []string{"login", "status"},
-			Environment:    []string{},
 			MaxOutputBytes: 1024,
 		},
 	)

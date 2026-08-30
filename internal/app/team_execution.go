@@ -665,6 +665,11 @@ func restartTeamExecutionFromTerminal(
 		case "succeeded", "failed", "cancelled", "degraded", "blocked",
 			"human_required", "ready_for_review":
 			continue
+		case "pending":
+			if node.CurrentAttempt != 0 || len(node.Attempts) != 0 {
+				return false
+			}
+			continue
 		case "running", "awaiting_recovery":
 			attemptIndex := -1
 			for index := range node.Attempts {

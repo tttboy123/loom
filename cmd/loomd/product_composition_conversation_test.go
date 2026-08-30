@@ -9,12 +9,14 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,7 +224,7 @@ func TestCOMP2CProductionConversationCompositionKeepsPiAndOpenCodeRespondersDist
 	root := t.TempDir()
 	executablePath := filepath.Join(root, "opencode")
 	if err := os.WriteFile(executablePath, []byte(`#!/bin/sh
-printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-COMPOSITION-OK"}}' '{"type":"step_finish"}'
+printf '%s\n' '{"type":"tool_use","part":{"type":"tool","tool":"StructuredOutput","state":{"status":"completed","input":{"response":"OPENCODE-COMPOSITION-OK","tool_name":"none","tool_arguments":{}}}}}' '{"type":"step_finish","part":{"type":"step-finish"}}'
 `), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +263,43 @@ printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-COMPOSITION
 	last := thread.Messages[len(thread.Messages)-1]
 	if last.Role != "loom" || last.Content != "OPENCODE-COMPOSITION-OK" || !last.Tentative {
 		t.Fatalf("last message = %#v attempts=%#v diagnostics=%#v", last, thread.Attempts, diagnostics.records)
+	}
+}
+
+func TestPhase7ProductionConversationBindsMetadataGatewayExactlyOnce(t *testing.T) {
+	root := t.TempDir()
+	diagnostics := &productConversationCompositionDiagnosticFixture{
+		now: time.Date(2026, 8, 28, 14, 0, 0, 0, time.UTC),
+	}
+	sources := productConversationControlMetadataSources{
+		Read: productConversationControlReadFixture{},
+	}
+	routes, err := newProductConversationConstructionFactory(
+		filepath.Join(root, "loom.db"),
+		productSetupRuntimeConfig{
+			CredentialLeases:      &profileConversationLeaseRecorder{},
+			ConversationResponder: &productPiConversationResponder{},
+		},
+		projection.New(nil), nil, diagnostics, sources,
+	)(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := routes.close(); closeErr != nil {
+			t.Errorf("close conversation routes: %v", closeErr)
+		}
+	})
+	chat, ok := routes.route.(*api.LocalProductChatAPI)
+	if !ok {
+		t.Fatalf("production Conversation route type = %T", routes.route)
+	}
+	second, err := newProductConversationControlMetadataGateway(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.SetControlMetadataGateway(second); !errors.Is(err, api.ErrInvalidLocalProductChatRequest) {
+		t.Fatalf("second metadata Gateway bind err=%v", err)
 	}
 }
 
@@ -397,7 +436,7 @@ while IFS= read -r line; do
       turn=$((turn + 1))
       printf '{"id":"loom-turn-start-%s","result":{"turn":{"id":"turn-%s","status":"inProgress"}}}\n' "$turn" "$turn"
       printf '{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-production-codex","turnId":"turn-%s","tokenUsage":{"last":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":2}}}}\n' "$turn"
-      printf '{"method":"item/completed","params":{"threadId":"thread-production-codex","turnId":"turn-%s","item":{"type":"agentMessage","text":"CODEX-GATEWAY-OK"}}}\n' "$turn"
+      printf '{"method":"item/completed","params":{"threadId":"thread-production-codex","turnId":"turn-%s","item":{"type":"agentMessage","text":"{\\\"response\\\":\\\"CODEX-GATEWAY-OK\\\",\\\"tool_name\\\":\\\"none\\\",\\\"tool_arguments_json\\\":\\\"{}\\\"}"}}}\n' "$turn"
       printf '{"method":"turn/completed","params":{"threadId":"thread-production-codex","turn":{"id":"turn-%s","status":"completed"}}}\n' "$turn"
       ;;
   esac
@@ -426,7 +465,7 @@ done
 		root := t.TempDir()
 		executablePath := filepath.Join(root, "opencode")
 		if err := os.WriteFile(executablePath, []byte(`#!/bin/sh
-printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-GATEWAY-OK"}}' '{"type":"step_finish"}'
+printf '%s\n' '{"type":"tool_use","part":{"type":"tool","tool":"StructuredOutput","state":{"status":"completed","input":{"response":"OPENCODE-GATEWAY-OK","tool_name":"none","tool_arguments":{}}}}}' '{"type":"step_finish","part":{"type":"step-finish"}}'
 `), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -452,11 +491,13 @@ printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-GATEWAY-OK"
 		root := t.TempDir()
 		content := "review the configured runtime"
 		piPath := filepath.Join(root, "pi")
-		prompt := productPiConversationFixturePrompt(
+		replyPrompt := productPiConversationFixturePrompt(
 			t, "thread-production-pi-gateway", "segment-1", content,
 		)
 		if err := os.WriteFile(
-			piPath, []byte(productPiConversationFixtureScript(prompt)), 0o700,
+			piPath, []byte(productPiConversationFixtureScript(
+				productPiConversationFixtureEnvelope("", content), replyPrompt,
+			)), 0o700,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -501,7 +542,7 @@ printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-GATEWAY-OK"
 				t.Errorf("close projection database: %v", err)
 			}
 		})
-		requestSeen := make(chan struct{}, 1)
+		var requestCount atomic.Int32
 		server := httptest.NewTLSServer(http.HandlerFunc(func(
 			writer http.ResponseWriter,
 			request *http.Request,
@@ -511,11 +552,53 @@ printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-GATEWAY-OK"
 				http.Error(writer, "invalid bounded request", http.StatusBadRequest)
 				return
 			}
-			requestSeen <- struct{}{}
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				http.Error(writer, "invalid bounded request", http.StatusBadRequest)
+				return
+			}
+			call := requestCount.Add(1)
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(
-				`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"LOOM-NATIVE-GATEWAY-OK"}}]}`,
-			))
+			switch call {
+			case 1:
+				payload := string(body)
+				if !strings.Contains(payload, `"tool_choice":"required"`) ||
+					!strings.Contains(payload, `"name":"loom_conversation_reply"`) {
+					http.Error(writer, "typed selection missing", http.StatusBadRequest)
+					return
+				}
+				_, _ = writer.Write([]byte(
+					`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-direct-1","type":"function","function":{"name":"loom_conversation_reply","arguments":"{\"decision\":\"no_product_tool_matches\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				))
+			case 2:
+				payload := string(body)
+				if !strings.Contains(payload, `"tools"`) ||
+					!strings.Contains(payload, `"tool_choice":"required"`) ||
+					!strings.Contains(payload, `"name":"loom_conversation_reply"`) ||
+					strings.Contains(payload, `call-direct-1`) ||
+					!strings.Contains(payload, `independent typed recheck`) {
+					http.Error(writer, "direct reply typed recheck invalid", http.StatusBadRequest)
+					return
+				}
+				_, _ = writer.Write([]byte(
+					`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-direct-2","type":"function","function":{"name":"loom_conversation_reply","arguments":"{\"decision\":\"no_product_tool_matches\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				))
+			case 3:
+				payload := string(body)
+				if strings.Contains(payload, `"tools"`) ||
+					strings.Contains(payload, `"tool_choice"`) ||
+					strings.Contains(payload, `call-direct-1`) ||
+					strings.Contains(payload, `call-direct-2`) ||
+					!strings.Contains(payload, `answer_request_directly`) {
+					http.Error(writer, "direct answer retained tool authority", http.StatusBadRequest)
+					return
+				}
+				_, _ = writer.Write([]byte(
+					`{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"LOOM-NATIVE-GATEWAY-OK"},"finish_reason":"stop"}]}`,
+				))
+			default:
+				http.Error(writer, "unexpected request", http.StatusBadRequest)
+			}
 		}))
 		defer server.Close()
 
@@ -551,10 +634,8 @@ printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE-GATEWAY-OK"
 			harnessgateway.HarnessLoomNative,
 			"LOOM-NATIVE-GATEWAY-OK",
 		)
-		select {
-		case <-requestSeen:
-		default:
-			t.Fatal("bounded Loom Native Provider fixture was not called")
+		if got := requestCount.Load(); got != 3 {
+			t.Fatalf("bounded Loom Native Provider request count = %d, want 3", got)
 		}
 	})
 }
@@ -620,8 +701,17 @@ func assertCOMP2CProductionGovernedGatewayRoute(
 	}
 	wantBackend := "backend.segment." + string(wantHarness)
 	wantBackendVersion := productHarnessGatewayBackendVersion
-	if wantHarness == harnessgateway.HarnessCodex {
+	switch wantHarness {
+	case harnessgateway.HarnessCodex:
 		wantBackend = string(productCodexSegmentBackendID)
+	case harnessgateway.HarnessClaudeCode:
+		wantBackend = string(productClaudeCodeSegmentBackendID)
+	case harnessgateway.HarnessOpenCode:
+		wantBackend = string(productOpenCodeSegmentBackendID)
+	case harnessgateway.HarnessPi:
+		wantBackend = string(productPiSegmentBackendID)
+	case harnessgateway.HarnessLoomNative:
+		wantBackend = string(productLoomNativeSegmentBackendID)
 	}
 	for index, record := range gatewayRecords {
 		if record.GatewayEventType != string(wantTypes[index]) ||

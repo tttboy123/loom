@@ -19,6 +19,8 @@ type sessionState struct {
 	seats                   map[string]Seat
 	seatMembershipRevisions map[string]int
 	messages                map[string]Message
+	attempts                map[string]SeatAttempt
+	interventions           map[string]Intervention
 	rounds                  []roundRecord
 	view                    View
 	concludedSummaryDigest  string
@@ -27,10 +29,11 @@ type sessionState struct {
 }
 
 type roundRecord struct {
-	id           string
-	sequence     int
-	messageCount int
-	messages     []string
+	id             string
+	sequence       int
+	messageCount   int
+	messages       []string
+	pauseRequested bool
 }
 
 type fact struct {
@@ -170,6 +173,8 @@ func replaySession(
 		seats:                   make(map[string]Seat),
 		seatMembershipRevisions: make(map[string]int),
 		messages:                make(map[string]Message),
+		attempts:                make(map[string]SeatAttempt),
+		interventions:           make(map[string]Intervention),
 		rounds:                  make([]roundRecord, 0, 4),
 		importedContracts:       make(map[string]struct{}),
 	}
@@ -197,7 +202,8 @@ func applyFact(state *sessionState, event journal.Event) error {
 	case FactSessionCreated:
 		var payload sessionCreatedPayload
 		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
-			payload.SessionID != strings.TrimPrefix(event.StreamID, "roundtable/session/") {
+			payload.SessionID != strings.TrimPrefix(event.StreamID, "roundtable/session/") ||
+			(payload.Context != nil && !validSessionContext(*payload.Context)) {
 			return ErrRoundtableConflict
 		}
 		if state.found {
@@ -207,6 +213,7 @@ func applyFact(state *sessionState, event journal.Event) error {
 		state.session = Session{
 			ID: payload.SessionID, ModeratorSeat: payload.ModeratorSeat,
 			Title: payload.Title, CreatedAt: payload.CreatedAt,
+			Context: cloneSessionContext(payload.Context),
 		}
 		state.seats[payload.ModeratorSeat] = Seat{
 			ID: payload.ModeratorSeat, DisplayName: "Moderator", Available: true,
@@ -234,11 +241,17 @@ func applyFact(state *sessionState, event journal.Event) error {
 			payload.SessionID != state.session.ID {
 			return ErrRoundtableConflict
 		}
+		if err := validateReplayedSeatBinding(
+			state.session, payload.SessionID, payload.SeatID, payload.Binding, 1,
+		); err != nil {
+			return err
+		}
 		if _, exists := state.seats[payload.SeatID]; exists {
 			return ErrRoundtableConflict
 		}
 		state.seats[payload.SeatID] = Seat{
 			ID: payload.SeatID, DisplayName: payload.DisplayName, Available: true,
+			Binding: cloneFrozenSeatBindingPointer(payload.Binding),
 		}
 		state.seatMembershipRevisions[payload.SeatID] = 1
 		return nil
@@ -253,8 +266,15 @@ func applyFact(state *sessionState, event journal.Event) error {
 			payload.MembershipRevision != state.seatMembershipRevisions[payload.SeatID]+1 {
 			return ErrRoundtableConflict
 		}
+		if err := validateReplayedSeatBinding(
+			state.session, payload.SessionID, payload.SeatID, payload.Binding,
+			payload.MembershipRevision,
+		); err != nil {
+			return err
+		}
 		seat.DisplayName = payload.DisplayName
 		seat.Available = true
+		seat.Binding = cloneFrozenSeatBindingPointer(payload.Binding)
 		state.seats[payload.SeatID] = seat
 		state.seatMembershipRevisions[payload.SeatID] = payload.MembershipRevision
 		return nil
@@ -339,6 +359,106 @@ func applyFact(state *sessionState, event journal.Event) error {
 		}
 		state.messages[payload.MessageID] = message
 		return nil
+	case FactSeatAttemptStarted:
+		var payload seatAttemptStartedPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID ||
+			!validReplayedSeatAttemptStart(*state, payload.Attempt) {
+			return ErrRoundtableConflict
+		}
+		if _, exists := state.attempts[payload.Attempt.AttemptID]; exists {
+			return ErrRoundtableConflict
+		}
+		state.attempts[payload.Attempt.AttemptID] = payload.Attempt
+		return nil
+	case FactSeatAttemptSucceeded, FactSeatAttemptFailed:
+		var payload seatAttemptTerminalPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID {
+			return ErrRoundtableConflict
+		}
+		current, exists := state.attempts[payload.Attempt.AttemptID]
+		if !exists || current.Status != SeatAttemptRunning ||
+			!validReplayedSeatAttemptTerminal(current, payload.Attempt, event.Type) {
+			return ErrRoundtableConflict
+		}
+		state.attempts[payload.Attempt.AttemptID] = payload.Attempt
+		return nil
+	case FactRoundPauseRequested, FactRoundSteered, FactSeatRetryRequested, FactSeatSkipped,
+		FactRoundDispatchFailed:
+		var payload interventionPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID ||
+			!validReplayedIntervention(*state, event, payload.Intervention) {
+			return ErrRoundtableConflict
+		}
+		expectedKind := map[string]string{
+			FactRoundPauseRequested: InterventionPauseRound,
+			FactRoundSteered:        InterventionSteer,
+			FactSeatRetryRequested:  InterventionRetrySeat,
+			FactSeatSkipped:         InterventionSkipSeat,
+			FactRoundDispatchFailed: InterventionRoundDispatchFailure,
+		}[event.Type]
+		if payload.Intervention.Kind != expectedKind {
+			return ErrRoundtableConflict
+		}
+		if err := applyReplayedSimpleIntervention(state, payload.Intervention); err != nil {
+			return err
+		}
+		state.interventions[payload.Intervention.ID] = payload.Intervention
+		return nil
+	case FactSeatReplaced:
+		var payload seatReplacedPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID ||
+			payload.Intervention.Kind != InterventionReplaceSeat ||
+			!validReplayedIntervention(*state, event, payload.Intervention) ||
+			!validRoundtableText(payload.DisplayName, MaxDisplayNameBytes) {
+			return ErrRoundtableConflict
+		}
+		intervention := payload.Intervention
+		seat, found := state.seats[intervention.SeatID]
+		if !found || !seat.Available || seat.Binding == nil ||
+			activeSeatAttempt(*state, intervention.RoundID, intervention.SeatID) != nil ||
+			seatSkipped(*state, intervention.RoundID, intervention.SeatID) ||
+			intervention.PreviousMembershipRevision != seat.Binding.MembershipRevision ||
+			intervention.MembershipRevision != seat.Binding.MembershipRevision+1 ||
+			intervention.PreviousBindingDigest != seat.Binding.BindingDigest ||
+			intervention.SeatBindingDigest != payload.Binding.BindingDigest ||
+			intervention.RequestedAttemptNumber != nextSeatAttemptNumber(*state, intervention.RoundID, intervention.SeatID) {
+			return ErrRoundtableConflict
+		}
+		if err := validateReplayedSeatBinding(
+			state.session, state.session.ID, intervention.SeatID, &payload.Binding,
+			intervention.MembershipRevision,
+		); err != nil {
+			return err
+		}
+		seat.DisplayName = payload.DisplayName
+		seat.Binding = cloneFrozenSeatBindingPointer(&payload.Binding)
+		state.seats[intervention.SeatID] = seat
+		state.seatMembershipRevisions[intervention.SeatID] = intervention.MembershipRevision
+		state.interventions[intervention.ID] = intervention
+		return nil
+	case FactSeatAttemptCancelled:
+		var payload seatAttemptCancelledPayload
+		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
+			payload.SessionID != state.session.ID ||
+			payload.Intervention.Kind != InterventionCancelSeatAttempt ||
+			!validReplayedIntervention(*state, event, payload.Intervention) {
+			return ErrRoundtableConflict
+		}
+		intervention := payload.Intervention
+		current, found := state.attempts[intervention.AttemptID]
+		if !found || current.Status != SeatAttemptRunning ||
+			current.RoundID != intervention.RoundID || current.SeatID != intervention.SeatID ||
+			payload.Attempt.AttemptID != intervention.AttemptID ||
+			!validReplayedSeatAttemptTerminal(current, payload.Attempt, event.Type) {
+			return ErrRoundtableConflict
+		}
+		state.attempts[intervention.AttemptID] = payload.Attempt
+		state.interventions[intervention.ID] = intervention
+		return nil
 	case FactConcluded:
 		var payload concludedPayload
 		if err := decodeExact(event.PayloadJSON, &payload); err != nil ||
@@ -376,12 +496,239 @@ func applyFact(state *sessionState, event journal.Event) error {
 	}
 }
 
+func validReplayedIntervention(
+	state sessionState,
+	event journal.Event,
+	intervention Intervention,
+) bool {
+	if state.session.Concluded || state.session.Context == nil ||
+		!validFrozenIntervention(intervention) ||
+		event.EmittedAt != intervention.RequestedAt ||
+		roundRecordIndex(state.rounds, intervention.RoundID) < 0 {
+		return false
+	}
+	if intervention.Kind != InterventionCancelSeatAttempt &&
+		(len(state.rounds) == 0 ||
+			state.rounds[len(state.rounds)-1].id != intervention.RoundID) {
+		return false
+	}
+	if _, exists := state.interventions[intervention.ID]; exists {
+		return false
+	}
+	if intervention.Kind == InterventionCancelSeatAttempt {
+		if intervention.ModeratorSeat != "" {
+			return false
+		}
+	} else if intervention.ModeratorSeat != state.session.ModeratorSeat ||
+		!state.seats[intervention.ModeratorSeat].Available {
+		return false
+	}
+	return validInterventionShape(intervention)
+}
+
+func validInterventionShape(intervention Intervention) bool {
+	noInput := intervention.InputID == "" && intervention.ContentDigest == ""
+	noReplacement := intervention.PreviousMembershipRevision == 0 &&
+		intervention.MembershipRevision == 0 &&
+		intervention.PreviousBindingDigest == "" && intervention.SeatBindingDigest == ""
+	noFailure := intervention.IncidentID == "" && intervention.FailureCode == "" &&
+		intervention.FailureStage == "" && !intervention.Retryable
+	switch intervention.Kind {
+	case InterventionPauseRound:
+		return intervention.SeatID == "" && intervention.AttemptID == "" && noInput &&
+			intervention.RequestedAttemptNumber == 0 && noReplacement && noFailure
+	case InterventionSteer:
+		return validRoundtableID(intervention.SeatID, MaxSeatIDBytes) &&
+			validRoundtableID(intervention.AttemptID, MaxMessageIDBytes) &&
+			validRoundtableID(intervention.InputID, MaxSessionIDBytes) &&
+			validSHA256Digest(intervention.ContentDigest) &&
+			intervention.RequestedAttemptNumber == 0 && noReplacement && noFailure
+	case InterventionRetrySeat:
+		return validRoundtableID(intervention.SeatID, MaxSeatIDBytes) &&
+			validRoundtableID(intervention.AttemptID, MaxMessageIDBytes) && noInput &&
+			intervention.RequestedAttemptNumber > 1 &&
+			validRetriedSeatBinding(intervention, noReplacement) && noFailure
+	case InterventionSkipSeat:
+		return validRoundtableID(intervention.SeatID, MaxSeatIDBytes) &&
+			intervention.AttemptID == "" && noInput &&
+			intervention.RequestedAttemptNumber == 0 &&
+			validSkippedSeatBinding(intervention, noReplacement) && noFailure
+	case InterventionReplaceSeat:
+		return validRoundtableID(intervention.SeatID, MaxSeatIDBytes) &&
+			intervention.AttemptID == "" && noInput &&
+			intervention.RequestedAttemptNumber > 0 &&
+			intervention.PreviousMembershipRevision > 0 &&
+			intervention.MembershipRevision == intervention.PreviousMembershipRevision+1 &&
+			validSHA256Digest(intervention.PreviousBindingDigest) &&
+			validSHA256Digest(intervention.SeatBindingDigest) &&
+			intervention.PreviousBindingDigest != intervention.SeatBindingDigest && noFailure
+	case InterventionCancelSeatAttempt:
+		return validRoundtableID(intervention.SeatID, MaxSeatIDBytes) &&
+			validRoundtableID(intervention.AttemptID, MaxMessageIDBytes) && noInput &&
+			intervention.RequestedAttemptNumber == 0 && noReplacement && noFailure
+	case InterventionRoundDispatchFailure:
+		return intervention.SeatID == "" && intervention.AttemptID == "" && noInput &&
+			intervention.RequestedAttemptNumber == 0 && noReplacement &&
+			validRoundtableID(intervention.IncidentID, MaxSessionIDBytes) &&
+			validFailureMetadata(intervention.FailureCode) &&
+			validFailureMetadata(intervention.FailureStage)
+	default:
+		return false
+	}
+}
+
+func applyReplayedSimpleIntervention(
+	state *sessionState,
+	intervention Intervention,
+) error {
+	switch intervention.Kind {
+	case InterventionPauseRound:
+		for _, existing := range state.interventions {
+			if existing.Kind == InterventionPauseRound && existing.RoundID == intervention.RoundID {
+				return ErrRoundtableConflict
+			}
+		}
+		state.rounds[roundRecordIndex(state.rounds, intervention.RoundID)].pauseRequested = true
+		return nil
+	case InterventionSteer:
+		attempt, found := state.attempts[intervention.AttemptID]
+		if !found || attempt.RoundID != intervention.RoundID ||
+			attempt.SeatID != intervention.SeatID ||
+			!steerAdmissionWithinAttempt(attempt, intervention.RequestedAt) {
+			return ErrRoundtableConflict
+		}
+		for _, existing := range state.interventions {
+			if existing.Kind == InterventionSteer && existing.InputID == intervention.InputID {
+				return ErrRoundtableConflict
+			}
+		}
+		return nil
+	case InterventionRetrySeat:
+		attempt, found := state.attempts[intervention.AttemptID]
+		seat, seatFound := state.seats[intervention.SeatID]
+		if !found || attempt.RoundID != intervention.RoundID ||
+			attempt.SeatID != intervention.SeatID ||
+			!seatFound || !seat.Available || seat.Binding == nil ||
+			attempt.MembershipRevision != seat.Binding.MembershipRevision ||
+			attempt.SeatBindingDigest != seat.Binding.BindingDigest ||
+			intervention.MembershipRevision > 0 &&
+				(intervention.MembershipRevision != seat.Binding.MembershipRevision ||
+					intervention.SeatBindingDigest != seat.Binding.BindingDigest) ||
+			intervention.RequestedAttemptNumber != attempt.AttemptNumber+1 ||
+			intervention.RequestedAttemptNumber != nextSeatAttemptNumber(*state, intervention.RoundID, intervention.SeatID) ||
+			(attempt.Status != SeatAttemptCancelled &&
+				(attempt.Status != SeatAttemptFailed || !attempt.Retryable)) {
+			return ErrRoundtableConflict
+		}
+		for _, existing := range state.interventions {
+			if existing.Kind == InterventionRetrySeat &&
+				existing.RoundID == intervention.RoundID &&
+				existing.SeatID == intervention.SeatID &&
+				existing.RequestedAttemptNumber == intervention.RequestedAttemptNumber {
+				return ErrRoundtableConflict
+			}
+		}
+		return nil
+	case InterventionSkipSeat:
+		seat, found := state.seats[intervention.SeatID]
+		if !found || !seat.Available || seat.Binding == nil ||
+			intervention.SeatID == state.session.ModeratorSeat ||
+			activeSeatAttempt(*state, intervention.RoundID, intervention.SeatID) != nil ||
+			intervention.MembershipRevision > 0 &&
+				(intervention.MembershipRevision != seat.Binding.MembershipRevision ||
+					intervention.SeatBindingDigest != seat.Binding.BindingDigest) {
+			return ErrRoundtableConflict
+		}
+		for _, existing := range state.interventions {
+			if existing.Kind == InterventionSkipSeat &&
+				existing.RoundID == intervention.RoundID && existing.SeatID == intervention.SeatID {
+				return ErrRoundtableConflict
+			}
+		}
+		return nil
+	case InterventionRoundDispatchFailure:
+		if roundHasAttempts(*state, intervention.RoundID) {
+			return ErrRoundtableConflict
+		}
+		for _, existing := range state.interventions {
+			if existing.Kind == InterventionRoundDispatchFailure &&
+				existing.RoundID == intervention.RoundID {
+				return ErrRoundtableConflict
+			}
+		}
+		return nil
+	default:
+		return ErrRoundtableConflict
+	}
+}
+
+func validRetriedSeatBinding(intervention Intervention, legacyUnbound bool) bool {
+	if legacyUnbound {
+		return true
+	}
+	return intervention.PreviousMembershipRevision == 0 &&
+		intervention.PreviousBindingDigest == "" &&
+		intervention.MembershipRevision > 0 &&
+		validSHA256Digest(intervention.SeatBindingDigest)
+}
+
+func validSkippedSeatBinding(intervention Intervention, legacyUnbound bool) bool {
+	if legacyUnbound {
+		return true
+	}
+	return intervention.PreviousMembershipRevision == 0 &&
+		intervention.PreviousBindingDigest == "" &&
+		intervention.MembershipRevision > 0 &&
+		validSHA256Digest(intervention.SeatBindingDigest)
+}
+
+func steerAdmissionWithinAttempt(attempt SeatAttempt, admittedAt time.Time) bool {
+	if admittedAt.IsZero() || admittedAt.Location() != time.UTC ||
+		attempt.StartedAt.IsZero() || admittedAt.Before(attempt.StartedAt) {
+		return false
+	}
+	switch attempt.Status {
+	case SeatAttemptRunning:
+		return attempt.CompletedAt.IsZero()
+	case SeatAttemptSucceeded, SeatAttemptFailed, SeatAttemptCancelled:
+		return !attempt.CompletedAt.IsZero() && !admittedAt.After(attempt.CompletedAt)
+	default:
+		return false
+	}
+}
+
+func validateReplayedSeatBinding(
+	session Session,
+	sessionID string,
+	seatID string,
+	binding *FrozenSeatBinding,
+	membershipRevision int,
+) error {
+	if session.Context == nil {
+		if binding != nil {
+			return ErrRoundtableConflict
+		}
+		return nil
+	}
+	if binding == nil || binding.MembershipRevision != membershipRevision {
+		return ErrRoundtableConflict
+	}
+	if _, err := validateFrozenSeatBinding(
+		sessionID, seatID, *session.Context, *binding,
+	); err != nil {
+		return ErrRoundtableConflict
+	}
+	return nil
+}
+
 func buildView(state sessionState) View {
 	view := View{
-		Session:  state.session,
-		Seats:    make(map[string]Seat, len(state.seats)),
-		Messages: make(map[string]Message, len(state.messages)),
-		Rounds:   make([]Round, 0, len(state.rounds)),
+		Session:       state.session,
+		Seats:         make(map[string]Seat, len(state.seats)),
+		Messages:      make(map[string]Message, len(state.messages)),
+		Attempts:      make(map[string]SeatAttempt, len(state.attempts)),
+		Interventions: make(map[string]Intervention, len(state.interventions)),
+		Rounds:        make([]Round, 0, len(state.rounds)),
 	}
 	for id, seat := range state.seats {
 		view.Seats[id] = seat
@@ -389,11 +736,18 @@ func buildView(state sessionState) View {
 	for id, message := range state.messages {
 		view.Messages[id] = message
 	}
+	for id, attempt := range state.attempts {
+		view.Attempts[id] = attempt
+	}
+	for id, intervention := range state.interventions {
+		view.Interventions[id] = intervention
+	}
 	for _, record := range state.rounds {
 		round := Round{
 			ID: record.id, Sequence: record.sequence,
-			MessageCount: record.messageCount,
-			Messages:     make([]Message, 0, len(record.messages)),
+			MessageCount:   record.messageCount,
+			Messages:       make([]Message, 0, len(record.messages)),
+			PauseRequested: record.pauseRequested,
 		}
 		for _, messageID := range record.messages {
 			if message, ok := state.messages[messageID]; ok {
@@ -414,6 +768,11 @@ func digestView(view View) string {
 		view.Session.ID, view.Session.ModeratorSeat, view.Session.Title,
 		view.Session.CreatedAt.Format(time.RFC3339Nano), fmtBool(view.Session.Concluded),
 	}
+	if view.Session.Context != nil {
+		parts = append(parts, "context", view.Session.Context.ConversationID,
+			view.Session.Context.MissionID, view.Session.Context.TeamID,
+			fmtInt(view.Session.Context.TeamVersion), view.Session.Context.WorkspaceID)
+	}
 	seatIDs := make([]string, 0, len(view.Seats))
 	for id := range view.Seats {
 		seatIDs = append(seatIDs, id)
@@ -423,10 +782,16 @@ func digestView(view View) string {
 		seat := view.Seats[id]
 		parts = append(parts,
 			"seat", seat.ID, seat.DisplayName, fmtBool(seat.Available))
+		if seat.Binding != nil {
+			parts = append(parts, "seat-binding", seat.Binding.BindingDigest)
+		}
 	}
 	for _, round := range view.Rounds {
 		parts = append(parts,
 			"round", round.ID, fmtInt(round.Sequence), fmtInt(round.MessageCount))
+		if round.PauseRequested {
+			parts = append(parts, "pause-requested")
+		}
 	}
 	messageIDs := make([]string, 0, len(view.Messages))
 	for id := range view.Messages {
@@ -444,7 +809,114 @@ func digestView(view View) string {
 			message.AcknowledgedAt.Format(time.RFC3339Nano),
 		)
 	}
+	attemptIDs := make([]string, 0, len(view.Attempts))
+	for id := range view.Attempts {
+		attemptIDs = append(attemptIDs, id)
+	}
+	sort.Strings(attemptIDs)
+	for _, id := range attemptIDs {
+		attempt := view.Attempts[id]
+		parts = append(parts,
+			"attempt", attempt.AttemptID, attempt.RoundID, attempt.SeatID,
+			fmtInt(attempt.AttemptNumber), fmtInt(attempt.MembershipRevision),
+			attempt.ExecutionTeamID, attempt.WorkItemID, attempt.RunID, attempt.SegmentID,
+			fmtInt64(attempt.ClaimGeneration), attempt.RuntimeInstanceID,
+			attempt.AgentInstanceID, attempt.SeatBindingDigest,
+			attempt.ExecutionBindingDigest, attempt.ContextCapsuleDigest,
+			attempt.PayloadReference, attempt.Status, attempt.OutputDigest,
+			attempt.IncidentID, attempt.FailureCode, attempt.FailureStage,
+			fmtBool(attempt.Retryable),
+			attempt.StartedAt.Format(time.RFC3339Nano),
+			attempt.CompletedAt.Format(time.RFC3339Nano),
+		)
+	}
+	interventionIDs := make([]string, 0, len(view.Interventions))
+	for id := range view.Interventions {
+		interventionIDs = append(interventionIDs, id)
+	}
+	sort.Strings(interventionIDs)
+	for _, id := range interventionIDs {
+		parts = append(parts, "intervention", view.Interventions[id].Digest)
+	}
 	return digestBytes(parts...)
+}
+
+func validReplayedSeatAttemptStart(state sessionState, attempt SeatAttempt) bool {
+	seat, found := state.seats[attempt.SeatID]
+	if !found || !seat.Available || seat.Binding == nil ||
+		roundRecordIndex(state.rounds, attempt.RoundID) < 0 ||
+		!roundAllowsSeatAttemptStartAfterPause(
+			state, attempt.RoundID, attempt.SeatID, attempt.AttemptNumber,
+		) ||
+		roundDispatchFailed(state, attempt.RoundID) ||
+		seatSkipped(state, attempt.RoundID, attempt.SeatID) ||
+		!validRoundtableID(attempt.AttemptID, MaxMessageIDBytes) ||
+		!validRoundtableID(attempt.ExecutionTeamID, MaxSessionIDBytes) ||
+		!validRoundtableID(attempt.WorkItemID, MaxSessionIDBytes) ||
+		!validRoundtableID(attempt.RunID, MaxSessionIDBytes) ||
+		!validRoundtableID(attempt.SegmentID, MaxSessionIDBytes) || attempt.ClaimGeneration <= 0 ||
+		!validRoundtableID(attempt.RuntimeInstanceID, MaxSessionIDBytes) ||
+		!validRoundtableID(attempt.AgentInstanceID, MaxSessionIDBytes) ||
+		attempt.AttemptNumber != nextSeatAttemptNumber(state, attempt.RoundID, attempt.SeatID) ||
+		attempt.MembershipRevision != seat.Binding.MembershipRevision ||
+		attempt.SeatBindingDigest != seat.Binding.BindingDigest ||
+		attempt.ExecutionBindingDigest != seat.Binding.ExecutionBinding.BindingDigest ||
+		attempt.RuntimeInstanceID != seat.Binding.ExecutionBinding.RuntimeInstanceID ||
+		!validSHA256Digest(attempt.ContextCapsuleDigest) ||
+		attempt.Status != SeatAttemptRunning || attempt.PayloadReference != "" ||
+		attempt.OutputDigest != "" || attempt.IncidentID != "" ||
+		attempt.FailureCode != "" || attempt.FailureStage != "" || attempt.Retryable ||
+		attempt.StartedAt.IsZero() || attempt.StartedAt.Location() != time.UTC ||
+		!attempt.CompletedAt.IsZero() {
+		return false
+	}
+	for _, current := range state.attempts {
+		if current.RoundID == attempt.RoundID && current.SeatID == attempt.SeatID &&
+			current.Status == SeatAttemptRunning {
+			return false
+		}
+	}
+	return true
+}
+
+func validReplayedSeatAttemptTerminal(
+	current SeatAttempt,
+	terminal SeatAttempt,
+	factType string,
+) bool {
+	if terminal.AttemptID != current.AttemptID || terminal.RoundID != current.RoundID ||
+		terminal.SeatID != current.SeatID || terminal.AttemptNumber != current.AttemptNumber ||
+		terminal.ExecutionTeamID != current.ExecutionTeamID ||
+		terminal.WorkItemID != current.WorkItemID || terminal.RunID != current.RunID ||
+		terminal.SegmentID != current.SegmentID ||
+		terminal.ClaimGeneration != current.ClaimGeneration ||
+		terminal.RuntimeInstanceID != current.RuntimeInstanceID ||
+		terminal.AgentInstanceID != current.AgentInstanceID ||
+		terminal.MembershipRevision != current.MembershipRevision ||
+		terminal.SeatBindingDigest != current.SeatBindingDigest ||
+		terminal.ExecutionBindingDigest != current.ExecutionBindingDigest ||
+		terminal.ContextCapsuleDigest != current.ContextCapsuleDigest ||
+		terminal.StartedAt != current.StartedAt || terminal.CompletedAt.IsZero() ||
+		terminal.CompletedAt.Location() != time.UTC || terminal.CompletedAt.Before(current.StartedAt) {
+		return false
+	}
+	if factType == FactSeatAttemptSucceeded {
+		return terminal.Status == SeatAttemptSucceeded &&
+			validRoundtableID(terminal.PayloadReference, MaxSessionIDBytes) &&
+			validSHA256Digest(terminal.OutputDigest) && terminal.IncidentID == "" &&
+			terminal.FailureCode == "" && terminal.FailureStage == "" && !terminal.Retryable
+	}
+	if factType == FactSeatAttemptFailed {
+		return terminal.Status == SeatAttemptFailed && terminal.PayloadReference == "" &&
+			terminal.OutputDigest == "" &&
+			validRoundtableID(terminal.IncidentID, MaxSessionIDBytes) &&
+			validRoundtableID(terminal.FailureCode, MaxSeatIDBytes) &&
+			validRoundtableID(terminal.FailureStage, MaxSeatIDBytes)
+	}
+	return factType == FactSeatAttemptCancelled && terminal.Status == SeatAttemptCancelled &&
+		terminal.PayloadReference == "" && terminal.OutputDigest == "" &&
+		terminal.IncidentID == "" && terminal.FailureCode == "" &&
+		terminal.FailureStage == "" && !terminal.Retryable
 }
 
 func fmtBool(value bool) string {
@@ -455,6 +927,8 @@ func fmtBool(value bool) string {
 }
 
 func fmtInt(value int) string { return strconv.Itoa(value) }
+
+func fmtInt64(value int64) string { return strconv.FormatInt(value, 10) }
 
 func roundRecordIndex(rounds []roundRecord, roundID string) int {
 	for index := range rounds {
@@ -470,14 +944,17 @@ func sessionCreatedView(command CreateSessionCommand) View {
 		Session: Session{
 			ID: command.SessionID, ModeratorSeat: command.ModeratorSeat,
 			Title: command.Title, CreatedAt: command.EmittedAt,
+			Context: cloneSessionContext(command.Context),
 		},
 		Seats: map[string]Seat{
 			command.ModeratorSeat: {
 				ID: command.ModeratorSeat, DisplayName: "Moderator", Available: true,
 			},
 		},
-		Messages: map[string]Message{},
-		Rounds:   []Round{},
+		Messages:      map[string]Message{},
+		Attempts:      map[string]SeatAttempt{},
+		Interventions: map[string]Intervention{},
+		Rounds:        []Round{},
 	}
 }
 
@@ -509,11 +986,12 @@ func validCorrelationID(value string) bool {
 // payloads
 
 type sessionCreatedPayload struct {
-	SchemaVersion int       `json:"schema_version"`
-	SessionID     string    `json:"session_id"`
-	ModeratorSeat string    `json:"moderator_seat"`
-	Title         string    `json:"title"`
-	CreatedAt     time.Time `json:"created_at"`
+	SchemaVersion int             `json:"schema_version"`
+	SessionID     string          `json:"session_id"`
+	ModeratorSeat string          `json:"moderator_seat"`
+	Title         string          `json:"title"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Context       *SessionContext `json:"context,omitempty"`
 }
 
 type seatRetiredPayload struct {
@@ -525,20 +1003,22 @@ type seatRetiredPayload struct {
 }
 
 type seatAddedPayload struct {
-	SchemaVersion int       `json:"schema_version"`
-	SessionID     string    `json:"session_id"`
-	SeatID        string    `json:"seat_id"`
-	DisplayName   string    `json:"display_name"`
-	EmittedAt     time.Time `json:"emitted_at"`
+	SchemaVersion int                `json:"schema_version"`
+	SessionID     string             `json:"session_id"`
+	SeatID        string             `json:"seat_id"`
+	DisplayName   string             `json:"display_name"`
+	EmittedAt     time.Time          `json:"emitted_at"`
+	Binding       *FrozenSeatBinding `json:"binding,omitempty"`
 }
 
 type seatRejoinedPayload struct {
-	SchemaVersion      int       `json:"schema_version"`
-	SessionID          string    `json:"session_id"`
-	SeatID             string    `json:"seat_id"`
-	DisplayName        string    `json:"display_name"`
-	MembershipRevision int       `json:"membership_revision"`
-	RejoinedAt         time.Time `json:"rejoined_at"`
+	SchemaVersion      int                `json:"schema_version"`
+	SessionID          string             `json:"session_id"`
+	SeatID             string             `json:"seat_id"`
+	DisplayName        string             `json:"display_name"`
+	MembershipRevision int                `json:"membership_revision"`
+	RejoinedAt         time.Time          `json:"rejoined_at"`
+	Binding            *FrozenSeatBinding `json:"binding,omitempty"`
 }
 
 type roundOpenedPayload struct {

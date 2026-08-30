@@ -52,7 +52,7 @@ func productRouteManifest() []composition.RouteDescriptor {
 			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_request",
 			privacyClass: composition.PrivacyMetadataOnly,
 			methods: []composition.RouteMethod{
-				"chat_context_disclosure", "chat_response_cancel",
+				"chat_context_disclosure", "chat_control_decision", "chat_response_cancel",
 			},
 		},
 		{
@@ -97,7 +97,8 @@ func productRouteManifest() []composition.RouteDescriptor {
 			availabilityFailure: "state_unavailable", incidentPolicy: "preserve_request",
 			privacyClass: composition.PrivacyLocalContent,
 			methods: []composition.RouteMethod{
-				"agent_attempt_recovery", "agent_input", "codex_connect", "mission_execution",
+				"agent_attempt_recovery", "agent_input", "claude_code_cancel", "claude_code_connect",
+				"codex_connect", "mission_execution",
 			},
 		},
 		{
@@ -107,6 +108,9 @@ func productRouteManifest() []composition.RouteDescriptor {
 			methods: []composition.RouteMethod{
 				"roundtable_ack_message", "roundtable_add_seat", "roundtable_conclude",
 				"roundtable_drop_message", "roundtable_insert_message", "roundtable_open_round",
+				"roundtable_pause_round", "roundtable_replace_seat", "roundtable_retry_seat",
+				"roundtable_skip_seat", "roundtable_steer_seat",
+				"roundtable_export", "roundtable_import",
 				"roundtable_propose_message", "roundtable_relay_message", "roundtable_retire_seat",
 				"roundtable_session_create", "roundtable_snapshot",
 			},
@@ -128,7 +132,7 @@ func productRouteManifest() []composition.RouteDescriptor {
 				"builder_validate", "execution_command", "execution_snapshot",
 				"integration_command", "integration_snapshot", "production_command",
 				"production_snapshot", "queue_command", "queue_snapshot", "snapshot",
-				"team_archive", "team_restore", "timeline_page", "workers_command",
+				"team_archive", "team_materialize", "team_restore", "timeline_page", "workers_command",
 				"workers_snapshot", "tool_recovery",
 			},
 		},
@@ -276,6 +280,12 @@ func productRouteAdmissionFor(
 			}
 		case method == "chat_response_cancel":
 			if services.chatCancel == nil {
+				return reject(productErrorResponse(
+					"state_unavailable", api.ErrLocalProductChatUnavailable,
+				))
+			}
+		case method == "chat_control_decision":
+			if services.chatControl == nil {
 				return reject(productErrorResponse(
 					"state_unavailable", api.ErrLocalProductChatUnavailable,
 				))

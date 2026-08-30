@@ -15,15 +15,18 @@ import (
 	"unicode/utf8"
 
 	"loom-pi-rebuild/internal/api"
+	"loom-pi-rebuild/internal/controltool"
 	"loom-pi-rebuild/internal/harnessgateway"
 )
 
 const (
-	productHarnessGatewayConfiguredVersion = 1
-	productHarnessGatewayBackendVersion    = 1
-	productHarnessGatewayMaximumOutput     = 64 << 10
-	productHarnessGatewaySessionOpenLimit  = 30 * time.Second
-	productHarnessGatewaySessionCloseLimit = 4 * time.Second
+	productHarnessGatewayConfiguredVersion     = 1
+	productHarnessGatewayBackendVersion        = 1
+	productHarnessGatewayMaximumOutput         = 64 << 10
+	productHarnessGatewayMaximumVisibleContent = 4_096
+	productHarnessGatewayTruncationMarker      = "[Response truncated by Loom. Ask for a narrower result to see more.]"
+	productHarnessGatewaySessionOpenLimit      = 30 * time.Second
+	productHarnessGatewaySessionCloseLimit     = 4 * time.Second
 )
 
 type productHarnessGatewayConversationConfig struct {
@@ -33,6 +36,9 @@ type productHarnessGatewayConversationConfig struct {
 	Now               func() time.Time
 	CodexSegment      *productCodexSegmentBackendConfig
 	ClaudeCodeSegment *productClaudeCodeSegmentBackendConfig
+	OpenCodeSegment   *productOpenCodeSegmentBackendConfig
+	PiSegment         *productPiSegmentBackendConfig
+	LoomNativeSegment *productLoomNativeSegmentBackendConfig
 }
 
 type productHarnessGatewayConversationResponder struct {
@@ -49,6 +55,35 @@ type productHarnessGatewayActiveResponse struct {
 	responseID string
 	incidentID string
 	cancel     context.CancelFunc
+}
+
+func productHarnessControlTurnContext(
+	request api.LocalProductConversationRequest,
+	binding harnessgateway.SegmentSessionBinding,
+) controltool.TurnContext {
+	route := controltool.FrozenRouteReference{}
+	if request.ExecutionBinding != nil {
+		route = controltool.FrozenRouteReference{
+			HarnessAdapter:         request.ExecutionBinding.HarnessAdapter,
+			ProviderID:             request.ExecutionBinding.ProviderID,
+			ProviderAccountID:      request.ExecutionBinding.ProviderAccountID,
+			CredentialRevision:     request.ExecutionBinding.CredentialRevision,
+			ModelID:                request.ExecutionBinding.ModelID,
+			ReasoningEffort:        request.ReasoningEffort,
+			ExecutionBindingDigest: request.SegmentBindingDigest,
+			ContextCapsuleDigest:   request.ContextCapsuleDigest,
+		}
+	}
+	return controltool.TurnContext{
+		ConversationID: request.ThreadID, SegmentID: request.SegmentID,
+		AttemptID: request.AttemptID, IncidentID: request.IncidentID,
+		Catalog:       append([]controltool.SessionReference(nil), request.SessionCatalog...),
+		CatalogDigest: request.CatalogDigest,
+		Route:         route,
+		Workspace: controltool.FrozenWorkspaceReference{
+			WorkspaceID: binding.WorkspaceID, WorkspaceDigest: binding.WorkspaceDigest,
+		},
+	}
 }
 
 type productHarnessGatewayOperationalEventSink struct {
@@ -68,6 +103,18 @@ func (sink *productHarnessGatewayOperationalEventSink) Record(
 	result, errorCode, retryable, ok := productHarnessGatewayDiagnosticOutcome(event.Type)
 	if !ok {
 		return
+	}
+	stage := "conversation_dispatch"
+	httpStatus := 0
+	providerCode := ""
+	retryAfterSeconds := int64(0)
+	if event.Type == harnessgateway.EventResponseFailed {
+		stage = event.Failure.Stage
+		errorCode = event.Failure.Code
+		httpStatus = event.Failure.HTTPStatus
+		providerCode = event.Failure.ProviderCode
+		retryAfterSeconds = event.Failure.RetryAfterSeconds
+		retryable = event.Failure.Retryable
 	}
 	_ = sink.diagnostics.append(productOperationalDiagnosticRecord{
 		SchemaVersion: 1,
@@ -97,12 +144,30 @@ func (sink *productHarnessGatewayOperationalEventSink) Record(
 		CapsuleDigest:                   event.ContextCapsuleDigest,
 		GovernancePolicyDigest:          event.GovernancePolicyDigest,
 		RouteTransitionReviewDigest:     event.RouteTransitionReviewDigest,
+		ContextAlignmentDigest:          event.ContextAlignmentDigest,
 		ResponseID:                      event.ResponseID,
-		Stage:                           "conversation_dispatch",
+		Stage:                           stage,
 		Result:                          result,
 		ErrorCode:                       errorCode,
+		HTTPStatus:                      httpStatus,
+		ProviderErrorCode:               providerCode,
+		RetryAfterSeconds:               retryAfterSeconds,
 		Retryable:                       retryable,
 	})
+}
+
+func productHarnessGatewayClassifyResponseFailure(
+	err error,
+) (harnessgateway.ResponseFailure, bool) {
+	failure, ok := api.LocalProductConversationDispatchFailureDetails(err)
+	if !ok {
+		return harnessgateway.ResponseFailure{}, false
+	}
+	return harnessgateway.ResponseFailure{
+		Code: failure.Code, Stage: failure.Stage,
+		HTTPStatus: failure.HTTPStatus, ProviderCode: failure.ProviderCode,
+		RetryAfterSeconds: failure.RetryAfterSeconds, Retryable: failure.Retryable,
+	}, true
 }
 
 func newProductHarnessGatewayConversationResponder(
@@ -139,6 +204,24 @@ func newProductHarnessGatewayConversationResponder(
 				return nil, errors.Join(api.ErrLocalProductChatUnavailable, err)
 			}
 		}
+		if harnessID == harnessgateway.HarnessOpenCode && config.OpenCodeSegment != nil {
+			backend, err = newProductOpenCodeSegmentBackend(*config.OpenCodeSegment)
+			if err != nil {
+				return nil, errors.Join(api.ErrLocalProductChatUnavailable, err)
+			}
+		}
+		if harnessID == harnessgateway.HarnessPi && config.PiSegment != nil {
+			backend, err = newProductPiSegmentBackend(*config.PiSegment)
+			if err != nil {
+				return nil, errors.Join(api.ErrLocalProductChatUnavailable, err)
+			}
+		}
+		if harnessID == harnessgateway.HarnessLoomNative && config.LoomNativeSegment != nil {
+			backend, err = newProductLoomNativeSegmentBackend(*config.LoomNativeSegment)
+			if err != nil {
+				return nil, errors.Join(api.ErrLocalProductChatUnavailable, err)
+			}
+		}
 		backendIDs[harnessID] = backend.ID()
 		backendVersions[harnessID] = backend.Version()
 		registrations = append(registrations, harnessgateway.Registration{
@@ -167,6 +250,7 @@ func newProductHarnessGatewayConversationResponder(
 		Registry: registry, Events: config.Events, Now: config.Now,
 		SessionOpenTimeout:  productHarnessGatewaySessionOpenLimit,
 		SessionCloseTimeout: productHarnessGatewaySessionCloseLimit,
+		ClassifyFailure:     productHarnessGatewayClassifyResponseFailure,
 	})
 	if err != nil {
 		return nil, errors.Join(api.ErrLocalProductChatUnavailable, err)
@@ -222,6 +306,7 @@ func (responder *productHarnessGatewayConversationResponder) Respond(
 		SegmentContextCapsuleDigest: request.SegmentContextCapsuleDigest,
 		GovernancePolicyDigest:      request.ExecutionBinding.ProviderAccountPolicyDigest,
 		RouteTransitionReviewDigest: request.RouteTransitionReviewDigest,
+		ContextAlignmentDigest:      request.ContextAlignmentDigest,
 	}
 	responseContext, cancelResponse := context.WithCancel(ctx)
 	active := productHarnessGatewayActiveResponse{
@@ -253,6 +338,7 @@ func (responder *productHarnessGatewayConversationResponder) Respond(
 				SegmentContextCapsuleDigest: binding.SegmentContextCapsuleDigest,
 				GovernancePolicyDigest:      binding.GovernancePolicyDigest,
 				RouteTransitionReviewDigest: binding.RouteTransitionReviewDigest,
+				ContextAlignmentDigest:      binding.ContextAlignmentDigest,
 				ProviderID:                  binding.ProviderID, ProviderAccountID: binding.ProviderAccountID,
 				CredentialRevision: binding.CredentialRevision, ModelID: binding.ModelID,
 				ReasoningEffort: binding.ReasoningEffort,
@@ -359,7 +445,8 @@ func productHarnessGatewayRequestMatches(
 	return request.ExecutionBinding.ProviderAccountID == binding.ProviderAccountID &&
 		request.ExecutionBinding.CredentialRevision == binding.CredentialRevision &&
 		request.ExecutionBinding.ProviderAccountPolicyDigest == binding.GovernancePolicyDigest &&
-		request.RouteTransitionReviewDigest == binding.RouteTransitionReviewDigest
+		request.RouteTransitionReviewDigest == binding.RouteTransitionReviewDigest &&
+		request.ContextAlignmentDigest == binding.ContextAlignmentDigest
 }
 
 func productHarnessGatewayHarnessID(
@@ -405,8 +492,75 @@ func validProductHarnessGatewayResponse(
 	response api.LocalProductConversationResponse,
 ) bool {
 	content := strings.TrimSpace(response.Content)
-	return content != "" && len(content) <= 4_096 && utf8.ValidString(content) &&
-		strings.IndexByte(content, 0) < 0
+	if content == "" || len(content) > productHarnessGatewayMaximumVisibleContent ||
+		!utf8.ValidString(content) ||
+		strings.IndexByte(content, 0) >= 0 || len(response.ControlProposals) > 8 ||
+		len(response.ActionProposals) > 8 {
+		return false
+	}
+	registry, err := controltool.NewBuiltinRegistry()
+	if err != nil || !registry.ValidCompletedCalls(response.CompletedControlTools, 8) {
+		return false
+	}
+	completedProposals := make(map[controltool.ToolID]int)
+	for _, call := range response.CompletedControlTools {
+		if call.Effect == controltool.EffectProposal {
+			completedProposals[call.ToolID]++
+		}
+	}
+	capturedProposals := make(map[controltool.ToolID]int)
+	seen := make(
+		map[string]struct{}, len(response.ControlProposals)+len(response.ActionProposals),
+	)
+	for _, proposal := range response.ControlProposals {
+		if !proposal.Valid() || proposal.MessageID != "" {
+			return false
+		}
+		if _, duplicate := seen[proposal.ProposalDigest]; duplicate {
+			return false
+		}
+		seen[proposal.ProposalDigest] = struct{}{}
+		capturedProposals[proposal.ToolID]++
+	}
+	for _, proposal := range response.ActionProposals {
+		if !proposal.Valid() || proposal.MessageID != "" {
+			return false
+		}
+		if _, duplicate := seen[proposal.ProposalDigest]; duplicate {
+			return false
+		}
+		seen[proposal.ProposalDigest] = struct{}{}
+		capturedProposals[proposal.ToolID]++
+	}
+	if len(completedProposals) != len(capturedProposals) {
+		return false
+	}
+	for toolID, count := range capturedProposals {
+		if completedProposals[toolID] != count {
+			return false
+		}
+	}
+	return true
+}
+
+func productHarnessGatewayResponseWithProposalFallback(
+	response api.LocalProductConversationResponse,
+) api.LocalProductConversationResponse {
+	content := strings.TrimSpace(response.Content)
+	if len(content) > productHarnessGatewayMaximumVisibleContent {
+		prefixBytes := productHarnessGatewayMaximumVisibleContent -
+			len(productHarnessGatewayTruncationMarker) - 2
+		for prefixBytes > 0 && !utf8.ValidString(content[:prefixBytes]) {
+			prefixBytes--
+		}
+		response.Content = strings.TrimSpace(content[:prefixBytes]) + "\n\n" +
+			productHarnessGatewayTruncationMarker
+	}
+	if strings.TrimSpace(response.Content) == "" &&
+		(len(response.ControlProposals) != 0 || len(response.ActionProposals) != 0) {
+		response.Content = "I prepared a Loom proposal for your review."
+	}
+	return response
 }
 
 func clearProductHarnessGatewayBytes(value []byte) {

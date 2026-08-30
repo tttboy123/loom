@@ -42,6 +42,8 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
     func testGovernanceSwitcherIncludesTopologyAndTimelineAsRealViews() {
         let destinations = LoomGovernanceDestination.allCases
 
+        XCTAssertTrue(destinations.contains(.mission))
+        XCTAssertTrue(destinations.contains(.roundtable))
         XCTAssertTrue(destinations.contains(.topology))
         XCTAssertTrue(destinations.contains(.timeline))
         XCTAssertEqual(
@@ -49,9 +51,153 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
             destinations.count,
             "Every governance view needs a unique accessible label"
         )
+        XCTAssertEqual(
+            LoomGovernanceDestination.missionContext,
+            [.mission, .roundtable, .timeline, .decisions, .evidence, .topology]
+        )
+        XCTAssertEqual(
+            LoomGovernanceDestination.workspace,
+            [.board, .team, .attention, .library, .runtimes]
+        )
+        XCTAssertEqual(LoomGovernanceDestination.timeline.rawValue, "Activity")
+        XCTAssertEqual(LoomGovernanceDestination.evidence.rawValue, "Results")
+    }
+
+    func testMissionIsAConversationContextRatherThanAWorkbenchMode() {
+        var panel = LoomGovernancePanelState()
+
+        panel.open(.mission)
+
+        XCTAssertEqual(panel.mode, .visible)
+        XCTAssertEqual(panel.destination, .mission)
+    }
+
+    func testRoundTableCanShareTheConversationGovernanceContext() {
+        var panel = LoomGovernancePanelState()
+
+        panel.open(.roundtable)
+
+        XCTAssertEqual(panel.mode, .visible)
+        XCTAssertEqual(panel.destination, .roundtable)
+    }
+
+    func testRoundTableOutputRendersInlineMarkdownWithoutActiveLinks() {
+        let output = roundtableContextAttributedOutput(
+            "**Plan**: review [supporting material](https://example.com)."
+        )
+
+        XCTAssertEqual(
+            String(output.characters),
+            "Plan: review supporting material."
+        )
+        XCTAssertFalse(output.runs.contains { $0.link != nil })
+    }
+
+    func testRoundTableOutputSupportsCompactPreviewAndExplicitExpansion() {
+        let body = "abcdefghij" + "klmnopqrst"
+        let preview = roundtableContextAttributedOutput(
+            body,
+            expanded: false,
+            limit: 12
+        )
+        let expanded = roundtableContextAttributedOutput(
+            body,
+            expanded: true,
+            limit: 12
+        )
+
+        XCTAssertEqual(String(preview.characters), "abcdef\n…\nrst")
+        XCTAssertEqual(String(expanded.characters), body)
+    }
+
+    func testRoundTablePreviewKeepsSummaryAndLatestActionWithinLimit() {
+        let body = "Summary: adopt the trust header. "
+            + String(repeating: "middle ", count: 90)
+            + "Next: publish one binding instruction per Agent."
+        let preview = String(
+            roundtableContextAttributedOutput(
+                body,
+                expanded: false,
+                limit: roundtableContextPreviewLimit
+            ).characters
+        )
+
+        XCTAssertLessThanOrEqual(preview.count, roundtableContextPreviewLimit)
+        XCTAssertTrue(preview.hasPrefix("Summary:"))
+        XCTAssertTrue(preview.contains("\n…\n"))
+        XCTAssertTrue(preview.hasSuffix("per Agent."))
+    }
+
+    func testRoundTablePreviewNeverExposesSplitMarkdownMarkers() {
+        let body = "**Agreement. Keep the Mission binding. "
+            + String(repeating: "middle ", count: 90)
+            + "The accepted result stays emphasized.** "
+            + "**Next action.** Publish one instruction per Agent."
+        let preview = roundtableContextAttributedOutput(
+            body,
+            expanded: false,
+            limit: roundtableContextPreviewLimit
+        )
+        let visible = String(preview.characters)
+
+        XCTAssertTrue(visible.hasPrefix("Agreement."))
+        XCTAssertTrue(visible.contains("Next action."))
+        XCTAssertFalse(visible.contains("**"))
+        XCTAssertFalse(preview.runs.contains { $0.link != nil })
+    }
+
+    func testRoundTablePreviewDoesNotExposePartialWordsAtEitherCut() {
+        let body = "Agreement. Keep the Mission binding. "
+            + String(repeating: "middle-context ", count: 60)
+            + "Next action. Publish one instruction per Agent."
+        let visible = String(
+            roundtableContextAttributedOutput(
+                body,
+                expanded: false,
+                limit: roundtableContextPreviewLimit
+            ).characters
+        )
+        let sections = visible.components(separatedBy: "\n…\n")
+
+        XCTAssertEqual(sections.count, 2)
+        XCTAssertFalse(sections[0].hasSuffix("middle-cont"))
+        XCTAssertFalse(sections[1].hasPrefix("text"))
+        XCTAssertFalse(sections[0].last?.isWhitespace ?? true)
+        XCTAssertFalse(sections[1].first?.isWhitespace ?? true)
+    }
+
+    func testRestartRestoresRoundTableOnlyForTheExactKnownMission() {
+        XCTAssertEqual(
+            loomWorkspaceRestorationSelection(
+                destinationRawValue: LoomGovernanceDestination.roundtable.rawValue,
+                modeRawValue: LoomGovernancePanelMode.pinned.rawValue,
+                missionID: "mission-1",
+                availableMissionIDs: ["mission-1", "mission-2"]
+            ),
+            LoomWorkspaceRestorationSelection(
+                destination: .roundtable,
+                mode: .pinned,
+                missionID: "mission-1"
+            )
+        )
+        XCTAssertNil(loomWorkspaceRestorationSelection(
+            destinationRawValue: LoomGovernanceDestination.roundtable.rawValue,
+            modeRawValue: LoomGovernancePanelMode.visible.rawValue,
+            missionID: "stale-mission",
+            availableMissionIDs: ["mission-1"]
+        ))
+        XCTAssertNil(loomWorkspaceRestorationSelection(
+            destinationRawValue: LoomGovernanceDestination.roundtable.rawValue,
+            modeRawValue: LoomGovernancePanelMode.hidden.rawValue,
+            missionID: "mission-1",
+            availableMissionIDs: ["mission-1"]
+        ))
     }
 
     func testLayoutProtectsConversationAndUsesOverlayAtCompactWidth() {
+        XCTAssertEqual(loomRailConversationLimit(compact: false), 12)
+        XCTAssertEqual(loomRailConversationLimit(compact: true), 0)
+
         let wide = LoomWorkspaceLayoutPolicy.metrics(
             for: 1_440,
             panelMode: .visible
@@ -488,44 +634,6 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
         )
     }
 
-    func testNewMissionAutomaticallyStartsFreshAfterTerminalTeamExecution() {
-        let terminalStatuses = [
-            "succeeded", "failed", "cancelled", "degraded", "blocked",
-            "human_required", "ready_for_review",
-        ]
-        for status in terminalStatuses {
-            XCTAssertTrue(
-                missionShouldStartNewAttempt(
-                    teamInstanceID: "team-1",
-                    missions: [missionSummary(teamInstanceID: "team-1", status: status)]
-                ),
-                "Expected a fresh Attempt after \(status)"
-            )
-        }
-        XCTAssertFalse(
-            missionShouldStartNewAttempt(
-                teamInstanceID: "team-1",
-                missions: [missionSummary(teamInstanceID: "team-1", status: "running")]
-            )
-        )
-        XCTAssertFalse(
-            missionShouldStartNewAttempt(
-                teamInstanceID: "team-1",
-                missions: [
-                    missionSummary(teamInstanceID: "team-1", status: "failed"),
-                    missionSummary(teamInstanceID: "team-1", status: "running"),
-                ]
-            ),
-            "An active Mission must remain the Team's current execution"
-        )
-        XCTAssertFalse(
-            missionShouldStartNewAttempt(
-                teamInstanceID: "team-2",
-                missions: [missionSummary(teamInstanceID: "team-1", status: "failed")]
-            )
-        )
-    }
-
     private func missionSummary(
         teamInstanceID: String,
         status: String
@@ -626,6 +734,24 @@ final class LoomWorkspaceShellStateTests: XCTestCase {
                 ready: true
             ),
             "OpenCode, available"
+        )
+        XCTAssertEqual(
+            runtimeInspectorDetail(
+                status: "Online",
+                capacity: 1,
+                adapterType: "pi-cli",
+                hasConversationRoute: false
+            ),
+            "Online · Local model required for Conversation"
+        )
+        XCTAssertEqual(
+            runtimeInspectorDetail(
+                status: "Online",
+                capacity: 3,
+                adapterType: "pi-cli",
+                hasConversationRoute: true
+            ),
+            "Online · Capacity 3"
         )
     }
 

@@ -157,6 +157,32 @@ func TestExportSessionPublishesContractArtifactAndFact(t *testing.T) {
 	_ = concludedAt
 }
 
+func TestExportDocumentPropagatesCorrelationIDToJournal(t *testing.T) {
+	authority, _, journalStore := newRoundtableFixture(t)
+	ctx := context.Background()
+	sessionID := "session-export-correlated"
+	runConcludedJourney(t, authority, sessionID)
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+
+	result, err := authority.ExportDocument(
+		ctx, sessionID, now.Add(24*time.Hour), exportCorrelation,
+	)
+	if err != nil {
+		t.Fatalf("export document: %v", err)
+	}
+	if len(result.Document) == 0 {
+		t.Fatal("export document is empty")
+	}
+	events, err := journalStore.ReadStream(ctx, sessionStream(sessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != FactSessionExported || last.CorrelationID != exportCorrelation {
+		t.Fatalf("export fact correlation = %q, type = %q", last.CorrelationID, last.Type)
+	}
+}
+
 func TestExportSessionRejectsUnconcluded(t *testing.T) {
 	authority, _, _ := newRoundtableFixture(t)
 	ctx := context.Background()

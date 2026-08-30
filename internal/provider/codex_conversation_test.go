@@ -64,6 +64,37 @@ func TestCodexConversationClientUsesBoundedReadOnlyEphemeralRequest(t *testing.T
 	}
 }
 
+func TestCodexConversationClientRepairsLegacyPrivateDirectoryModes(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "codex")
+	writeExecutableFixture(t, executable, "#!/bin/sh\nexit 0\n")
+	privateRoot := filepath.Join(root, "conversation")
+	legacy := filepath.Join(privateRoot, ".tmp-legacy")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCodexConversationClient(CodexConversationConfig{
+		ExecutablePath: executable,
+		HomePath:       root,
+		PrivateRoot:    privateRoot,
+		Timeout:        time.Minute,
+		MaxOutputBytes: 1024,
+		Runner:         &codexConversationRunnerFixture{output: []byte("ok")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("legacy private directory mode = %o", info.Mode().Perm())
+	}
+}
+
 func TestCodexConversationClientRejectsInvalidAndOversizedResponses(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "codex")
@@ -116,7 +147,12 @@ set -eu
 [ "$5" = "--skip-git-repo-check" ]
 [ "$6" = "--ignore-user-config" ]
 [ "$7" = "--ignore-rules" ]
-[ "$PWD" = "$(cd "$TMPDIR" && pwd -P)" ]
+case "$TMPDIR" in
+  "$PWD"/process-*) ;;
+  *) exit 66 ;;
+esac
+[ "$(stat -f '%Lp' "$TMPDIR")" = "700" ]
+mkdir -m 755 "$TMPDIR/child-default-mode"
 [ "${LOOM_TEST_SECRET-}" = "" ]
 output=""
 while [ "$#" -gt 0 ]; do
@@ -149,6 +185,47 @@ printf 'Read-only response\n' > "$output"
 	}
 	if string(output) != "Read-only response\n" {
 		t.Fatalf("output = %q", output)
+	}
+	entries, err := os.ReadDir(privateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("ephemeral Codex process state remained: %v", entries)
+	}
+}
+
+func TestSystemCodexConversationRunnerCleansPrivateTempAfterFailure(t *testing.T) {
+	root := t.TempDir()
+	privateRoot := filepath.Join(root, "conversation")
+	if err := os.Mkdir(privateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "codex")
+	writeExecutableFixture(t, executable, `#!/bin/sh
+set -eu
+mkdir -m 755 "$TMPDIR/child-default-mode"
+exit 71
+`)
+	_, err := NewSystemCodexConversationRunner().RunCodexConversation(
+		context.Background(),
+		CodexConversationProcessRequest{
+			ExecutablePath: executable,
+			HomePath:       root,
+			PrivateRoot:    privateRoot,
+			Prompt:         "bounded failure",
+			MaxOutputBytes: 1024,
+		},
+	)
+	if !errors.Is(err, ErrCodexConversationUnavailable) {
+		t.Fatalf("error = %v", err)
+	}
+	entries, err := os.ReadDir(privateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed Codex process state remained: %v", entries)
 	}
 }
 

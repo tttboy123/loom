@@ -60,6 +60,36 @@ func (service *LocalProductSetupAPI) ConnectCodex(
 	return backend.ConnectCodex(ctx)
 }
 
+func (service *LocalProductSetupAPI) ConnectClaudeCode(
+	ctx context.Context,
+) (app.ProviderConnectResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.ProviderConnectResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		ConnectClaudeCode(context.Context) (app.ProviderConnectResult, error)
+	})
+	if !ok {
+		return app.ProviderConnectResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.ConnectClaudeCode(ctx)
+}
+
+func (service *LocalProductSetupAPI) CancelClaudeCode(
+	ctx context.Context,
+) (app.ProviderConnectResult, error) {
+	if service == nil || service.backend == nil || ctx == nil {
+		return app.ProviderConnectResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	backend, ok := service.backend.(interface {
+		CancelClaudeCode(context.Context) (app.ProviderConnectResult, error)
+	})
+	if !ok {
+		return app.ProviderConnectResult{}, ErrInvalidLocalProductSetupAPI
+	}
+	return backend.CancelClaudeCode(ctx)
+}
+
 func (service *LocalProductSetupAPI) ConfigureProviderAccountPolicy(
 	ctx context.Context,
 	command app.ProviderAccountPolicyCommand,

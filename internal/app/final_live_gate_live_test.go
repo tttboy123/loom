@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"loom-pi-rebuild/internal/authorization"
+	"loom-pi-rebuild/internal/contextcapsule"
 	"loom-pi-rebuild/internal/evidence"
 	"loom-pi-rebuild/internal/journal"
 	"loom-pi-rebuild/internal/projection"
@@ -37,6 +38,7 @@ import (
 const (
 	finalLiveRuntimeID                 = "runtime.pi.earendil-works.0.82.1"
 	finalLiveInstalledPiSHA256         = "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca"
+	finalLiveLlamaArchiveSHA256        = "b9554ab4c9f6e91199f48387cb4ab27466fb1d724881f81463ef03f6370cfa32"
 	finalLiveModelSHA256               = "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046"
 	finalLivePi0821EventStreamSHA256   = "44a2498660ca61efa952ad6a3f10cc0491883411bd2b4572c9a392ec4e9553ec"
 	finalLivePi0821OpenAISHA256        = "0d50250fe2931e66e2078279a397814202e1ecddee58faf4b8bc04c278da177a"
@@ -46,15 +48,17 @@ const (
 )
 
 type finalLiveResolvedManifestInput struct {
-	Destination         string
-	PrivateRoot         string
-	PiExecutable        string
-	LlamaExecutable     string
-	ModelPath           string
-	ExpectedPiSHA256    string
-	ExpectedLlamaSHA256 string
-	ExpectedModelSHA256 string
-	CreatedAt           time.Time
+	Destination           string
+	PrivateRoot           string
+	PiExecutable          string
+	LlamaArchive          string
+	LlamaExecutable       string
+	ModelPath             string
+	ExpectedPiSHA256      string
+	ExpectedArchiveSHA256 string
+	ExpectedLlamaSHA256   string
+	ExpectedModelSHA256   string
+	CreatedAt             time.Time
 }
 
 func TestFinalLiveFreshAttemptIsolationAndPrivateSQLite(t *testing.T) {
@@ -236,11 +240,13 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 	privateRoot := os.Getenv("LOOM_FINAL_PRIVATE_ROOT")
 	piExecutable := os.Getenv("LOOM_FINAL_PI_EXECUTABLE")
 	llamaExecutable := os.Getenv("LOOM_FINAL_LLAMA_EXECUTABLE")
+	llamaArchive := os.Getenv("LOOM_FINAL_LLAMA_ARCHIVE")
 	modelPath := os.Getenv("LOOM_FINAL_MODEL_PATH")
 	searchPaths := filepath.SplitList(os.Getenv("LOOM_FINAL_RUNTIME_SEARCH_PATH"))
 	assertFinalLivePrivateBinding(
 		t,
 		privateRoot,
+		llamaArchive,
 		llamaExecutable,
 		modelPath,
 	)
@@ -263,15 +269,17 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 	}
 	llamaExecutableSHA256 := os.Getenv("LOOM_FINAL_LLAMA_EXECUTABLE_SHA256")
 	if err := writeFinalLiveResolvedManifest(finalLiveResolvedManifestInput{
-		Destination:         finalLiveResolvedManifestPath(t),
-		PrivateRoot:         privateRoot,
-		PiExecutable:        piExecutable,
-		LlamaExecutable:     llamaExecutable,
-		ModelPath:           modelPath,
-		ExpectedPiSHA256:    finalLiveInstalledPiSHA256,
-		ExpectedLlamaSHA256: llamaExecutableSHA256,
-		ExpectedModelSHA256: finalLiveModelSHA256,
-		CreatedAt:           time.Now().UTC(),
+		Destination:           finalLiveResolvedManifestPath(t),
+		PrivateRoot:           privateRoot,
+		PiExecutable:          piExecutable,
+		LlamaArchive:          llamaArchive,
+		LlamaExecutable:       llamaExecutable,
+		ModelPath:             modelPath,
+		ExpectedPiSHA256:      finalLiveInstalledPiSHA256,
+		ExpectedArchiveSHA256: finalLiveLlamaArchiveSHA256,
+		ExpectedLlamaSHA256:   llamaExecutableSHA256,
+		ExpectedModelSHA256:   finalLiveModelSHA256,
+		CreatedAt:             time.Now().UTC(),
 	}); err != nil {
 		t.Fatal("sanitized resolved live manifest was not created before execution")
 	}
@@ -316,13 +324,14 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 	modelServer, err := piadapter.StartPiLocalModelServer(
 		ctx,
 		piadapter.PiLocalModelServerConfig{
-			PrivateRoot:    privateRoot,
-			ExecutablePath: llamaExecutable,
-			ModelPath:      modelPath,
-			Host:           "127.0.0.1",
-			Port:           18427,
-			StartupTimeout: 60 * time.Second,
-			CancelGrace:    3 * time.Second,
+			PrivateRoot:        privateRoot,
+			RuntimeArchivePath: llamaArchive,
+			ExecutablePath:     llamaExecutable,
+			ModelPath:          modelPath,
+			Host:               "127.0.0.1",
+			Port:               18427,
+			StartupTimeout:     60 * time.Second,
+			CancelGrace:        3 * time.Second,
 		},
 	)
 	if err != nil {
@@ -423,15 +432,61 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 	}
 	workItemID := appTeamAttemptIdentity("work", plan, "main", 1)
 	runID := appTeamAttemptIdentity("run", plan, "main", 1)
-	promptPayload, err := json.Marshal(struct {
-		SchemaVersion int    `json:"schema_version"`
-		Kind          string `json:"kind"`
-		Prompt        string `json:"prompt"`
-	}{
-		SchemaVersion: 1,
-		Kind:          "pi_rpc_prompt",
-		Prompt:        finalLivePrompt,
+	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
+		ID:          "profile-pi-final-live",
+		AdapterType: "pi-cli",
+		ProviderID:  "loom-local",
+		ModelID:     "qwen2.5-coder-1.5b-instruct-q4-k-m",
+		AuthMode:    loomruntime.AuthNative,
+		Timeout:     120 * time.Second,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
+		ID:                finalLiveRuntimeID,
+		DeviceID:          "device.local",
+		AdapterType:       "pi-cli",
+		DisplayName:       "Pi 0.82.1 Final Live Gate",
+		ExecutableVersion: "0.82.1",
+		Status:            loomruntime.RuntimeOnline,
+		Capacity:          1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := missionContextCapacityAuthority()
+	counter := missionContextCounter
+	capsule, err := contextcapsule.BuildRoleContextCapsuleWithCapacity(
+		contextcapsule.Target{
+			ConversationID:          "team-conversation:" + plan.TeamInstanceID(),
+			TeamID:                  plan.TeamInstanceID(),
+			AgentID:                 "agent-main-final-live",
+			RoleID:                  "main",
+			ProviderID:              profile.ProviderID,
+			ModelID:                 profile.ModelID,
+			AuthMode:                string(profile.AuthMode),
+			ContextAdapterID:        "context:pi-cli:v1",
+			DisclosurePolicyID:      "policy.final-live",
+			DisclosurePolicyVersion: 1,
+			TokenBudget:             2048,
+		},
+		[]contextcapsule.ItemInput{{
+			ItemID: "goal-1", Kind: contextcapsule.KindConversationGoal,
+			Trust:    contextcapsule.TrustAuthoritative,
+			Scope:    contextcapsule.ScopeTeamShared,
+			Priority: contextcapsule.PrioritySystem, Required: true,
+			Content:    []byte(finalLivePrompt),
+			SourceType: contextcapsule.SourceAuthority,
+			SourceRef:  "team-plan:" + plan.Digest(),
+		}},
+		capacity,
+		counter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPayload, err := contextcapsule.RenderDispatchPayload(capsule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,28 +501,7 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 		Sequence:              1,
 		Type:                  bridgev1.MessageDispatch,
 		EmittedAt:             authoritativeClock(),
-		Payload:               promptPayload,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := loomruntime.NewRuntimeProfile(loomruntime.RuntimeProfile{
-		ID:          "profile-pi-final-live",
-		AdapterType: "pi-cli",
-		AuthMode:    loomruntime.AuthBrokered,
-		Timeout:     120 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	instance, err := loomruntime.NewRuntimeInstance(loomruntime.RuntimeInstance{
-		ID:                finalLiveRuntimeID,
-		DeviceID:          "device.local",
-		AdapterType:       "pi-cli",
-		DisplayName:       "Pi 0.82.1 Final Live Gate",
-		ExecutableVersion: "0.82.1",
-		Status:            loomruntime.RuntimeOnline,
-		Capacity:          1,
+		Payload:               dispatchPayload,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -497,6 +531,9 @@ func TestFinalLiveGatePiRPCOfflineModel(t *testing.T) {
 				grantAuthority,
 				adapter,
 			),
+			ContextCapsule:           capsule,
+			ContextCapacityAuthority: capacity,
+			ContextTokenCounter:      counter,
 		}},
 		Semantics:            testTeamNodeSemantics(t, plan, time.Second, ""),
 		AuthoritativeTime:    authoritativeClock(),
@@ -533,15 +570,17 @@ func TestFinalLiveResolvedManifestIsSanitizedAndFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	piPath := filepath.Join(privateRoot, "pi")
+	archivePath := filepath.Join(privateRoot, "llama-runtime.tar.gz")
 	llamaPath := filepath.Join(privateRoot, "llama-server")
 	modelPath := filepath.Join(privateRoot, "model.gguf")
 	for path, fixture := range map[string]struct {
 		content []byte
 		mode    os.FileMode
 	}{
-		piPath:    {content: []byte("pi"), mode: 0o600},
-		llamaPath: {content: []byte("llama"), mode: 0o700},
-		modelPath: {content: []byte("model"), mode: 0o600},
+		piPath:      {content: []byte("pi"), mode: 0o600},
+		archivePath: {content: []byte("archive"), mode: 0o600},
+		llamaPath:   {content: []byte("llama"), mode: 0o700},
+		modelPath:   {content: []byte("model"), mode: 0o600},
 	} {
 		if err := os.WriteFile(path, fixture.content, fixture.mode); err != nil {
 			t.Fatal(err)
@@ -549,15 +588,17 @@ func TestFinalLiveResolvedManifestIsSanitizedAndFailClosed(t *testing.T) {
 	}
 	destination := filepath.Join(t.TempDir(), "resolved-live-manifest.json")
 	input := finalLiveResolvedManifestInput{
-		Destination:         destination,
-		PrivateRoot:         privateRoot,
-		PiExecutable:        piPath,
-		LlamaExecutable:     llamaPath,
-		ModelPath:           modelPath,
-		ExpectedPiSHA256:    finalLiveTestDigest([]byte("pi")),
-		ExpectedLlamaSHA256: finalLiveTestDigest([]byte("llama")),
-		ExpectedModelSHA256: finalLiveTestDigest([]byte("model")),
-		CreatedAt:           time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),
+		Destination:           destination,
+		PrivateRoot:           privateRoot,
+		PiExecutable:          piPath,
+		LlamaArchive:          archivePath,
+		LlamaExecutable:       llamaPath,
+		ModelPath:             modelPath,
+		ExpectedPiSHA256:      finalLiveTestDigest([]byte("pi")),
+		ExpectedArchiveSHA256: finalLiveTestDigest([]byte("archive")),
+		ExpectedLlamaSHA256:   finalLiveTestDigest([]byte("llama")),
+		ExpectedModelSHA256:   finalLiveTestDigest([]byte("model")),
+		CreatedAt:             time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC),
 	}
 	inspectorCalls := 0
 	inspector := func(
@@ -565,6 +606,7 @@ func TestFinalLiveResolvedManifestIsSanitizedAndFailClosed(t *testing.T) {
 	) (piadapter.PiLocalModelServerBinding, error) {
 		inspectorCalls++
 		if config.PrivateRoot != privateRoot ||
+			config.RuntimeArchivePath != archivePath ||
 			config.ExecutablePath != llamaPath ||
 			config.ModelPath != modelPath ||
 			config.Host != "127.0.0.1" ||
@@ -574,8 +616,10 @@ func TestFinalLiveResolvedManifestIsSanitizedAndFailClosed(t *testing.T) {
 			return piadapter.PiLocalModelServerBinding{}, errors.New("unexpected local-model binding request")
 		}
 		return piadapter.PiLocalModelServerBinding{
-			ExecutableSHA256: finalLiveTestDigest([]byte("llama")),
-			ModelSHA256:      finalLiveTestDigest([]byte("model")),
+			RuntimeArchiveSHA256: finalLiveTestDigest([]byte("archive")),
+			RuntimeTreeSHA256:    finalLiveTestDigest([]byte("tree")),
+			ExecutableSHA256:     finalLiveTestDigest([]byte("llama")),
+			ModelSHA256:          finalLiveTestDigest([]byte("model")),
 		}, nil
 	}
 	if err := writeFinalLiveResolvedManifestWithInspector(input, inspector); err != nil {
@@ -591,6 +635,7 @@ func TestFinalLiveResolvedManifestIsSanitizedAndFailClosed(t *testing.T) {
 	for _, secret := range []string{
 		privateRoot,
 		piPath,
+		archivePath,
 		llamaPath,
 		modelPath,
 		finalLivePrompt,
@@ -647,17 +692,21 @@ func writeFinalLiveResolvedManifestWithInspector(
 		return errors.New("invalid final live manifest private root")
 	}
 	localBinding, err := inspect(piadapter.PiLocalModelServerConfig{
-		PrivateRoot:    input.PrivateRoot,
-		ExecutablePath: input.LlamaExecutable,
-		ModelPath:      input.ModelPath,
-		Host:           "127.0.0.1",
-		Port:           18427,
-		StartupTimeout: 60 * time.Second,
-		CancelGrace:    3 * time.Second,
+		PrivateRoot:        input.PrivateRoot,
+		RuntimeArchivePath: input.LlamaArchive,
+		ExecutablePath:     input.LlamaExecutable,
+		ModelPath:          input.ModelPath,
+		Host:               "127.0.0.1",
+		Port:               18427,
+		StartupTimeout:     60 * time.Second,
+		CancelGrace:        3 * time.Second,
 	})
 	if err != nil ||
+		!validFinalLiveDigest(localBinding.RuntimeArchiveSHA256) ||
+		!validFinalLiveDigest(localBinding.RuntimeTreeSHA256) ||
 		!validFinalLiveDigest(localBinding.ExecutableSHA256) ||
 		!validFinalLiveDigest(localBinding.ModelSHA256) ||
+		localBinding.RuntimeArchiveSHA256 != input.ExpectedArchiveSHA256 ||
 		localBinding.ExecutableSHA256 != input.ExpectedLlamaSHA256 ||
 		localBinding.ModelSHA256 != input.ExpectedModelSHA256 {
 		return errors.New("invalid inspected final live local-model binding")
@@ -727,7 +776,7 @@ func writeFinalLiveResolvedManifestWithInspector(
 	manifest.Runtime.ExecutableSHA = piDigest
 	manifest.LocalModelServer.Release = "b10107"
 	manifest.LocalModelServer.Commit = "c0bc8591e8815c63cb01dd3f051a8b0df02501c9"
-	manifest.LocalModelServer.ReleaseAssetSHA256 = "b9554ab4c9f6e91199f48387cb4ab27466fb1d724881f81463ef03f6370cfa32"
+	manifest.LocalModelServer.ReleaseAssetSHA256 = localBinding.RuntimeArchiveSHA256
 	manifest.LocalModelServer.ExecutableName = filepath.Base(input.LlamaExecutable)
 	manifest.LocalModelServer.ExecutableSHA = localBinding.ExecutableSHA256
 	manifest.LocalModelServer.Host = "127.0.0.1"
@@ -752,6 +801,7 @@ func writeFinalLiveResolvedManifestWithInspector(
 	for _, forbidden := range []string{
 		input.PrivateRoot,
 		input.PiExecutable,
+		input.LlamaArchive,
 		input.LlamaExecutable,
 		input.ModelPath,
 		finalLivePrompt,

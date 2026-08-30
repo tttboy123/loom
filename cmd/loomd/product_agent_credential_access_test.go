@@ -661,6 +661,7 @@ func TestEnsureProductNativeAgentRuntimeIsAuthoritativeAndIdempotent(t *testing.
 	}
 	instance, ok := readModel.GlobalReadView().RuntimeInstance("runtime.loom-native.local")
 	if !ok || instance.AdapterType != nativeadapter.DeepSeekAgentAdapterType ||
+		instance.DisplayName != "Loom Native (DeepSeek)" ||
 		instance.Status != string(loomruntime.RuntimeOnline) || instance.Capacity != 3 ||
 		!reflect.DeepEqual(
 			instance.ObservedCapabilities,
@@ -672,14 +673,22 @@ func TestEnsureProductNativeAgentRuntimeIsAuthoritativeAndIdempotent(t *testing.
 	for _, expected := range []struct {
 		runtimeInstanceID string
 		modelID           string
+		displayName       string
 	}{
-		{runtimeInstanceID: "runtime.loom-native.kimi", modelID: nativeadapter.KimiAgentModelID},
-		{runtimeInstanceID: "runtime.loom-native.minimax", modelID: nativeadapter.MiniMaxAgentModelID},
+		{
+			runtimeInstanceID: "runtime.loom-native.kimi",
+			modelID:           nativeadapter.KimiAgentModelID, displayName: "Loom Native (Kimi)",
+		},
+		{
+			runtimeInstanceID: "runtime.loom-native.minimax",
+			modelID:           nativeadapter.MiniMaxAgentModelID, displayName: "Loom Native (MiniMax)",
+		},
 	} {
 		providerRuntime, providerOK := readModel.GlobalReadView().RuntimeInstance(
 			expected.runtimeInstanceID,
 		)
 		if !providerOK || providerRuntime.AdapterType != nativeadapter.LoomNativeAgentAdapterType ||
+			providerRuntime.DisplayName != expected.displayName ||
 			providerRuntime.Status != string(loomruntime.RuntimeOnline) ||
 			providerRuntime.Capacity != 3 ||
 			!reflect.DeepEqual(
@@ -757,6 +766,12 @@ func TestEnsureProductNativeAgentRuntimeMigratesOnlyExactHistoricalCapabilitySet
 		context.Background(), store, readModel, now.Add(time.Second), definition.ProviderID,
 	); err != nil {
 		t.Fatal(err)
+	}
+	migrated, migratedOK := readModel.GlobalReadView().RuntimeInstance(
+		definition.RuntimeInstanceID,
+	)
+	if !migratedOK || migrated.DisplayName != "Loom Native (DeepSeek)" {
+		t.Fatalf("migrated runtime = %#v, %t", migrated, migratedOK)
 	}
 	if err := ensureProductNativeAgentProviderRuntime(
 		context.Background(), store, readModel, now.Add(2*time.Second), definition.ProviderID,
@@ -1897,9 +1912,10 @@ func TestProductSetupCatalogPublishesOpenCodeNativeTeamProfilesWithoutVaultAccou
 	), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProductOpenCodeAgentRuntime(
+	if err := ensureProductOpenCodeAgentRuntimeWithModelTimeout(
 		context.Background(), store, readModel,
 		time.Date(2026, 8, 22, 4, 0, 0, 0, time.UTC), executable,
+		30*time.Second,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1961,8 +1977,8 @@ func TestOpenCodeRuntimeRefreshesDynamicModelsWithoutHidingHarnessOnCatalogFailu
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 22, 4, 20, 0, 0, time.UTC)
-	if err := ensureProductOpenCodeAgentRuntime(
-		context.Background(), store, readModel, now, executable,
+	if err := ensureProductOpenCodeAgentRuntimeWithModelTimeout(
+		context.Background(), store, readModel, now, executable, 30*time.Second,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1978,8 +1994,9 @@ func TestOpenCodeRuntimeRefreshesDynamicModelsWithoutHidingHarnessOnCatalogFailu
 	if err := os.WriteFile(modelsPath, []byte("diagnostic output\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProductOpenCodeAgentRuntime(
+	if err := ensureProductOpenCodeAgentRuntimeWithModelTimeout(
 		context.Background(), store, readModel, now.Add(time.Second), executable,
+		30*time.Second,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1995,8 +2012,9 @@ func TestOpenCodeRuntimeRefreshesDynamicModelsWithoutHidingHarnessOnCatalogFailu
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProductOpenCodeAgentRuntime(
+	if err := ensureProductOpenCodeAgentRuntimeWithModelTimeout(
 		context.Background(), store, readModel, now.Add(2*time.Second), executable,
+		30*time.Second,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2031,8 +2049,8 @@ func TestProductSetupCatalogSeparatesOpenCodeHarnessFromBrokeredProvider(t *test
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProductOpenCodeAgentRuntime(
-		context.Background(), store, readModel, now, executable,
+	if err := ensureProductOpenCodeAgentRuntimeWithModelTimeout(
+		context.Background(), store, readModel, now, executable, 30*time.Second,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2065,6 +2083,30 @@ func TestProductSetupCatalogSeparatesOpenCodeHarnessFromBrokeredProvider(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	configuredMiniMax, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "configure-minimax-opencode-catalog", ProviderID: "minimax",
+			CredentialReference: "credential-ref-minimax-opencode-catalog",
+			ExpectedRevision:    0, OccurredAt: now.Add(3 * time.Second),
+			Status: credentials.CredentialConfigured,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.CommitCredentialMetadata(
+		context.Background(),
+		credentials.MetadataCommand{
+			CommandID: "verify-minimax-opencode-catalog", ProviderID: "minimax",
+			CredentialReference: configuredMiniMax.CredentialReference,
+			ExpectedRevision:    configuredMiniMax.Revision,
+			OccurredAt:          now.Add(4 * time.Second),
+			Status:              credentials.CredentialVerified,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
 	if err := readModel.Rebuild(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -2080,6 +2122,9 @@ func TestProductSetupCatalogSeparatesOpenCodeHarnessFromBrokeredProvider(t *test
 	for _, profile := range catalog.RuntimeProfiles {
 		if profile.AdapterType != harnessadapter.OpenCodeAdapterType {
 			continue
+		}
+		if profile.ProviderID == "minimax" {
+			t.Fatalf("incompatible OpenCode + MiniMax Team profile = %#v", profile)
 		}
 		opencodeProfiles++
 		if profile.AuthMode == loomruntime.AuthNative {

@@ -3,6 +3,17 @@ import Testing
 @testable import LoomLocalAppCore
 
 @Test
+func nativeAuthConnectResultAcceptsExplicitCancellation() throws {
+    let result = try LocalProductSetupWire.decodeProviderConnectResult(
+        Data(
+            #"{"provider_id":"claude-code","auth_mode":"native_auth","status":"cancelled"}"#.utf8
+        )
+    )
+    #expect(result.providerID == "claude-code")
+    #expect(result.status == "cancelled")
+}
+
+@Test
 func conversationProfileRejectsCrossProviderAccountAndRevisionDrift() throws {
     let valid =
         #"{"profile_id":"conversation-deepseek-deepseek-chat-account-work-r7","harness_adapter":"loom-native","provider_id":"deepseek","provider_account_id":"deepseek.work","display_name":"DeepSeek","protocol":"openai_compatible","model_id":"deepseek-chat","auth_mode":"brokered","credential_revision":7}"#
@@ -741,6 +752,30 @@ func providerConnectResultDecodesExactClosedShape() throws {
     #expect(result.providerID == "codex")
     #expect(result.authMode == "native_auth")
     #expect(result.status == "started")
+
+    let claude = try LocalProductSetupWire.decodeProviderConnectResult(Data(
+        """
+        {
+          "provider_id": "claude-code",
+          "auth_mode": "native_auth",
+          "status": "started"
+        }
+        """.utf8
+    ))
+    #expect(claude.providerID == "claude-code")
+
+    let untrustedProvider = Data(
+        """
+        {
+          "provider_id": "arbitrary-runtime",
+          "auth_mode": "native_auth",
+          "status": "started"
+        }
+        """.utf8
+    )
+    #expect(throws: LocalProductWireError.invalidJSON) {
+        _ = try LocalProductSetupWire.decodeProviderConnectResult(untrustedProvider)
+    }
 
     let unknown = Data(
         """

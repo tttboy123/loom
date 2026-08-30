@@ -12,7 +12,7 @@ import (
 
 type EventType string
 
-const EventSchemaVersion = 3
+const EventSchemaVersion = 4
 
 const (
 	defaultSessionOpenTimeout  = 30 * time.Second
@@ -56,14 +56,38 @@ type Event struct {
 	ContextCapsuleDigest        string
 	GovernancePolicyDigest      string
 	RouteTransitionReviewDigest string
+	ContextAlignmentDigest      string
 	ResponseID                  string
 	IncidentID                  string
+	Failure                     ResponseFailure
 	// Forbidden content-bearing fields remain zero and exist only as a
 	// regression tripwire for event sinks and compatibility projections.
 	WorkspacePath string
 	Content       string
 	ProviderBody  string
 }
+
+type ResponseFailure struct {
+	Code              string
+	Stage             string
+	HTTPStatus        int
+	ProviderCode      string
+	RetryAfterSeconds int64
+	Retryable         bool
+}
+
+func (failure ResponseFailure) Valid() bool {
+	return validIdentifier(failure.Code) && validIdentifier(failure.Stage) &&
+		(failure.HTTPStatus == 0 || failure.HTTPStatus >= 100 && failure.HTTPStatus <= 599) &&
+		(failure.ProviderCode == "" || validIdentifier(failure.ProviderCode)) &&
+		failure.RetryAfterSeconds >= 0 && failure.RetryAfterSeconds <= 24*60*60
+}
+
+func (failure ResponseFailure) zero() bool {
+	return failure == (ResponseFailure{})
+}
+
+type ResponseFailureClassifier func(error) (ResponseFailure, bool)
 
 func (event Event) Valid() bool {
 	if event.SchemaVersion != EventSchemaVersion || event.ConfiguredHarnessVersion < 1 ||
@@ -80,6 +104,7 @@ func (event Event) Valid() bool {
 		!validDigest(event.SegmentContextCapsuleDigest) ||
 		!optionalDigest(event.GovernancePolicyDigest) ||
 		!optionalDigest(event.RouteTransitionReviewDigest) ||
+		!optionalDigest(event.ContextAlignmentDigest) ||
 		(event.ProviderAccountID == "" && event.GovernancePolicyDigest != "") ||
 		event.WorkspacePath != "" || event.Content != "" || event.ProviderBody != "" {
 		return false
@@ -88,10 +113,13 @@ func (event Event) Valid() bool {
 	case EventSessionOpening, EventSessionReady, EventSessionClosing, EventSessionClosed,
 		EventSessionFailed:
 		return event.ResponseID == "" && event.IncidentID == "" &&
-			event.ContextCapsuleDigest == ""
-	case EventResponseStarted, EventResponseCompleted, EventResponseCancelled, EventResponseFailed:
+			event.ContextCapsuleDigest == "" && event.Failure.zero()
+	case EventResponseStarted, EventResponseCompleted, EventResponseCancelled:
 		return validIdentifier(event.ResponseID) && validIdentifier(event.IncidentID) &&
-			validDigest(event.ContextCapsuleDigest)
+			validDigest(event.ContextCapsuleDigest) && event.Failure.zero()
+	case EventResponseFailed:
+		return validIdentifier(event.ResponseID) && validIdentifier(event.IncidentID) &&
+			validDigest(event.ContextCapsuleDigest) && event.Failure.Valid()
 	default:
 		return false
 	}
@@ -105,6 +133,7 @@ type Config struct {
 	Now                 func() time.Time
 	SessionOpenTimeout  time.Duration
 	SessionCloseTimeout time.Duration
+	ClassifyFailure     ResponseFailureClassifier
 }
 
 type sessionState struct {
@@ -153,6 +182,7 @@ type Gateway struct {
 	eventMu         sync.Mutex
 	openTimeout     time.Duration
 	closeTimeout    time.Duration
+	classifyFailure ResponseFailureClassifier
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 
@@ -192,10 +222,11 @@ func New(config Config) (*Gateway, error) {
 	}
 	return &Gateway{
 		registry: config.Registry, events: config.Events, now: config.Now,
-		instanceID:   instanceID,
-		openTimeout:  openTimeout,
-		closeTimeout: closeTimeout,
-		lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel,
+		instanceID:      instanceID,
+		openTimeout:     openTimeout,
+		closeTimeout:    closeTimeout,
+		classifyFailure: config.ClassifyFailure,
+		lifecycleCtx:    lifecycleCtx, lifecycleCancel: lifecycleCancel,
 		sessions: make(map[string]*sessionState), opening: make(map[string]*sessionOpening),
 		closing: make(map[*sessionState]struct{}), active: make(map[string]activeResponse),
 		used: make(map[string]struct{}), counts: make(map[configuredHarnessKey]int),
@@ -291,7 +322,10 @@ func (gateway *Gateway) Respond(
 		if errors.Is(respondErr, context.Canceled) {
 			gateway.record(EventResponseCancelled, binding, sessionID, request.Authority)
 		} else {
-			gateway.record(EventResponseFailed, binding, sessionID, request.Authority)
+			gateway.recordResponseFailure(
+				binding, sessionID, request.Authority,
+				gateway.responseFailure(respondErr),
+			)
 		}
 		if errors.Is(respondErr, ErrSessionUnhealthy) {
 			gateway.failSession(state)
@@ -734,6 +768,39 @@ func (gateway *Gateway) record(
 	sessionID string,
 	authority ResponseAuthority,
 ) {
+	gateway.recordEvent(eventType, binding, sessionID, authority, ResponseFailure{})
+}
+
+func (gateway *Gateway) recordResponseFailure(
+	binding SegmentSessionBinding,
+	sessionID string,
+	authority ResponseAuthority,
+	failure ResponseFailure,
+) {
+	gateway.recordEvent(EventResponseFailed, binding, sessionID, authority, failure)
+}
+
+func (gateway *Gateway) responseFailure(err error) ResponseFailure {
+	fallback := ResponseFailure{
+		Code: "provider_unavailable", Stage: "conversation_dispatch", Retryable: true,
+	}
+	if gateway == nil || gateway.classifyFailure == nil {
+		return fallback
+	}
+	classified, ok := gateway.classifyFailure(err)
+	if !ok || !classified.Valid() {
+		return fallback
+	}
+	return classified
+}
+
+func (gateway *Gateway) recordEvent(
+	eventType EventType,
+	binding SegmentSessionBinding,
+	sessionID string,
+	authority ResponseAuthority,
+	failure ResponseFailure,
+) {
 	gateway.eventMu.Lock()
 	defer gateway.eventMu.Unlock()
 	event := Event{
@@ -752,8 +819,10 @@ func (gateway *Gateway) record(
 		ContextCapsuleDigest:        authority.ContextCapsuleDigest,
 		GovernancePolicyDigest:      binding.GovernancePolicyDigest,
 		RouteTransitionReviewDigest: binding.RouteTransitionReviewDigest,
+		ContextAlignmentDigest:      binding.ContextAlignmentDigest,
 		ResponseID:                  authority.ResponseID,
 		IncidentID:                  authority.IncidentID,
+		Failure:                     failure,
 	}
 	if event.Valid() {
 		gateway.events.Record(event)

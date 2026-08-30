@@ -17,9 +17,10 @@ var (
 )
 
 type PiLocalModelCatalogConfig struct {
-	PrivateRoot    string
-	ExecutablePath string
-	ModelPath      string
+	PrivateRoot        string
+	RuntimeArchivePath string
+	ExecutablePath     string
+	ModelPath          string
 }
 
 type piLocalModelCatalog struct {
@@ -35,16 +36,36 @@ func bindPiLocalModelCatalog(
 	input PiLocalModelCatalogConfig,
 	expectedModelDigest string,
 ) (*piLocalModelCatalog, error) {
+	return bindPiLocalModelCatalogWithArtifactDigests(
+		input,
+		"",
+		"",
+		expectedModelDigest,
+	)
+}
+
+func bindPiLocalModelCatalogWithArtifactDigests(
+	input PiLocalModelCatalogConfig,
+	expectedArchiveDigest string,
+	expectedExecutableDigest string,
+	expectedModelDigest string,
+) (*piLocalModelCatalog, error) {
 	config := PiLocalModelServerConfig{
-		PrivateRoot:    input.PrivateRoot,
-		ExecutablePath: input.ExecutablePath,
-		ModelPath:      input.ModelPath,
-		Host:           "127.0.0.1",
-		Port:           18427,
-		StartupTimeout: time.Second,
-		CancelGrace:    100 * time.Millisecond,
+		PrivateRoot:        input.PrivateRoot,
+		RuntimeArchivePath: input.RuntimeArchivePath,
+		ExecutablePath:     input.ExecutablePath,
+		ModelPath:          input.ModelPath,
+		Host:               "127.0.0.1",
+		Port:               18427,
+		StartupTimeout:     time.Second,
+		CancelGrace:        100 * time.Millisecond,
 	}
-	binding, err := inspectPiLocalModelServerBinding(config, expectedModelDigest)
+	binding, err := inspectPiLocalModelServerBindingWithArtifactDigests(
+		config,
+		expectedArchiveDigest,
+		expectedExecutableDigest,
+		expectedModelDigest,
+	)
 	if err != nil {
 		return nil, errors.Join(ErrInvalidPiLocalModelCatalog, err)
 	}

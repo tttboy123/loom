@@ -749,8 +749,10 @@ func writeFixtureControl(t *testing.T, executable, name, value string) {
 	}
 }
 
+const piFixtureProcessStartupTimeout = 15 * time.Second
+
 func waitForFixtureReady(path string) {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(piFixtureProcessStartupTimeout)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
 			return

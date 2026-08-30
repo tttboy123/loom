@@ -43,6 +43,8 @@ type CreateSessionCommand struct {
 	SessionID     string
 	ModeratorSeat string
 	Title         string
+	Link          *SessionLinkRequest
+	Context       *SessionContext
 	EmittedAt     time.Time
 	CorrelationID string
 }
@@ -58,6 +60,8 @@ func (authority *Authority) CreateSession(
 		if !validRoundtableID(command.SessionID, MaxSessionIDBytes) ||
 			!validRoundtableID(command.ModeratorSeat, MaxSeatIDBytes) ||
 			!validRoundtableText(command.Title, MaxSessionTitleBytes) ||
+			command.Link != nil ||
+			(command.Context != nil && !validSessionContext(*command.Context)) ||
 			command.EmittedAt.IsZero() || command.EmittedAt.Location() != time.UTC ||
 			!validCorrelationID(command.CorrelationID) {
 			return View{}, fact{}, ErrInvalidRoundtableSession
@@ -66,6 +70,7 @@ func (authority *Authority) CreateSession(
 			SchemaVersion: SchemaVersion, SessionID: command.SessionID,
 			ModeratorSeat: command.ModeratorSeat, Title: command.Title,
 			CreatedAt: command.EmittedAt,
+			Context:   cloneSessionContext(command.Context),
 		})
 		if err != nil {
 			return View{}, fact{}, err
@@ -88,6 +93,8 @@ type AddSeatCommand struct {
 	SessionID     string
 	SeatID        string
 	DisplayName   string
+	Selection     *SeatBindingRequest
+	Binding       *FrozenSeatBinding
 	EmittedAt     time.Time
 	CorrelationID string
 }
@@ -105,13 +112,30 @@ func (authority *Authority) AddSeat(
 		}
 		if !validRoundtableID(command.SeatID, MaxSeatIDBytes) ||
 			!validRoundtableText(command.DisplayName, MaxDisplayNameBytes) ||
+			command.Selection != nil ||
 			command.EmittedAt.IsZero() || command.EmittedAt.Location() != time.UTC ||
 			!validCorrelationID(command.CorrelationID) {
 			return View{}, fact{}, ErrInvalidRoundtableSeat
 		}
+		var validatedBinding *FrozenSeatBinding
+		if state.session.Context != nil {
+			if command.Binding == nil {
+				return View{}, fact{}, ErrInvalidRoundtableSeatBinding
+			}
+			validated, err := validateFrozenSeatBinding(
+				command.SessionID, command.SeatID, *state.session.Context, *command.Binding,
+			)
+			if err != nil {
+				return View{}, fact{}, err
+			}
+			validatedBinding = &validated
+		} else if command.Binding != nil {
+			return View{}, fact{}, ErrInvalidRoundtableSeatBinding
+		}
 		if existing, exists := state.seats[command.SeatID]; exists {
 			if existing.Available {
-				if existing.DisplayName == command.DisplayName {
+				if existing.DisplayName == command.DisplayName &&
+					equalFrozenSeatBindings(existing.Binding, validatedBinding) {
 					return cloneView(state.view), fact{}, nil
 				}
 				return View{}, fact{}, ErrRoundtableConflict
@@ -119,11 +143,19 @@ func (authority *Authority) AddSeat(
 			if len(state.rounds) != 0 {
 				return View{}, fact{}, ErrRoundtableConflict
 			}
+			if state.session.Context != nil &&
+				activeRoundtableAgentSeatCount(state) >= MaxAgentSeats {
+				return View{}, fact{}, ErrRoundtableTooManySeats
+			}
 			revision := state.seatMembershipRevisions[command.SeatID] + 1
+			if validatedBinding != nil && validatedBinding.MembershipRevision != revision {
+				return View{}, fact{}, ErrInvalidRoundtableSeatBinding
+			}
 			payload, err := json.Marshal(seatRejoinedPayload{
 				SchemaVersion: SchemaVersion, SessionID: command.SessionID,
 				SeatID: command.SeatID, DisplayName: command.DisplayName,
 				MembershipRevision: revision, RejoinedAt: command.EmittedAt,
+				Binding: cloneFrozenSeatBindingPointer(validatedBinding),
 			})
 			if err != nil {
 				return View{}, fact{}, err
@@ -131,6 +163,7 @@ func (authority *Authority) AddSeat(
 			view := cloneView(state.view)
 			existing.DisplayName = command.DisplayName
 			existing.Available = true
+			existing.Binding = cloneFrozenSeatBindingPointer(validatedBinding)
 			view.Seats[command.SeatID] = existing
 			revisionText := fmtInt(revision)
 			return view, fact{
@@ -151,10 +184,21 @@ func (authority *Authority) AddSeat(
 		if len(state.seats) >= MaxSeats {
 			return View{}, fact{}, ErrRoundtableTooManySeats
 		}
+		if state.session.Context != nil && len(state.rounds) != 0 {
+			return View{}, fact{}, ErrRoundtableConflict
+		}
+		if state.session.Context != nil &&
+			activeRoundtableAgentSeatCount(state) >= MaxAgentSeats {
+			return View{}, fact{}, ErrRoundtableTooManySeats
+		}
+		if validatedBinding != nil && validatedBinding.MembershipRevision != 1 {
+			return View{}, fact{}, ErrInvalidRoundtableSeatBinding
+		}
 		payload, err := json.Marshal(seatAddedPayload{
 			SchemaVersion: SchemaVersion, SessionID: command.SessionID,
 			SeatID: command.SeatID, DisplayName: command.DisplayName,
 			EmittedAt: command.EmittedAt,
+			Binding:   cloneFrozenSeatBindingPointer(validatedBinding),
 		})
 		if err != nil {
 			return View{}, fact{}, err
@@ -162,6 +206,7 @@ func (authority *Authority) AddSeat(
 		view := cloneView(state.view)
 		view.Seats[command.SeatID] = Seat{
 			ID: command.SeatID, DisplayName: command.DisplayName, Available: true,
+			Binding: cloneFrozenSeatBindingPointer(validatedBinding),
 		}
 		return view, fact{
 			Event: journal.Event{
@@ -212,6 +257,9 @@ func (authority *Authority) RetireSeat(
 		if !seat.Available {
 			return cloneView(state.view), fact{}, nil
 		}
+		if state.session.Context != nil && len(state.rounds) != 0 {
+			return View{}, fact{}, ErrRoundtableConflict
+		}
 		revision := state.seatMembershipRevisions[command.SeatID]
 		payload, err := json.Marshal(seatRetiredPayload{
 			SchemaVersion: SchemaVersion, SessionID: command.SessionID,
@@ -251,6 +299,9 @@ type OpenRoundCommand struct {
 	SessionID     string
 	RoundID       string
 	ModeratorSeat string
+	// Prompt is product dispatch input. Authority deliberately excludes it
+	// from RoundOpened facts; the encrypted Context Capsule owns the content.
+	Prompt        string
 	EmittedAt     time.Time
 	CorrelationID string
 }
@@ -274,6 +325,12 @@ func (authority *Authority) OpenRound(
 			command.EmittedAt.IsZero() || command.EmittedAt.Location() != time.UTC ||
 			!validCorrelationID(command.CorrelationID) {
 			return View{}, fact{}, ErrInvalidRoundtableMessage
+		}
+		if state.session.Context != nil {
+			count := activeRoundtableAgentSeatCount(state)
+			if count < MinAgentSeats || count > MaxAgentSeats {
+				return View{}, fact{}, ErrRoundtableAgentSeatCount
+			}
 		}
 		if len(state.rounds) >= MaxRounds {
 			return View{}, fact{}, ErrRoundtableConflict
@@ -304,6 +361,16 @@ func (authority *Authority) OpenRound(
 			commandID: "round:" + command.SessionID + ":" + command.RoundID,
 		}, nil
 	})
+}
+
+func activeRoundtableAgentSeatCount(state sessionState) int {
+	count := 0
+	for seatID, seat := range state.seats {
+		if seatID != state.session.ModeratorSeat && seat.Available && seat.Binding != nil {
+			count++
+		}
+	}
+	return count
 }
 
 type ProposeMessageCommand struct {
@@ -551,6 +618,9 @@ func (authority *Authority) ConcludeSession(
 			!validCorrelationID(command.CorrelationID) {
 			return View{}, fact{}, ErrInvalidRoundtableSession
 		}
+		if state.session.Context != nil && !missionRoundtableReadyToConclude(state) {
+			return View{}, fact{}, ErrRoundtableInterventionRequired
+		}
 		summary := BuildAlignmentSummary(state.view, command.EmittedAt)
 		encoded, err := json.Marshal(summary)
 		if err != nil {
@@ -589,4 +659,39 @@ func (authority *Authority) ConcludeSession(
 			commandID: "conclude:" + command.SessionID,
 		}, nil
 	})
+}
+
+func missionRoundtableReadyToConclude(state sessionState) bool {
+	if alignmentSummaryCandidate(state.view) == nil {
+		return false
+	}
+	roundID := latestRoundID(state)
+	for seatID, seat := range state.seats {
+		if seatID == state.session.ModeratorSeat || !seat.Available {
+			continue
+		}
+		if seatSkipped(state, roundID, seatID) {
+			continue
+		}
+		var latest SeatAttempt
+		found := false
+		for _, attempt := range state.attempts {
+			if attempt.RoundID == roundID && attempt.SeatID == seatID &&
+				(!found || attempt.AttemptNumber > latest.AttemptNumber) {
+				latest = attempt
+				found = true
+			}
+		}
+		if !found || latest.Status != SeatAttemptSucceeded {
+			return false
+		}
+	}
+	return true
+}
+
+func latestRoundID(state sessionState) string {
+	if len(state.rounds) == 0 {
+		return ""
+	}
+	return state.rounds[len(state.rounds)-1].id
 }
